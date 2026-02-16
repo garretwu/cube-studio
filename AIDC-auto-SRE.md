@@ -286,13 +286,33 @@ sre_agent/
 │   └── config_memory.py            # 配置记忆（基线值、阈值）
 │
 ├── skills/
-│   ├── loader.py                   # Skill 加载器
-│   ├── registry.py                 # Skill 注册表
-│   └── builtin/
-│       ├── vllm_diagnosis.yaml     # vLLM 诊断 Skill
-│       ├── rdma_diagnosis.yaml     # RDMA 诊断 Skill
-│       ├── gpu_health.yaml         # GPU 健康检查 Skill
-│       └── network_diagnosis.yaml  # 网络诊断 Skill
+│   ├── runtime/
+│   │   ├── registry.py                 # SkillRegistry — 热扫描 **/SKILL.md
+│   │   ├── executor.py                 # SkillExecutor — 安全脚本执行
+│   │   ├── tools.py                    # 4 个固定 LangChain @tool
+│   │   └── policy.py                   # allow/deny/ask 权限策略
+│   ├── builtin/                        # 内置 Skills（Claude Code SKILL.md 格式）
+│   │   ├── vllm-diagnosis/
+│   │   │   ├── SKILL.md
+│   │   │   ├── scripts/
+│   │   │   │   └── check_gpu_contention.sh
+│   │   │   └── references/
+│   │   │       └── vllm-tuning-guide.md
+│   │   ├── rdma-diagnosis/
+│   │   │   ├── SKILL.md
+│   │   │   ├── scripts/
+│   │   │   │   └── check_pfc_storm.sh
+│   │   │   └── references/
+│   │   │       └── rdma-troubleshoot.md
+│   │   ├── gpu-health/
+│   │   │   ├── SKILL.md
+│   │   │   └── scripts/
+│   │   │       └── gpu_ecc_check.py
+│   │   └── network-diagnosis/
+│   │       ├── SKILL.md
+│   │       └── scripts/
+│   │           └── port_scan.sh
+│   └── custom/                         # 用户自定义 Skills（同格式，热加载）
 │
 ├── safety/
 │   ├── guard.py                    # SafetyGuard
@@ -2303,118 +2323,619 @@ class MemoryStore:
 
 ---
 
-## 10. Skills 框架（Claude Code 兼容）
+## 10. Skills 框架（Claude Code 即插即用）
 
-### 10.1 Skill 格式
+### 10.1 设计目标
 
 需求："考虑兼容 anthropic claude code skills"。
 
-每个 Skill 是一组工具 + 专用系统提示词 + 示例的打包，可被 Claude Code 加载。
+采用 **完全复刻 Claude Code skills 机制** 的即插即用设计：
 
-```yaml
-# skills/builtin/vllm_diagnosis.yaml
-name: "sre:vllm-diagnosis"
-description: "诊断 vLLM 推理服务延迟问题"
-version: "1.0"
+| 特性 | 说明 |
+|------|------|
+| 目录约定 | `.claude/skills/**/SKILL.md` + `scripts/` + `references/` |
+| 即插即用 | 拷贝/更新 skills 目录即生效，无需重新编译/部署 |
+| 固定工具数 | Agent 通过 **4 个固定 tool** 发现/加载/执行 skills，不随 skill 数量变化 |
+| 按需加载 | 默认只给模型 skills 摘要；需要时再加载 SKILL.md → references → scripts |
+| 热更新 | `SkillRegistry` 周期性重新扫描 `**/SKILL.md`，无需重启 |
+| 安全管控 | allow/deny/ask 策略 + 路径防逃逸 + 超时 + 输出截断 + 低权限执行 |
 
-# 此 Skill 可用的工具子集
-tools:
-  - query_prometheus
-  - get_gpu_metrics
-  - get_pod_metrics
-  - get_inference_latency
-  - read_pod_logs
-  - get_thermal_status
-  - get_pcie_errors
-  - check_rdma_status
-  - check_nic_errors
-  - query_topology
-  - get_blast_radius
-  - search_knowledge
-  - search_similar_incidents
+### 10.2 Skill 目录约定
 
-# Skill 专用系统提示词补充
-system_prompt: |
-  你正在诊断 vLLM 推理服务的延迟问题。常见根因：
-  1. GPU 资源争用（其他进程占用 GPU 或 PCIe 带宽）
-  2. GPU 热节流（温度 > 85°C 导致降频）
-  3. 网络问题（RDMA 异常、丢包、MTU 不匹配）
-  4. KV Cache 内存不足（OOM 导致请求排队）
-  5. 平台级瓶颈（Gunicorn Worker 饱和、DB 连接池耗尽）
-  6. 存储 I/O（模型加载慢、checkpoint 读写）
+兼容 Claude Code 的 `SKILL.md` 格式，支持多根目录：
 
-  诊断流程建议：
-  1. 先查延迟指标确认问题范围（哪些 percentile 受影响）
-  2. 查 GPU 指标（利用率、显存、温度）
-  3. 查网络指标（RDMA 状态、PFC、NIC 错误）
-  4. 查 Pod/Node 状态
-  5. 交叉验证，排除假设
+```
+# 内置 Skills（随代码库分发）
+sre_agent/skills/builtin/
+  vllm-diagnosis/
+    SKILL.md                    # 核心：技能描述 + 系统提示词 + 示例
+    scripts/
+      check_gpu_contention.sh   # 可执行诊断脚本
+      parse_vllm_logs.py
+    references/
+      vllm-tuning-guide.md      # 参考文档
+      gpu-pcie-topology.json
 
-# 示例诊断过程
-examples:
-  - input: "vLLM P95 > 500ms"
-    steps:
-      - tool: "get_inference_latency"
-        params: {service: "vllm-deepseek"}
-        observation: "P50=120ms, P95=680ms, P99=1.2s"
-      - tool: "get_gpu_metrics"
-        params: {node: "gpu-1-1"}
-        observation: "GPU-0: util=98%, GPU-1: util=72%"
-      - thought: "GPU-0 利用率异常高，推理在 GPU-1 但可能受 PCIe 争用影响"
-      - tool: "read_pod_logs"
-        params: {pod: "vllm-xxx", namespace: "service", tail: 50}
-      - conclusion: "GPU 资源争用，gpu-burn 进程占用 GPU-0"
+  rdma-diagnosis/
+    SKILL.md
+    scripts/
+      check_pfc_storm.sh
+    references/
+      rdma-troubleshoot.md
+
+# 用户自定义 Skills（可热加载）
+sre_agent/skills/custom/
+  my-custom-diag/
+    SKILL.md
+    scripts/...
+
+# 全局 Skills（可选，跨项目共享）
+~/.claude/skills/
+  shared-network-check/
+    SKILL.md
+    ...
 ```
 
-### 10.2 内置 Skills
+**Skill 发现规则**：
+- 递归扫描所有根目录下的 `**/SKILL.md`
+- `skill_id` = `SKILL.md` 所在目录的相对路径（如 `vllm-diagnosis`、`subdir/my-skill`）
+- 可通过 SKILL.md frontmatter `name` 字段覆盖 skill_id
 
-| Skill 名 | 用途 | 核心工具 |
-|-----------|------|----------|
-| `sre:vllm-diagnosis` | vLLM 推理延迟诊断 | GPU 指标、推理延迟、温度、网络 |
-| `sre:rdma-diagnosis` | RDMA/RoCEv2 问题诊断 | PFC 计数器、ECN 配置、交换机端口、NIC 错误 |
-| `sre:gpu-health` | GPU 硬件健康检查 | BMC SEL、温度、PCIe 错误、ECC 错误 |
-| `sre:network-diagnosis` | 通用网络问题诊断 | 交换机端口、LLDP、ping、traceroute |
-| `sre:storage-diagnosis` | 存储 I/O 问题诊断 | PVC 状态、I/O 延迟、磁盘健康 |
-| `sre:platform-health` | Cube Studio 平台健康检查 | API 延迟、Worker 状态、DB 连接、队列深度 |
+### 10.3 SKILL.md 格式
 
-### 10.3 自定义 Skill 创建
+```markdown
+---
+name: sre:vllm-diagnosis
+description: 诊断 vLLM 推理服务延迟问题
+version: "1.0"
+---
 
-现场工程师可以将成功的诊断 trace 保存为新的自定义 Skill：
+# vLLM 推理延迟诊断
+
+## 适用场景
+- vLLM P95/P99 延迟超标
+- 推理 QPS 下降
+- GPU 利用率异常
+
+## 诊断方法论
+
+### 常见根因
+1. GPU 资源争用（其他进程占用 GPU 或 PCIe 带宽）
+2. GPU 热节流（温度 > 85°C 导致降频）
+3. 网络问题（RDMA 异常、丢包、MTU 不匹配）
+4. KV Cache 内存不足（OOM 导致请求排队）
+5. 平台级瓶颈（Gunicorn Worker 饱和、DB 连接池耗尽）
+
+### 推荐诊断流程
+1. 先查延迟指标确认问题范围（哪些 percentile 受影响）
+2. 查 GPU 指标（利用率、显存、温度）→ 可执行 `scripts/check_gpu_contention.sh`
+3. 查网络指标（RDMA 状态、PFC、NIC 错误）
+4. 查 Pod/Node 状态
+5. 交叉验证，排除假设
+
+### 关键工具
+- `get_gpu_metrics` — GPU 利用率、显存、温度
+- `get_gpu_processes` — GPU 进程列表
+- `get_inference_latency` — 推理 P50/P95/P99
+- `get_thermal_status` — 温度和散热
+- `check_rdma_status` — RDMA 设备状态
+- `query_prometheus` — 自定义 PromQL
+
+### 可执行脚本
+- `scripts/check_gpu_contention.sh` — 检查 GPU 争用（传入 node 参数）
+- `scripts/parse_vllm_logs.py` — 分析 vLLM 日志中的 OOM/timeout 模式
+
+### 参考文档
+- `references/vllm-tuning-guide.md` — vLLM 性能调优指南
+- `references/gpu-pcie-topology.json` — PCIe 拓扑参考
+
+## 示例诊断 Trace
+
+```
+告警: vLLM P95 > 500ms
+Step 1: get_inference_latency → P50=120ms, P95=680ms
+Step 2: get_gpu_metrics → GPU-0 util=98%, GPU-1 util=72%
+Step 3: get_gpu_processes → gpu-burn 占用 GPU-0
+结论: GPU 资源争用，gpu-burn 进程占用 GPU-0，导致 PCIe 带宽争用
+```
+```
+
+### 10.4 运行时固定的 4 个工具（核心架构）
+
+Agent 通过固定的 4 个 LangChain `@tool` 与 skills 交互。**新增 skill 不会新增 tool**，
+无需修改 Agent 代码或重新部署：
+
+| 工具 | 作用 | 上下文影响 |
+|------|------|-----------|
+| `list_skills()` | 列出所有可用技能的摘要（ID + name + 短描述） | 极小（仅摘要） |
+| `load_skill(skill_id)` | 加载指定 skill 的完整 SKILL.md 内容 | 中等（按需加载） |
+| `read_skill_ref(skill_id, path)` | 读取 skill 的 references/ 下文件 | 中等（按需读取） |
+| `run_skill(skill_id, script, args)` | 执行 skill 的 scripts/ 下脚本 | 取决于脚本输出 |
+
+```python
+from langchain_core.tools import tool
+from typing import Any, Dict, List, Optional
+
+# ─── 这 4 个 tool 注册到 LangGraph，永远不变 ───
+
+@tool
+def list_skills() -> List[Dict[str, Any]]:
+    """列出所有可用的 SRE 诊断技能（仅摘要，不加载全文）。
+    返回每个 skill 的 id、名称、描述。
+    使用此工具发现适合当前问题的 skill。"""
+    skills = registry.list()
+    return [
+        {
+            "skill_id": s.skill_id,
+            "name": s.name,
+            "description": s.description,
+            "has_scripts": s.scripts_dir().exists(),
+            "has_references": s.references_dir().exists(),
+        }
+        for s in skills
+    ]
+
+@tool
+def load_skill(skill_id: str) -> Dict[str, Any]:
+    """加载指定 skill 的完整 SKILL.md 内容。
+    包含诊断方法论、推荐步骤、可用脚本和参考文档列表。
+    仅在需要某个 skill 的详细指导时调用。"""
+    s = registry.get(skill_id)
+    if not s:
+        return {"ok": False, "error": "skill_not_found"}
+    return {
+        "ok": True,
+        "skill_id": s.skill_id,
+        "name": s.name,
+        "skill_md": s.read_skill_md(),
+        "scripts": [p.name for p in s.scripts_dir().iterdir()]
+            if s.scripts_dir().exists() else [],
+        "references": [p.name for p in s.references_dir().iterdir()]
+            if s.references_dir().exists() else [],
+    }
+
+@tool
+def read_skill_ref(skill_id: str, path: str) -> Dict[str, Any]:
+    """读取 skill 的 references/ 下的参考文件内容。
+    path 是相对于 references/ 的路径，如 'vllm-tuning-guide.md'。"""
+    s = registry.get(skill_id)
+    if not s:
+        return {"ok": False, "error": "skill_not_found"}
+    try:
+        p = registry.resolve_in_skill(s, "references", path)
+        if not p.exists():
+            return {"ok": False, "error": "ref_not_found", "path": path}
+        content = p.read_text(encoding="utf-8", errors="replace")
+        if len(content) > 200_000:
+            content = content[:200_000] + "\n...[truncated]"
+        return {"ok": True, "path": path, "content": content}
+    except ValueError as e:
+        return {"ok": False, "error": "invalid_path", "detail": str(e)}
+
+@tool
+def run_skill(
+    skill_id: str, script: str,
+    args: Optional[Dict[str, Any]] = None,
+    timeout_sec: Optional[int] = None,
+) -> Dict[str, Any]:
+    """执行 skill 的 scripts/ 下的脚本。
+    script: 相对于 scripts/ 的路径，如 'check_gpu_contention.sh'
+    args: 结构化参数 dict，脚本可通过环境变量 SKILL_ARGS_JSON 读取
+    timeout_sec: 超时秒数（默认 60s）"""
+    s = registry.get(skill_id)
+    if not s:
+        return {"ok": False, "error": "skill_not_found"}
+    # ── 权限策略检查 ──
+    decision = policy.check(skill_id, script, args)
+    if decision == "deny":
+        return {"ok": False, "error": "policy_denied",
+                "detail": f"Script {script} in {skill_id} is denied by policy"}
+    if decision == "ask":
+        return {"ok": False, "error": "approval_required",
+                "detail": f"Script {script} requires human approval"}
+    # ── 执行 ──
+    try:
+        p = registry.resolve_in_skill(s, "scripts", script)
+        if not p.exists() or p.is_dir():
+            return {"ok": False, "error": "script_not_found"}
+        result = executor.run_script(
+            script_path=p, args=args or {},
+            cwd=s.base_dir, timeout_sec=timeout_sec)
+        result.update({"skill_id": skill_id, "script": script})
+        return result
+    except Exception as e:
+        return {"ok": False, "error": "execution_failed", "detail": str(e)}
+```
+
+### 10.5 SkillRegistry — 热发现与路径安全
+
+```python
+import os, re, time, hashlib
+from dataclasses import dataclass
+from pathlib import Path
+
+_FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n", re.S)
+
+@dataclass
+class Skill:
+    skill_id: str
+    name: str
+    description: str
+    base_dir: Path
+    skill_md_path: Path
+    skill_md_hash: str
+    frontmatter: dict
+
+    def read_skill_md(self) -> str:
+        data = self.skill_md_path.read_bytes()[:2_000_000]
+        return data.decode("utf-8", errors="replace")
+
+    def scripts_dir(self) -> Path:
+        return self.base_dir / "scripts"
+
+    def references_dir(self) -> Path:
+        return self.base_dir / "references"
+
+class SkillRegistry:
+    """
+    兼容 Claude Code 目录布局的运行时 Skill 注册表。
+
+    - 扫描多个根目录下的 **/SKILL.md
+    - 周期性热刷新（refresh_interval_sec）
+    - 路径防逃逸（resolve_in_skill）
+    """
+
+    def __init__(self, roots: list[Path], refresh_interval_sec: int = 10):
+        self.roots = [Path(r).expanduser().resolve() for r in roots]
+        self.refresh_interval_sec = refresh_interval_sec
+        self._last_refresh = 0.0
+        self._skills: dict[str, Skill] = {}
+
+    def refresh(self, force: bool = False) -> None:
+        now = time.time()
+        if not force and (now - self._last_refresh) < self.refresh_interval_sec:
+            return
+        self._last_refresh = now
+        skills: dict[str, Skill] = {}
+        for root in self.roots:
+            if not root.exists():
+                continue
+            for skill_md in root.rglob("SKILL.md"):
+                try:
+                    base_dir = skill_md.parent.resolve()
+                    md_bytes = skill_md.read_bytes()[:2_000_000]
+                    md_text = md_bytes.decode("utf-8", errors="replace")
+                    fm, body = self._parse_frontmatter(md_text)
+                    rel = base_dir.relative_to(root)
+                    skill_id = str(rel).replace("\\", "/")
+                    name = fm.get("name") or base_dir.name
+                    desc = fm.get("description") or self._first_line(body) or ""
+                    h = hashlib.sha256(md_bytes).hexdigest()
+                    skills[skill_id] = Skill(
+                        skill_id=skill_id, name=name,
+                        description=desc[:240], base_dir=base_dir,
+                        skill_md_path=skill_md, skill_md_hash=h,
+                        frontmatter=fm,
+                    )
+                except Exception:
+                    continue  # skip broken skills
+        self._skills = skills
+
+    def list(self) -> list[Skill]:
+        self.refresh()
+        return sorted(self._skills.values(), key=lambda x: x.skill_id)
+
+    def get(self, skill_id: str) -> Skill | None:
+        self.refresh()
+        return self._skills.get(skill_id)
+
+    def resolve_in_skill(self, skill: Skill, subdir: str, rel_path: str) -> Path:
+        """解析 scripts/ 或 references/ 下的相对路径，防止路径逃逸。"""
+        rel = Path(rel_path)
+        if rel.is_absolute():
+            raise ValueError("absolute paths not allowed")
+        target = (skill.base_dir / subdir / rel).resolve()
+        root = (skill.base_dir / subdir).resolve()
+        if not str(target).startswith(str(root) + os.sep) and target != root:
+            raise ValueError("path traversal blocked")
+        return target
+
+    @staticmethod
+    def _parse_frontmatter(md: str) -> tuple[dict, str]:
+        m = _FRONTMATTER_RE.match(md)
+        if not m:
+            return {}, md
+        fm = {}
+        for line in m.group(1).splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or ":" not in line:
+                continue
+            k, v = line.split(":", 1)
+            fm[k.strip()] = v.strip().strip('"').strip("'")
+        return fm, md[m.end():]
+
+    @staticmethod
+    def _first_line(s: str) -> str:
+        for line in s.splitlines():
+            t = line.strip()
+            if t:
+                return t
+        return ""
+```
+
+### 10.6 SkillExecutor — 安全脚本执行
+
+```python
+import os, json, subprocess, time
+from pathlib import Path
+
+class SkillExecutor:
+    """
+    安全执行 skill scripts/ 下的脚本。
+
+    安全措施：
+    - 仅执行 resolve_in_skill 验证过的路径
+    - 超时控制（默认 60s）
+    - 输出截断（默认 12000 字符）
+    - 环境变量白名单（不泄露完整环境）
+    - 参数通过 SKILL_ARGS_JSON 环境变量传递（非 shell 拼接）
+    """
+
+    def __init__(self, default_timeout_sec: int = 60,
+                 max_output_chars: int = 12000,
+                 env_allowlist: list[str] | None = None):
+        self.default_timeout_sec = default_timeout_sec
+        self.max_output_chars = max_output_chars
+        self.env_allowlist = env_allowlist or [
+            "PATH", "HOME", "USER", "LANG", "LC_ALL"]
+
+    def run_script(self, script_path: Path, args: dict,
+                   cwd: Path, timeout_sec: int | None = None) -> dict:
+        timeout = timeout_sec or self.default_timeout_sec
+        cmd = self._build_cmd(script_path)
+        env = {k: os.environ.get(k, "") for k in self.env_allowlist}
+        env["SKILL_ARGS_JSON"] = json.dumps(args, ensure_ascii=False)
+
+        start = time.time()
+        try:
+            p = subprocess.run(
+                cmd, cwd=str(cwd), env=env,
+                capture_output=True, text=True, timeout=timeout)
+            dur_ms = int((time.time() - start) * 1000)
+            stdout = self._truncate(p.stdout or "")
+            stderr = self._truncate(p.stderr or "")
+            data = self._extract_result_json(stdout, cwd)
+            return {
+                "ok": p.returncode == 0,
+                "returncode": p.returncode,
+                "stdout": stdout, "stderr": stderr,
+                "data": data,
+                "duration_ms": dur_ms,
+            }
+        except subprocess.TimeoutExpired:
+            dur_ms = int((time.time() - start) * 1000)
+            return {
+                "ok": False, "error": "timeout",
+                "duration_ms": dur_ms,
+                "timeout_sec": timeout,
+            }
+
+    def _build_cmd(self, script_path: Path) -> list[str]:
+        suffix = script_path.suffix.lower()
+        if suffix in (".sh", ".bash"):
+            return ["bash", str(script_path)]
+        if suffix == ".py":
+            return ["python3", str(script_path)]
+        if os.access(script_path, os.X_OK):
+            return [str(script_path)]
+        return ["bash", str(script_path)]
+
+    def _truncate(self, s: str) -> str:
+        if len(s) <= self.max_output_chars:
+            return s
+        return s[:self.max_output_chars] + f"\n...[truncated {len(s)-self.max_output_chars} chars]"
+
+    def _extract_result_json(self, stdout: str, cwd: Path) -> dict | None:
+        """提取结构化结果：stdout 中的 RESULT_JSON={...} 或 cwd/output.json"""
+        for line in reversed(stdout.splitlines()[-50:]):
+            if line.startswith("RESULT_JSON="):
+                try:
+                    return json.loads(line[len("RESULT_JSON="):].strip())
+                except Exception:
+                    return None
+        out_file = cwd / "output.json"
+        if out_file.exists():
+            try:
+                return json.loads(out_file.read_text(encoding="utf-8"))
+            except Exception:
+                return None
+        return None
+```
+
+### 10.7 执行权限策略（Policy Gate）
+
+```python
+from typing import Literal
+
+class SkillPolicy:
+    """
+    Skill 脚本执行的权限策略。
+
+    支持三种决策：
+    - allow: 允许执行（默认，内置 skills）
+    - deny: 拒绝执行（黑名单或危险操作）
+    - ask: 需要人工审批
+
+    可按 skill_id pattern、environment（dev/prod）、脚本后缀分级。
+    """
+
+    def __init__(self, default: Literal["allow", "deny", "ask"] = "allow",
+                 rules: list[dict] | None = None):
+        self.default = default
+        self.rules = rules or []
+        # 默认规则示例：
+        # [
+        #   {"pattern": "builtin/*", "action": "allow"},
+        #   {"pattern": "custom/*", "action": "ask"},
+        #   {"pattern": "danger-*", "action": "deny"},
+        # ]
+
+    def check(self, skill_id: str, script: str,
+              args: dict | None = None) -> Literal["allow", "deny", "ask"]:
+        import fnmatch
+        for rule in self.rules:
+            pattern = rule.get("pattern", "")
+            if fnmatch.fnmatch(skill_id, pattern):
+                return rule.get("action", self.default)
+            if fnmatch.fnmatch(f"{skill_id}/{script}", pattern):
+                return rule.get("action", self.default)
+        return self.default
+```
+
+### 10.8 LangGraph 集成 — 固定图结构
+
+Skill 的 4 个 tool 与 SRE Agent 的诊断 tool 一起注册到 LangGraph，**图结构不随 skills 变化**：
+
+```python
+from skills.runtime.registry import SkillRegistry
+from skills.runtime.executor import SkillExecutor
+from skills.runtime.tools import build_skill_tools
+from skills.runtime.policy import SkillPolicy
+
+# ── 初始化（应用启动时执行一次）──
+registry = SkillRegistry(
+    roots=[
+        Path("./sre_agent/skills/builtin"),      # 内置 skills
+        Path("./sre_agent/skills/custom"),        # 自定义 skills
+        Path("~/.claude/skills"),                  # 全局 skills
+    ],
+    refresh_interval_sec=10,
+)
+
+executor = SkillExecutor(default_timeout_sec=60, max_output_chars=12000)
+
+policy = SkillPolicy(
+    default="allow",
+    rules=[
+        {"pattern": "builtin/*", "action": "allow"},
+        {"pattern": "custom/*", "action": "ask"},     # 自定义 skills 需确认
+    ],
+)
+
+skill_tools = build_skill_tools(registry, executor, policy)
+
+# ── 合并到 LangGraph Agent ──
+# SRE 诊断工具 + Skill 工具 一起 bind
+all_tools = sre_read_only_tools + skill_tools  # [query_prometheus, ...] + [list_skills, ...]
+llm_with_tools = llm.bind_tools(all_tools)
+
+# LangGraph 图结构不变，只是 ToolNode 包含了 skill tools
+tool_node = ToolNode(all_tools)
+```
+
+**关键设计点**：
+- `list_skills` / `load_skill` / `read_skill_ref` / `run_skill` 这 4 个 tool 是**固定的**
+- 新增 / 删除 / 更新 skill 只需修改 skills 目录，无需改代码
+- `registry.refresh()` 在每次 agent_node 调用前自动触发，实现热更新
+- `run_skill` 执行前先经过 `policy.check()` 权限门控
+
+### 10.9 Agent 使用 Skills 的提示词策略
+
+在 system prompt 中指导 Agent 按需加载 skills（避免上下文膨胀）：
+
+```
+## 技能系统 (Skills)
+
+你拥有一套可扩展的诊断技能库。使用流程：
+1. 先调用 list_skills() 查看有哪些可用技能
+2. 根据当前问题选择最相关的 skill，调用 load_skill(skill_id) 加载详细指导
+3. 按照 SKILL.md 中的诊断方法论和推荐步骤进行诊断
+4. 需要参考资料时调用 read_skill_ref(skill_id, path)
+5. 需要执行自动化检查时调用 run_skill(skill_id, script, args)
+
+注意：
+- 不要一次加载多个 skill（避免上下文膨胀）
+- 优先使用 skill 推荐的诊断步骤和工具组合
+- 脚本执行结果可作为诊断证据
+```
+
+### 10.10 内置 Skills
+
+| Skill ID | 名称 | 用途 | scripts | references |
+|----------|------|------|---------|------------|
+| `vllm-diagnosis` | vLLM 推理延迟诊断 | GPU 争用/热节流/网络/KV Cache | `check_gpu_contention.sh` | `vllm-tuning-guide.md` |
+| `rdma-diagnosis` | RDMA/RoCEv2 问题诊断 | PFC 风暴/ECN/链路 flap | `check_pfc_storm.sh` | `rdma-troubleshoot.md` |
+| `gpu-health` | GPU 硬件健康检查 | ECC/PCIe/温度/功耗 | `gpu_ecc_check.py` | — |
+| `network-diagnosis` | 通用网络问题诊断 | 端口/LLDP/MTU/丢包 | `port_scan.sh` | — |
+| `storage-diagnosis` | 存储 I/O 问题诊断 | PVC/磁盘/latency | — | — |
+| `platform-health` | Cube Studio 平台健康检查 | API/Worker/DB/队列 | — | — |
+
+### 10.11 自定义 Skill 创建
+
+工程师可以将成功的诊断 trace 保存为新的自定义 Skill（SKILL.md 格式）：
 
 ```python
 class SkillCreator:
-    """从诊断 trace 创建新 Skill"""
+    """从诊断 trace 自动生成 SKILL.md"""
 
     async def create_from_trace(self, session: DiagnosisSession,
-                                 name: str, description: str) -> str:
-        """将诊断会话转化为 Skill YAML"""
+                                 name: str, description: str) -> Path:
+        """将诊断会话转化为 SKILL.md 目录结构"""
+        skill_dir = Path(f"sre_agent/skills/custom/{name}")
+        skill_dir.mkdir(parents=True, exist_ok=True)
+
+        # 生成 SKILL.md
         tools_used = set()
-        steps = []
+        steps_md = []
         for item in session.trace.steps:
             if isinstance(item, ThinkingStep) and item.tool_name:
                 tools_used.add(item.tool_name)
-                steps.append({
-                    "tool": item.tool_name,
-                    "params": item.tool_params,
-                })
-            elif isinstance(item, ThinkingStep) and item.thought:
-                steps.append({"thought": item.thought})
+                steps_md.append(
+                    f"Step: {item.tool_name}({item.tool_params}) "
+                    f"→ {item.thought or ''}")
+            elif isinstance(item, Observation):
+                steps_md.append(f"Observe: {item.tool} → (result)")
 
-        skill = {
-            "name": name,
-            "description": description,
-            "version": "1.0",
-            "tools": sorted(tools_used),
-            "system_prompt": f"根因: {session.diagnosis.root_cause}\n"
-                           f"修复: {session.proposed_plan.description if session.proposed_plan else 'N/A'}",
-            "examples": [{"input": session.alert.summary, "steps": steps}],
-            "created_from_incident": session.session_id,
-        }
-        path = f"skills/custom/{name}.yaml"
-        with open(path, "w") as f:
-            yaml.dump(skill, f, allow_unicode=True)
-        return path
+        md_content = f"""---
+name: {name}
+description: {description}
+version: "1.0"
+created_from: {session.session_id}
+---
+
+# {description}
+
+## 适用场景
+- {session.alert.alert_name}
+
+## 根因
+{session.diagnosis.root_cause}
+
+## 关键工具
+{chr(10).join(f'- `{t}`' for t in sorted(tools_used))}
+
+## 诊断 Trace
 ```
+{chr(10).join(steps_md)}
+```
+"""
+        (skill_dir / "SKILL.md").write_text(md_content, encoding="utf-8")
+        return skill_dir
+```
+
+### 10.12 生产安全清单
+
+| 安全措施 | 实现 | 状态 |
+|----------|------|------|
+| 路径防逃逸 | `resolve_in_skill()` — resolve + prefix 校验 | ✓ |
+| 执行超时 | `subprocess.run(timeout=)` 默认 60s | ✓ |
+| 输出截断 | `max_output_chars=12000` | ✓ |
+| 环境变量白名单 | 仅传递 PATH/HOME/USER/LANG | ✓ |
+| 参数传递 | `SKILL_ARGS_JSON` 环境变量（非 shell 拼接） | ✓ |
+| 权限策略 | `SkillPolicy` allow/deny/ask + pattern 匹配 | ✓ |
+| 低权限执行 | 建议：K8s Job/sidecar 或非 root 用户 | 推荐 |
+| 审计日志 | skill_id/script/args/returncode/duration 写入 audit.jsonl | 推荐 |
+| 容器隔离 | 高危脚本在隔离容器执行（CPU/mem 限制） | 长期 |
 
 ---
 
@@ -2875,10 +3396,24 @@ remediation:
     dry_run: false
     max_concurrent_remediations: 2
 
-# ─── Skills ───
+# ─── Skills（Claude Code 兼容即插即用）───
 skills:
-  builtin_dir: "./skills/builtin/"
-  custom_dir: "./skills/custom/"
+  roots:                                         # 多根目录扫描
+    - "./sre_agent/skills/builtin"               # 内置 skills
+    - "./sre_agent/skills/custom"                # 自定义 skills
+    - "~/.claude/skills"                         # 全局 skills（可选）
+  refresh_interval_sec: 10                       # 热扫描间隔
+  executor:
+    default_timeout_sec: 60                      # 脚本执行超时
+    max_output_chars: 12000                      # 输出截断限制
+    env_allowlist: ["PATH", "HOME", "USER", "LANG", "LC_ALL"]
+  policy:
+    default: "allow"                             # 默认策略
+    rules:
+      - pattern: "builtin/*"
+        action: "allow"
+      - pattern: "custom/*"
+        action: "ask"                            # 自定义 skills 需确认
 
 # ─── 监控 ───
 monitor:
@@ -2910,6 +3445,25 @@ class AgentConfig(BaseModel):
     step_timeout: int = 60
     total_timeout: int = 600
 
+class SkillExecutorConfig(BaseModel):
+    default_timeout_sec: int = 60
+    max_output_chars: int = 12000
+    env_allowlist: list[str] = ["PATH", "HOME", "USER", "LANG", "LC_ALL"]
+
+class SkillPolicyRule(BaseModel):
+    pattern: str
+    action: Literal["allow", "deny", "ask"]
+
+class SkillPolicyConfig(BaseModel):
+    default: Literal["allow", "deny", "ask"] = "allow"
+    rules: list[SkillPolicyRule] = []
+
+class SkillsConfig(BaseModel):
+    roots: list[str]                                # 多根目录
+    refresh_interval_sec: int = 10
+    executor: SkillExecutorConfig = SkillExecutorConfig()
+    policy: SkillPolicyConfig = SkillPolicyConfig()
+
 class SREAgentConfig(BaseModel):
     global_: GlobalConfig = Field(alias="global")
     agent: AgentConfig
@@ -2919,6 +3473,7 @@ class SREAgentConfig(BaseModel):
     memory: MemoryConfig
     remediation: RemediationConfig
     skills: SkillsConfig
+    nat: NATConfig | None = None                    # NeMo Agent Toolkit
     monitor: MonitorConfig
     server: ServerConfig
 
@@ -3655,7 +4210,7 @@ cat data/nat_profiles/workflow_profiling_report.txt
 | 3b. 灰度发布 fix | 7.3 CanaryExecutor | ✓ |
 | 3c. 显示 Agent 思考过程 | 4.3 ThinkingTrace + WebSocket | ✓ |
 | 3d. 工具对接 log/telemetry/alert/platform/OS | 5.2 只读工具集 (40+ 工具) | ✓ |
-| 4. 兼容 Claude Code skills | 10.1-10.3 Skills 框架 | ✓ |
+| 4. 兼容 Claude Code skills（即插即用） | 10.1-10.12 Skills 框架（SKILL.md + 4 固定 tool + 热加载） | ✓ 重构 |
 | 5. 知识库集成 | 8.1-8.4 RAG 知识库 | ✓ |
 | 6. 记忆库（越用越懂） | 9.1-9.5 记忆系统 | ✓ |
 | 7. 对话功能 | 16.1-16.4 对话接口 (LangGraph) | ✓ |
