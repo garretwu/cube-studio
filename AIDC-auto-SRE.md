@@ -47,7 +47,7 @@
 
 **关键区别**：fault-injector 和 load-simulator 是确定性执行引擎，LLM 仅做单次只读分析。SRE Agent 的诊断核心需要多步推理（ReAct 循环），因为根因分析本质上是迭代的："当有多种组合根因时，通过 试验→验证→排查 的循环最终定位"。但修复执行仍然是确定性的、WAL 保护的。
 
-**为什么选择 LangChain/LangGraph + NeMo**：手写 ReAct 循环需要自行处理 tool calling 协议、消息管理、错误恢复、流式输出等基础设施。LangGraph 提供了成熟的状态图 + 条件路由 + 工具节点，减少约 60% 的 Agent 基础设施代码。NeMo Guardrails 提供声明式安全护栏（输入过滤、输出审查、工具 I/O 验证），比手写 `SafetyGuard` 更系统化。NeMo Agent Toolkit 提供开箱即用的 profiling 和 evaluation，加速 Agent 调优。
+**为什么选择 LangChain/LangGraph + NeMo**：手写 ReAct 循环需要自行处理 tool calling 协议、消息管理、错误恢复、流式输出等基础设施。LangGraph 提供了成熟的状态图 + 条件路由 + 工具节点，减少约 60% 的 Agent 基础设施代码。NeMo Guardrails 提供声明式安全护栏（输入过滤、输出审查、工具 I/O 验证），比手写 `SafetyGuard` 更系统化。NeMo Agent Toolkit 仅用于生产基础设施层（profiling/evaluation/deployment），**不用于 Agent 编排**——其 YAML `react_agent` 缺少自定义状态、条件路由、审批门控和 checkpoint 持久化，无法满足 SRE Agent 需求（详见 §18.1 对比分析）。
 
 ### 1.4 核心不变量
 
@@ -107,10 +107,10 @@
 │  │                                               审批门控         │    │
 │  └────────────────────────────────────────────────────────────────┘    │
 │                                                                        │
-│  ┌──── NeMo Agent Toolkit (nvidia-nat) ──────────────────────────┐    │
-│  │ · Profiling: 逐步耗时/token 效率/瓶颈分析                      │    │
-│  │ · Evaluation: 诊断准确率/轨迹评估/RAG 质量评估                  │    │
-│  │ · Optimization: 提示词优化/超参调优                             │    │
+│  ┌──── NeMo Agent Toolkit (nvidia-nat) ─ 生产基础设施层 ─────────┐    │
+│  │ · Profiling: 逐步耗时/token 效率/瓶颈分析（包裹 LangGraph）    │    │
+│  │ · Evaluation: 诊断准确率/轨迹评估/RAG 质量（CI/CD 集成）       │    │
+│  │ · 注意：不用于编排，仅包裹 LangGraph Agent（详见 §18.1）       │    │
 │  └────────────────────────────────────────────────────────────────┘    │
 │                                                                        │
 │  ┌───────────────┐  ┌───────────────┐  ┌──────────────┐               │
@@ -4133,69 +4133,140 @@ async def sanitize_tool_output(tool_output: str) -> str:
 
 ## 18. NeMo Agent Toolkit 集成
 
-### 18.1 目的
+### 18.1 编排方案决策：LangGraph 编排 + NAT 生产基础设施
 
-使用 NeMo Agent Toolkit (`nvidia-nat`) 对 SRE Agent 进行 profiling、evaluation 和优化：
+**决策结论：LangGraph 负责 Agent 编排逻辑，NAT 仅作为生产基础设施层（profiling/evaluation/deployment）。不使用 NAT YAML 的 `react_agent` 进行编排。**
 
-| 能力 | 说明 | 使用场景 |
-|------|------|---------|
-| **Profiling** | Token 效率分析、步骤耗时、瓶颈识别 | 开发阶段调优 Agent 性能 |
-| **Evaluation** | 诊断准确率评估、Agent 轨迹评估、RAG 质量评估 | CI/CD 中回归测试 |
-| **Optimization** | 提示词优化、超参调优 | 持续改进诊断质量 |
+#### 对比分析
 
-### 18.2 NAT Workflow 配置 (workflow.yml)
+| 维度 | NAT YAML `react_agent` | LangGraph `StateGraph` | SRE Agent 需求 |
+|------|------------------------|------------------------|----------------|
+| **自定义状态** | 仅 `messages` 列表 | 任意 TypedDict（alert, topology, patterns 等） | 需要复杂诊断状态 (**LangGraph**) |
+| **条件路由** | 不支持 | `add_conditional_edges` 任意分支 | 诊断→修复→审批多路径 (**LangGraph**) |
+| **Human-in-the-loop** | 不支持 | `interrupt_before/after` 原生支持 | 修复审批门控 (**LangGraph**) |
+| **并行执行** | 不支持 | `Send()` API 原生支持 | 多节点并行诊断 (**LangGraph**) |
+| **Checkpoint 持久化** | 不支持 | `AsyncSqliteSaver` / `PostgresSaver` | 长时诊断断点续传 (**LangGraph**) |
+| **工具绑定** | YAML 声明式 | `bind_tools()` + `ToolNode` | 40+ 工具动态注册 (**LangGraph**) |
+| **Profiling** | 内置 profiler（token 效率、步骤耗时） | 无（需外部工具） | 开发调优 (**NAT**) |
+| **Evaluation** | 内置 evaluator（准确率、轨迹评估） | 无（需 LangSmith 等） | CI/CD 回归测试 (**NAT**) |
+| **NIM 部署** | 内置 NIM 优化 | 无 | GPU 推理部署 (**NAT**) |
 
-```yaml
-# sre_agent/nat/workflow.yml
-functions:
-  query_prometheus:
-    _type: custom
-    module: sre_agent.tools.metrics
-  get_gpu_metrics:
-    _type: custom
-    module: sre_agent.tools.metrics
-  get_gpu_processes:
-    _type: custom
-    module: sre_agent.tools.metrics
-  check_rdma_status:
-    _type: custom
-    module: sre_agent.tools.network
+#### 不采用 NAT YAML 编排的原因
 
-llms:
-  main_llm:
-    _type: openai_compatible
-    model_name: minimax-2.1
-    api_base: ${MINIMAX_API_BASE}
-    temperature: 0.3
+1. **状态不足**：NAT `react_agent` 仅维护 `messages` 列表，无法承载 SRE Agent 所需的结构化状态（alert、topology_summary、similar_incidents、known_patterns、thinking_trace 等）。
+2. **无条件路由**：SRE Agent 需要 `diagnose → should_continue → [tools|remediate|end]` 的多路条件分支，NAT 的 `react_agent` 只有固定的 `LLM → Tool → LLM` 循环。
+3. **无审批门控**：修复操作需要 human-in-the-loop 审批（`interrupt_before`），NAT 不支持。
+4. **无 checkpoint**：诊断可能耗时数分钟，需要断点续传和状态持久化，NAT 不支持。
+5. **NVIDIA 官方定位**：NAT 官方文档将自身定位为"生产基础设施层"，推荐与 LangGraph 等框架搭配使用，而非替代。
 
-workflow:
-  _type: react_agent
-  tool_names: [query_prometheus, get_gpu_metrics, get_gpu_processes, check_rdma_status]
-  llm_name: main_llm
-  verbose: true
-  max_iterations: 20
+#### 架构分层
+
+```
+┌─────────────────────────────────────────────────┐
+│  NAT 生产基础设施层                                │
+│  · Profiling: 逐步耗时/token 效率/瓶颈分析         │
+│  · Evaluation: 诊断准确率/轨迹评估/RAG 质量         │
+│  · Optimization: 提示词优化/超参调优                │
+│  · Deployment: NIM 模型部署优化                     │
+├─────────────────────────────────────────────────┤
+│  NeMo Guardrails 安全层                           │
+│  · Input/Output/Execution/Dialog Rails            │
+├─────────────────────────────────────────────────┤
+│  LangGraph 编排层 ← Agent 核心逻辑在此             │
+│  · StateGraph + 条件路由 + ToolNode                │
+│  · Human-in-the-loop 审批门控                      │
+│  · AsyncSqliteSaver checkpoint 持久化              │
+│  · 自定义 SREAgentState（alert/topology/patterns） │
+├─────────────────────────────────────────────────┤
+│  LangChain 工具层                                  │
+│  · @tool 装饰器 + bind_tools()                     │
+│  · Channel 抽象 (SSH/K8s/Prometheus/...)           │
+└─────────────────────────────────────────────────┘
 ```
 
-### 18.3 使用方式
+### 18.2 NAT 集成方式：包裹 LangGraph Agent
 
-```bash
-# Profiling：分析 Agent 在测试告警上的性能
-nat run --config_file sre_agent/nat/workflow.yml \
-    --input '{"alert": "VLLMLatencyP95High", "node": "gpu-1-1"}'
+NAT 不替代 LangGraph 编排，而是 **包裹** LangGraph Agent 进行 profiling 和 evaluation：
 
-# Evaluation：评估诊断准确率
-nat eval --config_file sre_agent/nat/workflow.yml \
-    --eval_dataset sre_agent/nat/eval_dataset.jsonl
+```python
+# sre_agent/nat/nat_wrapper.py
+from nvidia_nat import AgentRunner, EvalRunner, ProfilerConfig
 
-# 查看 profiling 报告
-cat data/nat_profiles/workflow_profiling_report.txt
+class NATWrappedSREAgent:
+    """NAT 包裹层：不改变 Agent 逻辑，仅添加 profiling/evaluation 能力。"""
+
+    def __init__(self, sre_agent: SREAgent):
+        self.sre_agent = sre_agent  # LangGraph Agent（§4.2）
+
+    async def run_with_profiling(self, alert: Alert) -> dict:
+        """开发阶段：带 profiling 的诊断运行。"""
+        profiler = AgentRunner(
+            agent_fn=self._agent_fn,
+            profiler_config=ProfilerConfig(
+                track_tokens=True,
+                track_latency=True,
+                track_tool_calls=True,
+                output_dir="data/nat_profiles/"
+            )
+        )
+        result = await profiler.arun(input={"alert": alert.model_dump()})
+        return result
+
+    async def _agent_fn(self, input: dict) -> dict:
+        """将 LangGraph Agent 暴露为 NAT 可调用的函数。"""
+        alert = Alert.model_validate(input["alert"])
+        result = await self.sre_agent.diagnose(alert)
+        return result.model_dump() if result else {}
+```
+
+### 18.3 NAT 评估配置
+
+```python
+# sre_agent/nat/evaluation.py
+from nvidia_nat import EvalRunner, EvalConfig, EvalMetric
+
+eval_config = EvalConfig(
+    agent_fn=nat_wrapper._agent_fn,
+    dataset_path="sre_agent/nat/eval_dataset.jsonl",
+    metrics=[
+        EvalMetric.TOOL_CALL_ACCURACY,   # 工具调用是否正确
+        EvalMetric.TRAJECTORY_MATCH,     # 诊断轨迹是否合理
+        EvalMetric.ANSWER_RELEVANCE,     # 根因结论是否相关
+        EvalMetric.TOKEN_EFFICIENCY,     # token 使用效率
+    ],
+    concurrency=4,
+)
+
+async def run_evaluation():
+    runner = EvalRunner(config=eval_config)
+    report = await runner.arun()
+    print(f"准确率: {report.accuracy:.2%}")
+    print(f"平均 token: {report.avg_tokens}")
+    print(f"平均延迟: {report.avg_latency_ms:.0f}ms")
+    return report
 ```
 
 ### 18.4 评估数据集格式
 
 ```jsonl
-{"input": "vLLM P95 延迟 > 500ms, GPU-0 利用率 98%", "expected_output": "GPU 资源争用", "expected_tools": ["get_gpu_metrics", "get_gpu_processes"]}
-{"input": "NCCL AllReduce timeout, 300s", "expected_output": "ECN 配置错误", "expected_tools": ["check_rdma_status", "get_pfc_counters", "get_ecn_config"]}
+{"input": {"alert": {"alert_name": "VLLMLatencyP95High", "node": "gpu-1-1"}}, "expected_root_cause": "GPU 资源争用（gpu-burn 进程）", "expected_tools": ["get_gpu_metrics", "get_gpu_processes"], "expected_severity": "high"}
+{"input": {"alert": {"alert_name": "NCCLTimeout", "node": "gpu-2-1"}}, "expected_root_cause": "ECN 配置错误", "expected_tools": ["check_rdma_status", "get_pfc_counters", "get_ecn_config"], "expected_severity": "critical"}
+```
+
+### 18.5 CLI 使用
+
+```bash
+# Profiling：分析单个告警的诊断性能
+python -m sre_agent.nat.nat_wrapper profile \
+    --alert '{"alert_name": "VLLMLatencyP95High", "node": "gpu-1-1"}'
+
+# Evaluation：批量评估诊断准确率（用于 CI/CD）
+python -m sre_agent.nat.evaluation run \
+    --dataset sre_agent/nat/eval_dataset.jsonl \
+    --output data/nat_reports/eval_report.json
+
+# 查看 profiling 报告
+cat data/nat_profiles/profiling_report.txt
 ```
 
 ---
@@ -4216,7 +4287,7 @@ cat data/nat_profiles/workflow_profiling_report.txt
 | 7. 对话功能 | 16.1-16.4 对话接口 (LangGraph) | ✓ |
 | 8. GUI 展示 | 14.1-14.3 GUI 设计 | ✓ |
 | 9. Agent 安全护栏 | 17.1-17.6 NeMo Guardrails | ✓ 新增 |
-| 10. Agent 可观测与调优 | 18.1-18.4 NeMo Agent Toolkit | ✓ 新增 |
+| 10. Agent 可观测与调优 | 18.1-18.5 NeMo Agent Toolkit（包裹层，非编排） | ✓ 重构 |
 | Demo 1: vLLM P95 诊断修复 | 11.1 完整 Trace (get_gpu_processes 修正) | ✓ |
 | Demo 2: RDMA RoCEv2 诊断修复 | 11.2 完整 Trace | ✓ |
 | 集成 fault-injector 智能部分 | 4.7 DiagnosisResult (扩展) | ✓ |
