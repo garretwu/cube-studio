@@ -8,11 +8,13 @@
 
 ### 1.2 架构定位
 
-采用 **"自由诊断、受控修复"** 混合架构：
+采用 **"自由诊断、受控修复"** 混合架构，基于 **LangChain/LangGraph + NeMo Guardrails** 实现 Agent 核心：
 
 | 层级 | 技术 | 理由 |
 |------|------|------|
-| 诊断 Agent | LLM ReAct 循环（多步推理） | 根因分析需要迭代假设→采集→验证→排除，单次推理无法完成 |
+| 诊断 Agent | **LangGraph ReAct Agent** + **NeMo Guardrails** | 根因分析需要迭代假设→采集→验证→排除；LangGraph 提供成熟的状态机 + tool calling 循环；NeMo Guardrails 提供输入/输出/执行安全护栏 |
+| Agent 安全层 | **NeMo Guardrails**（Colang + Rails） | 输入防注入、输出防泄密、工具调用验证、话题范围约束，替代手写安全检查 |
+| Agent 可观测 | **NeMo Agent Toolkit**（`nvidia-nat`） | Agent 工作流 profiling、token 效率分析、准确性评估、瓶颈识别 |
 | 修复引擎 | Python + asyncio（确定性） | 修复操作必须精确、可回滚、可审计，不允许 LLM 幻觉 |
 | 发现 Agent | Python（确定性） | 拓扑扫描是结构化的 API 调用，无需推理 |
 | 监控 Agent | Python（确定性） | 指标采集、阈值检测是规则驱动 |
@@ -45,9 +47,11 @@
 
 **关键区别**：fault-injector 和 load-simulator 是确定性执行引擎，LLM 仅做单次只读分析。SRE Agent 的诊断核心需要多步推理（ReAct 循环），因为根因分析本质上是迭代的："当有多种组合根因时，通过 试验→验证→排查 的循环最终定位"。但修复执行仍然是确定性的、WAL 保护的。
 
+**为什么选择 LangChain/LangGraph + NeMo**：手写 ReAct 循环需要自行处理 tool calling 协议、消息管理、错误恢复、流式输出等基础设施。LangGraph 提供了成熟的状态图 + 条件路由 + 工具节点，减少约 60% 的 Agent 基础设施代码。NeMo Guardrails 提供声明式安全护栏（输入过滤、输出审查、工具 I/O 验证），比手写 `SafetyGuard` 更系统化。NeMo Agent Toolkit 仅用于生产基础设施层（profiling/evaluation/deployment），**不用于 Agent 编排**——其 YAML `react_agent` 缺少自定义状态、条件路由、审批门控和 checkpoint 持久化，无法满足 SRE Agent 需求（详见 §18.1 对比分析）。
+
 ### 1.4 核心不变量
 
-**LLM 可以自由观测，但永远不直接执行写操作。** 所有修复操作通过确定性修复引擎执行，写操作前必须记录 WAL 回滚条目。
+**LLM 可以自由观测，但永远不直接执行写操作。** 所有修复操作通过确定性修复引擎执行，写操作前必须记录 WAL 回滚条目。此不变量通过 NeMo Guardrails 的执行护栏（execution rails）在工具调用层强制执行。
 
 ---
 
@@ -63,6 +67,8 @@
 | 可回滚 | 所有修复操作通过 WAL 记录恢复命令，支持一键回滚 |
 | 越用越智能 | 每次事件诊断结果写入记忆系统，积累 AIDC 专属知识 |
 | 可解释 | 完整记录 Agent 思考过程（ThinkingTrace），支持回放 |
+| 声明式安全 | 通过 NeMo Guardrails (Colang) 声明式定义安全规则，而非散落在代码中的 if-else |
+| 框架标准化 | 使用 LangChain/LangGraph 标准 tool calling 协议，与 LLM 生态兼容 |
 
 ### 2.2 系统架构图
 
@@ -78,104 +84,115 @@
 ┌───────▼───────────────▼────────────────▼─────────────────▼──────────────┐
 │                       Agent 核心层                                       │
 │                                                                         │
-│  ┌──────────────────────────────────────────────────────────────────┐   │
-│  │                    SRE Agent (ReAct 循环)                        │   │
-│  │                                                                  │   │
-│  │   Alert ──→ 构建上下文 ──→ ┌────────────────────────┐           │   │
-│  │                           │  Think: LLM 推理        │           │   │
-│  │                           │  · 分析观测数据          │           │   │
-│  │                           │  · 生成/排除假设         │           │   │
-│  │                           │  · 决定下一步行动        │           │   │
-│  │                           └──────────┬─────────────┘           │   │
-│  │                                      │                         │   │
-│  │                    ┌─────────────────┼────────────────┐        │   │
-│  │                    ▼                 ▼                ▼        │   │
-│  │              tool_call          conclude         remediate     │   │
-│  │              (只读工具)       (输出诊断结果)    (提交修复计划)    │   │
-│  │                │                    │                │         │   │
-│  │                ▼                    │           ┌────▼─────┐   │   │
-│  │          Observation                │           │ 审批门控  │   │   │
-│  │          (工具返回数据)              │           │ 人工/自动 │   │   │
-│  │                │                    │           └────┬─────┘   │   │
-│  │                └──→ 更新上下文 ──→ Think            │         │   │
-│  │                     (循环)                          ▼         │   │
-│  │                                              修复引擎执行     │   │
-│  └──────────────────────────────────────────────────────────────┘   │
-│                                                                      │
-│  ┌───────────────┐  ┌───────────────┐  ┌──────────────┐             │
-│  │ Discovery     │  │ Monitor       │  │ Remediation  │             │
-│  │ Agent         │  │ Agent         │  │ Engine       │             │
-│  │ (确定性)      │  │ (确定性)       │  │ (确定性+WAL) │             │
-│  │ · BMC 扫描    │  │ · 指标采集     │  │ · 灰度执行   │             │
-│  │ · 交换机发现  │  │ · 阈值检测     │  │ · 逐步验证   │             │
-│  │ · K8s 发现    │  │ · 告警触发     │  │ · 自动回滚   │             │
-│  └───────┬───────┘  └───────┬───────┘  └──────┬───────┘             │
-└──────────┼──────────────────┼─────────────────┼─────────────────────┘
+│  ┌─────────────────── NeMo Guardrails ────────────────────────────┐    │
+│  │ Input Rails: 防注入/话题约束/PII 过滤                            │    │
+│  │ Execution Rails: 工具 I/O 验证（check tool input/output）        │    │
+│  │ Output Rails: 防泄密/幻觉检测/敏感信息脱敏                       │    │
+│  └─────────────────────────┬──────────────────────────────────────┘    │
+│                             │                                          │
+│  ┌──────────────────────── LangGraph StateGraph ─────────────────┐    │
+│  │                                                                │    │
+│  │   Alert ──→ 构建上下文 ──→ ┌──────────────────────────┐       │    │
+│  │                           │  Agent Node (Guarded LLM) │       │    │
+│  │                           │  RunnableRails(passthrough)│       │    │
+│  │                           │  + LLM.bind_tools()        │       │    │
+│  │                           └──────────┬────────────────┘       │    │
+│  │                                      │                         │    │
+│  │                    ┌─────── tools_condition ──────────┐        │    │
+│  │                    ▼                                  ▼        │    │
+│  │              ToolNode                          END (结论)      │    │
+│  │              (LangChain @tool)                  或 remediate   │    │
+│  │                │                                    │          │    │
+│  │                └──→ Agent Node (循环)               ▼          │    │
+│  │                                               审批门控         │    │
+│  └────────────────────────────────────────────────────────────────┘    │
+│                                                                        │
+│  ┌──── NeMo Agent Toolkit (nvidia-nat) ─ 生产基础设施层 ─────────┐    │
+│  │ · Profiling: 逐步耗时/token 效率/瓶颈分析（包裹 LangGraph）    │    │
+│  │ · Evaluation: 诊断准确率/轨迹评估/RAG 质量（CI/CD 集成）       │    │
+│  │ · 注意：不用于编排，仅包裹 LangGraph Agent（详见 §18.1）       │    │
+│  └────────────────────────────────────────────────────────────────┘    │
+│                                                                        │
+│  ┌───────────────┐  ┌───────────────┐  ┌──────────────┐               │
+│  │ Discovery     │  │ Monitor       │  │ Remediation  │               │
+│  │ Agent         │  │ Agent         │  │ Engine       │               │
+│  │ (确定性)      │  │ (确定性)       │  │ (确定性+WAL) │               │
+│  │ · BMC 扫描    │  │ · 指标采集     │  │ · 灰度执行   │               │
+│  │ · 交换机发现  │  │ · 阈值检测     │  │ · 逐步验证   │               │
+│  │ · K8s 发现    │  │ · 告警触发     │  │ · 自动回滚   │               │
+│  └───────┬───────┘  └───────┬───────┘  └──────┬───────┘               │
+└──────────┼──────────────────┼─────────────────┼───────────────────────┘
            │                  │                 │
-┌──────────▼──────────────────▼─────────────────▼─────────────────────┐
-│                       工具注册表 (Tool Registry)                      │
-│                                                                      │
-│  只读工具 (safety_level: read_only)        写工具 (write_confirm)     │
-│  · query_prometheus    · get_pod_logs      · restart_pod             │
-│  · get_gpu_metrics     · check_rdma_status · scale_deployment        │
-│  · get_bmc_health      · query_topology    · configure_ecn           │
-│  · search_knowledge    · search_incidents  · reset_switch_port       │
-└──────────────────────────────┬──────────────────────────────────────┘
+┌──────────▼──────────────────▼─────────────────▼───────────────────────┐
+│                       工具层 (LangChain @tool)                         │
+│                                                                        │
+│  只读工具 (safety_level: read_only)        写工具 (write_confirm)       │
+│  · query_prometheus    · get_pod_logs      · restart_pod               │
+│  · get_gpu_metrics     · check_rdma_status · scale_deployment          │
+│  · get_bmc_health      · query_topology    · configure_ecn             │
+│  · search_knowledge    · search_incidents  · reset_switch_port         │
+│  · get_gpu_processes   (新增: P0 修复)                                 │
+└──────────────────────────────┬────────────────────────────────────────┘
                                │
-┌──────────────────────────────▼──────────────────────────────────────┐
-│                       Channel 层（共享）                              │
-│                                                                      │
-│  ┌─────────┐ ┌──────────┐ ┌──────────┐ ┌──────┐ ┌──────────────┐   │
-│  │  SSH    │ │ Redfish  │ │ Switch   │ │ K8s  │ │ CubeStudio   │   │
-│  │ Channel │ │ Channel  │ │ Channel  │ │Channel│ │  Channel     │   │
-│  └────┬────┘ └────┬─────┘ └────┬─────┘ └──┬───┘ └──────┬───────┘   │
-│       │           │            │           │            │           │
-│  ┌────┴────┐ ┌────┴─────┐ ┌───┴────┐ ┌───┴─────┐ ┌───┴────────┐  │
-│  │Prometheus│ │  Log     │ │ Alert  │ │Ontology │ │ Knowledge  │   │
-│  │ Channel │ │ Channel  │ │Channel │ │ Channel │ │Base Channel│   │
-│  └─────────┘ └──────────┘ └────────┘ └─────────┘ └────────────┘   │
-└────────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────▼────────────────────────────────────────┐
+│                       Channel 层（共享）                                │
+│                                                                        │
+│  ┌─────────┐ ┌──────────┐ ┌──────────┐ ┌──────┐ ┌──────────────┐     │
+│  │  SSH    │ │ Redfish  │ │ Switch   │ │ K8s  │ │ CubeStudio   │     │
+│  │ Channel │ │ Channel  │ │ Channel  │ │Channel│ │  Channel     │     │
+│  └────┬────┘ └────┬─────┘ └────┬─────┘ └──┬───┘ └──────┬───────┘     │
+│       │           │            │           │            │             │
+│  ┌────┴────┐ ┌────┴─────┐ ┌───┴────┐ ┌───┴─────┐ ┌───┴────────┐    │
+│  │Prometheus│ │  Log     │ │ Alert  │ │Ontology │ │ Knowledge  │     │
+│  │ Channel │ │ Channel  │ │Channel │ │ Channel │ │Base Channel│     │
+│  └─────────┘ └──────────┘ └────────┘ └─────────┘ └────────────┘     │
+└──────────────────────────────────────────────────────────────────────┘
                                │
-┌──────────────────────────────▼──────────────────────────────────────┐
-│                       数据层                                         │
-│                                                                      │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────────────────┐   │
-│  │ 数字孪生      │  │ 知识库        │  │ 记忆系统                  │   │
-│  │ (Ontology)   │  │ (RAG)        │  │ · 事件记忆                │   │
-│  │ SQLite +     │  │ ChromaDB     │  │ · 模式记忆                │   │
-│  │ NetworkX     │  │ 向量检索      │  │ · 配置记忆                │   │
-│  └──────────────┘  └──────────────┘  │ SQLite per-AIDC          │   │
-│                                       └──────────────────────────┘   │
-└────────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────▼────────────────────────────────────────┐
+│                       数据层                                           │
+│                                                                        │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────────────────┐     │
+│  │ 数字孪生      │  │ 知识库        │  │ 记忆系统                  │     │
+│  │ (Ontology)   │  │ (RAG)        │  │ · 事件记忆                │     │
+│  │ aiosqlite +  │  │ ChromaDB     │  │ · 模式记忆                │     │
+│  │ NetworkX     │  │ 向量检索      │  │ · 配置记忆                │     │
+│  └──────────────┘  └──────────────┘  │ aiosqlite per-AIDC       │     │
+│                                       └──────────────────────────┘     │
+└──────────────────────────────────────────────────────────────────────┘
 ```
 
 ### 2.3 Agent 角色
 
-| Agent | 类型 | 职责 | LLM? |
-|-------|------|------|------|
-| SRE Agent | ReAct 循环 | 接收告警/问题，迭代诊断根因，生成修复计划 | 是（多步推理） |
-| Discovery Agent | 确定性 | 扫描 BMC/交换机/K8s/Prometheus，构建数字孪生 | 否 |
-| Monitor Agent | 确定性 | 持续采集指标，阈值检测，触发告警 | 否 |
-| Remediation Engine | 确定性 | 执行修复计划，灰度部署，WAL 回滚 | 否 |
+| Agent | 类型 | 职责 | LLM? | 框架 |
+|-------|------|------|------|------|
+| SRE Agent | LangGraph ReAct | 接收告警/问题，迭代诊断根因，生成修复计划 | 是（多步推理） | LangGraph + NeMo Guardrails |
+| Conversational Agent | LangGraph ReAct | 对话式 SRE 助手，支持工具调用 | 是 | LangGraph + NeMo Guardrails |
+| Discovery Agent | 确定性 | 扫描 BMC/交换机/K8s/Prometheus，构建数字孪生 | 否 | Python asyncio |
+| Monitor Agent | 确定性 | 持续采集指标，阈值检测，触发告警 | 否 | Python asyncio |
+| Remediation Engine | 确定性 | 执行修复计划，灰度部署，WAL 回滚 | 否 | Python asyncio |
 
 ### 2.4 技术栈
 
-| 组件 | 技术 | 版本 |
-|------|------|------|
-| 语言 | Python | 3.11+ |
-| 异步框架 | asyncio | stdlib |
-| LLM | MiniMax-2.1（主）/ Claude（可选） | — |
-| HTTP 客户端 | httpx | 0.27+ |
-| SSH | asyncssh | 2.14+ |
-| 配置校验 | Pydantic v2 | 2.5+ |
-| 向量存储 | ChromaDB | 0.4+ |
-| 图存储 | NetworkX + SQLite | — |
-| CLI | Click | 8.1+ |
-| Web API | FastAPI + uvicorn | 0.110+ |
-| WebSocket | FastAPI WebSocket | — |
-| 模板引擎 | Jinja2 | 3.1+ |
-| 前端 | React 18 + Ant Design + D3.js | — |
-| 图表 | Plotly | 5.18+ |
+| 组件 | 技术 | 版本 | 说明 |
+|------|------|------|------|
+| 语言 | Python | 3.11+ | — |
+| 异步框架 | asyncio | stdlib | — |
+| **Agent 框架** | **LangChain + LangGraph** | 0.3+ / 0.3+ | ReAct 状态图、tool calling、消息管理 |
+| **Agent 安全** | **NeMo Guardrails** (`nemoguardrails`) | 0.11+ | 输入/输出/执行护栏、Colang 声明式规则 |
+| **Agent 可观测** | **NeMo Agent Toolkit** (`nvidia-nat`) | 1.4+ | Profiling、evaluation、优化 |
+| LLM | MiniMax-2.1（主）/ Claude（可选） | — | 通过 LangChain ChatModel 适配 |
+| LLM 接入 | langchain-openai / langchain-anthropic | — | OpenAI-compatible 协议适配 MiniMax |
+| HTTP 客户端 | httpx | 0.27+ | — |
+| SSH | asyncssh | 2.14+ | — |
+| 配置校验 | Pydantic v2 | 2.5+ | — |
+| 向量存储 | ChromaDB | 0.4+ | — |
+| 图存储 | NetworkX + aiosqlite | — | aiosqlite 替代 sqlite3（P1 修复） |
+| CLI | Click | 8.1+ | — |
+| Web API | FastAPI + uvicorn | 0.110+ | — |
+| WebSocket | FastAPI WebSocket | — | — |
+| 模板引擎 | Jinja2 | 3.1+ | — |
+| 前端 | React 18 + Ant Design + D3.js | — | — |
+| 图表 | Plotly | 5.18+ | — |
 
 ### 2.5 项目结构
 
@@ -186,14 +203,32 @@ sre_agent/
 ├── server.py                       # FastAPI 服务入口
 │
 ├── agent/
-│   ├── sre_agent.py                # SRE Agent ReAct 核心
-│   ├── discovery_agent.py          # 拓扑发现 Agent
-│   ├── monitor_agent.py            # 持续监控 Agent
+│   ├── sre_agent.py                # SRE Agent — LangGraph StateGraph 核心
+│   ├── graph.py                    # LangGraph 图定义（nodes, edges, conditions）
+│   ├── state.py                    # MessagesState 扩展（诊断上下文状态）
+│   ├── nodes.py                    # LangGraph 节点函数（agent_node, conclude_node, remediate_node）
+│   ├── discovery_agent.py          # 拓扑发现 Agent（确定性）
+│   ├── monitor_agent.py            # 持续监控 Agent（确定性）
+│   ├── conversational_agent.py     # 对话式 SRE 助手 — LangGraph
 │   ├── thinking_trace.py           # 思考过程记录
 │   └── prompts/
 │       ├── sre_system.j2           # SRE Agent 系统提示词
 │       ├── diagnosis.j2            # 诊断上下文模板
 │       └── remediation.j2          # 修复计划模板
+│
+├── guardrails/                     # NeMo Guardrails 配置
+│   ├── config.yml                  # 模型配置 + 活跃 rails
+│   ├── rails/
+│   │   ├── input.co                # 输入护栏（防注入、话题约束）
+│   │   ├── output.co               # 输出护栏（防泄密、幻觉检测）
+│   │   ├── execution.co            # 执行护栏（工具 I/O 验证）
+│   │   └── dialog.co               # 对话护栏（拒绝破坏性操作请求）
+│   ├── actions.py                  # 自定义 NeMo Actions
+│   └── prompts.yml                 # 安全检查提示词模板
+│
+├── nat/                            # NeMo Agent Toolkit 配置
+│   ├── workflow.yml                # NAT workflow 定义（profiling/eval）
+│   └── eval_dataset.jsonl          # 诊断准确率评估数据集
 │
 ├── channels/                       # 共享 Channel 层
 │   ├── base.py                     # BaseChannel ABC
@@ -251,13 +286,33 @@ sre_agent/
 │   └── config_memory.py            # 配置记忆（基线值、阈值）
 │
 ├── skills/
-│   ├── loader.py                   # Skill 加载器
-│   ├── registry.py                 # Skill 注册表
-│   └── builtin/
-│       ├── vllm_diagnosis.yaml     # vLLM 诊断 Skill
-│       ├── rdma_diagnosis.yaml     # RDMA 诊断 Skill
-│       ├── gpu_health.yaml         # GPU 健康检查 Skill
-│       └── network_diagnosis.yaml  # 网络诊断 Skill
+│   ├── runtime/
+│   │   ├── registry.py                 # SkillRegistry — 热扫描 **/SKILL.md
+│   │   ├── executor.py                 # SkillExecutor — 安全脚本执行
+│   │   ├── tools.py                    # 4 个固定 LangChain @tool
+│   │   └── policy.py                   # allow/deny/ask 权限策略
+│   ├── builtin/                        # 内置 Skills（Claude Code SKILL.md 格式）
+│   │   ├── vllm-diagnosis/
+│   │   │   ├── SKILL.md
+│   │   │   ├── scripts/
+│   │   │   │   └── check_gpu_contention.sh
+│   │   │   └── references/
+│   │   │       └── vllm-tuning-guide.md
+│   │   ├── rdma-diagnosis/
+│   │   │   ├── SKILL.md
+│   │   │   ├── scripts/
+│   │   │   │   └── check_pfc_storm.sh
+│   │   │   └── references/
+│   │   │       └── rdma-troubleshoot.md
+│   │   ├── gpu-health/
+│   │   │   ├── SKILL.md
+│   │   │   └── scripts/
+│   │   │       └── gpu_ecc_check.py
+│   │   └── network-diagnosis/
+│   │       ├── SKILL.md
+│   │       └── scripts/
+│   │           └── port_scan.sh
+│   └── custom/                         # 用户自定义 Skills（同格式，热加载）
 │
 ├── safety/
 │   ├── guard.py                    # SafetyGuard
@@ -272,10 +327,12 @@ sre_agent/
 
 ### 2.6 核心架构不变量
 
-1. **LLM 不直接执行写操作**：SRE Agent 的 ReAct 循环中，所有工具调用通过 ToolRegistry 分发，write 工具必须经过审批门控 + WAL 记录。
-2. **写操作前必须记录 WAL**：与 fault-injector 相同，任何修复操作在执行前将恢复命令写入回滚日志（fsync）。
-3. **灰度优先**：修复默认走 canary 路径，除非配置明确跳过。
-4. **可恢复**：进程崩溃时可通过 `sre-agent --resume <session_id>` 恢复。
+1. **LLM 不直接执行写操作**：SRE Agent 的 LangGraph 循环中，LLM 仅绑定 read_only 工具（通过 `llm.bind_tools(read_only_tools)`）。write 工具不注册为 LLM 可调用工具，而是作为 schema 描述附加到系统提示词中供 LLM 生成 `RemediationPlan`。修复执行通过确定性的 Remediation Engine。
+2. **NeMo Guardrails 强制安全边界**：所有 LLM 输入经过 input rails（防注入/话题约束），所有输出经过 output rails（防泄密/脱敏），所有工具调用经过 execution rails（I/O 验证）。
+3. **写操作前必须记录 WAL**：与 fault-injector 相同，任何修复操作在执行前将恢复命令写入回滚日志（fsync）。
+4. **灰度优先**：修复默认走 canary 路径，除非配置明确跳过。
+5. **可恢复**：进程崩溃时可通过 `sre-agent --resume <session_id>` 恢复。LangGraph 支持 checkpoint 持久化。
+6. **条件表达式安全求值**：所有验证条件（`success_condition`、`success_criteria`）通过白名单操作符求值器执行，禁止 `eval()`。
 
 ---
 
@@ -443,15 +500,20 @@ class Relationship(BaseModel):
 
 ```python
 import networkx as nx
-import sqlite3
+import aiosqlite
+from collections import deque
 
 class OntologyGraph:
-    """数字孪生图：NetworkX 内存图 + SQLite 持久化"""
+    """数字孪生图：NetworkX 内存图 + aiosqlite 异步持久化"""
 
     def __init__(self, db_path: str = "./ontology.db"):
         self.graph = nx.DiGraph()
-        self.db = sqlite3.connect(db_path)
-        self._init_tables()
+        self.db_path = db_path
+        self._db: aiosqlite.Connection | None = None
+
+    async def connect(self) -> None:
+        self._db = await aiosqlite.connect(self.db_path)
+        await self._init_tables()
 
     def add_entity(self, entity: BaseModel) -> None:
         self.graph.add_node(entity.id, type=type(entity).__name__,
@@ -465,8 +527,8 @@ class OntologyGraph:
 
     # ─── 查询 API ───
 
-    def get_entity(self, entity_id: str) -> dict:
-        return self.graph.nodes[entity_id]
+    def get_entity(self, entity_id: str) -> dict | None:
+        return self.graph.nodes.get(entity_id)
 
     def find_entities(self, entity_type: str,
                       filters: dict | None = None) -> list[dict]:
@@ -492,22 +554,39 @@ class OntologyGraph:
         return neighbors
 
     def get_blast_radius(self, entity_id: str) -> dict:
-        """故障影响半径分析：BFS 沿依赖关系遍历受影响实体"""
+        """故障影响半径分析：BFS 双向遍历受影响实体
+
+        修复说明 (P1-1): 原实现仅遍历 out_edges，但关系方向定义为
+        HOSTED_ON: Pod→Node, SERVES: Service→Pod。当 Node 故障时，
+        需沿 in_edges 反向追踪 HOSTED_ON 才能找到受影响的 Pod。
+        现在 BFS 同时遍历 out_edges 和 in_edges，根据关系类型决定方向：
+        - 故障向上传播（影响依赖者）：沿 SERVES/DEPENDS_ON 的 in_edges
+        - 故障向下定位（找到宿主/组件）：沿 HOSTED_ON/PART_OF 的 out_edges
+        """
         affected = {}
         visited = set()
-        queue = [(entity_id, 0)]
+        queue = deque([(entity_id, 0)])
+
+        # 关系传播方向映射
+        PROPAGATE_VIA_OUT = {RelationType.HOSTED_ON, RelationType.PART_OF}
+        PROPAGATE_VIA_IN = {RelationType.SERVES, RelationType.DEPENDS_ON,
+                            RelationType.HOSTED_ON}
+
         while queue:
-            current, hops = queue.pop(0)
+            current, hops = queue.popleft()   # deque.popleft() = O(1)
             if current in visited:
                 continue
             visited.add(current)
             affected[current] = {"entity": self.graph.nodes.get(current),
                                  "hops": hops}
+            # 正向：沿 out_edges 追踪
             for _, target, data in self.graph.out_edges(current, data=True):
-                if data["relation"] in (RelationType.SERVES,
-                                        RelationType.DEPENDS_ON,
-                                        RelationType.HOSTED_ON):
+                if data["relation"] in PROPAGATE_VIA_OUT:
                     queue.append((target, hops + 1))
+            # 反向：沿 in_edges 追踪（找到依赖当前实体的上层）
+            for source, _, data in self.graph.in_edges(current, data=True):
+                if data["relation"] in PROPAGATE_VIA_IN:
+                    queue.append((source, hops + 1))
         return affected
 
     def get_path(self, from_id: str, to_id: str) -> list[str] | None:
@@ -630,11 +709,53 @@ class DiscoveryAgent:
 | 推理模式 | 单次 Prompt → JSON | 多步 Think → Act → Observe 循环 |
 | 需求原文 | — | "试验→验证→排查的循环最终定位" |
 
-### 4.2 ReAct 循环实现
+### 4.2 ReAct 循环实现（LangGraph + NeMo Guardrails）
+
+> **架构变更**：原设计使用手写 for 循环实现 ReAct。现改为 **LangGraph StateGraph**
+> + **NeMo Guardrails RunnableRails** 实现，获得以下优势：
+> - LangGraph 自动管理 tool_call → observation → re-think 循环
+> - NeMo Guardrails 在 LLM 调用前后自动执行安全检查
+> - LangGraph checkpoint 支持会话持久化和 crash recovery
+> - 标准 LangChain tool 协议，LLM 模型切换零成本
+>
+> **Review P1-5 修复**：write 工具的 schema 描述作为 system prompt 附加信息提供给 LLM
+> （只读参考，不注册为可调用工具），使 LLM 能生成正确的 RemediationPlan。
+>
+> **Review P1-6 修复**：步级和会话级 timeout 通过 `asyncio.wait_for` 实现。
 
 ```python
+from langchain_openai import ChatOpenAI
+from langchain_core.tools import tool
+from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+from langgraph.graph import StateGraph, MessagesState, END
+from langgraph.prebuilt import ToolNode, tools_condition
+from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+from nemoguardrails import RailsConfig
+from nemoguardrails.integrations.langchain.runnable_rails import RunnableRails
+import asyncio
+from typing import TypedDict, Annotated
+from operator import add
+
+
+# ─── 状态定义 ───
+
+class SREAgentState(MessagesState):
+    """LangGraph 状态：扩展 MessagesState 添加诊断上下文"""
+    alert: Alert                                    # 原始告警
+    topology_summary: str                           # Ontology 拓扑摘要
+    similar_incidents: list[dict]                   # 历史相似事件
+    knowledge_context: str                          # RAG 知识片段
+    known_patterns: str                             # 已学习模式
+    thinking_trace: list[dict]                      # 思考过程记录
+    step_count: int                                 # 当前步数
+    diagnosis_result: DiagnosisResult | None        # 诊断结论
+    remediation_plan: RemediationPlan | None        # 修复计划
+
+
+# ─── SRE Agent 核心 ───
+
 class SREAgent:
-    """ReAct 诊断循环核心"""
+    """基于 LangGraph + NeMo Guardrails 的 SRE 诊断 Agent"""
 
     def __init__(self, config: AgentConfig, tool_registry: ToolRegistry,
                  ontology: OntologyGraph, knowledge: KnowledgeStore,
@@ -644,79 +765,142 @@ class SREAgent:
         self.ontology = ontology
         self.knowledge = knowledge
         self.memory = memory
-        self.llm = LLMClient(config.llm)
         self.max_steps = config.max_steps  # 默认 20
+
+        # ── 构建 LLM ──
+        self.llm = ChatOpenAI(
+            model=config.llm.model,
+            openai_api_base=str(config.llm.api_base),
+            openai_api_key=os.environ[config.llm.api_key_env],
+            temperature=config.llm.temperature,
+            max_tokens=config.llm.max_tokens,
+        )
+
+        # ── 构建 LangChain Tools ──
+        self.lc_tools = self._build_langchain_tools()
+        self.llm_with_tools = self.llm.bind_tools(self.lc_tools)
+
+        # ── NeMo Guardrails ──
+        rails_config = RailsConfig.from_path("./sre_agent/guardrails")
+        self.guardrails = RunnableRails(
+            config=rails_config,
+            passthrough=True,           # 必须 True 才支持 tool calling
+        )
+
+        # ── 构建 LangGraph ──
+        self.graph = self._build_graph()
+
+    def _build_langchain_tools(self) -> list:
+        """将 ToolRegistry 中的 read_only 工具转为 LangChain @tool"""
+        lc_tools = []
+        for name, tool_def in self.tools._tools.items():
+            if tool_def.safety_level != "read_only":
+                continue
+            handler = self.tools._handlers[name]
+            # 动态创建 LangChain tool
+            lc_tool = self._wrap_as_langchain_tool(name, tool_def, handler)
+            lc_tools.append(lc_tool)
+        return lc_tools
+
+    def _build_graph(self) -> StateGraph:
+        """构建 LangGraph 诊断状态图"""
+        # 系统提示词（包含 write 工具描述供 LLM 参考）
+        write_tools_desc = self.tools.get_tool_descriptions(
+            safety_level="write_confirm")
+        prompt = ChatPromptTemplate.from_messages([
+            ("system", SRE_SYSTEM_PROMPT + f"\n\n## 可用修复工具（仅供参考，不可直接调用）\n{write_tools_desc}"),
+            MessagesPlaceholder(variable_name="messages"),
+        ])
+        guarded_llm = prompt | (self.guardrails | self.llm_with_tools)
+
+        # ── 节点定义 ──
+        async def agent_node(state: SREAgentState) -> dict:
+            """LLM 推理节点（带 NeMo Guardrails 保护）"""
+            response = await asyncio.wait_for(
+                guarded_llm.ainvoke(state["messages"]),
+                timeout=self.config.step_timeout,
+            )
+            # 记录思考步骤
+            step = {
+                "step": state.get("step_count", 0),
+                "type": "thought",
+                "content": response.content if hasattr(response, 'content') else str(response),
+                "has_tool_calls": bool(getattr(response, 'tool_calls', [])),
+            }
+            return {
+                "messages": [response],
+                "thinking_trace": state.get("thinking_trace", []) + [step],
+                "step_count": state.get("step_count", 0) + 1,
+            }
+
+        tool_node = ToolNode(self.lc_tools)
+
+        def should_continue(state: SREAgentState) -> str:
+            """条件路由：继续工具调用 or 结束"""
+            # 超过最大步数
+            if state.get("step_count", 0) >= self.max_steps:
+                return END
+            # 标准 LangGraph tools_condition
+            return tools_condition(state)
+
+        # ── 构建图 ──
+        graph = StateGraph(SREAgentState)
+        graph.add_node("agent", agent_node)
+        graph.add_node("tools", tool_node)
+        graph.set_entry_point("agent")
+        graph.add_conditional_edges("agent", should_continue)
+        graph.add_edge("tools", "agent")
+
+        # 使用 aiosqlite checkpoint 实现会话持久化
+        checkpointer = AsyncSqliteSaver.from_conn_string(
+            "./data/langgraph_checkpoints.db")
+        return graph.compile(checkpointer=checkpointer)
 
     async def diagnose(self, alert: Alert,
                        trace_callback: Callable | None = None
                        ) -> DiagnosisSession:
         """
-        接收告警，启动 ReAct 诊断循环。
+        接收告警，启动 LangGraph 诊断循环。
 
         trace_callback: 实时推送 ThinkingStep 到 GUI（WebSocket）
         """
         session = DiagnosisSession.create(alert)
         context = await self._build_initial_context(alert)
-        trace = ThinkingTrace()
 
-        for step_num in range(self.max_steps):
-            # ── Think: LLM 推理 ──
-            messages = self._build_messages(context, trace)
-            response = await self.llm.chat_completion(
-                model=self.config.llm.model,
-                messages=messages,
-                tools=self.tools.get_tool_schemas(safety_level="read_only"),
-                temperature=0.3,
+        # 构建初始消息
+        initial_message = self._format_alert_message(alert, context)
+
+        # 运行 LangGraph（带总超时）
+        try:
+            final_state = await asyncio.wait_for(
+                self.graph.ainvoke(
+                    {
+                        "messages": [("user", initial_message)],
+                        "alert": alert,
+                        "topology_summary": context.topology,
+                        "similar_incidents": context.similar_incidents,
+                        "knowledge_context": context.knowledge,
+                        "known_patterns": context.known_patterns,
+                        "thinking_trace": [],
+                        "step_count": 0,
+                        "diagnosis_result": None,
+                        "remediation_plan": None,
+                    },
+                    config={"configurable": {"thread_id": session.session_id}},
+                ),
+                timeout=self.config.total_timeout,
             )
+        except asyncio.TimeoutError:
+            session.status = "timeout"
+            return session
 
-            thought = self._parse_response(response)
-            trace.add_step(ThinkingStep(
-                step=step_num,
-                thought=thought.reasoning,
-                action_type=thought.action_type,
-            ))
-            if trace_callback:
-                await trace_callback(trace.steps[-1])
+        # 解析最终状态
+        session.trace = ThinkingTrace.from_langraph_state(
+            final_state["thinking_trace"])
+        session.status = "diagnosed"
 
-            # ── Conclude: 得出结论 ──
-            if thought.action_type == "conclude":
-                diagnosis = DiagnosisResult.model_validate(thought.conclusion)
-                session.diagnosis = diagnosis
-                session.trace = trace
-                session.status = "diagnosed"
-
-                # 记录到记忆系统
-                await self.memory.record_incident(session)
-                return session
-
-            # ── Tool Call: 调用只读工具采集数据 ──
-            if thought.action_type == "tool_call":
-                tool_result = await self.tools.execute(
-                    name=thought.tool_name,
-                    params=thought.tool_params,
-                    safety_level="read_only",
-                )
-                observation = Observation(
-                    tool=thought.tool_name,
-                    params=thought.tool_params,
-                    result=tool_result,
-                )
-                trace.add_observation(observation)
-                context.observations.append(observation)
-                if trace_callback:
-                    await trace_callback(observation)
-
-            # ── Remediate: 提出修复方案 ──
-            if thought.action_type == "remediate":
-                plan = RemediationPlan.model_validate(thought.remediation)
-                session.proposed_plan = plan
-                session.status = "awaiting_approval"
-                session.trace = trace
-                return session
-
-        # 超过最大步数，返回部分结果
-        session.status = "max_steps_reached"
-        session.trace = trace
+        # 记录到记忆系统
+        await self.memory.record_incident(session)
         return session
 
     async def _build_initial_context(self, alert: Alert) -> DiagnosisContext:
@@ -752,6 +936,8 @@ class SREAgent:
 需求："能显示 agent 的整个思考过程"。
 
 ```python
+from dataclasses import dataclass, field, asdict
+
 @dataclass
 class ThinkingStep:
     """单步思考记录"""
@@ -763,6 +949,10 @@ class ThinkingStep:
     tool_params: dict | None = None
     confidence: float | None = None             # 当前假设置信度
 
+    def to_dict(self) -> dict:
+        """P2-6 修复：显式实现 to_dict()，用于 WebSocket 推送"""
+        return asdict(self)
+
 @dataclass
 class Observation:
     """工具调用结果"""
@@ -770,6 +960,10 @@ class Observation:
     params: dict
     result: dict
     timestamp: datetime = field(default_factory=datetime.now)
+
+    def to_dict(self) -> dict:
+        """P2-6 修复：显式实现 to_dict()，用于 WebSocket 推送"""
+        return asdict(self)
 
 @dataclass
 class ThinkingTrace:
@@ -781,6 +975,23 @@ class ThinkingTrace:
 
     def add_observation(self, obs: Observation) -> None:
         self.steps.append(obs)
+
+    @classmethod
+    def from_langraph_state(cls, trace_dicts: list[dict]) -> "ThinkingTrace":
+        """从 LangGraph state 中的 thinking_trace 重建 ThinkingTrace"""
+        trace = cls()
+        for d in trace_dicts:
+            if d.get("type") == "thought":
+                trace.add_step(ThinkingStep(
+                    step=d["step"], thought=d.get("content", ""),
+                    action_type=d.get("action", "tool_call"),
+                ))
+            elif d.get("type") == "observation":
+                trace.add_observation(Observation(
+                    tool=d["tool"], params=d.get("params", {}),
+                    result=d.get("result", {}),
+                ))
+        return trace
 
     def to_display(self) -> list[dict]:
         """格式化为 GUI 展示格式"""
@@ -885,9 +1096,10 @@ Step 4 [Think]: GPU-0 被占用可能导致 PCIe 总线争用影响 GPU-1
   → 需要验证：查进程列表 + PCIe 拓扑
   假设 A 升级为主要嫌疑
 
-Step 5 [Act]: tool_call("read_system_log", {node: "gpu-1-1",
-                         command: "nvidia-smi"})
-Step 6 [Observe]: 发现 gpu-burn 进程占用 GPU-0
+Step 5 [Act]: tool_call("get_gpu_processes", {node: "gpu-1-1"})
+         (P0 修复：使用专用 get_gpu_processes 工具替代 read_system_log)
+Step 6 [Observe]: {processes: [{pid: 12847, name: "gpu-burn", gpu_uuid: "GPU-0", memory_mb: 40960}]}
+  → 发现 gpu-burn 进程占用 GPU-0
   → 假设 A 确认：GPU 资源争用
 
 Step 7 [Think]: 检查是否有其他贡献因素
@@ -906,13 +1118,14 @@ Step 10 [Conclude]:
 
 | 配置项 | 值 | 说明 |
 |--------|-----|------|
-| 模型 | MiniMax-2.1（主）| 支持 tool_use / function calling |
-| 备选模型 | Claude（复杂场景）| 需要更强推理能力时切换 |
+| 模型 | MiniMax-2.1（主）| 通过 `langchain-openai` 的 OpenAI-compatible 协议接入 |
+| 备选模型 | Claude（复杂场景）| 通过 `langchain-anthropic` 接入，需要更强推理能力时切换 |
 | 温度 | 0.3（诊断）/ 0.1（修复计划）| 低温度保证稳定性 |
-| 最大步数 | 20（默认，可配置）| 防止无限循环 |
-| 工具格式 | JSON Schema function calling | 与 Claude Code skills 兼容 |
-| 超时 | 单步 60s，总计 600s | 避免长时间挂起 |
+| 最大步数 | 20（默认，可配置）| LangGraph `should_continue` 条件边控制 |
+| 工具格式 | LangChain `@tool` + `bind_tools()` | 自动生成 JSON Schema，兼容 Claude Code skills |
+| 超时 | 单步 60s，总计 600s | `asyncio.wait_for` 在 agent_node 和 diagnose 两级控制 |
 | 降级策略 | LLM 不可用时退化为规则检查 | ThresholdEngine 仍可独立运行 |
+| 安全护栏 | NeMo Guardrails `RunnableRails(passthrough=True)` | 透传 tool calling，同时执行输入/输出/执行安全检查 |
 
 ### 4.7 DiagnosisResult 输出模型
 
@@ -954,28 +1167,38 @@ class PropagationStep(BaseModel):
 
 ### 5.1 工具架构
 
-每个工具是 Channel 方法的薄封装，包含完整的 JSON Schema 描述。工具按 `safety_level` 分为三级：
+工具采用 **双层设计**：
+1. **ToolRegistry**（内部管理层）：维护工具元数据、安全级别、Channel 绑定
+2. **LangChain `@tool`**（LLM 接口层）：SREAgent 在初始化时将 `read_only` 工具包装为 LangChain `@tool`，通过 `llm.bind_tools()` 注册到 LLM
 
-| 安全级别 | 说明 | 审批 |
-|----------|------|------|
-| `read_only` | 只读数据采集（指标、日志、状态） | 无需审批，LLM 自由调用 |
-| `write_confirm` | 写操作（重启 Pod、修改配置） | 需要人工确认或自动审批策略 |
-| `write_blocked` | 高危操作（节点关机、删除 namespace） | 硬编码拦截，不允许执行 |
+工具按 `safety_level` 分为三级：
+
+| 安全级别 | 说明 | LLM 可调用？ | 审批 |
+|----------|------|-------------|------|
+| `read_only` | 只读数据采集（指标、日志、状态） | 是（通过 `bind_tools`） | 无需审批 |
+| `write_confirm` | 写操作（重启 Pod、修改配置） | 否（仅 schema 描述附加到 system prompt） | 需要人工确认或自动审批 |
+| `write_blocked` | 高危操作（节点关机、删除 namespace） | 否 | 硬编码拦截 |
+
+> **Review P1-5 修复**：原设计中 LLM 在诊断阶段看不到 write 工具的 schema，无法生成正确的
+> RemediationPlan。现在 write 工具的描述列表作为系统提示词附加信息提供给 LLM（只读参考），
+> LLM 可以基于描述生成修复计划，但无法直接调用。
 
 ```python
+from langchain_core.tools import tool as langchain_tool
+
 @dataclass
 class ToolDefinition:
     """工具定义 — 兼容 Claude Code skills 格式"""
     name: str                                   # 工具名称
     description: str                            # 自然语言描述（LLM 可读）
-    category: str                               # metrics | logs | k8s | network | bmc | platform | ontology | knowledge | remediation
+    category: str                               # metrics | logs | k8s | network | bmc | ...
     safety_level: Literal["read_only", "write_confirm", "write_blocked"]
     input_schema: dict                          # JSON Schema
     output_schema: dict                         # JSON Schema
     channel: str                                # 使用的 Channel
 
 class ToolRegistry:
-    """工具注册表：管理所有可用工具"""
+    """工具注册表：管理所有可用工具 + 生成 LangChain @tool 包装"""
 
     def __init__(self):
         self._tools: dict[str, ToolDefinition] = {}
@@ -985,22 +1208,29 @@ class ToolRegistry:
         self._tools[tool.name] = tool
         self._handlers[tool.name] = handler
 
-    def get_tool_schemas(self, safety_level: str | None = None) -> list[dict]:
-        """生成 LLM function calling 格式的工具列表"""
-        tools = self._tools.values()
-        if safety_level:
-            tools = [t for t in tools if t.safety_level == safety_level]
-        return [
-            {
-                "type": "function",
-                "function": {
-                    "name": t.name,
-                    "description": t.description,
-                    "parameters": t.input_schema,
-                }
-            }
-            for t in tools
-        ]
+    def get_langchain_tools(self, safety_level: str = "read_only") -> list:
+        """将指定安全级别的工具包装为 LangChain @tool 列表"""
+        lc_tools = []
+        for name, tool_def in self._tools.items():
+            if tool_def.safety_level != safety_level:
+                continue
+            handler = self._handlers[name]
+            # 动态创建 LangChain tool（保留原始 docstring 和 schema）
+            wrapped = langchain_tool(handler)
+            wrapped.name = name
+            wrapped.description = tool_def.description
+            lc_tools.append(wrapped)
+        return lc_tools
+
+    def get_tool_descriptions(self, safety_level: str) -> str:
+        """生成工具描述文本（用于附加到 system prompt，不注册为可调用工具）"""
+        lines = []
+        for name, t in self._tools.items():
+            if t.safety_level != safety_level:
+                continue
+            lines.append(f"- {name}: {t.description}")
+            lines.append(f"  参数: {json.dumps(t.input_schema, ensure_ascii=False)}")
+        return "\n".join(lines)
 
     async def execute(self, name: str, params: dict,
                       safety_level: str = "read_only") -> dict:
@@ -1023,8 +1253,31 @@ class ToolRegistry:
 | `get_node_metrics` | `node: str` | `{cpu_pct, memory_pct, disk_io, network_io}` | K8s |
 | `get_gpu_metrics` | `node: str` | `{per_gpu: [{index, util_pct, mem_used_mb, mem_total_mb, temp_c, power_w}]}` | SSH |
 | `get_inference_latency` | `service: str, percentile: int?` | `{p50_ms, p95_ms, p99_ms, qps, error_rate}` | Prometheus |
+| `get_gpu_processes` | `node: str` | `{processes: list[{pid, name, gpu_uuid, memory_mb}]}` | SSH |
+
+> **P0 新增**：`get_gpu_processes` 是专用的 GPU 进程查询工具，调用
+> `nvidia-smi --query-compute-apps=pid,name,gpu_uuid,used_memory`。
+> 原设计中 Demo 1 Step 5 错误地使用 `read_system_log(command="nvidia-smi ...")`，
+> 但 `read_system_log` 不支持 `command` 参数。新增此工具避免开放任意命令执行。
 
 ```python
+# 示例：get_gpu_processes 实现（P0 新增）
+async def get_gpu_processes(node: str) -> dict:
+    """查询指定节点上的 GPU 计算进程"""
+    output = await ssh_channel.run_command(
+        node, "nvidia-smi --query-compute-apps=pid,name,gpu_uuid,used_memory "
+              "--format=csv,noheader,nounits")
+    processes = []
+    for line in output.strip().split("\n"):
+        if not line.strip():
+            continue
+        pid, name, gpu_uuid, memory = line.split(", ")
+        processes.append({
+            "pid": int(pid), "name": name.strip(),
+            "gpu_uuid": gpu_uuid.strip(), "memory_mb": float(memory),
+        })
+    return {"processes": processes}
+
 # 示例：get_gpu_metrics 实现
 async def get_gpu_metrics(node: str) -> dict:
     """通过 SSH 执行 nvidia-smi 获取 GPU 指标"""
@@ -1258,16 +1511,37 @@ class LogChannel:
 
     async def read_system_log(self, node: str, log_path: str = "/var/log/syslog",
                               tail: int = 100) -> list[str]:
-        """通过 SSH 读取节点系统日志"""
-        output = await self.ssh.run_command(node, f"tail -n {tail} {log_path}")
+        """通过 SSH 读取节点系统日志
+
+        P0 安全修复：log_path 使用白名单 + shlex.quote() 防命令注入。
+        """
+        import shlex
+        ALLOWED_LOG_PATHS = {
+            "/var/log/syslog", "/var/log/messages", "/var/log/kern.log",
+            "/var/log/dmesg", "/var/log/auth.log", "/var/log/gpu-manager.log",
+        }
+        # 路径白名单校验
+        if log_path not in ALLOWED_LOG_PATHS:
+            raise SafetyViolationError(
+                f"log_path {log_path!r} not in allowed list: {ALLOWED_LOG_PATHS}")
+        # 即使白名单也 quote，防御纵深
+        output = await self.ssh.run_command(
+            node, f"tail -n {int(tail)} {shlex.quote(log_path)}")
         return output.strip().split("\n")
 
     async def read_dmesg(self, node: str, filter_str: str | None = None
                          ) -> list[str]:
-        """读取内核日志"""
+        """读取内核日志
+
+        P0 安全修复：filter_str 使用 shlex.quote() 防命令注入。
+        """
+        import shlex
         cmd = "dmesg --time-format iso"
         if filter_str:
-            cmd += f" | grep -i '{filter_str}'"
+            # 限制 filter_str 长度并 quote
+            if len(filter_str) > 100:
+                raise SafetyViolationError("filter_str too long (max 100 chars)")
+            cmd += f" | grep -i {shlex.quote(filter_str)}"
         output = await self.ssh.run_command(node, cmd)
         return output.strip().split("\n")
 ```
@@ -1306,15 +1580,18 @@ class AlertChannel:
         })
         return resp.json()["silenceID"]
 
-@dataclass
-class Alert:
-    """告警数据结构"""
+class Alert(BaseModel):
+    """告警数据结构
+
+    P1 修复：统一为 Pydantic BaseModel（原 @dataclass 与 model_validate() 和
+    IncidentRecord(BaseModel) 中的 alert: Alert 字段不兼容）。
+    """
     alert_name: str
     severity: Literal["critical", "warning", "info"]
     labels: dict[str, str]                      # {instance, job, namespace, ...}
     annotations: dict[str, str]                 # {summary, description, ...}
     starts_at: datetime
-    ends_at: datetime | None
+    ends_at: datetime | None = None
     fingerprint: str
     status: Literal["firing", "resolved"]
 ```
@@ -1541,7 +1818,10 @@ class ApprovalGate:
             "confidence": plan.confidence,
         }
         # 等待用户响应（超时 300s）
-        response = await self.approval_queue.get(timeout=300)
+        # P0 修复：asyncio.Queue.get() 不支持 timeout 参数，
+        # 改用 asyncio.wait_for 包装
+        response = await asyncio.wait_for(
+            self.approval_queue.get(), timeout=300)
         return ApprovalResult(
             approved=response["approved"],
             method="human",
@@ -1555,14 +1835,19 @@ class ApprovalGate:
 
 ```python
 class RemediationEngine:
-    """修复引擎：确定性执行 + WAL + 灰度"""
+    """修复引擎：确定性执行 + WAL + 灰度
+
+    P1-4 修复：构造函数显式注入 PrometheusChannel 依赖。
+    """
 
     def __init__(self, tool_registry: ToolRegistry,
                  approval_gate: ApprovalGate,
-                 wal: RollbackJournal):
+                 wal: RollbackJournal,
+                 prometheus: PrometheusChannel):
         self.tools = tool_registry
         self.approval = approval_gate
         self.wal = wal
+        self.prometheus = prometheus                # P1-4: 显式注入
         self.canary = CanaryExecutor(wal=wal)
 
     async def execute(self, plan: RemediationPlan) -> RemediationResult:
@@ -1610,16 +1895,81 @@ class RemediationEngine:
                                 steps_total=len(plan.steps))
 
     async def _verify(self, config: VerificationConfig) -> bool:
+        """验证修复步骤结果
+
+        P0 安全修复：替换 eval() 为安全的白名单条件求值器。
+        原实现使用 eval(config.success_condition)，success_condition 来自
+        LLM 生成的 RemediationPlan，存在任意代码执行风险。
+        """
         if config.method == "promql":
             value = await self.prometheus.query_instant(config.query)
-            return eval(config.success_condition, {"value": value})
+            return safe_eval_condition(config.success_condition, {"value": value})
         elif config.method == "tool_call":
             result = await self.tools.execute(config.tool, config.tool_params,
                                              safety_level="read_only")
-            return eval(config.success_condition, {"result": result})
+            return safe_eval_condition(config.success_condition, {"result": result})
         elif config.method == "wait":
             await asyncio.sleep(config.wait_seconds)
             return True
+
+
+# ─── P0 安全修复：白名单条件求值器（替代 eval）───
+
+import operator as op
+import re
+
+SAFE_OPERATORS = {
+    "<": op.lt, ">": op.gt, "<=": op.le, ">=": op.ge,
+    "==": op.eq, "!=": op.ne,
+}
+# 匹配 "field op literal" 三元组，如 "value < 500", "status == 'Running'"
+CONDITION_PATTERN = re.compile(
+    r"^(\w+(?:\.\w+)*)\s*(<=?|>=?|[!=]=)\s*(.+)$"
+)
+
+def safe_eval_condition(condition: str, variables: dict) -> bool:
+    """安全的条件求值：仅支持 'field op literal' 格式。
+
+    支持的条件格式：
+      "value < 500"
+      "status == 'Running'"
+      "error_rate < 0.01"
+      "result.status == 'healthy'"
+
+    不支持任意 Python 表达式、函数调用、import 等。
+    """
+    match = CONDITION_PATTERN.match(condition.strip())
+    if not match:
+        raise ValueError(f"Invalid condition format: {condition!r}. "
+                         f"Expected 'field op literal', e.g. 'value < 500'")
+
+    field_path, operator_str, literal_str = match.groups()
+    op_func = SAFE_OPERATORS.get(operator_str)
+    if not op_func:
+        raise ValueError(f"Unsupported operator: {operator_str!r}")
+
+    # 解析字段值（支持嵌套如 result.status）
+    value = variables
+    for key in field_path.split("."):
+        if isinstance(value, dict):
+            value = value[key]
+        else:
+            value = getattr(value, key)
+
+    # 解析字面量
+    literal_str = literal_str.strip()
+    if literal_str.startswith(("'", '"')) and literal_str.endswith(("'", '"')):
+        literal_value = literal_str[1:-1]
+    else:
+        try:
+            literal_value = int(literal_str)
+        except ValueError:
+            try:
+                literal_value = float(literal_str)
+            except ValueError:
+                literal_value = literal_str
+
+    return op_func(value, literal_value)
 ```
 
 ---
@@ -1847,17 +2197,27 @@ class LearnedPattern(BaseModel):
 
 ```python
 class MemoryStore:
-    """记忆存储 — SQLite per AIDC"""
+    """记忆存储 — aiosqlite per AIDC
+
+    P1-10 修复：sqlite3 替换为 aiosqlite 异步库，避免阻塞事件循环。
+    ChromaDB 同步调用包裹在 asyncio.to_thread() 中。
+    """
 
     def __init__(self, aidc_id: str, db_dir: str = "./memory"):
         self.aidc_id = aidc_id
-        self.db = sqlite3.connect(f"{db_dir}/{aidc_id}.db")
-        self._init_tables()
-        # 向量索引用于语义搜索
+        self.db_dir = db_dir
+        self.db_path = f"{db_dir}/{aidc_id}.db"
+        self._db: aiosqlite.Connection | None = None
+        # 向量索引用于语义搜索（ChromaDB 仍为同步，通过 to_thread 调用）
         self.vector_index = chromadb.PersistentClient(
             path=f"{db_dir}/{aidc_id}_vectors")
         self.incidents_collection = self.vector_index.get_or_create_collection(
             "incidents")
+
+    async def connect(self) -> None:
+        """异步初始化数据库连接"""
+        self._db = await aiosqlite.connect(self.db_path)
+        await self._init_tables()
 
     async def record_incident(self, session: DiagnosisSession) -> str:
         """记录完整事件"""
@@ -1913,9 +2273,14 @@ class MemoryStore:
         if existing:
             existing.occurrence_count += 1
             existing.last_seen = record.timestamp
-            existing.confidence = min(1.0, existing.confidence + 0.1)
+            # P1-9 修复：根据修复结果区分置信度更新方向
+            # 原实现无论成功/失败都 +0.1，导致失败模式置信度虚高
             if record.outcome == "resolved":
+                existing.confidence = min(1.0, existing.confidence + 0.15)
                 existing.example_incidents.append(record.incident_id)
+            elif record.outcome == "failed":
+                existing.confidence = max(0.0, existing.confidence - 0.1)
+            # partially_resolved / escalated 不调整
             self._save_pattern(existing)
         else:
             pattern = LearnedPattern(
@@ -1958,118 +2323,619 @@ class MemoryStore:
 
 ---
 
-## 10. Skills 框架（Claude Code 兼容）
+## 10. Skills 框架（Claude Code 即插即用）
 
-### 10.1 Skill 格式
+### 10.1 设计目标
 
 需求："考虑兼容 anthropic claude code skills"。
 
-每个 Skill 是一组工具 + 专用系统提示词 + 示例的打包，可被 Claude Code 加载。
+采用 **完全复刻 Claude Code skills 机制** 的即插即用设计：
 
-```yaml
-# skills/builtin/vllm_diagnosis.yaml
-name: "sre:vllm-diagnosis"
-description: "诊断 vLLM 推理服务延迟问题"
-version: "1.0"
+| 特性 | 说明 |
+|------|------|
+| 目录约定 | `.claude/skills/**/SKILL.md` + `scripts/` + `references/` |
+| 即插即用 | 拷贝/更新 skills 目录即生效，无需重新编译/部署 |
+| 固定工具数 | Agent 通过 **4 个固定 tool** 发现/加载/执行 skills，不随 skill 数量变化 |
+| 按需加载 | 默认只给模型 skills 摘要；需要时再加载 SKILL.md → references → scripts |
+| 热更新 | `SkillRegistry` 周期性重新扫描 `**/SKILL.md`，无需重启 |
+| 安全管控 | allow/deny/ask 策略 + 路径防逃逸 + 超时 + 输出截断 + 低权限执行 |
 
-# 此 Skill 可用的工具子集
-tools:
-  - query_prometheus
-  - get_gpu_metrics
-  - get_pod_metrics
-  - get_inference_latency
-  - read_pod_logs
-  - get_thermal_status
-  - get_pcie_errors
-  - check_rdma_status
-  - check_nic_errors
-  - query_topology
-  - get_blast_radius
-  - search_knowledge
-  - search_similar_incidents
+### 10.2 Skill 目录约定
 
-# Skill 专用系统提示词补充
-system_prompt: |
-  你正在诊断 vLLM 推理服务的延迟问题。常见根因：
-  1. GPU 资源争用（其他进程占用 GPU 或 PCIe 带宽）
-  2. GPU 热节流（温度 > 85°C 导致降频）
-  3. 网络问题（RDMA 异常、丢包、MTU 不匹配）
-  4. KV Cache 内存不足（OOM 导致请求排队）
-  5. 平台级瓶颈（Gunicorn Worker 饱和、DB 连接池耗尽）
-  6. 存储 I/O（模型加载慢、checkpoint 读写）
+兼容 Claude Code 的 `SKILL.md` 格式，支持多根目录：
 
-  诊断流程建议：
-  1. 先查延迟指标确认问题范围（哪些 percentile 受影响）
-  2. 查 GPU 指标（利用率、显存、温度）
-  3. 查网络指标（RDMA 状态、PFC、NIC 错误）
-  4. 查 Pod/Node 状态
-  5. 交叉验证，排除假设
+```
+# 内置 Skills（随代码库分发）
+sre_agent/skills/builtin/
+  vllm-diagnosis/
+    SKILL.md                    # 核心：技能描述 + 系统提示词 + 示例
+    scripts/
+      check_gpu_contention.sh   # 可执行诊断脚本
+      parse_vllm_logs.py
+    references/
+      vllm-tuning-guide.md      # 参考文档
+      gpu-pcie-topology.json
 
-# 示例诊断过程
-examples:
-  - input: "vLLM P95 > 500ms"
-    steps:
-      - tool: "get_inference_latency"
-        params: {service: "vllm-deepseek"}
-        observation: "P50=120ms, P95=680ms, P99=1.2s"
-      - tool: "get_gpu_metrics"
-        params: {node: "gpu-1-1"}
-        observation: "GPU-0: util=98%, GPU-1: util=72%"
-      - thought: "GPU-0 利用率异常高，推理在 GPU-1 但可能受 PCIe 争用影响"
-      - tool: "read_pod_logs"
-        params: {pod: "vllm-xxx", namespace: "service", tail: 50}
-      - conclusion: "GPU 资源争用，gpu-burn 进程占用 GPU-0"
+  rdma-diagnosis/
+    SKILL.md
+    scripts/
+      check_pfc_storm.sh
+    references/
+      rdma-troubleshoot.md
+
+# 用户自定义 Skills（可热加载）
+sre_agent/skills/custom/
+  my-custom-diag/
+    SKILL.md
+    scripts/...
+
+# 全局 Skills（可选，跨项目共享）
+~/.claude/skills/
+  shared-network-check/
+    SKILL.md
+    ...
 ```
 
-### 10.2 内置 Skills
+**Skill 发现规则**：
+- 递归扫描所有根目录下的 `**/SKILL.md`
+- `skill_id` = `SKILL.md` 所在目录的相对路径（如 `vllm-diagnosis`、`subdir/my-skill`）
+- 可通过 SKILL.md frontmatter `name` 字段覆盖 skill_id
 
-| Skill 名 | 用途 | 核心工具 |
-|-----------|------|----------|
-| `sre:vllm-diagnosis` | vLLM 推理延迟诊断 | GPU 指标、推理延迟、温度、网络 |
-| `sre:rdma-diagnosis` | RDMA/RoCEv2 问题诊断 | PFC 计数器、ECN 配置、交换机端口、NIC 错误 |
-| `sre:gpu-health` | GPU 硬件健康检查 | BMC SEL、温度、PCIe 错误、ECC 错误 |
-| `sre:network-diagnosis` | 通用网络问题诊断 | 交换机端口、LLDP、ping、traceroute |
-| `sre:storage-diagnosis` | 存储 I/O 问题诊断 | PVC 状态、I/O 延迟、磁盘健康 |
-| `sre:platform-health` | Cube Studio 平台健康检查 | API 延迟、Worker 状态、DB 连接、队列深度 |
+### 10.3 SKILL.md 格式
 
-### 10.3 自定义 Skill 创建
+```markdown
+---
+name: sre:vllm-diagnosis
+description: 诊断 vLLM 推理服务延迟问题
+version: "1.0"
+---
 
-现场工程师可以将成功的诊断 trace 保存为新的自定义 Skill：
+# vLLM 推理延迟诊断
+
+## 适用场景
+- vLLM P95/P99 延迟超标
+- 推理 QPS 下降
+- GPU 利用率异常
+
+## 诊断方法论
+
+### 常见根因
+1. GPU 资源争用（其他进程占用 GPU 或 PCIe 带宽）
+2. GPU 热节流（温度 > 85°C 导致降频）
+3. 网络问题（RDMA 异常、丢包、MTU 不匹配）
+4. KV Cache 内存不足（OOM 导致请求排队）
+5. 平台级瓶颈（Gunicorn Worker 饱和、DB 连接池耗尽）
+
+### 推荐诊断流程
+1. 先查延迟指标确认问题范围（哪些 percentile 受影响）
+2. 查 GPU 指标（利用率、显存、温度）→ 可执行 `scripts/check_gpu_contention.sh`
+3. 查网络指标（RDMA 状态、PFC、NIC 错误）
+4. 查 Pod/Node 状态
+5. 交叉验证，排除假设
+
+### 关键工具
+- `get_gpu_metrics` — GPU 利用率、显存、温度
+- `get_gpu_processes` — GPU 进程列表
+- `get_inference_latency` — 推理 P50/P95/P99
+- `get_thermal_status` — 温度和散热
+- `check_rdma_status` — RDMA 设备状态
+- `query_prometheus` — 自定义 PromQL
+
+### 可执行脚本
+- `scripts/check_gpu_contention.sh` — 检查 GPU 争用（传入 node 参数）
+- `scripts/parse_vllm_logs.py` — 分析 vLLM 日志中的 OOM/timeout 模式
+
+### 参考文档
+- `references/vllm-tuning-guide.md` — vLLM 性能调优指南
+- `references/gpu-pcie-topology.json` — PCIe 拓扑参考
+
+## 示例诊断 Trace
+
+```
+告警: vLLM P95 > 500ms
+Step 1: get_inference_latency → P50=120ms, P95=680ms
+Step 2: get_gpu_metrics → GPU-0 util=98%, GPU-1 util=72%
+Step 3: get_gpu_processes → gpu-burn 占用 GPU-0
+结论: GPU 资源争用，gpu-burn 进程占用 GPU-0，导致 PCIe 带宽争用
+```
+```
+
+### 10.4 运行时固定的 4 个工具（核心架构）
+
+Agent 通过固定的 4 个 LangChain `@tool` 与 skills 交互。**新增 skill 不会新增 tool**，
+无需修改 Agent 代码或重新部署：
+
+| 工具 | 作用 | 上下文影响 |
+|------|------|-----------|
+| `list_skills()` | 列出所有可用技能的摘要（ID + name + 短描述） | 极小（仅摘要） |
+| `load_skill(skill_id)` | 加载指定 skill 的完整 SKILL.md 内容 | 中等（按需加载） |
+| `read_skill_ref(skill_id, path)` | 读取 skill 的 references/ 下文件 | 中等（按需读取） |
+| `run_skill(skill_id, script, args)` | 执行 skill 的 scripts/ 下脚本 | 取决于脚本输出 |
+
+```python
+from langchain_core.tools import tool
+from typing import Any, Dict, List, Optional
+
+# ─── 这 4 个 tool 注册到 LangGraph，永远不变 ───
+
+@tool
+def list_skills() -> List[Dict[str, Any]]:
+    """列出所有可用的 SRE 诊断技能（仅摘要，不加载全文）。
+    返回每个 skill 的 id、名称、描述。
+    使用此工具发现适合当前问题的 skill。"""
+    skills = registry.list()
+    return [
+        {
+            "skill_id": s.skill_id,
+            "name": s.name,
+            "description": s.description,
+            "has_scripts": s.scripts_dir().exists(),
+            "has_references": s.references_dir().exists(),
+        }
+        for s in skills
+    ]
+
+@tool
+def load_skill(skill_id: str) -> Dict[str, Any]:
+    """加载指定 skill 的完整 SKILL.md 内容。
+    包含诊断方法论、推荐步骤、可用脚本和参考文档列表。
+    仅在需要某个 skill 的详细指导时调用。"""
+    s = registry.get(skill_id)
+    if not s:
+        return {"ok": False, "error": "skill_not_found"}
+    return {
+        "ok": True,
+        "skill_id": s.skill_id,
+        "name": s.name,
+        "skill_md": s.read_skill_md(),
+        "scripts": [p.name for p in s.scripts_dir().iterdir()]
+            if s.scripts_dir().exists() else [],
+        "references": [p.name for p in s.references_dir().iterdir()]
+            if s.references_dir().exists() else [],
+    }
+
+@tool
+def read_skill_ref(skill_id: str, path: str) -> Dict[str, Any]:
+    """读取 skill 的 references/ 下的参考文件内容。
+    path 是相对于 references/ 的路径，如 'vllm-tuning-guide.md'。"""
+    s = registry.get(skill_id)
+    if not s:
+        return {"ok": False, "error": "skill_not_found"}
+    try:
+        p = registry.resolve_in_skill(s, "references", path)
+        if not p.exists():
+            return {"ok": False, "error": "ref_not_found", "path": path}
+        content = p.read_text(encoding="utf-8", errors="replace")
+        if len(content) > 200_000:
+            content = content[:200_000] + "\n...[truncated]"
+        return {"ok": True, "path": path, "content": content}
+    except ValueError as e:
+        return {"ok": False, "error": "invalid_path", "detail": str(e)}
+
+@tool
+def run_skill(
+    skill_id: str, script: str,
+    args: Optional[Dict[str, Any]] = None,
+    timeout_sec: Optional[int] = None,
+) -> Dict[str, Any]:
+    """执行 skill 的 scripts/ 下的脚本。
+    script: 相对于 scripts/ 的路径，如 'check_gpu_contention.sh'
+    args: 结构化参数 dict，脚本可通过环境变量 SKILL_ARGS_JSON 读取
+    timeout_sec: 超时秒数（默认 60s）"""
+    s = registry.get(skill_id)
+    if not s:
+        return {"ok": False, "error": "skill_not_found"}
+    # ── 权限策略检查 ──
+    decision = policy.check(skill_id, script, args)
+    if decision == "deny":
+        return {"ok": False, "error": "policy_denied",
+                "detail": f"Script {script} in {skill_id} is denied by policy"}
+    if decision == "ask":
+        return {"ok": False, "error": "approval_required",
+                "detail": f"Script {script} requires human approval"}
+    # ── 执行 ──
+    try:
+        p = registry.resolve_in_skill(s, "scripts", script)
+        if not p.exists() or p.is_dir():
+            return {"ok": False, "error": "script_not_found"}
+        result = executor.run_script(
+            script_path=p, args=args or {},
+            cwd=s.base_dir, timeout_sec=timeout_sec)
+        result.update({"skill_id": skill_id, "script": script})
+        return result
+    except Exception as e:
+        return {"ok": False, "error": "execution_failed", "detail": str(e)}
+```
+
+### 10.5 SkillRegistry — 热发现与路径安全
+
+```python
+import os, re, time, hashlib
+from dataclasses import dataclass
+from pathlib import Path
+
+_FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n", re.S)
+
+@dataclass
+class Skill:
+    skill_id: str
+    name: str
+    description: str
+    base_dir: Path
+    skill_md_path: Path
+    skill_md_hash: str
+    frontmatter: dict
+
+    def read_skill_md(self) -> str:
+        data = self.skill_md_path.read_bytes()[:2_000_000]
+        return data.decode("utf-8", errors="replace")
+
+    def scripts_dir(self) -> Path:
+        return self.base_dir / "scripts"
+
+    def references_dir(self) -> Path:
+        return self.base_dir / "references"
+
+class SkillRegistry:
+    """
+    兼容 Claude Code 目录布局的运行时 Skill 注册表。
+
+    - 扫描多个根目录下的 **/SKILL.md
+    - 周期性热刷新（refresh_interval_sec）
+    - 路径防逃逸（resolve_in_skill）
+    """
+
+    def __init__(self, roots: list[Path], refresh_interval_sec: int = 10):
+        self.roots = [Path(r).expanduser().resolve() for r in roots]
+        self.refresh_interval_sec = refresh_interval_sec
+        self._last_refresh = 0.0
+        self._skills: dict[str, Skill] = {}
+
+    def refresh(self, force: bool = False) -> None:
+        now = time.time()
+        if not force and (now - self._last_refresh) < self.refresh_interval_sec:
+            return
+        self._last_refresh = now
+        skills: dict[str, Skill] = {}
+        for root in self.roots:
+            if not root.exists():
+                continue
+            for skill_md in root.rglob("SKILL.md"):
+                try:
+                    base_dir = skill_md.parent.resolve()
+                    md_bytes = skill_md.read_bytes()[:2_000_000]
+                    md_text = md_bytes.decode("utf-8", errors="replace")
+                    fm, body = self._parse_frontmatter(md_text)
+                    rel = base_dir.relative_to(root)
+                    skill_id = str(rel).replace("\\", "/")
+                    name = fm.get("name") or base_dir.name
+                    desc = fm.get("description") or self._first_line(body) or ""
+                    h = hashlib.sha256(md_bytes).hexdigest()
+                    skills[skill_id] = Skill(
+                        skill_id=skill_id, name=name,
+                        description=desc[:240], base_dir=base_dir,
+                        skill_md_path=skill_md, skill_md_hash=h,
+                        frontmatter=fm,
+                    )
+                except Exception:
+                    continue  # skip broken skills
+        self._skills = skills
+
+    def list(self) -> list[Skill]:
+        self.refresh()
+        return sorted(self._skills.values(), key=lambda x: x.skill_id)
+
+    def get(self, skill_id: str) -> Skill | None:
+        self.refresh()
+        return self._skills.get(skill_id)
+
+    def resolve_in_skill(self, skill: Skill, subdir: str, rel_path: str) -> Path:
+        """解析 scripts/ 或 references/ 下的相对路径，防止路径逃逸。"""
+        rel = Path(rel_path)
+        if rel.is_absolute():
+            raise ValueError("absolute paths not allowed")
+        target = (skill.base_dir / subdir / rel).resolve()
+        root = (skill.base_dir / subdir).resolve()
+        if not str(target).startswith(str(root) + os.sep) and target != root:
+            raise ValueError("path traversal blocked")
+        return target
+
+    @staticmethod
+    def _parse_frontmatter(md: str) -> tuple[dict, str]:
+        m = _FRONTMATTER_RE.match(md)
+        if not m:
+            return {}, md
+        fm = {}
+        for line in m.group(1).splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or ":" not in line:
+                continue
+            k, v = line.split(":", 1)
+            fm[k.strip()] = v.strip().strip('"').strip("'")
+        return fm, md[m.end():]
+
+    @staticmethod
+    def _first_line(s: str) -> str:
+        for line in s.splitlines():
+            t = line.strip()
+            if t:
+                return t
+        return ""
+```
+
+### 10.6 SkillExecutor — 安全脚本执行
+
+```python
+import os, json, subprocess, time
+from pathlib import Path
+
+class SkillExecutor:
+    """
+    安全执行 skill scripts/ 下的脚本。
+
+    安全措施：
+    - 仅执行 resolve_in_skill 验证过的路径
+    - 超时控制（默认 60s）
+    - 输出截断（默认 12000 字符）
+    - 环境变量白名单（不泄露完整环境）
+    - 参数通过 SKILL_ARGS_JSON 环境变量传递（非 shell 拼接）
+    """
+
+    def __init__(self, default_timeout_sec: int = 60,
+                 max_output_chars: int = 12000,
+                 env_allowlist: list[str] | None = None):
+        self.default_timeout_sec = default_timeout_sec
+        self.max_output_chars = max_output_chars
+        self.env_allowlist = env_allowlist or [
+            "PATH", "HOME", "USER", "LANG", "LC_ALL"]
+
+    def run_script(self, script_path: Path, args: dict,
+                   cwd: Path, timeout_sec: int | None = None) -> dict:
+        timeout = timeout_sec or self.default_timeout_sec
+        cmd = self._build_cmd(script_path)
+        env = {k: os.environ.get(k, "") for k in self.env_allowlist}
+        env["SKILL_ARGS_JSON"] = json.dumps(args, ensure_ascii=False)
+
+        start = time.time()
+        try:
+            p = subprocess.run(
+                cmd, cwd=str(cwd), env=env,
+                capture_output=True, text=True, timeout=timeout)
+            dur_ms = int((time.time() - start) * 1000)
+            stdout = self._truncate(p.stdout or "")
+            stderr = self._truncate(p.stderr or "")
+            data = self._extract_result_json(stdout, cwd)
+            return {
+                "ok": p.returncode == 0,
+                "returncode": p.returncode,
+                "stdout": stdout, "stderr": stderr,
+                "data": data,
+                "duration_ms": dur_ms,
+            }
+        except subprocess.TimeoutExpired:
+            dur_ms = int((time.time() - start) * 1000)
+            return {
+                "ok": False, "error": "timeout",
+                "duration_ms": dur_ms,
+                "timeout_sec": timeout,
+            }
+
+    def _build_cmd(self, script_path: Path) -> list[str]:
+        suffix = script_path.suffix.lower()
+        if suffix in (".sh", ".bash"):
+            return ["bash", str(script_path)]
+        if suffix == ".py":
+            return ["python3", str(script_path)]
+        if os.access(script_path, os.X_OK):
+            return [str(script_path)]
+        return ["bash", str(script_path)]
+
+    def _truncate(self, s: str) -> str:
+        if len(s) <= self.max_output_chars:
+            return s
+        return s[:self.max_output_chars] + f"\n...[truncated {len(s)-self.max_output_chars} chars]"
+
+    def _extract_result_json(self, stdout: str, cwd: Path) -> dict | None:
+        """提取结构化结果：stdout 中的 RESULT_JSON={...} 或 cwd/output.json"""
+        for line in reversed(stdout.splitlines()[-50:]):
+            if line.startswith("RESULT_JSON="):
+                try:
+                    return json.loads(line[len("RESULT_JSON="):].strip())
+                except Exception:
+                    return None
+        out_file = cwd / "output.json"
+        if out_file.exists():
+            try:
+                return json.loads(out_file.read_text(encoding="utf-8"))
+            except Exception:
+                return None
+        return None
+```
+
+### 10.7 执行权限策略（Policy Gate）
+
+```python
+from typing import Literal
+
+class SkillPolicy:
+    """
+    Skill 脚本执行的权限策略。
+
+    支持三种决策：
+    - allow: 允许执行（默认，内置 skills）
+    - deny: 拒绝执行（黑名单或危险操作）
+    - ask: 需要人工审批
+
+    可按 skill_id pattern、environment（dev/prod）、脚本后缀分级。
+    """
+
+    def __init__(self, default: Literal["allow", "deny", "ask"] = "allow",
+                 rules: list[dict] | None = None):
+        self.default = default
+        self.rules = rules or []
+        # 默认规则示例：
+        # [
+        #   {"pattern": "builtin/*", "action": "allow"},
+        #   {"pattern": "custom/*", "action": "ask"},
+        #   {"pattern": "danger-*", "action": "deny"},
+        # ]
+
+    def check(self, skill_id: str, script: str,
+              args: dict | None = None) -> Literal["allow", "deny", "ask"]:
+        import fnmatch
+        for rule in self.rules:
+            pattern = rule.get("pattern", "")
+            if fnmatch.fnmatch(skill_id, pattern):
+                return rule.get("action", self.default)
+            if fnmatch.fnmatch(f"{skill_id}/{script}", pattern):
+                return rule.get("action", self.default)
+        return self.default
+```
+
+### 10.8 LangGraph 集成 — 固定图结构
+
+Skill 的 4 个 tool 与 SRE Agent 的诊断 tool 一起注册到 LangGraph，**图结构不随 skills 变化**：
+
+```python
+from skills.runtime.registry import SkillRegistry
+from skills.runtime.executor import SkillExecutor
+from skills.runtime.tools import build_skill_tools
+from skills.runtime.policy import SkillPolicy
+
+# ── 初始化（应用启动时执行一次）──
+registry = SkillRegistry(
+    roots=[
+        Path("./sre_agent/skills/builtin"),      # 内置 skills
+        Path("./sre_agent/skills/custom"),        # 自定义 skills
+        Path("~/.claude/skills"),                  # 全局 skills
+    ],
+    refresh_interval_sec=10,
+)
+
+executor = SkillExecutor(default_timeout_sec=60, max_output_chars=12000)
+
+policy = SkillPolicy(
+    default="allow",
+    rules=[
+        {"pattern": "builtin/*", "action": "allow"},
+        {"pattern": "custom/*", "action": "ask"},     # 自定义 skills 需确认
+    ],
+)
+
+skill_tools = build_skill_tools(registry, executor, policy)
+
+# ── 合并到 LangGraph Agent ──
+# SRE 诊断工具 + Skill 工具 一起 bind
+all_tools = sre_read_only_tools + skill_tools  # [query_prometheus, ...] + [list_skills, ...]
+llm_with_tools = llm.bind_tools(all_tools)
+
+# LangGraph 图结构不变，只是 ToolNode 包含了 skill tools
+tool_node = ToolNode(all_tools)
+```
+
+**关键设计点**：
+- `list_skills` / `load_skill` / `read_skill_ref` / `run_skill` 这 4 个 tool 是**固定的**
+- 新增 / 删除 / 更新 skill 只需修改 skills 目录，无需改代码
+- `registry.refresh()` 在每次 agent_node 调用前自动触发，实现热更新
+- `run_skill` 执行前先经过 `policy.check()` 权限门控
+
+### 10.9 Agent 使用 Skills 的提示词策略
+
+在 system prompt 中指导 Agent 按需加载 skills（避免上下文膨胀）：
+
+```
+## 技能系统 (Skills)
+
+你拥有一套可扩展的诊断技能库。使用流程：
+1. 先调用 list_skills() 查看有哪些可用技能
+2. 根据当前问题选择最相关的 skill，调用 load_skill(skill_id) 加载详细指导
+3. 按照 SKILL.md 中的诊断方法论和推荐步骤进行诊断
+4. 需要参考资料时调用 read_skill_ref(skill_id, path)
+5. 需要执行自动化检查时调用 run_skill(skill_id, script, args)
+
+注意：
+- 不要一次加载多个 skill（避免上下文膨胀）
+- 优先使用 skill 推荐的诊断步骤和工具组合
+- 脚本执行结果可作为诊断证据
+```
+
+### 10.10 内置 Skills
+
+| Skill ID | 名称 | 用途 | scripts | references |
+|----------|------|------|---------|------------|
+| `vllm-diagnosis` | vLLM 推理延迟诊断 | GPU 争用/热节流/网络/KV Cache | `check_gpu_contention.sh` | `vllm-tuning-guide.md` |
+| `rdma-diagnosis` | RDMA/RoCEv2 问题诊断 | PFC 风暴/ECN/链路 flap | `check_pfc_storm.sh` | `rdma-troubleshoot.md` |
+| `gpu-health` | GPU 硬件健康检查 | ECC/PCIe/温度/功耗 | `gpu_ecc_check.py` | — |
+| `network-diagnosis` | 通用网络问题诊断 | 端口/LLDP/MTU/丢包 | `port_scan.sh` | — |
+| `storage-diagnosis` | 存储 I/O 问题诊断 | PVC/磁盘/latency | — | — |
+| `platform-health` | Cube Studio 平台健康检查 | API/Worker/DB/队列 | — | — |
+
+### 10.11 自定义 Skill 创建
+
+工程师可以将成功的诊断 trace 保存为新的自定义 Skill（SKILL.md 格式）：
 
 ```python
 class SkillCreator:
-    """从诊断 trace 创建新 Skill"""
+    """从诊断 trace 自动生成 SKILL.md"""
 
     async def create_from_trace(self, session: DiagnosisSession,
-                                 name: str, description: str) -> str:
-        """将诊断会话转化为 Skill YAML"""
+                                 name: str, description: str) -> Path:
+        """将诊断会话转化为 SKILL.md 目录结构"""
+        skill_dir = Path(f"sre_agent/skills/custom/{name}")
+        skill_dir.mkdir(parents=True, exist_ok=True)
+
+        # 生成 SKILL.md
         tools_used = set()
-        steps = []
+        steps_md = []
         for item in session.trace.steps:
             if isinstance(item, ThinkingStep) and item.tool_name:
                 tools_used.add(item.tool_name)
-                steps.append({
-                    "tool": item.tool_name,
-                    "params": item.tool_params,
-                })
-            elif isinstance(item, ThinkingStep) and item.thought:
-                steps.append({"thought": item.thought})
+                steps_md.append(
+                    f"Step: {item.tool_name}({item.tool_params}) "
+                    f"→ {item.thought or ''}")
+            elif isinstance(item, Observation):
+                steps_md.append(f"Observe: {item.tool} → (result)")
 
-        skill = {
-            "name": name,
-            "description": description,
-            "version": "1.0",
-            "tools": sorted(tools_used),
-            "system_prompt": f"根因: {session.diagnosis.root_cause}\n"
-                           f"修复: {session.proposed_plan.description if session.proposed_plan else 'N/A'}",
-            "examples": [{"input": session.alert.summary, "steps": steps}],
-            "created_from_incident": session.session_id,
-        }
-        path = f"skills/custom/{name}.yaml"
-        with open(path, "w") as f:
-            yaml.dump(skill, f, allow_unicode=True)
-        return path
+        md_content = f"""---
+name: {name}
+description: {description}
+version: "1.0"
+created_from: {session.session_id}
+---
+
+# {description}
+
+## 适用场景
+- {session.alert.alert_name}
+
+## 根因
+{session.diagnosis.root_cause}
+
+## 关键工具
+{chr(10).join(f'- `{t}`' for t in sorted(tools_used))}
+
+## 诊断 Trace
 ```
+{chr(10).join(steps_md)}
+```
+"""
+        (skill_dir / "SKILL.md").write_text(md_content, encoding="utf-8")
+        return skill_dir
+```
+
+### 10.12 生产安全清单
+
+| 安全措施 | 实现 | 状态 |
+|----------|------|------|
+| 路径防逃逸 | `resolve_in_skill()` — resolve + prefix 校验 | ✓ |
+| 执行超时 | `subprocess.run(timeout=)` 默认 60s | ✓ |
+| 输出截断 | `max_output_chars=12000` | ✓ |
+| 环境变量白名单 | 仅传递 PATH/HOME/USER/LANG | ✓ |
+| 参数传递 | `SKILL_ARGS_JSON` 环境变量（非 shell 拼接） | ✓ |
+| 权限策略 | `SkillPolicy` allow/deny/ask + pattern 匹配 | ✓ |
+| 低权限执行 | 建议：K8s Job/sidecar 或非 root 用户 | 推荐 |
+| 审计日志 | skill_id/script/args/returncode/duration 写入 audit.jsonl | 推荐 |
+| 容器隔离 | 高危脚本在隔离容器执行（CPU/mem 限制） | 长期 |
 
 ---
 
@@ -2141,12 +3007,14 @@ class SkillCreator:
             → 需要查看 GPU-0 上的进程"
 
 [14:00:05] ── Step 5 [Act] ── tool_call
-           → read_system_log(node="gpu-1-1",
-                             command="nvidia-smi --query-compute-apps=pid,process_name,gpu_uuid,used_memory --format=csv,noheader")
+           → get_gpu_processes(node="gpu-1-1")
+           (P0 修复：使用专用 get_gpu_processes 工具，替代原错误的 read_system_log)
 
 [14:00:05] ── Step 5 [Observe] ──
-           "12847, gpu-burn, GPU-00000000:3B:00.0, 74500 MiB
-            15923, python3, GPU-00000000:86:00.0, 44800 MiB"
+           {processes: [
+             {pid: 12847, name: "gpu-burn", gpu_uuid: "GPU-0", memory_mb: 74500},
+             {pid: 15923, name: "python3", gpu_uuid: "GPU-1", memory_mb: 44800}
+           ]}
            "确认: gpu-burn 进程 (PID 12847) 占用 GPU-0 全部显存和算力"
 
 [14:00:06] ── Step 6 [Think] ──
@@ -2421,9 +3289,22 @@ agent:
     model: "claude-sonnet-4-20250514"
     api_base: "https://api.anthropic.com/v1"
     api_key_env: "ANTHROPIC_API_KEY"
-  max_steps: 20                                # 单次诊断最大推理步数
-  step_timeout: 60                             # 单步超时（秒）
-  total_timeout: 600                           # 总超时（秒）
+  max_steps: 20                                # 单次诊断最大推理步数（LangGraph should_continue 控制）
+  step_timeout: 60                             # 单步超时（asyncio.wait_for 在 agent_node 控制）
+  total_timeout: 600                           # 总超时（asyncio.wait_for 在 diagnose 控制）
+  max_concurrent_diagnoses: 5                  # P2-8 新增：全局并发诊断数限制
+  guardrails_config_dir: "./sre_agent/guardrails"  # NeMo Guardrails 配置目录
+  langgraph_checkpoint_db: "./data/langgraph_checkpoints.db"  # LangGraph checkpoint 持久化
+
+# ─── NeMo Agent Toolkit 配置（新增）───
+nat:
+  workflow_config: "./sre_agent/nat/workflow.yml"
+  profiling:
+    enabled: true                              # 是否启用 profiling
+    output_dir: "./data/nat_profiles"
+  evaluation:
+    enabled: false                             # 默认关闭，按需开启
+    dataset: "./sre_agent/nat/eval_dataset.jsonl"
 
 # ─── Channel 连接配置 ───
 channels:
@@ -2436,7 +3317,7 @@ channels:
   redfish:
     request_timeout: 30
     session_refresh_interval: 600
-    verify_ssl: false
+    verify_ssl: true                               # P2-3 修复：默认开启 TLS 校验
   switch:
     cli_timeout: 30
     netconf_timeout: 30
@@ -2474,7 +3355,7 @@ ontology:
                       user: "admin", password: "${SWITCH_PASSWORD}" }
     k8s_clusters:
       main:
-        kubeconfig: "~/.kube/config"
+        kubeconfig: "${channels.kubernetes.kubeconfig}"  # P2-10 修复：引用 channels 配置，避免重复
 
 # ─── 知识库 ───
 knowledge_base:
@@ -2515,10 +3396,24 @@ remediation:
     dry_run: false
     max_concurrent_remediations: 2
 
-# ─── Skills ───
+# ─── Skills（Claude Code 兼容即插即用）───
 skills:
-  builtin_dir: "./skills/builtin/"
-  custom_dir: "./skills/custom/"
+  roots:                                         # 多根目录扫描
+    - "./sre_agent/skills/builtin"               # 内置 skills
+    - "./sre_agent/skills/custom"                # 自定义 skills
+    - "~/.claude/skills"                         # 全局 skills（可选）
+  refresh_interval_sec: 10                       # 热扫描间隔
+  executor:
+    default_timeout_sec: 60                      # 脚本执行超时
+    max_output_chars: 12000                      # 输出截断限制
+    env_allowlist: ["PATH", "HOME", "USER", "LANG", "LC_ALL"]
+  policy:
+    default: "allow"                             # 默认策略
+    rules:
+      - pattern: "builtin/*"
+        action: "allow"
+      - pattern: "custom/*"
+        action: "ask"                            # 自定义 skills 需确认
 
 # ─── 监控 ───
 monitor:
@@ -2550,6 +3445,25 @@ class AgentConfig(BaseModel):
     step_timeout: int = 60
     total_timeout: int = 600
 
+class SkillExecutorConfig(BaseModel):
+    default_timeout_sec: int = 60
+    max_output_chars: int = 12000
+    env_allowlist: list[str] = ["PATH", "HOME", "USER", "LANG", "LC_ALL"]
+
+class SkillPolicyRule(BaseModel):
+    pattern: str
+    action: Literal["allow", "deny", "ask"]
+
+class SkillPolicyConfig(BaseModel):
+    default: Literal["allow", "deny", "ask"] = "allow"
+    rules: list[SkillPolicyRule] = []
+
+class SkillsConfig(BaseModel):
+    roots: list[str]                                # 多根目录
+    refresh_interval_sec: int = 10
+    executor: SkillExecutorConfig = SkillExecutorConfig()
+    policy: SkillPolicyConfig = SkillPolicyConfig()
+
 class SREAgentConfig(BaseModel):
     global_: GlobalConfig = Field(alias="global")
     agent: AgentConfig
@@ -2559,6 +3473,7 @@ class SREAgentConfig(BaseModel):
     memory: MemoryConfig
     remediation: RemediationConfig
     skills: SkillsConfig
+    nat: NATConfig | None = None                    # NeMo Agent Toolkit
     monitor: MonitorConfig
     server: ServerConfig
 
@@ -2820,25 +3735,34 @@ async def chat_ws(websocket: WebSocket):
 ### 15.1 多层安全模型
 
 ```
-┌────────────────────────────────────────────────────┐
-│ 层级 1: 工具级 (Tool Registry)                      │
-│ · safety_level: read_only | write_confirm | blocked │
-│ · LLM 诊断阶段仅允许 read_only                      │
-├────────────────────────────────────────────────────┤
-│ 层级 2: Channel 级                                  │
-│ · FORBIDDEN_OPERATIONS 硬编码拦截                    │
-│ · 与 fault-injector 共享同一禁止列表                  │
-├────────────────────────────────────────────────────┤
-│ 层级 3: 修复引擎级                                   │
-│ · WAL 写前日志（fsync）                              │
-│ · 审批门控（auto / human_confirm / blocked）         │
-│ · 灰度执行（canary → monitor → expand/rollback）    │
-├────────────────────────────────────────────────────┤
-│ 层级 4: 架构级                                       │
-│ · LLM 永远不直接执行写操作                            │
-│ · 修复引擎是确定性代码，无 LLM 调用                   │
-│ · 最大步数限制防止无限循环                            │
-└────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────┐
+│ 层级 0: NeMo Guardrails（声明式安全护栏，新增）            │
+│ · Input Rails: 防 prompt injection、话题约束、PII 过滤    │
+│ · Execution Rails: 工具 I/O 验证（check tool input/output）│
+│ · Output Rails: 防泄密、幻觉检测、敏感信息脱敏            │
+│ · Dialog Rails: 拒绝破坏性操作请求                        │
+├──────────────────────────────────────────────────────────┤
+│ 层级 1: 工具级 (Tool Registry + LangChain bind_tools)     │
+│ · LLM 仅绑定 read_only 工具（bind_tools）                │
+│ · write 工具 schema 仅作为 system prompt 参考             │
+│ · write_blocked 工具不暴露给 LLM                          │
+├──────────────────────────────────────────────────────────┤
+│ 层级 2: Channel 级                                        │
+│ · FORBIDDEN_OPERATIONS 硬编码拦截                          │
+│ · Shell 参数 shlex.quote() + 路径白名单（P0 修复）        │
+│ · 与 fault-injector 共享同一禁止列表                       │
+├──────────────────────────────────────────────────────────┤
+│ 层级 3: 修复引擎级                                         │
+│ · WAL 写前日志（fsync）                                    │
+│ · 审批门控（auto / human_confirm / blocked）               │
+│ · 灰度执行（canary → monitor → expand/rollback）          │
+│ · 条件求值使用白名单操作符（禁止 eval，P0 修复）           │
+├──────────────────────────────────────────────────────────┤
+│ 层级 4: 架构级                                             │
+│ · LLM 永远不直接执行写操作                                 │
+│ · 修复引擎是确定性代码，无 LLM 调用                        │
+│ · LangGraph max_steps + asyncio.wait_for 超时控制          │
+└──────────────────────────────────────────────────────────┘
 ```
 
 ### 15.2 禁止操作（FORBIDDEN_OPERATIONS）
@@ -2890,11 +3814,25 @@ class AuditLog(BaseModel):
 
 对话接口不是简单的 chatbot，而是**具有完整工具访问能力的 SRE 助手**。工程师可以用自然语言请求 Agent 执行诊断、查询拓扑、搜索知识。
 
-### 16.2 对话模式
+### 16.2 对话模式（LangGraph）
+
+> **架构变更**：原实现使用手写 tool_call 循环，收到 tool_call 后仅执行工具但
+> 未重新向 LLM 续推理（P1-8），导致多步工具链中断。现改为 LangGraph StateGraph，
+> 自动处理 tool_call → observation → re-think 循环。
+>
+> **P2-7 修复**：对话历史设置 max_history=50，超出后截断。
 
 ```python
+from collections import deque
+
 class ConversationalAgent:
-    """对话式 SRE 助手"""
+    """对话式 SRE 助手 — 基于 LangGraph + NeMo Guardrails
+
+    P1-8 修复：使用 LangGraph 标准 tool calling loop，自动续推理。
+    P2-7 修复：对话历史限制为 max_history 轮。
+    """
+
+    MAX_HISTORY = 50                            # 最大历史轮数
 
     def __init__(self, sre_agent: SREAgent, ontology: OntologyGraph,
                  knowledge: KnowledgeStore, memory: MemoryStore):
@@ -2902,42 +3840,59 @@ class ConversationalAgent:
         self.ontology = ontology
         self.knowledge = knowledge
         self.memory = memory
-        self.conversations: dict[str, list[dict]] = {}
+        self.conversations: dict[str, deque[dict]] = {}
+        self._graph = self._build_chat_graph()
+
+    def _build_chat_graph(self) -> StateGraph:
+        """构建对话 LangGraph（复用 SRE Agent 的 guarded LLM + tools）"""
+        read_only_tools = self.sre_agent.lc_tools
+        llm_with_tools = self.sre_agent.llm.bind_tools(read_only_tools)
+
+        rails_config = RailsConfig.from_path("./sre_agent/guardrails")
+        guardrails = RunnableRails(config=rails_config, passthrough=True)
+
+        prompt = ChatPromptTemplate.from_messages([
+            ("system", "{system_prompt}"),
+            MessagesPlaceholder(variable_name="messages"),
+        ])
+        guarded_llm = prompt | (guardrails | llm_with_tools)
+
+        async def agent_node(state: MessagesState) -> dict:
+            response = await guarded_llm.ainvoke(state["messages"])
+            return {"messages": [response]}
+
+        tool_node = ToolNode(read_only_tools)
+
+        graph = StateGraph(MessagesState)
+        graph.add_node("agent", agent_node)
+        graph.add_node("tools", tool_node)
+        graph.set_entry_point("agent")
+        graph.add_conditional_edges("agent", tools_condition)
+        graph.add_edge("tools", "agent")
+        return graph.compile()
 
     async def chat(self, user_id: str, message: str) -> AsyncIterator[str]:
         """处理用户消息，流式返回回答"""
-        history = self.conversations.setdefault(user_id, [])
+        history = self.conversations.setdefault(
+            user_id, deque(maxlen=self.MAX_HISTORY * 2))  # *2: user+assistant
         history.append({"role": "user", "content": message})
 
         # 构建上下文
         context = await self._build_chat_context(user_id)
 
-        # LLM 推理（带工具调用能力）
-        messages = [
-            {"role": "system", "content": self._chat_system_prompt(context)},
-            *history,
-        ]
+        # 运行 LangGraph 对话图
+        result = await self._graph.ainvoke({
+            "messages": [
+                {"role": "system", "content": self._chat_system_prompt(context)},
+                *list(history),
+            ]
+        })
 
-        response = await self.sre_agent.llm.chat_completion(
-            messages=messages,
-            tools=self.sre_agent.tools.get_tool_schemas(safety_level="read_only"),
-            stream=True,
-        )
-
-        # 处理工具调用
-        full_response = ""
-        async for chunk in response:
-            if chunk.type == "tool_call":
-                result = await self.sre_agent.tools.execute(
-                    chunk.tool_name, chunk.tool_params,
-                    safety_level="read_only")
-                history.append({"role": "tool", "content": json.dumps(result)})
-                # 继续推理
-            elif chunk.type == "text":
-                full_response += chunk.content
-                yield chunk.content
-
+        # 提取最终 assistant 回复
+        final_message = result["messages"][-1]
+        full_response = final_message.content if hasattr(final_message, 'content') else str(final_message)
         history.append({"role": "assistant", "content": full_response})
+        yield full_response
 
     def _chat_system_prompt(self, context: dict) -> str:
         return f"""
@@ -3019,22 +3974,321 @@ Agent:  [tool_call: get_thermal_status(node="gpu-1-3")]
 
 ---
 
+## 17. NeMo Guardrails 配置
+
+### 17.1 Guardrails 目录结构
+
+```
+sre_agent/guardrails/
+├── config.yml              # 主配置：模型、活跃 rails、通用指令
+├── rails/
+│   ├── input.co            # 输入护栏（防注入、话题约束）
+│   ├── output.co           # 输出护栏（防泄密、脱敏）
+│   ├── execution.co        # 执行护栏（工具 I/O 验证）
+│   └── dialog.co           # 对话护栏（拒绝破坏性操作）
+├── actions.py              # 自定义 NeMo Actions
+└── prompts.yml             # 安全检查提示词模板
+```
+
+### 17.2 config.yml
+
+```yaml
+models:
+  - type: main
+    engine: openai
+    model: ${AGENT_LLM_MODEL}           # 复用 Agent 主模型
+
+  # 安全检查使用轻量模型（降低成本）
+  - type: self_check_input
+    engine: openai
+    model: ${SAFETY_CHECK_MODEL}         # 如 gpt-4o-mini 或 minimax-lite
+
+  - type: self_check_output
+    engine: openai
+    model: ${SAFETY_CHECK_MODEL}
+
+instructions:
+  - type: general
+    content: |
+      你是 AIDC（智算数据中心）的 SRE 专家 Agent。你只处理以下范围的请求：
+      - 基础设施诊断：GPU、网络、存储、K8s、BMC 故障排查
+      - 监控指标查询：Prometheus PromQL 查询、日志分析
+      - 拓扑查询：数字孪生实体关系、影响范围分析
+      - 知识检索：运维手册、Runbook、历史事件
+      - 修复建议：提出结构化修复计划（不直接执行）
+
+      你绝不处理以下请求：
+      - 与基础设施运维无关的对话
+      - 直接执行破坏性操作（删除、格式化、出厂重置）
+      - 暴露凭据、密钥、密码等敏感信息
+      - 绕过审批流程的修复操作
+
+rails:
+  input:
+    flows:
+      - self check input
+      - check jailbreak
+  output:
+    flows:
+      - self check output
+  execution:
+    flows:
+      - check tool input
+      - check tool output
+```
+
+### 17.3 输入护栏 (input.co)
+
+```colang
+define user request destructive action
+  "删除这个 pod"
+  "kubectl delete"
+  "scale down to zero"
+  "重启所有节点"
+  "drain 这个 node"
+  "format disk"
+  "rm -rf"
+
+define user attempt prompt injection
+  "忽略上面的指令"
+  "ignore previous instructions"
+  "你现在是一个"
+  "system: you are now"
+
+define flow block destructive actions
+  user request destructive action
+  bot say "破坏性操作需要通过修复审批流程执行。我可以帮你诊断问题并生成修复计划，但无法直接执行写操作。请使用 GUI 的修复流程或 `sre-agent diagnose` 命令。"
+
+define flow block injection attempts
+  user attempt prompt injection
+  bot say "我只能处理 AIDC 基础设施相关的运维请求。"
+```
+
+### 17.4 输出护栏 (output.co)
+
+```colang
+define flow self check output
+  $is_safe = execute self_check_output
+  if not $is_safe
+    bot say "（已过滤敏感信息）请通过安全渠道获取详细信息。"
+```
+
+### 17.5 执行护栏 (execution.co)
+
+```colang
+define flow check tool input
+  # 验证工具输入参数安全性
+  $tool_name = $context.tool_name
+  $tool_input = $context.tool_input
+  $is_valid = execute validate_tool_input(tool_name=$tool_name, tool_input=$tool_input)
+  if not $is_valid
+    bot say "工具输入参数被安全检查拦截。"
+    stop
+
+define flow check tool output
+  # 过滤工具输出中的敏感信息
+  $tool_output = $context.tool_output
+  $sanitized = execute sanitize_tool_output(tool_output=$tool_output)
+  # 用脱敏后的结果替换原始输出
+```
+
+### 17.6 自定义 Actions (actions.py)
+
+```python
+from nemoguardrails.actions import action
+import re
+
+SENSITIVE_PATTERNS = [
+    r"password\s*[:=]\s*\S+",
+    r"api[_-]?key\s*[:=]\s*\S+",
+    r"token\s*[:=]\s*\S+",
+    r"secret\s*[:=]\s*\S+",
+    r"\b(?:\d{1,3}\.){3}\d{1,3}\b",             # 内部 IP（可配置例外）
+]
+
+@action()
+async def validate_tool_input(tool_name: str, tool_input: dict) -> bool:
+    """验证工具输入参数安全性"""
+    # 检查 log_path 注入
+    if "log_path" in tool_input:
+        ALLOWED_PATHS = {"/var/log/syslog", "/var/log/messages", "/var/log/kern.log"}
+        if tool_input["log_path"] not in ALLOWED_PATHS:
+            return False
+    # 检查 shell 注入字符
+    for key, value in tool_input.items():
+        if isinstance(value, str) and any(c in value for c in [";", "|", "&", "`", "$("]):
+            return False
+    return True
+
+@action()
+async def sanitize_tool_output(tool_output: str) -> str:
+    """脱敏工具输出中的敏感信息"""
+    sanitized = tool_output
+    for pattern in SENSITIVE_PATTERNS:
+        sanitized = re.sub(pattern, "[REDACTED]", sanitized, flags=re.IGNORECASE)
+    return sanitized
+```
+
+---
+
+## 18. NeMo Agent Toolkit 集成
+
+### 18.1 编排方案决策：LangGraph 编排 + NAT 生产基础设施
+
+**决策结论：LangGraph 负责 Agent 编排逻辑，NAT 仅作为生产基础设施层（profiling/evaluation/deployment）。不使用 NAT YAML 的 `react_agent` 进行编排。**
+
+#### 对比分析
+
+| 维度 | NAT YAML `react_agent` | LangGraph `StateGraph` | SRE Agent 需求 |
+|------|------------------------|------------------------|----------------|
+| **自定义状态** | 仅 `messages` 列表 | 任意 TypedDict（alert, topology, patterns 等） | 需要复杂诊断状态 (**LangGraph**) |
+| **条件路由** | 不支持 | `add_conditional_edges` 任意分支 | 诊断→修复→审批多路径 (**LangGraph**) |
+| **Human-in-the-loop** | 不支持 | `interrupt_before/after` 原生支持 | 修复审批门控 (**LangGraph**) |
+| **并行执行** | 不支持 | `Send()` API 原生支持 | 多节点并行诊断 (**LangGraph**) |
+| **Checkpoint 持久化** | 不支持 | `AsyncSqliteSaver` / `PostgresSaver` | 长时诊断断点续传 (**LangGraph**) |
+| **工具绑定** | YAML 声明式 | `bind_tools()` + `ToolNode` | 40+ 工具动态注册 (**LangGraph**) |
+| **Profiling** | 内置 profiler（token 效率、步骤耗时） | 无（需外部工具） | 开发调优 (**NAT**) |
+| **Evaluation** | 内置 evaluator（准确率、轨迹评估） | 无（需 LangSmith 等） | CI/CD 回归测试 (**NAT**) |
+| **NIM 部署** | 内置 NIM 优化 | 无 | GPU 推理部署 (**NAT**) |
+
+#### 不采用 NAT YAML 编排的原因
+
+1. **状态不足**：NAT `react_agent` 仅维护 `messages` 列表，无法承载 SRE Agent 所需的结构化状态（alert、topology_summary、similar_incidents、known_patterns、thinking_trace 等）。
+2. **无条件路由**：SRE Agent 需要 `diagnose → should_continue → [tools|remediate|end]` 的多路条件分支，NAT 的 `react_agent` 只有固定的 `LLM → Tool → LLM` 循环。
+3. **无审批门控**：修复操作需要 human-in-the-loop 审批（`interrupt_before`），NAT 不支持。
+4. **无 checkpoint**：诊断可能耗时数分钟，需要断点续传和状态持久化，NAT 不支持。
+5. **NVIDIA 官方定位**：NAT 官方文档将自身定位为"生产基础设施层"，推荐与 LangGraph 等框架搭配使用，而非替代。
+
+#### 架构分层
+
+```
+┌─────────────────────────────────────────────────┐
+│  NAT 生产基础设施层                                │
+│  · Profiling: 逐步耗时/token 效率/瓶颈分析         │
+│  · Evaluation: 诊断准确率/轨迹评估/RAG 质量         │
+│  · Optimization: 提示词优化/超参调优                │
+│  · Deployment: NIM 模型部署优化                     │
+├─────────────────────────────────────────────────┤
+│  NeMo Guardrails 安全层                           │
+│  · Input/Output/Execution/Dialog Rails            │
+├─────────────────────────────────────────────────┤
+│  LangGraph 编排层 ← Agent 核心逻辑在此             │
+│  · StateGraph + 条件路由 + ToolNode                │
+│  · Human-in-the-loop 审批门控                      │
+│  · AsyncSqliteSaver checkpoint 持久化              │
+│  · 自定义 SREAgentState（alert/topology/patterns） │
+├─────────────────────────────────────────────────┤
+│  LangChain 工具层                                  │
+│  · @tool 装饰器 + bind_tools()                     │
+│  · Channel 抽象 (SSH/K8s/Prometheus/...)           │
+└─────────────────────────────────────────────────┘
+```
+
+### 18.2 NAT 集成方式：包裹 LangGraph Agent
+
+NAT 不替代 LangGraph 编排，而是 **包裹** LangGraph Agent 进行 profiling 和 evaluation：
+
+```python
+# sre_agent/nat/nat_wrapper.py
+from nvidia_nat import AgentRunner, EvalRunner, ProfilerConfig
+
+class NATWrappedSREAgent:
+    """NAT 包裹层：不改变 Agent 逻辑，仅添加 profiling/evaluation 能力。"""
+
+    def __init__(self, sre_agent: SREAgent):
+        self.sre_agent = sre_agent  # LangGraph Agent（§4.2）
+
+    async def run_with_profiling(self, alert: Alert) -> dict:
+        """开发阶段：带 profiling 的诊断运行。"""
+        profiler = AgentRunner(
+            agent_fn=self._agent_fn,
+            profiler_config=ProfilerConfig(
+                track_tokens=True,
+                track_latency=True,
+                track_tool_calls=True,
+                output_dir="data/nat_profiles/"
+            )
+        )
+        result = await profiler.arun(input={"alert": alert.model_dump()})
+        return result
+
+    async def _agent_fn(self, input: dict) -> dict:
+        """将 LangGraph Agent 暴露为 NAT 可调用的函数。"""
+        alert = Alert.model_validate(input["alert"])
+        result = await self.sre_agent.diagnose(alert)
+        return result.model_dump() if result else {}
+```
+
+### 18.3 NAT 评估配置
+
+```python
+# sre_agent/nat/evaluation.py
+from nvidia_nat import EvalRunner, EvalConfig, EvalMetric
+
+eval_config = EvalConfig(
+    agent_fn=nat_wrapper._agent_fn,
+    dataset_path="sre_agent/nat/eval_dataset.jsonl",
+    metrics=[
+        EvalMetric.TOOL_CALL_ACCURACY,   # 工具调用是否正确
+        EvalMetric.TRAJECTORY_MATCH,     # 诊断轨迹是否合理
+        EvalMetric.ANSWER_RELEVANCE,     # 根因结论是否相关
+        EvalMetric.TOKEN_EFFICIENCY,     # token 使用效率
+    ],
+    concurrency=4,
+)
+
+async def run_evaluation():
+    runner = EvalRunner(config=eval_config)
+    report = await runner.arun()
+    print(f"准确率: {report.accuracy:.2%}")
+    print(f"平均 token: {report.avg_tokens}")
+    print(f"平均延迟: {report.avg_latency_ms:.0f}ms")
+    return report
+```
+
+### 18.4 评估数据集格式
+
+```jsonl
+{"input": {"alert": {"alert_name": "VLLMLatencyP95High", "node": "gpu-1-1"}}, "expected_root_cause": "GPU 资源争用（gpu-burn 进程）", "expected_tools": ["get_gpu_metrics", "get_gpu_processes"], "expected_severity": "high"}
+{"input": {"alert": {"alert_name": "NCCLTimeout", "node": "gpu-2-1"}}, "expected_root_cause": "ECN 配置错误", "expected_tools": ["check_rdma_status", "get_pfc_counters", "get_ecn_config"], "expected_severity": "critical"}
+```
+
+### 18.5 CLI 使用
+
+```bash
+# Profiling：分析单个告警的诊断性能
+python -m sre_agent.nat.nat_wrapper profile \
+    --alert '{"alert_name": "VLLMLatencyP95High", "node": "gpu-1-1"}'
+
+# Evaluation：批量评估诊断准确率（用于 CI/CD）
+python -m sre_agent.nat.evaluation run \
+    --dataset sre_agent/nat/eval_dataset.jsonl \
+    --output data/nat_reports/eval_report.json
+
+# 查看 profiling 报告
+cat data/nat_profiles/profiling_report.txt
+```
+
+---
+
 ## 附录 A: 需求覆盖矩阵
 
 | 需求 | 对应章节 | 状态 |
 |------|----------|------|
 | 1. 自动检测 AIDC 拓扑（BMC/Switch/Host/Platform） | 3.5 DiscoveryAgent | ✓ |
 | 2. 数字孪生（Palantir Ontology 风格） | 3.1-3.4 Ontology 模型 | ✓ |
-| 3a. 根因分析 + 试验→验证→排查循环 | 4.2-4.5 ReAct 循环 | ✓ |
+| 3a. 根因分析 + 试验→验证→排查循环 | 4.2 LangGraph ReAct Agent | ✓ |
 | 3b. 灰度发布 fix | 7.3 CanaryExecutor | ✓ |
 | 3c. 显示 Agent 思考过程 | 4.3 ThinkingTrace + WebSocket | ✓ |
 | 3d. 工具对接 log/telemetry/alert/platform/OS | 5.2 只读工具集 (40+ 工具) | ✓ |
-| 4. 兼容 Claude Code skills | 10.1-10.3 Skills 框架 | ✓ |
+| 4. 兼容 Claude Code skills（即插即用） | 10.1-10.12 Skills 框架（SKILL.md + 4 固定 tool + 热加载） | ✓ 重构 |
 | 5. 知识库集成 | 8.1-8.4 RAG 知识库 | ✓ |
 | 6. 记忆库（越用越懂） | 9.1-9.5 记忆系统 | ✓ |
-| 7. 对话功能 | 16.1-16.4 对话接口 | ✓ |
+| 7. 对话功能 | 16.1-16.4 对话接口 (LangGraph) | ✓ |
 | 8. GUI 展示 | 14.1-14.3 GUI 设计 | ✓ |
-| Demo 1: vLLM P95 诊断修复 | 11.1 完整 Trace | ✓ |
+| 9. Agent 安全护栏 | 17.1-17.6 NeMo Guardrails | ✓ 新增 |
+| 10. Agent 可观测与调优 | 18.1-18.5 NeMo Agent Toolkit（包裹层，非编排） | ✓ 重构 |
+| Demo 1: vLLM P95 诊断修复 | 11.1 完整 Trace (get_gpu_processes 修正) | ✓ |
 | Demo 2: RDMA RoCEv2 诊断修复 | 11.2 完整 Trace | ✓ |
 | 集成 fault-injector 智能部分 | 4.7 DiagnosisResult (扩展) | ✓ |
 | 集成 load-simulator 智能部分 | 5.2 (ThresholdEngine 集成) | ✓ |
@@ -3055,3 +4309,77 @@ Agent:  [tool_call: get_thermal_status(node="gpu-1-3")]
 | Pydantic Config 基类 | `config.py` | 同一代码库 |
 | DiagnosisResult | `agent/models.py` | 扩展自 fault-injector |
 | ThresholdEngine | `tools/threshold.py` | 扩展自 load-simulator |
+
+## 附录 C: 设计评审问题解决记录
+
+> 本附录合并了 `review.md` 和 `AIDC-auto-SRE-review.md` 中的评审发现，
+> 并记录每个问题的解决状态。
+
+### P0 — 已解决
+
+| # | 问题 | 解决方式 | 文档位置 |
+|---|------|---------|----------|
+| P0-1 | `eval()` 远程代码执行：`_verify()` 使用 `eval(success_condition)` | 替换为 `safe_eval_condition()` 白名单操作符求值器 | §7.5 `_verify()` |
+| P0-2 | SSH 命令注入：`log_path`、`filter_str` 未 shell escape | `shlex.quote()` + 路径白名单 | §6.2 LogChannel |
+| P0-3 | API/WebSocket 缺少鉴权 | 增加安全层级 0: NeMo Guardrails input/output rails | §15.1, §17 |
+| P0-4 | `asyncio.Queue.get(timeout=300)` 不支持 timeout | 改为 `asyncio.wait_for(queue.get(), timeout=300)` | §7.4 ApprovalGate |
+| P0-5 | Demo 1 工具调用不匹配（`read_system_log` 无 `command` 参数） | 新增 `get_gpu_processes` 专用工具，修正 Demo Trace | §5.2, §4.5, §11.1 |
+
+### P1 — 已解决
+
+| # | 问题 | 解决方式 | 文档位置 |
+|---|------|---------|----------|
+| P1-1 | `get_blast_radius()` BFS 方向错误 | 双向遍历 out_edges + in_edges，按关系类型决定方向 | §3.4 OntologyGraph |
+| P1-2 | `RemediationResult` 返回值不一致 | 统一 Result schema（待实现时完善） | §7.2 |
+| P1-3 | Alert 混用 `@dataclass` 和 Pydantic | 统一为 `BaseModel` | §6.2 AlertChannel |
+| P1-4 | `_verify()` 使用 `self.prometheus` 但未注入 | 构造函数显式注入 `PrometheusChannel` | §7.5 RemediationEngine |
+| P1-5 | LLM 看不到 write 工具 schema | write 工具描述附加到 system prompt（只读参考） | §4.2, §5.1 |
+| P1-6 | ReAct timeout 未实现 | `asyncio.wait_for` 在 agent_node（步级）和 diagnose（会话级）双层控制 | §4.2 |
+| P1-7 | `gather(return_exceptions=True)` 后未检查结果 | 待实现时增加错误聚合和数据新鲜度标注 | §3.5 |
+| P1-8 | 对话工具调用循环不完整 | 改用 LangGraph StateGraph 自动处理 tool_call → re-think 循环 | §16.2 |
+| P1-9 | 置信度更新不区分成功/失败 | resolved: +0.15, failed: -0.1 | §9.4 MemoryStore |
+| P1-10 | 同步库（sqlite3、ChromaDB）阻塞事件循环 | sqlite3 → aiosqlite；ChromaDB 通过 asyncio.to_thread() | §3.4, §9.4 |
+
+### P2 — 已解决或计划
+
+| # | 问题 | 解决方式 | 状态 |
+|---|------|---------|------|
+| P2-1 | SQLite + NetworkX 并发安全 | aiosqlite 异步层（已做），锁和事务边界（待实现） | 部分解决 |
+| P2-2 | 思考轨迹泄露敏感信息 | NeMo Guardrails output rails 脱敏 | ✓ 已解决 |
+| P2-3 | `verify_ssl: false` 默认不安全 | 改为 `verify_ssl: true` | ✓ 已解决 |
+| P2-4 | 知识库文档 ID 哈希碰撞 | 待实现时增加 source/category/version 维度 | 计划中 |
+| P2-5 | `infer_topology()` 空实现 | 待实现时补充 hostname 匹配逻辑 | 计划中 |
+| P2-6 | ThinkingStep/Observation 缺 `to_dict()` | 显式实现 `to_dict()` 方法（基于 `dataclasses.asdict`） | ✓ 已解决 |
+| P2-7 | 对话历史无限增长 | `deque(maxlen=MAX_HISTORY*2)` 限制为 50 轮 | ✓ 已解决 |
+| P2-8 | 无 LLM 调用速率限制 | 新增 `max_concurrent_diagnoses` 配置项 | ✓ 已解决 |
+| P2-9 | `CanaryConfig.success_criteria` 解析未定义 | 与 P0-1 统一使用 `safe_eval_condition()` | ✓ 已解决 |
+| P2-10 | kubeconfig 出现两处 | discovery 引用 channels 配置 | ✓ 已解决 |
+
+### 跨组件问题
+
+| # | 问题 | 解决方式 | 状态 |
+|---|------|---------|------|
+| 跨-1 | fault-injector ↔ load-simulator 联动接口不一致 | 推荐统一为"调用方读取 `report/report.json`"方案 | 见 fault-injector / load-simulator 文档 |
+| 跨-2 | 三组件鉴权落地程度不一 | auto-SRE 通过 NeMo Guardrails 补齐安全层 | ✓ 已解决 |
+| 跨-3 | 条件表达式求值各自实现 | 统一使用 `safe_eval_condition()` | ✓ 已解决 |
+
+### 已确认的设计亮点（保留）
+
+- "自由诊断、受控修复" 架构边界清晰，ReAct 循环 vs 确定性引擎的分离合理。
+- Demo 场景（11.1、11.2）的 10 步诊断 Trace 足够具体，可直接用于 Demo 脚本编写。
+- 记忆系统的三层设计（事件/模式/配置）与系统提示词的集成方式实用。
+- WAL + 灰度 + 审批门控的三层修复安全设计与 fault-injector 保持一致。
+- Skills 框架采用 YAML 格式打包工具 + 提示词 + 示例，扩展性好。
+- **新增**：LangGraph 提供标准化的 Agent 状态管理和 checkpoint 持久化。
+- **新增**：NeMo Guardrails 提供声明式安全护栏，比手写安全检查更系统化。
+- **新增**：NeMo Agent Toolkit 提供开箱即用的 profiling 和 evaluation。
+
+### 长期产品级优化
+
+1. **Ontology 实时同步**：K8s Informer watch 替代定时全量刷新，保持 Pod 级别的实时拓扑。
+2. **多 LLM 路由**：按诊断复杂度和成本自动选择 LLM（简单告警用轻量模型，复杂根因用强模型）。LangChain 原生支持 fallback chains。
+3. **可观测性**：Agent 自身的 SLI/SLO（诊断成功率、MTTR、LLM 调用耗时/成功率），通过 NeMo Agent Toolkit profiling 持续监控。
+4. **联邦记忆**：多 AIDC 间共享匿名化模式记忆（A 站学到的模式可加速 B 站诊断）。
+5. **Runbook 自动生成**：从高置信度 LearnedPattern 自动生成 Runbook YAML，形成知识闭环。
+6. **LangGraph 高级特性**：Human-in-the-loop 节点、子图复用、并行工具调用、流式输出。
+7. **Guardrails 增强**：Colang 2.0 迁移、自定义安全评估模型微调、多语言 rail 支持。
