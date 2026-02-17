@@ -846,6 +846,12 @@ class SREAgent:
             # 超过最大步数
             if state.get("step_count", 0) >= self.max_steps:
                 return END
+            # Review 增强：token 预算检查
+            if (self.config.max_tokens_per_diagnosis
+                    and state.get("total_tokens", 0)
+                    >= self.config.max_tokens_per_diagnosis):
+                logger.warning("Token budget exhausted, returning best result")
+                return END
             # 标准 LangGraph tools_condition
             return tools_condition(state)
 
@@ -1146,6 +1152,7 @@ Step 10 [Conclude]:
 | 最大步数 | 20（默认，可配置）| LangGraph `should_continue` 条件边控制 |
 | 工具格式 | LangChain `@tool` + `bind_tools()` | 自动生成 JSON Schema，兼容 Claude Code skills |
 | 超时 | 单步 60s，总计 600s | `asyncio.wait_for` 在 agent_node 和 diagnose 两级控制 |
+| Token 预算 | 100K/次（可配置）| `should_continue` 检查 `total_tokens`，超出后终止并返回当前最优结论 |
 | 降级策略 | LLM 不可用时退化为规则检查 | ThresholdEngine 仍可独立运行 |
 | 安全护栏 | NeMo Guardrails `RunnableRails(passthrough=True)` | 透传 tool calling，同时执行输入/输出/执行安全检查 |
 
@@ -4194,6 +4201,8 @@ agent:
   step_timeout: 60                             # 单步超时（asyncio.wait_for 在 agent_node 控制）
   total_timeout: 600                           # 总超时（asyncio.wait_for 在 diagnose 控制）
   max_concurrent_diagnoses: 5                  # P2-8 新增：全局并发诊断数限制
+  max_tokens_per_diagnosis: 100000             # Review 增强：单次诊断 token 预算上限（含输入+输出）
+                                               # 超出后强制终止 ReAct 循环并返回当前最优结论
   guardrails_config_dir: "./sre_agent/guardrails"  # NeMo Guardrails 配置目录
   langgraph_checkpoint_db: "./data/langgraph_checkpoints.db"  # LangGraph checkpoint 持久化
 
@@ -4354,6 +4363,7 @@ class AgentConfig(BaseModel):
     max_steps: int = 20
     step_timeout: int = 60
     total_timeout: int = 600
+    max_tokens_per_diagnosis: int = 100000     # Review 增强：单次 token 预算
 
 class SkillExecutorConfig(BaseModel):
     default_timeout_sec: int = 60
@@ -4681,7 +4691,7 @@ async def chat_ws(websocket: WebSocket):
 │ 层级 4: 架构级                                             │
 │ · LLM 永远不直接执行写操作                                 │
 │ · 修复引擎是确定性代码，无 LLM 调用                        │
-│ · LangGraph max_steps + asyncio.wait_for 超时控制          │
+│ · LangGraph max_steps + asyncio.wait_for + token 预算控制   │
 └──────────────────────────────────────────────────────────┘
 ```
 
@@ -5276,7 +5286,7 @@ cat data/nat_profiles/profiling_report.txt
 | P2-5 | `infer_topology()` 空实现 | 待实现时补充 hostname 匹配逻辑 | 计划中 |
 | P2-6 | ThinkingStep/Observation 缺 `to_dict()` | 显式实现 `to_dict()` 方法（基于 `dataclasses.asdict`） | ✓ 已解决 |
 | P2-7 | 对话历史无限增长 | `deque(maxlen=MAX_HISTORY*2)` 限制为 50 轮 | ✓ 已解决 |
-| P2-8 | 无 LLM 调用速率限制 | 新增 `max_concurrent_diagnoses` 配置项 | ✓ 已解决 |
+| P2-8 | 无 LLM 调用速率限制 | 新增 `max_concurrent_diagnoses` + `max_tokens_per_diagnosis` 配置项 | ✓ 已解决 |
 | P2-9 | `CanaryConfig.success_criteria` 解析未定义 | 与 P0-1 统一为结构化 `CanaryCondition` 模型 | ✓ 已解决 |
 | P2-10 | kubeconfig 出现两处 | discovery 引用 channels 配置 | ✓ 已解决 |
 
@@ -5303,6 +5313,19 @@ cat data/nat_profiles/profiling_report.txt
 - **Review 增强**：验证条件从字符串解析（`safe_eval_condition`）升级为结构化模型（`VerificationCondition`），彻底消除字符串求值风险（§7.2）。
 - **Review 增强**：新增 PlanValidator（§7.5），在审批门控前校验 LLM 生成的修复计划的工具名/参数合法性，不通过则退回重生成。
 - **Review 增强**：模式记忆加入时间衰减 `effective_confidence()`（§9.3），避免过期模式以高置信度误导诊断。
+
+### 验收标准（来自评审建议）
+
+> 以下标准摘自 `AIDC-auto-SRE-review.md` 第 4 节，作为 P0+P1 收敛后的验收基线。
+
+| 维度 | 标准 | 验证方式 |
+|------|------|----------|
+| **安全性** | 无动态代码执行路径；工具命令执行无 shell 注入面 | 代码审计 + 安全扫描（bandit / semgrep） |
+| **正确性** | 3 类标准故障场景中，影响面识别准确率 ≥ 90% | Demo 1/2/3 端到端回放 + blast_radius 单测 |
+| **稳定性** | 10 并发诊断会话下，事件循环阻塞告警为 0 | asyncio 监控 + `max_concurrent_diagnoses` 压测 |
+| **可执行性** | 修复计划 schema 一次通过率 ≥ 95%，不合法计划可被拦截 | PlanValidator 单测 + LLM 回归测试集 |
+| **可回滚性** | 所有写操作具备 WAL 且通过回滚演练 | WAL recover_all 集成测试 |
+| **成本可控** | 单次诊断 token 消耗 ≤ 100K，超出自动终止 | `max_tokens_per_diagnosis` + NeMo Agent Toolkit profiling |
 
 ### 长期产品级优化
 
