@@ -413,42 +413,43 @@ class Prometheus():
 
         return {"cpu": round(max_cpu, 2), "memory": round(max_mem, 2), 'gpu': round(ave_gpu, 2)}
 
-    # todo 获取机器的负载补充完整
     # @pysnooper.snoop()
     def get_machine_metric(self):
-        # 这个pod  30分钟内的最大值
-        metrics = {
-            "pod_num": "sum(kubelet_running_pod_count)by (node)",
-            "request_memory": "",
-            "request_cpu": "",
-            "request_gpu": "",
-            "used_memory": "",
-            "used_cpu": "",
-            "used_gpu": "",
+        # 获取每个节点的资源请求量和实际使用量
+        queries = {
+            "pod_num": "sum(kubelet_running_pod_count) by (node)",
+            "request_memory": "sum(kube_pod_container_resource_requests{resource='memory'}) by (node)",
+            "request_cpu": "sum(kube_pod_container_resource_requests{resource='cpu'}) by (node)",
+            "request_gpu": "sum(kube_pod_container_resource_requests{resource='nvidia.com/gpu'}) by (node)",
+            "used_memory": "sum by (node) (container_memory_working_set_bytes{container!='POD', container!=''})",
+            "used_cpu": "sum by (node) (rate(container_cpu_usage_seconds_total{container!='POD'}[5m]))",
+            "used_gpu": "avg by (node) (DCGM_FI_DEV_GPU_UTIL)",
         }
         back = {}
-        for metric_name in metrics:
-            # print(mem_expr)
+        for metric_name in queries:
+            query = queries[metric_name]
+            if not query:
+                continue
             params = {
-                'query': metrics[metric_name],
+                'query': query,
                 'timeout': "30s"
             }
-            # print(params)
             back[metric_name] = {}
 
             try:
-                res = requests.get(url=self.query_path, params=params)
-                metrics = json.loads(res.content.decode('utf8', 'ignore'))
-                if metrics['status'] == 'success':
-                    metrics = metrics['data']['result']
-                    if metrics:
-                        for metric in metrics:
-                            node = metric['metric']['node']
+                res = requests.get(url=self.query_path, params=params, timeout=5)
+                result = json.loads(res.content.decode('utf8', 'ignore'))
+                if result['status'] == 'success':
+                    result_data = result['data']['result']
+                    if result_data:
+                        for item in result_data:
+                            node = item['metric'].get('node', '')
+                            if not node:
+                                continue
                             if ':' in node:
                                 node = node[:node.index(':')]
-                            value = metric['value'][1]
-                            back[metric_name][node] = int(value)
-
+                            value = float(item['value'][1])
+                            back[metric_name][node] = round(value, 2)
 
             except Exception as e:
                 print(e)
