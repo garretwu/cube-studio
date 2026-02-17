@@ -45,7 +45,7 @@
                        └─────────────┘
 ```
 
-**关键区别**：fault-injector 和 load-simulator 是确定性执行引擎，LLM 仅做单次只读分析。SRE Agent 的诊断核心需要多步推理（ReAct 循环），因为根因分析本质上是迭代的："当有多种组合根因时，通过 试验→验证→排查 的循环最终定位"。但修复执行仍然是确定性的、WAL 保护的。
+**关键区别**：fault-injector 和 load-simulator 是确定性执行引擎，LLM 仅做单次只读分析。SRE Agent 的诊断核心需要多步推理（ReAct 循环），因为根因分析本质上是迭代的："当有多种组合根因时，通过 试验→验证→排查 的循环最终定位"。但修复执行仍然是确定性的、WAL 保护的。当诊断无法在只读观测阶段确定唯一根因时（`diagnosis_certainty` 为 `probable` 或 `ambiguous`），**循环编排器**（§7.6）按候选排名逐一修复验证，通过 "治疗性诊断" 确认真实根因。
 
 **为什么选择 LangChain/LangGraph + NeMo**：手写 ReAct 循环需要自行处理 tool calling 协议、消息管理、错误恢复、流式输出等基础设施。LangGraph 提供了成熟的状态图 + 条件路由 + 工具节点，减少约 60% 的 Agent 基础设施代码。NeMo Guardrails 提供声明式安全护栏（输入过滤、输出审查、工具 I/O 验证），比手写 `SafetyGuard` 更系统化。NeMo Agent Toolkit 仅用于生产基础设施层（profiling/evaluation/deployment），**不用于 Agent 编排**——其 YAML `react_agent` 缺少自定义状态、条件路由、审批门控和 checkpoint 持久化，无法满足 SRE Agent 需求（详见 §18.1 对比分析）。
 
@@ -114,13 +114,13 @@
 │  └────────────────────────────────────────────────────────────────┘    │
 │                                                                        │
 │  ┌───────────────┐  ┌───────────────┐  ┌──────────────┐               │
-│  │ Discovery     │  │ Monitor       │  │ Remediation  │               │
-│  │ Agent         │  │ Agent         │  │ Engine       │               │
-│  │ (确定性)      │  │ (确定性)       │  │ (确定性+WAL) │               │
-│  │ · BMC 扫描    │  │ · 指标采集     │  │ · 灰度执行   │               │
-│  │ · 交换机发现  │  │ · 阈值检测     │  │ · 逐步验证   │               │
-│  │ · K8s 发现    │  │ · 告警触发     │  │ · 自动回滚   │               │
-│  └───────┬───────┘  └───────┬───────┘  └──────┬───────┘               │
+│  │ Discovery     │  │ Monitor       │  │ Remediation  │  │ Loop        ││
+│  │ Agent         │  │ Agent         │  │ Engine       │  │ Orchestrator││
+│  │ (确定性)      │  │ (确定性)       │  │ (确定性+WAL) │  │ (确定性)    ││
+│  │ · BMC 扫描    │  │ · 指标采集     │  │ · 灰度执行   │  │ · 候选排名  ││
+│  │ · 交换机发现  │  │ · 阈值检测     │  │ · 逐步验证   │  │ · 逐一尝试  ││
+│  │ · K8s 发现    │  │ · 告警触发     │  │ · 自动回滚   │  │ · 回滚/下一 ││
+│  └───────┬───────┘  └───────┬───────┘  └──────┬───────┘  └─────┬──────┘│
 └──────────┼──────────────────┼─────────────────┼───────────────────────┘
            │                  │                 │
 ┌──────────▼──────────────────▼─────────────────▼───────────────────────┐
@@ -165,10 +165,11 @@
 
 | Agent | 类型 | 职责 | LLM? | 框架 |
 |-------|------|------|------|------|
-| SRE Agent | LangGraph ReAct | 接收告警/问题，迭代诊断根因，生成修复计划 | 是（多步推理） | LangGraph + NeMo Guardrails |
+| SRE Agent | LangGraph ReAct | 接收告警/问题，迭代诊断根因，输出排序候选列表 | 是（多步推理） | LangGraph + NeMo Guardrails |
 | Conversational Agent | LangGraph ReAct | 对话式 SRE 助手，支持工具调用 | 是 | LangGraph + NeMo Guardrails |
 | Discovery Agent | 确定性 | 扫描 BMC/交换机/K8s/Prometheus，构建数字孪生 | 否 | Python asyncio |
 | Monitor Agent | 确定性 | 持续采集指标，阈值检测，触发告警 | 否 | Python asyncio |
+| Loop Orchestrator | 确定性 | 按候选排名循环修复验证，回滚失败候选，触发增量重诊 | 否 | Python asyncio |
 | Remediation Engine | 确定性 | 执行修复计划，灰度部署，WAL 回滚 | 否 | Python asyncio |
 
 ### 2.4 技术栈
@@ -268,6 +269,8 @@ sre_agent/
 │
 ├── remediation/
 │   ├── engine.py                   # 修复引擎
+│   ├── loop_orchestrator.py        # 诊断-修复循环编排器（§7.6）
+│   ├── incident_handler.py         # 顶层事件处理器（串联诊断→循环→重诊）
 │   ├── planner.py                  # 修复计划生成
 │   ├── canary.py                   # 灰度部署控制
 │   ├── approval.py                 # 审批门控
@@ -333,6 +336,8 @@ sre_agent/
 4. **灰度优先**：修复默认走 canary 路径，除非配置明确跳过。
 5. **可恢复**：进程崩溃时可通过 `sre-agent --resume <session_id>` 恢复。LangGraph 支持 checkpoint 持久化。
 6. **条件表达式安全求值**：所有验证条件（`success_condition`、`success_criteria`）通过白名单操作符求值器执行，禁止 `eval()`。
+7. **循环必须终止**：LoopOrchestrator 的候选尝试受 `max_candidates`（默认 3）和 `max_re_diagnosis_rounds`（默认 1）双重约束，最终一定解决或升级给人工。
+8. **修复失败必须回滚**：循环中每个候选验证失败后，LoopOrchestrator 强制调用 `wal.recover_all()` 回滚，确保下一候选的验证基线干净。
 
 ---
 
@@ -1055,6 +1060,22 @@ SRE_SYSTEM_PROMPT = """
 6. **得出结论**：输出根因、置信度、影响范围
 7. **提出修复**：如有修复方案，以结构化格式提出
 
+## 多候选根因输出要求
+当诊断过程中无法仅通过只读观测完全区分多个根因时（例如多种原因都可导致相同指标异常），
+你必须输出**排序后的候选根因列表**（ranked_candidates），而非强行选择单一根因。
+
+判断规则：
+- **confirmed**（直接修复）：最可能根因 confidence ≥ 0.85，且与第二候选差距 > 0.3
+- **probable**（建议循环验证）：最可能根因 confidence ∈ [0.6, 0.85)
+- **ambiguous**（必须循环验证）：前两个候选 confidence 差距 ≤ 0.15
+
+对每个候选根因，你必须提供：
+- `distinguishing_verification`: 描述如何通过实机修复验证来区分此根因与其他候选
+  例如 "kill gpu-burn 后如果 P95 在 60s 内降至 < 500ms，则确认为 GPU 争用"
+- `recommended_fix`: 针对此根因的修复方案
+
+循环编排器会按 confidence 从高到低依次尝试修复并验证，直到问题解决或所有候选耗尽。
+
 ## 输出格式
 每一步你必须输出：
 - **思考**：当前观察到什么、推理过程、下一步计划
@@ -1138,18 +1159,38 @@ class Hypothesis(BaseModel):
     evidence_against: list[str]                 # 反对证据
     confidence: float                           # 0.0 ~ 1.0
 
-class DiagnosisResult(BaseModel):
-    """诊断结论"""
+class RankedRootCause(BaseModel):
+    """排序后的候选根因 — 供循环编排器逐一尝试修复"""
+    rank: int                                   # 排名（1 = 最可能）
     root_cause: str                             # 根因描述
     root_cause_layer: Literal["hardware", "network", "os", "platform", "service"]
     root_cause_entities: list[str]              # 关联的 Ontology 实体 ID
-    confidence: float                           # 总体置信度 0.0 ~ 1.0
+    confidence: float                           # 该候选的置信度 0.0 ~ 1.0
+    evidence_summary: str                       # 支持/反对证据摘要
+    recommended_fix: RemediationPlan | None     # 针对此根因的修复方案
+    distinguishing_verification: str | None     # 区分此根因与其他候选的验证方法
+                                                # 例如 "kill gpu-burn 后观察 P95 是否 < 500ms"
+
+class DiagnosisResult(BaseModel):
+    """诊断结论 — 支持单根因和多候选根因两种模式"""
+    root_cause: str                             # 主根因描述（rank=1 的候选）
+    root_cause_layer: Literal["hardware", "network", "os", "platform", "service"]
+    root_cause_entities: list[str]              # 关联的 Ontology 实体 ID
+    confidence: float                           # 主根因置信度 0.0 ~ 1.0
     hypotheses: list[Hypothesis]                # 所有假设及其验证状态
     propagation_chain: list[PropagationStep]    # 故障传播链
     impact_summary: str                         # 影响摘要
     affected_services: list[str]                # 受影响服务列表
-    recommended_fix: RemediationPlan | None     # 推荐修复方案
+    recommended_fix: RemediationPlan | None     # 推荐修复方案（主根因的）
     triage_priority: Literal["P0", "P1", "P2", "P3"]
+    # ── 多候选根因支持（循环编排器使用）──
+    ranked_candidates: list[RankedRootCause]    # 按置信度降序排列的候选根因列表
+                                                # ranked_candidates[0] 与主根因一致
+    diagnosis_certainty: Literal[               # 诊断确定性级别
+        "confirmed",                            # 高置信度单一根因（≥ 0.85），直接修复
+        "probable",                             # 最可能根因 confidence ∈ [0.6, 0.85)，建议循环验证
+        "ambiguous",                            # 多个候选 confidence 接近，必须循环验证
+    ]
 
 class PropagationStep(BaseModel):
     """故障传播链中的一步"""
@@ -1159,6 +1200,26 @@ class PropagationStep(BaseModel):
     value_before: float | str
     value_after: float | str
     description: str
+
+class DiagnosisSession(BaseModel):
+    """诊断会话 — 贯穿诊断→循环修复→增量重诊的完整生命周期"""
+    session_id: str                             # UUID
+    alert: Alert                                # 原始告警
+    status: Literal[
+        "diagnosing", "diagnosed", "remediating",
+        "re_diagnosed", "resolved", "failed",
+        "escalated", "timeout",
+    ]
+    diagnosis_result: DiagnosisResult | None    # 诊断结论
+    trace: ThinkingTrace | None                 # 思考过程
+    re_diagnosis_round: int = 0                 # 增量重诊轮次（0=初始诊断）
+    outcome: str | None = None                  # 最终结果（由 IncidentHandler 设置）
+
+    @classmethod
+    def create(cls, alert: Alert) -> "DiagnosisSession":
+        return cls(session_id=str(uuid4()), alert=alert,
+                   status="diagnosing", diagnosis_result=None,
+                   trace=None)
 ```
 
 ---
@@ -1647,18 +1708,18 @@ class KnowledgeBaseChannel:
 修复引擎是**确定性执行器**，不包含 LLM 调用。LLM 在 SRE Agent 的 ReAct 循环中生成 `RemediationPlan`，修复引擎负责安全执行。
 
 ```
-SRE Agent (ReAct)                    修复引擎 (确定性)
-┌──────────────┐                    ┌──────────────────────┐
-│ 诊断根因      │ ──RemediationPlan──→│ 审批门控              │
-│ 生成修复方案  │                    │ ↓                    │
-│              │                    │ WAL 记录              │
-│              │                    │ ↓                    │
-│              │                    │ 灰度执行 (Canary)     │
-│              │                    │ ↓                    │
-│              │                    │ 逐步验证              │
-│              │                    │ ↓                    │
-│              │ ←RemediationResult─│ 结果/回滚             │
-└──────────────┘                    └──────────────────────┘
+SRE Agent (ReAct)          循环编排器 (确定性)          修复引擎 (确定性)
+┌──────────────┐          ┌──────────────────┐         ┌────────────────────┐
+│ 诊断根因      │          │ 按候选排名循环    │         │ 审批门控            │
+│ 输出排序候选  │─ranked──→│                  │─plan──→│ ↓                  │
+│ 根因列表     │ candidates│ 修复 → 验证       │        │ WAL 记录            │
+│              │          │  ↓                │        │ ↓                  │
+│              │          │ 通过 → 结束       │        │ 灰度执行 (Canary)   │
+│ re_diagnose()│←─失败且──│ 失败 → 回滚       │        │ ↓                  │
+│ (增量重诊)   │  候选耗尽 │        → 下一个   │←result─│ 逐步验证            │
+│              │          │ 全部失败 → 升级   │        │ ↓                  │
+└──────────────┘          └──────────────────┘         │ 结果/回滚           │
+                                                       └────────────────────┘
 ```
 
 ### 7.2 修复计划数据模型
@@ -1970,6 +2031,550 @@ def safe_eval_condition(condition: str, variables: dict) -> bool:
                 literal_value = literal_str
 
     return op_func(value, literal_value)
+```
+
+### 7.6 诊断-修复循环编排器（Diagnosis-Remediation Loop Orchestrator）
+
+#### 7.6.1 问题背景
+
+原架构中，诊断 Agent 输出单一 root cause + RemediationPlan → 修复引擎执行 → 记录结果。
+这一流程在**高置信度单根因**场景下工作良好（如 Demo 1 中 confidence=0.94 的 GPU 争用）。
+
+但在生产环境中，以下情况常见且无法仅通过只读观测区分：
+
+| 场景 | 诊断困难点 |
+|------|-----------|
+| vLLM 延迟波动 | GPU 争用、PCIe 带宽饱和、KV Cache 碎片、CUDA Context 切换 —— 指标表现相似 |
+| RDMA 性能下降 | ECN 阈值错误、PFC 死锁、线缆衰减、交换机缓冲区溢出 —— 都表现为吞吐下降 |
+| Pod 反复 OOMKill | 内存泄漏、limit 设置过低、cgroup 竞争、NUMA 跨节点访问 —— 需实际调整后观察 |
+
+**核心矛盾**：诊断 Agent 通过只读工具收集的数据只能缩小假设空间，但某些根因之间
+的区分**必须通过实际修复操作 + 观测恢复效果**才能确认（即 "治疗性诊断"）。
+
+#### 7.6.2 架构设计
+
+循环编排器是诊断 Agent 和修复引擎之间的**确定性编排层**，不包含 LLM 调用。
+
+```
+                        ┌─────────────────────────────────────────────────────────┐
+                        │            循环编排器 (LoopOrchestrator)                  │
+                        │            确定性 Python + asyncio                       │
+                        │                                                         │
+   ┌──────────┐        │  ┌─────────────────┐    ┌────────────────────────┐      │
+   │ SRE Agent │ ─────→ │  │ 1. 取排名最高的  │───→│ 2. 修复引擎执行        │      │
+   │ (ReAct)   │        │  │    候选根因      │    │    (WAL + 审批 + 灰度) │      │
+   │           │        │  └─────────────────┘    └──────────┬─────────────┘      │
+   │ 输出:     │        │         ↑                          │                    │
+   │ Diagnosis │        │         │ 失败: 回滚               ↓                    │
+   │ Result    │        │         │ 尝试下一个     ┌──────────────────────┐        │
+   │ (ranked   │        │         │              │ 3. 验证阶段           │        │
+   │ candidates│        │         │              │    观察关键指标        │        │
+   │ )         │        │         └──────────────│    是否恢复正常?       │        │
+   │           │        │                        └──────────┬─────────────┘        │
+   │ 可选:     │        │                  成功 ↙           │ 失败 ↘              │
+   │ re-diagnose│ ←──── │  ┌──────────────────┐  ┌──────────────────────┐        │
+   │ (增量)    │        │  │ 4a. 记录 resolved │  │ 4b. WAL 回滚         │        │
+   │           │        │  │     更新记忆系统   │  │     记录 failed      │        │
+   └──────────┘        │  │     退出循环       │  │     continue 下一个  │        │
+                        │  └──────────────────┘  └──────────────────────┘        │
+                        │                                                         │
+                        │  所有候选耗尽 → 5. 升级给人工 (escalate)                  │
+                        │              → 可选: 触发增量 re-diagnose                │
+                        └─────────────────────────────────────────────────────────┘
+```
+
+**关键设计决策**：
+
+| 决策 | 选择 | 理由 |
+|------|------|------|
+| 编排器是否包含 LLM？ | 否，纯确定性 | 修复循环必须可预测、可审计、可重放 |
+| 候选排序谁负责？ | 诊断 Agent（LLM） | LLM 擅长综合多维度证据排序 |
+| 修复失败后重新诊断？ | 可选，仅在所有候选耗尽时触发 | 避免无限循环；每轮修复的观测数据作为增量上下文注入 |
+| 修复间隔 | 每次回滚后等待冷却期（cooldown） | 避免频繁修改导致系统不稳定 |
+| 最大尝试次数 | 配置项（默认 3） | 防止无限循环 |
+
+#### 7.6.3 数据模型
+
+```python
+class LoopConfig(BaseModel):
+    """循环编排器配置"""
+    max_candidates: int = 3                     # 最多尝试的候选根因数
+    cooldown_seconds: int = 30                  # 两次修复尝试之间的冷却期
+    verification_window: int = 120              # 修复后的观测窗口（秒）
+    enable_re_diagnosis: bool = True            # 所有候选耗尽后是否触发增量重新诊断
+    max_re_diagnosis_rounds: int = 1            # 最多重新诊断轮数（防止无限循环）
+    certainty_skip_loop: Literal[               # 哪些确定性级别跳过循环直接修复
+        "confirmed",                            # 仅 confirmed 跳过（默认）
+    ] = "confirmed"
+
+class CandidateAttempt(BaseModel):
+    """单个候选根因的修复尝试记录"""
+    candidate: RankedRootCause                  # 候选根因
+    remediation_result: RemediationResult       # 修复执行结果
+    verification_passed: bool                   # 修复后验证是否通过
+    rolled_back: bool                           # 是否已回滚
+    observations: dict                          # 修复前后的关键指标对比
+    duration_seconds: int                       # 本次尝试耗时
+
+class LoopResult(BaseModel):
+    """循环编排器执行结果"""
+    session_id: str
+    outcome: Literal[
+        "resolved",                             # 某个候选根因修复成功
+        "partially_resolved",                   # 指标改善但未完全恢复
+        "exhausted",                            # 所有候选耗尽，无一成功
+        "escalated",                            # 升级给人工
+        "re_diagnosed",                         # 触发了增量重新诊断
+    ]
+    winning_candidate: RankedRootCause | None   # 成功的候选（如有）
+    attempts: list[CandidateAttempt]            # 所有尝试记录
+    total_duration_seconds: int                 # 总耗时
+    re_diagnosis_context: dict | None           # 传递给增量诊断的上下文（如有）
+```
+
+#### 7.6.4 循环编排器实现
+
+```python
+class LoopOrchestrator:
+    """诊断-修复循环编排器
+
+    确定性编排层，负责按候选根因排名逐一尝试修复，
+    直到问题解决或所有候选耗尽。不包含 LLM 调用。
+    """
+
+    def __init__(self, remediation_engine: RemediationEngine,
+                 prometheus: PrometheusChannel,
+                 memory: MemoryStore,
+                 config: LoopConfig):
+        self.engine = remediation_engine
+        self.prometheus = prometheus
+        self.memory = memory
+        self.config = config
+
+    async def execute(self, session: DiagnosisSession,
+                      trace_callback: Callable | None = None
+                      ) -> LoopResult:
+        """
+        根据诊断结果的确定性级别，决定直接修复或进入循环验证。
+
+        流程：
+        1. confirmed → 直接修复，不进循环
+        2. probable / ambiguous → 按排名逐一尝试
+        3. 每次修复后验证，失败则回滚并尝试下一个
+        4. 所有候选耗尽 → 可选触发增量重新诊断
+        """
+        diagnosis = session.diagnosis_result
+        attempts: list[CandidateAttempt] = []
+        start_time = datetime.now()
+
+        # ── 判断是否需要循环 ──
+        if diagnosis.diagnosis_certainty == "confirmed":
+            # 高置信度单根因，直接修复（不进循环）
+            candidate = diagnosis.ranked_candidates[0]
+            attempt = await self._attempt_candidate(candidate, trace_callback)
+            attempts.append(attempt)
+
+            if attempt.verification_passed:
+                return self._build_result(
+                    session, "resolved", candidate, attempts, start_time)
+            else:
+                # 高置信度但修复失败 → 降级为循环模式，尝试剩余候选
+                logger.warning(
+                    f"Confirmed root cause failed verification, "
+                    f"falling back to loop mode")
+
+        # ── 循环验证模式 ──
+        candidates = diagnosis.ranked_candidates
+        start_idx = 1 if attempts else 0  # 如果已尝试过第一个则跳过
+
+        for i in range(start_idx, min(len(candidates), self.config.max_candidates)):
+            candidate = candidates[i]
+
+            # 冷却期
+            if attempts:
+                logger.info(
+                    f"Cooldown {self.config.cooldown_seconds}s "
+                    f"before next candidate...")
+                if trace_callback:
+                    await trace_callback({
+                        "type": "loop_cooldown",
+                        "seconds": self.config.cooldown_seconds,
+                        "next_candidate": candidate.root_cause,
+                    })
+                await asyncio.sleep(self.config.cooldown_seconds)
+
+            # 尝试修复
+            attempt = await self._attempt_candidate(candidate, trace_callback)
+            attempts.append(attempt)
+
+            if attempt.verification_passed:
+                return self._build_result(
+                    session, "resolved", candidate, attempts, start_time)
+
+            # 检查是否部分改善
+            if self._is_partially_improved(attempts):
+                return self._build_result(
+                    session, "partially_resolved", candidate, attempts,
+                    start_time)
+
+        # ── 所有候选耗尽 ──
+        if (self.config.enable_re_diagnosis and
+                session.re_diagnosis_round < self.config.max_re_diagnosis_rounds):
+            # 构建增量上下文，传递给 SRE Agent 重新诊断
+            re_diag_context = self._build_re_diagnosis_context(attempts)
+            return self._build_result(
+                session, "re_diagnosed", None, attempts, start_time,
+                re_diag_context=re_diag_context)
+        else:
+            return self._build_result(
+                session, "escalated", None, attempts, start_time)
+
+    async def _attempt_candidate(self, candidate: RankedRootCause,
+                                 trace_callback: Callable | None
+                                 ) -> CandidateAttempt:
+        """尝试修复单个候选根因"""
+        start = datetime.now()
+
+        if trace_callback:
+            await trace_callback({
+                "type": "loop_attempt_start",
+                "rank": candidate.rank,
+                "root_cause": candidate.root_cause,
+                "confidence": candidate.confidence,
+            })
+
+        # 采集修复前基线指标
+        pre_metrics = await self._collect_verification_metrics(candidate)
+
+        # 执行修复（内含审批 + WAL + 灰度）
+        plan = candidate.recommended_fix
+        if not plan:
+            return CandidateAttempt(
+                candidate=candidate,
+                remediation_result=RemediationResult(
+                    success=False, reason="No remediation plan"),
+                verification_passed=False, rolled_back=False,
+                observations={"error": "no_plan"},
+                duration_seconds=0)
+
+        result = await self.engine.execute(plan)
+
+        if not result.success:
+            # 修复执行本身失败（已由引擎内部回滚）
+            return CandidateAttempt(
+                candidate=candidate,
+                remediation_result=result,
+                verification_passed=False,
+                rolled_back=result.rolled_back,
+                observations={"execution_failed": True},
+                duration_seconds=(datetime.now() - start).seconds)
+
+        # 等待验证窗口
+        logger.info(
+            f"Verification window: {self.config.verification_window}s...")
+        if trace_callback:
+            await trace_callback({
+                "type": "loop_verification_wait",
+                "seconds": self.config.verification_window,
+            })
+        await asyncio.sleep(self.config.verification_window)
+
+        # 采集修复后指标
+        post_metrics = await self._collect_verification_metrics(candidate)
+
+        # 验证修复效果
+        verified = self._evaluate_verification(
+            candidate, pre_metrics, post_metrics)
+
+        if not verified:
+            # 修复未解决问题 → 回滚
+            logger.warning(
+                f"Candidate #{candidate.rank} ({candidate.root_cause}) "
+                f"verification failed, rolling back...")
+            await self.engine.wal.recover_all()
+
+            if trace_callback:
+                await trace_callback({
+                    "type": "loop_attempt_rollback",
+                    "rank": candidate.rank,
+                    "root_cause": candidate.root_cause,
+                })
+
+        duration = (datetime.now() - start).seconds
+
+        if trace_callback:
+            await trace_callback({
+                "type": "loop_attempt_result",
+                "rank": candidate.rank,
+                "verified": verified,
+                "duration_seconds": duration,
+            })
+
+        return CandidateAttempt(
+            candidate=candidate,
+            remediation_result=result,
+            verification_passed=verified,
+            rolled_back=not verified,
+            observations={
+                "pre_metrics": pre_metrics,
+                "post_metrics": post_metrics,
+            },
+            duration_seconds=duration)
+
+    async def _collect_verification_metrics(
+            self, candidate: RankedRootCause) -> dict:
+        """采集候选根因的区分性验证指标"""
+        metrics = {}
+        if candidate.distinguishing_verification:
+            # 解析 distinguishing_verification 中引用的指标
+            # 例如 "P95 < 500ms" → 查询 vllm_request_duration_seconds
+            # 实际实现时通过候选根因的 recommended_fix 中的 verification 配置获取
+            for step in (candidate.recommended_fix.steps
+                         if candidate.recommended_fix else []):
+                if step.verification and step.verification.query:
+                    value = await self.prometheus.query_instant(
+                        step.verification.query)
+                    metrics[step.verification.query] = value
+        return metrics
+
+    def _evaluate_verification(self, candidate: RankedRootCause,
+                                pre: dict, post: dict) -> bool:
+        """评估修复前后指标变化，判断是否解决问题"""
+        if not candidate.recommended_fix:
+            return False
+        # 使用最后一步的验证条件（通常是端到端验证）
+        final_step = candidate.recommended_fix.steps[-1]
+        if final_step.verification and final_step.verification.success_condition:
+            for query, value in post.items():
+                result = safe_eval_condition(
+                    final_step.verification.success_condition,
+                    {"value": value})
+                if not result:
+                    return False
+            return bool(post)  # 至少有一个指标被验证
+        return False
+
+    def _is_partially_improved(self, attempts: list[CandidateAttempt]) -> bool:
+        """判断是否有部分改善（指标变好但未达标）"""
+        if not attempts:
+            return False
+        latest = attempts[-1]
+        pre = latest.observations.get("pre_metrics", {})
+        post = latest.observations.get("post_metrics", {})
+        # 如果所有指标都有改善（值变小），视为部分改善
+        for key in pre:
+            if key in post:
+                try:
+                    if float(post[key]) >= float(pre[key]):
+                        return False
+                except (ValueError, TypeError):
+                    continue
+        return bool(pre) and bool(post)
+
+    def _build_re_diagnosis_context(
+            self, attempts: list[CandidateAttempt]) -> dict:
+        """构建传递给增量重新诊断的上下文"""
+        return {
+            "previous_attempts": [
+                {
+                    "root_cause": a.candidate.root_cause,
+                    "confidence": a.candidate.confidence,
+                    "fix_applied": a.candidate.recommended_fix.description
+                        if a.candidate.recommended_fix else None,
+                    "verified": a.verification_passed,
+                    "rolled_back": a.rolled_back,
+                    "post_metrics": a.observations.get("post_metrics", {}),
+                }
+                for a in attempts
+            ],
+            "instruction": (
+                "以下候选根因已尝试修复但均未解决问题。"
+                "请基于新增的修复观测数据重新分析，"
+                "提出新的假设和候选根因列表。"
+            ),
+        }
+
+    def _build_result(self, session, outcome, winner, attempts, start_time,
+                      re_diag_context=None) -> LoopResult:
+        duration = (datetime.now() - start_time).seconds
+        return LoopResult(
+            session_id=session.session_id,
+            outcome=outcome,
+            winning_candidate=winner,
+            attempts=attempts,
+            total_duration_seconds=duration,
+            re_diagnosis_context=re_diag_context)
+```
+
+#### 7.6.5 增量重新诊断（Re-diagnosis）
+
+当所有候选根因修复失败时，循环编排器可触发**增量重新诊断**。
+增量诊断不是从零开始，而是将前几轮修复的观测数据注入 SRE Agent 的上下文。
+
+```python
+class SREAgent:
+    # ... 在现有 SREAgent 中新增方法 ...
+
+    async def re_diagnose(self, session: DiagnosisSession,
+                          loop_result: LoopResult,
+                          trace_callback: Callable | None = None
+                          ) -> DiagnosisSession:
+        """
+        增量重新诊断：基于前轮修复失败的观测数据，重新分析根因。
+
+        与 diagnose() 的区别：
+        1. 初始上下文包含前轮尝试的结果（哪些根因已排除、修复后指标变化）
+        2. LLM 被明确告知"以下修复已尝试但失败"，避免重复相同假设
+        3. re_diagnosis_round 递增，编排器用此计数防止无限循环
+        """
+        session.re_diagnosis_round += 1
+        context = await self._build_initial_context(session.alert)
+
+        # 将前轮修复观测作为额外上下文注入
+        re_diag_context = loop_result.re_diagnosis_context
+        augmented_message = self._format_alert_message(
+            session.alert, context)
+        augmented_message += f"\n\n## 前轮修复尝试结果（已失败）\n"
+        augmented_message += json.dumps(
+            re_diag_context["previous_attempts"],
+            indent=2, ensure_ascii=False)
+        augmented_message += f"\n\n{re_diag_context['instruction']}"
+
+        try:
+            final_state = await asyncio.wait_for(
+                self.graph.ainvoke(
+                    {
+                        "messages": [("user", augmented_message)],
+                        "alert": session.alert,
+                        "topology_summary": context.topology,
+                        "similar_incidents": context.similar_incidents,
+                        "knowledge_context": context.knowledge,
+                        "known_patterns": context.known_patterns,
+                        "thinking_trace": [],
+                        "step_count": 0,
+                        "diagnosis_result": None,
+                        "remediation_plan": None,
+                    },
+                    config={"configurable": {
+                        "thread_id": f"{session.session_id}-re{session.re_diagnosis_round}",
+                    }},
+                ),
+                timeout=self.config.total_timeout,
+            )
+        except asyncio.TimeoutError:
+            session.status = "timeout"
+            return session
+
+        session.trace = ThinkingTrace.from_langraph_state(
+            final_state["thinking_trace"])
+        session.status = "re_diagnosed"
+        await self.memory.record_incident(session)
+        return session
+```
+
+#### 7.6.6 顶层调度入口
+
+```python
+class IncidentHandler:
+    """事件处理器 — 串联诊断、循环编排、增量重诊的完整闭环"""
+
+    def __init__(self, sre_agent: SREAgent,
+                 loop_orchestrator: LoopOrchestrator,
+                 memory: MemoryStore):
+        self.agent = sre_agent
+        self.loop = loop_orchestrator
+        self.memory = memory
+
+    async def handle(self, alert: Alert,
+                     trace_callback: Callable | None = None) -> LoopResult:
+        """
+        完整的告警处理闭环：
+
+        诊断 → 循环修复 → (可选) 增量重新诊断 → 循环修复 → ... → 解决/升级
+
+        确保以下不变量：
+        1. 每轮 re-diagnosis 只发生一次（max_re_diagnosis_rounds 控制）
+        2. 每轮最多尝试 max_candidates 个候选
+        3. 修复失败必定回滚
+        4. 最终一定会终止（要么解决、要么升级给人工）
+        """
+        # 1. 初始诊断
+        session = await self.agent.diagnose(alert, trace_callback)
+        if session.status != "diagnosed":
+            return LoopResult(
+                session_id=session.session_id,
+                outcome="escalated", winning_candidate=None,
+                attempts=[], total_duration_seconds=0,
+                re_diagnosis_context=None)
+
+        # 2. 循环修复
+        loop_result = await self.loop.execute(session, trace_callback)
+
+        # 3. 如需增量重新诊断
+        while loop_result.outcome == "re_diagnosed":
+            session = await self.agent.re_diagnose(
+                session, loop_result, trace_callback)
+            if session.status != "re_diagnosed":
+                loop_result = LoopResult(
+                    session_id=session.session_id,
+                    outcome="escalated", winning_candidate=None,
+                    attempts=loop_result.attempts,
+                    total_duration_seconds=loop_result.total_duration_seconds,
+                    re_diagnosis_context=None)
+                break
+            loop_result = await self.loop.execute(session, trace_callback)
+
+        # 4. 最终记录
+        outcome_map = {
+            "resolved": "resolved",
+            "partially_resolved": "partially_resolved",
+            "exhausted": "failed",
+            "escalated": "escalated",
+        }
+        session.outcome = outcome_map.get(loop_result.outcome, "failed")
+        await self.memory.record_incident(session)
+
+        return loop_result
+```
+
+#### 7.6.7 架构不变量保证
+
+| 不变量 | 保证机制 |
+|--------|---------|
+| 循环必须终止 | `max_candidates`（默认 3）× `max_re_diagnosis_rounds`（默认 1）= 最多 6 次修复尝试 |
+| 修复失败必须回滚 | 每次 `_attempt_candidate` 验证失败后调用 `wal.recover_all()` |
+| LLM 不在循环中 | `LoopOrchestrator` 纯 Python asyncio，零 LLM 调用 |
+| 增量诊断有额外信息 | `re_diagnose()` 将前轮 `previous_attempts` 注入 LLM 上下文 |
+| 冷却期防抖动 | `cooldown_seconds`（默认 30s）在两次修复之间强制等待 |
+| 审批仍然有效 | 每个候选的修复计划仍经过 `RemediationEngine` 的审批门控 |
+| 全程可观测 | `trace_callback` 推送 `loop_*` 事件到 WebSocket GUI |
+
+#### 7.6.8 流程总览
+
+```
+┌──────────┐     DiagnosisResult        ┌───────────────────┐
+│ SRE Agent│────(ranked_candidates)─────→│  LoopOrchestrator │
+│ (ReAct)  │                             │                   │
+│          │                             │  for candidate    │
+│          │  re_diagnose()              │    in ranked:     │
+│          │←─(仅当所有候选耗尽)──────────│                   │
+│          │                             │  ┌─────────────┐  │
+│          │                             │  │ Remediation  │  │
+│          │                             │  │ Engine       │  │
+│          │                             │  │ (execute)    │  │
+│          │                             │  └──────┬──────┘  │
+│          │                             │         │         │
+│          │                             │  ┌──────▼──────┐  │
+│          │                             │  │ Verify      │  │
+│          │                             │  │ (PromQL /   │  │
+│          │                             │  │  tool_call) │  │
+│          │                             │  └──────┬──────┘  │
+│          │                             │         │         │
+│          │                             │    pass? ─→ done  │
+│          │                             │    fail? ─→ WAL   │
+│          │                             │           rollback│
+│          │                             │           next    │
+└──────────┘                             └───────────────────┘
 ```
 
 ---
@@ -3254,6 +3859,189 @@ created_from: {session.session_id}
            新模式: (NCCL timeout + PFC pause 激增) → ECN 配置错误
 ```
 
+### 11.3 Demo 3: 多候选根因循环验证 — vLLM 延迟波动（ambiguous 场景）
+
+#### 场景设定
+
+```
+前提：使用 fault-injector 同时注入两个故障：
+      1) GPU-0 上运行低强度 gpu-burn（util 60%，非满载）
+      2) KV Cache 配置为略低于最优值（gpu_memory_utilization=0.80 → 0.65）
+
+告警：Prometheus alert "VLLMLatencyP95High"
+      vllm_request_duration_seconds{quantile="0.95"} > 0.5
+      持续 5 分钟
+
+难点：GPU-0 util 60% 不像 Demo 1 那样明显异常（98%），
+      且 KV Cache 使用率偏高（92%）但未 OOM。
+      诊断 Agent 无法仅通过只读观测确定是 GPU 争用还是 KV Cache 不足导致延迟。
+```
+
+#### Agent 诊断 Trace
+
+```
+[16:00:00] ┌─ Alert 接收 ─────────────────────────────────────────────┐
+           │ alert: VLLMLatencyP95High                                │
+           │ severity: critical                                       │
+           │ labels: {service="vllm-deepseek", namespace="service"}   │
+           │ value: 0.72s (阈值: 0.5s)                               │
+           └──────────────────────────────────────────────────────────┘
+
+[16:00:01] ── 构建初始上下文 ──
+           · Ontology 拓扑: 同 Demo 1
+           · 记忆检索: 发现 Demo 1 的历史事件 (GPU 争用模式, confidence=0.65)
+           · 知识库: vLLM 性能调优文档, KV Cache 管理文档
+
+[16:00:02] ── Step 1 [Think] ──
+           "P95 = 720ms 超标。历史记忆提示此 AIDC 有 GPU 争用模式。
+            列举假设：
+            假设 A: GPU 资源争用
+            假设 B: KV Cache 内存不足
+            假设 C: 网络问题
+            假设 D: 热节流"
+
+[16:00:02] ── Step 2-3 [Act+Observe] ── get_gpu_metrics
+           {per_gpu: [{index: 0, util_pct: 62.3, mem_used_mb: 48000},
+                      {index: 1, util_pct: 71.2, mem_used_mb: 52400}]}
+           "GPU-0 util 62% — 偏高但不是满载，不像 Demo 1 的 98%。
+            不能确定这是否足以导致 PCIe 争用。"
+
+[16:00:03] ── Step 4-5 [Act+Observe] ── get_gpu_processes
+           {processes: [{pid: 23456, name: "gpu-burn", gpu_uuid: "GPU-0", memory_mb: 46000},
+                        {pid: 34567, name: "python3", gpu_uuid: "GPU-1", memory_mb: 51200}]}
+           "确认 gpu-burn 在 GPU-0，但 util 仅 62%，PCIe 争用程度不确定。"
+
+[16:00:04] ── Step 6-7 [Act+Observe] ── get_vllm_metrics
+           {kv_cache_usage_pct: 92.1, gpu_memory_utilization_config: 0.65,
+            num_running_requests: 8, num_waiting_requests: 3}
+           "KV Cache 使用率 92.1% — 接近耗尽！有等待请求（3个）。
+            gpu_memory_utilization=0.65 偏低（推荐 0.85-0.95）。
+            假设 B 也高度可疑。"
+
+[16:00:05] ── Step 8-9 [Act+Observe] ── get_thermal_status + check_nic_errors
+           温度正常，网络无异常
+           → 假设 C、D 排除
+
+[16:00:06] ── Step 10 [Conclude] ──
+           diagnosis_certainty: "ambiguous"    ← 两个候选置信度接近
+
+           ranked_candidates:
+             #1: KV Cache 配置不足 (confidence: 0.55)
+                 evidence: KV Cache 92%, waiting requests=3,
+                           gpu_memory_utilization=0.65 远低于推荐值
+                 fix: 调整 gpu_memory_utilization 为 0.90
+                 distinguishing_verification:
+                   "调整后如果 KV Cache usage < 70% 且 P95 < 500ms 则确认"
+
+             #2: GPU 资源争用 (confidence: 0.50)
+                 evidence: gpu-burn on GPU-0 (62% util),
+                           可能导致 PCIe 争用
+                 fix: 终止 gpu-burn 进程
+                 distinguishing_verification:
+                   "kill 后如果 GPU-0 util < 10% 且 P95 < 500ms 则确认"
+
+           注意: 两个候选置信度差距仅 0.05，无法仅通过只读观测区分。
+                 必须通过循环编排器逐一修复验证。
+```
+
+#### 循环编排器执行 Trace
+
+```
+[16:00:07] ┌─ 循环编排器启动 ──────────────────────────────────────────┐
+           │ diagnosis_certainty: ambiguous                            │
+           │ candidates: 2                                             │
+           │ mode: 循环验证                                             │
+           └──────────────────────────────────────────────────────────┘
+
+[16:00:07] ── Candidate #1: KV Cache 配置不足 (0.55) ──
+
+[16:00:07] ── 审批门控 ──
+           "update_vllm_config" 需要 human_confirm
+           → 推送到 GUI 等待确认
+
+[16:00:12] ── 工程师确认 ── ✓ Approved
+
+[16:00:12] ── 修复执行 ──
+           WAL: recorded (rollback → gpu_memory_utilization=0.65)
+           update_vllm_config(service="vllm-deepseek",
+                              gpu_memory_utilization=0.90)
+           执行: K8s patch → vLLM Pod rolling restart ✓
+
+[16:00:45] ── 验证窗口 (120s) ──
+           等待 vLLM Pod 重启完成 + 负载恢复...
+
+[16:02:45] ── 验证结果 ──
+           KV Cache usage: 92.1% → 58.3%  ✓ (改善)
+           waiting_requests: 3 → 0         ✓ (改善)
+           P95 latency: 720ms → 580ms      ✗ (仍超标! > 500ms)
+
+           verdict: 验证失败 — KV Cache 改善但延迟未降至阈值以下
+                    说明 KV Cache 是贡献因素但不是唯一根因
+
+[16:02:45] ── 回滚 ──
+           WAL recover: gpu_memory_utilization → 0.65
+           注意: 此处回滚是为了隔离变量，确保下一候选的验证基线干净
+
+[16:03:15] ── 冷却期 (30s) ──
+           等待系统恢复到故障状态基线...
+
+[16:03:45] ── Candidate #2: GPU 资源争用 (0.50) ──
+
+[16:03:45] ── 审批门控 ──
+           "kill_process" 需要 human_confirm
+           → 推送到 GUI
+
+[16:03:50] ── 工程师确认 ── ✓ Approved
+
+[16:03:50] ── 修复执行 ──
+           WAL: recorded (无需回滚 — kill 是不可逆的)
+           kill_process(node="gpu-1-1", pid_or_name="gpu-burn")
+           执行: SSH → kill -9 23456 ✓
+
+[16:03:55] ── 验证窗口 (120s) ──
+           等待 PCIe 带宽恢复 + 指标稳定...
+
+[16:05:55] ── 验证结果 ──
+           GPU-0 util: 62.3% → 2.1%       ✓
+           P95 latency: 720ms → 420ms      ✓ (< 500ms!)
+           P99 latency: 1100ms → 590ms     ✓
+
+           verdict: 验证通过! GPU 争用是主要根因。
+
+[16:05:55] ┌─ 循环编排器结论 ──────────────────────────────────────────┐
+           │ outcome: resolved                                         │
+           │ winning_candidate: #2 GPU 资源争用                         │
+           │ attempts: 2                                               │
+           │                                                           │
+           │ 洞察: KV Cache 和 GPU 争用同时存在。GPU 争用是主要根因       │
+           │       (kill 后 P95 420ms < 500ms)。KV Cache 是次要因素       │
+           │       (调整后 P95 从 720ms 降至 580ms 但仍超标)。            │
+           │       建议后续也调整 KV Cache 配置以获得最优性能。            │
+           │                                                           │
+           │ 诊断耗时: 6s                                               │
+           │ 循环修复耗时: 348s (含验证窗口 + 冷却期 + 回滚)              │
+           │ 总耗时: 354s                                               │
+           └──────────────────────────────────────────────────────────┘
+
+[16:05:55] ── 记忆记录 ──
+           事件写入 memory/aidc-001.db
+           更新模式:
+             (vLLM P95 高 + GPU util 中等 + KV Cache 高) → 多因素:
+               主因: GPU 争用 (confidence 0.50 → resolved → +0.15 = 0.65)
+               次因: KV Cache 配置 (confidence 0.55 → failed → -0.1 = 0.45)
+           注: 下次遇到类似症状时，记忆系统会提示优先检查 GPU 争用
+```
+
+#### Demo 3 要点
+
+| 要点 | 说明 |
+|------|------|
+| 诊断 Agent 输出 `ambiguous` | 两个候选置信度接近（0.55 vs 0.50），触发循环验证 |
+| 循环编排器隔离变量 | Candidate #1 失败后回滚，确保 #2 的验证基线干净 |
+| 修复验证 = 治疗性诊断 | 通过实际修复 + 观测效果来确认真实根因 |
+| 记忆系统反转置信度 | KV Cache 从 0.55 降至 0.45（修复失败），GPU 争用从 0.50 升至 0.65（修复成功） |
+| 工程师仍在循环中 | 每次修复仍经过审批门控，人工保持知情权 |
+
 ---
 
 ## 12. 配置 Schema
@@ -3395,6 +4183,15 @@ remediation:
     excluded_nodes: []
     dry_run: false
     max_concurrent_remediations: 2
+
+# ─── 循环编排器（诊断-修复闭环）───
+loop_orchestrator:
+  max_candidates: 3                            # 最多尝试的候选根因数
+  cooldown_seconds: 30                         # 两次修复之间的冷却期
+  verification_window: 120                     # 修复后观测窗口（秒）
+  enable_re_diagnosis: true                    # 候选耗尽后是否触发增量重诊
+  max_re_diagnosis_rounds: 1                   # 最多重诊轮数（防无限循环）
+  certainty_skip_loop: "confirmed"             # confirmed 级别跳过循环直接修复
 
 # ─── Skills（Claude Code 兼容即插即用）───
 skills:
@@ -3553,6 +4350,16 @@ async def diagnose(alert: Alert) -> DiagnosisSession:
     """触发诊断"""
     session = await sre_agent.diagnose(alert)
     return session
+
+@app.post("/api/handle")
+async def handle_alert(alert: Alert) -> LoopResult:
+    """完整闭环处理：诊断 → 循环修复 → 增量重诊 → 解决/升级"""
+    return await incident_handler.handle(alert)
+
+@app.get("/api/sessions/{session_id}/loop")
+async def get_loop_result(session_id: str) -> LoopResult:
+    """获取循环编排器执行结果（含所有候选尝试记录）"""
+    return loop_store.get(session_id)
 
 @app.post("/api/remediate/{session_id}/approve")
 async def approve_remediation(session_id: str,
@@ -4277,7 +5084,8 @@ cat data/nat_profiles/profiling_report.txt
 |------|----------|------|
 | 1. 自动检测 AIDC 拓扑（BMC/Switch/Host/Platform） | 3.5 DiscoveryAgent | ✓ |
 | 2. 数字孪生（Palantir Ontology 风格） | 3.1-3.4 Ontology 模型 | ✓ |
-| 3a. 根因分析 + 试验→验证→排查循环 | 4.2 LangGraph ReAct Agent | ✓ |
+| 3a. 根因分析 + 试验→验证→排查循环 | 4.2 LangGraph ReAct Agent + 7.6 LoopOrchestrator | ✓ 增强 |
+| 3a-ext. 多候选根因循环验证（治疗性诊断） | 7.6 LoopOrchestrator + 7.6.5 增量重诊 | ✓ 新增 |
 | 3b. 灰度发布 fix | 7.3 CanaryExecutor | ✓ |
 | 3c. 显示 Agent 思考过程 | 4.3 ThinkingTrace + WebSocket | ✓ |
 | 3d. 工具对接 log/telemetry/alert/platform/OS | 5.2 只读工具集 (40+ 工具) | ✓ |
@@ -4290,6 +5098,7 @@ cat data/nat_profiles/profiling_report.txt
 | 10. Agent 可观测与调优 | 18.1-18.5 NeMo Agent Toolkit（包裹层，非编排） | ✓ 重构 |
 | Demo 1: vLLM P95 诊断修复 | 11.1 完整 Trace (get_gpu_processes 修正) | ✓ |
 | Demo 2: RDMA RoCEv2 诊断修复 | 11.2 完整 Trace | ✓ |
+| Demo 3: 多候选根因循环验证 | 11.3 ambiguous 场景 + LoopOrchestrator Trace | ✓ 新增 |
 | 集成 fault-injector 智能部分 | 4.7 DiagnosisResult (扩展) | ✓ |
 | 集成 load-simulator 智能部分 | 5.2 (ThresholdEngine 集成) | ✓ |
 
@@ -4307,7 +5116,9 @@ cat data/nat_profiles/profiling_report.txt
 | SafetyGuard | `safety/guard.py` | 同一代码库 |
 | FORBIDDEN_OPERATIONS | `safety/forbidden.py` | 同一代码库 |
 | Pydantic Config 基类 | `config.py` | 同一代码库 |
-| DiagnosisResult | `agent/models.py` | 扩展自 fault-injector |
+| DiagnosisResult + RankedRootCause | `agent/models.py` | 扩展自 fault-injector，新增多候选支持 |
+| LoopOrchestrator | `remediation/loop_orchestrator.py` | SRE Agent 独有 |
+| IncidentHandler | `remediation/incident_handler.py` | SRE Agent 独有 |
 | ThresholdEngine | `tools/threshold.py` | 扩展自 load-simulator |
 
 ## 附录 C: 设计评审问题解决记录
@@ -4373,6 +5184,8 @@ cat data/nat_profiles/profiling_report.txt
 - **新增**：LangGraph 提供标准化的 Agent 状态管理和 checkpoint 持久化。
 - **新增**：NeMo Guardrails 提供声明式安全护栏，比手写安全检查更系统化。
 - **新增**：NeMo Agent Toolkit 提供开箱即用的 profiling 和 evaluation。
+- **新增**：诊断-修复循环编排器（§7.6）补齐了 "多候选根因实机验证" 闭环，支持治疗性诊断模式。
+- **新增**：`DiagnosisResult.ranked_candidates` + `diagnosis_certainty` 三级分类，让编排器根据确定性级别自动决策是否进入循环。
 
 ### 长期产品级优化
 
