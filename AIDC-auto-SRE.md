@@ -45,7 +45,7 @@
                        └─────────────┘
 ```
 
-**关键区别**：fault-injector 和 load-simulator 是确定性执行引擎，LLM 仅做单次只读分析。SRE Agent 的诊断核心需要多步推理（ReAct 循环），因为根因分析本质上是迭代的："当有多种组合根因时，通过 试验→验证→排查 的循环最终定位"。但修复执行仍然是确定性的、WAL 保护的。当诊断无法在只读观测阶段确定唯一根因时（`diagnosis_certainty` 为 `probable` 或 `ambiguous`），**循环编排器**（§7.6）按候选排名逐一修复验证，通过 "治疗性诊断" 确认真实根因。
+**关键区别**：fault-injector 和 load-simulator 是确定性执行引擎，LLM 仅做单次只读分析。SRE Agent 的诊断核心需要多步推理（ReAct 循环），因为根因分析本质上是迭代的："当有多种组合根因时，通过 试验→验证→排查 的循环最终定位"。但修复执行仍然是确定性的、WAL 保护的。当诊断无法在只读观测阶段确定唯一根因时（`diagnosis_certainty` 为 `probable` 或 `ambiguous`），**循环编排器**（§7.7）按候选排名逐一修复验证，通过 "治疗性诊断" 确认真实根因。
 
 **为什么选择 LangChain/LangGraph + NeMo**：手写 ReAct 循环需要自行处理 tool calling 协议、消息管理、错误恢复、流式输出等基础设施。LangGraph 提供了成熟的状态图 + 条件路由 + 工具节点，减少约 60% 的 Agent 基础设施代码。NeMo Guardrails 提供声明式安全护栏（输入过滤、输出审查、工具 I/O 验证），比手写 `SafetyGuard` 更系统化。NeMo Agent Toolkit 仅用于生产基础设施层（profiling/evaluation/deployment），**不用于 Agent 编排**——其 YAML `react_agent` 缺少自定义状态、条件路由、审批门控和 checkpoint 持久化，无法满足 SRE Agent 需求（详见 §18.1 对比分析）。
 
@@ -269,9 +269,10 @@ sre_agent/
 │
 ├── remediation/
 │   ├── engine.py                   # 修复引擎
-│   ├── loop_orchestrator.py        # 诊断-修复循环编排器（§7.6）
+│   ├── loop_orchestrator.py        # 诊断-修复循环编排器（§7.7）
 │   ├── incident_handler.py         # 顶层事件处理器（串联诊断→循环→重诊）
 │   ├── planner.py                  # 修复计划生成
+│   ├── validator.py                # 修复计划 Schema 校验（§7.5, Review 增强）
 │   ├── canary.py                   # 灰度部署控制
 │   ├── approval.py                 # 审批门控
 │   └── wal.py                      # WAL 回滚日志（复用 fault-injector 设计）
@@ -335,7 +336,7 @@ sre_agent/
 3. **写操作前必须记录 WAL**：与 fault-injector 相同，任何修复操作在执行前将恢复命令写入回滚日志（fsync）。
 4. **灰度优先**：修复默认走 canary 路径，除非配置明确跳过。
 5. **可恢复**：进程崩溃时可通过 `sre-agent --resume <session_id>` 恢复。LangGraph 支持 checkpoint 持久化。
-6. **条件表达式安全求值**：所有验证条件（`success_condition`、`success_criteria`）通过白名单操作符求值器执行，禁止 `eval()`。
+6. **验证条件结构化**：所有验证条件（`VerificationCondition`、`CanaryCondition`）采用结构化三字段模型（`field` + `operator` + `value`），通过 Pydantic 在模型层直接校验，禁止字符串解析和 `eval()`。
 7. **循环必须终止**：LoopOrchestrator 的候选尝试受 `max_candidates`（默认 3）和 `max_re_diagnosis_rounds`（默认 1）双重约束，最终一定解决或升级给人工。
 8. **修复失败必须回滚**：循环中每个候选验证失败后，LoopOrchestrator 强制调用 `wal.recover_all()` 回滚，确保下一候选的验证基线干净。
 
@@ -1710,15 +1711,17 @@ class KnowledgeBaseChannel:
 ```
 SRE Agent (ReAct)          循环编排器 (确定性)          修复引擎 (确定性)
 ┌──────────────┐          ┌──────────────────┐         ┌────────────────────┐
-│ 诊断根因      │          │ 按候选排名循环    │         │ 审批门控            │
-│ 输出排序候选  │─ranked──→│                  │─plan──→│ ↓                  │
-│ 根因列表     │ candidates│ 修复 → 验证       │        │ WAL 记录            │
+│ 诊断根因      │          │ 按候选排名循环    │         │ Schema 校验         │
+│ 输出排序候选  │─ranked──→│                  │─plan──→│ ↓ 不通过→退回重生成  │
+│ 根因列表     │ candidates│ 修复 → 验证       │        │ 审批门控            │
 │              │          │  ↓                │        │ ↓                  │
-│              │          │ 通过 → 结束       │        │ 灰度执行 (Canary)   │
+│              │          │ 通过 → 结束       │        │ WAL 记录            │
 │ re_diagnose()│←─失败且──│ 失败 → 回滚       │        │ ↓                  │
-│ (增量重诊)   │  候选耗尽 │        → 下一个   │←result─│ 逐步验证            │
+│ (增量重诊)   │  候选耗尽 │        → 下一个   │←result─│ 灰度执行 (Canary)   │
 │              │          │ 全部失败 → 升级   │        │ ↓                  │
-└──────────────┘          └──────────────────┘         │ 结果/回滚           │
+└──────────────┘          └──────────────────┘         │ 逐步验证            │
+                                                       │ ↓                  │
+                                                       │ 结果/回滚           │
                                                        └────────────────────┘
 ```
 
@@ -1736,21 +1739,40 @@ class RemediationStep(BaseModel):
     verification: VerificationConfig            # 验证配置
     timeout: int = 60                           # 超时（秒）
 
+class VerificationCondition(BaseModel):
+    """结构化验证条件 — 替代原 success_condition: str
+
+    Review 增强（P0-2 深化）：原设计使用 safe_eval_condition() 解析字符串格式
+    "value < 500"，虽已禁止 eval()，但正则解析仍有边界情况风险（嵌套引号、
+    Unicode 等）。改为结构化三字段模型，由 Pydantic 在模型层直接校验，
+    彻底消除字符串解析。
+    """
+    field: str                                  # 指标字段名，如 "value", "result.status"
+    operator: Literal["<", "<=", ">", ">=", "==", "!="]
+    value: float | int | str                    # 阈值，如 500, "Running"
+
 class VerificationConfig(BaseModel):
     """步骤验证配置"""
     method: Literal["promql", "tool_call", "wait"]
     query: str | None = None                    # PromQL 查询
     tool: str | None = None                     # 验证工具
     tool_params: dict | None = None
-    success_condition: str                      # "value < 500" 或 "status == 'Running'"
+    condition: VerificationCondition | None = None  # 结构化验证条件
     wait_seconds: int = 30                      # 验证前等待时间
+
+class CanaryCondition(BaseModel):
+    """灰度验证条件 — 结构化"""
+    metric: str                                 # 指标名（用作 PromQL 查询标识）
+    field: str = "value"                        # 结果字段名
+    operator: Literal["<", "<=", ">", ">=", "==", "!="]
+    value: float | int | str                    # 阈值
 
 class CanaryConfig(BaseModel):
     """灰度部署配置"""
     enabled: bool = True
     target_percentage: float = 0.1              # 首批 10%
     monitor_duration: int = 120                 # 监控窗口（秒）
-    success_criteria: list[str]                 # ["p95_latency < 500ms", "error_rate < 1%"]
+    success_criteria: list[CanaryCondition]     # 结构化灰度验证条件
     max_batches: int = 3                        # 最多分 3 批
     auto_rollback_on_regression: bool = True
 
@@ -1810,9 +1832,9 @@ class CanaryExecutor:
             logger.info(f"Monitoring canary for {canary.monitor_duration}s...")
             await asyncio.sleep(canary.monitor_duration)
 
-            # 检查成功标准
+            # 检查成功标准（结构化 CanaryCondition）
             for criterion in canary.success_criteria:
-                met = await self._check_criterion(criterion)
+                met = await self._check_canary_condition(criterion)
                 if not met:
                     logger.warning(f"Canary criterion failed: {criterion}")
                     if canary.auto_rollback_on_regression:
@@ -1890,15 +1912,88 @@ class ApprovalGate:
         )
 ```
 
-### 7.5 WAL 回滚集成
+### 7.5 修复计划 Schema 校验
+
+> **Review 增强（P1-5 第二部分）**：原设计通过 system prompt 向 LLM 提供 write 工具描述，
+> 使 LLM 能生成 RemediationPlan。但 LLM 可能产出不存在的工具名或参数不匹配的计划。
+> 新增 schema 校验步骤，在审批门控之前拦截不合法计划，不通过则退回 LLM 重新生成。
+
+```python
+class PlanValidationError(Exception):
+    """修复计划校验失败"""
+    def __init__(self, errors: list[str]):
+        self.errors = errors
+        super().__init__(f"Plan validation failed: {errors}")
+
+class PlanValidator:
+    """修复计划 Schema 校验器
+
+    Review 增强（P1-5）：在审批门控之前校验 LLM 生成的 RemediationPlan，
+    确保：
+    1. 计划中引用的 write 工具名存在于 ToolRegistry 中
+    2. 工具参数的必填项与类型匹配工具 schema
+    3. 验证条件的结构化字段合法
+    不通过则退回 LLM 重新生成（最多 max_retries 次）。
+    """
+
+    def __init__(self, tool_registry: ToolRegistry, max_retries: int = 2):
+        self.tools = tool_registry
+        self.max_retries = max_retries
+
+    def validate(self, plan: RemediationPlan) -> list[str]:
+        """校验修复计划，返回错误列表（空列表 = 通过）"""
+        errors = []
+        write_tools = self.tools.get_tools_by_level("write_confirm")
+        write_tool_names = {t.name for t in write_tools}
+        read_tools = self.tools.get_tools_by_level("read_only")
+        read_tool_names = {t.name for t in read_tools}
+
+        for step in plan.steps:
+            # 1. 检查 write 工具名是否存在
+            if step.tool not in write_tool_names:
+                errors.append(
+                    f"Step {step.step_id}: tool '{step.tool}' not found "
+                    f"in write_confirm registry. "
+                    f"Available: {sorted(write_tool_names)}")
+
+            # 2. 检查工具参数必填项
+            tool_def = self.tools.get_tool(step.tool)
+            if tool_def:
+                required_params = tool_def.required_params or []
+                missing = [p for p in required_params
+                           if p not in step.params]
+                if missing:
+                    errors.append(
+                        f"Step {step.step_id}: tool '{step.tool}' missing "
+                        f"required params: {missing}")
+
+            # 3. 检查回滚工具（如有）
+            if step.rollback_tool and step.rollback_tool not in write_tool_names:
+                errors.append(
+                    f"Step {step.step_id}: rollback_tool "
+                    f"'{step.rollback_tool}' not found in registry")
+
+            # 4. 检查验证工具（如有）
+            if (step.verification and step.verification.tool
+                    and step.verification.tool not in read_tool_names):
+                errors.append(
+                    f"Step {step.step_id}: verification tool "
+                    f"'{step.verification.tool}' not found in "
+                    f"read_only registry")
+
+        return errors
+```
+
+### 7.6 WAL 回滚集成
 
 与 fault-injector 相同的 WAL 模式：
 
 ```python
 class RemediationEngine:
-    """修复引擎：确定性执行 + WAL + 灰度
+    """修复引擎：确定性执行 + WAL + 灰度 + Schema 校验
 
     P1-4 修复：构造函数显式注入 PrometheusChannel 依赖。
+    Review 增强（P1-5）：新增 PlanValidator 校验 LLM 生成的修复计划。
     """
 
     def __init__(self, tool_registry: ToolRegistry,
@@ -1910,8 +2005,14 @@ class RemediationEngine:
         self.wal = wal
         self.prometheus = prometheus                # P1-4: 显式注入
         self.canary = CanaryExecutor(wal=wal)
+        self.validator = PlanValidator(tool_registry)  # Review 增强
 
     async def execute(self, plan: RemediationPlan) -> RemediationResult:
+        # 0. Schema 校验（Review 增强 P1-5）
+        validation_errors = self.validator.validate(plan)
+        if validation_errors:
+            raise PlanValidationError(validation_errors)
+
         # 1. 审批
         approval = await self.approval.request_approval(plan)
         if not approval.approved:
@@ -1958,84 +2059,62 @@ class RemediationEngine:
     async def _verify(self, config: VerificationConfig) -> bool:
         """验证修复步骤结果
 
-        P0 安全修复：替换 eval() 为安全的白名单条件求值器。
-        原实现使用 eval(config.success_condition)，success_condition 来自
-        LLM 生成的 RemediationPlan，存在任意代码执行风险。
+        P0 安全修复 + Review 增强：使用结构化 VerificationCondition 替代
+        字符串解析。条件的 field/operator/value 由 Pydantic 在反序列化时校验，
+        无需正则解析，彻底消除字符串求值风险。
         """
         if config.method == "promql":
             value = await self.prometheus.query_instant(config.query)
-            return safe_eval_condition(config.success_condition, {"value": value})
+            return evaluate_condition(config.condition, {"value": value})
         elif config.method == "tool_call":
             result = await self.tools.execute(config.tool, config.tool_params,
                                              safety_level="read_only")
-            return safe_eval_condition(config.success_condition, {"result": result})
+            return evaluate_condition(config.condition, {"result": result})
         elif config.method == "wait":
             await asyncio.sleep(config.wait_seconds)
             return True
 
 
-# ─── P0 安全修复：白名单条件求值器（替代 eval）───
+# ─── 结构化条件求值器（替代 safe_eval_condition + 正则解析）───
 
 import operator as op
-import re
 
-SAFE_OPERATORS = {
+OPERATORS = {
     "<": op.lt, ">": op.gt, "<=": op.le, ">=": op.ge,
     "==": op.eq, "!=": op.ne,
 }
-# 匹配 "field op literal" 三元组，如 "value < 500", "status == 'Running'"
-CONDITION_PATTERN = re.compile(
-    r"^(\w+(?:\.\w+)*)\s*(<=?|>=?|[!=]=)\s*(.+)$"
-)
 
-def safe_eval_condition(condition: str, variables: dict) -> bool:
-    """安全的条件求值：仅支持 'field op literal' 格式。
+def evaluate_condition(condition: VerificationCondition | None,
+                       variables: dict) -> bool:
+    """结构化条件求值：基于 VerificationCondition 模型。
 
-    支持的条件格式：
-      "value < 500"
-      "status == 'Running'"
-      "error_rate < 0.01"
-      "result.status == 'healthy'"
+    Review 增强（P0-2 深化）：原 safe_eval_condition() 使用正则解析字符串
+    "value < 500"，现在改为直接读取结构化字段，无字符串解析。
 
-    不支持任意 Python 表达式、函数调用、import 等。
+    示例：
+      condition = VerificationCondition(field="value", operator="<", value=500)
+      variables = {"value": 320.5}
+      → True (320.5 < 500)
     """
-    match = CONDITION_PATTERN.match(condition.strip())
-    if not match:
-        raise ValueError(f"Invalid condition format: {condition!r}. "
-                         f"Expected 'field op literal', e.g. 'value < 500'")
+    if condition is None:
+        return True  # 无条件 = 默认通过
 
-    field_path, operator_str, literal_str = match.groups()
-    op_func = SAFE_OPERATORS.get(operator_str)
-    if not op_func:
-        raise ValueError(f"Unsupported operator: {operator_str!r}")
+    op_func = OPERATORS[condition.operator]  # Literal 类型保证 key 合法
 
     # 解析字段值（支持嵌套如 result.status）
-    value = variables
-    for key in field_path.split("."):
-        if isinstance(value, dict):
-            value = value[key]
+    actual = variables
+    for key in condition.field.split("."):
+        if isinstance(actual, dict):
+            actual = actual[key]
         else:
-            value = getattr(value, key)
+            actual = getattr(actual, key)
 
-    # 解析字面量
-    literal_str = literal_str.strip()
-    if literal_str.startswith(("'", '"')) and literal_str.endswith(("'", '"')):
-        literal_value = literal_str[1:-1]
-    else:
-        try:
-            literal_value = int(literal_str)
-        except ValueError:
-            try:
-                literal_value = float(literal_str)
-            except ValueError:
-                literal_value = literal_str
-
-    return op_func(value, literal_value)
+    return op_func(actual, condition.value)
 ```
 
-### 7.6 诊断-修复循环编排器（Diagnosis-Remediation Loop Orchestrator）
+### 7.7 诊断-修复循环编排器（Diagnosis-Remediation Loop Orchestrator）
 
-#### 7.6.1 问题背景
+#### 7.7.1 问题背景
 
 原架构中，诊断 Agent 输出单一 root cause + RemediationPlan → 修复引擎执行 → 记录结果。
 这一流程在**高置信度单根因**场景下工作良好（如 Demo 1 中 confidence=0.94 的 GPU 争用）。
@@ -2051,7 +2130,7 @@ def safe_eval_condition(condition: str, variables: dict) -> bool:
 **核心矛盾**：诊断 Agent 通过只读工具收集的数据只能缩小假设空间，但某些根因之间
 的区分**必须通过实际修复操作 + 观测恢复效果**才能确认（即 "治疗性诊断"）。
 
-#### 7.6.2 架构设计
+#### 7.7.2 架构设计
 
 循环编排器是诊断 Agent 和修复引擎之间的**确定性编排层**，不包含 LLM 调用。
 
@@ -2093,7 +2172,7 @@ def safe_eval_condition(condition: str, variables: dict) -> bool:
 | 修复间隔 | 每次回滚后等待冷却期（cooldown） | 避免频繁修改导致系统不稳定 |
 | 最大尝试次数 | 配置项（默认 3） | 防止无限循环 |
 
-#### 7.6.3 数据模型
+#### 7.7.3 数据模型
 
 ```python
 class LoopConfig(BaseModel):
@@ -2132,7 +2211,7 @@ class LoopResult(BaseModel):
     re_diagnosis_context: dict | None           # 传递给增量诊断的上下文（如有）
 ```
 
-#### 7.6.4 循环编排器实现
+#### 7.7.4 循环编排器实现
 
 ```python
 class LoopOrchestrator:
@@ -2257,7 +2336,20 @@ class LoopOrchestrator:
                 observations={"error": "no_plan"},
                 duration_seconds=0)
 
-        result = await self.engine.execute(plan)
+        try:
+            result = await self.engine.execute(plan)
+        except PlanValidationError as e:
+            # Schema 校验失败：计划中的工具名/参数不合法（Review 增强 P1-5）
+            logger.warning(f"Plan validation failed for candidate "
+                           f"#{candidate.rank}: {e.errors}")
+            return CandidateAttempt(
+                candidate=candidate,
+                remediation_result=RemediationResult(
+                    success=False,
+                    reason=f"Plan validation failed: {e.errors}"),
+                verification_passed=False, rolled_back=False,
+                observations={"validation_errors": e.errors},
+                duration_seconds=(datetime.now() - start).seconds)
 
         if not result.success:
             # 修复执行本身失败（已由引擎内部回滚）
@@ -2344,10 +2436,10 @@ class LoopOrchestrator:
             return False
         # 使用最后一步的验证条件（通常是端到端验证）
         final_step = candidate.recommended_fix.steps[-1]
-        if final_step.verification and final_step.verification.success_condition:
+        if final_step.verification and final_step.verification.condition:
             for query, value in post.items():
-                result = safe_eval_condition(
-                    final_step.verification.success_condition,
+                result = evaluate_condition(
+                    final_step.verification.condition,
                     {"value": value})
                 if not result:
                     return False
@@ -2406,7 +2498,7 @@ class LoopOrchestrator:
             re_diagnosis_context=re_diag_context)
 ```
 
-#### 7.6.5 增量重新诊断（Re-diagnosis）
+#### 7.7.5 增量重新诊断（Re-diagnosis）
 
 当所有候选根因修复失败时，循环编排器可触发**增量重新诊断**。
 增量诊断不是从零开始，而是将前几轮修复的观测数据注入 SRE Agent 的上下文。
@@ -2472,7 +2564,7 @@ class SREAgent:
         return session
 ```
 
-#### 7.6.6 顶层调度入口
+#### 7.7.6 顶层调度入口
 
 ```python
 class IncidentHandler:
@@ -2537,7 +2629,7 @@ class IncidentHandler:
         return loop_result
 ```
 
-#### 7.6.7 架构不变量保证
+#### 7.7.7 架构不变量保证
 
 | 不变量 | 保证机制 |
 |--------|---------|
@@ -2549,7 +2641,7 @@ class IncidentHandler:
 | 审批仍然有效 | 每个候选的修复计划仍经过 `RemediationEngine` 的审批门控 |
 | 全程可观测 | `trace_callback` 推送 `loop_*` 事件到 WebSocket GUI |
 
-#### 7.6.8 流程总览
+#### 7.7.8 流程总览
 
 ```
 ┌──────────┐     DiagnosisResult        ┌───────────────────┐
@@ -2792,10 +2884,30 @@ class LearnedPattern(BaseModel):
     first_seen: datetime
     last_seen: datetime
     example_incidents: list[str]                # 关联事件 ID
+    # Review 增强（P1-6）：时间衰减配置
+    half_life_days: float = 90.0                # 置信度半衰期（天）
 
-    def should_suggest(self) -> bool:
-        """是否应该主动建议此模式"""
-        return self.occurrence_count >= 3 and self.confidence >= 0.7
+    def effective_confidence(self, now: datetime | None = None) -> float:
+        """计算带时间衰减的有效置信度
+
+        Review 增强（P1-6 深化）：原实现 confidence 只有奖惩无衰减，
+        半年前 confidence=0.9 的过期模式仍会以高置信度被推荐。
+        在 AIDC 环境中硬件迭代和配置变更频繁，加入指数衰减避免过期模式误导诊断。
+
+        衰减公式：effective = confidence × 0.5^(days_since_last_seen / half_life_days)
+        - half_life_days=90 时，90 天未见的模式有效置信度减半
+        - 180 天未见降至 1/4，基本不再被推荐
+        """
+        if now is None:
+            now = datetime.now()
+        days_elapsed = (now - self.last_seen).total_seconds() / 86400.0
+        decay_factor = 0.5 ** (days_elapsed / self.half_life_days)
+        return self.confidence * decay_factor
+
+    def should_suggest(self, now: datetime | None = None) -> bool:
+        """是否应该主动建议此模式（使用有效置信度）"""
+        return (self.occurrence_count >= 3
+                and self.effective_confidence(now) >= 0.7)
 ```
 
 ### 9.4 记忆存储与检索
@@ -2867,9 +2979,10 @@ class MemoryStore:
         return [self._load_from_db(iid) for iid in incident_ids]
 
     async def get_known_patterns(self) -> list[LearnedPattern]:
-        """获取所有高置信度模式"""
+        """获取所有高有效置信度模式（含时间衰减）"""
+        now = datetime.now()
         patterns = self._load_all_patterns()
-        return [p for p in patterns if p.should_suggest()]
+        return [p for p in patterns if p.should_suggest(now)]
 
     async def _update_patterns(self, record: IncidentRecord) -> None:
         """从新事件中提取/更新模式"""
@@ -4563,7 +4676,7 @@ async def chat_ws(websocket: WebSocket):
 │ · WAL 写前日志（fsync）                                    │
 │ · 审批门控（auto / human_confirm / blocked）               │
 │ · 灰度执行（canary → monitor → expand/rollback）          │
-│ · 条件求值使用白名单操作符（禁止 eval，P0 修复）           │
+│ · 验证条件结构化模型（禁止 eval 和字符串解析，Review 增强） │
 ├──────────────────────────────────────────────────────────┤
 │ 层级 4: 架构级                                             │
 │ · LLM 永远不直接执行写操作                                 │
@@ -5085,7 +5198,7 @@ cat data/nat_profiles/profiling_report.txt
 | 1. 自动检测 AIDC 拓扑（BMC/Switch/Host/Platform） | 3.5 DiscoveryAgent | ✓ |
 | 2. 数字孪生（Palantir Ontology 风格） | 3.1-3.4 Ontology 模型 | ✓ |
 | 3a. 根因分析 + 试验→验证→排查循环 | 4.2 LangGraph ReAct Agent + 7.6 LoopOrchestrator | ✓ 增强 |
-| 3a-ext. 多候选根因循环验证（治疗性诊断） | 7.6 LoopOrchestrator + 7.6.5 增量重诊 | ✓ 新增 |
+| 3a-ext. 多候选根因循环验证（治疗性诊断） | 7.7 LoopOrchestrator + 7.7.5 增量重诊 | ✓ 新增 |
 | 3b. 灰度发布 fix | 7.3 CanaryExecutor | ✓ |
 | 3c. 显示 Agent 思考过程 | 4.3 ThinkingTrace + WebSocket | ✓ |
 | 3d. 工具对接 log/telemetry/alert/platform/OS | 5.2 只读工具集 (40+ 工具) | ✓ |
@@ -5117,6 +5230,7 @@ cat data/nat_profiles/profiling_report.txt
 | FORBIDDEN_OPERATIONS | `safety/forbidden.py` | 同一代码库 |
 | Pydantic Config 基类 | `config.py` | 同一代码库 |
 | DiagnosisResult + RankedRootCause | `agent/models.py` | 扩展自 fault-injector，新增多候选支持 |
+| PlanValidator | `remediation/validator.py` | SRE Agent 独有（Review 增强） |
 | LoopOrchestrator | `remediation/loop_orchestrator.py` | SRE Agent 独有 |
 | IncidentHandler | `remediation/incident_handler.py` | SRE Agent 独有 |
 | ThresholdEngine | `tools/threshold.py` | 扩展自 load-simulator |
@@ -5130,7 +5244,7 @@ cat data/nat_profiles/profiling_report.txt
 
 | # | 问题 | 解决方式 | 文档位置 |
 |---|------|---------|----------|
-| P0-1 | `eval()` 远程代码执行：`_verify()` 使用 `eval(success_condition)` | 替换为 `safe_eval_condition()` 白名单操作符求值器 | §7.5 `_verify()` |
+| P0-1 | `eval()` 远程代码执行：`_verify()` 使用 `eval(success_condition)` | 替换为结构化 `VerificationCondition` 模型 + `evaluate_condition()` | §7.2, §7.6 `_verify()` |
 | P0-2 | SSH 命令注入：`log_path`、`filter_str` 未 shell escape | `shlex.quote()` + 路径白名单 | §6.2 LogChannel |
 | P0-3 | API/WebSocket 缺少鉴权 | 增加安全层级 0: NeMo Guardrails input/output rails | §15.1, §17 |
 | P0-4 | `asyncio.Queue.get(timeout=300)` 不支持 timeout | 改为 `asyncio.wait_for(queue.get(), timeout=300)` | §7.4 ApprovalGate |
@@ -5143,12 +5257,12 @@ cat data/nat_profiles/profiling_report.txt
 | P1-1 | `get_blast_radius()` BFS 方向错误 | 双向遍历 out_edges + in_edges，按关系类型决定方向 | §3.4 OntologyGraph |
 | P1-2 | `RemediationResult` 返回值不一致 | 统一 Result schema（待实现时完善） | §7.2 |
 | P1-3 | Alert 混用 `@dataclass` 和 Pydantic | 统一为 `BaseModel` | §6.2 AlertChannel |
-| P1-4 | `_verify()` 使用 `self.prometheus` 但未注入 | 构造函数显式注入 `PrometheusChannel` | §7.5 RemediationEngine |
-| P1-5 | LLM 看不到 write 工具 schema | write 工具描述附加到 system prompt（只读参考） | §4.2, §5.1 |
+| P1-4 | `_verify()` 使用 `self.prometheus` 但未注入 | 构造函数显式注入 `PrometheusChannel` | §7.6 RemediationEngine |
+| P1-5 | LLM 看不到 write 工具 schema | write 工具描述附加到 system prompt（只读参考）+ PlanValidator schema 校验（Review 增强） | §4.2, §5.1, §7.5 |
 | P1-6 | ReAct timeout 未实现 | `asyncio.wait_for` 在 agent_node（步级）和 diagnose（会话级）双层控制 | §4.2 |
 | P1-7 | `gather(return_exceptions=True)` 后未检查结果 | 待实现时增加错误聚合和数据新鲜度标注 | §3.5 |
 | P1-8 | 对话工具调用循环不完整 | 改用 LangGraph StateGraph 自动处理 tool_call → re-think 循环 | §16.2 |
-| P1-9 | 置信度更新不区分成功/失败 | resolved: +0.15, failed: -0.1 | §9.4 MemoryStore |
+| P1-9 | 置信度更新不区分成功/失败 | resolved: +0.15, failed: -0.1 + 时间衰减 `effective_confidence()`（Review 增强） | §9.3, §9.4 MemoryStore |
 | P1-10 | 同步库（sqlite3、ChromaDB）阻塞事件循环 | sqlite3 → aiosqlite；ChromaDB 通过 asyncio.to_thread() | §3.4, §9.4 |
 
 ### P2 — 已解决或计划
@@ -5163,7 +5277,7 @@ cat data/nat_profiles/profiling_report.txt
 | P2-6 | ThinkingStep/Observation 缺 `to_dict()` | 显式实现 `to_dict()` 方法（基于 `dataclasses.asdict`） | ✓ 已解决 |
 | P2-7 | 对话历史无限增长 | `deque(maxlen=MAX_HISTORY*2)` 限制为 50 轮 | ✓ 已解决 |
 | P2-8 | 无 LLM 调用速率限制 | 新增 `max_concurrent_diagnoses` 配置项 | ✓ 已解决 |
-| P2-9 | `CanaryConfig.success_criteria` 解析未定义 | 与 P0-1 统一使用 `safe_eval_condition()` | ✓ 已解决 |
+| P2-9 | `CanaryConfig.success_criteria` 解析未定义 | 与 P0-1 统一为结构化 `CanaryCondition` 模型 | ✓ 已解决 |
 | P2-10 | kubeconfig 出现两处 | discovery 引用 channels 配置 | ✓ 已解决 |
 
 ### 跨组件问题
@@ -5172,7 +5286,7 @@ cat data/nat_profiles/profiling_report.txt
 |---|------|---------|------|
 | 跨-1 | fault-injector ↔ load-simulator 联动接口不一致 | 推荐统一为"调用方读取 `report/report.json`"方案 | 见 fault-injector / load-simulator 文档 |
 | 跨-2 | 三组件鉴权落地程度不一 | auto-SRE 通过 NeMo Guardrails 补齐安全层 | ✓ 已解决 |
-| 跨-3 | 条件表达式求值各自实现 | 统一使用 `safe_eval_condition()` | ✓ 已解决 |
+| 跨-3 | 条件表达式求值各自实现 | 统一使用结构化 `VerificationCondition` / `CanaryCondition` | ✓ 已解决 |
 
 ### 已确认的设计亮点（保留）
 
@@ -5184,8 +5298,11 @@ cat data/nat_profiles/profiling_report.txt
 - **新增**：LangGraph 提供标准化的 Agent 状态管理和 checkpoint 持久化。
 - **新增**：NeMo Guardrails 提供声明式安全护栏，比手写安全检查更系统化。
 - **新增**：NeMo Agent Toolkit 提供开箱即用的 profiling 和 evaluation。
-- **新增**：诊断-修复循环编排器（§7.6）补齐了 "多候选根因实机验证" 闭环，支持治疗性诊断模式。
+- **新增**：诊断-修复循环编排器（§7.7）补齐了 "多候选根因实机验证" 闭环，支持治疗性诊断模式。
 - **新增**：`DiagnosisResult.ranked_candidates` + `diagnosis_certainty` 三级分类，让编排器根据确定性级别自动决策是否进入循环。
+- **Review 增强**：验证条件从字符串解析（`safe_eval_condition`）升级为结构化模型（`VerificationCondition`），彻底消除字符串求值风险（§7.2）。
+- **Review 增强**：新增 PlanValidator（§7.5），在审批门控前校验 LLM 生成的修复计划的工具名/参数合法性，不通过则退回重生成。
+- **Review 增强**：模式记忆加入时间衰减 `effective_confidence()`（§9.3），避免过期模式以高置信度误导诊断。
 
 ### 长期产品级优化
 
