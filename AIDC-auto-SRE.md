@@ -322,11 +322,35 @@ sre_agent/
 │   ├── guard.py                    # SafetyGuard
 │   └── forbidden.py                # 禁止操作列表
 │
+├── concurrency/                    # Review P0-3/P0-4 新增
+│   ├── resource_lock.py            # 资源级互斥锁（asyncio / Redis）
+│   ├── alert_dedup.py              # 告警幂等去重
+│   └── alert_correlator.py         # 告警风暴关联聚合
+│
+├── auth/                           # Review P0-2 新增
+│   ├── middleware.py               # JWT 鉴权中间件 + RBAC
+│   └── secrets.py                  # 密钥管理（env/Vault/K8s）
+│
+├── ha/                             # Review P1-1 新增
+│   ├── heartbeat.py                # 心跳检测
+│   └── leader.py                   # Leader 选举（Redis）
+│
+├── slo/                            # Review P1-4 新增
+│   ├── metrics.py                  # SLI 指标采集
+│   └── degradation.py              # 自动降级策略
+│
+├── lifecycle/                      # Review P2-6 新增
+│   └── data_lifecycle.py           # 数据归档/清理
+│
 └── tests/
     ├── test_agent.py
     ├── test_ontology.py
     ├── test_remediation.py
-    └── test_tools.py
+    ├── test_tools.py
+    ├── test_auth.py                # Review P0-2
+    ├── test_resource_lock.py       # Review P0-3
+    ├── test_alert_correlator.py    # Review P0-4
+    └── test_slo_degradation.py     # Review P1-4
 ```
 
 ### 2.6 核心架构不变量
@@ -339,6 +363,10 @@ sre_agent/
 6. **验证条件结构化**：所有验证条件（`VerificationCondition`、`CanaryCondition`）采用结构化三字段模型（`field` + `operator` + `value`），通过 Pydantic 在模型层直接校验，禁止字符串解析和 `eval()`。
 7. **循环必须终止**：LoopOrchestrator 的候选尝试受 `max_candidates`（默认 3）和 `max_re_diagnosis_rounds`（默认 1）双重约束，最终一定解决或升级给人工。
 8. **修复失败必须回滚**：循环中每个候选验证失败后，LoopOrchestrator 强制调用 `wal.recover_all()` 回滚，确保下一候选的验证基线干净。
+9. **所有 API 返回经过 Pydantic 模型**（Review P0-1）：禁止 dict 直接返回，`SREResponse[T]` 统一包装。
+10. **所有端点强制鉴权**（Review P0-2）：REST API 通过 `Depends(get_current_user)` 注入，WebSocket 在 `on_connect` 阶段校验 JWT。
+11. **同一实体不可并发修复**（Review P0-3）：`ResourceLock` 在 Ontology 实体级别互斥，防止交叉修复。
+12. **告警风暴不穿透**（Review P0-4）：`AlertCorrelator` 基于拓扑关联聚合，`AlertDeduplicator` 基于 fingerprint 去重。
 
 ---
 
@@ -773,14 +801,51 @@ class SREAgent:
         self.memory = memory
         self.max_steps = config.max_steps  # 默认 20
 
-        # ── 构建 LLM ──
-        self.llm = ChatOpenAI(
+        # ── 构建 LLM（含故障降级，Review P1-5）──
+        self.llm = self._build_llm_with_fallback(config)
+
+    def _build_llm_with_fallback(self, config: AgentConfig) -> ChatOpenAI:
+        """构建带故障降级的 LLM 链
+
+        Review P1-5 新增（来自 review-feedback）：
+        - 主 LLM 不可用时自动切换到 fallback LLM
+        - 所有 LLM 均不可用时降级到 ThresholdEngine 规则引擎
+        - 降级后功能范围：仅基于阈值的告警分类 + 已知模式匹配，无推理能力
+        - 恢复：每 60s 探测主 LLM 健康，恢复后自动切回
+
+        降级触发条件：
+        - 连续 3 次 API 调用超时（step_timeout）
+        - 连续 3 次 HTTP 5xx 错误
+        - 连续 3 次 rate limit (429)
+        """
+        from langchain_core.runnables import RunnableWithFallbacks
+
+        primary = ChatOpenAI(
             model=config.llm.model,
             openai_api_base=str(config.llm.api_base),
             openai_api_key=os.environ[config.llm.api_key_env],
             temperature=config.llm.temperature,
             max_tokens=config.llm.max_tokens,
+            max_retries=2,
         )
+
+        if config.fallback_llm:
+            fallback = ChatOpenAI(
+                model=config.fallback_llm.model,
+                openai_api_base=str(config.fallback_llm.api_base),
+                openai_api_key=os.environ[config.fallback_llm.api_key_env],
+                temperature=config.fallback_llm.temperature,
+                max_tokens=config.fallback_llm.max_tokens,
+                max_retries=2,
+            )
+            # LangChain 原生 fallback chain
+            return primary.with_fallbacks([fallback])
+        return primary
+
+        # ── LLM 健康监控（Review P1-5）──
+        self._llm_degraded = False
+        self._llm_failure_count = 0
+        self._llm_failure_threshold = 3
 
         # ── 构建 LangChain Tools ──
         self.lc_tools = self._build_langchain_tools()
@@ -1707,6 +1772,130 @@ class KnowledgeBaseChannel:
         return await self.store.search_runbooks(symptom)
 ```
 
+### 6.3 告警风暴与级联故障处理（Review P0-4）
+
+> **Review P0-4 新增**（来自 review-feedback）：智算中心最常见的生产事故是级联故障。
+> 一台交换机故障可导致下挂 20 台 GPU 节点同时触发网络/训练/健康检查告警（60+ 条）。
+> 若不做聚合，会耗尽 `max_concurrent_diagnoses` 并产生大量重复修复。
+
+#### 6.3.1 告警关联聚合（Topology-Aware Alert Correlation）
+
+```python
+class AlertCorrelator:
+    """基于 Ontology 拓扑的告警关联聚合
+
+    核心思路：短时间内涌入的多条告警，通过 Ontology 拓扑关系
+    判断是否同源（共享上游根因实体），合并为一个 IncidentGroup。
+
+    聚合策略：
+    1. 时间窗口：correlation_window 内到达的告警尝试聚合
+    2. 拓扑关联：通过 get_blast_radius() 反向查找，
+       如果多条告警的 target 实体共享同一上游实体，合并为同一 group
+    3. 抑制：已在处理的 group 内新增的下游告警自动 suppress
+    """
+
+    def __init__(self, ontology: OntologyGraph,
+                 correlation_window: int = 60,
+                 max_group_size: int = 50):
+        self.ontology = ontology
+        self.correlation_window = correlation_window
+        self.max_group_size = max_group_size
+        self._groups: dict[str, AlertGroup] = {}
+
+    class AlertGroup(BaseModel):
+        group_id: str
+        root_entity_id: str                     # 推测的上游根因实体
+        alerts: list[Alert]
+        created_at: datetime
+        session_id: str | None = None           # 关联的诊断会话
+        suppressed_count: int = 0               # 被抑制的下游告警数
+
+    def correlate(self, alert: Alert) -> tuple[str, bool]:
+        """对告警进行关联分组
+
+        Returns:
+            (group_id, is_new_group)
+            - 新组：需要触发诊断
+            - 已有组：告警被聚合（suppressed），不触发新诊断
+        """
+        target_entities = self._extract_entities(alert)
+        now = datetime.now()
+
+        # 尝试匹配已有 group（基于拓扑关系）
+        for gid, group in self._groups.items():
+            if (now - group.created_at).total_seconds() > self.correlation_window:
+                continue
+            if len(group.alerts) >= self.max_group_size:
+                continue
+            # 检查拓扑关联
+            if self._shares_upstream(target_entities, group.root_entity_id):
+                group.alerts.append(alert)
+                group.suppressed_count += 1
+                logger.info(f"Alert {alert.alert_name} suppressed into "
+                            f"group {gid} (root: {group.root_entity_id})")
+                return (gid, False)
+
+        # 无匹配 → 创建新组
+        root_entity = self._find_common_root(target_entities)
+        gid = str(uuid4())[:8]
+        self._groups[gid] = self.AlertGroup(
+            group_id=gid, root_entity_id=root_entity,
+            alerts=[alert], created_at=now)
+        return (gid, True)
+
+    def _shares_upstream(self, entities: list[str],
+                         root_entity_id: str) -> bool:
+        """检查实体列表是否与 root_entity 有上下游关系"""
+        blast = self.ontology.get_blast_radius(root_entity_id, max_hops=3)
+        blast_ids = {e.id for e in blast}
+        return bool(set(entities) & blast_ids)
+
+    def _find_common_root(self, entities: list[str]) -> str:
+        """查找实体列表的最近公共上游（LCA on ontology graph）"""
+        if len(entities) == 1:
+            return entities[0]
+        # 简化实现：取第一个实体的最近上游节点
+        for eid in entities:
+            parents = self.ontology.get_upstream(eid)
+            if parents:
+                return parents[0]
+        return entities[0]
+
+    def _extract_entities(self, alert: Alert) -> list[str]:
+        """从告警 labels 提取 Ontology 实体 ID"""
+        entities = []
+        for key in ("node", "instance", "pod", "service", "switch", "port"):
+            if key in alert.labels:
+                entities.append(alert.labels[key])
+        return entities or [alert.alert_name]
+```
+
+#### 6.3.2 集成到 IncidentHandler
+
+```
+告警到达
+  ↓
+AlertDeduplicator.check()  ─ 重复? → suppress
+  ↓ (新告警)
+AlertCorrelator.correlate() ─ 已有组? → 聚合到组，suppress
+  ↓ (新组)
+ResourceLock.acquire()
+  ↓
+SREAgent.diagnose()         ─ 诊断使用组内所有告警作为上下文
+  ↓
+LoopOrchestrator.execute()
+```
+
+**流量保护配置**：
+
+```yaml
+alert_storm:
+  correlation_window: 60           # 告警关联时间窗口（秒）
+  max_group_size: 50               # 单组最大告警数
+  queue_overflow_strategy: "drop_oldest"  # 队列溢出策略
+  max_queue_depth: 200             # 最大排队深度
+```
+
 ---
 
 ## 7. 修复引擎（Remediation Engine）
@@ -1780,6 +1969,9 @@ class CanaryConfig(BaseModel):
     target_percentage: float = 0.1              # 首批 10%
     monitor_duration: int = 120                 # 监控窗口（秒）
     success_criteria: list[CanaryCondition]     # 结构化灰度验证条件
+    criteria_mode: Literal["all", "any"] = "all"  # Review P1-7: 多条件聚合
+                                                # all = AND（默认，所有条件必须满足）
+                                                # any = OR（任一条件满足即通过）
     max_batches: int = 3                        # 最多分 3 批
     auto_rollback_on_regression: bool = True
 
@@ -1800,11 +1992,75 @@ class RemediationResult(BaseModel):
     success: bool
     steps_completed: int
     steps_total: int
-    failed_step: RemediationStep | None
-    rolled_back: bool
-    verification_results: list[dict]
-    duration_seconds: int
+    failed_step: RemediationStep | None = None
+    rolled_back: bool = False
+    verification_results: list[dict] = []
+    duration_seconds: int = 0
+    error: str | None = None                    # Review P0-1: 统一错误描述字段
 ```
+
+### 7.2.1 统一响应契约与错误模型
+
+> **Review P0-1 修复**：原设计中 `RemediationResult`、`LoopResult`、`DiagnosisSession`
+> 等返回模型存在以下问题：(1) Optional 字段无默认值，部分返回分支未填充全部字段；
+> (2) 存在非模型化返回路径（如直接 `return {"reason": ...}` 绕过 Pydantic）。
+> 新增统一错误模型和响应包装器，强制所有 API 返回通过 Pydantic 模型。
+
+```python
+# ─── 统一错误模型 ───
+
+class ErrorCode(str, Enum):
+    """跨组件统一错误码表（Review P2-1 同步解决）"""
+    # 诊断类
+    DIAGNOSIS_TIMEOUT = "DIAG_TIMEOUT"
+    DIAGNOSIS_LLM_ERROR = "DIAG_LLM_ERR"
+    DIAGNOSIS_NO_RESULT = "DIAG_NO_RESULT"
+    # 修复类
+    REMEDIATION_PLAN_INVALID = "REM_PLAN_INVALID"
+    REMEDIATION_APPROVAL_DENIED = "REM_APPROVAL_DENIED"
+    REMEDIATION_APPROVAL_TIMEOUT = "REM_APPROVAL_TIMEOUT"
+    REMEDIATION_EXECUTION_FAILED = "REM_EXEC_FAILED"
+    REMEDIATION_ROLLBACK_FAILED = "REM_ROLLBACK_FAILED"
+    REMEDIATION_BLOCKED = "REM_BLOCKED"
+    # 并发类
+    RESOURCE_LOCKED = "RES_LOCKED"
+    ALERT_DUPLICATE = "ALERT_DUPLICATE"
+    CONCURRENT_LIMIT = "CONCURRENT_LIMIT"
+    # 鉴权类
+    AUTH_REQUIRED = "AUTH_REQUIRED"
+    AUTH_FORBIDDEN = "AUTH_FORBIDDEN"
+    # 通用
+    INTERNAL_ERROR = "INTERNAL_ERROR"
+    VALIDATION_ERROR = "VALIDATION_ERROR"
+
+class SREError(BaseModel):
+    """统一错误响应"""
+    code: ErrorCode
+    message: str
+    details: dict | None = None
+    trace_id: str | None = None                 # Review P2-7: 关联分布式追踪
+
+class SREResponse(BaseModel, Generic[T]):
+    """统一 API 响应包装器
+
+    所有 API 端点必须通过此模型返回，禁止直接 return dict。
+    FastAPI 的 response_model 强制约束返回类型。
+    """
+    success: bool
+    data: T | None = None
+    error: SREError | None = None
+    trace_id: str                               # 每次请求生成的唯一 ID
+    timestamp: datetime = Field(default_factory=datetime.now)
+```
+
+**契约约束规则**：
+
+| 规则 | 说明 |
+|------|------|
+| 禁止 dict 返回 | 所有返回值必须经过 Pydantic 模型，FastAPI `response_model` 强制 |
+| Optional 字段必须有默认值 | `field: T | None = None`，防止分支遗漏赋值 |
+| 错误用 SREError | 不再使用 `reason` 字符串，统一 `ErrorCode` + `message` |
+| 契约测试 | CI 中对每种 outcome（成功/失败/回滚/拒绝）运行 schema 断言 |
 
 ### 7.3 灰度部署（Canary）
 
@@ -1839,14 +2095,23 @@ class CanaryExecutor:
             logger.info(f"Monitoring canary for {canary.monitor_duration}s...")
             await asyncio.sleep(canary.monitor_duration)
 
-            # 检查成功标准（结构化 CanaryCondition）
+            # 检查成功标准（结构化 CanaryCondition + 聚合逻辑 Review P1-7）
+            results = []
             for criterion in canary.success_criteria:
                 met = await self._check_canary_condition(criterion)
+                results.append(met)
                 if not met:
                     logger.warning(f"Canary criterion failed: {criterion}")
-                    if canary.auto_rollback_on_regression:
-                        await self.wal.recover_all()
-                    return RemediationResult(success=False, rolled_back=True, ...)
+
+            # Review P1-7: 多条件聚合 — all=AND(默认), any=OR
+            passed = (all(results) if canary.criteria_mode == "all"
+                      else any(results))
+            if not passed:
+                logger.warning(f"Canary criteria check failed "
+                               f"(mode={canary.criteria_mode})")
+                if canary.auto_rollback_on_regression:
+                    await self.wal.recover_all()
+                return RemediationResult(success=False, rolled_back=True, ...)
 
             logger.info(f"Canary batch {batch_idx+1} passed, expanding...")
 
@@ -2119,9 +2384,175 @@ def evaluate_condition(condition: VerificationCondition | None,
     return op_func(actual, condition.value)
 ```
 
-### 7.7 诊断-修复循环编排器（Diagnosis-Remediation Loop Orchestrator）
+### 7.7 资源级互斥锁与告警幂等（Review P0-3）
 
-#### 7.7.1 问题背景
+> **Review P0-3 修复**：原设计仅有 `max_concurrent_remediations` 全局数量限制，
+> 缺少资源级并发互斥。重复告警或并发告警可能触发对同一节点/服务的重复修复。
+> 新增资源锁 + 告警幂等键机制。
+
+#### 7.7.1 资源锁（ResourceLock）
+
+```python
+from contextlib import asynccontextmanager
+
+class ResourceLock:
+    """资源级互斥锁 — 防止对同一实体的并发修复
+
+    锁粒度：node_id / service_id / switch:port_id 等 Ontology 实体级别。
+
+    实现选型：
+    - 单实例部署：asyncio.Lock（进程内，零外部依赖）
+    - 多实例部署（HA）：Redis 分布式锁（SETNX + TTL）或 etcd lease
+
+    当前阶段采用 asyncio.Lock，HA 迁移时替换为 Redis 实现（接口不变）。
+    """
+
+    def __init__(self, backend: Literal["asyncio", "redis"] = "asyncio",
+                 lock_timeout: int = 600,
+                 redis_url: str | None = None):
+        self.backend = backend
+        self.lock_timeout = lock_timeout
+        self._locks: dict[str, asyncio.Lock] = {}  # asyncio 模式
+        self._redis = None
+        if backend == "redis" and redis_url:
+            import redis.asyncio as aioredis
+            self._redis = aioredis.from_url(redis_url)
+
+    @asynccontextmanager
+    async def acquire(self, resource_id: str, holder: str = ""):
+        """获取资源锁
+
+        Args:
+            resource_id: Ontology 实体 ID，如 "gpu-1-1", "svc:vllm-inference"
+            holder: 持有者标识（session_id）
+
+        Raises:
+            ResourceLockedError: 资源已被其他会话锁定
+        """
+        if self.backend == "asyncio":
+            lock = self._locks.setdefault(resource_id, asyncio.Lock())
+            if lock.locked():
+                raise ResourceLockedError(
+                    resource_id=resource_id,
+                    message=f"Resource {resource_id} is locked by another session")
+            async with lock:
+                yield
+        elif self.backend == "redis":
+            lock_key = f"sre:lock:{resource_id}"
+            acquired = await self._redis.set(
+                lock_key, holder, nx=True, ex=self.lock_timeout)
+            if not acquired:
+                current = await self._redis.get(lock_key)
+                raise ResourceLockedError(
+                    resource_id=resource_id,
+                    message=f"Resource {resource_id} locked by {current}")
+            try:
+                yield
+            finally:
+                await self._redis.delete(lock_key)
+
+class ResourceLockedError(Exception):
+    def __init__(self, resource_id: str, message: str):
+        self.resource_id = resource_id
+        super().__init__(message)
+```
+
+#### 7.7.2 告警幂等键（Alert Deduplication）
+
+```python
+class AlertDeduplicator:
+    """告警去重 — 基于 fingerprint + 时间窗口
+
+    fingerprint = hash(alert_name + sorted(labels))
+    同一 fingerprint 在 dedup_window 内的重复告警被合并，
+    仅保留首次告警触发的诊断会话。
+
+    与 Prometheus Alertmanager 的 group_wait / group_interval 互补：
+    Alertmanager 在告警源侧聚合，本模块在 Agent 侧做最终去重。
+    """
+
+    def __init__(self, dedup_window: int = 300):
+        self.dedup_window = dedup_window           # 去重窗口（秒）
+        self._seen: dict[str, AlertDeduplicator._Entry] = {}
+
+    class _Entry(BaseModel):
+        fingerprint: str
+        session_id: str
+        first_seen: datetime
+        count: int = 1
+
+    def fingerprint(self, alert: Alert) -> str:
+        """生成告警指纹"""
+        import hashlib
+        raw = f"{alert.alert_name}|" + "|".join(
+            f"{k}={v}" for k, v in sorted(alert.labels.items()))
+        return hashlib.sha256(raw.encode()).hexdigest()[:16]
+
+    def check_and_register(self, alert: Alert, session_id: str
+                           ) -> tuple[bool, str | None]:
+        """检查告警是否重复
+
+        Returns:
+            (is_duplicate, existing_session_id)
+            - (False, None): 新告警，已注册
+            - (True, session_id): 重复告警，返回已有会话 ID
+        """
+        fp = self.fingerprint(alert)
+        self._cleanup_expired()
+
+        if fp in self._seen:
+            entry = self._seen[fp]
+            entry.count += 1
+            return (True, entry.session_id)
+
+        self._seen[fp] = self._Entry(
+            fingerprint=fp, session_id=session_id,
+            first_seen=datetime.now())
+        return (False, None)
+
+    def _cleanup_expired(self):
+        now = datetime.now()
+        expired = [fp for fp, e in self._seen.items()
+                   if (now - e.first_seen).total_seconds() > self.dedup_window]
+        for fp in expired:
+            del self._seen[fp]
+```
+
+#### 7.7.3 集成到 IncidentHandler
+
+```python
+class IncidentHandler:
+    def __init__(self, ..., resource_lock: ResourceLock,
+                 deduplicator: AlertDeduplicator):
+        ...
+        self.lock = resource_lock
+        self.dedup = deduplicator
+
+    async def handle(self, alert: Alert, ...) -> SREResponse[LoopResult]:
+        session_id = str(uuid4())
+
+        # 1. 告警去重
+        is_dup, existing_sid = self.dedup.check_and_register(alert, session_id)
+        if is_dup:
+            return SREResponse(success=True, data=None,
+                               error=SREError(code=ErrorCode.ALERT_DUPLICATE,
+                                              message=f"Duplicate alert, see session {existing_sid}"),
+                               trace_id=generate_trace_id())
+
+        # 2. 资源锁（基于告警关联的 Ontology 实体）
+        entity_ids = self._extract_target_entities(alert)
+        for eid in entity_ids:
+            async with self.lock.acquire(eid, holder=session_id):
+                pass  # 实际在下面的诊断循环中持有锁
+
+        # 3. 正常诊断流程...
+```
+
+---
+
+### 7.8 诊断-修复循环编排器（Diagnosis-Remediation Loop Orchestrator）
+
+#### 7.8.1 问题背景
 
 原架构中，诊断 Agent 输出单一 root cause + RemediationPlan → 修复引擎执行 → 记录结果。
 这一流程在**高置信度单根因**场景下工作良好（如 Demo 1 中 confidence=0.94 的 GPU 争用）。
@@ -2137,7 +2568,7 @@ def evaluate_condition(condition: VerificationCondition | None,
 **核心矛盾**：诊断 Agent 通过只读工具收集的数据只能缩小假设空间，但某些根因之间
 的区分**必须通过实际修复操作 + 观测恢复效果**才能确认（即 "治疗性诊断"）。
 
-#### 7.7.2 架构设计
+#### 7.8.2 架构设计
 
 循环编排器是诊断 Agent 和修复引擎之间的**确定性编排层**，不包含 LLM 调用。
 
@@ -2179,7 +2610,7 @@ def evaluate_condition(condition: VerificationCondition | None,
 | 修复间隔 | 每次回滚后等待冷却期（cooldown） | 避免频繁修改导致系统不稳定 |
 | 最大尝试次数 | 配置项（默认 3） | 防止无限循环 |
 
-#### 7.7.3 数据模型
+#### 7.8.3 数据模型
 
 ```python
 class LoopConfig(BaseModel):
@@ -2218,7 +2649,7 @@ class LoopResult(BaseModel):
     re_diagnosis_context: dict | None           # 传递给增量诊断的上下文（如有）
 ```
 
-#### 7.7.4 循环编排器实现
+#### 7.8.4 循环编排器实现
 
 ```python
 class LoopOrchestrator:
@@ -2505,7 +2936,7 @@ class LoopOrchestrator:
             re_diagnosis_context=re_diag_context)
 ```
 
-#### 7.7.5 增量重新诊断（Re-diagnosis）
+#### 7.8.5 增量重新诊断（Re-diagnosis）
 
 当所有候选根因修复失败时，循环编排器可触发**增量重新诊断**。
 增量诊断不是从零开始，而是将前几轮修复的观测数据注入 SRE Agent 的上下文。
@@ -2571,7 +3002,7 @@ class SREAgent:
         return session
 ```
 
-#### 7.7.6 顶层调度入口
+#### 7.8.6 顶层调度入口
 
 ```python
 class IncidentHandler:
@@ -2636,7 +3067,7 @@ class IncidentHandler:
         return loop_result
 ```
 
-#### 7.7.7 架构不变量保证
+#### 7.8.7 架构不变量保证
 
 | 不变量 | 保证机制 |
 |--------|---------|
@@ -2648,7 +3079,7 @@ class IncidentHandler:
 | 审批仍然有效 | 每个候选的修复计划仍经过 `RemediationEngine` 的审批门控 |
 | 全程可观测 | `trace_callback` 推送 `loop_*` 事件到 WebSocket GUI |
 
-#### 7.7.8 流程总览
+#### 7.8.8 流程总览
 
 ```
 ┌──────────┐     DiagnosisResult        ┌───────────────────┐
@@ -3024,7 +3455,59 @@ class MemoryStore:
             self._save_pattern(pattern)
 ```
 
-### 9.5 记忆增强诊断
+### 9.5 数据生命周期管理（Review P2-6）
+
+> **Review P2-6 新增**（来自 review-feedback）：记忆系统持续积累数据，
+> 需要 TTL/归档策略防止存储膨胀和检索性能退化。
+
+| 数据类型 | 保留策略 | 归档方式 |
+|----------|----------|----------|
+| 事件记忆（IncidentRecord） | 热数据 90 天，温数据 1 年 | 90 天后移至归档表，1 年后导出到 S3/OSS |
+| 模式记忆（LearnedPattern） | 永久保留（effective_confidence 自然衰减） | 衰减到 < 0.1 的模式标记为 inactive |
+| 配置记忆 | 永久保留（覆盖更新） | — |
+| 向量索引（ChromaDB） | 与事件记忆同步 | 归档事件同时从向量索引删除 |
+| 知识库文档 | 永久保留，支持版本管理 | 旧版本压缩存储 |
+
+```python
+class DataLifecycleManager:
+    """数据生命周期管理 — 定期清理/归档
+
+    Review P2-6：通过 Celery Beat 或 asyncio 定时任务执行。
+    """
+
+    def __init__(self, memory: MemoryStore,
+                 hot_retention_days: int = 90,
+                 warm_retention_days: int = 365):
+        self.memory = memory
+        self.hot_days = hot_retention_days
+        self.warm_days = warm_retention_days
+
+    async def run_lifecycle(self):
+        """周期执行（建议每日一次）"""
+        now = datetime.now()
+        # 1. 归档过期事件
+        hot_cutoff = now - timedelta(days=self.hot_days)
+        archived = await self.memory.archive_incidents_before(hot_cutoff)
+        logger.info(f"Archived {archived} incidents older than {self.hot_days}d")
+
+        # 2. 清理过期向量索引
+        await self.memory.cleanup_vectors(before=hot_cutoff)
+
+        # 3. 标记低效模式为 inactive
+        patterns = await self.memory.get_all_patterns()
+        for p in patterns:
+            if p.effective_confidence(now) < 0.1:
+                p.status = "inactive"
+                await self.memory.save_pattern(p)
+
+        # 4. 存储容量预警
+        usage = await self.memory.get_storage_usage()
+        if usage.total_mb > usage.quota_mb * 0.8:
+            logger.warning(f"Memory storage at {usage.total_mb}/{usage.quota_mb}MB "
+                           f"({usage.total_mb/usage.quota_mb*100:.0f}%)")
+```
+
+### 9.6 记忆增强诊断
 
 记忆系统如何加速诊断：
 
@@ -3408,11 +3891,21 @@ class SkillExecutor:
 
     def __init__(self, default_timeout_sec: int = 60,
                  max_output_chars: int = 12000,
-                 env_allowlist: list[str] | None = None):
+                 env_allowlist: list[str] | None = None,
+                 sandbox_mode: Literal["none", "namespace", "cgroup"] = "none"):
+        """
+        Review P1-6 安全增强：
+        - sandbox_mode: 脚本执行隔离级别
+          - none: 仅超时+环境变量白名单（开发环境）
+          - namespace: Linux unshare 隔离 PID/NET/MNT（推荐生产）
+          - cgroup: systemd-run 资源限制（CPU/Memory）
+        - 输出注入防护：脚本输出在注入 LLM 上下文前经过 sanitize
+        """
         self.default_timeout_sec = default_timeout_sec
         self.max_output_chars = max_output_chars
         self.env_allowlist = env_allowlist or [
             "PATH", "HOME", "USER", "LANG", "LC_ALL"]
+        self.sandbox_mode = sandbox_mode
 
     def run_script(self, script_path: Path, args: dict,
                    cwd: Path, timeout_sec: int | None = None) -> dict:
@@ -3427,8 +3920,8 @@ class SkillExecutor:
                 cmd, cwd=str(cwd), env=env,
                 capture_output=True, text=True, timeout=timeout)
             dur_ms = int((time.time() - start) * 1000)
-            stdout = self._truncate(p.stdout or "")
-            stderr = self._truncate(p.stderr or "")
+            stdout = self._sanitize_output(self._truncate(p.stdout or ""))
+            stderr = self._sanitize_output(self._truncate(p.stderr or ""))
             data = self._extract_result_json(stdout, cwd)
             return {
                 "ok": p.returncode == 0,
@@ -3446,14 +3939,54 @@ class SkillExecutor:
             }
 
     def _build_cmd(self, script_path: Path) -> list[str]:
+        """构建执行命令
+
+        Review P1-6 安全增强：可选 cgroup/namespace 隔离。
+        """
         suffix = script_path.suffix.lower()
+        base_cmd = []
+
+        # Review P1-6: 生产环境可通过 unshare/systemd-run 隔离
+        if self.sandbox_mode == "namespace":
+            # Linux namespace 隔离：新 PID/NET/MNT namespace
+            base_cmd = ["unshare", "--pid", "--net", "--mount",
+                        "--fork", "--map-root-user"]
+        elif self.sandbox_mode == "cgroup":
+            # cgroup 资源限制：CPU 50%, 内存 512MB
+            base_cmd = ["systemd-run", "--scope",
+                        "-p", "MemoryMax=512M",
+                        "-p", "CPUQuota=50%"]
+
         if suffix in (".sh", ".bash"):
-            return ["bash", str(script_path)]
+            return base_cmd + ["bash", str(script_path)]
         if suffix == ".py":
-            return ["python3", str(script_path)]
+            return base_cmd + ["python3", str(script_path)]
         if os.access(script_path, os.X_OK):
-            return [str(script_path)]
-        return ["bash", str(script_path)]
+            return base_cmd + [str(script_path)]
+        return base_cmd + ["bash", str(script_path)]
+
+    def _sanitize_output(self, s: str) -> str:
+        """Review P1-6: 防止脚本输出注入 LLM 上下文
+
+        脚本输出会被注入到 LLM 的 observation 消息中。
+        恶意脚本可构造类似 system prompt 的文本进行 prompt injection。
+        通过以下方式缓解：
+        1. 移除常见 prompt injection 模式（"ignore previous", "system:" 等）
+        2. 限制输出中的特殊标记（<|im_start|> 等 chat template 标记）
+        3. 在输出前后添加明确的边界标记
+        """
+        import re
+        # 移除 chat template 控制标记
+        s = re.sub(r'<\|(?:im_start|im_end|system|user|assistant)\|>', '', s)
+        # 移除常见 injection 尝试
+        injection_patterns = [
+            r'(?i)ignore\s+(all\s+)?previous\s+instructions',
+            r'(?i)you\s+are\s+now\s+',
+            r'(?i)new\s+system\s+prompt',
+        ]
+        for pat in injection_patterns:
+            s = re.sub(pat, '[FILTERED]', s)
+        return s
 
     def _truncate(self, s: str) -> str:
         if len(s) <= self.max_output_chars:
@@ -4339,6 +4872,49 @@ monitor:
   scrape_interval: 15                          # 指标采集间隔（秒）
   alert_check_interval: 10                     # 告警检查间隔（秒）
 
+# ─── 告警风暴处理（Review P0-4 新增）───
+alert_storm:
+  correlation_window: 60                       # 告警关联时间窗口（秒）
+  max_group_size: 50                           # 单组最大告警数
+  dedup_window: 300                            # 去重窗口（秒）
+  queue_overflow_strategy: "drop_oldest"       # 队列溢出策略
+  max_queue_depth: 200                         # 最大排队深度
+
+# ─── 资源锁（Review P0-3 新增）───
+resource_lock:
+  backend: "asyncio"                           # asyncio | redis
+  lock_timeout: 600                            # 锁超时（秒）
+  redis_url: null                              # redis 模式时必填
+
+# ─── 密钥管理（Review P1-2 新增）───
+secrets:
+  backend: "env"                               # env | vault | k8s
+  vault_url: null                              # vault 模式时必填
+  vault_token_env: "VAULT_TOKEN"
+
+# ─── HA / 容灾（Review P1-1 新增）───
+ha:
+  enabled: false                               # 是否启用 HA
+  heartbeat_interval: 5                        # 心跳间隔（秒）
+  heartbeat_timeout: 15                        # 心跳超时（秒）
+  redis_url: "redis://redis:6379/1"            # leader 选举用 Redis
+  shared_storage: null                         # WAL/审计共享存储路径
+
+# ─── SLO 降级策略（Review P1-4 新增）───
+slo:
+  enabled: true
+  window_hours: 24                             # SLI 统计窗口
+  diagnosis_success_threshold: 0.85            # 诊断成功率 SLO
+  false_fix_threshold: 0.05                    # 误修复率 SLO
+  llm_success_threshold: 0.99                  # LLM 调用成功率 SLO
+  auto_recovery_hours: 1                       # 达标多久后自动恢复
+
+# ─── 数据生命周期（Review P2-6 新增）───
+data_lifecycle:
+  hot_retention_days: 90                       # 热数据保留天数
+  warm_retention_days: 365                     # 温数据保留天数
+  cleanup_schedule: "0 3 * * *"                # 每日凌晨 3 点执行
+
 # ─── Server ───
 server:
   host: "0.0.0.0"
@@ -4384,6 +4960,49 @@ class SkillsConfig(BaseModel):
     executor: SkillExecutorConfig = SkillExecutorConfig()
     policy: SkillPolicyConfig = SkillPolicyConfig()
 
+class AlertStormConfig(BaseModel):
+    """Review P0-4"""
+    correlation_window: int = 60
+    max_group_size: int = 50
+    dedup_window: int = 300
+    queue_overflow_strategy: Literal["drop_oldest", "reject"] = "drop_oldest"
+    max_queue_depth: int = 200
+
+class ResourceLockConfig(BaseModel):
+    """Review P0-3"""
+    backend: Literal["asyncio", "redis"] = "asyncio"
+    lock_timeout: int = 600
+    redis_url: str | None = None
+
+class SecretsConfig(BaseModel):
+    """Review P1-2"""
+    backend: Literal["env", "vault", "k8s"] = "env"
+    vault_url: str | None = None
+    vault_token_env: str = "VAULT_TOKEN"
+
+class HAConfig(BaseModel):
+    """Review P1-1"""
+    enabled: bool = False
+    heartbeat_interval: int = 5
+    heartbeat_timeout: int = 15
+    redis_url: str = "redis://redis:6379/1"
+    shared_storage: str | None = None
+
+class SLOConfig(BaseModel):
+    """Review P1-4"""
+    enabled: bool = True
+    window_hours: int = 24
+    diagnosis_success_threshold: float = 0.85
+    false_fix_threshold: float = 0.05
+    llm_success_threshold: float = 0.99
+    auto_recovery_hours: int = 1
+
+class DataLifecycleConfig(BaseModel):
+    """Review P2-6"""
+    hot_retention_days: int = 90
+    warm_retention_days: int = 365
+    cleanup_schedule: str = "0 3 * * *"
+
 class SREAgentConfig(BaseModel):
     global_: GlobalConfig = Field(alias="global")
     agent: AgentConfig
@@ -4394,6 +5013,12 @@ class SREAgentConfig(BaseModel):
     remediation: RemediationConfig
     skills: SkillsConfig
     nat: NATConfig | None = None                    # NeMo Agent Toolkit
+    alert_storm: AlertStormConfig = AlertStormConfig()    # Review P0-4
+    resource_lock: ResourceLockConfig = ResourceLockConfig()  # Review P0-3
+    secrets: SecretsConfig = SecretsConfig()               # Review P1-2
+    ha: HAConfig = HAConfig()                              # Review P1-1
+    slo: SLOConfig = SLOConfig()                          # Review P1-4
+    data_lifecycle: DataLifecycleConfig = DataLifecycleConfig()  # Review P2-6
     monitor: MonitorConfig
     server: ServerConfig
 
@@ -4464,36 +5089,110 @@ sre-agent validate --config config.yaml
 
 ### 13.2 REST API（FastAPI）
 
+> **Review P0-2 修复**：所有 API 端点接入 JWT 鉴权 + RBAC 角色校验。
+
 ```python
+# ─── 鉴权中间件（Review P0-2）───
+
+from fastapi import Depends, HTTPException, status
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+import jwt
+
+security = HTTPBearer()
+
+class CurrentUser(BaseModel):
+    user_id: str
+    username: str
+    role: Literal["viewer", "operator", "admin"]
+
+async def get_current_user(
+    credentials: HTTPAuthorizationCredentials = Depends(security)
+) -> CurrentUser:
+    """JWT 鉴权中间件 — 从 Bearer Token 解析用户身份
+
+    Review P0-2：所有 REST API 必须经过此依赖注入。
+    支持 JWT（内部签发）和 OIDC（外部 IdP，如 Keycloak/Dex）。
+    """
+    try:
+        payload = jwt.decode(
+            credentials.credentials,
+            key=config.auth.jwt_secret,
+            algorithms=["HS256"],
+            audience="sre-agent",
+        )
+        return CurrentUser(
+            user_id=payload["sub"],
+            username=payload["username"],
+            role=payload.get("role", "viewer"),
+        )
+    except jwt.PyJWTError as e:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=str(e),
+        )
+
+def require_role(*allowed_roles: str):
+    """RBAC 角色校验装饰器"""
+    async def _check(user: CurrentUser = Depends(get_current_user)):
+        if user.role not in allowed_roles:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Role '{user.role}' not in {allowed_roles}",
+            )
+        return user
+    return _check
+
+
 # server.py
 app = FastAPI(title="AIDC Auto SRE Agent")
 
 @app.post("/api/diagnose")
-async def diagnose(alert: Alert) -> DiagnosisSession:
+async def diagnose(alert: Alert,
+                   user: CurrentUser = Depends(require_role("operator", "admin"))
+                   ) -> SREResponse[DiagnosisSession]:
     """触发诊断"""
     session = await sre_agent.diagnose(alert)
     return session
 
 @app.post("/api/handle")
-async def handle_alert(alert: Alert) -> LoopResult:
+async def handle_alert(alert: Alert,
+                       user: CurrentUser = Depends(require_role("operator", "admin"))
+                       ) -> SREResponse[LoopResult]:
     """完整闭环处理：诊断 → 循环修复 → 增量重诊 → 解决/升级"""
-    return await incident_handler.handle(alert)
+    return SREResponse(success=True,
+                       data=await incident_handler.handle(alert),
+                       trace_id=generate_trace_id())
 
 @app.get("/api/sessions/{session_id}/loop")
-async def get_loop_result(session_id: str) -> LoopResult:
+async def get_loop_result(session_id: str,
+                          user: CurrentUser = Depends(get_current_user)
+                          ) -> SREResponse[LoopResult]:
     """获取循环编排器执行结果（含所有候选尝试记录）"""
-    return loop_store.get(session_id)
+    return SREResponse(success=True, data=loop_store.get(session_id),
+                       trace_id=generate_trace_id())
 
 @app.post("/api/remediate/{session_id}/approve")
 async def approve_remediation(session_id: str,
-                               approval: ApprovalInput) -> RemediationResult:
-    """审批修复计划"""
-    return await remediation_engine.approve_and_execute(session_id, approval)
+                               approval: ApprovalInput,
+                               user: CurrentUser = Depends(require_role("operator", "admin"))
+                               ) -> SREResponse[RemediationResult]:
+    """审批修复计划 — 高风险操作，需 operator 以上角色 + 审计记录"""
+    audit_log.record(user=user, action="approve", session_id=session_id)
+    return SREResponse(
+        success=True,
+        data=await remediation_engine.approve_and_execute(session_id, approval),
+        trace_id=generate_trace_id())
 
 @app.post("/api/remediate/{session_id}/rollback")
-async def rollback(session_id: str) -> RollbackResult:
-    """回滚修复"""
-    return await remediation_engine.rollback(session_id)
+async def rollback(session_id: str,
+                   user: CurrentUser = Depends(require_role("operator", "admin"))
+                   ) -> SREResponse[RollbackResult]:
+    """回滚修复 — 高风险操作，需 operator 以上角色 + 审计记录"""
+    audit_log.record(user=user, action="rollback", session_id=session_id)
+    return SREResponse(
+        success=True,
+        data=await remediation_engine.rollback(session_id),
+        trace_id=generate_trace_id())
 
 @app.get("/api/ontology")
 async def get_topology(entity_type: str | None = None) -> dict:
@@ -4538,17 +5237,53 @@ async def get_trace(session_id: str) -> ThinkingTrace:
 
 ### 13.3 WebSocket 接口
 
+> **Review P0-2 修复**：WebSocket 在 `on_connect` 阶段验证 JWT token（通过 query
+> parameter `?token=xxx`），鉴权失败立即关闭连接。
+>
+> **Review P2-3 修复**：增加 backpressure（发送缓冲区满时丢弃旧消息）和断线重连语义
+> （客户端携带 `last_event_id` 恢复推送位置）。
+
 ```python
+async def ws_authenticate(websocket: WebSocket) -> CurrentUser:
+    """WebSocket 鉴权 — on_connect 阶段校验 JWT
+
+    Review P0-2：WebSocket 通过 query parameter 传递 token，
+    在 accept() 前完成鉴权。鉴权失败返回 4001 关闭码。
+    """
+    token = websocket.query_params.get("token")
+    if not token:
+        await websocket.close(code=4001, reason="Missing token")
+        raise WebSocketDisconnect(code=4001)
+    try:
+        payload = jwt.decode(token, key=config.auth.jwt_secret,
+                             algorithms=["HS256"], audience="sre-agent")
+        return CurrentUser(user_id=payload["sub"],
+                           username=payload["username"],
+                           role=payload.get("role", "viewer"))
+    except jwt.PyJWTError:
+        await websocket.close(code=4001, reason="Invalid token")
+        raise WebSocketDisconnect(code=4001)
+
+
 @app.websocket("/ws/thinking-trace/{session_id}")
 async def thinking_trace_ws(websocket: WebSocket, session_id: str):
     """实时思考过程推送"""
+    user = await ws_authenticate(websocket)
     await websocket.accept()
-    async for step in session_store.subscribe_trace(session_id):
-        await websocket.send_json(step.to_dict())
+    # Review P2-3: 支持断线恢复 — 客户端传 last_event_id
+    last_id = websocket.query_params.get("last_event_id")
+    async for step in session_store.subscribe_trace(session_id, after=last_id):
+        try:
+            await asyncio.wait_for(
+                websocket.send_json({"event_id": step.id, **step.to_dict()}),
+                timeout=5.0)  # backpressure: 5s 发送超时则丢弃
+        except asyncio.TimeoutError:
+            logger.warning(f"WS backpressure: dropped event for {session_id}")
 
 @app.websocket("/ws/alerts")
 async def alerts_ws(websocket: WebSocket):
     """实时告警推送"""
+    user = await ws_authenticate(websocket)
     await websocket.accept()
     async for alert in alert_channel.subscribe():
         await websocket.send_json(alert.model_dump())
@@ -4556,6 +5291,7 @@ async def alerts_ws(websocket: WebSocket):
 @app.websocket("/ws/chat")
 async def chat_ws(websocket: WebSocket):
     """对话式交互 WebSocket"""
+    user = await ws_authenticate(websocket)
     await websocket.accept()
     while True:
         data = await websocket.receive_json()
@@ -4710,29 +5446,144 @@ async def chat_ws(websocket: WebSocket):
 | Switch | 删除管理 VLAN | 交换机不可达 |
 | Switch | 恢复出厂设置 | 所有配置丢失 |
 
-### 15.3 审计日志
+### 15.3 审计日志（Review P1-3 增强）
+
+> **Review P1-3 修复**：原设计仅 `audit.jsonl` append-only 本地文件，不足以满足
+> 高可信追责。增加远端双写 + hash chain 签名链。
 
 ```python
 class AuditLog(BaseModel):
     timestamp: datetime
     session_id: str
+    trace_id: str                               # Review P2-7: 分布式追踪 ID
     action: str                                 # tool_call | approve | reject | rollback
     tool: str | None
     params: dict | None
     user: str                                   # agent | admin | engineer
+    role: str                                   # viewer | operator | admin
     result: Literal["success", "failed", "blocked"]
     details: str
+    prev_hash: str                              # Review P1-3: 前一条审计记录的 hash
+    record_hash: str                            # Review P1-3: 本条记录的 hash
 
-# 所有操作写入 audit.jsonl（append-only）
+
+class AuditLogger:
+    """审计日志 — 本地 + 远端双写 + hash chain
+
+    Review P1-3 增强：
+    1. 本地：append-only audit.jsonl（与原设计一致）
+    2. 远端：异步写入对象存储（S3/OSS，版本化/WORM 策略）
+    3. Hash chain：每条记录包含前一条的 hash，形成不可篡改链
+    4. 高风险动作（approve/rollback）额外记录操作者身份和 trace_id
+
+    分阶段实施：
+    - 阶段 1（当前）：本地 jsonl + hash chain
+    - 阶段 2：增加远端 S3/OSS 双写
+    - 阶段 3：增加签名（HMAC 或 PKI）
+    """
+
+    def __init__(self, log_path: str = "./data/audit.jsonl",
+                 remote_backend: str | None = None):
+        self.log_path = log_path
+        self.remote_backend = remote_backend
+        self._prev_hash = "genesis"
+
+    def record(self, user: CurrentUser, action: str,
+               session_id: str = "", trace_id: str = "",
+               tool: str | None = None, params: dict | None = None,
+               result: str = "success", details: str = "") -> AuditLog:
+        import hashlib
+        entry = AuditLog(
+            timestamp=datetime.now(),
+            session_id=session_id,
+            trace_id=trace_id,
+            action=action, tool=tool, params=params,
+            user=user.username, role=user.role,
+            result=result, details=details,
+            prev_hash=self._prev_hash,
+            record_hash="",  # 填充后计算
+        )
+        # hash chain: hash(prev_hash + record_content)
+        content = entry.model_dump_json(exclude={"record_hash"})
+        entry.record_hash = hashlib.sha256(
+            f"{self._prev_hash}|{content}".encode()).hexdigest()
+        self._prev_hash = entry.record_hash
+
+        # 本地写入（append-only, fsync）
+        with open(self.log_path, "a") as f:
+            f.write(entry.model_dump_json() + "\n")
+            f.flush()
+            os.fsync(f.fileno())
+
+        # 远端异步写入（非阻塞）
+        if self.remote_backend:
+            asyncio.create_task(self._write_remote(entry))
+
+        return entry
 ```
 
-### 15.4 角色权限
+### 15.4 密钥治理（Review P1-2）
 
-| 角色 | 查看诊断 | 查看拓扑 | 审批修复 | 执行修复 | 管理知识库 | 管理记忆 |
-|------|---------|---------|---------|---------|-----------|---------|
-| viewer | ✓ | ✓ | — | — | — | — |
-| operator | ✓ | ✓ | ✓ | ✓ | — | — |
-| admin | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+> **Review P1-2 新增**：原设计通过环境变量引用密码/密钥，但未定义密钥生命周期管理。
+> 新增统一密钥管理规范。
+
+| 维度 | 策略 |
+|------|------|
+| 存储 | 所有密钥通过 Vault/KMS/K8s Secret 管理，禁止明文写入配置文件或代码 |
+| 引用 | 配置中通过 `${ENV_VAR}` 引用，运行时从环境变量/Secret Store 读取 |
+| 轮换 | SSH 密钥: 90 天轮换；API Key: 180 天轮换；JWT Secret: 365 天轮换 |
+| 最小权限 | 每个 Channel 使用独立凭据，权限范围与功能匹配（如 SSH 用 read-only 用户） |
+| 失效 | 密钥泄露后 < 15 分钟内可通过 Vault/KMS 吊销并生成新密钥 |
+| 审计 | 密钥读取/使用通过 Vault 审计日志记录 |
+
+```python
+class SecretProvider:
+    """密钥提供者抽象 — 支持多种后端
+
+    Review P1-2：统一密钥获取接口，支持：
+    - env: 环境变量（开发环境）
+    - vault: HashiCorp Vault（生产环境）
+    - k8s: Kubernetes Secret（K8s 部署）
+    """
+
+    def __init__(self, backend: Literal["env", "vault", "k8s"] = "env",
+                 vault_url: str | None = None,
+                 vault_token_env: str = "VAULT_TOKEN"):
+        self.backend = backend
+        self.vault_url = vault_url
+
+    async def get_secret(self, key: str) -> str:
+        if self.backend == "env":
+            value = os.environ.get(key)
+            if not value:
+                raise ValueError(f"Secret {key} not found in env")
+            return value
+        elif self.backend == "vault":
+            # Vault KV v2 读取
+            async with httpx.AsyncClient() as client:
+                resp = await client.get(
+                    f"{self.vault_url}/v1/secret/data/sre-agent/{key}",
+                    headers={"X-Vault-Token": os.environ[self.vault_token_env]})
+                resp.raise_for_status()
+                return resp.json()["data"]["data"]["value"]
+        elif self.backend == "k8s":
+            # K8s Secret 通过 projected volume 挂载到 /secrets/
+            secret_path = Path(f"/secrets/{key}")
+            return secret_path.read_text().strip()
+```
+
+### 15.5 角色权限（Review P0-2 增强）
+
+> 角色权限矩阵通过 §13.2 的 `require_role()` 中间件在 API 层强制执行。
+
+| 角色 | 查看诊断 | 查看拓扑 | 审批修复 | 执行修复 | 回滚 | 管理知识库 | 管理记忆 | 管理配置 |
+|------|---------|---------|---------|---------|------|-----------|---------|---------|
+| viewer | ✓ | ✓ | — | — | — | — | — | — |
+| operator | ✓ | ✓ | ✓ | ✓ | ✓ | — | — | — |
+| admin | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+
+**高风险操作二次确认**：`approve` / `rollback` / `handle` 端点除角色校验外，
+审计日志强制记录操作者身份、trace_id、操作参数（§15.3）。
 
 ---
 
@@ -5199,6 +6050,158 @@ python -m sre_agent.nat.evaluation run \
 cat data/nat_profiles/profiling_report.txt
 ```
 
+## 19. 高可用与容灾（Review P1-1）
+
+> **Review P1-1 新增**：原设计的 checkpoint、ontology、memory、WAL 均为本地文件/本地库，
+> 属于单机方案。需定义 HA 策略、状态分层、RTO/RPO 目标。
+
+### 19.1 状态分层
+
+| 状态类型 | 组件 | 一致性要求 | 当前存储 | HA 迁移方案 |
+|----------|------|-----------|----------|------------|
+| **强一致** | WAL 回滚日志 | 不可丢失 | 本地文件 fsync | → 共享存储（NFS/Ceph）或 PostgreSQL |
+| **强一致** | 审批状态 | 不可丢失 | 内存 Queue | → Redis Stream（持久化） |
+| **强一致** | 审计日志 | 不可篡改 | 本地 jsonl | → 远端 S3/OSS + hash chain（§15.3） |
+| **最终一致** | LangGraph checkpoint | 可重建 | aiosqlite | → PostgreSQL（langgraph-checkpoint-postgres） |
+| **最终一致** | Ontology 拓扑 | 可全量刷新 | aiosqlite + NetworkX | → PostgreSQL + pgvector |
+| **最终一致** | Memory 记忆 | 可从审计重建 | aiosqlite + ChromaDB | → PostgreSQL + pgvector |
+| **弱一致** | ThinkingTrace | 丢失可接受 | 内存 | → Redis pub/sub（可选持久化） |
+| **弱一致** | 告警队列 | 重新拉取即可 | 内存 Queue | → Redis Stream |
+
+### 19.2 最小 HA 方案
+
+```
+┌────────────────────────────────────────────────────────────┐
+│                    Active / Standby 双节点                   │
+│                                                            │
+│  ┌─────────────┐    心跳检测    ┌─────────────┐            │
+│  │ SRE Agent   │◄──────────────►│ SRE Agent   │            │
+│  │ (Active)    │                │ (Standby)   │            │
+│  │ 处理告警    │                │ 只读待命     │            │
+│  └──────┬──────┘                └──────┬──────┘            │
+│         │                              │                    │
+│  ┌──────▼──────────────────────────────▼──────┐            │
+│  │           共享存储层                         │            │
+│  │  ┌──────────┐  ┌────────┐  ┌────────────┐ │            │
+│  │  │PostgreSQL│  │ Redis  │  │ S3/OSS     │ │            │
+│  │  │·checkpoint│  │·锁/队列│  │·审计/知识   │ │            │
+│  │  │·ontology │  │·pub/sub│  │·WAL 备份   │ │            │
+│  │  │·memory   │  │        │  │            │ │            │
+│  │  └──────────┘  └────────┘  └────────────┘ │            │
+│  └────────────────────────────────────────────┘            │
+└────────────────────────────────────────────────────────────┘
+```
+
+**故障切换流程**：
+1. Standby 通过心跳检测 Active 故障（连续 3 次心跳丢失，间隔 5s）
+2. Standby 获取 Redis 分布式锁 `sre:leader`（防止脑裂）
+3. Standby 升级为 Active，从 PostgreSQL 恢复进行中的会话
+4. 未完成的诊断会话通过 LangGraph checkpoint 从最后状态继续
+5. 未完成的修复会话检查 WAL，如有未回滚条目则先执行回滚
+
+### 19.3 RTO / RPO 目标
+
+| 指标 | 目标 | 说明 |
+|------|------|------|
+| RTO（恢复时间） | < 30s | 心跳超时 15s + 锁获取 5s + 状态恢复 10s |
+| RPO（数据丢失） | 0（强一致状态） | WAL/审批/审计写入共享存储后才确认 |
+| RPO（弱一致状态） | < 15s | 最多丢失最近一次心跳周期内的 trace 数据 |
+
+### 19.4 最小迁移路径
+
+从当前单机方案到 HA 的最小改造路径：
+
+| 阶段 | 改造内容 | 工作量 |
+|------|----------|--------|
+| **阶段 0**（当前） | aiosqlite + 本地文件，单进程 | — |
+| **阶段 1** | WAL/审计 → 共享存储（NFS/S3），ResourceLock → Redis | 中 |
+| **阶段 2** | LangGraph checkpoint → PostgreSQL，Ontology/Memory → PostgreSQL | 大 |
+| **阶段 3** | Active/Standby 心跳 + 自动切换 | 中 |
+
+> 阶段 1 可独立完成，不依赖阶段 2/3。阶段 1 完成后即具备"单节点故障不丢数据"能力。
+
+---
+
+## 20. SLO 与自动降级策略（Review P1-4）
+
+> **Review P1-4 新增**：原设计有监控指标面板但缺少"阈值越界后的系统行为定义"。
+> 新增 Agent SLO 指标体系和错误预算驱动的自动降级策略。
+
+### 20.1 Agent SLO 定义
+
+| SLI（指标） | SLO（目标） | 采集方式 |
+|-------------|-------------|----------|
+| 诊断成功率 | ≥ 85%（已知故障类型） | `resolved / total_diagnoses` |
+| 误修复率 | ≤ 5% | `rollback_after_fix / total_fixes` |
+| 平均诊断耗时 | ≤ 120s（P95） | LangGraph checkpoint 时间戳差 |
+| 平均修复耗时（MTTR） | ≤ 300s（P95） | 告警到 resolved 的端到端时间 |
+| LLM 调用成功率 | ≥ 99% | LLM API 2xx / total calls |
+| 审批超时率 | ≤ 10% | `approval_timeout / total_approvals` |
+
+### 20.2 错误预算与自动降级
+
+```python
+class SLODegradationPolicy:
+    """SLO 错误预算驱动的自动降级策略
+
+    Review P1-4：当 SLI 指标越过 SLO 阈值时，系统自动收敛风险。
+
+    降级梯度：
+    1. 正常模式（SLO 达标）→ auto_approve + LLM 诊断
+    2. 警告模式（错误预算消耗 > 50%）→ 所有修复降级为 human_confirm
+    3. 保护模式（错误预算消耗 > 80%）→ 仅允许 read-only 诊断，禁止修复
+    4. 熔断模式（SLO 严重违规）→ 停止自动诊断，仅告警转发给人工
+    """
+
+    class Mode(str, Enum):
+        NORMAL = "normal"
+        WARNING = "warning"
+        PROTECTED = "protected"
+        CIRCUIT_BREAK = "circuit_break"
+
+    def __init__(self, window_hours: int = 24):
+        self.window_hours = window_hours
+        self.current_mode = self.Mode.NORMAL
+
+    def evaluate(self, metrics: dict) -> Mode:
+        """根据 SLI 指标评估当前降级模式"""
+        diagnosis_success_rate = metrics.get("diagnosis_success_rate", 1.0)
+        false_fix_rate = metrics.get("false_fix_rate", 0.0)
+        llm_success_rate = metrics.get("llm_success_rate", 1.0)
+
+        # 熔断：LLM 不可用或误修复率严重超标
+        if llm_success_rate < 0.90 or false_fix_rate > 0.15:
+            self.current_mode = self.Mode.CIRCUIT_BREAK
+        # 保护：诊断成功率过低
+        elif diagnosis_success_rate < 0.70 or false_fix_rate > 0.10:
+            self.current_mode = self.Mode.PROTECTED
+        # 警告：接近 SLO 边界
+        elif diagnosis_success_rate < 0.85 or false_fix_rate > 0.05:
+            self.current_mode = self.Mode.WARNING
+        else:
+            self.current_mode = self.Mode.NORMAL
+
+        return self.current_mode
+
+    def get_effective_approval_policy(self) -> str:
+        """根据降级模式返回有效的审批策略"""
+        return {
+            self.Mode.NORMAL: "auto_approve",       # SLO 达标，正常自动审批
+            self.Mode.WARNING: "human_confirm",      # 所有修复需人工确认
+            self.Mode.PROTECTED: "read_only",        # 仅允许诊断，禁止修复
+            self.Mode.CIRCUIT_BREAK: "disabled",     # 停止自动处理
+        }[self.current_mode]
+```
+
+### 20.3 降级恢复
+
+| 条件 | 恢复行为 |
+|------|----------|
+| SLI 指标连续 1h 达标 | 自动从 WARNING → NORMAL |
+| SLI 指标连续 2h 达标 | 自动从 PROTECTED → WARNING → NORMAL |
+| CIRCUIT_BREAK | 需要人工确认后手动恢复（`sre-agent slo reset`） |
+| LLM 恢复（探测成功） | 从 LLM 降级模式恢复到正常 LLM 调用（§4.2） |
+
 ---
 
 ## 附录 A: 需求覆盖矩阵
@@ -5313,19 +6316,42 @@ cat data/nat_profiles/profiling_report.txt
 - **Review 增强**：验证条件从字符串解析（`safe_eval_condition`）升级为结构化模型（`VerificationCondition`），彻底消除字符串求值风险（§7.2）。
 - **Review 增强**：新增 PlanValidator（§7.5），在审批门控前校验 LLM 生成的修复计划的工具名/参数合法性，不通过则退回重生成。
 - **Review 增强**：模式记忆加入时间衰减 `effective_confidence()`（§9.3），避免过期模式以高置信度误导诊断。
+- **Review P0-1**：统一响应契约 `SREResponse[T]` + 错误码表 `ErrorCode`，禁止 dict 直接返回（§7.2.1）。
+- **Review P0-2**：JWT 鉴权中间件 + RBAC `require_role()` 装饰器，WebSocket on_connect 鉴权（§13.2, §13.3）。
+- **Review P0-3**：资源级互斥锁 `ResourceLock` + 告警去重 `AlertDeduplicator`（§7.7）。
+- **Review P0-4**：告警风暴处理 `AlertCorrelator`，基于 Ontology 拓扑关联聚合（§6.3）。
+- **Review P1-1**：HA/容灾方案，状态分层 + Active/Standby + RTO<30s（§19）。
+- **Review P1-2**：密钥治理 `SecretProvider`，支持 env/Vault/K8s Secret 后端（§15.4）。
+- **Review P1-3**：审计日志 hash chain + 远端双写（§15.3）。
+- **Review P1-4**：SLO 自动降级 `SLODegradationPolicy`，四级降级梯度（§20）。
+- **Review P1-5**：LLM 故障降级，LangChain fallback chain + 健康监控（§4.2）。
+- **Review P1-6**：Skills 脚本沙箱，namespace/cgroup 隔离 + 输出注入防护（§10.6）。
+- **Review P1-7**：Canary 多条件聚合 `criteria_mode`（all/any），明确 AND/OR 判定（§7.3）。
+- **Review P2-3**：WebSocket backpressure + 断线重连 `last_event_id`（§13.3）。
+- **Review P2-6**：数据生命周期 `DataLifecycleManager`，热/温/冷分层 + 容量预警（§9.5）。
 
-### 验收标准（来自评审建议）
+### 验收标准（来自评审建议 + review-feedback 增强）
 
-> 以下标准摘自 `AIDC-auto-SRE-review.md` 第 4 节，作为 P0+P1 收敛后的验收基线。
+> 以下标准合并了 `AIDC-auto-SRE-review.md` 第 4 节和 `AIDC-auto-SRE-review-feedback.md`
+> 补充的验收维度，作为 P0+P1 收敛后的完整验收基线。
 
 | 维度 | 标准 | 验证方式 |
 |------|------|----------|
 | **安全性** | 无动态代码执行路径；工具命令执行无 shell 注入面 | 代码审计 + 安全扫描（bandit / semgrep） |
+| **契约一致性** | 所有核心接口通过 schema contract test，字段一致率 100% | Pydantic `SREResponse` 强制 + CI 契约测试 |
+| **权限有效性** | 高风险接口未经授权不可执行，越权测试拦截率 100% | `require_role()` 单测 + 渗透测试 |
+| **并发安全性** | 重复告警与并发告警下，无重复修复与交叉写冲突 | ResourceLock + AlertDeduplicator 并发压测 |
 | **正确性** | 3 类标准故障场景中，影响面识别准确率 ≥ 90% | Demo 1/2/3 端到端回放 + blast_radius 单测 |
+| **故障注入验收** | 已知故障类型诊断准确率 ≥ 80% | fault-injector 注入 → Agent 诊断 → 比对 |
 | **稳定性** | 10 并发诊断会话下，事件循环阻塞告警为 0 | asyncio 监控 + `max_concurrent_diagnoses` 压测 |
 | **可执行性** | 修复计划 schema 一次通过率 ≥ 95%，不合法计划可被拦截 | PlanValidator 单测 + LLM 回归测试集 |
 | **可回滚性** | 所有写操作具备 WAL 且通过回滚演练 | WAL recover_all 集成测试 |
 | **成本可控** | 单次诊断 token 消耗 ≤ 100K，超出自动终止 | `max_tokens_per_diagnosis` + NeMo Agent Toolkit profiling |
+| **可用性** | 单节点故障场景下可恢复，满足 RTO<30s RPO=0 | HA 故障切换演练（§19） |
+| **可追责性** | 关键操作在审计系统可检索、可验签、可关联 trace_id | audit.jsonl hash chain 验证 + S3 双写确认 |
+| **降级验收** | LLM 不可用时 30s 内切换到规则引擎，不丢失会话状态 | LLM mock 断连 → 验证降级行为 |
+| **风险可控** | SLO 越界时自动降级策略可触发并生效 | SLI mock 注入 → 验证降级模式切换 |
+| **回归测试** | Demo 1/2/3 场景作为 CI 自动化用例 | pytest + NeMo eval_dataset 集成 CI |
 
 ### 长期产品级优化
 
@@ -5336,3 +6362,4 @@ cat data/nat_profiles/profiling_report.txt
 5. **Runbook 自动生成**：从高置信度 LearnedPattern 自动生成 Runbook YAML，形成知识闭环。
 6. **LangGraph 高级特性**：Human-in-the-loop 节点、子图复用、并行工具调用、流式输出。
 7. **Guardrails 增强**：Colang 2.0 迁移、自定义安全评估模型微调、多语言 rail 支持。
+8. **OpenTelemetry 集成**（Review P2-7）：trace_id 贯穿 API → Agent → Channel → 外部系统，与审计日志强关联。
