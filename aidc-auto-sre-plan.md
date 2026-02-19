@@ -273,153 +273,92 @@ LoopOrchestrator 循环执行:
 ```
 Week 1-2  [Sprint 1 — 骨架与前置依赖]
 ─────────────────────────────────────────────────────────────────────
-Track A │ [✅ 已完成 2026-02-19] load_simulator v0.1.0 实现：
-        │   CLI(run/validate-config/list-scenarios，含 --output-format json，修复G-08)
-        │   + InferenceAgent + PipelineAgent + FineTuneAgent + NotebookAgent（全部完成）
-        │   + MetricsMonitor + BottleneckAnalyzer + metrics/thresholds.py六层(修复G-11)
-        │   + orchestrator/engine.py + session.py + scheduler.py
-        │   + config/schema.py + defaults.py + loader.py
-        │ [❌ 待实现] CubeStudioChannel + InferenceChannel（channels/ 模块，Sprint 2 Task A）
-Track B │ fault_injector: CLI骨架（含 --dry-run 预检模式，修复G-28）
-        │ + Orchestrator 五阶段执行流（pre-flight/setup/injection/monitoring/recovery，修复G-28）
-        │ + SSHChannel + RedfishChannel + SwitchChannel
-        │ + WAL 回滚日志(rollback.py) + SafetyGuard + watchdog.py
-        │ + Scenario基类 + 场景注册表(registry.py)
-Track C │ sre_agent: LangGraph骨架(sre_agent.py/graph.py/state.py/nodes.py)
-        │ + ToolRegistry + get_gpu_processes工具(修复P0-5)
-        │ + shlex.quote SSH注入防护(修复P0-2) + safe_eval DSL(替换eval)
-        │ + sre_agent 完整 YAML Config Schema: AgentConfig / RemediationConfig
-        │   DiscoveryConfig / HAConfig / SLOConfig（修复G-22，对应设计 §12）
-Track D │ sre_agent/frontend: Vite+React18+Zustand+AntDesign5项目初始化(修复G-04)
-        │ + 路由(7个页面) + 布局组件 + WebSocket client
-Track E │ Docker Compose部署环境 + Prometheus/K8s/Redfish/Switch mock
-        │ + CI骨架(pytest + ruff) + 配置 Schema(load_simulator + fault_injector + sre_agent)
+Track A │ [✅ 已完成 2026-02-19] load_simulator v0.1.0 实现（详见 load-simulator.md 实现状态节）
+        │ [❌ 待实现] channels/ 模块（Sprint 2 Track A）
+Track B │ fault_injector: CLI 骨架（含 --dry-run 预检，§11.1，修复G-28）
+        │ + Orchestrator 五阶段执行流（§11.2，修复G-28）
+        │ + channels/: SSHChannel / RedfishChannel / SwitchChannel（§2.6）
+        │ + safety/: WAL rollback.py + SafetyGuard（§2.7 / §13）
+        │ + orchestrator/: watchdog.py + Scenario 基类 + 场景注册表（§2.8）
+Track C │ sre_agent: LangGraph 骨架（agent/: sre_agent/graph/state/nodes，§4.2）
+        │ + ToolRegistry + get_gpu_processes（§5.2，修复P0-5）
+        │ + SSH 注入防护 shlex.quote + VerificationCondition DSL（§2.6 / Appendix C P0-1/P0-2）
+        │ + sre_agent 完整 Config Schema（§12，修复G-22）
+Track D │ sre_agent/frontend: Vite+React18+Zustand+AntDesign5 项目初始化（修复G-04）
+        │ + 7 页面路由 + 布局组件 + WebSocket client
+Track E │ Docker Compose 部署环境 + 各 Channel mock（Prometheus/K8s/Redfish/Switch）
+        │ + CI 骨架（pytest + ruff）
 
 Week 3-4  [Sprint 2 — 核心功能]
 ─────────────────────────────────────────────────────────────────────
 Track A │ load_simulator（Sprint 2 补全）:
-        │ + channels/ — CubeStudioChannel（含 JWT auth `CUBE_STUDIO_JWT_SECRET`，修复G-31）
-        │   / InferenceChannel / PrometheusChannel / K8sChannel
-        │ + load/profile.py — stepped/spike LoadProfile 完整实现
-        │ + load/rate_limiter.py — token bucket 速率控制
-        │ + load/token_distribution.py — token 分布采样 + load/prompt_pool.py — 提示词池
-        │ + Monitor Agent 三层架构（修复G-29）:
-        │     Layer1 应用层: 推理延迟直方图/错误率/TPS（Agent 内部采集）
-        │     Layer2 Prometheus: GPU/CPU/内存/NVLink/RDMA 指标
-        │     Layer3 平台API: CubeStudio 推理服务/Pipeline 状态轮询
-        │ + InferenceAgent 增强（stream/token分布/P50-P99精确聚合）
-        │ + 执行模式（修复G-30）:
-        │     stress: AdaptiveRules + breaking point 二分搜索（§9.1）
-        │     soak: 24h 长时稳定测试 + MemoryLeakDetector
-        │     mixed: 多 Agent 并发叠加负载
-        │     single: 单 Agent 精确复现
-        │ + BottleneckAnalyzer MiniMax-2.1 LLM 模式（v0.1 为确定性阈值，此处升级）
-        │ + reporting/html_report.py + charts.py(Plotly) + comparison.py
+        │ + channels/ 全部实现，含 CubeStudio JWT 认证（§2.6 / §2.9，修复G-31）
+        │ + load/: LoadProfile / RateLimiter / TokenDistribution / PromptPool（§2.7）
+        │ + Monitor Agent 三层架构完整实现（§4，修复G-29）
+        │ + InferenceAgent 完整实现（§3.1）
+        │ + 四种执行模式 + AdaptiveRules（§7 / §9.1，修复G-30）
+        │ + BottleneckAnalyzer LLM 模式（§5.4）
+        │ + reporting/ HTML 报告 + Plotly 图表 + 版本对比（§8）
 Track B │ fault_injector:
-        │ + vllm_latency.py: gpu_contention(RC-1) + network_jitter(RC-2)场景(修复G-01)
-        │ + rdma_anomaly.py: ecn_misconfiguration(F-2) + rdma_link_flap(F-4)场景(修复G-01)
-        │ + HardwareFaultAgent 完整子类型（修复G-27）:
-        │     CPU: stress-ng via SSH + GPU: nvidia-smi pm (reset/power-cap via Redfish)
-        │     内存: stress-ng --vm + 存储: dd error inject + 电源: Redfish PowerLimit
-        │ + OSFaultAgent 完整子类型（修复G-27）:
-        │     内核: sysctl kernel.panic/hung_task + 文件系统: /dev/full dd
-        │     进程: kill -9 + ulimit + 网络栈: tc netem / iptables
-        │ + DiagnosisAgent（单次 LLM 诊断 + 韧性评分，修复G-26；与 SRE Agent 无关）
+        │ + Demo 场景: gpu_contention(RC-1) + network_jitter(RC-2)（§7.1，修复G-01）
+        │ + Demo 场景: ecn_misconfiguration(F-2) + rdma_link_flap(F-4)（§8.1，修复G-01）
+        │ + HardwareFaultAgent 全部子类型（§3，修复G-27）
+        │ + OSFaultAgent 全部子类型（§4，修复G-27）
+        │ + DiagnosisAgent 单次 LLM 诊断（§12，修复G-26）
 Track C │ sre_agent:
-        │ + NeMo Guardrails: config.yml + rails/input.co + output.co + execution.co + dialog.co
-        │   (修复G-12，实现声明式安全护栏)
-        │ + ReAct循环(agent_node/conclude_node/remediate_node)
-        │ + asyncio.wait_for 步级+会话级超时(修复P0-4)
-        │ + skills/runtime/: SkillRegistry(热扫描**/SKILL.md) + SkillExecutor + 4个固定@tool
-        │   (list_skills/load_skill/read_skill_ref/run_skill)(修复G-03)
-        │ + SkillExecutor 脚本沙箱：namespace隔离 + cgroup限制 + 输出注入防护（修复G-16，Review P1-6）
-        │ + skills/builtin/vllm-diagnosis/SKILL.md + scripts/ + references/
-        │ + skills/builtin/rdma-diagnosis/SKILL.md + scripts/
-Track D │ sre_agent/frontend:
-        │ + 拓扑页面(D3.js力导向图，实体分层着色，故障高亮)
-        │ + 诊断页面(ThinkingStep Timeline + 假设树 + 实时WebSocket追加)
-        │ + 告警页面(告警列表/详情/触发诊断)
-Track E │ sre_agent/storage:
-        │ + KnowledgeStore(ChromaDB + asyncio.to_thread包装，修复G-15 P1-10)
-        │ + MemoryStore(aiosqlite，incident/pattern/config三类；修复G-15 P1-10)
-        │ + OntologyGraph(NetworkX + aiosqlite，BFS双向遍历，修复P1-1；修复G-15 P1-10)
+        │ + NeMo Guardrails 4 个 rail 文件（§17，修复G-12）
+        │ + ReAct 循环（agent_node/conclude_node/remediate_node，§4.2）
+        │ + asyncio.wait_for 步级 + 会话级超时（§4.2，修复P0-4）
+        │ + skills/runtime/: SkillRegistry + SkillExecutor + 4 个固定 @tool（§10，修复G-03）
+        │ + SkillExecutor 脚本沙箱（§10.6，修复G-16）
+        │ + skills/builtin/: vllm-diagnosis + rdma-diagnosis（§10.3）
+Track D │ sre_agent/frontend: 拓扑页 + 诊断页（ThinkingStep 实时流）+ 告警页
+Track E │ sre_agent/storage（修复G-15，P1-10）:
+        │ + KnowledgeStore: ChromaDB + asyncio.to_thread（§8）
+        │ + MemoryStore: aiosqlite，三类记忆（§9）
+        │ + OntologyGraph: NetworkX + aiosqlite，BFS 双向遍历（§3.4，修复P1-1）
 
 Week 5-6  [Sprint 3 — 场景集成与修复引擎]
 ─────────────────────────────────────────────────────────────────────
 Track A │ load_simulator:
-        │ + load↔fault 联动契约 E2E 测试（P0-1 已修复：`run --output-format json` 已实现）
-        │ + 多阶段压测(stepped/spike LoadProfile 完整实现)
-        │ + 单元测试套件 test_config / test_channels / test_load_profile / test_metrics / test_agents
-        │ + E2E 测试（推理/Pipeline/FineTune/Notebook 各一个）
+        │ + load↔fault 联动契约 E2E 测试（联动接口已实现，修复P0-1）
+        │ + 单元测试套件（test_config / test_channels / test_load_profile / test_metrics / test_agents）
+        │ + 四个 Agent E2E 测试
 Track B │ fault_injector:
-        │ + vllm_latency.py: storage_io_interference(RC-3) + platform_cascade(RC-4)
-        │ + rdma_anomaly.py: pfc_deadlock(F-1) + roce_mtu_mismatch(F-5)
-        │ + PlatformFaultAgent 完整子类型（修复G-32，设计 §5）:
-        │     K8s: etcd/apiserver/scheduler 组件故障 + Node NotReady 注入
-        │     MySQL: max_connections 限制 + binlog 延迟 + 慢查询注入
-        │     Redis: maxmemory 触发 OOM + 主从延迟 + key 过期风暴
-        │     Ceph: osd pause + pg degraded（修复G-32）
-        │     Kafka: consumer lag + broker 重启（修复G-32）
-        │ + ServiceFaultAgent(推理/Pipeline/Notebook)
-        │ + load-simulator 联动集成(`_run_load_simulator`异步子进程)
+        │ + 扩展场景: storage_io_interference(RC-3) + platform_cascade(RC-4)（§7.1）
+        │ + 扩展场景: pfc_deadlock(F-1) + roce_mtu_mismatch(F-5)（§8.1）
+        │ + PlatformFaultAgent 全部子类型（§5，修复G-32）
+        │ + ServiceFaultAgent（§6）
+        │ + load-simulator 联动集成（§9.2）
 Track C │ sre_agent:
-        │ + LoopOrchestrator(候选排名/逐一尝试/回滚/触发增量重诊)(修复G-05)
-        │     终止约束: max_candidates=3 / max_re_diagnosis_rounds=1（修复G-25，设计 §7.8）
-        │ + IncidentHandler(顶层事件处理串联诊断→循环→重诊)(修复G-05)
-        │ + RemediationEngine(WAL执行/canary灰度/approval门控)
-        │ + Canary 多条件聚合 criteria_mode=all|any（修复G-17，Review P1-7，设计 §7.3）
-        │ + SREResponse[T] 统一响应契约 + ErrorCode 表（修复G-24，Review P0-1，禁止 dict 直接返回）
-        │ + remediation/validator.py(RemediationPlan Schema校验)(修复G-10)
-        │ + concurrency/alert_dedup.py(fingerprint去重)(修复G-06)
-        │ + concurrency/alert_correlator.py(Ontology拓扑关联 + 10s时间窗口聚合)(修复G-06)
-        │ + concurrency/resource_lock.py(实体级互斥锁)(修复G-06)
-        │ + JWT鉴权中间件 + RBAC(admin/operator/viewer)(修复P0-3)
-        │ + FastAPI REST routes(diagnosis/remediation/topology/knowledge/incidents)
-        │ + WebSocket思考流推送
+        │ + LoopOrchestrator（§7.7 / §7.8，含终止约束，修复G-05 / G-25）
+        │ + IncidentHandler（§7.9，修复G-05）
+        │ + RemediationEngine: WAL + Canary（含 criteria_mode，§7.2 / §7.3，修复G-17）
+        │ + SREResponse[T] 统一响应契约（§7.2.1，修复G-24）
+        │ + remediation/validator.py（§7.5，修复G-10）
+        │ + concurrency/: alert_dedup + alert_correlator + resource_lock（§6.3 / §7.7，修复G-06）
+        │ + JWT 鉴权 + RBAC（§13.2 / §15.2，修复P0-3）
+        │ + FastAPI REST routes + WebSocket 思考流（§13）
 Track D │ sre_agent/frontend:
-        │ + 修复页面(RemediationPlan审批+灰度进度条+WAL回滚控制)
-        │ + 知识库页面(语义搜索+文档上传+Runbook编辑器)
-        │ + 记忆库页面(事件时间线+模式列表+MTTR统计)
-        │ + Skills 展示(list_skills结果/加载SKILL.md/执行脚本状态)
-        │ + 对话页面(Chat界面+tool_call结果折叠+上下文感知)
-        │ + WebSocket backpressure + 断线重连 last_event_id（修复G-18，Review P2-3）
+        │ + 修复页 + 知识库页 + 记忆库页 + Skills 页 + 对话页
+        │ + WebSocket backpressure + 断线重连 last_event_id（§13.3，修复G-18）
 Track E │ sre_agent/ontology:
-        │ + ontology/discovery/bmc_scanner.py(Redfish IP范围扫描)(修复G-09)
-        │ + ontology/discovery/switch_scanner.py(LLDP邻居表解析)(修复G-09)
-        │ + ontology/discovery/k8s_scanner.py(Node/Pod/Service发现)(修复G-09)
-        │ + ontology/discovery/prometheus_scanner.py(targets发现)(修复G-09)
-        │ + infer_topology: hostname匹配 K8s Node↔BMC Node(修复P2-5)
-        │ + DiscoveryAgent gather错误聚合 + 数据新鲜度标注（修复G-19，Appendix C P1-7）
-        │ + KnowledgeStore 文档ID增加 source/category/version 维度（修复G-20，防哈希碰撞）
-        │ + 知识库种子数据导入(vLLM调优/RDMA排查Runbook)
+        │ + ontology/discovery/ 四个扫描器（§3.5，修复G-09）
+        │ + infer_topology 拓扑推断（§3.5，修复P2-5）
+        │ + DiscoveryAgent gather 错误聚合（Appendix C P1-7，修复G-19）
+        │ + KnowledgeStore 文档 ID 多维度（Appendix C P2-4，修复G-20）
+        │ + 知识库种子数据导入（vLLM / RDMA Runbook）
 
 Week 7-8  [Sprint 4 — 测试、文档、Demo 彩排]
 ─────────────────────────────────────────────────────────────────────
-Track A │ load_simulator: 单元测试(test_config/test_channels/test_load_profile/test_metrics/test_agents)
-        │ E2E测试(推理/Pipeline/FineTune/Notebook四个Agent各一个E2E)
-Track B │ fault_injector: 单元测试(test_config/test_channels/test_scenarios/test_rollback/test_safety)
-        │ 安全注入测试(命令注入/表达式注入/禁止操作拦截)
-        │ WAL崩溃恢复测试(进程中途kill → --resume → 验证恢复)
-Track C │ sre_agent: 单元测试(test_agent/test_ontology/test_remediation/test_tools/test_auth)
-        │ test_resource_lock / test_alert_correlator / test_slo_degradation
-        │ nat/workflow.yml: NAT 包裹 LangGraph profiling 配置（修复G-21，设计 §18.2）
-        │ nat/eval_dataset.jsonl: 构建20条诊断准确率评估样本(修复G-13)
-Track D │ E2E测试套件:
-        │   test_e2e_case1_rc_a.py  # gpu_contention → 诊断 → kill → 验证
-        │   test_e2e_case1_rc_b.py  # network_jitter → 诊断 → tc del → 验证
-        │   test_e2e_case2_rc_a.py  # ecn_misconfiguration → 诊断 → 修复ECN → 验证
-        │   test_e2e_case2_rc_b.py  # rdma_link_flap → 诊断 → 稳定端口 → 验证
-        │   test_e2e_case3_loop.py  # ambiguous双根因 → LoopOrchestrator → 两次尝试 → 成功
-        │   test_e2e_gui_skills.py  # GUI Skills: list/load/run
-        │   test_e2e_gui_knowledge.py
-        │   test_e2e_gui_memory.py
-Track E │ 完整文档:
-        │   docs/demo/01-deployment.md   (Docker Compose + K8s部署)
-        │   docs/demo/02-demo-steps.md   (Case1/2/3完整演示脚本)
-        │   docs/demo/03-config-reference.md (三组件全量配置项说明)
-        │   docs/demo/04-troubleshooting.md
-        │   docs/demo/05-architecture.md (架构图+时序图)
-        │ Demo彩排 + 问题修复
+Track A │ load_simulator: 单元测试 + E2E 测试（4 个 Agent 各一个）
+Track B │ fault_injector: 单元测试 + 安全注入测试 + WAL 崩溃恢复测试
+Track C │ sre_agent: 单元测试（test_agent / test_ontology / test_remediation / test_tools / test_auth
+        │   test_resource_lock / test_alert_correlator / test_slo_degradation）
+        │ + nat/workflow.yml（§18.2，修复G-21）+ nat/eval_dataset.jsonl（修复G-13）
+Track D │ E2E 测试套件（5 个场景，参见 §11 Demo 场景详细说明）:
+        │   Case 1 RC-A/RC-B / Case 2 RC-A/RC-B / Case 3 Loop / GUI Skills / Knowledge / Memory
+Track E │ 完整文档（docs/demo/ 五篇）+ Demo 彩排 + 问题修复
 ```
 
 ---
