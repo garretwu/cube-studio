@@ -1,8 +1,9 @@
 # AIDC Auto-SRE 分阶段开发计划
 
-> 文档版本：v2.1 | 更新日期：2026-02-19 | 分支：claude/phased-development-plan-ZTWRB
+> 文档版本：v2.2 | 更新日期：2026-02-19 | 分支：claude/phased-development-plan-ZTWRB
 > v2.0 修订：对照 load-simulator.md / fault-injector.md / AIDC-auto-SRE.md 全文补全 14 项差距
 > v2.1 修订：`load_simulator` 包 v0.1.0 已实现（25 文件，2229 行）；更新实现进度与 Sprint Track A 状态
+> v2.2 修订：全文对照三份设计文档核对，新增 G-15 至 G-32 共 18 项遗漏；更新 Sprint 1-4 Track B/C/D/E；补入验收标准矩阵（修复G-23）；POC 交付物补 P1-10/P2-1
 
 ---
 
@@ -137,6 +138,31 @@ v1.0 → v2.0 修订的 14 项差距：
 | G-13 | NAT 评估集成缺失 | Sprint 4 Track E + Prod Phase 1 新增 |
 | G-14 | 场景名称未引用设计精确名 | 全文替换为设计文档中的精确 scenario 名 |
 
+v2.0 → v2.1 修订（load_simulator v0.1.0 实现状态更新）：见 load-simulator.md 实现状态节。
+
+v2.1 → v2.2 修订（核对三份设计文档全文后补入的 18 项遗漏）：
+
+| # | 来源文档 | 差距 | 处理 Sprint |
+|---|----------|------|------------|
+| G-15 | AIDC-auto-SRE.md §4.2, Appendix C P1-10 | 同步库（sqlite3/ChromaDB）阻塞事件循环：sqlite3→aiosqlite；ChromaDB→asyncio.to_thread() | Sprint 2 Track E + Sprint 3 Track C |
+| G-16 | AIDC-auto-SRE.md §10.6, Review P1-6 | SkillExecutor 脚本沙箱隔离（namespace/cgroup 隔离 + 输出注入防护）未入 Sprint | Sprint 2 Track C |
+| G-17 | AIDC-auto-SRE.md §7.3, Review P1-7 | Canary 多条件聚合 `criteria_mode`（all/any）未入 Sprint | Sprint 3 Track C |
+| G-18 | AIDC-auto-SRE.md §13.3, Review P2-3 | WebSocket backpressure + 断线重连 `last_event_id` 未入 Sprint | Sprint 3 Track D |
+| G-19 | AIDC-auto-SRE.md §3.5, Appendix C P1-7 | DiscoveryAgent `gather(return_exceptions=True)` 未检查结果（错误聚合 + 数据新鲜度标注）| Sprint 3 Track E |
+| G-20 | AIDC-auto-SRE.md §8, Appendix C P2-4 | 知识库文档 ID 哈希碰撞（增加 source/category/version 维度）计划中但未入 Sprint | Sprint 3 Track E |
+| G-21 | AIDC-auto-SRE.md §18.2 | `nat/workflow.yml` 实现（NAT 包裹 LangGraph profiling）未入 Sprint Track 项 | Sprint 4 Track C |
+| G-22 | AIDC-auto-SRE.md §12 | sre_agent 完整 YAML 配置 Schema 实现（AgentConfig/RemediationConfig/DiscoveryConfig/HAConfig/SLOConfig）未明确入 Sprint | Sprint 1 Track C |
+| G-23 | AIDC-auto-SRE.md Appendix C §6333 | 15 维度验收标准矩阵未纳入交付物检查清单 | Demo/POC/Prod Phase 1 各阶段 |
+| G-24 | AIDC-auto-SRE.md §7.2.1, Review P0-1 | `SREResponse[T]` 统一响应契约 + ErrorCode 表在 Sprint 3 Track C 中未明确列出 | Sprint 3 Track C |
+| G-25 | AIDC-auto-SRE.md §7.8 | LoopOrchestrator 终止约束 `max_candidates=3` / `max_re_diagnosis_rounds=1` 未在 Sprint 中明确约束 | Sprint 3 Track C |
+| G-26 | fault-injector.md §12 | fault_injector DiagnosisAgent（单次 LLM 诊断，与 SRE Agent 无关）未入 Sprint | Sprint 2 Track B |
+| G-27 | fault-injector.md §3, §4 | Hardware/OS Fault Agent 细分子类型未明确入 Sprint：CPU stress（stress-ng）/ 内存（stress-ng --vm）/ 存储（dd）/ 电源（Redfish 电源封顶）/ 内核（sysctl）/ 文件系统（/dev/full）/ 进程（kill -9 + ulimit） | Sprint 2 Track B |
+| G-28 | fault-injector.md §11 | fault_injector Orchestrator 五阶段执行流（pre-flight/setup/injection/monitoring/recovery）+ `--dry-run` 模式未明确入 Sprint | Sprint 1 Track B |
+| G-29 | load-simulator.md §4 | load_simulator Monitor Agent 三层架构（Layer1 应用层/Layer2 Prometheus层/Layer3 平台API层）未明确入 Sprint（v0.1 仅实现系统层） | Sprint 2 Track A |
+| G-30 | load-simulator.md §7, §9 | load_simulator 执行模式（stress/soak/mixed/single）+ AdaptiveRules（breaking point 二分搜索）未明确入 Sprint | Sprint 2 Track A |
+| G-31 | load-simulator.md §2.9 | load_simulator Cube Studio 认证机制（JWT `CUBE_STUDIO_JWT_SECRET` + refresh）未明确入 Sprint | Sprint 2 Track A |
+| G-32 | fault-injector.md §5 | Platform Fault Agent 覆盖范围缺 Ceph（osd pause）/Kafka/Prometheus 故障子类型 | Sprint 3 Track B |
+
 ---
 
 ## Demo 阶段（第 1–2 月）
@@ -254,12 +280,16 @@ Track A │ [✅ 已完成 2026-02-19] load_simulator v0.1.0 实现：
         │   + orchestrator/engine.py + session.py + scheduler.py
         │   + config/schema.py + defaults.py + loader.py
         │ [❌ 待实现] CubeStudioChannel + InferenceChannel（channels/ 模块，Sprint 2 Task A）
-Track B │ fault_injector: CLI骨架 + SSHChannel + RedfishChannel + SwitchChannel
+Track B │ fault_injector: CLI骨架（含 --dry-run 预检模式，修复G-28）
+        │ + Orchestrator 五阶段执行流（pre-flight/setup/injection/monitoring/recovery，修复G-28）
+        │ + SSHChannel + RedfishChannel + SwitchChannel
         │ + WAL 回滚日志(rollback.py) + SafetyGuard + watchdog.py
         │ + Scenario基类 + 场景注册表(registry.py)
 Track C │ sre_agent: LangGraph骨架(sre_agent.py/graph.py/state.py/nodes.py)
         │ + ToolRegistry + get_gpu_processes工具(修复P0-5)
         │ + shlex.quote SSH注入防护(修复P0-2) + safe_eval DSL(替换eval)
+        │ + sre_agent 完整 YAML Config Schema: AgentConfig / RemediationConfig
+        │   DiscoveryConfig / HAConfig / SLOConfig（修复G-22，对应设计 §12）
 Track D │ sre_agent/frontend: Vite+React18+Zustand+AntDesign5项目初始化(修复G-04)
         │ + 路由(7个页面) + 布局组件 + WebSocket client
 Track E │ Docker Compose部署环境 + Prometheus/K8s/Redfish/Switch mock
@@ -268,18 +298,33 @@ Track E │ Docker Compose部署环境 + Prometheus/K8s/Redfish/Switch mock
 Week 3-4  [Sprint 2 — 核心功能]
 ─────────────────────────────────────────────────────────────────────
 Track A │ load_simulator（Sprint 2 补全）:
-        │ + channels/ — CubeStudioChannel / InferenceChannel / PrometheusChannel / K8sChannel
+        │ + channels/ — CubeStudioChannel（含 JWT auth `CUBE_STUDIO_JWT_SECRET`，修复G-31）
+        │   / InferenceChannel / PrometheusChannel / K8sChannel
         │ + load/profile.py — stepped/spike LoadProfile 完整实现
         │ + load/rate_limiter.py — token bucket 速率控制
-        │ + load/token_distribution.py — token 分布采样
-        │ + load/prompt_pool.py — 提示词池
+        │ + load/token_distribution.py — token 分布采样 + load/prompt_pool.py — 提示词池
+        │ + Monitor Agent 三层架构（修复G-29）:
+        │     Layer1 应用层: 推理延迟直方图/错误率/TPS（Agent 内部采集）
+        │     Layer2 Prometheus: GPU/CPU/内存/NVLink/RDMA 指标
+        │     Layer3 平台API: CubeStudio 推理服务/Pipeline 状态轮询
         │ + InferenceAgent 增强（stream/token分布/P50-P99精确聚合）
+        │ + 执行模式（修复G-30）:
+        │     stress: AdaptiveRules + breaking point 二分搜索（§9.1）
+        │     soak: 24h 长时稳定测试 + MemoryLeakDetector
+        │     mixed: 多 Agent 并发叠加负载
+        │     single: 单 Agent 精确复现
         │ + BottleneckAnalyzer MiniMax-2.1 LLM 模式（v0.1 为确定性阈值，此处升级）
         │ + reporting/html_report.py + charts.py(Plotly) + comparison.py
 Track B │ fault_injector:
         │ + vllm_latency.py: gpu_contention(RC-1) + network_jitter(RC-2)场景(修复G-01)
         │ + rdma_anomaly.py: ecn_misconfiguration(F-2) + rdma_link_flap(F-4)场景(修复G-01)
-        │ + HardwareFaultAgent(Redfish/风扇/GPU) + OSFaultAgent(stress-ng/tc/iptables)
+        │ + HardwareFaultAgent 完整子类型（修复G-27）:
+        │     CPU: stress-ng via SSH + GPU: nvidia-smi pm (reset/power-cap via Redfish)
+        │     内存: stress-ng --vm + 存储: dd error inject + 电源: Redfish PowerLimit
+        │ + OSFaultAgent 完整子类型（修复G-27）:
+        │     内核: sysctl kernel.panic/hung_task + 文件系统: /dev/full dd
+        │     进程: kill -9 + ulimit + 网络栈: tc netem / iptables
+        │ + DiagnosisAgent（单次 LLM 诊断 + 韧性评分，修复G-26；与 SRE Agent 无关）
 Track C │ sre_agent:
         │ + NeMo Guardrails: config.yml + rails/input.co + output.co + execution.co + dialog.co
         │   (修复G-12，实现声明式安全护栏)
@@ -287,6 +332,7 @@ Track C │ sre_agent:
         │ + asyncio.wait_for 步级+会话级超时(修复P0-4)
         │ + skills/runtime/: SkillRegistry(热扫描**/SKILL.md) + SkillExecutor + 4个固定@tool
         │   (list_skills/load_skill/read_skill_ref/run_skill)(修复G-03)
+        │ + SkillExecutor 脚本沙箱：namespace隔离 + cgroup限制 + 输出注入防护（修复G-16，Review P1-6）
         │ + skills/builtin/vllm-diagnosis/SKILL.md + scripts/ + references/
         │ + skills/builtin/rdma-diagnosis/SKILL.md + scripts/
 Track D │ sre_agent/frontend:
@@ -294,9 +340,9 @@ Track D │ sre_agent/frontend:
         │ + 诊断页面(ThinkingStep Timeline + 假设树 + 实时WebSocket追加)
         │ + 告警页面(告警列表/详情/触发诊断)
 Track E │ sre_agent/storage:
-        │ + KnowledgeStore(ChromaDB + asyncio.to_thread包装)
-        │ + MemoryStore(aiosqlite，incident/pattern/config三类)
-        │ + OntologyGraph(NetworkX + aiosqlite，BFS双向遍历，修复P1-1)
+        │ + KnowledgeStore(ChromaDB + asyncio.to_thread包装，修复G-15 P1-10)
+        │ + MemoryStore(aiosqlite，incident/pattern/config三类；修复G-15 P1-10)
+        │ + OntologyGraph(NetworkX + aiosqlite，BFS双向遍历，修复P1-1；修复G-15 P1-10)
 
 Week 5-6  [Sprint 3 — 场景集成与修复引擎]
 ─────────────────────────────────────────────────────────────────────
@@ -308,16 +354,24 @@ Track A │ load_simulator:
 Track B │ fault_injector:
         │ + vllm_latency.py: storage_io_interference(RC-3) + platform_cascade(RC-4)
         │ + rdma_anomaly.py: pfc_deadlock(F-1) + roce_mtu_mismatch(F-5)
-        │ + PlatformFaultAgent(K8s/MySQL/Redis/Celery)
+        │ + PlatformFaultAgent 完整子类型（修复G-32，设计 §5）:
+        │     K8s: etcd/apiserver/scheduler 组件故障 + Node NotReady 注入
+        │     MySQL: max_connections 限制 + binlog 延迟 + 慢查询注入
+        │     Redis: maxmemory 触发 OOM + 主从延迟 + key 过期风暴
+        │     Ceph: osd pause + pg degraded（修复G-32）
+        │     Kafka: consumer lag + broker 重启（修复G-32）
         │ + ServiceFaultAgent(推理/Pipeline/Notebook)
         │ + load-simulator 联动集成(`_run_load_simulator`异步子进程)
 Track C │ sre_agent:
         │ + LoopOrchestrator(候选排名/逐一尝试/回滚/触发增量重诊)(修复G-05)
+        │     终止约束: max_candidates=3 / max_re_diagnosis_rounds=1（修复G-25，设计 §7.8）
         │ + IncidentHandler(顶层事件处理串联诊断→循环→重诊)(修复G-05)
         │ + RemediationEngine(WAL执行/canary灰度/approval门控)
+        │ + Canary 多条件聚合 criteria_mode=all|any（修复G-17，Review P1-7，设计 §7.3）
+        │ + SREResponse[T] 统一响应契约 + ErrorCode 表（修复G-24，Review P0-1，禁止 dict 直接返回）
         │ + remediation/validator.py(RemediationPlan Schema校验)(修复G-10)
         │ + concurrency/alert_dedup.py(fingerprint去重)(修复G-06)
-        │ + concurrency/alert_correlator.py(拓扑关联聚合)(修复G-06)
+        │ + concurrency/alert_correlator.py(Ontology拓扑关联 + 10s时间窗口聚合)(修复G-06)
         │ + concurrency/resource_lock.py(实体级互斥锁)(修复G-06)
         │ + JWT鉴权中间件 + RBAC(admin/operator/viewer)(修复P0-3)
         │ + FastAPI REST routes(diagnosis/remediation/topology/knowledge/incidents)
@@ -328,12 +382,15 @@ Track D │ sre_agent/frontend:
         │ + 记忆库页面(事件时间线+模式列表+MTTR统计)
         │ + Skills 展示(list_skills结果/加载SKILL.md/执行脚本状态)
         │ + 对话页面(Chat界面+tool_call结果折叠+上下文感知)
+        │ + WebSocket backpressure + 断线重连 last_event_id（修复G-18，Review P2-3）
 Track E │ sre_agent/ontology:
         │ + ontology/discovery/bmc_scanner.py(Redfish IP范围扫描)(修复G-09)
         │ + ontology/discovery/switch_scanner.py(LLDP邻居表解析)(修复G-09)
         │ + ontology/discovery/k8s_scanner.py(Node/Pod/Service发现)(修复G-09)
         │ + ontology/discovery/prometheus_scanner.py(targets发现)(修复G-09)
         │ + infer_topology: hostname匹配 K8s Node↔BMC Node(修复P2-5)
+        │ + DiscoveryAgent gather错误聚合 + 数据新鲜度标注（修复G-19，Appendix C P1-7）
+        │ + KnowledgeStore 文档ID增加 source/category/version 维度（修复G-20，防哈希碰撞）
         │ + 知识库种子数据导入(vLLM调优/RDMA排查Runbook)
 
 Week 7-8  [Sprint 4 — 测试、文档、Demo 彩排]
@@ -345,6 +402,7 @@ Track B │ fault_injector: 单元测试(test_config/test_channels/test_scenario
         │ WAL崩溃恢复测试(进程中途kill → --resume → 验证恢复)
 Track C │ sre_agent: 单元测试(test_agent/test_ontology/test_remediation/test_tools/test_auth)
         │ test_resource_lock / test_alert_correlator / test_slo_degradation
+        │ nat/workflow.yml: NAT 包裹 LangGraph profiling 配置（修复G-21，设计 §18.2）
         │ nat/eval_dataset.jsonl: 构建20条诊断准确率评估样本(修复G-13)
 Track D │ E2E测试套件:
         │   test_e2e_case1_rc_a.py  # gpu_contention → 诊断 → kill → 验证
@@ -391,6 +449,17 @@ Track E │ 完整文档:
 - [ ] 单元测试覆盖率 ≥ 70%
 - [ ] 5 个 E2E 场景测试通过（Case 1-3 + GUI Skills/Knowledge/Memory）
 - [ ] 完整文档（部署+Demo步骤+Config+故障排查+架构）
+
+**验收标准矩阵（AIDC-auto-SRE.md Appendix C §验收标准，修复G-23）**
+- [ ] 安全性：无动态代码执行路径，工具命令无 shell 注入面（bandit/semgrep 扫描通过）
+- [ ] 契约一致性：所有核心接口 `SREResponse[T]` 强制，字段一致率 100%（CI 契约测试）
+- [ ] 权限有效性：高风险接口未授权不可执行，越权测试拦截率 100%
+- [ ] 并发安全性：重复告警与并发告警下，无重复修复与交叉写冲突（ResourceLock 压测）
+- [ ] 正确性：3 类标准故障场景影响面识别准确率 ≥ 90%
+- [ ] 故障注入验收：已知故障类型诊断准确率 ≥ 80%
+- [ ] 可执行性：修复计划 schema 一次通过率 ≥ 95%，不合法计划可被 PlanValidator 拦截
+- [ ] 可回滚性：所有写操作有 WAL 且通过 `recover_all()` 回滚演练
+- [ ] 成本可控：单次诊断 token ≤ 100K，超出自动终止（`max_tokens_per_diagnosis`）
 
 ---
 
@@ -445,6 +514,8 @@ Track E │ 性能测试: 1000 次告警回放 + 无死锁 + aiosqlite 异步重
 - [ ] WAL 回滚成功率 ≥ 99%（注入 10 类失败场景验证）
 - [ ] 对话 Agent 多步 function-calling 场景通过 E2E 测试
 - [ ] LangGraph checkpoint 持久化，sre-agent --resume 可用
+- [ ] aiosqlite + asyncio.to_thread 异步化验证：事件循环阻塞告警为 0（修复G-15，P1-10）
+- [ ] SQLite/NetworkX 并发安全：锁和事务边界通过并发压测（P2-1）
 
 ---
 
