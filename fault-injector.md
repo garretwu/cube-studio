@@ -1,5 +1,149 @@
 # Cube Studio Fault Injector 设计规格
 
+> **实现状态**：待实现 | 更新日期：2026-02-19 | 分支：claude/phased-development-plan-ZTWRB
+
+## 实现状态（2026-02-19）
+
+### 整体状态
+
+`fault_injector` 包尚未开始实现。以下为计划目录结构、Sprint 分配和优先级排序。
+
+### 计划目录结构
+
+```
+fault_injector/
+├── __main__.py / cli.py              # CLI 入口（run / validate-config / list-scenarios）
+├── config/
+│   ├── schema.py                     # Pydantic v2 config
+│   ├── defaults.py                   # 内置默认 YAML
+│   └── loader.py                     # YAML 加载 + 校验
+├── orchestrator/
+│   ├── engine.py                     # FaultOrchestrator（asyncio 确定性调度）
+│   ├── session.py                    # Session 状态管理
+│   ├── scheduler.py                  # 调度辅助
+│   └── watchdog.py                   # 回滚看门狗（超时自动恢复）
+├── agents/
+│   ├── base.py                       # BaseAgent / AgentResult
+│   ├── hardware.py                   # HardwareFaultAgent（Redfish BMC）
+│   ├── os_fault.py                   # OSFaultAgent（SSH + stress-ng/tc/iptables）
+│   ├── platform.py                   # PlatformFaultAgent（K8s/MySQL/Redis/Celery）
+│   ├── service.py                    # ServiceFaultAgent（推理/Pipeline/Notebook）
+│   ├── monitor.py                    # MonitorAgent（指标采集）
+│   └── diagnosis.py                  # DiagnosisAgent（MiniMax-2.1 LLM 驱动）
+├── channels/
+│   ├── ssh.py                        # SSHChannel（asyncssh 连接池）
+│   ├── redfish.py                    # RedfishChannel（BMC 带外管理）
+│   ├── switch.py                     # SwitchChannel（H3C CLI）
+│   ├── kubernetes.py                 # KubernetesChannel
+│   ├── cube_studio.py                # CubeStudioChannel
+│   └── prometheus.py                 # PrometheusChannel
+├── scenarios/
+│   ├── vllm_latency.py               # RC-1~RC-6 六个 vLLM 延迟场景
+│   ├── rdma_anomaly.py               # F-1~F-6 六个 RDMA 异常场景
+│   └── registry.py                   # 场景注册表
+├── safety/
+│   ├── guard.py                      # SafetyGuard（禁止操作拦截）
+│   └── rollback.py                   # WAL 回滚日志（rollback.wal）
+├── reporting/
+│   ├── timeline.py                   # 故障时间线
+│   ├── html_report.py                # HTML 韧性报告
+│   ├── charts.py                     # Plotly 图表
+│   └── resilience.py                 # 韧性评分
+└── tests/
+```
+
+### Sprint 实现计划
+
+#### Sprint 1（Week 1-2）— 骨架与基础设施
+
+| 优先级 | 任务 | 说明 |
+|--------|------|------|
+| P0 | `cli.py` + `__main__.py` | CLI 骨架（run/validate-config/list-scenarios） |
+| P0 | `config/schema.py` + `defaults.py` + `loader.py` | Pydantic v2 配置层 |
+| P0 | `safety/rollback.py` (WAL) | **核心不变量**：注入前先写回滚日志 |
+| P0 | `safety/guard.py` | 禁止操作拦截（防误操作生产） |
+| P0 | `channels/ssh.py` | asyncssh 连接池（OSFaultAgent 的基础） |
+| P1 | `channels/redfish.py` | BMC 带外管理（HardwareFaultAgent 基础） |
+| P1 | `channels/switch.py` | H3C CLI（RDMA 场景基础） |
+| P1 | `orchestrator/engine.py` + `session.py` | FaultOrchestrator 骨架 |
+| P1 | `orchestrator/watchdog.py` | 超时自动回滚看门狗 |
+| P1 | `scenarios/registry.py` | 场景注册表 + Scenario 基类 |
+
+#### Sprint 2（Week 3-4）— Demo 场景实现
+
+| 优先级 | 任务 | 场景 |
+|--------|------|------|
+| P0 | `agents/os_fault.py` | `OSFaultAgent`（SSH + tc + stress-ng） |
+| P0 | `scenarios/vllm_latency.py` | RC-1 `gpu_contention`（gpu-burn SSH 注入） |
+| P0 | `scenarios/vllm_latency.py` | RC-2 `network_jitter`（tc netem Pareto 延迟） |
+| P0 | `channels/kubernetes.py` | K8s 通道（PlatformFaultAgent 基础） |
+| P1 | `agents/hardware.py` | `HardwareFaultAgent`（Redfish 风扇/电源） |
+| P1 | `channels/cube_studio.py` | CubeStudio 通道 |
+| P1 | `scenarios/rdma_anomaly.py` | F-2 `ecn_misconfiguration`（Switch CLI） |
+| P1 | `scenarios/rdma_anomaly.py` | F-4 `rdma_link_flap`（Switch 端口 shutdown 脚本） |
+| P1 | load-simulator 联动 | `_run_load_simulator()` 异步子进程 + stdout JSON 解析 |
+
+#### Sprint 3（Week 5-6）— 扩展场景 + 集成
+
+| 优先级 | 任务 | 说明 |
+|--------|------|------|
+| P1 | `scenarios/vllm_latency.py` | RC-3 `storage_io_interference`，RC-4 `platform_cascade` |
+| P1 | `scenarios/rdma_anomaly.py` | F-1 `pfc_deadlock`，F-5 `roce_mtu_mismatch` |
+| P1 | `agents/platform.py` | PlatformFaultAgent（K8s/MySQL/Redis） |
+| P1 | `agents/service.py` | ServiceFaultAgent（推理/Pipeline/Notebook） |
+| P2 | `agents/diagnosis.py` | DiagnosisAgent（MiniMax-2.1 韧性评分） |
+| P2 | `reporting/` | HTML 韧性报告 + 时间线图表 |
+
+#### Sprint 4（Week 7-8）— 测试与 Demo 彩排
+
+| 任务 | 说明 |
+|------|------|
+| `tests/test_config.py` | 配置校验单元测试 |
+| `tests/test_channels.py` | SSH/Redfish/Switch 通道 mock 测试 |
+| `tests/test_scenarios.py` | 场景注入 + 回滚单元测试 |
+| `tests/test_rollback.py` | WAL 崩溃恢复测试（kill 进程 → --resume） |
+| `tests/test_safety.py` | 命令注入防护、禁止操作拦截测试 |
+
+### P0 安全要求（实现前必须确认）
+
+| ID | 要求 | 说明 |
+|----|------|------|
+| S-1 | WAL 先写原则 | 任何注入操作的恢复命令必须在注入**之前**写入 WAL |
+| S-2 | SSH 参数转义 | 所有 SSH 命令参数使用 `shlex.quote()`，禁止字符串拼接 |
+| S-3 | SafetyGuard 白名单 | 只允许预定义操作集，拦截 `rm -rf`、`dd if=/dev/zero` 等危险命令 |
+| S-4 | 单租户限制（Demo 阶段） | WAL 回滚仅恢复本 Session 注入的变更，Demo 阶段建议单租户环境 |
+| S-5 | load-simulator 联动结果校验 | `json.loads(stdout)` 后必须校验 `exit_code == 0` 再继续 |
+
+### 与 load_simulator 的联动接口
+
+```python
+# fault_injector/scenarios/base.py（示例）
+import asyncio, json, shlex
+
+async def _run_load_simulator(config_path: str, only: list[str]) -> dict:
+    """调用 load-simulator 并解析 stdout JSON。"""
+    cmd = [
+        "python", "-m", "load_simulator", "run",
+        "--config", shlex.quote(config_path),
+        "--output-format", "json",
+    ]
+    for scenario in only:
+        cmd += ["--only", scenario]
+
+    proc = await asyncio.create_subprocess_exec(
+        *cmd,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    stdout, stderr = await proc.communicate()
+    result = json.loads(stdout.decode())
+    if result.get("exit_code") != 0:
+        raise RuntimeError(f"load-simulator failed: {stderr.decode()[:500]}")
+    return result["summary"]
+```
+
+---
+
 ## 1. 概述
 
 ### 1.1 目标

@@ -1,7 +1,8 @@
 # AIDC Auto-SRE 分阶段开发计划
 
-> 文档版本：v2.0 | 更新日期：2026-02-19 | 分支：claude/phased-development-plan-ZTWRB
+> 文档版本：v2.1 | 更新日期：2026-02-19 | 分支：claude/phased-development-plan-ZTWRB
 > v2.0 修订：对照 load-simulator.md / fault-injector.md / AIDC-auto-SRE.md 全文补全 14 项差距
+> v2.1 修订：`load_simulator` 包 v0.1.0 已实现（25 文件，2229 行）；更新实现进度与 Sprint Track A 状态
 
 ---
 
@@ -24,11 +25,11 @@
 
 AIDC Auto-SRE 是面向 AI 数据中心的自主运维智能体系统，通过 LangGraph ReAct + NeMo Guardrails 实现告警驱动的根因诊断与受控修复。整体由三个组件构成：
 
-| 组件 | 职责 | 优先级 |
-|------|------|--------|
-| `load_simulator` | 生成确定性推理/训练/微调/Notebook 负载，暴露瓶颈 | 前置依赖，最优先 |
-| `fault_injector` | 多维度故障注入（硬件/OS/平台/服务），驱动 Demo 场景 | 前置依赖，最优先 |
-| `sre_agent` | LangGraph ReAct 诊断 + NeMo 受控修复 + GUI | 核心交付物 |
+| 组件 | 职责 | 优先级 | 状态 |
+|------|------|--------|------|
+| `load_simulator` | 生成确定性推理/训练/微调/Notebook 负载，暴露瓶颈 | 前置依赖，最优先 | **✅ v0.1.0 已实现**（2026-02-19） |
+| `fault_injector` | 多维度故障注入（硬件/OS/平台/服务），驱动 Demo 场景 | 前置依赖，最优先 | ❌ 待实现（Sprint 1-2） |
+| `sre_agent` | LangGraph ReAct 诊断 + NeMo 受控修复 + GUI | 核心交付物 | ❌ 待实现（Sprint 1-4） |
 
 **核心不变量**：LLM 只做只读分析，确定性引擎（asyncio）负责注入/恢复/执行，WAL 保证可回滚。
 
@@ -233,7 +234,7 @@ LoopOrchestrator 循环执行:
 
 | ID | 问题 | 修复方案 | 设计文档位置 |
 |----|------|---------|------------|
-| P0-1 | load↔fault 联动接口：fault-injector 调用 `run --output-format json`，但 load-simulator 未定义此子命令 | load-simulator 实现 `run` 子命令，stdout 输出 JSON 摘要（`§9.2` 契约） | fault-injector §9.2 |
+| P0-1 | ~~load↔fault 联动接口：fault-injector 调用 `run --output-format json`，但 load-simulator 未定义此子命令~~ | **✅ 已修复（v0.1.0）**：`python -m load_simulator run --output-format json` 已实现，stdout 输出完整 JSON 摘要 | fault-injector §9.2 |
 | P0-2 | SSH 命令拼接注入（log_path/filter_str 未转义） | 所有 SSH 参数使用 `shlex.quote()`，禁止管道字符 | review §P0-2 |
 | P0-3 | API/WebSocket 全部缺鉴权 | 统一 JWT 中间件 + 接口级 RBAC | review §P0-3 |
 | P0-4 | `asyncio.Queue.get(timeout=...)` 不存在 | 改为 `asyncio.wait_for(queue.get(), timeout=300)` | review §P0-4 |
@@ -246,9 +247,13 @@ LoopOrchestrator 循环执行:
 ```
 Week 1-2  [Sprint 1 — 骨架与前置依赖]
 ─────────────────────────────────────────────────────────────────────
-Track A │ load_simulator: CLI骨架(含 run --output-format json 子命令，修复G-08)
-        │ + InferenceAgent骨架 + PipelineAgent骨架 + FineTuneAgent骨架 + NotebookAgent骨架
-        │ + CubeStudioChannel + InferenceChannel + metrics/thresholds.py六层(修复G-11)
+Track A │ [✅ 已完成 2026-02-19] load_simulator v0.1.0 实现：
+        │   CLI(run/validate-config/list-scenarios，含 --output-format json，修复G-08)
+        │   + InferenceAgent + PipelineAgent + FineTuneAgent + NotebookAgent（全部完成）
+        │   + MetricsMonitor + BottleneckAnalyzer + metrics/thresholds.py六层(修复G-11)
+        │   + orchestrator/engine.py + session.py + scheduler.py
+        │   + config/schema.py + defaults.py + loader.py
+        │ [❌ 待实现] CubeStudioChannel + InferenceChannel（channels/ 模块，Sprint 2 Task A）
 Track B │ fault_injector: CLI骨架 + SSHChannel + RedfishChannel + SwitchChannel
         │ + WAL 回滚日志(rollback.py) + SafetyGuard + watchdog.py
         │ + Scenario基类 + 场景注册表(registry.py)
@@ -262,13 +267,15 @@ Track E │ Docker Compose部署环境 + Prometheus/K8s/Redfish/Switch mock
 
 Week 3-4  [Sprint 2 — 核心功能]
 ─────────────────────────────────────────────────────────────────────
-Track A │ load_simulator:
-        │ + InferenceAgent完整实现(并发控制/stream/token分布/P50-P99聚合)
-        │ + PipelineAgent完整实现(DAG拓扑/调度监控)
-        │ + FineTuneAgent完整实现(LLaMA-Factory/GPU指标)
-        │ + NotebookAgent完整实现(Jupyter Kernel API)
-        │ + BottleneckAnalyzer(MiniMax-2.1，六层跨层分析)
-        │ + html_report.py + charts.py(Plotly) + comparison.py
+Track A │ load_simulator（Sprint 2 补全）:
+        │ + channels/ — CubeStudioChannel / InferenceChannel / PrometheusChannel / K8sChannel
+        │ + load/profile.py — stepped/spike LoadProfile 完整实现
+        │ + load/rate_limiter.py — token bucket 速率控制
+        │ + load/token_distribution.py — token 分布采样
+        │ + load/prompt_pool.py — 提示词池
+        │ + InferenceAgent 增强（stream/token分布/P50-P99精确聚合）
+        │ + BottleneckAnalyzer MiniMax-2.1 LLM 模式（v0.1 为确定性阈值，此处升级）
+        │ + reporting/html_report.py + charts.py(Plotly) + comparison.py
 Track B │ fault_injector:
         │ + vllm_latency.py: gpu_contention(RC-1) + network_jitter(RC-2)场景(修复G-01)
         │ + rdma_anomaly.py: ecn_misconfiguration(F-2) + rdma_link_flap(F-4)场景(修复G-01)
@@ -294,10 +301,10 @@ Track E │ sre_agent/storage:
 Week 5-6  [Sprint 3 — 场景集成与修复引擎]
 ─────────────────────────────────────────────────────────────────────
 Track A │ load_simulator:
-        │ + load↔fault 联动契约验证(P0-1修复后端到端测试)
-        │ + 多阶段压测(stepped/linear/spike LoadProfile)
-        │ + RateLimiter(token bucket) + prompt_pool.py
-        │ + PrometheusChannel + K8sChannel
+        │ + load↔fault 联动契约 E2E 测试（P0-1 已修复：`run --output-format json` 已实现）
+        │ + 多阶段压测(stepped/spike LoadProfile 完整实现)
+        │ + 单元测试套件 test_config / test_channels / test_load_profile / test_metrics / test_agents
+        │ + E2E 测试（推理/Pipeline/FineTune/Notebook 各一个）
 Track B │ fault_injector:
         │ + vllm_latency.py: storage_io_interference(RC-3) + platform_cascade(RC-4)
         │ + rdma_anomaly.py: pfc_deadlock(F-1) + roce_mtu_mismatch(F-5)
@@ -361,11 +368,11 @@ Track E │ 完整文档:
 
 ### Demo 交付物检查清单
 
-**load_simulator**
-- [ ] 4 个功能 Agent（inference/pipeline/finetune/notebook）可独立运行（`--only` 参数）
-- [ ] `python -m load_simulator run --output-format json` 子命令输出有效 JSON
-- [ ] HTML 报告含延迟分布/吞吐/资源时间线图表
-- [ ] 六层瓶颈阈值引擎检测并报告（`metrics/thresholds.py`）
+**load_simulator** *(v0.1.0 已实现，2026-02-19)*
+- [x] 4 个功能 Agent（inference/pipeline/finetune/notebook）可独立运行（`--only` 参数）
+- [x] `python -m load_simulator run --output-format json` 子命令输出有效 JSON
+- [ ] HTML 报告含延迟分布/吞吐/资源时间线图表 *(reporting/ 模块待实现，Sprint 2 Track A)*
+- [x] 六层瓶颈阈值引擎检测并报告（`metrics/thresholds.py`）
 
 **fault_injector**
 - [ ] `gpu_contention` / `network_jitter` 场景可注入并自动回滚
