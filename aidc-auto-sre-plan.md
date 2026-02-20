@@ -1,11 +1,12 @@
 # AIDC Auto-SRE 分阶段开发计划
 
-> 文档版本：v2.4 | 更新日期：2026-02-20 | 分支：claude/phased-development-plan-ZTWRB
+> 文档版本：v2.5 | 更新日期：2026-02-20 | 分支：claude/phased-development-plan-ZTWRB
 > v2.0 修订：对照 load-simulator.md / fault-injector.md / AIDC-auto-SRE.md 全文补全 14 项差距
 > v2.1 修订：`load_simulator` 包 v0.1.0 已实现（25 文件，2229 行）；更新实现进度与 Sprint Track A 状态
 > v2.2 修订：全文对照三份设计文档核对，新增 G-15 至 G-32 共 18 项遗漏；更新 Sprint 1-4 Track B/C/D/E；补入验收标准矩阵（修复G-23）；POC 交付物补 P1-10/P2-1
 > v2.3 修订：Sprint 条目去除实现细节，改为模块名 + 设计文档 §节 + Gap ID 引用格式
-> v2.4 修订：对照 AIDC-auto-SRE-review-feedback.md 审查，新增 G-33（OpenTelemetry）；补入性能基线验收、LLM 降级验收；Sprint 3 注明 resource_lock 分阶段决策
+> v2.4 修订：对照 AIDC-auto-SRE-review-feedback.md 审查，新增 G-33（OpenTelemetry 分布式追踪）
+> v2.5 修订：对照 aidc-auto-sre-plan-feedback.md 审查，落入以下变更：Demo 2 case 必做（Case 3 → POC）；GUI Skills/知识库/记忆库硬性验收；Gate-1/Gate-2 前置依赖；各阶段 Unit+E2E 测试阈值；文档 DoD；Prod Phase 时长标注 1~1.5 月；补入遗留 v2.4 项（性能基线、LLM 降级验收、resource_lock 分阶段决策、Sprint 7 OpenTelemetry）
 
 ---
 
@@ -174,10 +175,10 @@ v2.1 → v2.2 修订（核对三份设计文档全文后补入的 18 项遗漏�
 
 | 维度 | 内容 |
 |------|------|
-| 场景 | Case 1: p95 vLLM 延迟异常（2 根因）；Case 2: RDMA 异常（2 根因）；Case 3: ambiguous 多候选验证 |
-| GUI | 展示 7 个页面：拓扑/告警/诊断/修复/对话/知识库/记忆库（其中 Skills 在诊断/工具页面） |
-| 文档 | 部署手册、Demo 步骤、Config 参考、故障排查、架构图 |
-| 测试 | 单元测试覆盖率 ≥ 70%，E2E 测试跑通 3 个完整 Case |
+| 场景 | **必做**：Case 1 p95 vLLM 延迟异常（2 根因）；Case 2 RDMA 异常（2 根因）；**Stretch/POC**：Case 3 ambiguous 多候选验证 |
+| GUI | 展示 7 个页面：拓扑/告警/诊断/修复/对话/知识库/记忆库；**Skills/知识库/记忆库三页须通过硬性 GUI 验收** |
+| 文档 | 部署手册、Demo 步骤、Config 参考、故障排查（≥ 10 条）、架构图 |
+| 测试 | 单元测试覆盖率 ≥ 70%，E2E 测试跑通 2 核心 Case（4 场景：Case 1-2 + GUI Skills/Knowledge/Memory） |
 
 ---
 
@@ -229,9 +230,9 @@ Step 8: configure_ecn(灰度: HGE1/0/1→150000, 观察60s, HGE1/0/2→150000) [
 
 ---
 
-#### Case 3（Demo 3）：Ambiguous 多候选根因循环验证
+#### Case 3（Stretch Goal / POC 必做）：Ambiguous 多候选根因循环验证
 
-**说明**：此场景证明 LoopOrchestrator 的多候选根因能力，是需求"multiple root cause"的核心 Demo。
+**说明**：此场景证明 LoopOrchestrator 的多候选根因能力，是需求"multiple root cause"的验证场景。Demo 阶段为 Stretch Goal（有余力则实现），POC 阶段转为必做。
 
 ```
 fault_injector 同时注入两个低强度故障：
@@ -340,6 +341,7 @@ Track C │ sre_agent:
         │ + SREResponse[T] 统一响应契约（§7.2.1，修复G-24）
         │ + remediation/validator.py（§7.5，修复G-10）
         │ + concurrency/: alert_dedup + alert_correlator + resource_lock（§6.3 / §7.7，修复G-06）
+        │   [分阶段决策：Demo 用 asyncio.Lock（单进程）；Prod Phase 1 升级为 Redis Redlock（多副本 HA）]
         │ + JWT 鉴权 + RBAC（§13.2 / §15.2，修复P0-3）
         │ + FastAPI REST routes + WebSocket 思考流（§13）
 Track D │ sre_agent/frontend:
@@ -359,8 +361,9 @@ Track B │ fault_injector: 单元测试 + 安全注入测试 + WAL 崩溃恢复
 Track C │ sre_agent: 单元测试（test_agent / test_ontology / test_remediation / test_tools / test_auth
         │   test_resource_lock / test_alert_correlator / test_slo_degradation）
         │ + nat/workflow.yml（§18.2，修复G-21）+ nat/eval_dataset.jsonl（修复G-13）
-Track D │ E2E 测试套件（5 个场景，参见 §11 Demo 场景详细说明）:
-        │   Case 1 RC-A/RC-B / Case 2 RC-A/RC-B / Case 3 Loop / GUI Skills / Knowledge / Memory
+Track D │ E2E 测试套件（4 个必做场景 + 1 个 Stretch）:
+        │   Case 1 RC-A/RC-B / Case 2 RC-A/RC-B / GUI Skills / Knowledge / Memory
+        │   Case 3 Loop（Stretch Goal，可移入 POC Sprint 5）
 Track E │ 完整文档（docs/demo/ 五篇）+ Demo 彩排 + 问题修复
 ```
 
@@ -383,14 +386,17 @@ Track E │ 完整文档（docs/demo/ 五篇）+ Demo 彩排 + 问题修复
 **sre_agent**
 - [ ] Case 1 RC-A/RC-B：端到端诊断 + 审批 + 修复 + 验证
 - [ ] Case 2 RC-A/RC-B：端到端诊断 + 灰度修复 + 验证
-- [ ] Case 3：ambiguous 诊断 + LoopOrchestrator 两轮验证 + 记忆写入
+- [ ] Case 3（Stretch Goal）：ambiguous 诊断 + LoopOrchestrator 两轮验证 + 记忆写入
 - [ ] NeMo Guardrails 4个 rail 文件工作，拦截危险输入/输出
 - [ ] Skills：`list_skills` / `load_skill` / `run_skill` 可用，2 个 builtin skill 内容完整
 - [ ] GUI 7 个页面全部可访问（拓扑/告警/诊断/修复/对话/知识库/记忆库）
+- [ ] GUI Skills 页：list/load/run skill 可视化执行通过（硬性验收）
+- [ ] GUI 知识库页：检索 + 文档详情展示（硬性验收）
+- [ ] GUI 记忆库页：相似事件命中 + 模式置信度展示（硬性验收）
 - [ ] JWT 鉴权生效，未授权请求返回 401
 - [ ] 单元测试覆盖率 ≥ 70%
-- [ ] 5 个 E2E 场景测试通过（Case 1-3 + GUI Skills/Knowledge/Memory）
-- [ ] 完整文档（部署+Demo步骤+Config+故障排查+架构）
+- [ ] 4 个 E2E 场景测试通过（Case 1-2 各 2 根因 + GUI Skills/Knowledge/Memory）
+- [ ] 完整文档（部署+Demo步骤+Config+故障排查≥10条+架构）
 
 **验收标准矩阵（AIDC-auto-SRE.md Appendix C §验收标准，修复G-23）**
 - [ ] 安全性：无动态代码执行路径，工具命令无 shell 注入面（bandit/semgrep 扫描通过）
@@ -402,22 +408,24 @@ Track E │ 完整文档（docs/demo/ 五篇）+ Demo 彩排 + 问题修复
 - [ ] 可执行性：修复计划 schema 一次通过率 ≥ 95%，不合法计划可被 PlanValidator 拦截
 - [ ] 可回滚性：所有写操作有 WAL 且通过 `recover_all()` 回滚演练
 - [ ] 成本可控：单次诊断 token ≤ 100K，超出自动终止（`max_tokens_per_diagnosis`）
+- [ ] 性能基线：单次诊断端到端延迟有可测量基准值（含 LLM 调用），并发 5 路诊断时 P99 延迟可记录（§2.5 feedback）
 
 ---
 
-## POC 阶段（第 3–4 月）
+## POC 阶段（第 3–4 月，1~1.5 个月）
 
 ### 目标
 
-| 维度 | Demo | POC 新增 |
-|------|------|---------|
-| 根因数/场景 | vLLM 2 + RDMA 2 + ambiguous 1 | vLLM 全 6 RC + RDMA 全 6 F |
+| 维度 | Demo（基线） | POC 新增 |
+|------|-------------|---------|
+| 根因数/场景 | vLLM 2 + RDMA 2（必做） | **Case 3 ambiguous 多候选（由 Stretch 转为必做）** + vLLM 全 6 RC + RDMA 全 6 F |
 | 修复流程 | human_confirm | canary 灰度 + auto_approve（低风险）+ 自动回滚验证 |
 | 知识库 | 种子数据 | Runbook 批量摄入 pipeline + 增量更新 |
 | 记忆库 | 基础读写 | 置信度双向更新（成功+0.15/失败-0.1）+ 时间衰减 |
 | 并发 | 单诊断会话 | ≤ 5 并发诊断（Semaphore + ResourceLock） |
 | 压力测试 | — | 1000 次模拟告警回放，无死锁/无未恢复会话 |
 | 回滚测试 | — | 注入 10 类失败场景，WAL 回滚成功率 ≥ 99% |
+| 测试门槛 | Unit ≥ 70%，E2E 4 场景 | 单元测试维持 ≥ 70%，新增回归 E2E + 契约测试 + 安全扫描通过 |
 
 ### 里程碑与并行 Track
 
@@ -458,10 +466,12 @@ Track E │ 性能测试: 1000 次告警回放 + 无死锁 + aiosqlite 异步重
 - [ ] LangGraph checkpoint 持久化，sre-agent --resume 可用
 - [ ] aiosqlite + asyncio.to_thread 异步化验证：事件循环阻塞告警为 0（修复G-15，P1-10）
 - [ ] SQLite/NetworkX 并发安全：锁和事务边界通过并发压测（P2-1）
+- [ ] 降级验收：LLM 不可用时 ≤ 30s 切换到规则引擎，正在处理的会话状态不丢失（修复P1-5，feedback §2.5）
+- [ ] 单元测试覆盖率维持 ≥ 70%，新增回归 E2E 套件通过，安全扫描（bandit/semgrep）无 P0 告警
 
 ---
 
-## Prod Phase 1（第 5–6 月）
+## Prod Phase 1（第 5–6 月，1~1.5 个月）
 
 ### 目标：生产安全加固 + 高可用 + 可观测
 
@@ -486,6 +496,7 @@ Track B │ AuditLogger: hash chain + S3/OSS 远端双写 + HMAC 签名
 Track C │ slo/metrics.py: Prometheus 暴露诊断步数/工具失败率/回滚率/审批时延
         │ + slo/degradation.py: 自动降级策略
         │ + nat/ 集成: NeMo Agent Toolkit profiling 包裹 LangGraph + eval 运行
+        │ + OpenTelemetry 分布式追踪（trace_id 贯穿 API/Agent/Channel，修复G-33）
 Track D │ GUI: 用户登录页 + 权限展示 + 审计日志查看 + SLI/SLO 仪表盘
 Track E │ 安全测试: 命令注入/表达式注入/未授权访问三类测试全通过
 
@@ -508,11 +519,12 @@ Track E │ 端到端回归测试（含安全、幂等、HA 故障切换场景�
 - [ ] SLI/SLO Prometheus 指标 + Grafana 看板
 - [ ] NAT profiling + eval_dataset 评估报告（诊断准确率 baseline）
 - [ ] HA：sre_agent 双副本，单副本故障 < 30s 切换
+- [ ] OpenTelemetry 分布式追踪可用，trace_id 贯穿 API→Agent→Channel（修复G-33）
 - [ ] Helm Chart 生产部署完整文档
 
 ---
 
-## Prod Phase 2（第 7–8 月）
+## Prod Phase 2（第 7–8 月，1~1.5 个月）
 
 ### 目标：智能化提升
 
@@ -552,7 +564,7 @@ Track E │ 集成测试: Runbook 命中率对比 POC baseline
 
 ---
 
-## Prod Phase 3（第 9–10 月）
+## Prod Phase 3（第 9–10 月，1~1.5 个月）
 
 ### 目标：企业级运营
 
@@ -648,11 +660,19 @@ storage_interface:
     find_entities(type: str, filters: dict) -> list[dict]
 ```
 
+### 前置 Gate（阻塞关系）
+
+| Gate | 触发条件 | 解锁内容 |
+|------|---------|---------|
+| **Gate-1** | `load_simulator run --output-format json` 输出稳定并通过契约测试（S1 完成） | fault 场景 E2E 联动开发可进入（S3 解锁） |
+| **Gate-2** | fault_injector WAL + rollback 通过崩溃恢复测试（S2 完成） | sre_agent remediation 自动执行路径可开启（S5 解锁） |
+
 ### 合并策略
 
 - 每个 Session 在 feature branch 开发：`claude/<track>-<sprint>-<id>`
 - Sprint 末通过 PR 合并到 `claude/phased-development-plan-ZTWRB`
 - PR 合并前必须通过：① 单元测试；② 接口契约测试；③ 无 P0 安全问题
+- 每周固定集成窗口（建议周三/周六），未过契约测试不得合并
 
 ---
 
@@ -729,8 +749,8 @@ def safe_eval(condition: str, variables: dict[str, Any]) -> bool:
 
 | 阶段 | 时间 | 版本 | 发布物 |
 |------|------|------|--------|
-| Demo | 第 1–2 月 | v0.1.0-demo | Docker Compose + 文档 + Demo 脚本 |
-| POC | 第 3–4 月 | v0.2.0-poc | 全场景包 + 压测报告 + 回滚验证报告 |
-| Prod Phase 1 | 第 5–6 月 | v1.0.0 | Helm Chart + 安全审计 + NAT 评估报告 |
-| Prod Phase 2 | 第 7–8 月 | v1.1.0 | 多 LLM 路由 + 联邦记忆 + Runbook 生成 |
-| Prod Phase 3 | 第 9–10 月 | v2.0.0 | 多集群 + Skills 市场 + 合规报告 |
+| Demo | 第 1–2 月（2 个月） | v0.1.0-demo | Docker Compose + 文档 + Demo 脚本 |
+| POC | 第 3–4 月（1~1.5 个月） | v0.2.0-poc | 全场景包 + 压测报告 + 回滚验证报告 |
+| Prod Phase 1 | 第 5–6 月（1~1.5 个月） | v1.0.0 | Helm Chart + 安全审计 + NAT 评估报告 |
+| Prod Phase 2 | 第 7–8 月（1~1.5 个月） | v1.1.0 | 多 LLM 路由 + 联邦记忆 + Runbook 生成 |
+| Prod Phase 3 | 第 9–10 月（1~1.5 个月） | v2.0.0 | 多集群 + Skills 市场 + 合规报告 |
