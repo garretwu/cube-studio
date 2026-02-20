@@ -1,9 +1,11 @@
 # AIDC Auto-SRE 分阶段开发计划
 
-> 文档版本：v2.2 | 更新日期：2026-02-19 | 分支：claude/phased-development-plan-ZTWRB
+> 文档版本：v2.4 | 更新日期：2026-02-20 | 分支：claude/phased-development-plan-ZTWRB
 > v2.0 修订：对照 load-simulator.md / fault-injector.md / AIDC-auto-SRE.md 全文补全 14 项差距
 > v2.1 修订：`load_simulator` 包 v0.1.0 已实现（25 文件，2229 行）；更新实现进度与 Sprint Track A 状态
 > v2.2 修订：全文对照三份设计文档核对，新增 G-15 至 G-32 共 18 项遗漏；更新 Sprint 1-4 Track B/C/D/E；补入验收标准矩阵（修复G-23）；POC 交付物补 P1-10/P2-1
+> v2.3 修订：Sprint 条目去除实现细节，改为模块名 + 设计文档 §节 + Gap ID 引用格式
+> v2.4 修订：对照 AIDC-auto-SRE-review-feedback.md 审查，新增 G-33（OpenTelemetry）；补入性能基线验收、LLM 降级验收；Sprint 3 注明 resource_lock 分阶段决策
 
 ---
 
@@ -162,6 +164,7 @@ v2.1 → v2.2 修订（核对三份设计文档全文后补入的 18 项遗漏�
 | G-30 | load-simulator.md §7, §9 | load_simulator 执行模式（stress/soak/mixed/single）+ AdaptiveRules（breaking point 二分搜索）未明确入 Sprint | Sprint 2 Track A |
 | G-31 | load-simulator.md §2.9 | load_simulator Cube Studio 认证机制（JWT `CUBE_STUDIO_JWT_SECRET` + refresh）未明确入 Sprint | Sprint 2 Track A |
 | G-32 | fault-injector.md §5 | Platform Fault Agent 覆盖范围缺 Ceph（osd pause）/Kafka/Prometheus 故障子类型 | Sprint 3 Track B |
+| G-33 | AIDC-auto-SRE-review-feedback.md §2.2.6 | 分布式追踪（OpenTelemetry）：统一 trace_id 贯穿 API→Agent→Channel→外部系统，缺失导致跨服务排障困难（P2-7） | Prod Phase 1 Sprint 7 |
 
 ---
 
