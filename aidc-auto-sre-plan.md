@@ -1,12 +1,13 @@
 # AIDC Auto-SRE 分阶段开发计划
 
-> 文档版本：v2.5 | 更新日期：2026-02-20 | 分支：claude/phased-development-plan-ZTWRB
+> 文档版本：v2.6 | 更新日期：2026-02-22 | 分支：claude/phased-development-plan-ZTWRB
 > v2.0 修订：对照 load-simulator.md / fault-injector.md / AIDC-auto-SRE.md 全文补全 14 项差距
 > v2.1 修订：`load_simulator` 包 v0.1.0 已实现（25 文件，2229 行）；更新实现进度与 Sprint Track A 状态
 > v2.2 修订：全文对照三份设计文档核对，新增 G-15 至 G-32 共 18 项遗漏；更新 Sprint 1-4 Track B/C/D/E；补入验收标准矩阵（修复G-23）；POC 交付物补 P1-10/P2-1
 > v2.3 修订：Sprint 条目去除实现细节，改为模块名 + 设计文档 §节 + Gap ID 引用格式
 > v2.4 修订：对照 AIDC-auto-SRE-review-feedback.md 审查，新增 G-33（OpenTelemetry 分布式追踪）
 > v2.5 修订：对照 aidc-auto-sre-plan-feedback.md 审查，落入以下变更：Demo 2 case 必做（Case 3 → POC）；GUI Skills/知识库/记忆库硬性验收；Gate-1/Gate-2 前置依赖；各阶段 Unit+E2E 测试阈值；文档 DoD；Prod Phase 时长标注 1~1.5 月；补入遗留 v2.4 项（性能基线、LLM 降级验收、resource_lock 分阶段决策、Sprint 7 OpenTelemetry）
+> v2.6 修订：再次全量对照 load-simulator.md / fault-injector.md / AIDC-auto-SRE 基线要求，新增 G-34~G-37（Session 恢复、联动 contract 测试、BMC 网络写操作硬阻断、15 维验收矩阵显式 Gate）并补充“全量覆盖矩阵 + 阶段 Gate”
 
 ---
 
@@ -166,6 +167,26 @@ v2.1 → v2.2 修订（核对三份设计文档全文后补入的 18 项遗漏�
 | G-31 | load-simulator.md §2.9 | load_simulator Cube Studio 认证机制（JWT `CUBE_STUDIO_JWT_SECRET` + refresh）未明确入 Sprint | Sprint 2 Track A |
 | G-32 | fault-injector.md §5 | Platform Fault Agent 覆盖范围缺 Ceph（osd pause）/Kafka/Prometheus 故障子类型 | Sprint 3 Track B |
 | G-33 | AIDC-auto-SRE-review-feedback.md §2.2.6 | 分布式追踪（OpenTelemetry）：统一 trace_id 贯穿 API→Agent→Channel→外部系统，缺失导致跨服务排障困难（P2-7） | Prod Phase 1 Sprint 7 |
+| G-34 | load-simulator.md §2.8, fault-injector.md §2.9 | 两个前置组件 Session 持久化 + `--resume` 崩溃恢复虽有零散条目，但未列为阶段 Gate | Sprint 2 Track A/B + Gate-3 |
+| G-35 | fault-injector.md §9.2, load-simulator.md 联动接口节 | load→fault stdout JSON 契约在计划中仅定义 schema，缺“破坏性变更检测”与版本策略 | Sprint 2 Track A/B + S8 契约测试 |
+| G-36 | fault-injector.md §3.5, §13.2 | BMC 网络写操作高风险（VLAN/MTU 修改）需要硬编码禁用策略与演示环境 guard，计划未显式验收 | Sprint 2 Track B + Demo 安全验收 |
+| G-37 | AIDC-auto-SRE.md Appendix C | 15 维验收标准已提及但未转成可执行 Gate（阶段推进必须逐条过线） | Demo/POC/Prod Phase 1 Gate |
+
+### 三份设计文档全量覆盖矩阵（v2.6 复核）
+
+| 设计文档能力域 | 关键设计点（不允许遗漏） | 计划落位（增量实现） | 验收 Gate |
+|---|---|---|---|
+| load-simulator（负载/监控/报告） | 4 Agent、4 执行模式、AdaptiveRules、三层监控、JWT 认证、session 持久化恢复、报告对比 | Sprint 1 Track A（已实现基线）+ Sprint 2 Track A（补齐 G-29/30/31/34） | Gate-1 + Gate-3 |
+| fault-injector（注入/回滚/联动） | 五阶段编排、WAL 回滚、RC/F 场景全覆盖、DiagnosisAgent、平台故障 Ceph/Kafka/Prometheus、联动契约、BMC 高危操作硬阻断 | Sprint 1 Track B（编排+WAL）+ Sprint 2/3 Track B（场景+平台）+ G-35/G-36 | Gate-2 + Gate-3 |
+| AIDC-auto-SRE（诊断/修复/GUI/治理） | ReAct + Guardrails、skills/知识/记忆、并发与循环验证、NAT、OTel、安全/RBAC、15 维验收标准 | Sprint 1-4 Track C/D/E + Prod Sprint 7/8（G-33/G-37） | Gate-4 |
+| 三组件联动 | load→fault→sre 端到端闭环，contract 版本化，故障恢复与状态连续性 | Demo 阶段 S1~S8 并行 + POC 稳定性加固 | Gate-3/4 |
+
+### 阶段推进 Gate（新增）
+
+| Gate | 必须满足（全部） | 失败处理 |
+|---|---|---|
+| Gate-3（联动稳定性） | ① load/fault `--resume` 演练通过（G-34）；② stdout JSON 契约测试 + 版本兼容测试通过（G-35）；③ WAL 回滚 ≥99%；④ BMC 网络写操作 guard 测试通过（G-36） | 任一失败则冻结新功能，仅修复稳定性问题 |
+| Gate-4（阶段验收） | 15 维验收矩阵逐项过线并归档（G-37）；Unit/E2E/安全扫描达到阈值；GUI 三页面硬性验收通过 | 不允许进入下一阶段（Demo→POC、POC→Prod） |
 
 ---
 
