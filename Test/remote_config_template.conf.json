@@ -1,0 +1,27 @@
+{
+  "injector": {
+    "mode": "ssh",
+    "wal_path": "fault_injector/rollback.wal",
+    "timeout": 20
+  },
+  "servers": [
+    {
+      "name": "node-1",
+      "host": "192.168.10.11",
+      "user": "root",
+      "port": 22,
+      "interface": "ens5f0",
+      "original_mtu": 4200,
+      "fault_mtu": 1500
+    },
+    {
+      "name": "node-2",
+      "host": "192.168.10.12",
+      "user": "root",
+      "port": 22,
+      "interface": "ens5f0",
+      "original_mtu": 4200,
+      "fault_mtu": 9000
+    }
+  ]
+}
