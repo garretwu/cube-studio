@@ -1,13 +1,13 @@
 # AIDC Auto-SRE 分阶段开发计划
 
-> 文档版本：v2.6 | 更新日期：2026-02-22 | 分支：claude/phased-development-plan-ZTWRB
+> 文档版本：v2.6 | 更新日期：2026-02-24 | 分支：claude/phased-development-plan-ZTWRB
 > v2.0 修订：对照 load-simulator.md / fault-injector.md / AIDC-auto-SRE.md 全文补全 14 项差距
 > v2.1 修订：`load_simulator` 包 v0.1.0 已实现（25 文件，2229 行）；更新实现进度与 Sprint Track A 状态
 > v2.2 修订：全文对照三份设计文档核对，新增 G-15 至 G-32 共 18 项遗漏；更新 Sprint 1-4 Track B/C/D/E；补入验收标准矩阵（修复G-23）；POC 交付物补 P1-10/P2-1
 > v2.3 修订：Sprint 条目去除实现细节，改为模块名 + 设计文档 §节 + Gap ID 引用格式
 > v2.4 修订：对照 AIDC-auto-SRE-review-feedback.md 审查，新增 G-33（OpenTelemetry 分布式追踪）
 > v2.5 修订：对照 aidc-auto-sre-plan-feedback.md 审查，落入以下变更：Demo 2 case 必做（Case 3 → POC）；GUI Skills/知识库/记忆库硬性验收；Gate-1/Gate-2 前置依赖；各阶段 Unit+E2E 测试阈值；文档 DoD；Prod Phase 时长标注 1~1.5 月；补入遗留 v2.4 项（性能基线、LLM 降级验收、resource_lock 分阶段决策、Sprint 7 OpenTelemetry）
-> v2.6 修订：再次全量对照 load-simulator.md / fault-injector.md / AIDC-auto-SRE 基线要求，新增 G-34~G-37（Session 恢复、联动 contract 测试、BMC 网络写操作硬阻断、15 维验收矩阵显式 Gate）并补充“全量覆盖矩阵 + 阶段 Gate”
+> v2.6 修订：再次全量对照三份设计文档（§1-§18 逐节对比），新增 G-34~G-42：Session 恢复/联动 contract 测试/BMC 写操作硬阻断/15 维 Gate（G-34~G-37）+ reporting 模块/MonitorAgent/combined_scenario 多阶段注入/H3C S6850 25G 场景（G-38~G-41）；补全量覆盖矩阵 + 阶段 Gate 表
 
 ---
 
@@ -188,6 +188,15 @@ v2.1 → v2.2 修订（核对三份设计文档全文后补入的 18 项遗漏�
 | Gate-3（联动稳定性） | ① load/fault `--resume` 演练通过（G-34）；② stdout JSON 契约测试 + 版本兼容测试通过（G-35）；③ WAL 回滚 ≥99%；④ BMC 网络写操作 guard 测试通过（G-36） | 任一失败则冻结新功能，仅修复稳定性问题 |
 | Gate-4（阶段验收） | 15 维验收矩阵逐项过线并归档（G-37）；Unit/E2E/安全扫描达到阈值；GUI 三页面硬性验收通过 | 不允许进入下一阶段（Demo→POC、POC→Prod） |
 
+v2.5 → v2.6 修订（三份设计文档 §1-§18 全文交叉核验后补入的 4 项遗漏，G-34~G-37 已由本次 remote 新增，以下为补充项）：
+
+| # | 来源文档 | 差距 | 处理 Sprint |
+|---|----------|------|------------|
+| G-38 | fault-injector.md §2.10 | fault_injector `reporting/` 四个模块（`timeline.py` 执行时间线、`html_report.py` HTML 摘要、`charts.py` Matplotlib 图表、`resilience.py` 弹性评分 4 维度：auto_recovery/degradation_handling/fault_isolation/data_integrity）未入 Sprint Track | Sprint 3 Track B |
+| G-39 | fault-injector.md §2.5 | fault_injector `MonitorAgent`（五阶段执行流中 baseline 采集 + inject 阶段 + observe 阶段的 Prometheus 指标采集）已在 §2.5 中明确设计，但 Sprint 2 Track B 未显式列出 MonitorAgent 实现 | Sprint 2 Track B |
+| G-40 | fault-injector.md §7.2 | `combined_scenario`（`realistic_latency_instability`）多阶段顺序注入设计：6 个阶段 t=0/60/120/300/360/420s 各注入不同故障类型，Sprint 6 Track B 仅说"组合故障场景"，缺少多阶段时间线细节 | Sprint 6 Track B |
+| G-41 | fault-injector.md §3.6.2 | H3C S6850（25G 接入层交换机）专项故障场景：STP 重收敛（portfast 关闭触发 30s 收敛）/ LACP 降级（active→passive）/ 路由黑洞（Null0 静态路由）/ ARP 表清空，未在任何 Sprint Track B 中出现 | Sprint 5 Track B |
+
 ---
 
 ## Demo 阶段（第 1–2 月）
@@ -300,10 +309,11 @@ Week 1-2  [Sprint 1 — 骨架与前置依赖]
 ─────────────────────────────────────────────────────────────────────
 Track A │ [✅ 已完成 2026-02-19] load_simulator v0.1.0 实现（详见 load-simulator.md 实现状态节）
         │ [❌ 待实现] channels/ 模块（Sprint 2 Track A）
-Track B │ fault_injector: CLI 骨架（含 --dry-run 预检，§11.1，修复G-28）
+Track B │ fault_injector: CLI 骨架（含 --dry-run 预检 + --resume <session_id> 崩溃恢复，§11.1，修复G-28/G-34）
         │ + Orchestrator 五阶段执行流（§11.2，修复G-28）
         │ + channels/: SSHChannel / RedfishChannel / SwitchChannel（§2.6）
         │ + safety/: WAL rollback.py + SafetyGuard（§2.7 / §13）
+        │ + orchestrator/: session.py --resume 从 rollback.jsonl 恢复活跃故障（§2.9.2，修复G-34）
         │ + orchestrator/: watchdog.py + Scenario 基类 + 场景注册表（§2.8）
 Track C │ sre_agent: LangGraph 骨架（agent/: sre_agent/graph/state/nodes，§4.2）
         │ + ToolRegistry + get_gpu_processes（§5.2，修复P0-5）
@@ -329,6 +339,7 @@ Track B │ fault_injector:
         │ + Demo 场景: ecn_misconfiguration(F-2) + rdma_link_flap(F-4)（§8.1，修复G-01）
         │ + HardwareFaultAgent 全部子类型（§3，修复G-27）
         │ + OSFaultAgent 全部子类型（§4，修复G-27）
+        │ + MonitorAgent: baseline 采集（注入前）/ observe 阶段指标采集 / Prometheus 查询集成（§2.5，修复G-39）
         │ + DiagnosisAgent 单次 LLM 诊断（§12，修复G-26）
 Track C │ sre_agent:
         │ + NeMo Guardrails 4 个 rail 文件（§17，修复G-12）
@@ -355,6 +366,8 @@ Track B │ fault_injector:
         │ + PlatformFaultAgent 全部子类型（§5，修复G-32）
         │ + ServiceFaultAgent（§6）
         │ + load-simulator 联动集成（§9.2）
+        │ + reporting/: timeline.py（执行时间线）/ html_report.py（HTML 摘要）/ charts.py（Matplotlib 图表）
+        │   / resilience.py（弹性评分：auto_recovery/degradation_handling/fault_isolation/data_integrity，§2.10，修复G-38）
 Track C │ sre_agent:
         │ + LoopOrchestrator（§7.7 / §7.8，含终止约束，修复G-05 / G-25）
         │ + IncidentHandler（§7.9，修复G-05）
@@ -401,7 +414,9 @@ Track E │ 完整文档（docs/demo/ 五篇）+ Demo 彩排 + 问题修复
 **fault_injector**
 - [ ] `gpu_contention` / `network_jitter` 场景可注入并自动回滚
 - [ ] `ecn_misconfiguration` / `rdma_link_flap` 场景可注入并自动回滚
-- [ ] WAL 崩溃恢复：进程 kill 后 `--resume` 可恢复所有活跃故障
+- [ ] WAL 崩溃恢复：进程 kill 后 `--resume` 可恢复所有活跃故障（修复G-34）
+- [ ] MonitorAgent：baseline 采集 + observe 阶段指标可见（修复G-39）
+- [ ] reporting/ 模块：html_report.py 输出完整 HTML + resilience.py 返回四维弹性评分（修复G-38）
 - [ ] load-simulator 联动：子进程调用成功，stdout JSON 解析正确
 
 **sre_agent**
@@ -457,6 +472,9 @@ Track A │ fault_injector: vllm_latency.py 补全 RC-3(storage_io_interference)
         │   RC-4(platform_cascade) + RC-5(os_resource_pressure) + RC-6(thermal_throttling)
 Track B │ fault_injector: rdma_anomaly.py 补全 F-1(pfc_deadlock) + F-3(rdma_load_imbalance)
         │   + F-5(roce_mtu_mismatch) + F-6(rdma_qos_downgrade)
+        │ + H3C S6850（25G 接入层交换机）专项故障场景（§3.6.2，修复G-41）：
+        │   STP 重收敛（portfast 关闭触发 30s 收敛延迟）/ LACP 降级（active→passive）
+        │   / 路由黑洞（ip route-static Null0）/ ARP 表清空（reset arp）
 Track C │ sre_agent: 新增诊断工具(get_ecn_config/get_pfc_counters/check_thermal)
         │ + 写工具 schema 注入 system prompt(修复P1-5)
         │ + LLM 健康监控 + 降级 ThresholdEngine(修复P1-5)
@@ -466,7 +484,10 @@ Track E │ 知识库: Runbook 批量摄入(ingest.py + chunker.py) + 文档版�
 Week 11-12 [Sprint 6 — 可靠性与压力测试]
 ─────────────────────────────────────────────────────────────────────
 Track A │ load_simulator: 多 Agent 并发混合压测 + historical comparison 报告
-Track B │ fault_injector: 组合故障场景(combined_scenario 多阶段注入)
+Track B │ fault_injector: combined_scenario 多阶段顺序注入（§7.2，修复G-40）：
+        │   `realistic_latency_instability` — 6 阶段时间线：
+        │   t=0s gpu_contention(低强度) / t=60s ecn_misconfiguration / t=120s storage_io_interference
+        │   t=300s recover_ecn / t=360s recover_storage / t=420s recover_gpu（全自动回滚验证）
         │ + 1000 次模拟回放 + WAL 回滚 ≥ 99% 验证
 Track C │ sre_agent: 并发诊断 Semaphore(max_concurrent_diagnoses 配置项)
         │ + LangGraph checkpoint 持久化(AsyncSqliteSaver) + --resume 支持
@@ -479,6 +500,8 @@ Track E │ 性能测试: 1000 次告警回放 + 无死锁 + aiosqlite 异步重
 ### POC 交付物
 
 - [ ] 全部 6 个 vLLM RC 场景 + 6 个 RDMA F 场景可注入/诊断
+- [ ] H3C S6850（25G 接入层）4 类故障场景（STP/LACP/路由黑洞/ARP 清空）可注入/回滚（修复G-41）
+- [ ] combined_scenario `realistic_latency_instability` 6 阶段时间线完整执行通过（修复G-40）
 - [ ] 知识库 Runbook 摄入 pipeline 可用
 - [ ] 并发诊断 ≤ 5，无死锁，ResourceLock 生效
 - [ ] 1000 次告警回放通过（无未恢复会话，内存无泄漏）
