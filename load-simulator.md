@@ -1,5 +1,81 @@
 # Cube Studio Load Simulator 设计规格
 
+> **实现状态**：v0.1.0 已实现 | 更新日期：2026-02-19 | 分支：claude/phased-development-plan-ZTWRB
+
+## 实现状态（v0.1.0 — 2026-02-19）
+
+### 已实现模块（`load_simulator/` 包，25 个文件，2229 行）
+
+| 模块 | 文件 | 状态 | 说明 |
+|------|------|------|------|
+| CLI 入口 | `cli.py`, `__main__.py` | ✅ 完成 | `run` / `validate-config` / `list-scenarios` 三个子命令；支持 `--output-format json\|html\|none`、`--only`、`--duration`、`--concurrency` |
+| 配置 | `config/schema.py` | ✅ 完成 | Pydantic v2，含 `InferenceConfig` / `PipelineConfig` / `FineTuneConfig` / `NotebookConfig` / `LLMConfig` / `LoadSimulatorConfig` |
+| 配置 | `config/defaults.py` | ✅ 完成 | 内置默认 YAML（agents、各 Agent 参数、bottleneck_analysis） |
+| 配置 | `config/loader.py` | ✅ 完成 | YAML 加载 + Pydantic 校验，含 `load_config()` / `load_default_config()` |
+| 编排器 | `orchestrator/engine.py` | ✅ 完成 | `LoadOrchestrator` 并发调度所有 Agent，收集 `SessionResult` |
+| 编排器 | `orchestrator/scheduler.py` | ✅ 完成 | 调度辅助逻辑 |
+| 编排器 | `orchestrator/session.py` | ✅ 完成 | Session 状态管理 |
+| Agent 基类 | `agents/base.py` | ✅ 完成 | `BaseAgent`、`AgentResult` dataclass |
+| InferenceAgent | `agents/inference.py` | ✅ 完成 | vLLM `/v1/chat/completions` 并发压测（httpx async） |
+| PipelineAgent | `agents/pipeline.py` | ✅ 完成 | Cube Studio Argo Workflow 提交模拟 |
+| FineTuneAgent | `agents/finetune.py` | ✅ 完成 | LLaMA-Factory API 负载模拟 |
+| NotebookAgent | `agents/notebook.py` | ✅ 完成 | Jupyter Kernel API 执行模拟 |
+| MonitorAgent | `agents/monitor.py` | ✅ 完成 | 后台系统指标采集（CPU/MEM/GPU 轮询） |
+| BottleneckAnalyzer | `agents/bottleneck.py` | ✅ 完成 | 6 层阈值规则引擎（v0.1 为确定性，非 LLM） |
+| 指标采集 | `metrics/collector.py` | ✅ 完成 | 指标点采集 |
+| 指标聚合 | `metrics/aggregator.py` | ✅ 完成 | 聚合计算（P50/P95/P99 等） |
+| 时序存储 | `metrics/time_series.py` | ✅ 完成 | 内存时序数据结构 |
+| 阈值引擎 | `metrics/thresholds.py` | ✅ 完成 | 6 层 13 条阈值规则（GPU_COMPUTE / GPU_MEMORY / NVLINK_PCIE / NETWORK_RDMA / STORAGE_IO / CPU_SYSTEM） |
+| 负载类型 | `load/__init__.py` | ✅ 完成 | LoadProfile 类型定义 |
+
+### 联动接口（对外契约 §9.2）
+
+```bash
+# fault_injector 调用方式（stdout JSON 解析）
+python -m load_simulator run --config config.yaml --output-format json
+
+# 输出格式（stdout）
+{
+  "exit_code": 0,
+  "summary": {
+    "session_id": "<hex12>",
+    "duration_seconds": 62.3,
+    "scenarios": [
+      {"name": "inference", "status": "success", "metrics": {...}, "errors": [], "duration_seconds": 60.1}
+    ],
+    "bottlenecks": [
+      {"layer": "GPU_COMPUTE", "metric": "gpu_util_pct", "value": 96.2, "threshold": 95.0, "severity": "critical", "unit": "%", "description": "GPU compute utilization"}
+    ]
+  }
+}
+```
+
+### 尚未实现（设计文档 vs v0.1.0 差距）
+
+| 模块 | 状态 | 计划阶段 |
+|------|------|---------|
+| `channels/` — CubeStudio/Inference/Prometheus/Notebook/K8s Channel | ❌ 待实现 | Sprint 2 Track A |
+| `load/profile.py` — LoadProfile 完整实现（stepped/spike） | ❌ 待实现 | Sprint 2 Track A |
+| `load/rate_limiter.py` — token bucket 速率限制 | ❌ 待实现 | Sprint 3 Track A |
+| `load/token_distribution.py` — token 分布采样 | ❌ 待实现 | Sprint 2 Track A |
+| `load/prompt_pool.py` — 提示词池 | ❌ 待实现 | Sprint 2 Track A |
+| `reporting/html_report.py` — HTML 报告（Plotly 图表） | ❌ 待实现 | Sprint 2 Track A |
+| `reporting/charts.py` — 延迟分布/吞吐/资源时间线图 | ❌ 待实现 | Sprint 2 Track A |
+| `reporting/comparison.py` — 版本对比报告 | ❌ 待实现 | Sprint 2 Track A |
+| `tests/` — 单元测试 + E2E 测试 | ❌ 待实现 | Sprint 4 Track A |
+| BottleneckAnalyzer LLM 模式（MiniMax-2.1） | ❌ 待实现（v0.1 用确定性阈值） | Sprint 2 Track A |
+
+### v0.1.0 与设计文档的已知差异
+
+| 差异点 | 设计文档 | v0.1.0 实现 |
+|--------|---------|------------|
+| CLI 入口 | `load-simulator --config config.yaml` | `python -m load_simulator run --config config.yaml` |
+| 瓶颈分析 | MiniMax-2.1 LLM 跨层关联 | 6 层阈值规则（确定性），LLM 未集成 |
+| 配置 schema | 含 `mode` (stress/soak/mixed/single)、`channels`、`system_capacity` 等 | 简化 schema，无 mode/channels 字段 |
+| HTML 报告 | 完整 Plotly 图表 | 入口已定义，`reporting/` 模块待实现 |
+
+---
+
 ## 1. 概述
 
 ### 1.1 目标
