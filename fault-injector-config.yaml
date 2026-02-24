@@ -1,0 +1,37 @@
+# AIDC Auto-SRE Fault Injector 配置示例
+# RC-2 网络延迟场景
+
+global:
+  session_dir: "./fault-reports/sessions/"
+  log_level: "INFO"
+  safety:
+    require_confirmation: true
+    auto_recover_timeout: 600
+    dry_run: false
+    max_concurrent_faults: 3
+    excluded_nodes: []
+
+inventory:
+  nodes:
+    - name: "test-vm-1"
+      ssh:
+        host: "192.168.1.100"
+        port: 22
+        user: "root"
+        key_file: "~/.ssh/id_rsa"
+        # password: "your-password"  # 或使用密码
+      interface: "eth0"
+      roles: []
+
+scenarios:
+  network_jitter:
+    name: "network_jitter"
+    enabled: true
+    target_nodes: ["test-vm-1"]
+    params:
+      delay_ms: 50
+      jitter_ms: 100
+      distribution: "pareto"
+      loss_pct: 0
+      duration: 60
+      interface: "eth0"
