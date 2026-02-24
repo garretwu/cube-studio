@@ -1566,48 +1566,9 @@ async def check_rdma_status(node: str) -> dict:
 
 ### 6.1 共享 Channel（与 fault-injector / load-simulator 统一）
 
-以下 Channel 实现与 fault-injector、load-simulator 完全共用，放在独立 `channels/` 包中：
+> 完整 Channel 层设计（BaseChannel 基类 + 所有共享 Channel 实现）见 [channel.md](channel.md)。
 
-```python
-class BaseChannel(ABC):
-    """Channel 基类 — 统一 dry_run 和 WAL 集成"""
-
-    def __init__(self, dry_run: bool = False,
-                 wal: RollbackJournal | None = None):
-        self.dry_run = dry_run
-        self.wal = wal
-
-    async def execute(self, action: str, params: dict,
-                      recovery_action: str | None = None,
-                      recovery_params: dict | None = None) -> ChannelResult:
-        # 1. 禁止操作检查
-        if self._is_forbidden(action, params):
-            raise SafetyViolationError(f"{action} is forbidden")
-
-        # 2. 写操作 → WAL 记录
-        if recovery_action and self.wal:
-            self.wal.record(action, recovery_action, recovery_params)
-
-        # 3. dry_run → 仅日志
-        if self.dry_run:
-            logger.info(f"[DRY-RUN] {action}: {params}")
-            return ChannelResult(success=True, dry_run=True)
-
-        return await self._execute_impl(action, params)
-
-    @abstractmethod
-    async def _execute_impl(self, action: str, params: dict) -> ChannelResult:
-        pass
-```
-
-| Channel | 关键方法 | 来源 |
-|---------|----------|------|
-| **SSHChannel** | `run_command()`, `run_stress_ng()`, `run_tc_netem()` | fault-injector |
-| **RedfishChannel** | `authenticate()`, `get_thermal()`, `set_fan_control()`, `reset_system()` | fault-injector |
-| **SwitchChannel** | `ssh_cli_execute()`, `shutdown_port()`, `netconf_edit()` | fault-injector |
-| **K8sChannel** | `get_pods()`, `delete_pod()`, `scale_deployment()`, `exec_command()` | fault-injector |
-| **CubeStudioChannel** | `create_inference_service()`, `deploy_service()`, `get_service_status()` | load-simulator |
-| **PrometheusChannel** | `query_instant()`, `query_range()`, `collect_baseline()` | 共享 |
+SRE Agent 使用的共享 Channel：SSHChannel、RedfishChannel、SwitchChannel、K8sChannel、CubeStudioChannel、PrometheusChannel。
 
 ### 6.2 SRE Agent 新增 Channel
 
