@@ -6,9 +6,9 @@ import base64
 import hashlib
 import hmac
 import json
-import urllib.error
-import urllib.request
 from typing import Any
+
+import httpx
 
 from load_simulator.channels.base import BaseChannel, ChannelResult
 
@@ -37,7 +37,7 @@ def build_auth_header(*, method: str, username: str, jwt_secret: str | None = No
 
 
 class CubeStudioChannel(BaseChannel):
-    """Cube Studio API client with retry/backoff and CRUD helpers."""
+    """Cube Studio API client with async httpx, retry/backoff and CRUD helpers."""
 
     def __init__(
         self,
@@ -61,6 +61,15 @@ class CubeStudioChannel(BaseChannel):
             "Authorization": build_auth_header(method=auth_method, username=username, jwt_secret=jwt_secret),
             "Content-Type": "application/json",
         }
+        self._client = httpx.AsyncClient(
+            base_url=self.base_url,
+            timeout=httpx.Timeout(timeout),
+            headers=self._headers,
+        )
+
+    async def close(self) -> None:
+        """Close the HTTP client."""
+        await self._client.aclose()
 
     async def _execute_impl(self, action: str, params: dict[str, Any]) -> ChannelResult:
         method = params.get("method", "GET")
@@ -106,7 +115,7 @@ class CubeStudioChannel(BaseChannel):
         last_err: Exception | None = None
         for attempt in range(self.retry_count + 1):
             try:
-                return self._http_request_sync(method, path, json_body)
+                return await self._http_request_async(method, path, json_body)
             except Exception as exc:  # noqa: BLE001
                 last_err = exc
                 if attempt >= self.retry_count:
@@ -114,22 +123,24 @@ class CubeStudioChannel(BaseChannel):
                 await asyncio.sleep(self.retry_backoff * (2**attempt))
         raise RuntimeError(f"CubeStudio request failed: {last_err}") from last_err
 
-    def _http_request_sync(
+    async def _http_request_async(
         self,
         method: str,
         path: str,
         json_body: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        url = self.base_url + path
-        data = json.dumps(json_body).encode("utf-8") if json_body is not None else None
-        req = urllib.request.Request(url, method=method.upper(), headers=self._headers, data=data)
+        response = await self._client.request(
+            method=method.upper(),
+            url=path,
+            json=json_body,
+        )
+        if response.status_code >= 400:
+            detail = response.text[:200]
+            raise RuntimeError(f"HTTP {response.status_code}: {detail}")
         try:
-            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
-                raw = resp.read().decode("utf-8") if resp else ""
-                return json.loads(raw) if raw else {}
-        except urllib.error.HTTPError as exc:
-            detail = exc.read().decode("utf-8", errors="ignore")
-            raise RuntimeError(f"HTTP {exc.code}: {detail[:200]}") from exc
+            return response.json() if response.text else {}
+        except Exception:  # noqa: BLE001
+            return {}
 
     # ---- inference service ----
     async def create_inference_service(self, params: dict[str, Any]) -> dict[str, Any]:
@@ -175,6 +186,25 @@ class CubeStudioChannel(BaseChannel):
             action="list_inference_services",
             method="GET",
             path="/inferenceservice_modelview/api/",
+        )
+
+    async def get_service_status(self, service_name: str) -> dict[str, Any]:
+        """Get inference service status by name."""
+        import urllib.parse
+        filters = urllib.parse.quote(f'[{{"col":"name","opr":"eq","value":"{service_name}"}}]')
+        return await self._execute_request(
+            action="get_service_status",
+            method="GET",
+            path=f"/inferenceservice_modelview/api/?_filters={filters}",
+        )
+
+    async def update_inference_service(self, service_name: str, params: dict[str, Any]) -> dict[str, Any]:
+        """Update inference service by name (deploy/update)."""
+        return await self._execute_request(
+            action="update_inference_service",
+            method="POST",
+            path="/inferenceservice_modelview/api/deploy/update/",
+            json_body={"service_name": service_name, **params},
         )
 
     # ---- pipeline ----

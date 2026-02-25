@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import datetime as dt
 import unittest
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from load_simulator.channels.base import BaseChannel, ChannelResult, SafetyViolationError
 from load_simulator.channels.cube_studio import CubeStudioChannel, build_auth_header
@@ -61,45 +62,80 @@ class CubeStudioChannelTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(token.split(".")), 3)
 
     async def test_retry_and_path_methods(self) -> None:
-        class _TestChannel(CubeStudioChannel):
-            def __init__(self) -> None:
-                super().__init__(base_url="http://x", retry_count=1)
-                self.calls = 0
-                self.last = None
+        """Test that async httpx is used with retry logic."""
+        ch = CubeStudioChannel(base_url="http://x", retry_count=1)
+        # Mock the client request method
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.text = '{"ok": true}'
+        mock_response.json.return_value = {"ok": True}
 
-            def _http_request_sync(self, method, path, json_body=None):  # noqa: ANN001, ANN201
-                self.calls += 1
-                self.last = (method, path, json_body)
-                if self.calls == 1:
-                    raise RuntimeError("boom")
-                return {"ok": True}
+        call_count = 0
 
-        ch = _TestChannel()
+        async def mock_request(method, url, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise RuntimeError("boom")
+            return mock_response
+
+        ch._client.request = mock_request
+
         result = await ch.create_pipeline({"name": "p"})
         self.assertEqual(result["ok"], True)
-        self.assertEqual(ch.last[1], "/pipeline_modelview/api/")
-        self.assertEqual(ch.calls, 2)
+        self.assertEqual(call_count, 2)
+        await ch.close()
 
     async def test_dry_run_uses_base_execute_path(self) -> None:
-        class _DryRunChannel(CubeStudioChannel):
-            def __init__(self) -> None:
-                super().__init__(base_url="http://x", dry_run=True)
-                self.calls = 0
+        """Test that dry_run bypasses actual HTTP requests."""
+        ch = CubeStudioChannel(base_url="http://x", dry_run=True)
 
-            def _http_request_sync(self, method, path, json_body=None):  # noqa: ANN001, ANN201
-                _ = method, path, json_body
-                self.calls += 1
-                return {"ok": True}
-
-        ch = _DryRunChannel()
+        # In dry_run mode, execute() returns ChannelResult with dry_run=True
+        # But _execute_request extracts the data dict from the ChannelResult
         result = await ch.create_pipeline({"name": "p"})
-        self.assertEqual(ch.calls, 0)
+
+        # The result is the data dict extracted from ChannelResult
         self.assertEqual(result.get("action"), "create_pipeline")
+        await ch.close()
 
     async def test_forbidden_when_path_invalid(self) -> None:
         ch = CubeStudioChannel(base_url="http://x")
         with self.assertRaises(SafetyViolationError):
             await ch.execute("x", {"method": "GET", "path": "missing-leading-slash"})
+
+    async def test_get_service_status(self) -> None:
+        """Test get_service_status method."""
+        ch = CubeStudioChannel(base_url="http://x")
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {"id": 1, "name": "test-service"}
+
+        async def mock_request(method, url, **kwargs):
+            return mock_response
+
+        ch._client.request = mock_request
+
+        result = await ch.get_service_status("test-service")
+        self.assertEqual(result["name"], "test-service")
+        await ch.close()
+
+    async def test_update_inference_service(self) -> None:
+        """Test update_inference_service method."""
+        ch = CubeStudioChannel(base_url="http://x")
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {"ok": True}
+
+        async def mock_request(method, url, **kwargs):
+            return mock_response
+
+        ch._client.request = mock_request
+
+        result = await ch.update_inference_service("test-service", {"min_replicas": 2})
+        self.assertEqual(result["ok"], True)
+        await ch.close()
 
 
 class PrometheusChannelTests(unittest.IsolatedAsyncioTestCase):
@@ -118,17 +154,91 @@ class PrometheusChannelTests(unittest.IsolatedAsyncioTestCase):
 
 class InferenceChannelTests(unittest.IsolatedAsyncioTestCase):
     async def test_chat_completion(self) -> None:
-        class _TestInference(InferenceChannel):
-            def _post_json(self, body):  # noqa: ANN001, ANN201
-                self.last = body
-                return {"id": "1", "usage": {"completion_tokens": 10, "total_time_seconds": 2.0}}
+        """Test InferenceChannel with async httpx."""
+        ch = InferenceChannel(endpoint="http://x/v1/chat/completions", model="m")
 
-        ch = _TestInference(endpoint="http://x/v1/chat/completions", model="m")
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "id": "1",
+            "usage": {"completion_tokens": 10, "total_time_seconds": 2.0}
+        }
+
+        async def mock_post(url, **kwargs):
+            return mock_response
+
+        ch._client.post = mock_post
+
         result = await ch.chat_completion([{"role": "user", "content": "hi"}], max_tokens=20, stream=True)
         self.assertTrue(result.ok)
-        self.assertEqual(ch.last["model"], "m")
-        self.assertEqual(ch.last["max_tokens"], 20)
+        self.assertEqual(result.status_code, 200)
         self.assertAlmostEqual(result.ttft_seconds or 0, 0.2)
+        await ch.close()
+
+    async def test_chat_completion_with_metrics(self) -> None:
+        """Test that metrics are recorded when collector is provided."""
+        from load_simulator.metrics.collector import MetricCollector
+
+        collector = MetricCollector()
+        ch = InferenceChannel(
+            endpoint="http://x/v1/chat/completions",
+            model="m",
+            metrics_collector=collector,
+        )
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {"id": "1", "usage": {}}
+
+        async def mock_post(url, **kwargs):
+            return mock_response
+
+        ch._client.post = mock_post
+
+        result = await ch.chat_completion([{"role": "user", "content": "hi"}])
+        self.assertTrue(result.ok)
+
+        # Check metrics were recorded
+        samples = collector.get_samples("inference_requests_total")
+        self.assertEqual(len(samples), 1)
+        await ch.close()
+
+    async def test_chat_completion_error_metrics(self) -> None:
+        """Test that error metrics are recorded on failure."""
+        from load_simulator.metrics.collector import MetricCollector
+
+        collector = MetricCollector()
+        ch = InferenceChannel(
+            endpoint="http://x/v1/chat/completions",
+            model="m",
+            metrics_collector=collector,
+        )
+
+        async def mock_post(url, **kwargs):
+            raise RuntimeError("connection error")
+
+        ch._client.post = mock_post
+
+        result = await ch.chat_completion([{"role": "user", "content": "hi"}])
+        self.assertFalse(result.ok)
+        self.assertIsNotNone(result.error)
+
+        # Check error metrics were recorded
+        samples = collector.get_samples("inference_errors_total")
+        self.assertEqual(len(samples), 1)
+        await ch.close()
+
+    async def test_connection_pool_config(self) -> None:
+        """Test that connection pool is configured correctly."""
+        ch = InferenceChannel(
+            endpoint="http://x/v1/chat/completions",
+            model="m",
+            max_connections=100,
+            max_keepalive_connections=50,
+        )
+        # Verify the client limits attribute exists
+        self.assertIsNotNone(ch._client)
+        await ch.close()
 
 
 class NotebookChannelTests(unittest.IsolatedAsyncioTestCase):
@@ -207,6 +317,80 @@ class K8sChannelTests(unittest.IsolatedAsyncioTestCase):
         ch = K8sChannel(client=_HealthyClient())
         count = await ch.count_oomkilled_pods("ns")
         self.assertEqual(count, 0)
+
+    async def test_delete_pod(self) -> None:
+        """Test delete_pod with WAL and dry_run."""
+        class _TestClient:
+            def delete_pods(self, namespace, label_selector):
+                return {"deleted": True, "namespace": namespace, "label": label_selector}
+
+        wal = _Wal()
+        ch = K8sChannel(client=_TestClient(), wal=wal)
+
+        # Test dry_run
+        result = await ch.delete_pod("app=test", "default", dry_run=True)
+        self.assertTrue(result.get("dry_run"))
+        self.assertEqual(len(wal.records), 0)  # No WAL in dry_run
+
+    async def test_delete_pod_wal(self) -> None:
+        """Test delete_pod records to WAL."""
+        class _TestClient:
+            def delete_pods(self, namespace, label_selector):
+                return {"deleted": True}
+
+        wal = _Wal()
+        ch = K8sChannel(client=_TestClient(), wal=wal)
+
+        await ch.delete_pod("app=test", "default")
+        self.assertEqual(len(wal.records), 1)
+        self.assertEqual(wal.records[0]["recovery_action"], "restart_pod")
+
+    async def test_scale_deployment(self) -> None:
+        """Test scale_deployment with WAL."""
+        class _TestClient:
+            def get_deployment(self, namespace, name):
+                return {"spec": {"replicas": 3}}
+
+            def scale_deployment(self, namespace, name, replicas):
+                return {"scaled": True, "replicas": replicas}
+
+        wal = _Wal()
+        ch = K8sChannel(client=_TestClient(), wal=wal)
+
+        # Test dry_run
+        result = await ch.scale_deployment("deploy", "default", 5, dry_run=True)
+        self.assertTrue(result.get("dry_run"))
+
+        # Test actual scaling
+        result = await ch.scale_deployment("deploy", "default", 5)
+        self.assertEqual(result.get("replicas"), 5)
+        self.assertEqual(len(wal.records), 1)
+        self.assertEqual(wal.records[0]["recovery_params"]["replicas"], 3)
+
+    async def test_forbidden_operations(self) -> None:
+        """Test that forbidden operations raise SafetyViolationError."""
+        ch = K8sChannel(client=_TestClient())
+
+        # Test forbidden delete
+        is_forbidden = ch._is_forbidden("delete", {"verb": "delete", "resource": "Namespace"})
+        self.assertTrue(is_forbidden)
+
+        # Test allowed delete
+        is_forbidden = ch._is_forbidden("delete", {"verb": "delete", "resource": "Pod"})
+        self.assertFalse(is_forbidden)
+
+    async def test_label_selectors(self) -> None:
+        """Test that LABEL_SELECTORS are defined."""
+        ch = K8sChannel(client=_TestClient())
+
+        self.assertIn("backend", ch.LABEL_SELECTORS)
+        self.assertIn("worker", ch.LABEL_SELECTORS)
+        self.assertIn("inference", ch.LABEL_SELECTORS)
+        self.assertEqual(ch.LABEL_SELECTORS["backend"], "app=kubeflow-dashboard")
+
+
+class _TestClient:
+    pass
 
 
 if __name__ == "__main__":

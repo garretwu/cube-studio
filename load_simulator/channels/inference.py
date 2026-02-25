@@ -1,11 +1,13 @@
 """Inference endpoint channel."""
 from __future__ import annotations
 
-import json
 import time
-import urllib.request
 from dataclasses import dataclass
 from typing import Any
+
+import httpx
+
+from load_simulator.metrics.collector import MetricCollector
 
 
 @dataclass
@@ -19,12 +21,34 @@ class InferenceResult:
 
 
 class InferenceChannel:
-    """Direct client for `/v1/chat/completions`."""
+    """Direct client for `/v1/chat/completions` with async httpx and connection pool."""
 
-    def __init__(self, *, endpoint: str, model: str, timeout: int = 60) -> None:
+    def __init__(
+        self,
+        *,
+        endpoint: str,
+        model: str,
+        timeout: int = 60,
+        max_connections: int = 200,
+        max_keepalive_connections: int = 200,
+        metrics_collector: MetricCollector | None = None,
+    ) -> None:
         self.endpoint = endpoint
         self.model = model
         self.timeout = timeout
+        self.metrics_collector = metrics_collector
+        self._client = httpx.AsyncClient(
+            base_url=endpoint,
+            timeout=httpx.Timeout(timeout),
+            limits=httpx.Limits(
+                max_connections=max_connections,
+                max_keepalive_connections=max_keepalive_connections,
+            ),
+        )
+
+    async def close(self) -> None:
+        """Close the HTTP client."""
+        await self._client.aclose()
 
     async def chat_completion(
         self,
@@ -44,21 +68,46 @@ class InferenceChannel:
             body.update(extra)
         start = time.monotonic()
         try:
-            payload = self._post_json(body)
+            response = await self._client.post(
+                "/v1/chat/completions",
+                json=body,
+            )
             latency = time.monotonic() - start
-            ttft = self._estimate_ttft(payload) if stream else None
+            ttft = self._estimate_ttft(response.json()) if stream else None
+
+            # Record metrics
+            if self.metrics_collector:
+                await self.metrics_collector.record_async(
+                    "inference_latency_ms",
+                    latency * 1000,
+                )
+                if response.status_code == 200:
+                    await self.metrics_collector.record_async(
+                        "inference_requests_total",
+                        1.0,
+                    )
+
             return InferenceResult(
                 ok=True,
-                status_code=200,
+                status_code=response.status_code,
                 latency_seconds=latency,
-                body=payload,
+                body=response.json(),
                 ttft_seconds=ttft,
             )
         except Exception as exc:  # noqa: BLE001
+            latency = time.monotonic() - start
+
+            # Record error metrics
+            if self.metrics_collector:
+                await self.metrics_collector.record_async(
+                    "inference_errors_total",
+                    1.0,
+                )
+
             return InferenceResult(
                 ok=False,
                 status_code=500,
-                latency_seconds=time.monotonic() - start,
+                latency_seconds=latency,
                 body={},
                 error=str(exc),
             )
@@ -71,15 +120,3 @@ class InferenceChannel:
             if isinstance(total, (int, float)) and total > 0:
                 return float(total) / float(completion_tokens)
         return None
-
-    def _post_json(self, body: dict[str, Any]) -> dict[str, Any]:
-        data = json.dumps(body).encode("utf-8")
-        req = urllib.request.Request(
-            self.endpoint,
-            method="POST",
-            headers={"Content-Type": "application/json"},
-            data=data,
-        )
-        with urllib.request.urlopen(req, timeout=self.timeout) as resp:
-            text = resp.read().decode("utf-8")
-            return json.loads(text or "{}")
