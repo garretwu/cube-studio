@@ -1,0 +1,244 @@
+# =============================================================================
+# Fault Injector Test Configuration Template
+# =============================================================================
+# This is a template configuration file for testing the Fault Injector.
+# Copy this file and modify it according to your test environment.
+#
+# Usage:
+#   fault-injector inject --config fault-injector-test.yaml --dry-run
+# =============================================================================
+
+# Global Configuration
+global:
+  # Directory to store session data and rollback journals
+  session_dir: "./fault-reports/sessions/"
+  
+  # Logging level: DEBUG, INFO, WARNING, ERROR
+  log_level: "INFO"
+  
+  # Safety settings
+  safety:
+    # Require manual confirmation before injecting faults
+    require_confirmation: false
+    
+    # Auto-recovery timeout in seconds (0 to disable)
+    auto_recover_timeout: 600
+    
+    # Dry-run mode: simulate fault injection without actual execution
+    # Set to false for production use
+    dry_run: true
+    
+    # Maximum number of concurrent faults per session
+    max_concurrent_faults: 3
+    
+    # Nodes to exclude from fault injection
+    excluded_nodes: []
+
+# =============================================================================
+# Target Node Inventory
+# =============================================================================
+# Define target nodes for fault injection.
+# Each node requires SSH configuration for command execution.
+
+inventory:
+  # Node group: worker nodes
+  workers:
+    - name: "worker-01"
+      ssh:
+        host: "192.168.1.101"
+        port: 22
+        user: "root"
+        key_file: "~/.ssh/id_rsa"
+        password: null
+        timeout: 30
+        use_sudo: true
+      interface: "eth0"
+      roles:
+        - "compute"
+        - "rdma"
+    
+    - name: "worker-02"
+      ssh:
+        host: "192.168.1.102"
+        port: 22
+        user: "root"
+        key_file: "~/.ssh/id_rsa"
+        password: null
+        timeout: 30
+        use_sudo: true
+      interface: "eth0"
+      roles:
+        - "compute"
+        - "rdma"
+
+  # Node group: master nodes
+  masters:
+    - name: "master-01"
+      ssh:
+        host: "192.168.1.100"
+        port: 22
+        user: "root"
+        key_file: "~/.ssh/id_rsa"
+        password: null
+        timeout: 30
+        use_sudo: true
+      interface: "eth0"
+      roles:
+        - "control-plane"
+
+# =============================================================================
+# Fault Scenarios Configuration
+# =============================================================================
+# Enable and configure fault scenarios to inject.
+# Each scenario can target specific nodes and have custom parameters.
+
+scenarios:
+  # ---------------------------------------------------------------------------
+  # RC-2: Network Jitter (网络延迟抖动)
+  # ---------------------------------------------------------------------------
+  # Uses tc netem to inject network delay and jitter
+  # Effect: P95/P50 latency ratio > 10, intermittent token output
+  network_jitter:
+    enabled: true
+    target_nodes:
+      - "worker-01"
+      - "worker-02"
+    params:
+      # Network interface to apply delay
+      interface: "eth0"
+      
+      # Base delay in milliseconds
+      delay_ms: 50
+      
+      # Jitter range in milliseconds
+      jitter_ms: 100
+      
+      # Distribution: normal, pareto, paretonormal
+      distribution: "pareto"
+      
+      # Packet loss percentage (0-100)
+      loss_pct: 0
+      
+      # Duration in seconds
+      duration: 300
+
+  # ---------------------------------------------------------------------------
+  # F-5: RoCE MTU Mismatch (RoCE 网络 MTU 不一致)
+  # ---------------------------------------------------------------------------
+  # Modifies network interface MTU to create mismatch
+  # Effect: Large packet loss, throughput drop, RDMA connection retries
+  roce_mtu_mismatch:
+    enabled: true
+    target_nodes:
+      - "worker-01"
+    params:
+      interface: "eth0"
+      
+      # Target MTU (set lower to cause issues)
+      mtu: 1500
+      
+      # Original MTU for recovery
+      original_mtu: 9000
+
+  # ---------------------------------------------------------------------------
+  # F-1: PFC Deadlock (PFC 死锁)
+  # ---------------------------------------------------------------------------
+  # Configures PFC priority mapping to cause Head-of-Line Blocking
+  # Effect: RDMA traffic blocked, NCCL AllReduce timeout
+  # Note: Requires SwitchChannel (not yet implemented)
+  pfc_deadlock:
+    enabled: false
+    target_nodes:
+      - "worker-01"
+    params:
+      switch: "sw-200g"
+      interface: "HundredGigE 1/0/1"
+      priority: 3
+
+  # ---------------------------------------------------------------------------
+  # F-2: ECN Misconfiguration (ECN 标记阈值错配)
+  # ---------------------------------------------------------------------------
+  # Modifies ECN threshold settings on switch
+  # Effect: DCQCN rate reduction, unstable RDMA throughput
+  # Note: Requires SwitchChannel (not yet implemented)
+  ecn_misconfiguration:
+    enabled: false
+    target_nodes:
+      - "worker-01"
+    params:
+      switch: "sw-200g"
+      interface: "HundredGigE 1/0/1"
+      min_threshold: 10
+      max_threshold: 20
+
+  # ---------------------------------------------------------------------------
+  # F-3: RDMA Load Imbalance (不均衡 RDMA 负载)
+  # ---------------------------------------------------------------------------
+  # Modifies ECMP hash configuration for uneven load distribution
+  # Effect: Some links congested, some idle, reduced throughput
+  # Note: Requires SwitchChannel (not yet implemented)
+  rdma_load_imbalance:
+    enabled: false
+    target_nodes:
+      - "worker-01"
+    params:
+      switch: "sw-200g"
+      hash_algorithm: "src-dst-ip"
+
+  # ---------------------------------------------------------------------------
+  # F-4: RDMA Link Flap (RDMA 链路间歇性中断)
+  # ---------------------------------------------------------------------------
+  # Periodically shutdown/undo shutdown switch port
+  # Effect: RDMA connection drop/rebuild, NCCL timeout/retry
+  # Note: Requires SwitchChannel (not yet implemented)
+  rdma_link_flap:
+    enabled: false
+    target_nodes:
+      - "worker-01"
+    params:
+      switch: "sw-200g"
+      interface: "HundredGigE 1/0/1"
+      flap_interval: 30
+      flap_duration: 5
+
+  # ---------------------------------------------------------------------------
+  # F-6: RDMA QoS Downgrade (RDMA QoS 降级)
+  # ---------------------------------------------------------------------------
+  # Reduces RDMA traffic priority via DSCP/CoS mapping
+  # Effect: RDMA competes with TCP, unstable throughput/latency
+  rdma_qos_downgrade:
+    enabled: false
+    target_nodes:
+      - "worker-01"
+    params:
+      interface: "eth0"
+      dscp_value: 0
+
+# =============================================================================
+# Example: Minimal Test Configuration
+# =============================================================================
+# Uncomment below for a minimal test configuration:
+#
+# global:
+#   session_dir: "./fault-reports/sessions/"
+#   log_level: "DEBUG"
+#   safety:
+#     dry_run: true
+#     require_confirmation: false
+#
+# inventory:
+#   test-nodes:
+#     - name: "test-node-1"
+#       ssh:
+#         host: "192.168.1.100"
+#         user: "testuser"
+#         key_file: "~/.ssh/id_rsa"
+#       interface: "eth0"
+#
+# scenarios:
+#   network_jitter:
+#     enabled: true
+#     target_nodes: ["test-node-1"]
+#     params:
+#       delay_ms: 10
+#       duration: 60
