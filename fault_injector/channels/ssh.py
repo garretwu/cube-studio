@@ -148,6 +148,9 @@ class SSHChannel(BaseChannel):
         """
         timeout = timeout or self.command_timeout
         
+        # 先验证节点是否存在（即使在 dry_run 模式下也要验证）
+        self._get_node_config(node)
+        
         # 如果需要 sudo，包装命令
         actual_command = f"sudo {command}" if use_sudo else command
         
@@ -314,6 +317,9 @@ class SSHChannel(BaseChannel):
         try:
             # 测试连接时使用简单的 echo 命令，不需要 sudo
             result = await self.run_command(node, "echo 'OK'", use_sudo=False)
+            # dry_run 模式下返回 True
+            if result.dry_run:
+                return True
             return result.success and "OK" in result.output
         except Exception:
             return False

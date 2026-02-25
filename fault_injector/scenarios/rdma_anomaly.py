@@ -660,6 +660,11 @@ class RoCEMTUMismatchScenario(BaseScenario):
             command=check_cmd,
         )
         
+        # dry_run 模式下直接返回 True
+        if result.dry_run:
+            logger.info(f"[DRY-RUN] 跳过 MTU 验证")
+            return True
+        
         if result.success:
             current_mtu = int(result.output.strip())
             if current_mtu == original_mtu:
