@@ -2,6 +2,14 @@
 场景注册表
 
 管理所有可用的故障场景。
+
+场景分类：
+1. vLLM 延迟必选场景 (RC-1~RC-6)
+2. RDMA 必选场景 (F-1~F-6)
+3. 硬件层扩展场景
+4. OS 层扩展场景
+5. 平台层扩展场景
+6. 服务层扩展场景
 """
 from __future__ import annotations
 
@@ -9,6 +17,15 @@ import logging
 from typing import Type
 
 from fault_injector.scenarios.base import BaseScenario
+
+# vLLM 延迟场景 (RC-1, RC-3~RC-6)
+from fault_injector.scenarios.vllm_latency import (
+    GPUContentionScenario,       # RC-1
+    StorageIOInterferenceScenario, # RC-3
+    PlatformCascadeScenario,     # RC-4
+    OSResourcePressureScenario,  # RC-5
+    ThermalThrottlingScenario,   # RC-6
+)
 
 # RDMA 异常场景 (F-1~F-6 + RC-2)
 from fault_injector.scenarios.rdma_anomaly import (
@@ -21,13 +38,34 @@ from fault_injector.scenarios.rdma_anomaly import (
     RDMAQoSDowngradeScenario,   # F-6
 )
 
-# vLLM 延迟场景 (RC-1, RC-3~RC-6)
-from fault_injector.scenarios.vllm_latency import (
-    GPUContentionScenario,       # RC-1
-    StorageIOInterferenceScenario, # RC-3
-    PlatformCascadeScenario,     # RC-4
-    OSResourcePressureScenario,  # RC-5
-    ThermalThrottlingScenario,   # RC-6
+# 硬件层扩展场景
+from fault_injector.scenarios.hardware import (
+    CPUStressScenario,
+    GPURemovalScenario,
+    ThermalThrottleHWScenario,
+    NetworkDelayHWScenario,
+)
+
+# OS 层扩展场景
+from fault_injector.scenarios.os_fault import (
+    MemoryPressureScenario,
+    DiskFullScenario,
+    TimeSkewScenario,
+)
+
+# 平台层扩展场景
+from fault_injector.scenarios.platform import (
+    MySQLConnectionDropScenario,
+    RedisUnavailableScenario,
+    CeleryWorkerKillScenario,
+    IstioGatewayKillScenario,
+)
+
+# 服务层扩展场景
+from fault_injector.scenarios.service import (
+    InferencePodKillScenario,
+    PipelineWorkflowCancelScenario,
+    NotebookPodKillScenario,
 )
 
 logger = logging.getLogger(__name__)
@@ -53,6 +91,36 @@ SCENARIO_REGISTRY: dict[str, Type[BaseScenario]] = {
     "rdma_link_flap": RDMALinkFlapScenario,            # F-4: RDMA 链路间歇性中断
     "roce_mtu_mismatch": RoCEMTUMismatchScenario,      # F-5: RoCE 网络 MTU 不一致
     "rdma_qos_downgrade": RDMAQoSDowngradeScenario,    # F-6: RDMA QoS 降级
+    
+    # ================================================================
+    # 硬件层扩展场景
+    # ================================================================
+    "cpu_stress": CPUStressScenario,                   # CPU 压力
+    "gpu_removal": GPURemovalScenario,                 # GPU 掉卡
+    "thermal_throttle_hw": ThermalThrottleHWScenario,  # 热降频 (Redfish)
+    "network_delay_hw": NetworkDelayHWScenario,        # 网络延迟 (交换机)
+    
+    # ================================================================
+    # OS 层扩展场景
+    # ================================================================
+    "memory_pressure": MemoryPressureScenario,         # 内存压力
+    "disk_full": DiskFullScenario,                     # 磁盘满
+    "time_skew": TimeSkewScenario,                     # 时钟偏移
+    
+    # ================================================================
+    # 平台层扩展场景
+    # ================================================================
+    "mysql_connection_drop": MySQLConnectionDropScenario,   # MySQL 连接中断
+    "redis_unavailable": RedisUnavailableScenario,           # Redis 不可用
+    "celery_worker_kill": CeleryWorkerKillScenario,          # Celery Worker 终止
+    "istio_gateway_kill": IstioGatewayKillScenario,          # Istio Gateway 终止
+    
+    # ================================================================
+    # 服务层扩展场景
+    # ================================================================
+    "inference_pod_kill": InferencePodKillScenario,          # 推理 Pod 终止
+    "pipeline_workflow_cancel": PipelineWorkflowCancelScenario,  # Pipeline 取消
+    "notebook_pod_kill": NotebookPodKillScenario,            # Notebook Pod 终止
 }
 
 
