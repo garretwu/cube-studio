@@ -1,4 +1,4 @@
-"""
+"
 配置加载器
 
 从 YAML 文件加载配置并进行校验。
@@ -96,6 +96,7 @@ def _parse_config(raw: dict[str, Any]) -> FaultInjectorConfig:
                 key_file=ssh_raw.get("key_file"),
                 password=ssh_raw.get("password"),
                 timeout=ssh_raw.get("timeout", 30),
+                use_sudo=ssh_raw.get("use_sudo", True),  # 修复：解析 use_sudo 字段
             )
             node = TargetNodeConfig(
                 name=node_raw.get("name", ""),
