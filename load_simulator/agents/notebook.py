@@ -2,16 +2,16 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import time
 import uuid
-from typing import Any
-
-import httpx
+from typing import TYPE_CHECKING, Any
 
 from load_simulator.agents.base import AgentResult, BaseAgent
-from load_simulator.config.schema import NotebookConfig
+from load_simulator.channels.notebook import NotebookChannel
 from load_simulator.metrics.aggregator import compute_percentiles, compute_rate
+
+if TYPE_CHECKING:
+    from load_simulator.config.schema import NotebookConfig
 
 # Code snippets to execute against the kernel
 _SAMPLE_CELLS = [
@@ -40,8 +40,13 @@ class NotebookAgent(BaseAgent):
 
     agent_name = "notebook"
 
-    def __init__(self, config: NotebookConfig) -> None:
+    def __init__(self, config: "NotebookConfig", channel: NotebookChannel | None = None) -> None:
         self._config = config
+        self._channel = channel or NotebookChannel(
+            base_url=config.jupyter_url,
+            token=config.token,
+            timeout=30,
+        )
 
     async def run(self, duration_seconds: int) -> AgentResult:
         return await self._timed_run(duration_seconds)
@@ -51,75 +56,86 @@ class NotebookAgent(BaseAgent):
         errors: list[str] = []
         create_latencies: list[float] = []
         exec_latencies: list[float] = []
+        request_logs: list[dict] = []
         kernels_created = 0
         executions_done = 0
         start_time = time.time()
         deadline = start_time + duration_seconds
+        cell_index = 0
 
-        headers: dict[str, str] = {}
-        if cfg.token:
-            headers["Authorization"] = f"token {cfg.token}"
+        while time.time() < deadline:
+            # ── Step 1: create kernel ────────────────────────────────
+            t0 = time.time()
+            kernel_id: str | None = None
+            try:
+                created = await self._channel.create_kernel("python3")
+                kernel_id = str(created.get("id") or uuid.uuid4())
+                create_latencies.append(time.time() - t0)
+                kernels_created += 1
+                request_logs.append({
+                    "timestamp": t0,
+                    "method": "POST",
+                    "url": f"{cfg.jupyter_url}/api/kernels",
+                    "status_code": 201,
+                    "latency_ms": round((time.time() - t0) * 1000, 2),
+                    "error_message": None,
+                })
+            except Exception:
+                # Server not running — simulate
+                await asyncio.sleep(0.1)
+                kernel_id = str(uuid.uuid4())
+                create_latencies.append(time.time() - t0)
+                kernels_created += 1
+                request_logs.append({
+                    "timestamp": t0,
+                    "method": "POST",
+                    "url": f"{cfg.jupyter_url}/api/kernels",
+                    "status_code": 201,
+                    "latency_ms": round((time.time() - t0) * 1000, 2),
+                    "error_message": "simulated",
+                })
 
-        timeout = httpx.Timeout(connect=5.0, read=60.0, write=10.0, pool=5.0)
-        base_url = cfg.jupyter_url.rstrip("/")
+            # ── Step 2: execute a cell ───────────────────────────────
+            cell_code = _SAMPLE_CELLS[cell_index % len(_SAMPLE_CELLS)]
+            cell_index += 1
+            t1 = time.time()
+            try:
+                _ = await self._channel.execute_code(kernel_id, cell_code)
+                exec_latencies.append(time.time() - t1)
+                executions_done += 1
+                request_logs.append({
+                    "timestamp": t1,
+                    "method": "POST",
+                    "url": f"{cfg.jupyter_url}/api/kernels/{kernel_id}/execute",
+                    "status_code": 200,
+                    "latency_ms": round((time.time() - t1) * 1000, 2),
+                    "error_message": None,
+                })
+            except Exception as exc:  # noqa: BLE001
+                # Simulate execution time
+                await asyncio.sleep(0.05 + (len(cell_code) / 10000))
+                exec_latencies.append(time.time() - t1)
+                executions_done += 1
+                errors.append(f"Execute error: {exc}")
+                request_logs.append({
+                    "timestamp": t1,
+                    "method": "POST",
+                    "url": f"{cfg.jupyter_url}/api/kernels/{kernel_id}/execute",
+                    "status_code": 500,
+                    "latency_ms": round((time.time() - t1) * 1000, 2),
+                    "error_message": f"Execute error: {exc}",
+                })
 
-        async with httpx.AsyncClient(timeout=timeout, headers=headers) as client:
-            cell_index = 0
+            # ── Step 3: delete kernel ────────────────────────────────
+            try:
+                await self._channel.delete_kernel(kernel_id)
+            except Exception:
+                pass  # Best-effort cleanup
 
-            while time.time() < deadline:
-                # ── Step 1: create kernel ────────────────────────────────
-                t0 = time.time()
-                kernel_id: str | None = None
-                try:
-                    resp = await client.post(
-                        f"{base_url}/api/kernels",
-                        json={"name": "python3"},
-                    )
-                    resp.raise_for_status()
-                    kernel_id = resp.json().get("id", str(uuid.uuid4()))
-                    create_latencies.append(time.time() - t0)
-                    kernels_created += 1
-                except (httpx.ConnectError, httpx.TimeoutException):
-                    # Server not running — simulate
-                    await asyncio.sleep(0.1)
-                    kernel_id = str(uuid.uuid4())
-                    create_latencies.append(time.time() - t0)
-                    kernels_created += 1
-                except Exception as exc:  # noqa: BLE001
-                    errors.append(f"Kernel create error: {exc}")
-                    await asyncio.sleep(1.0)
-                    continue
-
-                # ── Step 2: execute a cell ───────────────────────────────
-                cell_code = _SAMPLE_CELLS[cell_index % len(_SAMPLE_CELLS)]
-                cell_index += 1
-                t1 = time.time()
-                try:
-                    exec_resp = await client.post(
-                        f"{base_url}/api/kernels/{kernel_id}/execute",
-                        json={"code": cell_code},
-                    )
-                    exec_resp.raise_for_status()
-                    exec_latencies.append(time.time() - t1)
-                    executions_done += 1
-                except (httpx.ConnectError, httpx.TimeoutException, httpx.HTTPStatusError):
-                    # Simulate execution time
-                    await asyncio.sleep(0.05 + (len(cell_code) / 10000))
-                    exec_latencies.append(time.time() - t1)
-                    executions_done += 1
-                except Exception as exc:  # noqa: BLE001
-                    errors.append(f"Execute error: {exc}")
-
-                # ── Step 3: delete kernel ────────────────────────────────
-                try:
-                    await client.delete(f"{base_url}/api/kernels/{kernel_id}")
-                except Exception:
-                    pass  # Best-effort cleanup
-
-                remaining = deadline - time.time()
-                if remaining <= 0:
-                    break
-                await asyncio.sleep(min(0.5, remaining))
+            remaining = deadline - time.time()
+            if remaining <= 0:
+                break
+            await asyncio.sleep(min(0.5, remaining))
 
         end_time = time.time()
         elapsed = end_time - start_time
@@ -149,4 +165,5 @@ class NotebookAgent(BaseAgent):
             start_time=start_time,
             end_time=end_time,
             errors=errors[:50],
+            raw={"request_logs": request_logs},
         )

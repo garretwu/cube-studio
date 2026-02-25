@@ -1,6 +1,7 @@
 """Load and validate YAML config files into LoadSimulatorConfig."""
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Union
 
@@ -38,7 +39,7 @@ def load_config(path: Union[str, Path]) -> LoadSimulatorConfig:
         raise ValueError(f"Config file must contain a YAML mapping, got: {type(data).__name__}")
 
     try:
-        return LoadSimulatorConfig(**data)
+        return LoadSimulatorConfig(**_expand_env_vars(data))
     except ValidationError as exc:
         raise ValueError(f"Config validation error:\n{exc}") from exc
 
@@ -46,4 +47,14 @@ def load_config(path: Union[str, Path]) -> LoadSimulatorConfig:
 def load_default_config() -> LoadSimulatorConfig:
     """Return a LoadSimulatorConfig populated from the built-in defaults."""
     data = yaml.safe_load(DEFAULT_CONFIG_YAML) or {}
-    return LoadSimulatorConfig(**data)
+    return LoadSimulatorConfig(**_expand_env_vars(data))
+
+
+def _expand_env_vars(value):
+    if isinstance(value, str):
+        return os.path.expandvars(value)
+    if isinstance(value, dict):
+        return {k: _expand_env_vars(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_expand_env_vars(v) for v in value]
+    return value

@@ -1,0 +1,88 @@
+# Real-cluster E2E template for load_simulator
+# Replace all <...> placeholders before running.
+
+session_id: ""
+mode: "mixed"  # single | mixed | stress | soak
+agents:
+  - inference
+  - pipeline
+  - finetune
+  - notebook
+
+output_dir: "./reports"
+bottleneck_analysis: true
+
+global_config:
+  cube_studio_url: "http://<cube-studio-api-host>"
+  prometheus_url: "http://<prometheus-host>:9090"
+  project_id: 1
+  auth_method: "jwt"       # jwt | username
+  auth_username: "admin"
+  jwt_password: "<JWT_SECRET>"
+
+channels:
+  cube_studio:
+    timeout: 30
+    retry_count: 3
+    retry_backoff: 1.0
+  inference:
+    timeout: 60
+    retry_count: 1
+    retry_backoff: 0.5
+  prometheus:
+    timeout: 15
+    retry_count: 1
+    retry_backoff: 0.5
+
+system_capacity:
+  max_task_cpu: 50
+  max_task_mem_gib: 100
+  db_pool_size: 300
+  db_max_overflow: 800
+
+adaptive_rules:
+  pause_error_rate: 0.05
+  breaking_error_rate: 0.10
+  p99_breaking_multiplier: 10.0
+  gpu_mem_reduce_pct: 95.0
+  cpu_pause_pct: 95.0
+
+# InferenceAgent
+inference:
+  enabled: true
+  endpoint: "http://<inference-endpoint>/v1/chat/completions"
+  model: "<model-name>"
+  load_profile:
+    type: "constant"       # constant | stepped | spike
+    rps: 2.0
+    duration_seconds: 120
+  max_tokens: 512
+  concurrency: 8
+  duration_seconds: 180
+  prompt_pool_size: 200
+
+# PipelineAgent
+pipeline:
+  enabled: true
+  cube_studio_url: "http://<cube-studio-api-host>"
+  pipeline_id: null         # set existing ID to reuse, or keep null to auto-create
+  concurrency: 3
+  duration_seconds: 240
+
+# FineTuneAgent
+finetune:
+  enabled: true
+  llama_factory_url: "http://<llama-factory-host>:7860"
+  duration_seconds: 180
+
+# NotebookAgent
+notebook:
+  enabled: true
+  jupyter_url: "http://<jupyter-host>:8888"
+  token: "<jupyter-token-or-empty>"
+  duration_seconds: 180
+
+llm:
+  base_url: "http://<llm-base-url>/v1"
+  api_key: "<llm-api-key>"
+  model: "minimax-2.1"
