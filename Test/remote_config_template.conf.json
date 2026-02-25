@@ -6,22 +6,13 @@
   },
   "servers": [
     {
-      "name": "node-1",
-      "host": "192.168.10.11",
-      "user": "root",
+      "name": "10.11.4.13",
+      "host": "10.11.4.13",
+      "user": "yuyonghao",
       "port": 22,
-      "interface": "ens5f0",
-      "original_mtu": 4200,
+      "interface": "roce200",
+      "original_mtu": 9000,
       "fault_mtu": 1500
-    },
-    {
-      "name": "node-2",
-      "host": "192.168.10.12",
-      "user": "root",
-      "port": 22,
-      "interface": "ens5f0",
-      "original_mtu": 4200,
-      "fault_mtu": 9000
     }
   ]
 }
