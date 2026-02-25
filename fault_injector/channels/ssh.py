@@ -32,7 +32,7 @@ class SSHChannel(BaseChannel):
     - 命令执行超时控制
     - 自动注册恢复命令到 WAL
     - 安全命令检查
-    - 支持 sudo 模式执行命令
+    - 支持 sudo 模式执行命令（默认启用）
     """
     
     def __init__(
@@ -68,15 +68,10 @@ class SSHChannel(BaseChannel):
         return self.inventory[node]
     
     def _should_use_sudo(self, node: str) -> bool:
-        """检查节点是否需要使用 sudo"""
+        """检查节点是否需要使用 sudo（默认 True）"""
         node_config = self._get_node_config(node)
-        return node_config.ssh.use_sudo
-    
-    def _wrap_with_sudo(self, command: str, node: str) -> str:
-        """如果需要，用 sudo 包装命令"""
-        if self._should_use_sudo(node):
-            return f"sudo {command}"
-        return command
+        # 如果配置中没有 use_sudo 字段，默认返回 True
+        return getattr(node_config.ssh, 'use_sudo', True)
     
     async def _get_connection(
         self, node: str
@@ -125,8 +120,7 @@ class SSHChannel(BaseChannel):
                 timeout=self.connect_timeout,
             )
             self._connections[node] = conn
-            sudo_info = " (sudo模式)" if ssh_config.use_sudo else ""
-            logger.info(f"SSH 连接成功: {node} ({ssh_config.host}){sudo_info}")
+            logger.info(f"SSH 连接成功: {node} ({ssh_config.host})")
             return conn
         except asyncio.TimeoutError:
             raise asyncssh.Error(
@@ -138,7 +132,7 @@ class SSHChannel(BaseChannel):
         node: str,
         command: str,
         timeout: int | None = None,
-        use_sudo: bool | None = None,
+        use_sudo: bool = True,  # 默认使用 sudo
     ) -> ChannelResult:
         """
         在目标节点执行命令。
@@ -147,16 +141,12 @@ class SSHChannel(BaseChannel):
             node: 节点名称
             command: 要执行的命令
             timeout: 超时时间（秒），默认使用 command_timeout
-            use_sudo: 是否使用 sudo，None 时使用节点配置
+            use_sudo: 是否使用 sudo，默认 True
             
         Returns:
             ChannelResult: 执行结果
         """
         timeout = timeout or self.command_timeout
-        
-        # 确定 sudo 设置
-        if use_sudo is None:
-            use_sudo = self._should_use_sudo(node)
         
         # 如果需要 sudo，包装命令
         actual_command = f"sudo {command}" if use_sudo else command
@@ -181,8 +171,8 @@ class SSHChannel(BaseChannel):
             
             return ChannelResult(
                 success=result.exit_status == 0,
-                output=result.stdout,
-                error=result.stderr,
+                output=result.stdout or "",
+                error=result.stderr or "",
                 dry_run=False,
             )
             
@@ -223,7 +213,7 @@ class SSHChannel(BaseChannel):
                 node=params["node"],
                 command=params["command"],
                 timeout=params.get("timeout"),
-                use_sudo=params.get("use_sudo"),
+                use_sudo=params.get("use_sudo", True),
             )
         elif action == "tc_add_delay":
             return await self._tc_add_delay(params)
@@ -239,6 +229,7 @@ class SSHChannel(BaseChannel):
     async def _tc_add_delay(self, params: dict[str, Any]) -> ChannelResult:
         """
         使用 tc netem 添加网络延迟。
+        强制使用 sudo 执行。
         
         Args:
             params: {
@@ -266,11 +257,13 @@ class SSHChannel(BaseChannel):
         if loss_pct > 0:
             cmd += f" loss {loss_pct}%"
         
-        return await self.run_command(node, cmd)
+        # 强制使用 sudo
+        return await self.run_command(node, cmd, use_sudo=True)
     
     async def _tc_del_qdisc(self, params: dict[str, Any]) -> ChannelResult:
         """
         删除 tc qdisc（恢复网络）。
+        强制使用 sudo 执行。
         
         Args:
             params: {"node": 节点名, "interface": 接口名}
@@ -279,7 +272,8 @@ class SSHChannel(BaseChannel):
         interface = params["interface"]
         cmd = f"tc qdisc del dev {interface} root"
         
-        return await self.run_command(node, cmd)
+        # 强制使用 sudo
+        return await self.run_command(node, cmd, use_sudo=True)
     
     def _check_safety(self, action: str, params: dict[str, Any]) -> None:
         """
