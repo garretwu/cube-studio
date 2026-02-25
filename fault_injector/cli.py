@@ -90,12 +90,14 @@ def run_cmd(
     from fault_injector.safety.guard import SafetyGuard
     from fault_injector.safety.rollback import RollbackJournal
     from fault_injector.channels.ssh import SSHChannel
+    from fault_injector.channels.redfish import RedfishChannel
     from fault_injector.scenarios.registry import get_scenario, list_scenarios
     
     # 加载配置
     if config_path:
         console.log(f"加载配置: [cyan]{config_path}[/cyan]")
         config = load_config(config_path)
+        _validate_redfish_requirements(config)
     else:
         console.log("使用默认配置")
         config = get_default_config()
@@ -179,6 +181,11 @@ def run_cmd(
             wal=rollback,
             guard=guard,
         )
+        redfish = RedfishChannel(
+            dry_run=config.global_.safety.dry_run,
+            wal=rollback,
+            guard=guard,
+        )
         
         # 获取场景参数
         scenario_config = config.scenarios.get(scenario_name)
@@ -196,6 +203,7 @@ def run_cmd(
             target_node=first_node.name,
             params=params,
             fault_id=fault_id,
+            redfish=redfish if first_node.redfish else None,
             session_id=session_id,
             interface=params.get("interface", first_node.interface),
         )
@@ -242,6 +250,7 @@ def run_cmd(
         
         finally:
             await ssh.close()
+            await redfish.close()
         
         # 显示结果
         console.print(f"\n[bold]>>> 执行完成[/bold]")
@@ -284,6 +293,7 @@ def validate_config_cmd(config_path: str) -> None:
     
     try:
         config = load_config(config_path)
+        _validate_redfish_requirements(config)
         console.print("[green]✓ 配置校验通过[/green]")
         console.print(f"  Session 目录: {config.global_.session_dir}")
         console.print(f"  日志级别: {config.global_.log_level}")
@@ -292,6 +302,50 @@ def validate_config_cmd(config_path: str) -> None:
     except Exception as e:
         console.print(f"[red]✗ 配置校验失败: {e}[/red]")
         sys.exit(1)
+
+
+def _scenario_requires_redfish(params: dict) -> bool:
+    if not isinstance(params, dict):
+        return False
+    if params.get("use_redfish") is True:
+        return True
+    redfish_keys = {
+        "bmc_host",
+        "fan_index",
+        "fan_mode",
+        "fan_pwm",
+        "reset_type",
+        "redfish_action",
+    }
+    return any(key in params for key in redfish_keys)
+
+
+def _validate_redfish_requirements(config) -> None:
+    enabled_scenarios = [name for name, sc in config.scenarios.items() if sc.enabled]
+    requires_redfish = any(
+        _scenario_requires_redfish(config.scenarios[name].params or {})
+        for name in enabled_scenarios
+    )
+    if not requires_redfish:
+        return
+
+    issues: list[str] = []
+    for group_name, nodes in config.inventory.items():
+        for node in nodes:
+            if node.redfish is None:
+                issues.append(f"{group_name}/{node.name}: missing redfish config")
+                continue
+            if not node.redfish.bmc_host:
+                issues.append(f"{group_name}/{node.name}: redfish.bmc_host is required")
+            has_token = bool(node.redfish.token)
+            has_userpass = bool(node.redfish.username and node.redfish.password)
+            if not has_token and not has_userpass:
+                issues.append(
+                    f"{group_name}/{node.name}: provide redfish.token or redfish.username+redfish.password"
+                )
+
+    if issues:
+        raise ValueError("Redfish validation failed: " + "; ".join(issues))
 
 
 @main.command("recover")

@@ -9,7 +9,7 @@ import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Optional
+from typing import Any, Optional, TYPE_CHECKING
 
 from fault_injector.config.schema import (
     InjectResult,
@@ -19,6 +19,12 @@ from fault_injector.config.schema import (
 from fault_injector.channels.ssh import SSHChannel
 from fault_injector.safety.rollback import RollbackJournal
 from fault_injector.safety.guard import SafetyGuard
+
+if TYPE_CHECKING:
+    from fault_injector.channels.redfish import RedfishChannel
+    from fault_injector.channels.switch import SwitchChannel
+    from fault_injector.channels.kubernetes import K8sChannel
+    from fault_injector.channels.prometheus import PrometheusChannel
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +42,10 @@ class FaultContext:
     target_node: str
     params: dict[str, Any]
     fault_id: str
+    redfish: "RedfishChannel | None" = None
+    switch: "SwitchChannel | None" = None
+    k8s: "K8sChannel | None" = None
+    prometheus: "PrometheusChannel | None" = None
     session_id: str = ""
     interface: str = "eth0"
 

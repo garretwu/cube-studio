@@ -9,29 +9,50 @@ import logging
 from typing import Type
 
 from fault_injector.scenarios.base import BaseScenario
-from fault_injector.scenarios.network_jitter import NetworkJitterScenario
+
+# RDMA 异常场景 (F-1~F-6 + RC-2)
+from fault_injector.scenarios.rdma_anomaly import (
+    NetworkJitterScenario,      # RC-2
+    PFCDeadlockScenario,        # F-1
+    ECNMisconfigurationScenario, # F-2
+    RDMALoadImbalanceScenario,  # F-3
+    RDMALinkFlapScenario,       # F-4
+    RoCEMTUMismatchScenario,    # F-5
+    RDMAQoSDowngradeScenario,   # F-6
+)
+
+# vLLM 延迟场景 (RC-1, RC-3~RC-6)
+from fault_injector.scenarios.vllm_latency import (
+    GPUContentionScenario,       # RC-1
+    StorageIOInterferenceScenario, # RC-3
+    PlatformCascadeScenario,     # RC-4
+    OSResourcePressureScenario,  # RC-5
+    ThermalThrottlingScenario,   # RC-6
+)
 
 logger = logging.getLogger(__name__)
 
 # 场景注册表
 SCENARIO_REGISTRY: dict[str, Type[BaseScenario]] = {
-    # 必选场景：vLLM Latency
-    "network_jitter": NetworkJitterScenario,
+    # ================================================================
+    # vLLM 延迟场景 (RC-1~RC-6)
+    # ================================================================
+    "gpu_contention": GPUContentionScenario,           # RC-1: GPU 资源争抢
+    "network_jitter": NetworkJitterScenario,           # RC-2: 网络延迟抖动
+    "storage_io_interference": StorageIOInterferenceScenario,  # RC-3: 存储 I/O 干扰
+    "platform_cascade": PlatformCascadeScenario,       # RC-4: 平台组件级联延迟
+    "os_resource_pressure": OSResourcePressureScenario, # RC-5: OS 资源压力
+    "thermal_throttling": ThermalThrottlingScenario,   # RC-6: 热降频
     
-    # 以下场景将在后续 Sprint 实现
-    # "gpu_contention": VLLMGpuContention,
-    # "storage_io_interference": VLLMStorageIO,
-    # "platform_cascade": VLLMPlatformCascade,
-    # "os_resource_pressure": VLLMOSPressure,
-    # "thermal_throttling": VLLMThermalThrottle,
-    
-    # 必选场景：RDMA
-    # "pfc_deadlock": RDMAPfcDeadlock,
-    # "ecn_misconfiguration": RDMAEcnMisconfig,
-    # "rdma_load_imbalance": RDMALoadImbalance,
-    # "rdma_link_flap": RDMALinkFlap,
-    # "roce_mtu_mismatch": RoCEMtuMismatch,
-    # "rdma_qos_downgrade": RDMAQosDowngrade,
+    # ================================================================
+    # RDMA 异常场景 (F-1~F-6)
+    # ================================================================
+    "pfc_deadlock": PFCDeadlockScenario,               # F-1: PFC 死锁
+    "ecn_misconfiguration": ECNMisconfigurationScenario, # F-2: ECN 标记阈值错配
+    "rdma_load_imbalance": RDMALoadImbalanceScenario,  # F-3: 不均衡 RDMA 负载
+    "rdma_link_flap": RDMALinkFlapScenario,            # F-4: RDMA 链路间歇性中断
+    "roce_mtu_mismatch": RoCEMTUMismatchScenario,      # F-5: RoCE 网络 MTU 不一致
+    "rdma_qos_downgrade": RDMAQoSDowngradeScenario,    # F-6: RDMA QoS 降级
 }
 
 
@@ -81,3 +102,39 @@ def list_scenarios() -> list[dict[str, str]]:
             "layer": instance.layer,
         })
     return scenarios
+
+
+def list_scenarios_by_layer(layer: str) -> list[dict[str, str]]:
+    """
+    按层级列出场景。
+    
+    Args:
+        layer: 层级名称 (hardware / os / platform / service)
+        
+    Returns:
+        list: 该层级的场景列表
+    """
+    return [s for s in list_scenarios() if s["layer"] == layer]
+
+
+def get_scenario_info(name: str) -> dict[str, str | list[str]] | None:
+    """
+    获取场景详细信息。
+    
+    Args:
+        name: 场景名称
+        
+    Returns:
+        dict: 场景信息，如果不存在返回 None
+    """
+    scenario_class = SCENARIO_REGISTRY.get(name)
+    if not scenario_class:
+        return None
+    
+    instance = scenario_class()
+    return {
+        "name": instance.name,
+        "description": instance.description,
+        "layer": instance.layer,
+        "monitor_queries": list(instance.monitor_queries().keys()),
+    }

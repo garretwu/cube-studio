@@ -54,6 +54,12 @@ inventory:
         port: 22
         user: "root"
         key_file: "~/.ssh/id_rsa"
+      redfish:
+        bmc_host: "192.168.1.110"
+        username: "admin"
+        password: "<SECRET>"
+        verify_tls: true
+        timeout: 30
       interface: "eth0"
       roles: []
 

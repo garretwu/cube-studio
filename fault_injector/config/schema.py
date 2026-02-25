@@ -27,10 +27,21 @@ class SSHConfig(BaseModel):
     use_sudo: bool = True  # 默认使用 sudo 执行命令
 
 
+class RedfishConfig(BaseModel):
+    """Redfish BMC connection config."""
+    bmc_host: str
+    username: str | None = None
+    password: str | None = None
+    token: str | None = None
+    verify_tls: bool = True
+    timeout: int = 30
+
+
 class TargetNodeConfig(BaseModel):
     """目标节点配置"""
     name: str
     ssh: SSHConfig
+    redfish: RedfishConfig | None = None
     interface: str = "eth0"  # 网络接口
     roles: list[str] = []
 

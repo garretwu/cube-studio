@@ -17,6 +17,7 @@ from fault_injector.config.schema import (
     SafetyConfig,
     TargetNodeConfig,
     SSHConfig,
+    RedfishConfig,
     ScenarioConfig,
 )
 from fault_injector.config.defaults import get_default_config
@@ -98,9 +99,21 @@ def _parse_config(raw: dict[str, Any]) -> FaultInjectorConfig:
                 timeout=ssh_raw.get("timeout", 30),
                 use_sudo=ssh_raw.get("use_sudo", True),
             )
+            redfish_raw = node_raw.get("redfish")
+            redfish = None
+            if isinstance(redfish_raw, dict):
+                redfish = RedfishConfig(
+                    bmc_host=redfish_raw.get("bmc_host", ""),
+                    username=redfish_raw.get("username"),
+                    password=redfish_raw.get("password"),
+                    token=redfish_raw.get("token"),
+                    verify_tls=redfish_raw.get("verify_tls", True),
+                    timeout=redfish_raw.get("timeout", 30),
+                )
             node = TargetNodeConfig(
                 name=node_raw.get("name", ""),
                 ssh=ssh,
+                redfish=redfish,
                 interface=node_raw.get("interface", "eth0"),
                 roles=node_raw.get("roles", []),
             )
