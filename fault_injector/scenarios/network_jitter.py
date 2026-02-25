@@ -53,7 +53,7 @@ class NetworkJitterScenario(BaseScenario):
     
     def _build_tc_command(self, params: NetworkJitterParams) -> str:
         """构建 tc netem 命令"""
-        cmd = f"tc qdisc add dev {params.interface} root netem delay {params.delay_ms}ms"
+        cmd = f"sudo tc qdisc add dev {params.interface} root netem delay {params.delay_ms}ms"
         if params.jitter_ms > 0:
             cmd += f" {params.jitter_ms}ms"
         if params.distribution != "normal":
@@ -64,7 +64,7 @@ class NetworkJitterScenario(BaseScenario):
     
     def _build_recovery_command(self, interface: str) -> str:
         """构建恢复命令"""
-        return f"tc qdisc del dev {interface} root"
+        return f"sudo tc qdisc del dev {interface} root"
     
     async def inject(self, ctx: FaultContext) -> InjectResult:
         """
@@ -197,7 +197,7 @@ class NetworkJitterScenario(BaseScenario):
             bool: 恢复是否成功
         """
         interface = ctx.params.get("interface", "eth0")
-        check_cmd = f"tc qdisc show dev {interface}"
+        check_cmd = f"sudo tc qdisc show dev {interface}"
         
         result = await ctx.ssh.run_command(
             node=ctx.target_node,
