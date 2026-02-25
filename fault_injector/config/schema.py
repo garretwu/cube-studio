@@ -24,6 +24,7 @@ class SSHConfig(BaseModel):
     key_file: str | None = None
     password: str | None = None
     timeout: int = 30
+    use_sudo: bool = True  # 默认使用 sudo 执行命令
 
 
 class TargetNodeConfig(BaseModel):

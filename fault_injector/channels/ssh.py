@@ -2,6 +2,7 @@
 SSHChannel — SSH 命令执行 Channel
 
 使用 asyncssh 实现异步 SSH 连接和命令执行。
+支持 sudo 模式执行需要 root 权限的命令。
 """
 from __future__ import annotations
 
@@ -31,6 +32,7 @@ class SSHChannel(BaseChannel):
     - 命令执行超时控制
     - 自动注册恢复命令到 WAL
     - 安全命令检查
+    - 支持 sudo 模式执行命令
     """
     
     def __init__(
@@ -59,6 +61,23 @@ class SSHChannel(BaseChannel):
         self.connect_timeout = connect_timeout
         self._connections: dict[str, asyncssh.SSHClientConnection] = {}
     
+    def _get_node_config(self, node: str) -> TargetNodeConfig:
+        """获取节点配置"""
+        if node not in self.inventory:
+            raise ValueError(f"节点 '{node}' 不在清单中")
+        return self.inventory[node]
+    
+    def _should_use_sudo(self, node: str) -> bool:
+        """检查节点是否需要使用 sudo"""
+        node_config = self._get_node_config(node)
+        return node_config.ssh.use_sudo
+    
+    def _wrap_with_sudo(self, command: str, node: str) -> str:
+        """如果需要，用 sudo 包装命令"""
+        if self._should_use_sudo(node):
+            return f"sudo {command}"
+        return command
+    
     async def _get_connection(
         self, node: str
     ) -> asyncssh.SSHClientConnection:
@@ -82,10 +101,7 @@ class SSHChannel(BaseChannel):
                 return conn
         
         # 获取节点配置
-        if node not in self.inventory:
-            raise ValueError(f"节点 '{node}' 不在清单中")
-        
-        node_config = self.inventory[node]
+        node_config = self._get_node_config(node)
         ssh_config = node_config.ssh
         
         # 构建连接参数
@@ -109,7 +125,8 @@ class SSHChannel(BaseChannel):
                 timeout=self.connect_timeout,
             )
             self._connections[node] = conn
-            logger.info(f"SSH 连接成功: {node} ({ssh_config.host})")
+            sudo_info = " (sudo模式)" if ssh_config.use_sudo else ""
+            logger.info(f"SSH 连接成功: {node} ({ssh_config.host}){sudo_info}")
             return conn
         except asyncio.TimeoutError:
             raise asyncssh.Error(
@@ -121,6 +138,7 @@ class SSHChannel(BaseChannel):
         node: str,
         command: str,
         timeout: int | None = None,
+        use_sudo: bool | None = None,
     ) -> ChannelResult:
         """
         在目标节点执行命令。
@@ -129,15 +147,23 @@ class SSHChannel(BaseChannel):
             node: 节点名称
             command: 要执行的命令
             timeout: 超时时间（秒），默认使用 command_timeout
+            use_sudo: 是否使用 sudo，None 时使用节点配置
             
         Returns:
             ChannelResult: 执行结果
         """
         timeout = timeout or self.command_timeout
         
+        # 确定 sudo 设置
+        if use_sudo is None:
+            use_sudo = self._should_use_sudo(node)
+        
+        # 如果需要 sudo，包装命令
+        actual_command = f"sudo {command}" if use_sudo else command
+        
         # dry_run 模式
         if self.dry_run:
-            logger.info(f"[DRY-RUN] SSH {node}: {command}")
+            logger.info(f"[DRY-RUN] SSH {node}: {actual_command}")
             return ChannelResult(
                 success=True,
                 output="[DRY-RUN] 命令未实际执行",
@@ -149,7 +175,7 @@ class SSHChannel(BaseChannel):
             
             # 执行命令
             result = await asyncio.wait_for(
-                conn.run(command),
+                conn.run(actual_command),
                 timeout=timeout,
             )
             
@@ -163,7 +189,7 @@ class SSHChannel(BaseChannel):
         except asyncio.TimeoutError:
             return ChannelResult(
                 success=False,
-                error=f"命令执行超时 ({timeout}s): {command}",
+                error=f"命令执行超时 ({timeout}s): {actual_command}",
                 dry_run=False,
             )
         except asyncssh.Error as e:
@@ -197,6 +223,7 @@ class SSHChannel(BaseChannel):
                 node=params["node"],
                 command=params["command"],
                 timeout=params.get("timeout"),
+                use_sudo=params.get("use_sudo"),
             )
         elif action == "tc_add_delay":
             return await self._tc_add_delay(params)
@@ -291,7 +318,8 @@ class SSHChannel(BaseChannel):
             bool: 连接是否成功
         """
         try:
-            result = await self.run_command(node, "echo 'OK'")
+            # 测试连接时使用简单的 echo 命令，不需要 sudo
+            result = await self.run_command(node, "echo 'OK'", use_sudo=False)
             return result.success and "OK" in result.output
         except Exception:
             return False
