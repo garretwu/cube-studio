@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 """
 NETCONF 连接测试脚本
 
@@ -8,11 +9,17 @@ NETCONF 连接测试脚本
 Usage:
     python -m fault_injector.tests.test_netconf_connection
 """
+import io
 import logging
 import sys
 from pathlib import Path
 
 import yaml
+
+# 修复 Windows 控制台编码问题
+if sys.platform == 'win32':
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
 
 # 添加项目根目录到 path
 project_root = Path(__file__).parent.parent.parent

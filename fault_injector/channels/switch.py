@@ -125,7 +125,9 @@ class H3CNetconfClient:
         """
         if self._manager is None:
             raise RuntimeError("NETCONF 未连接")
-        result = self._manager.get(filter_xml)
+        # ncclient expects a filter element or (type, criteria) tuple.
+        # Use subtree filter with the provided XML content.
+        result = self._manager.get(("subtree", filter_xml))
         return str(result)
     
     def get_config(self, filter_xml: str, source: str = "running") -> str:
@@ -141,7 +143,9 @@ class H3CNetconfClient:
         """
         if self._manager is None:
             raise RuntimeError("NETCONF 未连接")
-        result = self._manager.get_config(source=source, filter=filter_xml)
+        # ncclient expects a filter element or (type, criteria) tuple.
+        # Use subtree filter with the provided XML content.
+        result = self._manager.get_config(source=source, filter=("subtree", filter_xml))
         return str(result)
     
     def edit_config(self, config_xml: str, target: str = "running") -> bool:
@@ -317,10 +321,16 @@ class SwitchChannel(BaseChannel):
         
         client = self._get_client(switch)
         
-        filter_xml = f'<Ifmgr xmlns="{NS_IFMGR_DATA}"><Interfaces/></Ifmgr>'
+        # H3C Comware 9 支持 not-need-top capability
+        # 直接使用模块名 Ifmgr 作为根元素（参考 H3C_NETCONF_GUIDE.md）
+        filter_xml = f"""
+        <Ifmgr xmlns="{NS_IFMGR_DATA}">
+          <Interfaces/>
+        </Ifmgr>"""
         
         try:
             raw = client.get(filter_xml)
+            logger.debug(f"获取接口原始响应: {raw[:500]}...")
             return self._parse_interfaces(raw)
         except Exception as e:
             logger.error(f"获取所有接口失败: {e}")
