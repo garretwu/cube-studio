@@ -11,7 +11,8 @@ class K8sChannel(BaseChannel):
 
     # Forbidden operations (security guard)
     FORBIDDEN_OPERATIONS = [
-        ("delete", "Namespace"),  #禁止删除命名空间
+        ("delete", "Namespace"),  # 禁止删除命名空间
+        ("delete", "CRD"),  # 禁止删除 CRD
     ]
 
     # Cube Studio 使用的标签选择器
@@ -93,19 +94,16 @@ class K8sChannel(BaseChannel):
         self,
         label_selector: str,
         namespace: str = "default",
-        cluster: str = "default",
         dry_run: bool | None = None,
     ) -> dict[str, Any]:
         """Delete pods matching label selector (relies on K8s restart policy for recovery)."""
-        # Use instance dry_run if not explicitly specified
         is_dry_run = dry_run if dry_run is not None else self.dry_run
 
-        # Check if forbidden
-        if self._is_forbidden("delete", {"verb": "delete", "resource": "Pod"}):
-            raise SafetyViolationError("delete Pod is forbidden")
+        if is_dry_run:
+            return {"dry_run": True, "action": "delete_pod", "label_selector": label_selector, "namespace": namespace}
 
-        # Record to WAL for recovery if available (skip in dry_run)
-        if not is_dry_run and self.wal is not None:
+        # Record to WAL for recovery if available
+        if self.wal is not None:
             record = getattr(self.wal, "record", None)
             if callable(record):
                 record(
@@ -114,9 +112,6 @@ class K8sChannel(BaseChannel):
                     recovery_params={"label_selector": label_selector, "namespace": namespace},
                 )
 
-        if is_dry_run:
-            return {"dry_run": True, "action": "delete_pod", "label_selector": label_selector, "namespace": namespace}
-
         return self.client.delete_pods(namespace=namespace, label_selector=label_selector)
 
     async def scale_deployment(
@@ -124,26 +119,10 @@ class K8sChannel(BaseChannel):
         name: str,
         namespace: str,
         replicas: int,
-        cluster: str = "default",
         dry_run: bool | None = None,
     ) -> dict[str, Any]:
         """Scale deployment to specified replicas (records original value for recovery)."""
-        # Use instance dry_run if not explicitly specified
         is_dry_run = dry_run if dry_run is not None else self.dry_run
-
-        # Get current replicas for recovery
-        current = self.client.get_deployment(namespace=namespace, name=name)
-        current_replicas = current.get("spec", {}).get("replicas", 0) if current else 0
-
-        # Record to WAL for recovery (skip in dry_run)
-        if not is_dry_run and self.wal is not None:
-            record = getattr(self.wal, "record", None)
-            if callable(record):
-                record(
-                    action="scale_deployment",
-                    recovery_action="scale_deployment",
-                    recovery_params={"name": name, "namespace": namespace, "replicas": current_replicas},
-                )
 
         if is_dry_run:
             return {
@@ -154,12 +133,25 @@ class K8sChannel(BaseChannel):
                 "replicas": replicas,
             }
 
+        # Get current replicas for WAL recovery record
+        current = self.client.get_deployment(namespace=namespace, name=name)
+        current_replicas = current.get("spec", {}).get("replicas", 0) if current else 0
+
+        if self.wal is not None:
+            record = getattr(self.wal, "record", None)
+            if callable(record):
+                record(
+                    action="scale_deployment",
+                    recovery_action="scale_deployment",
+                    recovery_params={"name": name, "namespace": namespace, "replicas": current_replicas},
+                )
+
         return self.client.scale_deployment(namespace=namespace, name=name, replicas=replicas)
 
-    async def delete_crd(self, crd_name: str, cluster: str = "default") -> dict[str, Any]:
-        """Delete CRD (dangerous operation, requires safety confirmation)."""
+    async def delete_crd(self, crd_name: str) -> dict[str, Any]:
+        """Delete CRD (dangerous operation — blocked by FORBIDDEN_OPERATIONS)."""
         if self._is_forbidden("delete", {"verb": "delete", "resource": "CRD"}):
-            raise SafetyViolationError("delete CRD is forbidden - requires explicit safety confirmation")
+            raise SafetyViolationError("delete CRD is forbidden")
 
         if self.dry_run:
             return {"dry_run": True, "action": "delete_crd", "crd_name": crd_name}

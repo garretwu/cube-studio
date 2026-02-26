@@ -6,9 +6,12 @@ import base64
 import hashlib
 import hmac
 import json
+import logging
 from typing import Any
 
 import httpx
+
+logger = logging.getLogger(__name__)
 
 from load_simulator.channels.base import BaseChannel, ChannelResult
 
@@ -140,6 +143,7 @@ class CubeStudioChannel(BaseChannel):
         try:
             return response.json() if response.text else {}
         except Exception:  # noqa: BLE001
+            logger.warning("Failed to parse JSON response from %s %s: %s", method, path, response.text[:200])
             return {}
 
     # ---- inference service ----
@@ -191,11 +195,12 @@ class CubeStudioChannel(BaseChannel):
     async def get_service_status(self, service_name: str) -> dict[str, Any]:
         """Get inference service status by name."""
         import urllib.parse
-        filters = urllib.parse.quote(f'[{{"col":"name","opr":"eq","value":"{service_name}"}}]')
+        filters = json.dumps([{"col": "name", "opr": "eq", "value": service_name}])
+        encoded_filters = urllib.parse.quote(filters)
         return await self._execute_request(
             action="get_service_status",
             method="GET",
-            path=f"/inferenceservice_modelview/api/?_filters={filters}",
+            path=f"/inferenceservice_modelview/api/?_filters={encoded_filters}",
         )
 
     async def update_inference_service(self, service_name: str, params: dict[str, Any]) -> dict[str, Any]:

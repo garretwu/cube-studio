@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import datetime as dt
 import unittest
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock
 
 from load_simulator.channels.base import BaseChannel, ChannelResult, SafetyViolationError
 from load_simulator.channels.cube_studio import CubeStudioChannel, build_auth_header
@@ -118,6 +118,35 @@ class CubeStudioChannelTests(unittest.IsolatedAsyncioTestCase):
 
         result = await ch.get_service_status("test-service")
         self.assertEqual(result["name"], "test-service")
+        await ch.close()
+
+    async def test_get_service_status_escapes_quotes(self) -> None:
+        """Test that service_name with special chars doesn't break JSON filter."""
+        import json
+        import urllib.parse
+
+        ch = CubeStudioChannel(base_url="http://x")
+
+        captured_urls: list[str] = []
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {}
+
+        async def mock_request(method, url, **kwargs):
+            captured_urls.append(str(url))
+            return mock_response
+
+        ch._client.request = mock_request
+
+        # Name with quotes that would break naive string interpolation
+        await ch.get_service_status('svc"name')
+        self.assertEqual(len(captured_urls), 1)
+        # Extract _filters param and verify it's valid JSON
+        url_str = captured_urls[0]
+        filters_part = url_str.split("_filters=")[1]
+        decoded = urllib.parse.unquote(filters_part)
+        parsed = json.loads(decoded)
+        self.assertEqual(parsed[0]["value"], 'svc"name')
         await ch.close()
 
     async def test_update_inference_service(self) -> None:
@@ -236,8 +265,58 @@ class InferenceChannelTests(unittest.IsolatedAsyncioTestCase):
             max_connections=100,
             max_keepalive_connections=50,
         )
-        # Verify the client limits attribute exists
-        self.assertIsNotNone(ch._client)
+        pool = ch._client._transport._pool
+        self.assertEqual(pool._max_connections, 100)
+        self.assertEqual(pool._max_keepalive_connections, 50)
+        await ch.close()
+
+    async def test_non_200_response_returns_ok_false(self) -> None:
+        """Test that non-200 HTTP responses set ok=False."""
+        ch = InferenceChannel(endpoint="http://x/v1/chat/completions", model="m")
+
+        mock_response = MagicMock()
+        mock_response.status_code = 429
+        mock_response.json.return_value = {"error": "rate limited"}
+
+        async def mock_post(url, **kwargs):
+            return mock_response
+
+        ch._client.post = mock_post
+
+        result = await ch.chat_completion([{"role": "user", "content": "hi"}])
+        self.assertFalse(result.ok)
+        self.assertEqual(result.status_code, 429)
+        self.assertIsNotNone(result.error)
+        await ch.close()
+
+    async def test_non_200_records_error_metrics(self) -> None:
+        """Test that non-200 responses record error metrics when collector is provided."""
+        from load_simulator.metrics.collector import MetricCollector
+
+        collector = MetricCollector()
+        ch = InferenceChannel(
+            endpoint="http://x/v1/chat/completions",
+            model="m",
+            metrics_collector=collector,
+        )
+
+        mock_response = MagicMock()
+        mock_response.status_code = 500
+        mock_response.json.return_value = {"error": "internal"}
+
+        async def mock_post(url, **kwargs):
+            return mock_response
+
+        ch._client.post = mock_post
+
+        result = await ch.chat_completion([{"role": "user", "content": "hi"}])
+        self.assertFalse(result.ok)
+
+        # Check that error metric was recorded (not success)
+        success_samples = collector.get_samples("inference_requests_total")
+        error_samples = collector.get_samples("inference_errors_total")
+        self.assertEqual(len(success_samples), 0)
+        self.assertEqual(len(error_samples), 1)
         await ch.close()
 
 
@@ -347,37 +426,51 @@ class K8sChannelTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_scale_deployment(self) -> None:
         """Test scale_deployment with WAL."""
-        class _TestClient:
+        class _ScaleClient:
+            def __init__(self):
+                self.get_deployment_called = False
+
             def get_deployment(self, namespace, name):
+                self.get_deployment_called = True
                 return {"spec": {"replicas": 3}}
 
             def scale_deployment(self, namespace, name, replicas):
                 return {"scaled": True, "replicas": replicas}
 
         wal = _Wal()
-        ch = K8sChannel(client=_TestClient(), wal=wal)
+        client = _ScaleClient()
+        ch = K8sChannel(client=client, wal=wal)
 
-        # Test dry_run
+        # Test dry_run — must NOT call get_deployment
         result = await ch.scale_deployment("deploy", "default", 5, dry_run=True)
         self.assertTrue(result.get("dry_run"))
+        self.assertFalse(client.get_deployment_called)
 
         # Test actual scaling
         result = await ch.scale_deployment("deploy", "default", 5)
+        self.assertTrue(client.get_deployment_called)
         self.assertEqual(result.get("replicas"), 5)
         self.assertEqual(len(wal.records), 1)
         self.assertEqual(wal.records[0]["recovery_params"]["replicas"], 3)
 
     async def test_forbidden_operations(self) -> None:
-        """Test that forbidden operations raise SafetyViolationError."""
+        """Test that forbidden operations are correctly identified."""
         ch = K8sChannel(client=_TestClient())
 
-        # Test forbidden delete
-        is_forbidden = ch._is_forbidden("delete", {"verb": "delete", "resource": "Namespace"})
-        self.assertTrue(is_forbidden)
+        # Namespace deletion is forbidden
+        self.assertTrue(ch._is_forbidden("delete", {"verb": "delete", "resource": "Namespace"}))
 
-        # Test allowed delete
-        is_forbidden = ch._is_forbidden("delete", {"verb": "delete", "resource": "Pod"})
-        self.assertFalse(is_forbidden)
+        # CRD deletion is forbidden
+        self.assertTrue(ch._is_forbidden("delete", {"verb": "delete", "resource": "CRD"}))
+
+        # Pod deletion is allowed
+        self.assertFalse(ch._is_forbidden("delete", {"verb": "delete", "resource": "Pod"}))
+
+    async def test_delete_crd_raises(self) -> None:
+        """Test that delete_crd raises SafetyViolationError."""
+        ch = K8sChannel(client=_TestClient())
+        with self.assertRaises(SafetyViolationError):
+            await ch.delete_crd("my-crd")
 
     async def test_label_selectors(self) -> None:
         """Test that LABEL_SELECTORS are defined."""

@@ -267,6 +267,13 @@ class LoadOrchestrator:
 
         self._session_tracker.complete()
 
+        # Cleanup persistent channels
+        if self._cube_studio_channel is not None and hasattr(self._cube_studio_channel, "close"):
+            try:
+                await self._cube_studio_channel.close()
+            except Exception:  # noqa: BLE001
+                pass
+
         return SessionResult(
             session_id=session_id,
             duration_seconds=round(session_end - session_start, 2),
@@ -321,9 +328,14 @@ class LoadOrchestrator:
         concurrency_scale: float,
     ) -> tuple[list[AgentResult], dict[str, float], list[dict[str, Any]]]:
         agents: list[tuple[str, BaseAgent, int]] = []
+        channels_to_close: list[Any] = []
         for name in selected:
             agent, duration = self._build_agent(name, duration_scale=duration_scale, concurrency_scale=concurrency_scale)
             agents.append((name, agent, duration))
+            # Track channels that need closing
+            channel = getattr(agent, "_channel", None)
+            if channel is not None and hasattr(channel, "close"):
+                channels_to_close.append(channel)
 
         monitor_task = None
         monitor = None
@@ -423,6 +435,13 @@ class LoadOrchestrator:
                 except asyncio.CancelledError:
                     pass
             system_metrics.update(platform_monitor.aggregate())
+
+        # Close channels created for this stage
+        for ch in channels_to_close:
+            try:
+                await ch.close()
+            except Exception:  # noqa: BLE001
+                pass
 
         return agent_results, system_metrics, snapshots_dicts
 

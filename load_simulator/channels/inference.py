@@ -73,7 +73,9 @@ class InferenceChannel:
                 json=body,
             )
             latency = time.monotonic() - start
-            ttft = self._estimate_ttft(response.json()) if stream else None
+            payload = response.json()
+            ok = response.status_code < 400
+            ttft = self._estimate_ttft(payload) if stream and ok else None
 
             # Record metrics
             if self.metrics_collector:
@@ -81,18 +83,24 @@ class InferenceChannel:
                     "inference_latency_ms",
                     latency * 1000,
                 )
-                if response.status_code == 200:
+                if ok:
                     await self.metrics_collector.record_async(
                         "inference_requests_total",
                         1.0,
                     )
+                else:
+                    await self.metrics_collector.record_async(
+                        "inference_errors_total",
+                        1.0,
+                    )
 
             return InferenceResult(
-                ok=True,
+                ok=ok,
                 status_code=response.status_code,
                 latency_seconds=latency,
-                body=response.json(),
+                body=payload,
                 ttft_seconds=ttft,
+                error=f"HTTP {response.status_code}" if not ok else None,
             )
         except Exception as exc:  # noqa: BLE001
             latency = time.monotonic() - start
