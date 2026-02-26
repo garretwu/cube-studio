@@ -7,7 +7,7 @@ NETCONF 连接测试脚本
 使用 tests/config/switch_config.yaml 中的配置。
 
 Usage:
-    python -m fault_injector.tests.test_netconf_connection
+    python -m fault_injector.tests.channel.test_netconf_connection
 """
 import io
 import logging
@@ -16,13 +16,14 @@ from pathlib import Path
 
 import yaml
 
-# 修复 Windows 控制台编码问题
-if sys.platform == 'win32':
-    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
-    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
+def _configure_console_encoding() -> None:
+    """Fix Windows console encoding when running as script."""
+    if sys.platform == "win32":
+        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
+        sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
 
 # 添加项目根目录到 path
-project_root = Path(__file__).parent.parent.parent
+project_root = Path(__file__).parent.parent.parent.parent
 sys.path.insert(0, str(project_root))
 
 from fault_injector.channels.switch import (
@@ -41,7 +42,7 @@ logger = logging.getLogger(__name__)
 
 def load_config() -> dict:
     """加载测试配置"""
-    config_path = Path(__file__).parent / "config" / "switch_config.yaml"
+    config_path = Path(__file__).parent.parent / "config" / "switch_config.yaml"
     if not config_path.exists():
         raise FileNotFoundError(f"配置文件不存在: {config_path}")
     
@@ -196,6 +197,7 @@ def test_get_interface_status():
 
 def main():
     """运行所有测试"""
+    _configure_console_encoding()
     print("=" * 60)
     print("H3C NETCONF 连接测试")
     print("=" * 60)

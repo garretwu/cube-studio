@@ -1,22 +1,12 @@
 """
-Mock-based unit tests for Fault Injector.
+Compatibility package for legacy imports.
 
-This package contains unit tests that use mocks to test components
-without requiring actual SSH connections or hardware.
-
-Structure:
-- conftest.py: Shared pytest fixtures
-- test_base.py: Base classes for tests (extensible)
-- test_ssh_channel.py: SSH Channel unit tests
-- test_scenarios.py: Scenario unit tests
-
-To run tests:
-    pytest fault_injector/tests/mocktest/ -v
-    
-To run with coverage:
-    pytest fault_injector/tests/mocktest/ -v --cov=fault_injector
+The mock tests were reorganized into:
+- fault_injector/tests/channel/
+- fault_injector/tests/scenario/
+- fault_injector/tests/common/
 """
-from fault_injector.tests.mocktest.conftest import (
+from fault_injector.tests.conftest import (
     mock_ssh_config,
     mock_target_node,
     mock_inventory,

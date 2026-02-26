@@ -8,10 +8,11 @@
 ⚠️ 警告: 此测试会实际关闭和开启端口，请确保使用测试专用端口!
 
 Usage:
-    python -m fault_injector.tests.test_switch_operations
-    python -m fault_injector.tests.test_switch_operations --dry-run
+    python -m fault_injector.tests.channel.test_switch_operations
+    python -m fault_injector.tests.channel.test_switch_operations --dry-run
 """
 import argparse
+import io
 import logging
 import sys
 import time
@@ -19,8 +20,14 @@ from pathlib import Path
 
 import yaml
 
+def _configure_console_encoding() -> None:
+    """Fix Windows console encoding when running as script."""
+    if sys.platform == "win32":
+        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
+        sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
+
 # 添加项目根目录到 path
-project_root = Path(__file__).parent.parent.parent
+project_root = Path(__file__).parent.parent.parent.parent
 sys.path.insert(0, str(project_root))
 
 from fault_injector.channels.switch import (
@@ -38,7 +45,7 @@ logger = logging.getLogger(__name__)
 
 def load_config() -> dict:
     """加载测试配置"""
-    config_path = Path(__file__).parent / "config" / "switch_config.yaml"
+    config_path = Path(__file__).parent.parent / "config" / "switch_config.yaml"
     if not config_path.exists():
         raise FileNotFoundError(f"配置文件不存在: {config_path}")
     
@@ -304,6 +311,7 @@ def test_interface_by_index():
 
 def main():
     """运行所有测试"""
+    _configure_console_encoding()
     parser = argparse.ArgumentParser(description="交换机操作测试")
     parser.add_argument(
         "--dry-run",
