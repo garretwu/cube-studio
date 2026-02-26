@@ -26,7 +26,7 @@ global:
     
     # Dry-run mode: simulate fault injection without actual execution
     # Set to false for production use
-    dry_run: true
+    dry_run: false
     
     # Maximum number of concurrent faults per session
     max_concurrent_faults: 3
@@ -45,47 +45,18 @@ inventory:
   workers:
     - name: "worker-01"
       ssh:
-        host: "192.168.1.101"
+        host: "10.11.4.13"
         port: 22
-        user: "root"
+        user: "yuyonghao"
         key_file: "~/.ssh/id_rsa"
         password: null
         timeout: 30
         use_sudo: true
-      interface: "eth0"
+      interface: "roce200"
       roles:
         - "compute"
         - "rdma"
     
-    - name: "worker-02"
-      ssh:
-        host: "192.168.1.102"
-        port: 22
-        user: "root"
-        key_file: "~/.ssh/id_rsa"
-        password: null
-        timeout: 30
-        use_sudo: true
-      interface: "eth0"
-      roles:
-        - "compute"
-        - "rdma"
-
-  # Node group: master nodes
-  masters:
-    - name: "master-01"
-      ssh:
-        host: "192.168.1.100"
-        port: 22
-        user: "root"
-        key_file: "~/.ssh/id_rsa"
-        password: null
-        timeout: 30
-        use_sudo: true
-      interface: "eth0"
-      roles:
-        - "control-plane"
-
 # =============================================================================
 # Fault Scenarios Configuration
 # =============================================================================
@@ -102,10 +73,9 @@ scenarios:
     enabled: true
     target_nodes:
       - "worker-01"
-      - "worker-02"
     params:
       # Network interface to apply delay
-      interface: "eth0"
+      interface: "roce200"
       
       # Base delay in milliseconds
       delay_ms: 50
@@ -120,7 +90,7 @@ scenarios:
       loss_pct: 0
       
       # Duration in seconds
-      duration: 300
+      duration: 30
 
   # ---------------------------------------------------------------------------
   # F-5: RoCE MTU Mismatch (RoCE 网络 MTU 不一致)
@@ -132,7 +102,7 @@ scenarios:
     target_nodes:
       - "worker-01"
     params:
-      interface: "eth0"
+      interface: "roce200"
       
       # Target MTU (set lower to cause issues)
       mtu: 1500
