@@ -7,7 +7,7 @@ import uuid
 from typing import TYPE_CHECKING, Any
 
 from load_simulator.agents.base import AgentResult, BaseAgent
-from load_simulator.channels.cube_studio import CubeStudioChannel
+from lib.channels.cube_studio import CubeStudioChannel
 from load_simulator.metrics.aggregator import compute_percentiles, compute_rate
 
 if TYPE_CHECKING:

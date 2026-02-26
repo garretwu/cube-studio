@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from load_simulator.channels.base import BaseChannel, ChannelResult, SafetyViolationError
+from .base import BaseChannel, ChannelResult, SafetyViolationError
 
 
 class K8sChannel(BaseChannel):

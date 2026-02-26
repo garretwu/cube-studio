@@ -17,10 +17,10 @@ from load_simulator.agents.inference import InferenceAgent
 from load_simulator.agents.monitor import MetricsMonitor
 from load_simulator.agents.notebook import NotebookAgent
 from load_simulator.agents.pipeline import PipelineAgent
-from load_simulator.channels.cube_studio import CubeStudioChannel
+from lib.channels.cube_studio import CubeStudioChannel
+from lib.channels.prometheus import PrometheusChannel
 from load_simulator.channels.inference import InferenceChannel
 from load_simulator.channels.notebook import NotebookChannel
-from load_simulator.channels.prometheus import PrometheusChannel
 from load_simulator.metrics.collector import MetricCollector
 from load_simulator.orchestrator.adaptive import AdaptiveRules, AdaptiveThresholds
 from load_simulator.orchestrator.platform_monitor import PlatformMonitor

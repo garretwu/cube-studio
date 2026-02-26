@@ -13,7 +13,7 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
-from load_simulator.channels.base import BaseChannel, ChannelResult
+from .base import BaseChannel, ChannelResult
 
 
 def _b64url(data: bytes) -> str:

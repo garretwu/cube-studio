@@ -7,7 +7,7 @@ import urllib.parse
 import urllib.request
 from typing import Any
 
-from load_simulator.channels.base import BaseChannel, ChannelResult
+from .base import BaseChannel, ChannelResult
 
 
 class PrometheusChannel(BaseChannel):
