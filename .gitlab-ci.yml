@@ -1,0 +1,19 @@
+sync-feature-branch:
+  image: alpine/git
+  # 定时触发：每 30 分钟执行一次
+  schedule:
+    - cron: "*/30 * * * *"
+  script:
+    - git config --global user.email "ci-bot@gitlab.local"
+    - git config --global user.name "CI Sync Bot"
+    
+    # 添加 GitHub 远程源
+    - git remote add github https://${GITHUB_TOKEN}@${GITHUB_URL} || true
+    
+    # 拉取指定分支到本地临时分支
+    - git fetch github ${SYNC_BRANCH}:${SYNC_BRANCH}
+    
+    # 强制推送到 GitLab 当前仓库的对应分支
+    - git push origin ${SYNC_BRANCH} --force
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "schedule"
