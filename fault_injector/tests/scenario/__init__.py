@@ -1,1 +1,0 @@
-"""Scenario tests package."""
