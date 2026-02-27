@@ -3,13 +3,13 @@
 交换机操作测试脚本
 
 测试 SwitchChannel 的端口操作 (shutdown/bringup)。
-使用 tests/config/switch_config.yaml 中的配置。
+使用 tests/fixtures/switch_config.yaml 中的配置。
 
 ⚠️ 警告: 此测试会实际关闭和开启端口，请确保使用测试专用端口!
 
 Usage:
-    python -m fault_injector.tests.channel.test_switch_operations
-    python -m fault_injector.tests.channel.test_switch_operations --dry-run
+    python -m fault_injector.tests.integration.test_switch_operations
+    python -m fault_injector.tests.integration.test_switch_operations --dry-run
 """
 import argparse
 import io
@@ -45,7 +45,7 @@ logger = logging.getLogger(__name__)
 
 def load_config() -> dict:
     """加载测试配置"""
-    config_path = Path(__file__).parent.parent / "config" / "switch_config.yaml"
+    config_path = Path(__file__).parent.parent / "fixtures" / "switch_config.yaml"
     if not config_path.exists():
         raise FileNotFoundError(f"配置文件不存在: {config_path}")
     

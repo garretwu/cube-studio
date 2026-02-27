@@ -2,9 +2,9 @@
 Compatibility package for legacy imports.
 
 The mock tests were reorganized into:
-- fault_injector/tests/channel/
-- fault_injector/tests/scenario/
-- fault_injector/tests/common/
+- fault_injector/tests/unit/features/channels/
+- fault_injector/tests/unit/features/scenarios/
+- fault_injector/tests/helpers/
 """
 from fault_injector.tests.conftest import (
     mock_ssh_config,

@@ -4,10 +4,10 @@
 NETCONF 连接测试脚本
 
 测试到 H3C 交换机的 NETCONF 连接。
-使用 tests/config/switch_config.yaml 中的配置。
+使用 tests/fixtures/switch_config.yaml 中的配置。
 
 Usage:
-    python -m fault_injector.tests.channel.test_netconf_connection
+    python -m fault_injector.tests.integration.test_netconf_connection
 """
 import io
 import logging
@@ -42,7 +42,7 @@ logger = logging.getLogger(__name__)
 
 def load_config() -> dict:
     """加载测试配置"""
-    config_path = Path(__file__).parent.parent / "config" / "switch_config.yaml"
+    config_path = Path(__file__).parent.parent / "fixtures" / "switch_config.yaml"
     if not config_path.exists():
         raise FileNotFoundError(f"配置文件不存在: {config_path}")
     
