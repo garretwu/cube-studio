@@ -1,14 +1,14 @@
-"""
-VLLM Latency Scenarios — RC-1, RC-3~RC-6 五个 vLLM 延迟场景
+﻿"""
+VLLM Latency Scenarios 鈥?RC-1, RC-3~RC-6 浜斾釜 vLLM 寤惰繜鍦烘櫙
 
-必选场景：制造 vLLM 推理延迟不稳定。
+蹇呴€夊満鏅細鍒堕€?vLLM 鎺ㄧ悊寤惰繜涓嶇ǔ瀹氥€?
 
-场景列表：
-- RC-1: gpu_contention - GPU 资源争抢
-- RC-3: storage_io_interference - 存储 I/O 干扰
-- RC-4: platform_cascade - 平台组件级联延迟
-- RC-5: os_resource_pressure - OS 资源压力
-- RC-6: thermal_throttling - 热降频
+鍦烘櫙鍒楄〃锛?
+- RC-1: gpu_contention - GPU 璧勬簮浜夋姠
+- RC-3: storage_io_interference - 瀛樺偍 I/O 骞叉壈
+- RC-4: platform_cascade - 骞冲彴缁勪欢绾ц仈寤惰繜
+- RC-5: os_resource_pressure - OS 璧勬簮鍘嬪姏
+- RC-6: thermal_throttling - 鐑檷棰?
 """
 from __future__ import annotations
 
@@ -22,19 +22,118 @@ logger = logging.getLogger(__name__)
 
 
 # ============================================================================
-# RC-1: GPU 资源争抢
+# RC-2: Network Jitter
+# ============================================================================
+
+class NetworkJitterScenario(BaseScenario):
+    """RC-2: network_jitter - 网络延迟抖动 (tc netem)."""
+
+    @property
+    def name(self) -> str:
+        return "network_jitter"
+
+    @property
+    def description(self) -> str:
+        return "网络延迟抖动 - 使用 tc netem 注入不确定延迟"
+
+    @property
+    def layer(self) -> str:
+        return "os"
+
+    def _build_tc_command(self, params: dict[str, Any]) -> str:
+        interface = params.get("interface", "eth0")
+        delay_ms = params.get("delay_ms", 50)
+        jitter_ms = params.get("jitter_ms", 100)
+        distribution = params.get("distribution", "pareto")
+        loss_pct = params.get("loss_pct", 0)
+
+        cmd = f"sudo tc qdisc add dev {interface} root netem delay {delay_ms}ms"
+        if jitter_ms > 0:
+            cmd += f" {jitter_ms}ms"
+        if distribution != "normal":
+            cmd += f" distribution {distribution}"
+        if loss_pct > 0:
+            cmd += f" loss {loss_pct}%"
+        return cmd
+
+    def _build_recovery_command(self, interface: str) -> str:
+        return f"sudo tc qdisc del dev {interface} root"
+
+    async def inject(self, ctx: FaultContext) -> InjectResult:
+        interface = ctx.params.get("interface", "eth0")
+        delay_ms = ctx.params.get("delay_ms", 50)
+        jitter_ms = ctx.params.get("jitter_ms", 100)
+        distribution = ctx.params.get("distribution", "pareto")
+        loss_pct = ctx.params.get("loss_pct", 0)
+
+        inject_cmd = self._build_tc_command(ctx.params)
+
+        ctx.rollback.record(
+            fault_id=ctx.fault_id,
+            channel="ssh",
+            target=ctx.target_node,
+            inject_action="tc_add_delay",
+            inject_params={
+                "node": ctx.target_node,
+                "interface": interface,
+                "delay_ms": delay_ms,
+                "jitter_ms": jitter_ms,
+                "distribution": distribution,
+                "loss_pct": loss_pct,
+            },
+            recover_action="tc_del_qdisc",
+            recover_params={"node": ctx.target_node, "interface": interface},
+        )
+
+        result = await ctx.ssh.run_command(node=ctx.target_node, command=inject_cmd)
+        if result.success:
+            return InjectResult(success=True, fault_id=ctx.fault_id)
+        return InjectResult(success=False, fault_id=ctx.fault_id, error=result.error)
+
+    async def recover(self, ctx: FaultContext) -> RecoverResult:
+        interface = ctx.params.get("interface", "eth0")
+        recover_cmd = self._build_recovery_command(interface)
+        result = await ctx.ssh.run_command(node=ctx.target_node, command=recover_cmd)
+
+        if result.success or "No such file or directory" in result.error or "Cannot delete" in result.error:
+            ctx.rollback.mark_recovered(ctx.fault_id)
+            return RecoverResult(success=True, fault_id=ctx.fault_id)
+
+        ctx.rollback.mark_failed(ctx.fault_id)
+        return RecoverResult(success=False, fault_id=ctx.fault_id, error=result.error)
+
+    async def verify(self, ctx: FaultContext) -> bool:
+        interface = ctx.params.get("interface", "eth0")
+        result = await ctx.ssh.run_command(
+            node=ctx.target_node,
+            command=f"sudo tc qdisc show dev {interface}",
+        )
+        if not result.success:
+            return True
+        return "netem" not in result.output
+
+    def monitor_queries(self) -> dict[str, str]:
+        return {
+            "inference_p50": 'histogram_quantile(0.5, rate(vllm:request_duration_seconds_bucket[1m]))',
+            "inference_p95": 'histogram_quantile(0.95, rate(vllm:request_duration_seconds_bucket[1m]))',
+            "inference_p99": 'histogram_quantile(0.99, rate(vllm:request_duration_seconds_bucket[1m]))',
+            "network_latency": 'histogram_quantile(0.95, rate(network_latency_seconds_bucket[1m]))',
+        }
+
+# ============================================================================
+# RC-1: GPU 璧勬簮浜夋姠
 # ============================================================================
 
 class GPUContentionScenario(BaseScenario):
     """
-    RC-1: GPU 资源争抢。
+    RC-1: GPU 璧勬簮浜夋姠銆?
     
-    使用 gpu-burn 在同一 GPU 上运行多个计算任务争抢 SM 和显存带宽。
+    浣跨敤 gpu-burn 鍦ㄥ悓涓€ GPU 涓婅繍琛屽涓绠椾换鍔′簤鎶?SM 鍜屾樉瀛樺甫瀹姐€?
     
-    效果：
-    - 推理延迟 P50 增加 3-5x
-    - P99 尾延迟出现周期性波动
-    - TTFT (Time To First Token) 不稳定
+    鏁堟灉锛?
+    - 鎺ㄧ悊寤惰繜 P50 澧炲姞 3-5x
+    - P99 灏惧欢杩熷嚭鐜板懆鏈熸€ф尝鍔?
+    - TTFT (Time To First Token) 涓嶇ǔ瀹?
     """
     
     @property
@@ -43,7 +142,7 @@ class GPUContentionScenario(BaseScenario):
     
     @property
     def description(self) -> str:
-        return "GPU 资源争抢 — 使用 gpu-burn 制造 GPU 满载"
+        return "GPU 璧勬簮浜夋姠 鈥?浣跨敤 gpu-burn 鍒堕€?GPU 婊¤浇"
     
     @property
     def layer(self) -> str:
@@ -52,19 +151,19 @@ class GPUContentionScenario(BaseScenario):
     async def inject(self, ctx: FaultContext) -> InjectResult:
         duration = ctx.params.get("duration", 300)
         gpu_id = ctx.params.get("gpu_id", 0)
-        intensity = ctx.params.get("intensity", 100)  # GPU 使用率百分比
+        intensity = ctx.params.get("intensity", 100)  # GPU 浣跨敤鐜囩櫨鍒嗘瘮
         
-        # 构建命令 - 使用 gpu-burn 或备用方案
-        # gpu-burn 需要预先安装：git clone https://github.com/wilicc/gpu-burn
+        # 鏋勫缓鍛戒护 - 浣跨敤 gpu-burn 鎴栧鐢ㄦ柟妗?
+        # gpu-burn 闇€瑕侀鍏堝畨瑁咃細git clone https://github.com/wilicc/gpu-burn
         inject_cmd = f"cd /tmp/gpu-burn && CUDA_VISIBLE_DEVICES={gpu_id} ./gpu_burn {duration} &"
         recover_cmd = "pkill -f gpu_burn"
         
         logger.info(
-            f"注入 GPU 争抢: node={ctx.target_node}, "
+            f"娉ㄥ叆 GPU 浜夋姠: node={ctx.target_node}, "
             f"gpu_id={gpu_id}, duration={duration}s, intensity={intensity}%"
         )
         
-        # 写入 WAL
+        # 鍐欏叆 WAL
         ctx.rollback.record(
             fault_id=ctx.fault_id,
             channel="ssh",
@@ -79,34 +178,34 @@ class GPUContentionScenario(BaseScenario):
             recover_params={},
         )
         
-        # 执行注入
+        # 鎵ц娉ㄥ叆
         result = await ctx.ssh.run_command(
             node=ctx.target_node,
             command=inject_cmd,
         )
         
-        # gpu-burn 在后台运行，命令会立即返回
+        # gpu-burn 鍦ㄥ悗鍙拌繍琛岋紝鍛戒护浼氱珛鍗宠繑鍥?
         if result.success or "GPU burn" in result.output:
-            logger.info(f"GPU 争抢注入成功: {ctx.fault_id}")
+            logger.info(f"GPU 浜夋姠娉ㄥ叆鎴愬姛: {ctx.fault_id}")
             return InjectResult(success=True, fault_id=ctx.fault_id)
         else:
-            logger.error(f"GPU 争抢注入失败: {result.error}")
+            logger.error(f"GPU 浜夋姠娉ㄥ叆澶辫触: {result.error}")
             return InjectResult(success=False, fault_id=ctx.fault_id, error=result.error)
     
     async def recover(self, ctx: FaultContext) -> RecoverResult:
-        logger.info(f"恢复 GPU 争抢: node={ctx.target_node}")
+        logger.info(f"鎭㈠ GPU 浜夋姠: node={ctx.target_node}")
         
         result = await ctx.ssh.run_command(
             node=ctx.target_node,
             command="pkill -f gpu_burn || pkill -f gpu-burn",
         )
         
-        # pkill 失败可能是因为进程不存在，这是可接受的
+        # pkill 澶辫触鍙兘鏄洜涓鸿繘绋嬩笉瀛樺湪锛岃繖鏄彲鎺ュ彈鐨?
         ctx.rollback.mark_recovered(ctx.fault_id)
         return RecoverResult(success=True, fault_id=ctx.fault_id)
     
     async def verify(self, ctx: FaultContext) -> bool:
-        # 检查 gpu-burn 是否还在运行
+        # 妫€鏌?gpu-burn 鏄惁杩樺湪杩愯
         result = await ctx.ssh.run_command(
             node=ctx.target_node,
             command="pgrep -f gpu_burn || pgrep -f gpu-burn || echo 'not_running'",
@@ -114,7 +213,7 @@ class GPUContentionScenario(BaseScenario):
         if "not_running" in result.output:
             logger.info("验证通过: gpu-burn 已停止")
             return True
-        logger.warning("验证失败: gpu-burn 仍在运行")
+        logger.warning("楠岃瘉澶辫触: gpu-burn 浠嶅湪杩愯")
         return False
     
     def monitor_queries(self) -> dict[str, str]:
@@ -128,19 +227,19 @@ class GPUContentionScenario(BaseScenario):
 
 
 # ============================================================================
-# RC-3: 存储 I/O 干扰
+# RC-3: 瀛樺偍 I/O 骞叉壈
 # ============================================================================
 
 class StorageIOInterferenceScenario(BaseScenario):
     """
-    RC-3: 存储 I/O 干扰。
+    RC-3: 瀛樺偍 I/O 骞叉壈銆?
     
-    使用 fio 在推理节点的数据盘发起大量随机 I/O。
+    浣跨敤 fio 鍦ㄦ帹鐞嗚妭鐐圭殑鏁版嵁鐩樺彂璧峰ぇ閲忛殢鏈?I/O銆?
     
-    效果：
-    - 模型冷启动时间增加 3-6x
-    - KV Cache 落盘时延迟出现间歇性尖峰
-    - 模型加载时间延长
+    鏁堟灉锛?
+    - 妯″瀷鍐峰惎鍔ㄦ椂闂村鍔?3-6x
+    - KV Cache 钀界洏鏃跺欢杩熷嚭鐜伴棿姝囨€у皷宄?
+    - 妯″瀷鍔犺浇鏃堕棿寤堕暱
     """
     
     @property
@@ -149,7 +248,7 @@ class StorageIOInterferenceScenario(BaseScenario):
     
     @property
     def description(self) -> str:
-        return "存储 I/O 干扰 — 使用 fio 制造磁盘 I/O 压力"
+        return "瀛樺偍 I/O 骞叉壈 鈥?浣跨敤 fio 鍒堕€犵鐩?I/O 鍘嬪姏"
     
     @property
     def layer(self) -> str:
@@ -163,7 +262,7 @@ class StorageIOInterferenceScenario(BaseScenario):
         iodepth = ctx.params.get("iodepth", 128)
         numjobs = ctx.params.get("numjobs", 8)
         
-        # 构建命令
+        # 鏋勫缓鍛戒护
         inject_cmd = (
             f"fio --name=disturb --filename={filename} "
             f"--rw={rw_mode} --bs={bs} --iodepth={iodepth} --numjobs={numjobs} "
@@ -172,11 +271,11 @@ class StorageIOInterferenceScenario(BaseScenario):
         recover_cmd = "pkill -f 'fio.*disturb'"
         
         logger.info(
-            f"注入存储 I/O 干扰: node={ctx.target_node}, "
+            f"娉ㄥ叆瀛樺偍 I/O 骞叉壈: node={ctx.target_node}, "
             f"filename={filename}, rw={rw_mode}, duration={duration}s"
         )
         
-        # 写入 WAL
+        # 鍐欏叆 WAL
         ctx.rollback.record(
             fault_id=ctx.fault_id,
             channel="ssh",
@@ -194,21 +293,21 @@ class StorageIOInterferenceScenario(BaseScenario):
             recover_params={},
         )
         
-        # 执行注入
+        # 鎵ц娉ㄥ叆
         result = await ctx.ssh.run_command(
             node=ctx.target_node,
             command=inject_cmd,
         )
         
         if result.success:
-            logger.info(f"存储 I/O 干扰注入成功: {ctx.fault_id}")
+            logger.info(f"瀛樺偍 I/O 骞叉壈娉ㄥ叆鎴愬姛: {ctx.fault_id}")
             return InjectResult(success=True, fault_id=ctx.fault_id)
         else:
-            logger.error(f"存储 I/O 干扰注入失败: {result.error}")
+            logger.error(f"瀛樺偍 I/O 骞叉壈娉ㄥ叆澶辫触: {result.error}")
             return InjectResult(success=False, fault_id=ctx.fault_id, error=result.error)
     
     async def recover(self, ctx: FaultContext) -> RecoverResult:
-        logger.info(f"恢复存储 I/O 干扰: node={ctx.target_node}")
+        logger.info(f"鎭㈠瀛樺偍 I/O 骞叉壈: node={ctx.target_node}")
         
         result = await ctx.ssh.run_command(
             node=ctx.target_node,
@@ -226,7 +325,7 @@ class StorageIOInterferenceScenario(BaseScenario):
         if "not_running" in result.output:
             logger.info("验证通过: fio 已停止")
             return True
-        logger.warning("验证失败: fio 仍在运行")
+        logger.warning("楠岃瘉澶辫触: fio 浠嶅湪杩愯")
         return False
     
     def monitor_queries(self) -> dict[str, str]:
@@ -240,20 +339,20 @@ class StorageIOInterferenceScenario(BaseScenario):
 
 
 # ============================================================================
-# RC-4: 平台组件级联延迟
+# RC-4: 骞冲彴缁勪欢绾ц仈寤惰繜
 # ============================================================================
 
 class PlatformCascadeScenario(BaseScenario):
     """
-    RC-4: 平台组件级联延迟。
+    RC-4: 骞冲彴缁勪欢绾ц仈寤惰繜銆?
     
-    通过对平台关键组件（MySQL、Redis、K8s API）注入延迟，
-    制造级联效应影响推理服务。
+    閫氳繃瀵瑰钩鍙板叧閿粍浠讹紙MySQL銆丷edis銆並8s API锛夋敞鍏ュ欢杩燂紝
+    鍒堕€犵骇鑱旀晥搴斿奖鍝嶆帹鐞嗘湇鍔°€?
     
-    效果：
-    - 请求排队，延迟累积
-    - 推理服务超时重试
-    - 整体吞吐下降
+    鏁堟灉锛?
+    - 璇锋眰鎺掗槦锛屽欢杩熺疮绉?
+    - 鎺ㄧ悊鏈嶅姟瓒呮椂閲嶈瘯
+    - 鏁翠綋鍚炲悙涓嬮檷
     """
     
     @property
@@ -262,7 +361,7 @@ class PlatformCascadeScenario(BaseScenario):
     
     @property
     def description(self) -> str:
-        return "平台组件级联延迟 — 对 MySQL/Redis 注入延迟"
+        return "骞冲彴缁勪欢绾ц仈寤惰繜 鈥?瀵?MySQL/Redis 娉ㄥ叆寤惰繜"
     
     @property
     def layer(self) -> str:
@@ -272,9 +371,9 @@ class PlatformCascadeScenario(BaseScenario):
         target_component = ctx.params.get("target_component", "mysql")  # mysql/redis/k8s
         delay_ms = ctx.params.get("delay_ms", 100)
         duration = ctx.params.get("duration", 300)
-        port = ctx.params.get("port", 3306)  # MySQL 默认端口
+        port = ctx.params.get("port", 3306)  # MySQL 榛樿绔彛
         
-        # 使用 tc netem 对特定端口注入延迟
+        # 浣跨敤 tc netem 瀵圭壒瀹氱鍙ｆ敞鍏ュ欢杩?
         inject_cmd = (
             f"sudo tc qdisc add dev eth0 root handle 1: prio bands 4 "
             f"&& sudo tc filter add dev eth0 protocol ip parent 1:0 prio 1 u32 "
@@ -284,11 +383,11 @@ class PlatformCascadeScenario(BaseScenario):
         recover_cmd = "sudo tc qdisc del dev eth0 root"
         
         logger.info(
-            f"注入平台级联延迟: node={ctx.target_node}, "
+            f"娉ㄥ叆骞冲彴绾ц仈寤惰繜: node={ctx.target_node}, "
             f"component={target_component}, port={port}, delay={delay_ms}ms"
         )
         
-        # 写入 WAL
+        # 鍐欏叆 WAL
         ctx.rollback.record(
             fault_id=ctx.fault_id,
             channel="ssh",
@@ -303,21 +402,21 @@ class PlatformCascadeScenario(BaseScenario):
             recover_params={},
         )
         
-        # 执行注入
+        # 鎵ц娉ㄥ叆
         result = await ctx.ssh.run_command(
             node=ctx.target_node,
             command=inject_cmd,
         )
         
         if result.success:
-            logger.info(f"平台级联延迟注入成功: {ctx.fault_id}")
+            logger.info(f"骞冲彴绾ц仈寤惰繜娉ㄥ叆鎴愬姛: {ctx.fault_id}")
             return InjectResult(success=True, fault_id=ctx.fault_id)
         else:
-            logger.error(f"平台级联延迟注入失败: {result.error}")
+            logger.error(f"骞冲彴绾ц仈寤惰繜娉ㄥ叆澶辫触: {result.error}")
             return InjectResult(success=False, fault_id=ctx.fault_id, error=result.error)
     
     async def recover(self, ctx: FaultContext) -> RecoverResult:
-        logger.info(f"恢复平台级联延迟: node={ctx.target_node}")
+        logger.info(f"鎭㈠骞冲彴绾ц仈寤惰繜: node={ctx.target_node}")
         
         result = await ctx.ssh.run_command(
             node=ctx.target_node,
@@ -349,19 +448,19 @@ class PlatformCascadeScenario(BaseScenario):
 
 
 # ============================================================================
-# RC-5: OS 资源压力
+# RC-5: OS 璧勬簮鍘嬪姏
 # ============================================================================
 
 class OSResourcePressureScenario(BaseScenario):
     """
-    RC-5: OS 资源压力。
+    RC-5: OS 璧勬簮鍘嬪姏銆?
     
-    使用 stress-ng 制造内存和 CPU 压力。
+    浣跨敤 stress-ng 鍒堕€犲唴瀛樺拰 CPU 鍘嬪姏銆?
     
-    效果：
-    - 延迟整体升高且波动大
-    - 出现间歇性超时
-    - OOM Killer 可能杀死推理进程
+    鏁堟灉锛?
+    - 寤惰繜鏁翠綋鍗囬珮涓旀尝鍔ㄥぇ
+    - 鍑虹幇闂存瓏鎬ц秴鏃?
+    - OOM Killer 鍙兘鏉€姝绘帹鐞嗚繘绋?
     """
     
     @property
@@ -370,7 +469,7 @@ class OSResourcePressureScenario(BaseScenario):
     
     @property
     def description(self) -> str:
-        return "OS 资源压力 — 使用 stress-ng 制造 CPU/内存压力"
+        return "OS 璧勬簮鍘嬪姏 鈥?浣跨敤 stress-ng 鍒堕€?CPU/鍐呭瓨鍘嬪姏"
     
     @property
     def layer(self) -> str:
@@ -383,7 +482,7 @@ class OSResourcePressureScenario(BaseScenario):
         cpu_load = ctx.params.get("cpu_load", 90)
         io_workers = ctx.params.get("io_workers", 4)
         
-        # 构建命令
+        # 鏋勫缓鍛戒护
         inject_cmd = (
             f"stress-ng "
             f"--vm 4 --vm-bytes {vm_bytes_percent}% "
@@ -394,11 +493,11 @@ class OSResourcePressureScenario(BaseScenario):
         recover_cmd = "pkill -f stress-ng"
         
         logger.info(
-            f"注入 OS 资源压力: node={ctx.target_node}, "
+            f"娉ㄥ叆 OS 璧勬簮鍘嬪姏: node={ctx.target_node}, "
             f"vm={vm_bytes_percent}%, cpu_workers={cpu_workers}, cpu_load={cpu_load}%"
         )
         
-        # 写入 WAL
+        # 鍐欏叆 WAL
         ctx.rollback.record(
             fault_id=ctx.fault_id,
             channel="ssh",
@@ -415,22 +514,22 @@ class OSResourcePressureScenario(BaseScenario):
             recover_params={},
         )
         
-        # 执行注入
+        # 鎵ц娉ㄥ叆
         result = await ctx.ssh.run_command(
             node=ctx.target_node,
             command=inject_cmd,
         )
         
-        # stress-ng 在后台运行，前台命令会立即返回
+        # stress-ng 鍦ㄥ悗鍙拌繍琛岋紝鍓嶅彴鍛戒护浼氱珛鍗宠繑鍥?
         if result.success or "dispatching hogs" in result.output.lower():
-            logger.info(f"OS 资源压力注入成功: {ctx.fault_id}")
+            logger.info(f"OS 璧勬簮鍘嬪姏娉ㄥ叆鎴愬姛: {ctx.fault_id}")
             return InjectResult(success=True, fault_id=ctx.fault_id)
         else:
-            logger.error(f"OS 资源压力注入失败: {result.error}")
+            logger.error(f"OS 璧勬簮鍘嬪姏娉ㄥ叆澶辫触: {result.error}")
             return InjectResult(success=False, fault_id=ctx.fault_id, error=result.error)
     
     async def recover(self, ctx: FaultContext) -> RecoverResult:
-        logger.info(f"恢复 OS 资源压力: node={ctx.target_node}")
+        logger.info(f"鎭㈠ OS 璧勬簮鍘嬪姏: node={ctx.target_node}")
         
         result = await ctx.ssh.run_command(
             node=ctx.target_node,
@@ -448,7 +547,7 @@ class OSResourcePressureScenario(BaseScenario):
         if "not_running" in result.output:
             logger.info("验证通过: stress-ng 已停止")
             return True
-        logger.warning("验证失败: stress-ng 仍在运行")
+        logger.warning("楠岃瘉澶辫触: stress-ng 浠嶅湪杩愯")
         return False
     
     def monitor_queries(self) -> dict[str, str]:
@@ -463,20 +562,20 @@ class OSResourcePressureScenario(BaseScenario):
 
 
 # ============================================================================
-# RC-6: 热降频
+# RC-6: 鐑檷棰?
 # ============================================================================
 
 class ThermalThrottlingScenario(BaseScenario):
     """
-    RC-6: 热降频。
+    RC-6: 鐑檷棰戙€?
     
-    通过限制 GPU 风扇转速或使用 nvidia-smi 设置功率限制，
-    模拟 GPU 热降频场景。
+    閫氳繃闄愬埗 GPU 椋庢墖杞€熸垨浣跨敤 nvidia-smi 璁剧疆鍔熺巼闄愬埗锛?
+    妯℃嫙 GPU 鐑檷棰戝満鏅€?
     
-    效果：
-    - GPU 核心频率降低
-    - 推理延迟增加
-    - 吞吐下降
+    鏁堟灉锛?
+    - GPU 鏍稿績棰戠巼闄嶄綆
+    - 鎺ㄧ悊寤惰繜澧炲姞
+    - 鍚炲悙涓嬮檷
     """
     
     @property
@@ -485,7 +584,7 @@ class ThermalThrottlingScenario(BaseScenario):
     
     @property
     def description(self) -> str:
-        return "热降频 — 限制 GPU 功率模拟热降频"
+        return "热降频 - 限制 GPU 功率模拟热降频"
     
     @property
     def layer(self) -> str:
@@ -493,33 +592,33 @@ class ThermalThrottlingScenario(BaseScenario):
     
     async def inject(self, ctx: FaultContext) -> InjectResult:
         gpu_id = ctx.params.get("gpu_id", 0)
-        power_limit = ctx.params.get("power_limit", 150)  # 瓦特，默认降低到 150W
+        power_limit = ctx.params.get("power_limit", 150)  # 鐡︾壒锛岄粯璁ら檷浣庡埌 150W
         duration = ctx.params.get("duration", 300)
         
-        # 先获取当前功率限制用于恢复
+        # 鍏堣幏鍙栧綋鍓嶅姛鐜囬檺鍒剁敤浜庢仮澶?
         get_power_cmd = f"nvidia-smi -i {gpu_id} --query-gpu=power.limit --format=csv,noheader,nounits"
         get_result = await ctx.ssh.run_command(
             node=ctx.target_node,
             command=get_power_cmd,
         )
         
-        original_power = 300  # 默认值
+        original_power = 300  # 榛樿鍊?
         if get_result.success:
             try:
                 original_power = int(float(get_result.output.strip()))
             except ValueError:
-                logger.warning(f"无法解析原始功率限制: {get_result.output}")
+                logger.warning(f"鏃犳硶瑙ｆ瀽鍘熷鍔熺巼闄愬埗: {get_result.output}")
         
-        # 设置功率限制
+        # 璁剧疆鍔熺巼闄愬埗
         inject_cmd = f"sudo nvidia-smi -i {gpu_id} -pl {power_limit}"
         recover_cmd = f"sudo nvidia-smi -i {gpu_id} -pl {original_power}"
         
         logger.info(
-            f"注入热降频: node={ctx.target_node}, "
-            f"gpu_id={gpu_id}, power_limit={power_limit}W (原: {original_power}W)"
+            f"娉ㄥ叆鐑檷棰? node={ctx.target_node}, "
+            f"gpu_id={gpu_id}, power_limit={power_limit}W (鍘? {original_power}W)"
         )
         
-        # 写入 WAL
+        # 鍐欏叆 WAL
         ctx.rollback.record(
             fault_id=ctx.fault_id,
             channel="ssh",
@@ -536,24 +635,24 @@ class ThermalThrottlingScenario(BaseScenario):
             },
         )
         
-        # 执行注入
+        # 鎵ц娉ㄥ叆
         result = await ctx.ssh.run_command(
             node=ctx.target_node,
             command=inject_cmd,
         )
         
         if result.success:
-            logger.info(f"热降频注入成功: {ctx.fault_id}")
+            logger.info(f"鐑檷棰戞敞鍏ユ垚鍔? {ctx.fault_id}")
             return InjectResult(success=True, fault_id=ctx.fault_id)
         else:
-            logger.error(f"热降频注入失败: {result.error}")
+            logger.error(f"鐑檷棰戞敞鍏ュけ璐? {result.error}")
             return InjectResult(success=False, fault_id=ctx.fault_id, error=result.error)
     
     async def recover(self, ctx: FaultContext) -> RecoverResult:
         gpu_id = ctx.params.get("gpu_id", 0)
         original_power = ctx.params.get("original_power", 300)
         
-        logger.info(f"恢复热降频: node={ctx.target_node}, gpu_id={gpu_id}")
+        logger.info(f"鎭㈠鐑檷棰? node={ctx.target_node}, gpu_id={gpu_id}")
         
         result = await ctx.ssh.run_command(
             node=ctx.target_node,
@@ -575,17 +674,17 @@ class ThermalThrottlingScenario(BaseScenario):
         if result.success:
             try:
                 current_power = int(float(result.output.strip()))
-                if current_power >= original_power - 10:  # 允许 10W 误差
-                    logger.info(f"验证通过: 功率限制已恢复到 {current_power}W")
+                if current_power >= original_power - 10:  # 鍏佽 10W 璇樊
+                    logger.info(f"楠岃瘉閫氳繃: 鍔熺巼闄愬埗宸叉仮澶嶅埌 {current_power}W")
                     return True
                 else:
-                    logger.warning(f"验证失败: 功率限制为 {current_power}W，期望 >= {original_power}W")
+                    logger.warning(f"楠岃瘉澶辫触: 鍔熺巼闄愬埗涓?{current_power}W锛屾湡鏈?>= {original_power}W")
                     return False
             except ValueError:
-                logger.warning(f"无法解析功率限制: {result.output}")
+                logger.warning(f"鏃犳硶瑙ｆ瀽鍔熺巼闄愬埗: {result.output}")
                 return True
         
-        logger.warning(f"无法检查功率限制: {result.error}")
+        logger.warning(f"鏃犳硶妫€鏌ュ姛鐜囬檺鍒? {result.error}")
         return True
     
     def monitor_queries(self) -> dict[str, str]:
@@ -600,11 +699,12 @@ class ThermalThrottlingScenario(BaseScenario):
 
 
 # ============================================================================
-# 场景注册列表
+# 鍦烘櫙娉ㄥ唽鍒楄〃
 # ============================================================================
 
 SCENARIOS = [
     GPUContentionScenario,
+    NetworkJitterScenario,
     StorageIOInterferenceScenario,
     PlatformCascadeScenario,
     OSResourcePressureScenario,

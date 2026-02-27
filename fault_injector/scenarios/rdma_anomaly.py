@@ -1,16 +1,15 @@
-"""
-RDMA Anomaly Scenarios — F-1~F-6 六个 RDMA 异常场景 + RC-2 网络延迟
+﻿"""
+RDMA Anomaly Scenarios 鈥?F-1~F-6 RDMA anomaly scenarios
 
-必选场景：制造 RDMA 网络异常和网络延迟抖动。
+蹇呴€夊満鏅細鍒堕€?RDMA 缃戠粶寮傚父鍜岀綉缁滃欢杩熸姈鍔ㄣ€?
 
-场景列表：
-- RC-2: network_jitter - 网络延迟抖动 (tc netem)
-- F-1: pfc_deadlock - PFC 死锁
-- F-2: ecn_misconfiguration - ECN 标记阈值错配
-- F-3: rdma_load_imbalance - 不均衡 RDMA 负载
-- F-4: rdma_link_flap - RDMA 链路间歇性中断
-- F-5: roce_mtu_mismatch - RoCE 网络 MTU 不一致
-- F-6: rdma_qos_downgrade - RDMA QoS 降级
+鍦烘櫙鍒楄〃锛?
+- F-1: pfc_deadlock - PFC 姝婚攣
+- F-2: ecn_misconfiguration - ECN 鏍囪闃堝€奸敊閰?
+- F-3: rdma_load_imbalance - 涓嶅潎琛?RDMA 璐熻浇
+- F-4: rdma_link_flap - RDMA 閾捐矾闂存瓏鎬т腑鏂?
+- F-5: roce_mtu_mismatch - RoCE 缃戠粶 MTU 涓嶄竴鑷?
+- F-6: rdma_qos_downgrade - RDMA QoS 闄嶇骇
 """
 from __future__ import annotations
 
@@ -23,233 +22,21 @@ from fault_injector.config.schema import InjectResult, RecoverResult
 logger = logging.getLogger(__name__)
 
 
-# ============================================================================
-# RC-2: 网络延迟抖动
-# ============================================================================
-
-class NetworkJitterScenario(BaseScenario):
-    """
-    RC-2: 网络延迟场景。
-    
-    使用 tc netem 注入网络延迟：
-    - 注入命令: tc qdisc add dev eth0 root netem delay 50ms 100ms distribution pareto
-    - 恢复命令: tc qdisc del dev eth0 root
-    
-    效果：
-    - 延迟分布从正态变为长尾 (pareto)
-    - P95/P50 比值 > 10
-    - Stream 模式下 token 输出断断续续
-    """
-    
-    @property
-    def name(self) -> str:
-        return "network_jitter"
-    
-    @property
-    def description(self) -> str:
-        return "网络延迟抖动 — 使用 tc netem 注入不确定延迟"
-    
-    @property
-    def layer(self) -> str:
-        return "os"
-    
-    def _build_tc_command(self, params: dict[str, Any]) -> str:
-        """构建 tc netem 命令"""
-        interface = params.get("interface", "eth0")
-        delay_ms = params.get("delay_ms", 50)
-        jitter_ms = params.get("jitter_ms", 100)
-        distribution = params.get("distribution", "pareto")
-        loss_pct = params.get("loss_pct", 0)
-        
-        cmd = f"sudo tc qdisc add dev {interface} root netem delay {delay_ms}ms"
-        if jitter_ms > 0:
-            cmd += f" {jitter_ms}ms"
-        if distribution != "normal":
-            cmd += f" distribution {distribution}"
-        if loss_pct > 0:
-            cmd += f" loss {loss_pct}%"
-        return cmd
-    
-    def _build_recovery_command(self, interface: str) -> str:
-        """构建恢复命令"""
-        return f"sudo tc qdisc del dev {interface} root"
-    
-    async def inject(self, ctx: FaultContext) -> InjectResult:
-        """
-        注入网络延迟。
-        
-        执行流程：
-        1. 解析参数
-        2. 构建注入和恢复命令
-        3. 先写入 WAL（安全机制）
-        4. 执行注入命令
-        
-        Args:
-            ctx: 故障注入上下文
-            
-        Returns:
-            InjectResult: 注入结果
-        """
-        interface = ctx.params.get("interface", "eth0")
-        delay_ms = ctx.params.get("delay_ms", 50)
-        jitter_ms = ctx.params.get("jitter_ms", 100)
-        distribution = ctx.params.get("distribution", "pareto")
-        loss_pct = ctx.params.get("loss_pct", 0)
-        
-        # 构建命令
-        inject_cmd = self._build_tc_command(ctx.params)
-        recover_cmd = self._build_recovery_command(interface)
-        
-        logger.info(
-            f"注入网络延迟: node={ctx.target_node}, "
-            f"delay={delay_ms}ms, jitter={jitter_ms}ms, "
-            f"distribution={distribution}"
-        )
-        
-        # 写入 WAL（在执行之前）
-        ctx.rollback.record(
-            fault_id=ctx.fault_id,
-            channel="ssh",
-            target=ctx.target_node,
-            inject_action="tc_add_delay",
-            inject_params={
-                "node": ctx.target_node,
-                "interface": interface,
-                "delay_ms": delay_ms,
-                "jitter_ms": jitter_ms,
-                "distribution": distribution,
-                "loss_pct": loss_pct,
-            },
-            recover_action="tc_del_qdisc",
-            recover_params={
-                "node": ctx.target_node,
-                "interface": interface,
-            },
-        )
-        
-        # 执行注入命令
-        result = await ctx.ssh.run_command(
-            node=ctx.target_node,
-            command=inject_cmd,
-        )
-        
-        if result.success:
-            logger.info(f"网络延迟注入成功: {ctx.fault_id}")
-            return InjectResult(
-                success=True,
-                fault_id=ctx.fault_id,
-            )
-        else:
-            logger.error(f"网络延迟注入失败: {result.error}")
-            return InjectResult(
-                success=False,
-                fault_id=ctx.fault_id,
-                error=result.error,
-            )
-    
-    async def recover(self, ctx: FaultContext) -> RecoverResult:
-        """
-        恢复网络延迟。
-        
-        执行 tc qdisc del 命令删除 netem 规则。
-        
-        Args:
-            ctx: 故障注入上下文
-            
-        Returns:
-            RecoverResult: 恢复结果
-        """
-        interface = ctx.params.get("interface", "eth0")
-        recover_cmd = self._build_recovery_command(interface)
-        
-        logger.info(f"恢复网络延迟: node={ctx.target_node}")
-        
-        result = await ctx.ssh.run_command(
-            node=ctx.target_node,
-            command=recover_cmd,
-        )
-        
-        if result.success:
-            logger.info(f"网络延迟恢复成功: {ctx.fault_id}")
-            ctx.rollback.mark_recovered(ctx.fault_id)
-            return RecoverResult(
-                success=True,
-                fault_id=ctx.fault_id,
-            )
-        else:
-            # tc qdisc del 可能因为 qdisc 不存在而失败，这是可接受的
-            if "No such file or directory" in result.error or "Cannot delete" in result.error:
-                logger.warning(f"qdisc 不存在或已删除: {ctx.fault_id}")
-                ctx.rollback.mark_recovered(ctx.fault_id)
-                return RecoverResult(
-                    success=True,
-                    fault_id=ctx.fault_id,
-                )
-            
-            logger.error(f"网络延迟恢复失败: {result.error}")
-            ctx.rollback.mark_failed(ctx.fault_id)
-            return RecoverResult(
-                success=False,
-                fault_id=ctx.fault_id,
-                error=result.error,
-            )
-    
-    async def verify(self, ctx: FaultContext) -> bool:
-        """
-        验证恢复是否成功。
-        
-        检查 tc qdisc 是否已删除（netem 不再存在）。
-        
-        Args:
-            ctx: 故障注入上下文
-            
-        Returns:
-            bool: 恢复是否成功
-        """
-        interface = ctx.params.get("interface", "eth0")
-        check_cmd = f"sudo tc qdisc show dev {interface}"
-        
-        result = await ctx.ssh.run_command(
-            node=ctx.target_node,
-            command=check_cmd,
-        )
-        
-        if not result.success:
-            logger.warning(f"无法检查 tc qdisc: {result.error}")
-            return True  # 假设成功
-        
-        # 检查是否还有 netem
-        if "netem" in result.output:
-            logger.warning(f"netem 仍然存在: {result.output}")
-            return False
-        
-        logger.info(f"验证通过: netem 已删除")
-        return True
-    
-    def monitor_queries(self) -> dict[str, str]:
-        """返回监控 PromQL"""
-        return {
-            "inference_p50": 'histogram_quantile(0.5, rate(vllm:request_duration_seconds_bucket[1m]))',
-            "inference_p95": 'histogram_quantile(0.95, rate(vllm:request_duration_seconds_bucket[1m]))',
-            "inference_p99": 'histogram_quantile(0.99, rate(vllm:request_duration_seconds_bucket[1m]))',
-            "network_latency": 'histogram_quantile(0.95, rate(network_latency_seconds_bucket[1m]))',
-        }
-
 
 # ============================================================================
-# F-1: PFC 死锁
+# F-1: PFC 姝婚攣
 # ============================================================================
 
 class PFCDeadlockScenario(BaseScenario):
     """
-    F-1: PFC 死锁。
+    F-1: PFC 姝婚攣銆?
     
-    通过 H3C 交换机 CLI 配置 PFC 优先级映射，制造 Head-of-Line Blocking。
+    閫氳繃 H3C 浜ゆ崲鏈?CLI 閰嶇疆 PFC 浼樺厛绾ф槧灏勶紝鍒堕€?Head-of-Line Blocking銆?
     
-    效果：
-    - RDMA 流量完全阻塞
-    - NCCL AllReduce 超时
-    - 训练任务 hang 住无法推进
+    鏁堟灉锛?
+    - RDMA 娴侀噺瀹屽叏闃诲
+    - NCCL AllReduce 瓒呮椂
+    - 璁粌浠诲姟 hang 浣忔棤娉曟帹杩?
     """
     
     @property
@@ -258,7 +45,7 @@ class PFCDeadlockScenario(BaseScenario):
     
     @property
     def description(self) -> str:
-        return "PFC 死锁 — 制造 Head-of-Line Blocking"
+        return "PFC 姝婚攣 鈥?鍒堕€?Head-of-Line Blocking"
     
     @property
     def layer(self) -> str:
@@ -284,9 +71,9 @@ class PFCDeadlockScenario(BaseScenario):
             "quit",
         ]
         
-        logger.info(f"注入 PFC 死锁: switch={switch}, interface={interface}, priority={priority}")
+        logger.info(f"娉ㄥ叆 PFC 姝婚攣: switch={switch}, interface={interface}, priority={priority}")
         
-        # 写入 WAL
+        # 鍐欏叆 WAL
         ctx.rollback.record(
             fault_id=ctx.fault_id,
             channel="switch",
@@ -303,7 +90,7 @@ class PFCDeadlockScenario(BaseScenario):
             },
         )
         
-        # TODO: 实际执行需要 SwitchChannel
+        # TODO: 瀹為檯鎵ц闇€瑕?SwitchChannel
         logger.warning("SwitchChannel not implemented, PFC deadlock injection skipped")
         
         return InjectResult(success=True, fault_id=ctx.fault_id)
@@ -312,9 +99,9 @@ class PFCDeadlockScenario(BaseScenario):
         switch = ctx.params.get("switch", "sw-200g")
         interface = ctx.params.get("interface", "HundredGigE 1/0/1")
         
-        logger.info(f"恢复 PFC 配置: switch={switch}, interface={interface}")
+        logger.info(f"鎭㈠ PFC 閰嶇疆: switch={switch}, interface={interface}")
         
-        # TODO: 实际执行需要 SwitchChannel
+        # TODO: 瀹為檯鎵ц闇€瑕?SwitchChannel
         ctx.rollback.mark_recovered(ctx.fault_id)
         return RecoverResult(success=True, fault_id=ctx.fault_id)
     
@@ -327,18 +114,18 @@ class PFCDeadlockScenario(BaseScenario):
 
 
 # ============================================================================
-# F-2: ECN 标记阈值错配
+# F-2: ECN 鏍囪闃堝€奸敊閰?
 # ============================================================================
 
 class ECNMisconfigurationScenario(BaseScenario):
     """
-    F-2: ECN 标记阈值错配。
+    F-2: ECN 鏍囪闃堝€奸敊閰嶃€?
     
-    通过 H3C 交换机 CLI 修改 ECN 阈值设置。
+    閫氳繃 H3C 浜ゆ崲鏈?CLI 淇敼 ECN 闃堝€艰缃€?
     
-    效果：
-    - DCQCN 频繁触发速率降低
-    - RDMA 吞吐不稳定，出现周期性波动
+    鏁堟灉锛?
+    - DCQCN 棰戠箒瑙﹀彂閫熺巼闄嶄綆
+    - RDMA 鍚炲悙涓嶇ǔ瀹氾紝鍑虹幇鍛ㄦ湡鎬ф尝鍔?
     """
     
     @property
@@ -347,7 +134,7 @@ class ECNMisconfigurationScenario(BaseScenario):
     
     @property
     def description(self) -> str:
-        return "ECN 标记阈值错配 — 修改交换机 ECN 配置"
+        return "ECN 鏍囪闃堝€奸敊閰?鈥?淇敼浜ゆ崲鏈?ECN 閰嶇疆"
     
     @property
     def layer(self) -> str:
@@ -368,11 +155,11 @@ class ECNMisconfigurationScenario(BaseScenario):
         ]
         
         logger.info(
-            f"注入 ECN 错配: switch={switch}, interface={interface}, "
+            f"娉ㄥ叆 ECN 閿欓厤: switch={switch}, interface={interface}, "
             f"min={min_threshold}, max={max_threshold}"
         )
         
-        # 写入 WAL
+        # 鍐欏叆 WAL
         ctx.rollback.record(
             fault_id=ctx.fault_id,
             channel="switch",
@@ -387,7 +174,7 @@ class ECNMisconfigurationScenario(BaseScenario):
             recover_params={"interface": interface},
         )
         
-        # TODO: 实际执行需要 SwitchChannel
+        # TODO: 瀹為檯鎵ц闇€瑕?SwitchChannel
         logger.warning("SwitchChannel not implemented, ECN injection skipped")
         
         return InjectResult(success=True, fault_id=ctx.fault_id)
@@ -396,9 +183,9 @@ class ECNMisconfigurationScenario(BaseScenario):
         switch = ctx.params.get("switch", "sw-200g")
         interface = ctx.params.get("interface", "HundredGigE 1/0/1")
         
-        logger.info(f"恢复 ECN 配置: switch={switch}, interface={interface}")
+        logger.info(f"鎭㈠ ECN 閰嶇疆: switch={switch}, interface={interface}")
         
-        # TODO: 实际执行需要 SwitchChannel
+        # TODO: 瀹為檯鎵ц闇€瑕?SwitchChannel
         ctx.rollback.mark_recovered(ctx.fault_id)
         return RecoverResult(success=True, fault_id=ctx.fault_id)
     
@@ -411,19 +198,19 @@ class ECNMisconfigurationScenario(BaseScenario):
 
 
 # ============================================================================
-# F-3: 不均衡 RDMA 负载
+# F-3: 涓嶅潎琛?RDMA 璐熻浇
 # ============================================================================
 
 class RDMALoadImbalanceScenario(BaseScenario):
     """
-    F-3: 不均衡 RDMA 负载。
+    F-3: 涓嶅潎琛?RDMA 璐熻浇銆?
     
-    通过修改交换机 ECMP 哈希配置，使多条链路负载不均。
+    閫氳繃淇敼浜ゆ崲鏈?ECMP 鍝堝笇閰嶇疆锛屼娇澶氭潯閾捐矾璐熻浇涓嶅潎銆?
     
-    效果：
-    - 部分链路拥塞，部分链路空闲
-    - 整体吞吐下降
-    - NCCL AllReduce 性能波动
+    鏁堟灉锛?
+    - 閮ㄥ垎閾捐矾鎷ュ锛岄儴鍒嗛摼璺┖闂?
+    - 鏁翠綋鍚炲悙涓嬮檷
+    - NCCL AllReduce 鎬ц兘娉㈠姩
     """
     
     @property
@@ -432,7 +219,7 @@ class RDMALoadImbalanceScenario(BaseScenario):
     
     @property
     def description(self) -> str:
-        return "不均衡 RDMA 负载 — 修改 ECMP 哈希配置"
+        return "涓嶅潎琛?RDMA 璐熻浇 鈥?淇敼 ECMP 鍝堝笇閰嶇疆"
     
     @property
     def layer(self) -> str:
@@ -449,10 +236,10 @@ class RDMALoadImbalanceScenario(BaseScenario):
         ]
         
         logger.info(
-            f"注入 RDMA 负载不均衡: switch={switch}, hash_algorithm={hash_algorithm}"
+            f"娉ㄥ叆 RDMA 璐熻浇涓嶅潎琛? switch={switch}, hash_algorithm={hash_algorithm}"
         )
         
-        # 写入 WAL
+        # 鍐欏叆 WAL
         ctx.rollback.record(
             fault_id=ctx.fault_id,
             channel="switch",
@@ -465,7 +252,7 @@ class RDMALoadImbalanceScenario(BaseScenario):
             recover_params={},
         )
         
-        # TODO: 实际执行需要 SwitchChannel
+        # TODO: 瀹為檯鎵ц闇€瑕?SwitchChannel
         logger.warning("SwitchChannel not implemented, ECMP injection skipped")
         
         return InjectResult(success=True, fault_id=ctx.fault_id)
@@ -473,9 +260,9 @@ class RDMALoadImbalanceScenario(BaseScenario):
     async def recover(self, ctx: FaultContext) -> RecoverResult:
         switch = ctx.params.get("switch", "sw-200g")
         
-        logger.info(f"恢复 ECMP 配置: switch={switch}")
+        logger.info(f"鎭㈠ ECMP 閰嶇疆: switch={switch}")
         
-        # TODO: 实际执行需要 SwitchChannel
+        # TODO: 瀹為檯鎵ц闇€瑕?SwitchChannel
         ctx.rollback.mark_recovered(ctx.fault_id)
         return RecoverResult(success=True, fault_id=ctx.fault_id)
     
@@ -488,19 +275,19 @@ class RDMALoadImbalanceScenario(BaseScenario):
 
 
 # ============================================================================
-# F-4: RDMA 链路间歇性中断
+# F-4: RDMA 閾捐矾闂存瓏鎬т腑鏂?
 # ============================================================================
 
 class RDMALinkFlapScenario(BaseScenario):
     """
-    F-4: RDMA 链路间歇性中断。
+    F-4: RDMA 閾捐矾闂存瓏鎬т腑鏂€?
     
-    通过交换机 CLI 间歇性 shutdown/undo shutdown 端口。
+    閫氳繃浜ゆ崲鏈?CLI 闂存瓏鎬?shutdown/undo shutdown 绔彛銆?
     
-    效果：
-    - RDMA 连接周期性断开重建
-    - NCCL 通信超时重试
-    - 训练任务可能 hang 或 crash
+    鏁堟灉锛?
+    - RDMA 杩炴帴鍛ㄦ湡鎬ф柇寮€閲嶅缓
+    - NCCL 閫氫俊瓒呮椂閲嶈瘯
+    - 璁粌浠诲姟鍙兘 hang 鎴?crash
     """
     
     @property
@@ -509,7 +296,7 @@ class RDMALinkFlapScenario(BaseScenario):
     
     @property
     def description(self) -> str:
-        return "RDMA 链路间歇性中断 — 交换机端口 flap"
+        return "RDMA 閾捐矾闂存瓏鎬т腑鏂?鈥?浜ゆ崲鏈虹鍙?flap"
     
     @property
     def layer(self) -> str:
@@ -522,11 +309,11 @@ class RDMALinkFlapScenario(BaseScenario):
         flap_duration = ctx.params.get("flap_duration", 5)
         
         logger.info(
-            f"注入 RDMA 链路 flap: switch={switch}, interface={interface}, "
+            f"娉ㄥ叆 RDMA 閾捐矾 flap: switch={switch}, interface={interface}, "
             f"interval={flap_interval}s, duration={flap_duration}s"
         )
         
-        # 写入 WAL
+        # 鍐欏叆 WAL
         ctx.rollback.record(
             fault_id=ctx.fault_id,
             channel="switch",
@@ -541,7 +328,7 @@ class RDMALinkFlapScenario(BaseScenario):
             recover_params={"interface": interface},
         )
         
-        # TODO: 实际执行需要 SwitchChannel
+        # TODO: 瀹為檯鎵ц闇€瑕?SwitchChannel
         logger.warning("SwitchChannel not implemented, link flap injection skipped")
         
         return InjectResult(success=True, fault_id=ctx.fault_id)
@@ -550,10 +337,10 @@ class RDMALinkFlapScenario(BaseScenario):
         switch = ctx.params.get("switch", "sw-200g")
         interface = ctx.params.get("interface", "HundredGigE 1/0/1")
         
-        logger.info(f"恢复 RDMA 链路: switch={switch}, interface={interface}")
+        logger.info(f"鎭㈠ RDMA 閾捐矾: switch={switch}, interface={interface}")
         
-        # 停止 flap 脚本，确保端口 up
-        # TODO: 实际执行需要 SwitchChannel
+        # 鍋滄 flap 鑴氭湰锛岀‘淇濈鍙?up
+        # TODO: 瀹為檯鎵ц闇€瑕?SwitchChannel
         
         ctx.rollback.mark_recovered(ctx.fault_id)
         return RecoverResult(success=True, fault_id=ctx.fault_id)
@@ -567,19 +354,19 @@ class RDMALinkFlapScenario(BaseScenario):
 
 
 # ============================================================================
-# F-5: RoCE 网络 MTU 不一致
+# F-5: RoCE 缃戠粶 MTU 涓嶄竴鑷?
 # ============================================================================
 
 class RoCEMTUMismatchScenario(BaseScenario):
     """
-    F-5: RoCE 网络 MTU 不一致。
+    F-5: RoCE 缃戠粶 MTU 涓嶄竴鑷淬€?
     
-    通过修改网卡 MTU 配置制造 MTU 不匹配。
+    閫氳繃淇敼缃戝崱 MTU 閰嶇疆鍒堕€?MTU 涓嶅尮閰嶃€?
     
-    效果：
-    - 大包丢失，吞吐骤降
-    - RDMA 连接频繁重试
-    - NCCL 性能严重下降
+    鏁堟灉锛?
+    - 澶у寘涓㈠け锛屽悶鍚愰闄?
+    - RDMA 杩炴帴棰戠箒閲嶈瘯
+    - NCCL 鎬ц兘涓ラ噸涓嬮檷
     """
     
     @property
@@ -588,7 +375,7 @@ class RoCEMTUMismatchScenario(BaseScenario):
     
     @property
     def description(self) -> str:
-        return "RoCE 网络 MTU 不一致 — 修改网卡 MTU"
+        return "RoCE 缃戠粶 MTU 涓嶄竴鑷?鈥?淇敼缃戝崱 MTU"
     
     @property
     def layer(self) -> str:
@@ -596,16 +383,16 @@ class RoCEMTUMismatchScenario(BaseScenario):
     
     async def inject(self, ctx: FaultContext) -> InjectResult:
         interface = ctx.params.get("interface", "eth0")
-        mtu = ctx.params.get("mtu", 1500)  # 故意设小制造不匹配
+        mtu = ctx.params.get("mtu", 1500)  # 鏁呮剰璁惧皬鍒堕€犱笉鍖归厤
         
         inject_cmd = f"sudo ip link set dev {interface} mtu {mtu}"
-        recover_cmd = f"sudo ip link set dev {interface} mtu 9000"  # 恢复到 jumbo frame
+        recover_cmd = f"sudo ip link set dev {interface} mtu 9000"  # 鎭㈠鍒?jumbo frame
         
         logger.info(
-            f"注入 MTU 不匹配: node={ctx.target_node}, interface={interface}, mtu={mtu}"
+            f"娉ㄥ叆 MTU 涓嶅尮閰? node={ctx.target_node}, interface={interface}, mtu={mtu}"
         )
         
-        # 写入 WAL
+        # 鍐欏叆 WAL
         ctx.rollback.record(
             fault_id=ctx.fault_id,
             channel="ssh",
@@ -622,17 +409,17 @@ class RoCEMTUMismatchScenario(BaseScenario):
             },
         )
         
-        # 执行注入
+        # 鎵ц娉ㄥ叆
         result = await ctx.ssh.run_command(
             node=ctx.target_node,
             command=inject_cmd,
         )
         
         if result.success:
-            logger.info(f"MTU 不匹配注入成功: {ctx.fault_id}")
+            logger.info(f"MTU 涓嶅尮閰嶆敞鍏ユ垚鍔? {ctx.fault_id}")
             return InjectResult(success=True, fault_id=ctx.fault_id)
         else:
-            logger.error(f"MTU 不匹配注入失败: {result.error}")
+            logger.error(f"MTU 涓嶅尮閰嶆敞鍏ュけ璐? {result.error}")
             return InjectResult(success=False, fault_id=ctx.fault_id, error=result.error)
     
     async def recover(self, ctx: FaultContext) -> RecoverResult:
@@ -640,7 +427,7 @@ class RoCEMTUMismatchScenario(BaseScenario):
         original_mtu = ctx.params.get("original_mtu", 9000)
         recover_cmd = f"sudo ip link set dev {interface} mtu {original_mtu}"
         
-        logger.info(f"恢复 MTU: node={ctx.target_node}, interface={interface}")
+        logger.info(f"鎭㈠ MTU: node={ctx.target_node}, interface={interface}")
         
         result = await ctx.ssh.run_command(
             node=ctx.target_node,
@@ -660,21 +447,21 @@ class RoCEMTUMismatchScenario(BaseScenario):
             command=check_cmd,
         )
         
-        # dry_run 模式下直接返回 True
+        # dry_run 妯″紡涓嬬洿鎺ヨ繑鍥?True
         if result.dry_run:
-            logger.info(f"[DRY-RUN] 跳过 MTU 验证")
+            logger.info(f"[DRY-RUN] 璺宠繃 MTU 楠岃瘉")
             return True
         
         if result.success:
             current_mtu = int(result.output.strip())
             if current_mtu == original_mtu:
-                logger.info(f"验证通过: MTU 已恢复到 {original_mtu}")
+                logger.info(f"楠岃瘉閫氳繃: MTU 宸叉仮澶嶅埌 {original_mtu}")
                 return True
             else:
-                logger.warning(f"验证失败: MTU 为 {current_mtu}，期望 {original_mtu}")
+                logger.warning(f"楠岃瘉澶辫触: MTU 涓?{current_mtu}锛屾湡鏈?{original_mtu}")
                 return False
         
-        logger.warning(f"无法检查 MTU: {result.error}")
+        logger.warning(f"鏃犳硶妫€鏌?MTU: {result.error}")
         return True
     
     def monitor_queries(self) -> dict[str, str]:
@@ -686,19 +473,19 @@ class RoCEMTUMismatchScenario(BaseScenario):
 
 
 # ============================================================================
-# F-6: RDMA QoS 降级
+# F-6: RDMA QoS 闄嶇骇
 # ============================================================================
 
 class RDMAQoSDowngradeScenario(BaseScenario):
     """
-    F-6: RDMA QoS 降级。
+    F-6: RDMA QoS 闄嶇骇銆?
     
-    通过修改网卡或交换机的 DSCP/CoS 映射，降低 RDMA 流量优先级。
+    閫氳繃淇敼缃戝崱鎴栦氦鎹㈡満鐨?DSCP/CoS 鏄犲皠锛岄檷浣?RDMA 娴侀噺浼樺厛绾с€?
     
-    效果：
-    - RDMA 流量与普通 TCP 流量竞争带宽
-    - 吞吐不稳定，延迟升高
-    - 训练时间延长
+    鏁堟灉锛?
+    - RDMA 娴侀噺涓庢櫘閫?TCP 娴侀噺绔炰簤甯﹀
+    - 鍚炲悙涓嶇ǔ瀹氾紝寤惰繜鍗囬珮
+    - 璁粌鏃堕棿寤堕暱
     """
     
     @property
@@ -707,7 +494,7 @@ class RDMAQoSDowngradeScenario(BaseScenario):
     
     @property
     def description(self) -> str:
-        return "RDMA QoS 降级 — 降低 RDMA 流量优先级"
+        return "RDMA QoS 降级 - 降低 RDMA 流量优先级"
     
     @property
     def layer(self) -> str:
@@ -715,10 +502,10 @@ class RDMAQoSDowngradeScenario(BaseScenario):
     
     async def inject(self, ctx: FaultContext) -> InjectResult:
         interface = ctx.params.get("interface", "eth0")
-        # 将 RDMA 流量的 DSCP 从 26 (高优先级) 降为 0 (best effort)
+        # 灏?RDMA 娴侀噺鐨?DSCP 浠?26 (楂樹紭鍏堢骇) 闄嶄负 0 (best effort)
         dscp_value = ctx.params.get("dscp_value", 0)
         
-        # 使用 tc 设置 DSCP 重标记
+        # 浣跨敤 tc 璁剧疆 DSCP 閲嶆爣璁?
         inject_cmd = (
             f"sudo tc qdisc add dev {interface} root handle 1: mqprio "
             f"num_tc 4 map 0 1 2 3 queues 4@0 4@4 4@8 4@12 hw 0"
@@ -726,10 +513,10 @@ class RDMAQoSDowngradeScenario(BaseScenario):
         recover_cmd = f"sudo tc qdisc del dev {interface} root"
         
         logger.info(
-            f"注入 RDMA QoS 降级: node={ctx.target_node}, interface={interface}"
+            f"娉ㄥ叆 RDMA QoS 闄嶇骇: node={ctx.target_node}, interface={interface}"
         )
         
-        # 写入 WAL
+        # 鍐欏叆 WAL
         ctx.rollback.record(
             fault_id=ctx.fault_id,
             channel="ssh",
@@ -745,31 +532,31 @@ class RDMAQoSDowngradeScenario(BaseScenario):
             },
         )
         
-        # 执行注入
+        # 鎵ц娉ㄥ叆
         result = await ctx.ssh.run_command(
             node=ctx.target_node,
             command=inject_cmd,
         )
         
         if result.success:
-            logger.info(f"RDMA QoS 降级注入成功: {ctx.fault_id}")
+            logger.info(f"RDMA QoS 闄嶇骇娉ㄥ叆鎴愬姛: {ctx.fault_id}")
             return InjectResult(success=True, fault_id=ctx.fault_id)
         else:
-            logger.error(f"RDMA QoS 降级注入失败: {result.error}")
+            logger.error(f"RDMA QoS 闄嶇骇娉ㄥ叆澶辫触: {result.error}")
             return InjectResult(success=False, fault_id=ctx.fault_id, error=result.error)
     
     async def recover(self, ctx: FaultContext) -> RecoverResult:
         interface = ctx.params.get("interface", "eth0")
         recover_cmd = f"sudo tc qdisc del dev {interface} root"
         
-        logger.info(f"恢复 RDMA QoS: node={ctx.target_node}, interface={interface}")
+        logger.info(f"鎭㈠ RDMA QoS: node={ctx.target_node}, interface={interface}")
         
         result = await ctx.ssh.run_command(
             node=ctx.target_node,
             command=recover_cmd,
         )
         
-        # tc qdisc del 可能因为 qdisc 不存在而失败，这是可接受的
+        # tc qdisc del 鍙兘鍥犱负 qdisc 涓嶅瓨鍦ㄨ€屽け璐ワ紝杩欐槸鍙帴鍙楃殑
         ctx.rollback.mark_recovered(ctx.fault_id)
         return RecoverResult(success=True, fault_id=ctx.fault_id)
     
@@ -782,11 +569,10 @@ class RDMAQoSDowngradeScenario(BaseScenario):
 
 
 # ============================================================================
-# 场景注册列表
+# 鍦烘櫙娉ㄥ唽鍒楄〃
 # ============================================================================
 
 SCENARIOS = [
-    NetworkJitterScenario,
     PFCDeadlockScenario,
     ECNMisconfigurationScenario,
     RDMALoadImbalanceScenario,
@@ -794,3 +580,4 @@ SCENARIOS = [
     RoCEMTUMismatchScenario,
     RDMAQoSDowngradeScenario,
 ]
+

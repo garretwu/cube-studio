@@ -14,8 +14,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from pathlib import Path
 import tempfile
 
-from fault_injector.scenarios.rdma_anomaly import (
+from fault_injector.scenarios.vllm_latency import (
     NetworkJitterScenario,
+)
+from fault_injector.scenarios.rdma_anomaly import (
     RoCEMTUMismatchScenario,
     PFCDeadlockScenario,
     ECNMisconfigurationScenario,
@@ -315,7 +317,7 @@ class TestRoCEMTUMismatchScenario:
     def test_scenario_description(self, scenario):
         """Test scenario description."""
         assert "MTU" in scenario.description
-        assert "不一致" in scenario.description or "网卡" in scenario.description
+        assert "RoCE" in scenario.description or "roce" in scenario.description.lower()
     
     def test_scenario_layer(self, scenario):
         """Test scenario layer."""
