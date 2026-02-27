@@ -3311,12 +3311,27 @@ class LearnedPattern(BaseModel):
 
 ### 9.4 记忆存储与检索
 
+#### 存储后端分阶段演进
+
+| 阶段 | 结构化存储 | 向量搜索 | 理由 |
+|------|-----------|---------|------|
+| **Demo/POC** | aiosqlite (per-AIDC 文件) | ChromaDB (嵌入式) | 零运维，单进程部署，快速验证记忆系统逻辑 |
+| **产品化** | asyncpg (PostgreSQL，按 `aidc_id` 分区) | Qdrant (原生 async + payload filter) | 并发诊断无锁争用；向量检索原生异步无需 `to_thread()`；Qdrant 内置 TTL 简化生命周期管理 |
+
+迁移约束：
+- 两阶段均使用 async 接口，业务层代码（`record_incident`、`search_similar` 等）通过 `MemoryStore` 抽象隔离，切换后端时上层无感知。
+- POC → 产品化迁移时需一次性数据导入（SQLite → PG、ChromaDB → Qdrant），可通过离线脚本完成。
+
+#### POC 阶段实现（aiosqlite + ChromaDB）
+
 ```python
 class MemoryStore:
-    """记忆存储 — aiosqlite per AIDC
+    """记忆存储 — POC 阶段：aiosqlite + ChromaDB per AIDC
 
     P1-10 修复：sqlite3 替换为 aiosqlite 异步库，避免阻塞事件循环。
     ChromaDB 同步调用包裹在 asyncio.to_thread() 中。
+
+    产品化阶段替换为 MemoryStorePG（asyncpg + Qdrant），接口不变。
     """
 
     def __init__(self, aidc_id: str, db_dir: str = "./memory"):
@@ -3416,6 +3431,87 @@ class MemoryStore:
             self._save_pattern(pattern)
 ```
 
+#### 产品化阶段实现（asyncpg + Qdrant）
+
+```python
+class MemoryStorePG(MemoryStore):
+    """记忆存储 — 产品化阶段：asyncpg + Qdrant
+
+    与 MemoryStore 接口一致，替换存储后端：
+    - 结构化数据：asyncpg (PostgreSQL)，按 aidc_id 做表分区
+    - 向量搜索：qdrant-client[async]，原生异步，per-AIDC 通过 payload filter 隔离
+    - 事务一致性：PG 事务保证事件记录原子写入
+
+    迁移方式：配置切换（工厂函数根据环境变量选择后端）。
+    """
+
+    def __init__(self, aidc_id: str, pg_dsn: str, qdrant_url: str):
+        self.aidc_id = aidc_id
+        self.pg_dsn = pg_dsn
+        self._pool: asyncpg.Pool | None = None
+        self.qdrant = AsyncQdrantClient(url=qdrant_url)
+        self.collection_name = "incidents"
+
+    async def connect(self) -> None:
+        self._pool = await asyncpg.create_pool(self.pg_dsn, min_size=2, max_size=10)
+        await self._init_tables()
+        # 确保 Qdrant collection 存在
+        await self.qdrant.recreate_collection(
+            collection_name=self.collection_name,
+            vectors_config=VectorParams(size=EMBEDDING_DIM, distance=Distance.COSINE),
+        )
+
+    async def record_incident(self, session: DiagnosisSession) -> str:
+        record = self._build_record(session)
+        async with self._pool.acquire() as conn:
+            async with conn.transaction():
+                await conn.execute(
+                    "INSERT INTO incidents (id, aidc_id, data) VALUES ($1, $2, $3)",
+                    record.incident_id, self.aidc_id, record.model_dump_json())
+
+        # 向量写入（原生 async，无需 to_thread）
+        embedding = await self._embed(
+            f"{record.root_cause} | {' '.join(record.symptoms)}")
+        await self.qdrant.upsert(
+            collection_name=self.collection_name,
+            points=[PointStruct(
+                id=record.incident_id,
+                vector=embedding,
+                payload={"aidc_id": self.aidc_id,
+                         "incident_id": record.incident_id,
+                         "root_cause": record.root_cause},
+            )],
+        )
+        await self._update_patterns(record)
+        return record.incident_id
+
+    async def search_similar(self, symptoms: dict,
+                             top_k: int = 3) -> list[IncidentRecord]:
+        query = " ".join(f"{k}={v}" for k, v in symptoms.items())
+        embedding = await self._embed(query)
+        results = await self.qdrant.search(
+            collection_name=self.collection_name,
+            query_vector=embedding,
+            query_filter=Filter(must=[
+                FieldCondition(key="aidc_id", match=MatchValue(value=self.aidc_id)),
+            ]),
+            limit=top_k,
+        )
+        incident_ids = [r.payload["incident_id"] for r in results]
+        return [await self._load_from_pg(iid) for iid in incident_ids]
+
+
+def create_memory_store(aidc_id: str) -> MemoryStore:
+    """工厂函数：根据环境选择存储后端"""
+    if os.getenv("MEMORY_BACKEND", "sqlite") == "pg":
+        return MemoryStorePG(
+            aidc_id=aidc_id,
+            pg_dsn=os.environ["MEMORY_PG_DSN"],
+            qdrant_url=os.environ["QDRANT_URL"],
+        )
+    return MemoryStore(aidc_id=aidc_id)
+```
+
 ### 9.5 数据生命周期管理（Review P2-6）
 
 > **Review P2-6 新增**（来自 review-feedback）：记忆系统持续积累数据，
@@ -3426,7 +3522,7 @@ class MemoryStore:
 | 事件记忆（IncidentRecord） | 热数据 90 天，温数据 1 年 | 90 天后移至归档表，1 年后导出到 S3/OSS |
 | 模式记忆（LearnedPattern） | 永久保留（effective_confidence 自然衰减） | 衰减到 < 0.1 的模式标记为 inactive |
 | 配置记忆 | 永久保留（覆盖更新） | — |
-| 向量索引（ChromaDB） | 与事件记忆同步 | 归档事件同时从向量索引删除 |
+| 向量索引（POC: ChromaDB → 产品化: Qdrant） | 与事件记忆同步 | 归档事件同时从向量索引删除；Qdrant 产品化阶段可配置 collection-level TTL |
 | 知识库文档 | 永久保留，支持版本管理 | 旧版本压缩存储 |
 
 ```python

@@ -3,13 +3,15 @@ from __future__ import annotations
 
 import asyncio
 import time
-from typing import Any
-
-import httpx
+import uuid
+from typing import TYPE_CHECKING, Any
 
 from load_simulator.agents.base import AgentResult, BaseAgent
-from load_simulator.config.schema import FineTuneConfig
+from lib.channels.cube_studio import CubeStudioChannel
 from load_simulator.metrics.aggregator import compute_percentiles
+
+if TYPE_CHECKING:
+    from load_simulator.config.schema import FineTuneConfig
 
 
 # Default training config sent to LLaMA-Factory Gradio/REST API
@@ -43,8 +45,21 @@ class FineTuneAgent(BaseAgent):
 
     agent_name = "finetune"
 
-    def __init__(self, config: FineTuneConfig) -> None:
+    def __init__(self, config: "FineTuneConfig", channel: CubeStudioChannel | None = None) -> None:
         self._config = config
+        auth_method = str(getattr(config, "auth_method", "username"))
+        auth_username = str(getattr(config, "auth_username", "admin"))
+        jwt_secret = getattr(config, "jwt_password", None)
+        # NOTE: keep compatibility with v0.1 config that only has llama_factory_url.
+        self._channel = channel or CubeStudioChannel(
+            base_url=config.llama_factory_url,
+            auth_method=auth_method,
+            username=auth_username,
+            jwt_secret=jwt_secret,
+            timeout=30,
+            retry_count=2,
+            retry_backoff=0.5,
+        )
 
     async def run(self, duration_seconds: int) -> AgentResult:
         return await self._timed_run(duration_seconds)
@@ -52,6 +67,7 @@ class FineTuneAgent(BaseAgent):
     async def _execute(self, duration_seconds: int) -> AgentResult:
         cfg = self._config
         errors: list[str] = []
+        request_logs: list[dict] = []
         start_time = time.time()
         deadline = start_time + duration_seconds
 
@@ -60,43 +76,67 @@ class FineTuneAgent(BaseAgent):
         jobs_started = 0
         jobs_completed = 0
 
-        timeout = httpx.Timeout(connect=5.0, read=300.0, write=10.0, pool=5.0)
-        train_url = f"{cfg.llama_factory_url.rstrip('/')}/api/v1/train"
+        while time.time() < deadline:
+            job_start = time.time()
+            jobs_started += 1
+            url = f"{cfg.llama_factory_url}/pipeline_modelview/api/"
+            try:
+                # Prefer unified CubeStudio channel workflow.
+                run_id = uuid.uuid4().hex[:8]
+                pipeline = await self._channel.create_pipeline(
+                    {"name": f"load-finetune-{run_id}", "project_id": 1}
+                )
+                pipeline_id = int(pipeline.get("id", 0) or 0)
+                if pipeline_id <= 0:
+                    raise RuntimeError("finetune pipeline creation returned invalid id")
 
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            while time.time() < deadline:
-                job_start = time.time()
-                jobs_started += 1
-                try:
-                    response = await client.post(train_url, json=_DEFAULT_TRAIN_CONFIG)
-                    response.raise_for_status()
-                    body = response.json()
-                    steps = body.get("steps_completed", _DEFAULT_TRAIN_CONFIG["max_steps"])
-                    elapsed_for_job = time.time() - job_start
-                    step_times.append(elapsed_for_job / max(1, steps))
-                    gpu_util = body.get("gpu_util_pct", None)
-                    if gpu_util is not None:
-                        gpu_utils.append(float(gpu_util))
-                    jobs_completed += 1
-                except (httpx.ConnectError, httpx.TimeoutException):
-                    # Server down — simulate a short mock training run
-                    sim_result = await _simulate_training(
-                        max_steps=_DEFAULT_TRAIN_CONFIG["max_steps"],
-                        deadline=deadline,
-                    )
-                    step_times.extend(sim_result["step_times"])
-                    gpu_utils.extend(sim_result["gpu_utils"])
-                    jobs_completed += 1
-                except httpx.HTTPStatusError as exc:
-                    errors.append(f"HTTP {exc.response.status_code}: {exc.response.text[:80]}")
-                except Exception as exc:  # noqa: BLE001
-                    errors.append(f"{type(exc).__name__}: {exc}")
+                _ = await self._channel.create_task(
+                    {
+                        "name": f"finetune-task-{run_id}",
+                        "pipeline_id": pipeline_id,
+                        "args": _DEFAULT_TRAIN_CONFIG,
+                    }
+                )
+                body = await self._channel.run_pipeline(pipeline_id)
+                steps = body.get("steps_completed", _DEFAULT_TRAIN_CONFIG["max_steps"])
+                elapsed_for_job = time.time() - job_start
+                step_times.append(elapsed_for_job / max(1, int(steps)))
+                gpu_util = body.get("gpu_util_pct", None)
+                if gpu_util is not None:
+                    gpu_utils.append(float(gpu_util))
+                jobs_completed += 1
+                request_logs.append({
+                    "timestamp": job_start,
+                    "method": "POST",
+                    "url": url,
+                    "status_code": 200,
+                    "latency_ms": round(elapsed_for_job * 1000, 2),
+                    "error_message": None,
+                })
+            except Exception as exc:  # noqa: BLE001
+                # API path unavailable — fallback to deterministic local simulation.
+                sim_result = await _simulate_training(
+                    max_steps=_DEFAULT_TRAIN_CONFIG["max_steps"],
+                    deadline=deadline,
+                )
+                step_times.extend(sim_result["step_times"])
+                gpu_utils.extend(sim_result["gpu_utils"])
+                jobs_completed += 1
+                errors.append(f"{type(exc).__name__}: {exc}")
+                request_logs.append({
+                    "timestamp": job_start,
+                    "method": "POST",
+                    "url": url,
+                    "status_code": 0,
+                    "latency_ms": round((time.time() - job_start) * 1000, 2),
+                    "error_message": f"{type(exc).__name__}: {exc}",
+                })
 
-                # Pause between job submissions to avoid hammering the server
-                remaining = deadline - time.time()
-                if remaining <= 0:
-                    break
-                await asyncio.sleep(min(5.0, remaining))
+            # Pause between job submissions to avoid hammering the server
+            remaining = deadline - time.time()
+            if remaining <= 0:
+                break
+            await asyncio.sleep(min(5.0, remaining))
 
         end_time = time.time()
 
@@ -126,6 +166,7 @@ class FineTuneAgent(BaseAgent):
             start_time=start_time,
             end_time=end_time,
             errors=errors[:50],
+            raw={"request_logs": request_logs},
         )
 
 

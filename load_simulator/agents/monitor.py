@@ -6,7 +6,7 @@ import shlex
 import subprocess
 import time
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Any, Optional
 
 
 @dataclass
@@ -20,6 +20,11 @@ class SystemSnapshot:
     gpu_mem_util_pct: Optional[float] = None
     disk_util_pct: Optional[float] = None
     io_wait_pct: Optional[float] = None
+    prom_pod_cpu: Optional[float] = None
+    prom_pod_memory: Optional[float] = None
+    prom_gpu_util: Optional[float] = None
+    prom_gpu_memory: Optional[float] = None
+    prom_istio_qps: Optional[float] = None
 
 
 class MetricsMonitor:
@@ -35,10 +40,17 @@ class MetricsMonitor:
         flat_metrics = monitor.aggregate()
     """
 
-    def __init__(self, interval_seconds: float = 5.0) -> None:
+    def __init__(
+        self,
+        interval_seconds: float = 5.0,
+        prometheus_channel: Any | None = None,
+        prometheus_queries: dict[str, str] | None = None,
+    ) -> None:
         self._interval = interval_seconds
         self._snapshots: list[SystemSnapshot] = []
         self._stop_event = asyncio.Event()
+        self._prometheus_channel = prometheus_channel
+        self._prometheus_queries = prometheus_queries or {}
 
     @property
     def snapshots(self) -> list[SystemSnapshot]:
@@ -65,6 +77,8 @@ class MetricsMonitor:
         disk = await asyncio.get_event_loop().run_in_executor(None, _disk_util)
         io_wait = await asyncio.get_event_loop().run_in_executor(None, _io_wait)
 
+        prom_data = await self._collect_prometheus()
+
         return SystemSnapshot(
             timestamp=time.time(),
             cpu_util_pct=cpu,
@@ -73,7 +87,25 @@ class MetricsMonitor:
             gpu_mem_util_pct=gpu_mem,
             disk_util_pct=disk,
             io_wait_pct=io_wait,
+            prom_pod_cpu=prom_data.get("pod_cpu"),
+            prom_pod_memory=prom_data.get("pod_memory"),
+            prom_gpu_util=prom_data.get("gpu_utilization"),
+            prom_gpu_memory=prom_data.get("gpu_memory"),
+            prom_istio_qps=prom_data.get("istio_qps"),
         )
+
+    async def _collect_prometheus(self) -> dict[str, float]:
+        """Collect Prometheus metrics if a channel is configured."""
+        if self._prometheus_channel is None or not self._prometheus_queries:
+            return {}
+        results: dict[str, float] = {}
+        for name, promql in self._prometheus_queries.items():
+            try:
+                value = await self._prometheus_channel.query_instant(promql)
+                results[name] = float(value)
+            except Exception:
+                pass
+        return results
 
     def aggregate(self) -> dict[str, float]:
         """Return mean values across all snapshots, suitable for bottleneck checks."""
@@ -108,6 +140,26 @@ class MetricsMonitor:
         io_mean = mean([s.io_wait_pct for s in self._snapshots])
         if io_mean is not None:
             result["io_wait_pct"] = round(io_mean, 2)
+
+        prom_cpu_mean = mean([s.prom_pod_cpu for s in self._snapshots])
+        if prom_cpu_mean is not None:
+            result["prom_pod_cpu"] = round(prom_cpu_mean, 4)
+
+        prom_mem_mean = mean([s.prom_pod_memory for s in self._snapshots])
+        if prom_mem_mean is not None:
+            result["prom_pod_memory"] = round(prom_mem_mean, 2)
+
+        prom_gpu_mean = mean([s.prom_gpu_util for s in self._snapshots])
+        if prom_gpu_mean is not None:
+            result["prom_gpu_util"] = round(prom_gpu_mean, 2)
+
+        prom_gpu_mem_mean = mean([s.prom_gpu_memory for s in self._snapshots])
+        if prom_gpu_mem_mean is not None:
+            result["prom_gpu_memory"] = round(prom_gpu_mem_mean, 2)
+
+        prom_qps_mean = mean([s.prom_istio_qps for s in self._snapshots])
+        if prom_qps_mean is not None:
+            result["prom_istio_qps"] = round(prom_qps_mean, 2)
 
         return result
 

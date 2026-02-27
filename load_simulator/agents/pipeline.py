@@ -4,13 +4,14 @@ from __future__ import annotations
 import asyncio
 import time
 import uuid
-from typing import Any
-
-import httpx
+from typing import TYPE_CHECKING, Any
 
 from load_simulator.agents.base import AgentResult, BaseAgent
-from load_simulator.config.schema import PipelineConfig
+from lib.channels.cube_studio import CubeStudioChannel
 from load_simulator.metrics.aggregator import compute_percentiles, compute_rate
+
+if TYPE_CHECKING:
+    from load_simulator.config.schema import PipelineConfig
 
 
 # Simulated pipeline statuses returned by the mock endpoint
@@ -26,8 +27,20 @@ class PipelineAgent(BaseAgent):
 
     agent_name = "pipeline"
 
-    def __init__(self, config: PipelineConfig) -> None:
+    def __init__(self, config: "PipelineConfig", channel: CubeStudioChannel | None = None) -> None:
         self._config = config
+        auth_method = str(getattr(config, "auth_method", "username"))
+        auth_username = str(getattr(config, "auth_username", "admin"))
+        jwt_secret = getattr(config, "jwt_password", None)
+        self._channel = channel or CubeStudioChannel(
+            base_url=config.cube_studio_url,
+            auth_method=auth_method,
+            username=auth_username,
+            jwt_secret=jwt_secret,
+            timeout=30,
+            retry_count=2,
+            retry_backoff=0.5,
+        )
 
     async def run(self, duration_seconds: int) -> AgentResult:
         return await self._timed_run(duration_seconds)
@@ -37,59 +50,80 @@ class PipelineAgent(BaseAgent):
         semaphore = asyncio.Semaphore(cfg.concurrency)
         durations: list[float] = []
         errors: list[str] = []
+        request_logs: list[dict] = []
         completed = 0
         failed = 0
         start_time = time.time()
         deadline = start_time + duration_seconds
+        tasks: list[asyncio.Task[Any]] = []
 
-        timeout = httpx.Timeout(connect=5.0, read=60.0, write=10.0, pool=5.0)
-        submit_url = f"{cfg.cube_studio_url.rstrip('/')}/api/v1/pipeline/run"
+        async def _submit_one() -> None:
+            nonlocal completed, failed
+            run_id = str(uuid.uuid4())[:8]
+            req_start = time.time()
+            url = f"{cfg.cube_studio_url}/pipeline_modelview/api/"
+            try:
+                async with semaphore:
+                    try:
+                        if cfg.pipeline_id:
+                            body = await self._channel.run_pipeline(int(cfg.pipeline_id))
+                        else:
+                            created = await self._channel.create_pipeline(
+                                {"name": f"load-pipeline-{run_id}", "project_id": 1}
+                            )
+                            pipeline_id = int(created.get("id", 0) or 0)
+                            if pipeline_id <= 0:
+                                raise RuntimeError(f"invalid pipeline id: {pipeline_id}")
+                            body = await self._channel.run_pipeline(pipeline_id)
+                        status = str(body.get("status", "Succeeded"))
+                    except Exception:
+                        # Real server unreachable — use simulation
+                        await asyncio.sleep(0.5 + (hash(run_id) % 30) * 0.1)
+                        import random
 
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            tasks: list[asyncio.Task] = []
-
-            async def _submit_one() -> None:
-                nonlocal completed, failed
-                run_id = str(uuid.uuid4())[:8]
-                req_start = time.time()
-                try:
-                    async with semaphore:
-                        try:
-                            payload = {
-                                "pipeline_id": cfg.pipeline_id or "default",
-                                "run_id": run_id,
-                                "parameters": {},
-                            }
-                            response = await client.post(submit_url, json=payload)
-                            response.raise_for_status()
-                            body = response.json()
-                            status = body.get("status", "Succeeded")
-                        except (httpx.ConnectError, httpx.TimeoutException):
-                            # Real server unreachable — use simulation
-                            await asyncio.sleep(0.5 + (hash(run_id) % 30) * 0.1)
-                            import random
-                            status = random.choice(_SIMULATED_STATUSES)
-                    elapsed = time.time() - req_start
-                    durations.append(elapsed)
-                    if status in ("Succeeded", "success"):
-                        completed += 1
-                    else:
-                        failed += 1
-                except httpx.HTTPStatusError as exc:
-                    errors.append(f"HTTP {exc.response.status_code}")
+                        status = random.choice(_SIMULATED_STATUSES)
+                elapsed = time.time() - req_start
+                durations.append(elapsed)
+                if status in ("Succeeded", "success"):
+                    completed += 1
+                    request_logs.append({
+                        "timestamp": req_start,
+                        "method": "POST",
+                        "url": url,
+                        "status_code": 200,
+                        "latency_ms": round(elapsed * 1000, 2),
+                        "error_message": None,
+                    })
+                else:
                     failed += 1
-                except Exception as exc:  # noqa: BLE001
-                    errors.append(f"{type(exc).__name__}: {exc}")
-                    failed += 1
+                    request_logs.append({
+                        "timestamp": req_start,
+                        "method": "POST",
+                        "url": url,
+                        "status_code": 200,
+                        "latency_ms": round(elapsed * 1000, 2),
+                        "error_message": f"pipeline status: {status}",
+                    })
+            except Exception as exc:  # noqa: BLE001
+                errors.append(f"{type(exc).__name__}: {exc}")
+                failed += 1
+                request_logs.append({
+                    "timestamp": req_start,
+                    "method": "POST",
+                    "url": url,
+                    "status_code": 0,
+                    "latency_ms": round((time.time() - req_start) * 1000, 2),
+                    "error_message": f"{type(exc).__name__}: {exc}",
+                })
 
-            while time.time() < deadline:
-                task = asyncio.create_task(_submit_one())
-                tasks.append(task)
-                await asyncio.sleep(1.0 / max(1, cfg.concurrency))
-                tasks = [t for t in tasks if not t.done()]
+        while time.time() < deadline:
+            task = asyncio.create_task(_submit_one())
+            tasks.append(task)
+            await asyncio.sleep(1.0 / max(1, cfg.concurrency))
+            tasks = [t for t in tasks if not t.done()]
 
-            if tasks:
-                await asyncio.gather(*tasks, return_exceptions=True)
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
 
         end_time = time.time()
         elapsed = end_time - start_time
@@ -119,4 +153,5 @@ class PipelineAgent(BaseAgent):
             start_time=start_time,
             end_time=end_time,
             errors=errors[:50],
+            raw={"request_logs": request_logs},
         )
