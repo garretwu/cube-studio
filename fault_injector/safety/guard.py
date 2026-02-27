@@ -53,6 +53,8 @@ class SafetyGuard:
         # 交换机恢复出厂
         r"restore\s+factory",
         r"reset\s+saved-configuration",
+        r"\breload\b",
+        r"\breboot\b",
     ]
     
     # 危险 shell 元字符

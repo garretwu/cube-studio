@@ -43,6 +43,51 @@ from fault_injector.safety.rollback import RollbackJournal
 # Test Fixtures
 # =============================================================================
 
+class _MockSwitchChannel:
+    def __init__(self):
+        self.admin_status = "up"
+        self.description = "baseline"
+        self.pvid = 1
+        self.link_type = "trunk"
+
+    def get_interface_status(self, switch, interface):
+        _ = (switch, interface)
+        return MagicMock(admin_status=self.admin_status)
+
+    def get_interface_config(self, switch, interface):
+        _ = (switch, interface)
+        return MagicMock(
+            description=self.description,
+            pvid=self.pvid,
+            link_type=self.link_type,
+        )
+
+    def apply_interface_config(self, switch, interface, **kwargs):
+        _ = (switch, interface)
+        if "description" in kwargs and kwargs["description"] is not None:
+            self.description = kwargs["description"]
+        if "admin_status" in kwargs and kwargs["admin_status"] is not None:
+            self.admin_status = "up" if kwargs["admin_status"] == 1 else "down"
+        if "pvid" in kwargs and kwargs["pvid"] is not None:
+            self.pvid = kwargs["pvid"]
+        if "link_type" in kwargs and kwargs["link_type"] is not None:
+            self.link_type = {1: "access", 2: "trunk", 3: "hybrid"}.get(kwargs["link_type"], "trunk")
+        return ChannelResult(success=True)
+
+    def shutdown_port(self, switch, interface, fault_id=None):
+        _ = (switch, interface, fault_id)
+        self.admin_status = "down"
+        return ChannelResult(success=True)
+
+    def bringup_port(self, switch, interface, fault_id=None):
+        _ = (switch, interface, fault_id)
+        self.admin_status = "up"
+        return ChannelResult(success=True)
+
+    def verify_admin_state(self, switch, interface, expected):
+        _ = (switch, interface)
+        return self.admin_status == expected
+
 @pytest.fixture
 def temp_journal_path():
     """Temporary path for rollback journal."""
@@ -113,6 +158,10 @@ def base_context(mock_ssh_channel, rollback_journal, safety_guard):
         fault_id="test-fault-001",
         session_id="test-session",
     )
+
+@pytest.fixture
+def mock_switch_channel():
+    return _MockSwitchChannel()
 
 
 # =============================================================================
@@ -406,6 +455,44 @@ class TestRoCEMTUMismatchScenario:
             assert result.success is True
             
             await scenario.recover(context)
+
+
+class TestRDMASwitchScenarios:
+    @pytest.fixture
+    def context(self, base_context, mock_switch_channel):
+        base_context.switch = mock_switch_channel
+        base_context.params = {
+            "switch": "sw1",
+            "interface": "GE1/0/4",
+            "flap_duration": 0,
+        }
+        base_context.fault_id = "rdma-switch-test"
+        return base_context
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "scenario_cls",
+        [
+            PFCDeadlockScenario,
+            ECNMisconfigurationScenario,
+            RDMALoadImbalanceScenario,
+            RDMALinkFlapScenario,
+            RDMAQoSDowngradeScenario,
+        ],
+    )
+    async def test_switch_scenario_inject_recover_cycle(self, scenario_cls, context):
+        scenario = scenario_cls()
+        inject = await scenario.inject(context)
+        assert inject.success is True
+
+        active = context.rollback.get_active_faults()
+        assert any(entry.fault_id == context.fault_id for entry in active)
+
+        recover = await scenario.recover(context)
+        assert recover.success is True
+
+        active_after = context.rollback.get_active_faults()
+        assert all(entry.fault_id != context.fault_id for entry in active_after)
 
 
 # =============================================================================

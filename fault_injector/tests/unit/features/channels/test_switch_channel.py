@@ -133,4 +133,4 @@ class TestSwitchChannelUnit:
         result = await channel._execute_impl("unknown", {})
 
         assert result.success is False
-        assert "未知操作" in result.error
+        assert "Unknown action" in result.error

@@ -2,7 +2,7 @@
 # For H3C S9855-24B8D NETCONF testing
 
 switches:
-  sw-200g:
+  Switch200GE:
     host: "10.11.8.52"
     port: 830  # NETCONF port
     username: "apitest"
@@ -15,3 +15,9 @@ test_interfaces:
   - name: "200GE1/0/4"
     if_index: 4
     description: "Test port for fault injection"
+    baseline:
+      admin: "UP"
+      speed: "200G(a)"
+      duplex: "F(a)"
+      link_type: "T"
+      pvid: 10

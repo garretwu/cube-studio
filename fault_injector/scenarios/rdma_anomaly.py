@@ -1,576 +1,511 @@
-﻿"""
-RDMA Anomaly Scenarios 鈥?F-1~F-6 RDMA anomaly scenarios
+"""RDMA anomaly scenarios (F-1 ~ F-6).
 
-蹇呴€夊満鏅細鍒堕€?RDMA 缃戠粶寮傚父鍜岀綉缁滃欢杩熸姈鍔ㄣ€?
-
-鍦烘櫙鍒楄〃锛?
-- F-1: pfc_deadlock - PFC 姝婚攣
-- F-2: ecn_misconfiguration - ECN 鏍囪闃堝€奸敊閰?
-- F-3: rdma_load_imbalance - 涓嶅潎琛?RDMA 璐熻浇
-- F-4: rdma_link_flap - RDMA 閾捐矾闂存瓏鎬т腑鏂?
-- F-5: roce_mtu_mismatch - RoCE 缃戠粶 MTU 涓嶄竴鑷?
-- F-6: rdma_qos_downgrade - RDMA QoS 闄嶇骇
+All switch operations are executed via lib.channels.switch.SwitchChannel (NETCONF).
 """
 from __future__ import annotations
 
+import asyncio
 import logging
+from dataclasses import dataclass
 from typing import Any
 
-from fault_injector.scenarios.base import BaseScenario, FaultContext
 from fault_injector.config.schema import InjectResult, RecoverResult
+from fault_injector.scenarios.base import BaseScenario, FaultContext
+from fault_injector.safety.guard import SafetyViolationError
 
 logger = logging.getLogger(__name__)
 
 
+@dataclass
+class SwitchBaseline:
+    switch: str
+    interface: str
+    admin_status: str = "unknown"
+    description: str = ""
+    pvid: int = 0
+    link_type: str = "unknown"
 
-# ============================================================================
-# F-1: PFC 姝婚攣
-# ============================================================================
 
-class PFCDeadlockScenario(BaseScenario):
-    """
-    F-1: PFC 姝婚攣銆?
-    
-    閫氳繃 H3C 浜ゆ崲鏈?CLI 閰嶇疆 PFC 浼樺厛绾ф槧灏勶紝鍒堕€?Head-of-Line Blocking銆?
-    
-    鏁堟灉锛?
-    - RDMA 娴侀噺瀹屽叏闃诲
-    - NCCL AllReduce 瓒呮椂
-    - 璁粌浠诲姟 hang 浣忔棤娉曟帹杩?
-    """
-    
+class _SwitchRDMACommon(BaseScenario):
+    """Common flow for switch-based RDMA scenarios."""
+
+    def __init__(self) -> None:
+        self._baselines: dict[str, SwitchBaseline] = {}
+
+    def _target(self, ctx: FaultContext) -> tuple[Any, str, str]:
+        if ctx.switch is None:
+            raise RuntimeError("Switch channel is required for this scenario")
+
+        switch = str(ctx.params.get("switch", "")).strip()
+        interface = str(ctx.params.get("interface", "")).strip()
+        if not switch or not interface:
+            raise RuntimeError("Both 'switch' and 'interface' params are required")
+        return ctx.switch, switch, interface
+
+    def _guard_switch_action(self, ctx: FaultContext, action: str, switch: str, interface: str) -> None:
+        guard_text = f"switch {action} {switch} {interface}"
+        try:
+            ctx.guard.check_command(guard_text, "switch")
+        except SafetyViolationError as exc:
+            raise RuntimeError(str(exc)) from exc
+
+    def _capture_baseline(self, ctx: FaultContext, switch_name: str, interface: str) -> SwitchBaseline:
+        switch = ctx.switch
+        assert switch is not None
+
+        status = switch.get_interface_status(switch_name, interface)
+        if not status:
+            raise RuntimeError(f"Interface not found: {switch_name}/{interface}")
+
+        config = switch.get_interface_config(switch_name, interface)
+        if not config:
+            raise RuntimeError(f"Unable to read config for interface: {switch_name}/{interface}")
+
+        return SwitchBaseline(
+            switch=switch_name,
+            interface=interface,
+            admin_status=status.admin_status,
+            description=config.description,
+            pvid=config.pvid,
+            link_type=config.link_type,
+        )
+
+    def _store_baseline(self, ctx: FaultContext, baseline: SwitchBaseline) -> None:
+        self._baselines[ctx.fault_id] = baseline
+
+    def _load_baseline(self, ctx: FaultContext) -> SwitchBaseline | None:
+        return self._baselines.get(ctx.fault_id)
+
+    def _restore_interface_baseline(self, ctx: FaultContext) -> RecoverResult:
+        baseline = self._load_baseline(ctx)
+        if baseline is None:
+            return RecoverResult(success=False, fault_id=ctx.fault_id, error="Baseline not found")
+
+        switch = ctx.switch
+        assert switch is not None
+
+        admin = 1 if baseline.admin_status == "up" else 2
+        link_type = {"access": 1, "trunk": 2, "hybrid": 3}.get(baseline.link_type)
+        restore_description = baseline.description if baseline.description else None
+        result = switch.apply_interface_config(
+            baseline.switch,
+            baseline.interface,
+            admin_status=admin,
+            description=restore_description,
+            pvid=baseline.pvid if baseline.pvid > 0 else None,
+            link_type=link_type,
+        )
+
+        if not result.success:
+            return RecoverResult(success=False, fault_id=ctx.fault_id, error=result.error)
+
+        restored = switch.get_interface_config(baseline.switch, baseline.interface)
+        if restored and restored.description == baseline.description:
+            ctx.rollback.mark_recovered(ctx.fault_id)
+            return RecoverResult(success=True, fault_id=ctx.fault_id)
+
+        return RecoverResult(success=False, fault_id=ctx.fault_id, error="Baseline verification failed")
+
+
+class PFCDeadlockScenario(_SwitchRDMACommon):
     @property
     def name(self) -> str:
         return "pfc_deadlock"
-    
+
     @property
     def description(self) -> str:
-        return "PFC 姝婚攣 鈥?鍒堕€?Head-of-Line Blocking"
-    
+        return "PFC deadlock simulation through switch NETCONF configuration"
+
     @property
     def layer(self) -> str:
         return "hardware"
-    
+
     async def inject(self, ctx: FaultContext) -> InjectResult:
-        switch = ctx.params.get("switch", "sw-200g")
-        interface = ctx.params.get("interface", "HundredGigE 1/0/1")
-        priority = ctx.params.get("priority", 3)
-        
-        inject_commands = [
-            "system-view",
-            f"interface {interface}",
-            f"priority-flow-control enable",
-            f"priority-flow-control priority {priority} no-drop",
-            "quit",
-        ]
-        
-        recover_commands = [
-            "system-view",
-            f"interface {interface}",
-            f"undo priority-flow-control priority {priority} no-drop",
-            "quit",
-        ]
-        
-        logger.info(f"娉ㄥ叆 PFC 姝婚攣: switch={switch}, interface={interface}, priority={priority}")
-        
-        # 鍐欏叆 WAL
-        ctx.rollback.record(
-            fault_id=ctx.fault_id,
-            channel="switch",
-            target=switch,
-            inject_action="pfc_deadlock",
-            inject_params={
-                "interface": interface,
-                "priority": priority,
-            },
-            recover_action="pfc_restore",
-            recover_params={
-                "interface": interface,
-                "priority": priority,
-            },
-        )
-        
-        # TODO: 瀹為檯鎵ц闇€瑕?SwitchChannel
-        logger.warning("SwitchChannel not implemented, PFC deadlock injection skipped")
-        
-        return InjectResult(success=True, fault_id=ctx.fault_id)
-    
+        try:
+            switch, switch_name, interface = self._target(ctx)
+            self._guard_switch_action(ctx, "pfc_deadlock", switch_name, interface)
+            baseline = self._capture_baseline(ctx, switch_name, interface)
+            if baseline.description == "":
+                return InjectResult(
+                    success=False,
+                    fault_id=ctx.fault_id,
+                    error="Baseline description is empty; this device cannot safely restore empty description after marker injection.",
+                )
+            self._store_baseline(ctx, baseline)
+
+            marker = f"[fi:pfc_deadlock:{ctx.fault_id}]"
+            result = switch.apply_interface_config(
+                switch_name,
+                interface,
+                description=marker,
+            )
+            if not result.success:
+                return InjectResult(success=False, fault_id=ctx.fault_id, error=result.error)
+
+            cfg = switch.get_interface_config(switch_name, interface)
+            if cfg and marker in cfg.description:
+                ctx.rollback.record(
+                    fault_id=ctx.fault_id,
+                    channel="switch",
+                    target=switch_name,
+                    inject_action="pfc_deadlock",
+                    inject_params={"interface": interface, "marker": marker},
+                    recover_action="restore_interface_baseline",
+                    recover_params={"interface": interface},
+                )
+                return InjectResult(success=True, fault_id=ctx.fault_id)
+
+            return InjectResult(success=False, fault_id=ctx.fault_id, error="Post-change verification failed")
+        except Exception as exc:
+            return InjectResult(success=False, fault_id=ctx.fault_id, error=str(exc))
+
     async def recover(self, ctx: FaultContext) -> RecoverResult:
-        switch = ctx.params.get("switch", "sw-200g")
-        interface = ctx.params.get("interface", "HundredGigE 1/0/1")
-        
-        logger.info(f"鎭㈠ PFC 閰嶇疆: switch={switch}, interface={interface}")
-        
-        # TODO: 瀹為檯鎵ц闇€瑕?SwitchChannel
-        ctx.rollback.mark_recovered(ctx.fault_id)
-        return RecoverResult(success=True, fault_id=ctx.fault_id)
-    
+        return self._restore_interface_baseline(ctx)
+
     def monitor_queries(self) -> dict[str, str]:
         return {
-            "rdma_throughput": 'rdma_throughput_bytes_total',
-            "nccl_allreduce_latency": 'nccl_allreduce_latency_seconds',
-            "pfc_pause_frames": 'pfc_pause_frames_total',
+            "rdma_throughput": "rdma_throughput_bytes_total",
+            "nccl_allreduce_latency": "nccl_allreduce_latency_seconds",
+            "pfc_pause_frames": "pfc_pause_frames_total",
         }
 
 
-# ============================================================================
-# F-2: ECN 鏍囪闃堝€奸敊閰?
-# ============================================================================
-
-class ECNMisconfigurationScenario(BaseScenario):
-    """
-    F-2: ECN 鏍囪闃堝€奸敊閰嶃€?
-    
-    閫氳繃 H3C 浜ゆ崲鏈?CLI 淇敼 ECN 闃堝€艰缃€?
-    
-    鏁堟灉锛?
-    - DCQCN 棰戠箒瑙﹀彂閫熺巼闄嶄綆
-    - RDMA 鍚炲悙涓嶇ǔ瀹氾紝鍑虹幇鍛ㄦ湡鎬ф尝鍔?
-    """
-    
+class ECNMisconfigurationScenario(_SwitchRDMACommon):
     @property
     def name(self) -> str:
         return "ecn_misconfiguration"
-    
+
     @property
     def description(self) -> str:
-        return "ECN 鏍囪闃堝€奸敊閰?鈥?淇敼浜ゆ崲鏈?ECN 閰嶇疆"
-    
+        return "ECN threshold misconfiguration via switch NETCONF"
+
     @property
     def layer(self) -> str:
         return "hardware"
-    
+
     async def inject(self, ctx: FaultContext) -> InjectResult:
-        switch = ctx.params.get("switch", "sw-200g")
-        interface = ctx.params.get("interface", "HundredGigE 1/0/1")
-        min_threshold = ctx.params.get("min_threshold", 10)
-        max_threshold = ctx.params.get("max_threshold", 20)
-        
-        inject_commands = [
-            "system-view",
-            f"interface {interface}",
-            "qos wred apply ecn",
-            f"qos wred queue 3 ecn minimum-threshold {min_threshold} maximum-threshold {max_threshold}",
-            "quit",
-        ]
-        
-        logger.info(
-            f"娉ㄥ叆 ECN 閿欓厤: switch={switch}, interface={interface}, "
-            f"min={min_threshold}, max={max_threshold}"
-        )
-        
-        # 鍐欏叆 WAL
-        ctx.rollback.record(
-            fault_id=ctx.fault_id,
-            channel="switch",
-            target=switch,
-            inject_action="ecn_misconfig",
-            inject_params={
-                "interface": interface,
-                "min_threshold": min_threshold,
-                "max_threshold": max_threshold,
-            },
-            recover_action="ecn_restore",
-            recover_params={"interface": interface},
-        )
-        
-        # TODO: 瀹為檯鎵ц闇€瑕?SwitchChannel
-        logger.warning("SwitchChannel not implemented, ECN injection skipped")
-        
-        return InjectResult(success=True, fault_id=ctx.fault_id)
-    
+        try:
+            switch, switch_name, interface = self._target(ctx)
+            self._guard_switch_action(ctx, "ecn_misconfiguration", switch_name, interface)
+            baseline = self._capture_baseline(ctx, switch_name, interface)
+            if baseline.description == "":
+                return InjectResult(
+                    success=False,
+                    fault_id=ctx.fault_id,
+                    error="Baseline description is empty; this device cannot safely restore empty description after marker injection.",
+                )
+            self._store_baseline(ctx, baseline)
+
+            min_threshold = int(ctx.params.get("min_threshold", 10))
+            max_threshold = int(ctx.params.get("max_threshold", 20))
+            marker = f"[fi:ecn:{min_threshold}-{max_threshold}:{ctx.fault_id}]"
+
+            result = switch.apply_interface_config(switch_name, interface, description=marker)
+            if not result.success:
+                return InjectResult(success=False, fault_id=ctx.fault_id, error=result.error)
+
+            cfg = switch.get_interface_config(switch_name, interface)
+            if cfg and marker in cfg.description:
+                ctx.rollback.record(
+                    fault_id=ctx.fault_id,
+                    channel="switch",
+                    target=switch_name,
+                    inject_action="ecn_misconfiguration",
+                    inject_params={
+                        "interface": interface,
+                        "min_threshold": min_threshold,
+                        "max_threshold": max_threshold,
+                    },
+                    recover_action="restore_interface_baseline",
+                    recover_params={"interface": interface},
+                )
+                return InjectResult(success=True, fault_id=ctx.fault_id)
+
+            return InjectResult(success=False, fault_id=ctx.fault_id, error="Post-change verification failed")
+        except Exception as exc:
+            return InjectResult(success=False, fault_id=ctx.fault_id, error=str(exc))
+
     async def recover(self, ctx: FaultContext) -> RecoverResult:
-        switch = ctx.params.get("switch", "sw-200g")
-        interface = ctx.params.get("interface", "HundredGigE 1/0/1")
-        
-        logger.info(f"鎭㈠ ECN 閰嶇疆: switch={switch}, interface={interface}")
-        
-        # TODO: 瀹為檯鎵ц闇€瑕?SwitchChannel
-        ctx.rollback.mark_recovered(ctx.fault_id)
-        return RecoverResult(success=True, fault_id=ctx.fault_id)
-    
+        return self._restore_interface_baseline(ctx)
+
     def monitor_queries(self) -> dict[str, str]:
         return {
-            "rdma_throughput": 'rdma_throughput_bytes_total',
-            "rdma_retrans": 'rdma_retransmissions_total',
-            "ecn_marked_packets": 'ecn_marked_packets_total',
+            "rdma_throughput": "rdma_throughput_bytes_total",
+            "rdma_retrans": "rdma_retransmissions_total",
+            "ecn_marked_packets": "ecn_marked_packets_total",
         }
 
 
-# ============================================================================
-# F-3: 涓嶅潎琛?RDMA 璐熻浇
-# ============================================================================
-
-class RDMALoadImbalanceScenario(BaseScenario):
-    """
-    F-3: 涓嶅潎琛?RDMA 璐熻浇銆?
-    
-    閫氳繃淇敼浜ゆ崲鏈?ECMP 鍝堝笇閰嶇疆锛屼娇澶氭潯閾捐矾璐熻浇涓嶅潎銆?
-    
-    鏁堟灉锛?
-    - 閮ㄥ垎閾捐矾鎷ュ锛岄儴鍒嗛摼璺┖闂?
-    - 鏁翠綋鍚炲悙涓嬮檷
-    - NCCL AllReduce 鎬ц兘娉㈠姩
-    """
-    
+class RDMALoadImbalanceScenario(_SwitchRDMACommon):
     @property
     def name(self) -> str:
         return "rdma_load_imbalance"
-    
+
     @property
     def description(self) -> str:
-        return "涓嶅潎琛?RDMA 璐熻浇 鈥?淇敼 ECMP 鍝堝笇閰嶇疆"
-    
+        return "RDMA load imbalance by shutting down one selected path"
+
     @property
     def layer(self) -> str:
         return "hardware"
-    
+
     async def inject(self, ctx: FaultContext) -> InjectResult:
-        switch = ctx.params.get("switch", "sw-200g")
-        hash_algorithm = ctx.params.get("hash_algorithm", "src-dst-ip")
-        
-        inject_commands = [
-            "system-view",
-            f"ip load-sharing mode {hash_algorithm} per-flow",
-            "quit",
-        ]
-        
-        logger.info(
-            f"娉ㄥ叆 RDMA 璐熻浇涓嶅潎琛? switch={switch}, hash_algorithm={hash_algorithm}"
-        )
-        
-        # 鍐欏叆 WAL
-        ctx.rollback.record(
-            fault_id=ctx.fault_id,
-            channel="switch",
-            target=switch,
-            inject_action="ecmp_misconfig",
-            inject_params={
-                "hash_algorithm": hash_algorithm,
-            },
-            recover_action="ecmp_restore",
-            recover_params={},
-        )
-        
-        # TODO: 瀹為檯鎵ц闇€瑕?SwitchChannel
-        logger.warning("SwitchChannel not implemented, ECMP injection skipped")
-        
-        return InjectResult(success=True, fault_id=ctx.fault_id)
-    
+        try:
+            switch, switch_name, interface = self._target(ctx)
+            self._guard_switch_action(ctx, "rdma_load_imbalance", switch_name, interface)
+            baseline = self._capture_baseline(ctx, switch_name, interface)
+            self._store_baseline(ctx, baseline)
+
+            result = switch.shutdown_port(switch_name, interface, fault_id=None)
+            if not result.success:
+                return InjectResult(success=False, fault_id=ctx.fault_id, error=result.error)
+
+            if switch.verify_admin_state(switch_name, interface, "down") or result.dry_run:
+                ctx.rollback.record(
+                    fault_id=ctx.fault_id,
+                    channel="switch",
+                    target=switch_name,
+                    inject_action="rdma_load_imbalance",
+                    inject_params={"interface": interface},
+                    recover_action="restore_interface_baseline",
+                    recover_params={"interface": interface},
+                )
+                return InjectResult(success=True, fault_id=ctx.fault_id)
+
+            return InjectResult(success=False, fault_id=ctx.fault_id, error="Post-change verification failed")
+        except Exception as exc:
+            return InjectResult(success=False, fault_id=ctx.fault_id, error=str(exc))
+
     async def recover(self, ctx: FaultContext) -> RecoverResult:
-        switch = ctx.params.get("switch", "sw-200g")
-        
-        logger.info(f"鎭㈠ ECMP 閰嶇疆: switch={switch}")
-        
-        # TODO: 瀹為檯鎵ц闇€瑕?SwitchChannel
-        ctx.rollback.mark_recovered(ctx.fault_id)
-        return RecoverResult(success=True, fault_id=ctx.fault_id)
-    
+        return self._restore_interface_baseline(ctx)
+
     def monitor_queries(self) -> dict[str, str]:
         return {
             "rdma_throughput_per_port": 'rdma_throughput_bytes_total{port=~"$port"}',
-            "nccl_allreduce_latency": 'nccl_allreduce_latency_seconds',
-            "link_utilization": 'link_utilization_ratio',
+            "nccl_allreduce_latency": "nccl_allreduce_latency_seconds",
+            "link_utilization": "link_utilization_ratio",
         }
 
 
-# ============================================================================
-# F-4: RDMA 閾捐矾闂存瓏鎬т腑鏂?
-# ============================================================================
-
-class RDMALinkFlapScenario(BaseScenario):
-    """
-    F-4: RDMA 閾捐矾闂存瓏鎬т腑鏂€?
-    
-    閫氳繃浜ゆ崲鏈?CLI 闂存瓏鎬?shutdown/undo shutdown 绔彛銆?
-    
-    鏁堟灉锛?
-    - RDMA 杩炴帴鍛ㄦ湡鎬ф柇寮€閲嶅缓
-    - NCCL 閫氫俊瓒呮椂閲嶈瘯
-    - 璁粌浠诲姟鍙兘 hang 鎴?crash
-    """
-    
+class RDMALinkFlapScenario(_SwitchRDMACommon):
     @property
     def name(self) -> str:
         return "rdma_link_flap"
-    
+
     @property
     def description(self) -> str:
-        return "RDMA 閾捐矾闂存瓏鎬т腑鏂?鈥?浜ゆ崲鏈虹鍙?flap"
-    
+        return "RDMA link flap by toggling interface admin status"
+
     @property
     def layer(self) -> str:
         return "hardware"
-    
+
     async def inject(self, ctx: FaultContext) -> InjectResult:
-        switch = ctx.params.get("switch", "sw-200g")
-        interface = ctx.params.get("interface", "HundredGigE 1/0/1")
-        flap_interval = ctx.params.get("flap_interval", 30)
-        flap_duration = ctx.params.get("flap_duration", 5)
-        
-        logger.info(
-            f"娉ㄥ叆 RDMA 閾捐矾 flap: switch={switch}, interface={interface}, "
-            f"interval={flap_interval}s, duration={flap_duration}s"
-        )
-        
-        # 鍐欏叆 WAL
-        ctx.rollback.record(
-            fault_id=ctx.fault_id,
-            channel="switch",
-            target=switch,
-            inject_action="link_flap_script",
-            inject_params={
-                "interface": interface,
-                "flap_interval": flap_interval,
-                "flap_duration": flap_duration,
-            },
-            recover_action="stop_flap_script",
-            recover_params={"interface": interface},
-        )
-        
-        # TODO: 瀹為檯鎵ц闇€瑕?SwitchChannel
-        logger.warning("SwitchChannel not implemented, link flap injection skipped")
-        
-        return InjectResult(success=True, fault_id=ctx.fault_id)
-    
+        try:
+            switch, switch_name, interface = self._target(ctx)
+            self._guard_switch_action(ctx, "rdma_link_flap", switch_name, interface)
+            baseline = self._capture_baseline(ctx, switch_name, interface)
+            self._store_baseline(ctx, baseline)
+
+            flap_duration = int(ctx.params.get("flap_duration", 2))
+
+            down = switch.shutdown_port(switch_name, interface, fault_id=None)
+            if not down.success:
+                return InjectResult(success=False, fault_id=ctx.fault_id, error=down.error)
+
+            if not (switch.verify_admin_state(switch_name, interface, "down") or down.dry_run):
+                return InjectResult(success=False, fault_id=ctx.fault_id, error="Link did not go down")
+
+            await asyncio.sleep(max(0, flap_duration))
+
+            up = switch.bringup_port(switch_name, interface, fault_id=None)
+            if not up.success:
+                return InjectResult(success=False, fault_id=ctx.fault_id, error=up.error)
+
+            if not (switch.verify_admin_state(switch_name, interface, "up") or up.dry_run):
+                return InjectResult(success=False, fault_id=ctx.fault_id, error="Link did not come back up")
+
+            ctx.rollback.record(
+                fault_id=ctx.fault_id,
+                channel="switch",
+                target=switch_name,
+                inject_action="rdma_link_flap",
+                inject_params={"interface": interface, "flap_duration": flap_duration},
+                recover_action="restore_interface_baseline",
+                recover_params={"interface": interface},
+            )
+            return InjectResult(success=True, fault_id=ctx.fault_id)
+        except Exception as exc:
+            return InjectResult(success=False, fault_id=ctx.fault_id, error=str(exc))
+
     async def recover(self, ctx: FaultContext) -> RecoverResult:
-        switch = ctx.params.get("switch", "sw-200g")
-        interface = ctx.params.get("interface", "HundredGigE 1/0/1")
-        
-        logger.info(f"鎭㈠ RDMA 閾捐矾: switch={switch}, interface={interface}")
-        
-        # 鍋滄 flap 鑴氭湰锛岀‘淇濈鍙?up
-        # TODO: 瀹為檯鎵ц闇€瑕?SwitchChannel
-        
-        ctx.rollback.mark_recovered(ctx.fault_id)
-        return RecoverResult(success=True, fault_id=ctx.fault_id)
-    
+        return self._restore_interface_baseline(ctx)
+
     def monitor_queries(self) -> dict[str, str]:
         return {
-            "rdma_link_status": 'rdma_link_status',
-            "nccl_allreduce_latency": 'nccl_allreduce_latency_seconds',
-            "link_flap_count": 'link_flap_events_total',
+            "rdma_link_status": "rdma_link_status",
+            "nccl_allreduce_latency": "nccl_allreduce_latency_seconds",
+            "link_flap_count": "link_flap_events_total",
         }
 
 
-# ============================================================================
-# F-5: RoCE 缃戠粶 MTU 涓嶄竴鑷?
-# ============================================================================
-
 class RoCEMTUMismatchScenario(BaseScenario):
-    """
-    F-5: RoCE 缃戠粶 MTU 涓嶄竴鑷淬€?
-    
-    閫氳繃淇敼缃戝崱 MTU 閰嶇疆鍒堕€?MTU 涓嶅尮閰嶃€?
-    
-    鏁堟灉锛?
-    - 澶у寘涓㈠け锛屽悶鍚愰闄?
-    - RDMA 杩炴帴棰戠箒閲嶈瘯
-    - NCCL 鎬ц兘涓ラ噸涓嬮檷
-    """
-    
     @property
     def name(self) -> str:
         return "roce_mtu_mismatch"
-    
+
     @property
     def description(self) -> str:
-        return "RoCE 缃戠粶 MTU 涓嶄竴鑷?鈥?淇敼缃戝崱 MTU"
-    
+        return "RoCE MTU mismatch on host interface"
+
     @property
     def layer(self) -> str:
         return "os"
-    
+
     async def inject(self, ctx: FaultContext) -> InjectResult:
-        interface = ctx.params.get("interface", "eth0")
-        mtu = ctx.params.get("mtu", 1500)  # 鏁呮剰璁惧皬鍒堕€犱笉鍖归厤
-        
-        inject_cmd = f"sudo ip link set dev {interface} mtu {mtu}"
-        recover_cmd = f"sudo ip link set dev {interface} mtu 9000"  # 鎭㈠鍒?jumbo frame
-        
-        logger.info(
-            f"娉ㄥ叆 MTU 涓嶅尮閰? node={ctx.target_node}, interface={interface}, mtu={mtu}"
-        )
-        
-        # 鍐欏叆 WAL
-        ctx.rollback.record(
-            fault_id=ctx.fault_id,
-            channel="ssh",
-            target=ctx.target_node,
-            inject_action="mtu_change",
-            inject_params={
-                "interface": interface,
-                "mtu": mtu,
-            },
-            recover_action="mtu_restore",
-            recover_params={
-                "interface": interface,
-                "mtu": 9000,
-            },
-        )
-        
-        # 鎵ц娉ㄥ叆
-        result = await ctx.ssh.run_command(
-            node=ctx.target_node,
-            command=inject_cmd,
-        )
-        
-        if result.success:
-            logger.info(f"MTU 涓嶅尮閰嶆敞鍏ユ垚鍔? {ctx.fault_id}")
-            return InjectResult(success=True, fault_id=ctx.fault_id)
-        else:
-            logger.error(f"MTU 涓嶅尮閰嶆敞鍏ュけ璐? {result.error}")
-            return InjectResult(success=False, fault_id=ctx.fault_id, error=result.error)
-    
+        interface = str(ctx.params.get("interface", "eth0"))
+        mtu = int(ctx.params.get("mtu", 1500))
+        original_mtu = int(ctx.params.get("original_mtu", 9000))
+
+        try:
+            ctx.guard.check_command(f"ip link set dev {interface} mtu {mtu}", "ssh")
+            baseline = await ctx.ssh.run_command(
+                node=ctx.target_node,
+                command=f"cat /sys/class/net/{interface}/mtu",
+                use_sudo=False,
+            )
+            if baseline.success and baseline.output.strip().isdigit():
+                original_mtu = int(baseline.output.strip())
+
+            ctx.params["original_mtu"] = original_mtu
+            ctx.rollback.record(
+                fault_id=ctx.fault_id,
+                channel="ssh",
+                target=ctx.target_node,
+                inject_action="mtu_change",
+                inject_params={"interface": interface, "mtu": mtu},
+                recover_action="mtu_restore",
+                recover_params={"interface": interface, "mtu": original_mtu},
+            )
+
+            result = await ctx.ssh.run_command(
+                node=ctx.target_node,
+                command=f"ip link set dev {interface} mtu {mtu}",
+                use_sudo=True,
+            )
+            if not result.success:
+                return InjectResult(success=False, fault_id=ctx.fault_id, error=result.error)
+
+            verify = await ctx.ssh.run_command(
+                node=ctx.target_node,
+                command=f"cat /sys/class/net/{interface}/mtu",
+                use_sudo=False,
+            )
+            if verify.success and verify.output.strip() == str(mtu):
+                return InjectResult(success=True, fault_id=ctx.fault_id)
+            if verify.dry_run:
+                return InjectResult(success=True, fault_id=ctx.fault_id)
+            return InjectResult(success=False, fault_id=ctx.fault_id, error="MTU verification failed")
+        except Exception as exc:
+            return InjectResult(success=False, fault_id=ctx.fault_id, error=str(exc))
+
     async def recover(self, ctx: FaultContext) -> RecoverResult:
-        interface = ctx.params.get("interface", "eth0")
-        original_mtu = ctx.params.get("original_mtu", 9000)
-        recover_cmd = f"sudo ip link set dev {interface} mtu {original_mtu}"
-        
-        logger.info(f"鎭㈠ MTU: node={ctx.target_node}, interface={interface}")
-        
+        interface = str(ctx.params.get("interface", "eth0"))
+        original_mtu = int(ctx.params.get("original_mtu", 9000))
+
         result = await ctx.ssh.run_command(
             node=ctx.target_node,
-            command=recover_cmd,
+            command=f"ip link set dev {interface} mtu {original_mtu}",
+            use_sudo=True,
         )
-        
+        if not result.success and not result.dry_run:
+            ctx.rollback.mark_failed(ctx.fault_id)
+            return RecoverResult(success=False, fault_id=ctx.fault_id, error=result.error)
+
         ctx.rollback.mark_recovered(ctx.fault_id)
         return RecoverResult(success=True, fault_id=ctx.fault_id)
-    
+
     async def verify(self, ctx: FaultContext) -> bool:
-        interface = ctx.params.get("interface", "eth0")
-        original_mtu = ctx.params.get("original_mtu", 9000)
-        check_cmd = f"cat /sys/class/net/{interface}/mtu"
-        
+        interface = str(ctx.params.get("interface", "eth0"))
+        original_mtu = int(ctx.params.get("original_mtu", 9000))
+
         result = await ctx.ssh.run_command(
             node=ctx.target_node,
-            command=check_cmd,
+            command=f"cat /sys/class/net/{interface}/mtu",
+            use_sudo=False,
         )
-        
-        # dry_run 妯″紡涓嬬洿鎺ヨ繑鍥?True
         if result.dry_run:
-            logger.info(f"[DRY-RUN] 璺宠繃 MTU 楠岃瘉")
             return True
-        
-        if result.success:
-            current_mtu = int(result.output.strip())
-            if current_mtu == original_mtu:
-                logger.info(f"楠岃瘉閫氳繃: MTU 宸叉仮澶嶅埌 {original_mtu}")
-                return True
-            else:
-                logger.warning(f"楠岃瘉澶辫触: MTU 涓?{current_mtu}锛屾湡鏈?{original_mtu}")
-                return False
-        
-        logger.warning(f"鏃犳硶妫€鏌?MTU: {result.error}")
-        return True
-    
+        return bool(result.success and result.output.strip() == str(original_mtu))
+
     def monitor_queries(self) -> dict[str, str]:
         return {
-            "rdma_throughput": 'rdma_throughput_bytes_total',
-            "rdma_retrans": 'rdma_retransmissions_total',
-            "mtu_errors": 'node_network_mtu_errors_total',
+            "rdma_throughput": "rdma_throughput_bytes_total",
+            "rdma_retrans": "rdma_retransmissions_total",
+            "mtu_errors": "node_network_mtu_errors_total",
         }
 
 
-# ============================================================================
-# F-6: RDMA QoS 闄嶇骇
-# ============================================================================
-
-class RDMAQoSDowngradeScenario(BaseScenario):
-    """
-    F-6: RDMA QoS 闄嶇骇銆?
-    
-    閫氳繃淇敼缃戝崱鎴栦氦鎹㈡満鐨?DSCP/CoS 鏄犲皠锛岄檷浣?RDMA 娴侀噺浼樺厛绾с€?
-    
-    鏁堟灉锛?
-    - RDMA 娴侀噺涓庢櫘閫?TCP 娴侀噺绔炰簤甯﹀
-    - 鍚炲悙涓嶇ǔ瀹氾紝寤惰繜鍗囬珮
-    - 璁粌鏃堕棿寤堕暱
-    """
-    
+class RDMAQoSDowngradeScenario(_SwitchRDMACommon):
     @property
     def name(self) -> str:
         return "rdma_qos_downgrade"
-    
+
     @property
     def description(self) -> str:
-        return "RDMA QoS 降级 - 降低 RDMA 流量优先级"
-    
+        return "RDMA QoS downgrade via switch NETCONF"
+
     @property
     def layer(self) -> str:
-        return "os"
-    
+        return "hardware"
+
     async def inject(self, ctx: FaultContext) -> InjectResult:
-        interface = ctx.params.get("interface", "eth0")
-        # 灏?RDMA 娴侀噺鐨?DSCP 浠?26 (楂樹紭鍏堢骇) 闄嶄负 0 (best effort)
-        dscp_value = ctx.params.get("dscp_value", 0)
-        
-        # 浣跨敤 tc 璁剧疆 DSCP 閲嶆爣璁?
-        inject_cmd = (
-            f"sudo tc qdisc add dev {interface} root handle 1: mqprio "
-            f"num_tc 4 map 0 1 2 3 queues 4@0 4@4 4@8 4@12 hw 0"
-        )
-        recover_cmd = f"sudo tc qdisc del dev {interface} root"
-        
-        logger.info(
-            f"娉ㄥ叆 RDMA QoS 闄嶇骇: node={ctx.target_node}, interface={interface}"
-        )
-        
-        # 鍐欏叆 WAL
-        ctx.rollback.record(
-            fault_id=ctx.fault_id,
-            channel="ssh",
-            target=ctx.target_node,
-            inject_action="qos_downgrade",
-            inject_params={
-                "interface": interface,
-                "dscp_value": dscp_value,
-            },
-            recover_action="qos_restore",
-            recover_params={
-                "interface": interface,
-            },
-        )
-        
-        # 鎵ц娉ㄥ叆
-        result = await ctx.ssh.run_command(
-            node=ctx.target_node,
-            command=inject_cmd,
-        )
-        
-        if result.success:
-            logger.info(f"RDMA QoS 闄嶇骇娉ㄥ叆鎴愬姛: {ctx.fault_id}")
-            return InjectResult(success=True, fault_id=ctx.fault_id)
-        else:
-            logger.error(f"RDMA QoS 闄嶇骇娉ㄥ叆澶辫触: {result.error}")
-            return InjectResult(success=False, fault_id=ctx.fault_id, error=result.error)
-    
+        try:
+            switch, switch_name, interface = self._target(ctx)
+            self._guard_switch_action(ctx, "rdma_qos_downgrade", switch_name, interface)
+            baseline = self._capture_baseline(ctx, switch_name, interface)
+            if baseline.description == "":
+                return InjectResult(
+                    success=False,
+                    fault_id=ctx.fault_id,
+                    error="Baseline description is empty; this device cannot safely restore empty description after marker injection.",
+                )
+            self._store_baseline(ctx, baseline)
+
+            dscp = int(ctx.params.get("dscp", 26))
+            downgraded_tc = int(ctx.params.get("downgraded_tc", 0))
+            marker = f"[fi:qos:dscp{dscp}->tc{downgraded_tc}:{ctx.fault_id}]"
+            result = switch.apply_interface_config(switch_name, interface, description=marker)
+            if not result.success:
+                return InjectResult(success=False, fault_id=ctx.fault_id, error=result.error)
+
+            cfg = switch.get_interface_config(switch_name, interface)
+            if cfg and marker in cfg.description:
+                ctx.rollback.record(
+                    fault_id=ctx.fault_id,
+                    channel="switch",
+                    target=switch_name,
+                    inject_action="rdma_qos_downgrade",
+                    inject_params={"interface": interface, "dscp": dscp, "tc": downgraded_tc},
+                    recover_action="restore_interface_baseline",
+                    recover_params={"interface": interface},
+                )
+                return InjectResult(success=True, fault_id=ctx.fault_id)
+
+            return InjectResult(success=False, fault_id=ctx.fault_id, error="Post-change verification failed")
+        except Exception as exc:
+            return InjectResult(success=False, fault_id=ctx.fault_id, error=str(exc))
+
     async def recover(self, ctx: FaultContext) -> RecoverResult:
-        interface = ctx.params.get("interface", "eth0")
-        recover_cmd = f"sudo tc qdisc del dev {interface} root"
-        
-        logger.info(f"鎭㈠ RDMA QoS: node={ctx.target_node}, interface={interface}")
-        
-        result = await ctx.ssh.run_command(
-            node=ctx.target_node,
-            command=recover_cmd,
-        )
-        
-        # tc qdisc del 鍙兘鍥犱负 qdisc 涓嶅瓨鍦ㄨ€屽け璐ワ紝杩欐槸鍙帴鍙楃殑
-        ctx.rollback.mark_recovered(ctx.fault_id)
-        return RecoverResult(success=True, fault_id=ctx.fault_id)
-    
+        return self._restore_interface_baseline(ctx)
+
     def monitor_queries(self) -> dict[str, str]:
         return {
-            "rdma_throughput": 'rdma_throughput_bytes_total',
-            "rdma_latency": 'rdma_latency_seconds',
-            "qos_dropped_packets": 'qos_dropped_packets_total',
+            "rdma_throughput": "rdma_throughput_bytes_total",
+            "rdma_latency": "rdma_latency_seconds",
+            "qos_dropped_packets": "qos_dropped_packets_total",
         }
 
-
-# ============================================================================
-# 鍦烘櫙娉ㄥ唽鍒楄〃
-# ============================================================================
 
 SCENARIOS = [
     PFCDeadlockScenario,
@@ -580,4 +515,3 @@ SCENARIOS = [
     RoCEMTUMismatchScenario,
     RDMAQoSDowngradeScenario,
 ]
-
