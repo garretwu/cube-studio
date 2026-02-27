@@ -1,107 +1,98 @@
-"""Prometheus query channel."""
+"""
+Prometheus channel.
+"""
 from __future__ import annotations
 
-import datetime as dt
-import json
-import urllib.parse
-import urllib.request
+import asyncio
+from datetime import datetime
 from typing import Any
 
-from .base import BaseChannel, ChannelResult
+import httpx
+
+from lib.channels.base import BaseChannel
+from fault_injector.config.schema import ChannelResult
 
 
 class PrometheusChannel(BaseChannel):
-    def __init__(self, *, base_url: str, timeout: int = 15, dry_run: bool = False) -> None:
-        super().__init__(dry_run=dry_run, wal=None)
-        self.base_url = base_url.rstrip("/")
+    """Prometheus HTTP API queries (read-only)."""
+
+    def __init__(self, base_url: str, dry_run: bool = False, timeout: int = 30):
+        super().__init__(dry_run=dry_run, wal=None, guard=None)
+        self.base_url = base_url
         self.timeout = timeout
+        self._client: httpx.AsyncClient | None = None
+
+    async def _client_get(self) -> httpx.AsyncClient:
+        if self._client is None:
+            self._client = httpx.AsyncClient(base_url=self.base_url, timeout=self.timeout)
+        return self._client
 
     async def _execute_impl(self, action: str, params: dict[str, Any]) -> ChannelResult:
         if action == "query_instant":
             value = await self.query_instant(params["promql"])
-            return ChannelResult(success=True, data=value)
+            return ChannelResult(success=True, output=str(value))
         if action == "query_range":
-            value = await self.query_range(
+            result = await self.query_range(
                 params["promql"],
                 params["start"],
                 params["end"],
                 params.get("step", "15s"),
             )
-            return ChannelResult(success=True, data=value)
-        return ChannelResult(success=False, error=f"unknown action: {action}")
+            return ChannelResult(success=True, output=str(result))
+        return ChannelResult(success=False, error=f"Unknown action: {action}")
 
     async def query_instant(self, promql: str) -> float:
-        query = urllib.parse.quote(promql, safe="")
-        url = f"{self.base_url}/api/v1/query?query={query}"
-        data = self._http_get_json(url)
-        result = data.get("data", {}).get("result", [])
+        client = await self._client_get()
+        resp = await client.get("/api/v1/query", params={"query": promql})
+        resp.raise_for_status()
+        payload = resp.json()
+        result = payload.get("data", {}).get("result", [])
         if not result:
             return 0.0
-        value = result[0].get("value", [0, "0"])[1]
-        return float(value)
+        return float(result[0]["value"][1])
 
     async def query_range(
         self,
         promql: str,
-        start: dt.datetime,
-        end: dt.datetime,
+        start: datetime,
+        end: datetime,
         step: str = "15s",
     ) -> list[tuple[float, float]]:
-        query = urllib.parse.quote(promql, safe="")
-        url = (
-            f"{self.base_url}/api/v1/query_range?query={query}"
-            f"&start={start.timestamp()}&end={end.timestamp()}&step={step}"
+        client = await self._client_get()
+        resp = await client.get(
+            "/api/v1/query_range",
+            params={
+                "query": promql,
+                "start": start.timestamp(),
+                "end": end.timestamp(),
+                "step": step,
+            },
         )
-        data = self._http_get_json(url)
-        result = data.get("data", {}).get("result", [])
+        resp.raise_for_status()
+        payload = resp.json()
+        result = payload.get("data", {}).get("result", [])
         if not result:
             return []
-        values = result[0].get("values", [])
-        return [(float(ts), float(val)) for ts, val in values]
+        return [(float(ts), float(val)) for ts, val in result[0].get("values", [])]
 
     async def collect_baseline(
         self,
         queries: dict[str, str],
         duration: int = 120,
-        sample_interval: int = 15,
+        interval: int = 15,
     ) -> dict[str, list[float]]:
-        rounds = max(1, duration // max(1, sample_interval))
-        out: dict[str, list[float]] = {k: [] for k in queries}
-        for _ in range(rounds):
+        out: dict[str, list[float]] = {name: [] for name in queries}
+        end_ts = asyncio.get_event_loop().time() + duration
+        while asyncio.get_event_loop().time() < end_ts:
             for name, promql in queries.items():
-                out[name].append(await self.query_instant(promql))
-            await _sleep(sample_interval)
+                try:
+                    out[name].append(await self.query_instant(promql))
+                except Exception:
+                    out[name].append(0.0)
+            await asyncio.sleep(interval)
         return out
 
-    async def compare_to_baseline(
-        self,
-        current: dict[str, float],
-        baseline: dict[str, list[float]],
-        threshold: float = 0.1,
-    ) -> dict[str, dict[str, float | bool]]:
-        report: dict[str, dict[str, float | bool]] = {}
-        for key, cur in current.items():
-            base_values = baseline.get(key, [])
-            base_mean = (sum(base_values) / len(base_values)) if base_values else 0.0
-            if base_mean == 0:
-                deviation = 0.0 if cur == 0 else 1.0
-            else:
-                deviation = abs(cur - base_mean) / abs(base_mean)
-            report[key] = {
-                "current": cur,
-                "baseline_mean": base_mean,
-                "deviation_ratio": deviation,
-                "exceeds_threshold": deviation > threshold,
-            }
-        return report
-
-    def _http_get_json(self, url: str) -> dict[str, Any]:
-        with urllib.request.urlopen(url, timeout=self.timeout) as resp:
-            text = resp.read().decode("utf-8")
-        return json.loads(text or "{}")
-
-
-async def _sleep(seconds: int) -> None:
-    import asyncio
-
-    await asyncio.sleep(seconds)
+    async def close(self) -> None:
+        if self._client:
+            await self._client.aclose()
+            self._client = None

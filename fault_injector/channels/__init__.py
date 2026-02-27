@@ -1,30 +1,23 @@
-"""Channel package."""
+"""Compatibility imports for channels now hosted under lib.channels."""
 
-from fault_injector.channels.base import BaseChannel, ChannelResult
-from fault_injector.channels.ssh import SSHChannel
-from fault_injector.channels.redfish import RedfishChannel
-
-try:
-    from fault_injector.channels.prometheus import PrometheusChannel
-except Exception:  # optional dependency import guard
-    PrometheusChannel = None  # type: ignore[assignment]
-
-try:
-    from fault_injector.channels.switch import SwitchChannel
-except Exception:
-    SwitchChannel = None  # type: ignore[assignment]
-
-try:
-    from fault_injector.channels.kubernetes import K8sChannel
-except Exception:
-    K8sChannel = None  # type: ignore[assignment]
+from lib.channels import (
+    BaseChannel,
+    K8sChannel,
+    PrometheusChannel,
+    RedfishChannel,
+    SSHChannel,
+    SwitchChannel,
+)
+from fault_injector.config.schema import ChannelResult
+from fault_injector.safety.guard import SafetyViolationError
 
 __all__ = [
     "BaseChannel",
     "ChannelResult",
-    "SSHChannel",
-    "RedfishChannel",
-    "PrometheusChannel",
-    "SwitchChannel",
     "K8sChannel",
+    "PrometheusChannel",
+    "RedfishChannel",
+    "SSHChannel",
+    "SwitchChannel",
+    "SafetyViolationError",
 ]

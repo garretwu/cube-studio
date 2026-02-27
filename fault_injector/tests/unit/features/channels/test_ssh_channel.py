@@ -13,8 +13,8 @@ from __future__ import annotations
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from fault_injector.channels.ssh import SSHChannel
-from fault_injector.channels.base import BaseChannel
+from lib.channels.ssh import SSHChannel
+from lib.channels.base import BaseChannel
 from fault_injector.config.schema import ChannelResult, SSHConfig, TargetNodeConfig
 
 
@@ -397,7 +397,7 @@ class TestSSHChannelIntegration:
     @pytest.mark.asyncio
     async def test_connection_with_mock(self, ssh_channel_real):
         """Test connection with mocked asyncssh."""
-        with patch("fault_injector.channels.ssh.asyncssh") as mock_asyncssh:
+        with patch("lib.channels.ssh.asyncssh") as mock_asyncssh:
             # Setup mock
             mock_conn = AsyncMock()
             mock_conn.is_closed.return_value = False
@@ -421,7 +421,7 @@ class TestSSHChannelIntegration:
     @pytest.mark.asyncio
     async def test_connection_failure_with_mock(self, ssh_channel_real):
         """Test connection failure handling with mocked asyncssh."""
-        with patch("fault_injector.channels.ssh.asyncssh") as mock_asyncssh:
+        with patch("lib.channels.ssh.asyncssh") as mock_asyncssh:
             # Setup mock to fail
             mock_asyncssh.connect = AsyncMock(
                 side_effect=Exception("Connection refused")

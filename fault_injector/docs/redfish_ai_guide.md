@@ -32,7 +32,7 @@ Use this order in agents/workflows:
 ## Example Usage
 
 ```python
-from fault_injector.channels.redfish import RedfishChannel
+from lib.channels.redfish import RedfishChannel
 
 channel = RedfishChannel(dry_run=False, timeout=30)
 

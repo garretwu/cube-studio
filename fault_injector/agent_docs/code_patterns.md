@@ -60,7 +60,7 @@ from typing import Any, Optional
 from pydantic import BaseModel
 
 # Local imports
-from fault_injector.channels.base import BaseChannel
+from lib.channels.base import BaseChannel
 
 # Module-level constants
 LOGGER = logging.getLogger(__name__)
@@ -352,7 +352,7 @@ import httpx
 from pydantic import BaseModel
 
 # 4. Local imports (alphabetical)
-from fault_injector.channels.base import BaseChannel
+from lib.channels.base import BaseChannel
 from fault_injector.config.schema import FaultInjectorConfig
 ```
 

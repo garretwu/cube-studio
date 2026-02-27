@@ -26,7 +26,7 @@ def _configure_console_encoding() -> None:
 project_root = Path(__file__).parent.parent.parent.parent
 sys.path.insert(0, str(project_root))
 
-from fault_injector.channels.switch import (
+from lib.channels.switch import (
     H3CDevice,
     H3CNetconfClient,
     SwitchChannel,
