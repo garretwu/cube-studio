@@ -36,3 +36,5 @@ compile.py
 /install/docker/kubeconfig/
 /install/docker/project/
 /myapp/dm/
+/reqs/
+.venv/
