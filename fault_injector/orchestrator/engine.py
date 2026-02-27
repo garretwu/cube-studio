@@ -27,11 +27,11 @@ from fault_injector.orchestrator.session import (
     ScenarioResult,
 )
 from fault_injector.orchestrator.watchdog import FaultWatchdog
-from fault_injector.channels.ssh import SSHChannel
-from fault_injector.channels.prometheus import PrometheusChannel
-from fault_injector.channels.kubernetes import K8sChannel
-from fault_injector.channels.redfish import RedfishChannel
-from fault_injector.channels.switch import SwitchChannel
+from lib.channels.ssh import SSHChannel
+from lib.channels.prometheus import PrometheusChannel
+from lib.channels.kubernetes import K8sChannel
+from lib.channels.redfish import RedfishChannel
+from lib.channels.switch import SwitchChannel
 from fault_injector.safety.rollback import RollbackJournal
 from fault_injector.safety.guard import SafetyGuard
 from fault_injector.scenarios.registry import SCENARIO_REGISTRY

@@ -24,8 +24,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from fault_injector.channels.base import BaseChannel
-from fault_injector.channels.ssh import SSHChannel
+from lib.channels.base import BaseChannel
+from lib.channels.ssh import SSHChannel
 from fault_injector.scenarios.base import BaseScenario, FaultContext
 from fault_injector.config.schema import ChannelResult, InjectResult, RecoverResult
 

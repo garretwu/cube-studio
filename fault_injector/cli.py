@@ -89,8 +89,8 @@ def run_cmd(
     from fault_injector.config.schema import FaultInjectorConfig
     from fault_injector.safety.guard import SafetyGuard
     from fault_injector.safety.rollback import RollbackJournal
-    from fault_injector.channels.ssh import SSHChannel
-    from fault_injector.channels.redfish import RedfishChannel
+    from lib.channels.ssh import SSHChannel
+    from lib.channels.redfish import RedfishChannel
     from fault_injector.scenarios.registry import get_scenario, list_scenarios
     
     # 加载配置

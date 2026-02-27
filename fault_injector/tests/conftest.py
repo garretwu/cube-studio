@@ -27,7 +27,7 @@ from fault_injector.config.schema import (
 )
 from fault_injector.safety.guard import SafetyGuard
 from fault_injector.safety.rollback import RollbackJournal
-from fault_injector.channels.ssh import SSHChannel
+from lib.channels.ssh import SSHChannel
 from fault_injector.scenarios.base import FaultContext
 
 
@@ -159,7 +159,7 @@ def mock_ssh_channel_with_mocks(
     Returns:
         tuple: (SSHChannel instance, mock connection)
     """
-    with patch("fault_injector.channels.ssh.asyncssh") as mock_asyncssh:
+    with patch("lib.channels.ssh.asyncssh") as mock_asyncssh:
         # Setup mock connection
         mock_conn = AsyncMock()
         mock_conn.is_closed.return_value = False

@@ -1,4 +1,4 @@
-<!--
+﻿<!--
 =============================================================================
 FILE: agents.md
 PURPOSE: Universal AI instructions for working with this project
@@ -6,7 +6,6 @@ GUIDANCE FOR AI AGENTS:
 - This is the FIRST file you should read when working on this project
 - Follow these instructions for all interactions with this codebase
 - These instructions apply to all AI agents (Claude, GPT, etc.)
-- Update this file when adding new AI-relevant conventions
 =============================================================================
 -->
 
@@ -14,41 +13,92 @@ GUIDANCE FOR AI AGENTS:
 
 ## Quick Start for AI Agents
 
-Welcome to the **Fault Injector** project. This file contains universal instructions for AI agents working on this codebase.
-
-### First Steps
-
-1. **Read this file** (`agents.md`) - You are here
-2. **Read project brief** (`agent_docs/project_brief.md`) - Understand what this project is
-3. **Check tech stack** (`agent_docs/tech_stack.md`) - Know what technologies are used
-4. **Review code patterns** (`agent_docs/code_patterns.md`) - Follow coding conventions
+1. Read this file (`agents.md`)
+2. Read `agent_docs/project_brief.md`
+3. Read `agent_docs/tech_stack.md`
+4. Read `agent_docs/code_patterns.md`
 
 ---
 
 ## Project Context
 
-### What is this project?
+Fault Injector is a multi-dimensional fault injection system for Cube Studio resilience testing across hardware, OS, platform, and service layers.
 
-Fault Injector is a multi-dimensional fault injection system for testing the resilience of the Cube Studio platform. It injects controlled faults across hardware, OS, platform, and service layers.
+Key principles:
 
-### Key Principles
+1. Safety first (recoverable operations only)
+2. Async by default for I/O
+3. Channel-based communication abstraction
+4. Scenario-driven fault logic
 
-1. **Safety First**: All operations must be recoverable
-2. **Async by Default**: All I/O is async
-3. **Channel-based**: Communication through abstracted channels
-4. **Scenario-driven**: Faults are reusable, configurable scenarios
+---
 
-### Important Files
+## Important Files
 
 | File | Purpose | Read When |
 |------|---------|-----------|
-| `agent_docs/project_brief.md` | Project overview | Starting work |
-| `agent_docs/tech_stack.md` | Technologies used | Adding dependencies |
+| `agent_docs/project_brief.md` | Project overview and status | Starting work |
+| `agent_docs/tech_stack.md` | Tech constraints | Adding dependencies |
 | `agent_docs/code_patterns.md` | Coding conventions | Writing code |
 | `agent_docs/product_requirements.md` | Requirements | Implementing features |
-| `FAULT_INJECTOR_IMPLEMENTATION_GUIDE.md` | Implementation details | Deep dive |
 | `docs/PRD.md` | Product requirements | Understanding scope |
 | `docs/techdesign.md` | Technical design | Architecture decisions |
+
+---
+
+## Project Trees
+
+### cube-studio (workspace)
+
+```text
+cube-studio/
+├── fault_injector/
+├── lib/
+│   └── channels/
+├── load_simulator/
+├── myapp/
+├── install/
+├── images/
+└── job-template/
+```
+
+### fault_injector
+
+```text
+fault_injector/
+├── agents.md
+├── cli.py
+├── testing.md
+├── agent_docs/
+├── docs/
+├── agents/
+├── config/
+├── orchestrator/
+├── reporting/
+├── safety/
+├── scenarios/
+└── tests/
+    ├── unit/features/channels/
+    ├── unit/features/scenarios/
+    ├── integration/
+    ├── e2e/
+    ├── fixtures/
+    ├── mocks/
+    └── helpers/
+```
+
+### Public Channel Modules
+
+```text
+lib/channels/
+├── base.py
+├── kubernetes.py
+├── prometheus.py
+├── redfish.py
+├── ssh.py
+├── switch.py
+└── __init__.py
+```
 
 ---
 
@@ -56,47 +106,20 @@ Fault Injector is a multi-dimensional fault injection system for testing the res
 
 ### Must Do
 
-- ✅ Use type hints on all public functions
-- ✅ Write docstrings for all public APIs
-- ✅ Follow async patterns for I/O operations
-- ✅ Use Pydantic for data validation
-- ✅ Write tests for new functionality
-- ✅ Follow the code patterns in `agent_docs/code_patterns.md`
+- Use type hints on public functions
+- Write docstrings for public APIs
+- Follow async patterns for I/O
+- Use Pydantic models for config/data contracts
+- Write tests for new behavior
+- Follow `agent_docs/code_patterns.md`
 
 ### Must NOT Do
 
-- ❌ Use bare `except:` clauses
-- ❌ Use mutable default arguments
-- ❌ Hardcode credentials or secrets
-- ❌ Skip safety checks
-- ❌ Introduce new dependencies without updating tech_stack.md
-- ❌ Execute dangerous commands (see safety guards)
-
----
-
-## Project Structure
-
-```
-fault_injector/
-├── agents.md              ← You are here (AI instructions)
-├── agent_docs/            ← AI-specific documentation
-│   ├── project_brief.md
-│   ├── tech_stack.md
-│   ├── code_patterns.md
-│   └── product_requirements.md
-├── docs/                  ← Human-facing documentation
-│   ├── PRD.md
-│   ├── techdesign.md
-│   └── research-fault-injector.txt
-├── config/                ← Configuration management
-├── orchestrator/          ← Session orchestration
-├── agents/                ← Fault injection agents
-├── channels/              ← Communication channels
-├── scenarios/             ← Fault injection scenarios
-├── safety/                ← Safety guards and rollback
-├── reporting/             ← Report generation
-└── tests/                 ← Test suite
-```
+- Use bare `except:`
+- Use mutable default arguments
+- Hardcode credentials/secrets
+- Skip safety checks
+- Add dependencies without updating docs
 
 ---
 
@@ -104,120 +127,64 @@ fault_injector/
 
 ### Adding a New Scenario
 
-1. Create a new file in `scenarios/` (e.g., `scenarios/my_scenario.py`)
-2. Inherit from `BaseScenario` in `scenarios/base.py`
-3. Implement `inject()`, `recover()`, and `verify()` methods
-4. Register in `scenarios/registry.py`
-5. Add tests in `tests/scenario/`
-6. Update `agent_docs/product_requirements.md`
+1. Add file under `fault_injector/scenarios/`
+2. Inherit `BaseScenario`
+3. Implement `inject()`, `recover()`, `verify()`
+4. Register in `fault_injector/scenarios/registry.py`
+5. Add tests in `fault_injector/tests/unit/features/scenarios/`
 
 ### Adding a New Channel
 
-1. Create a new file in `channels/` (e.g., `channels/my_channel.py`)
-2. Inherit from `BaseChannel` in `channels/base.py`
-3. Implement `_execute_impl()` method
+1. Add file under `lib/channels/`
+2. Inherit `BaseChannel` from `lib/channels/base.py`
+3. Implement `_execute_impl()`
 4. Add safety checks for dangerous operations
-5. Add tests in `tests/channel/`
-6. Update `agent_docs/tech_stack.md`
+5. Add tests in `fault_injector/tests/unit/features/channels/`
 
 ### Fixing a Bug
 
-1. Write a test that reproduces the bug
-2. Fix the bug
-3. Verify the test passes
-4. Run the full test suite to ensure no regressions
+1. Write a failing test first
+2. Implement fix
+3. Re-run affected tests
+4. Re-run relevant suite for regressions
 
 ---
 
 ## Testing
 
-### Running Tests
-
 ```bash
-# Run all tests
+# all fault injector tests
 pytest fault_injector/tests/
 
-# Run specific test file
-pytest fault_injector/tests/scenario/test_scenarios.py
+# scenario unit tests
+pytest fault_injector/tests/unit/features/scenarios/test_scenarios.py
 
-# Run with coverage
+# channel unit tests
+pytest fault_injector/tests/unit/features/channels/
+
+# with coverage
 pytest fault_injector/tests/ --cov=fault_injector --cov-report=html
-
-# Run in dry-run mode
-python -m fault_injector run --config fault-injector-test.yaml --dry-run
 ```
 
-### Test Guidelines
-
-- Use `pytest` and `pytest-asyncio` for async tests
-- Mirror source structure in `tests/` directory
-- Use fixtures from `tests/conftest.py`
-- Mock external services (SSH, K8s, etc.)
-- See `testing.md` for detailed testing strategy
+See `fault_injector/testing.md` for detailed strategy.
 
 ---
 
-## Safety Guidelines
+## Safety Notes
 
-### Dangerous Commands (BLOCKED)
-
-These commands are blocked by safety guards:
-
-- `rm -rf /`
-- `dd if=/dev/zero`
-- `:(){ :|:& };:` (fork bomb)
-- BMC network configuration changes
-- Kubernetes namespace deletion
-
-### Recovery Guarantees
-
-- All faults must have a recovery command
-- Recovery commands are written to WAL before injection
-- Crash recovery is supported via `--resume`
+- All injections must have rollback/recovery behavior
+- Recovery info should be written before risky operations
+- Do not bypass guardrails for destructive operations
 
 ---
 
-## Communication Style
+## Checklist
 
-### When Working on This Project
-
-1. **Be explicit**: Reference specific files, functions, and requirements
-2. **Be safe**: Always consider recovery and rollback
-3. **Be thorough**: Write tests, update documentation
-4. **Be consistent**: Follow existing patterns
-
-### When Suggesting Changes
-
-1. Explain the reasoning
-2. Reference relevant requirements (REQ-XXX)
-3. Consider safety implications
-4. Update relevant documentation
-
----
-
-## Checklist for AI Agents
-
-Before completing a task, verify:
-
-- [ ] Read `agent_docs/project_brief.md` for context
-- [ ] Followed code patterns in `agent_docs/code_patterns.md`
-- [ ] All new functions have type hints
-- [ ] All public APIs have docstrings
-- [ ] Tests written for new functionality
-- [ ] Documentation updated if needed
-- [ ] No safety violations introduced
-- [ ] No hardcoded credentials
-
----
-
-## Questions?
-
-If you need more context:
-
-1. Check `FAULT_INJECTOR_IMPLEMENTATION_GUIDE.md` for implementation details
-2. Check `docs/techdesign.md` for architecture decisions
-3. Check existing code for patterns and examples
-4. Ask the user for clarification
+- [ ] Read project context docs
+- [ ] Follow code patterns
+- [ ] Added/updated tests
+- [ ] Updated docs when behavior changed
+- [ ] No safety regressions introduced
 
 ---
 
@@ -225,8 +192,4 @@ If you need more context:
 
 | Date | Version | Changes |
 |------|---------|---------|
-| 2026-02-27 | 1.0 | Initial AI instructions |
-
----
-
-*This file is maintained for AI agent context. Update when project conventions change.*
+| 2026-02-27 | 1.1 | Updated project trees and moved channel module location to `lib/channels` |

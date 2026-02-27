@@ -16,15 +16,15 @@ from fault_injector.config.schema import (
     RecoverResult,
     ScenarioResult,
 )
-from fault_injector.channels.ssh import SSHChannel
+from lib.channels.ssh import SSHChannel
 from fault_injector.safety.rollback import RollbackJournal
 from fault_injector.safety.guard import SafetyGuard
 
 if TYPE_CHECKING:
-    from fault_injector.channels.redfish import RedfishChannel
-    from fault_injector.channels.switch import SwitchChannel
-    from fault_injector.channels.kubernetes import K8sChannel
-    from fault_injector.channels.prometheus import PrometheusChannel
+    from lib.channels.redfish import RedfishChannel
+    from lib.channels.switch import SwitchChannel
+    from lib.channels.kubernetes import K8sChannel
+    from lib.channels.prometheus import PrometheusChannel
 
 logger = logging.getLogger(__name__)
 
