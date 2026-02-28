@@ -47,6 +47,31 @@ def test_cli_run_uses_orchestrator(monkeypatch, tmp_path):
     assert "session_id" in result.output
 
 
+def test_cli_run_can_disable_monitor_via_flag(monkeypatch, tmp_path):
+    cfg = tmp_path / "cfg.yaml"
+    cfg.write_text(_config_yaml(), encoding="utf-8")
+
+    seen: dict[str, bool] = {}
+
+    class _FakeOrchestrator:
+        def __init__(self, config, dry_run: bool, session_dir: str):
+            _ = (dry_run, session_dir)
+            seen["monitor_enabled"] = config.monitor.enabled
+
+        async def run(self):
+            s = Session.create(config_hash="x", session_dir=str(tmp_path))
+            s.complete()
+            return s
+
+    monkeypatch.setattr("fault_injector.cli.FaultOrchestrator", _FakeOrchestrator)
+
+    runner = CliRunner()
+    result = runner.invoke(main, ["run", "--config", str(cfg), "--no-monitor", "--yes"])
+
+    assert result.exit_code == 0
+    assert seen["monitor_enabled"] is False
+
+
 def test_cli_resume(monkeypatch):
     async def _fake_resume(session_id: str, session_dir: str):
         s = Session.create(config_hash="x", session_dir=session_dir)

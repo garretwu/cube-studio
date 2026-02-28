@@ -38,9 +38,16 @@ def main() -> None:
 @main.command("run")
 @click.option("--config", "config_path", type=click.Path(exists=True, dir_okay=False), default=None)
 @click.option("--dry-run", is_flag=True, default=False)
+@click.option("--no-monitor", is_flag=True, default=False, help="Disable monitoring (Prometheus) for this run.")
 @click.option("--scenario", "scenario_name", type=str, default=None)
 @click.option("--yes", "-y", is_flag=True, default=False)
-def run_cmd(config_path: Optional[str], dry_run: bool, scenario_name: Optional[str], yes: bool) -> None:
+def run_cmd(
+    config_path: Optional[str],
+    dry_run: bool,
+    no_monitor: bool,
+    scenario_name: Optional[str],
+    yes: bool,
+) -> None:
     """Execute a fault injection session via orchestrator."""
     if config_path:
         config = load_config(config_path)
@@ -49,6 +56,9 @@ def run_cmd(config_path: Optional[str], dry_run: bool, scenario_name: Optional[s
 
     if dry_run:
         config.global_.safety.dry_run = True
+
+    if no_monitor:
+        config.monitor.enabled = False
 
     if scenario_name:
         for name, sc in config.scenarios.items():
@@ -167,4 +177,3 @@ def resume_cmd(session_id: str, session_dir: str) -> None:
 
 if __name__ == "__main__":
     main()
-
