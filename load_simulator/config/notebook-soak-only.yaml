@@ -9,13 +9,13 @@ mode: "soak"
 # output_dir: "report"
 # bottleneck_analysis: true
 
-# global_config:
-#   cube_studio_url: "http://localhost"
-#   prometheus_url: "http://localhost:9090"
-#   project_id: 1
-#   auth_method: "username"
-#   auth_username: "admin"
-#   jwt_password: ""
+global_config:
+  cube_studio_url: "http://10.11.4.3:32655"
+  prometheus_url: "http://10.11.4.3:31260"
+  project_id: 1
+  auth_method: "username"
+  auth_username: "admin"
+  jwt_password: ""
 
 channels:
   notebook:
@@ -38,9 +38,10 @@ channels:
 
 notebook:
   enabled: true
-  jupyter_url: "http://localhost:8888"
+  jupyter_url: "http://10.11.4.3:32655/notebook/jupyter/admin-c821"
   token: ""
-  duration_seconds: 3600
+  username: "admin"
+  duration_seconds: 120
 
 # inference:
 #   enabled: false
@@ -56,12 +57,12 @@ notebook:
 #   prompt_pool_size: 100
 #   stream: false
 
-# pipeline:
-#   enabled: false
-#   cube_studio_url: "http://localhost"
-#   pipeline_id: ""
-#   concurrency: 2
-#   duration_seconds: 120
+pipeline:
+  enabled: false
+  cube_studio_url: "http://10.11.4.3:32655"
+  pipeline_id: ""
+  concurrency: 2
+  duration_seconds: 120
 
 # finetune:
 #   enabled: false

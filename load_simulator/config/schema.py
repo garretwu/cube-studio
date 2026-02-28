@@ -56,6 +56,7 @@ class NotebookConfig(_StrictBaseModel):
     enabled: bool = False
     jupyter_url: str = "http://localhost:8888"
     token: str = ""
+    username: str = ""
     duration_seconds: int = 60
 
 

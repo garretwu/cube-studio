@@ -490,10 +490,15 @@ class LoadOrchestrator:
             channel = NotebookChannel(
                 base_url=sec.jupyter_url,
                 token=sec.token,
+                username=sec.username,
                 timeout=int(getattr(runtime, "timeout", 30)),
             )
+            log_dir = None
+            if self._session_store is not None:
+                log_dir = self._session_store.session_dir(self._session_tracker.session_id)
             duration = max(1, int(round(sec.duration_seconds * duration_scale)))
-            return self._create_agent(factory, sec, channel), duration
+            agent = factory(sec, channel=channel, log_dir=log_dir)
+            return agent, duration
         raise ValueError(f"Unsupported agent: {name!r}")
 
     def _create_agent(self, factory: type[BaseAgent], section: Any, channel: Any) -> BaseAgent:

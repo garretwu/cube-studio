@@ -66,6 +66,9 @@ class _FakeNotebookChannel:
         self.deleted += 1
         return {"ok": True}
 
+    async def close(self) -> None:
+        pass
+
 
 class _FakeCubeChannel:
     def __init__(self) -> None:
