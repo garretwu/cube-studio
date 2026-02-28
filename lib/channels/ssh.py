@@ -105,6 +105,7 @@ class SSHChannel(BaseChannel):
             "port": ssh_config.port,
             "username": ssh_config.user,
             "known_hosts": None,  # 禁用主机密钥检查（内网环境）
+            "config": [],  # Avoid local ~/.ssh/config encoding/parse issues on Windows.
         }
         
         # 认证方式
@@ -168,7 +169,7 @@ class SSHChannel(BaseChannel):
             
             # 执行命令
             result = await asyncio.wait_for(
-                conn.run(actual_command),
+                conn.run(actual_command, encoding="utf-8", errors="replace"),
                 timeout=timeout,
             )
             
