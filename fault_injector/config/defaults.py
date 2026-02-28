@@ -47,6 +47,7 @@ global:
     excluded_nodes: []
 
 monitor:
+  enabled: true
   prometheus_url: "http://localhost:9090"
   baseline_duration: 60
   post_recovery_duration: 60

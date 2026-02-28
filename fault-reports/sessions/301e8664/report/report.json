@@ -1,0 +1,162 @@
+{
+  "session_id": "301e8664",
+  "status": "running",
+  "phase": "report",
+  "started_at": "2026-02-28T14:58:39.560602",
+  "finished_at": "2026-02-28T14:58:44.600310",
+  "baseline_metrics": {
+    "cpu_util": [],
+    "memory_util": [],
+    "rdma_link_flap:rdma_link_status": [],
+    "rdma_link_flap:nccl_allreduce_latency": [],
+    "rdma_link_flap:link_flap_count": []
+  },
+  "scenario_results": {
+    "rdma_link_flap": {
+      "scenario_name": "rdma_link_flap",
+      "inject_success": true,
+      "recover_success": true,
+      "verified": true,
+      "inject_duration_ms": 0,
+      "observe_duration_ms": 0,
+      "recover_duration_ms": 0,
+      "error": "",
+      "metrics": {
+        "during": {
+          "rdma_link_status": [],
+          "nccl_allreduce_latency": [],
+          "link_flap_count": []
+        }
+      }
+    }
+  },
+  "events": [
+    {
+      "timestamp": "2026-02-28T14:58:39.569443",
+      "phase": "init",
+      "event": "components_initialized",
+      "details": {}
+    },
+    {
+      "timestamp": "2026-02-28T14:58:39.570352",
+      "phase": "init",
+      "event": "phase_changed",
+      "details": {
+        "from": "init",
+        "to": "init"
+      }
+    },
+    {
+      "timestamp": "2026-02-28T14:58:39.570359",
+      "phase": "init",
+      "event": "preflight_started",
+      "details": {}
+    },
+    {
+      "timestamp": "2026-02-28T14:58:39.570949",
+      "phase": "init",
+      "event": "preflight_prometheus_skipped",
+      "details": {
+        "dry_run": true
+      }
+    },
+    {
+      "timestamp": "2026-02-28T14:58:39.571502",
+      "phase": "init",
+      "event": "preflight_completed",
+      "details": {}
+    },
+    {
+      "timestamp": "2026-02-28T14:58:39.572008",
+      "phase": "baseline",
+      "event": "phase_changed",
+      "details": {
+        "from": "init",
+        "to": "baseline"
+      }
+    },
+    {
+      "timestamp": "2026-02-28T14:58:39.572013",
+      "phase": "baseline",
+      "event": "baseline_started",
+      "details": {}
+    },
+    {
+      "timestamp": "2026-02-28T14:58:39.572902",
+      "phase": "baseline",
+      "event": "baseline_completed",
+      "details": {
+        "baseline_path": "fault-reports\\sessions\\301e8664\\baseline.json"
+      }
+    },
+    {
+      "timestamp": "2026-02-28T14:58:39.573423",
+      "phase": "inject",
+      "event": "phase_changed",
+      "details": {
+        "from": "baseline",
+        "to": "inject"
+      }
+    },
+    {
+      "timestamp": "2026-02-28T14:58:44.591990",
+      "phase": "inject",
+      "event": "fault_injected",
+      "details": {
+        "fault_id": "rdma_link_flap_cabc5c80",
+        "scenario_name": "rdma_link_flap"
+      }
+    },
+    {
+      "timestamp": "2026-02-28T14:58:44.592614",
+      "phase": "observe",
+      "event": "phase_changed",
+      "details": {
+        "from": "inject",
+        "to": "observe"
+      }
+    },
+    {
+      "timestamp": "2026-02-28T14:58:44.593103",
+      "phase": "recover",
+      "event": "phase_changed",
+      "details": {
+        "from": "observe",
+        "to": "recover"
+      }
+    },
+    {
+      "timestamp": "2026-02-28T14:58:44.597958",
+      "phase": "recover",
+      "event": "fault_recovered",
+      "details": {
+        "fault_id": "rdma_link_flap_cabc5c80",
+        "scenario_name": "rdma_link_flap"
+      }
+    },
+    {
+      "timestamp": "2026-02-28T14:58:44.598583",
+      "phase": "verify",
+      "event": "phase_changed",
+      "details": {
+        "from": "recover",
+        "to": "verify"
+      }
+    },
+    {
+      "timestamp": "2026-02-28T14:58:44.599622",
+      "phase": "report",
+      "event": "phase_changed",
+      "details": {
+        "from": "verify",
+        "to": "report"
+      }
+    },
+    {
+      "timestamp": "2026-02-28T14:58:44.599626",
+      "phase": "report",
+      "event": "report_started",
+      "details": {}
+    }
+  ]
+}

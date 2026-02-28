@@ -35,6 +35,8 @@ global:
     excluded_nodes: []
 
 monitor:
+  # Enable/disable Prometheus monitoring entirely
+  enabled: true
   # Prometheus base URL used by MonitorAgent
   prometheus_url: "http://localhost:9090"
   # Baseline metrics collection duration (seconds)

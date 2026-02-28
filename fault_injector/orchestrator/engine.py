@@ -119,11 +119,14 @@ class FaultOrchestrator:
             wal=self.rollback,
             guard=self.guard,
         )
-        prom_dry_run = self.dry_run or self.config.global_.safety.dry_run
-        self.prometheus = PrometheusChannel(
-            base_url=self.config.monitor.prometheus_url,
-            dry_run=prom_dry_run,
-        )
+        if self.config.monitor.enabled:
+            prom_dry_run = self.dry_run or self.config.global_.safety.dry_run
+            self.prometheus = PrometheusChannel(
+                base_url=self.config.monitor.prometheus_url,
+                dry_run=prom_dry_run,
+            )
+        else:
+            self.prometheus = None
         self.kubernetes = K8sChannel(dry_run=self.dry_run, wal=self.rollback)
         self.redfish = RedfishChannel(dry_run=self.dry_run, wal=self.rollback, guard=self.guard)
 

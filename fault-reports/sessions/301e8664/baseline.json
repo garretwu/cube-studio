@@ -1,0 +1,7 @@
+{
+  "cpu_util": [],
+  "memory_util": [],
+  "rdma_link_flap:rdma_link_status": [],
+  "rdma_link_flap:nccl_allreduce_latency": [],
+  "rdma_link_flap:link_flap_count": []
+}
