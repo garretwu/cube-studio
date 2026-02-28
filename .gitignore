@@ -38,3 +38,4 @@ compile.py
 /myapp/dm/
 /reqs/
 .venv/
+/reports/
