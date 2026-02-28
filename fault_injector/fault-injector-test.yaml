@@ -36,7 +36,7 @@ global:
 
 monitor:
   # Enable/disable Prometheus monitoring entirely
-  enabled: true
+  enabled: false
   # Prometheus base URL used by MonitorAgent
   prometheus_url: "http://10.11.4.3:31260"
   # Baseline metrics collection duration (seconds)
