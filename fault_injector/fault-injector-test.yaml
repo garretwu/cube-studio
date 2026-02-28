@@ -38,7 +38,7 @@ monitor:
   # Enable/disable Prometheus monitoring entirely
   enabled: true
   # Prometheus base URL used by MonitorAgent
-  prometheus_url: "http://localhost:9090"
+  prometheus_url: "http://10.11.4.3:31260"
   # Baseline metrics collection duration (seconds)
   baseline_duration: 60
   # Post-recovery observation duration (seconds)

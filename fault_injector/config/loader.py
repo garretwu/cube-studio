@@ -66,7 +66,7 @@ def _parse_config(raw: dict[str, Any]) -> FaultInjectorConfig:
     monitor_raw = raw.get("monitor", {})
     monitor = MonitorConfig(
         enabled=monitor_raw.get("enabled", True),
-        prometheus_url=monitor_raw.get("prometheus_url", "http://localhost:9090"),
+        prometheus_url=monitor_raw.get("prometheus_url", "http://10.11.4.3:31260"),
         baseline_duration=monitor_raw.get("baseline_duration", 60),
         post_recovery_duration=monitor_raw.get("post_recovery_duration", 60),
     )

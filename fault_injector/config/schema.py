@@ -59,7 +59,7 @@ class OrchestratorConfig(BaseModel):
 
 class MonitorConfig(BaseModel):
     enabled: bool = True
-    prometheus_url: str = "http://localhost:9090"
+    prometheus_url: str = "http://10.11.4.3:31260"
     baseline_duration: int = 60
     post_recovery_duration: int = 60
 
