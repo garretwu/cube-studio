@@ -1,0 +1,144 @@
+{
+  "session_id": "fbca4e65",
+  "status": "running",
+  "phase": "report",
+  "started_at": "2026-02-28T17:29:01.012806",
+  "finished_at": "2026-02-28T17:29:32.575452",
+  "baseline_metrics": {},
+  "scenario_results": {
+    "network_jitter": {
+      "scenario_name": "network_jitter",
+      "inject_success": true,
+      "recover_success": true,
+      "verified": true,
+      "inject_duration_ms": 0,
+      "observe_duration_ms": 0,
+      "recover_duration_ms": 0,
+      "error": "",
+      "metrics": {
+        "during": {}
+      }
+    }
+  },
+  "events": [
+    {
+      "timestamp": "2026-02-28T17:29:01.013719",
+      "phase": "init",
+      "event": "components_initialized",
+      "details": {}
+    },
+    {
+      "timestamp": "2026-02-28T17:29:01.014285",
+      "phase": "init",
+      "event": "phase_changed",
+      "details": {
+        "from": "init",
+        "to": "init"
+      }
+    },
+    {
+      "timestamp": "2026-02-28T17:29:01.014290",
+      "phase": "init",
+      "event": "preflight_started",
+      "details": {}
+    },
+    {
+      "timestamp": "2026-02-28T17:29:01.014735",
+      "phase": "init",
+      "event": "preflight_completed",
+      "details": {}
+    },
+    {
+      "timestamp": "2026-02-28T17:29:01.015141",
+      "phase": "baseline",
+      "event": "phase_changed",
+      "details": {
+        "from": "init",
+        "to": "baseline"
+      }
+    },
+    {
+      "timestamp": "2026-02-28T17:29:01.015145",
+      "phase": "baseline",
+      "event": "baseline_started",
+      "details": {}
+    },
+    {
+      "timestamp": "2026-02-28T17:29:01.015936",
+      "phase": "baseline",
+      "event": "baseline_completed",
+      "details": {
+        "baseline_path": "fault-reports\\sessions\\fbca4e65\\baseline.json"
+      }
+    },
+    {
+      "timestamp": "2026-02-28T17:29:01.016472",
+      "phase": "inject",
+      "event": "phase_changed",
+      "details": {
+        "from": "baseline",
+        "to": "inject"
+      }
+    },
+    {
+      "timestamp": "2026-02-28T17:29:02.192296",
+      "phase": "inject",
+      "event": "fault_injected",
+      "details": {
+        "fault_id": "network_jitter_a5ab593d",
+        "scenario_name": "network_jitter"
+      }
+    },
+    {
+      "timestamp": "2026-02-28T17:29:02.193073",
+      "phase": "observe",
+      "event": "phase_changed",
+      "details": {
+        "from": "inject",
+        "to": "observe"
+      }
+    },
+    {
+      "timestamp": "2026-02-28T17:29:32.202760",
+      "phase": "recover",
+      "event": "phase_changed",
+      "details": {
+        "from": "observe",
+        "to": "recover"
+      }
+    },
+    {
+      "timestamp": "2026-02-28T17:29:32.368492",
+      "phase": "recover",
+      "event": "fault_recovered",
+      "details": {
+        "fault_id": "network_jitter_a5ab593d",
+        "scenario_name": "network_jitter"
+      }
+    },
+    {
+      "timestamp": "2026-02-28T17:29:32.369590",
+      "phase": "verify",
+      "event": "phase_changed",
+      "details": {
+        "from": "recover",
+        "to": "verify"
+      }
+    },
+    {
+      "timestamp": "2026-02-28T17:29:32.574472",
+      "phase": "report",
+      "event": "phase_changed",
+      "details": {
+        "from": "verify",
+        "to": "report"
+      }
+    },
+    {
+      "timestamp": "2026-02-28T17:29:32.574479",
+      "phase": "report",
+      "event": "report_started",
+      "details": {}
+    }
+  ]
+}

@@ -88,7 +88,7 @@ switches:
 
 scenarios:
   # ---------------------------------------------------------------------------
-  # RC-2: Network Jitter (网络延迟抖动)
+  # RC-2: Network Jitter
   # ---------------------------------------------------------------------------
   # Uses tc netem to inject network delay and jitter
   # Effect: P95/P50 latency ratio > 10, intermittent token output
@@ -116,12 +116,12 @@ scenarios:
       duration: 30
 
   # ---------------------------------------------------------------------------
-  # F-5: RoCE MTU Mismatch (RoCE 网络 MTU 不一致)
+  # F-5: RoCE MTU Mismatch
   # ---------------------------------------------------------------------------
   # Modifies network interface MTU to create mismatch
   # Effect: Large packet loss, throughput drop, RDMA connection retries
   roce_mtu_mismatch:
-    enabled: true
+    enabled: false
     target_nodes:
       - "worker-01"
     params:
@@ -134,13 +134,13 @@ scenarios:
       original_mtu: 9000
 
   # ---------------------------------------------------------------------------
-  # F-1: PFC Deadlock (PFC 死锁)
+  # F-1: PFC Deadlock
   # ---------------------------------------------------------------------------
   # Configures PFC priority mapping to cause Head-of-Line Blocking
   # Effect: RDMA traffic blocked, NCCL AllReduce timeout
   # Requires configured switches entry above.
   pfc_deadlock:
-    enabled: false
+    enabled: true
     target_nodes:
       - "worker-01"
     params:
@@ -149,13 +149,13 @@ scenarios:
       priority: 3
 
   # ---------------------------------------------------------------------------
-  # F-2: ECN Misconfiguration (ECN 标记阈值错配)
+  # F-2: ECN Misconfiguration
   # ---------------------------------------------------------------------------
   # Modifies ECN threshold settings on switch
   # Effect: DCQCN rate reduction, unstable RDMA throughput
   # Requires configured switches entry above.
   ecn_misconfiguration:
-    enabled: false
+    enabled: true
     target_nodes:
       - "worker-01"
     params:
@@ -165,27 +165,28 @@ scenarios:
       max_threshold: 20
 
   # ---------------------------------------------------------------------------
-  # F-3: RDMA Load Imbalance (不均衡 RDMA 负载)
+  # F-3: RDMA Load Imbalance
   # ---------------------------------------------------------------------------
   # Modifies ECMP hash configuration for uneven load distribution
   # Effect: Some links congested, some idle, reduced throughput
   # Requires configured switches entry above.
   rdma_load_imbalance:
-    enabled: false
+    enabled: true
     target_nodes:
       - "worker-01"
     params:
       switch: "sw-200g"
+      interface: "200GE1/0/4"
       hash_algorithm: "src-dst-ip"
 
   # ---------------------------------------------------------------------------
-  # F-4: RDMA Link Flap (RDMA 链路间歇性中断)
+  # F-4: RDMA Link Flap
   # ---------------------------------------------------------------------------
   # Periodically shutdown/undo shutdown switch port
   # Effect: RDMA connection drop/rebuild, NCCL timeout/retry
   # Requires configured switches entry above.
   rdma_link_flap:
-    enabled: true
+    enabled: false
     target_nodes:
       - "worker-01"
     params:
@@ -195,17 +196,19 @@ scenarios:
       flap_duration: 5
 
   # ---------------------------------------------------------------------------
-  # F-6: RDMA QoS Downgrade (RDMA QoS 降级)
+  # F-6: RDMA QoS Downgrade
   # ---------------------------------------------------------------------------
   # Reduces RDMA traffic priority via DSCP/CoS mapping
   # Effect: RDMA competes with TCP, unstable throughput/latency
   rdma_qos_downgrade:
-    enabled: false
+    enabled: true
     target_nodes:
       - "worker-01"
     params:
-      interface: "roce200"
-      dscp_value: 0
+      switch: "sw-200g"
+      interface: "200GE1/0/4"
+      dscp: 0
+      downgraded_tc: 0
 
 # =============================================================================
 # Example: Minimal Test Configuration

@@ -34,7 +34,7 @@ class NetworkJitterScenario(BaseScenario):
 
     @property
     def description(self) -> str:
-        return "网络延迟抖动 - 使用 tc netem 注入不确定延迟"
+        return "Network jitter via tc netem delay injection"
 
     @property
     def layer(self) -> str:
@@ -47,7 +47,9 @@ class NetworkJitterScenario(BaseScenario):
         distribution = params.get("distribution", "pareto")
         loss_pct = params.get("loss_pct", 0)
 
-        cmd = f"sudo tc qdisc add dev {interface} root netem delay {delay_ms}ms"
+        # SSHChannel handles sudo; keep command body raw to avoid "sudo sudo ...".
+        # Use replace to make injection idempotent and avoid exclusivity errors.
+        cmd = f"tc qdisc replace dev {interface} root netem delay {delay_ms}ms"
         if jitter_ms > 0:
             cmd += f" {jitter_ms}ms"
         if distribution != "normal":
@@ -57,7 +59,7 @@ class NetworkJitterScenario(BaseScenario):
         return cmd
 
     def _build_recovery_command(self, interface: str) -> str:
-        return f"sudo tc qdisc del dev {interface} root"
+        return f"tc qdisc del dev {interface} root"
 
     async def inject(self, ctx: FaultContext) -> InjectResult:
         interface = ctx.params.get("interface", "eth0")
@@ -85,7 +87,7 @@ class NetworkJitterScenario(BaseScenario):
             recover_params={"node": ctx.target_node, "interface": interface},
         )
 
-        result = await ctx.ssh.run_command(node=ctx.target_node, command=inject_cmd)
+        result = await ctx.ssh.run_command(node=ctx.target_node, command=inject_cmd, use_sudo=True)
         if result.success:
             return InjectResult(success=True, fault_id=ctx.fault_id)
         return InjectResult(success=False, fault_id=ctx.fault_id, error=result.error)
@@ -93,7 +95,7 @@ class NetworkJitterScenario(BaseScenario):
     async def recover(self, ctx: FaultContext) -> RecoverResult:
         interface = ctx.params.get("interface", "eth0")
         recover_cmd = self._build_recovery_command(interface)
-        result = await ctx.ssh.run_command(node=ctx.target_node, command=recover_cmd)
+        result = await ctx.ssh.run_command(node=ctx.target_node, command=recover_cmd, use_sudo=True)
 
         if result.success or "No such file or directory" in result.error or "Cannot delete" in result.error:
             ctx.rollback.mark_recovered(ctx.fault_id)
@@ -106,7 +108,8 @@ class NetworkJitterScenario(BaseScenario):
         interface = ctx.params.get("interface", "eth0")
         result = await ctx.ssh.run_command(
             node=ctx.target_node,
-            command=f"sudo tc qdisc show dev {interface}",
+            command=f"tc qdisc show dev {interface}",
+            use_sudo=True,
         )
         if not result.success:
             return True
@@ -142,7 +145,7 @@ class GPUContentionScenario(BaseScenario):
     
     @property
     def description(self) -> str:
-        return "GPU 璧勬簮浜夋姠 鈥?浣跨敤 gpu-burn 鍒堕€?GPU 婊¤浇"
+        return "GPU resource contention via gpu-burn saturation"
     
     @property
     def layer(self) -> str:
@@ -248,7 +251,7 @@ class StorageIOInterferenceScenario(BaseScenario):
     
     @property
     def description(self) -> str:
-        return "瀛樺偍 I/O 骞叉壈 鈥?浣跨敤 fio 鍒堕€犵鐩?I/O 鍘嬪姏"
+        return "Storage I/O interference via fio stress workload"
     
     @property
     def layer(self) -> str:
@@ -361,7 +364,7 @@ class PlatformCascadeScenario(BaseScenario):
     
     @property
     def description(self) -> str:
-        return "骞冲彴缁勪欢绾ц仈寤惰繜 鈥?瀵?MySQL/Redis 娉ㄥ叆寤惰繜"
+        return "Platform cascade latency via MySQL/Redis delay injection"
     
     @property
     def layer(self) -> str:
@@ -469,7 +472,7 @@ class OSResourcePressureScenario(BaseScenario):
     
     @property
     def description(self) -> str:
-        return "OS 璧勬簮鍘嬪姏 鈥?浣跨敤 stress-ng 鍒堕€?CPU/鍐呭瓨鍘嬪姏"
+        return "OS resource pressure via stress-ng CPU and memory load"
     
     @property
     def layer(self) -> str:
@@ -584,7 +587,7 @@ class ThermalThrottlingScenario(BaseScenario):
     
     @property
     def description(self) -> str:
-        return "热降频 - 限制 GPU 功率模拟热降频"
+        return "Thermal throttling simulation via GPU power limit"
     
     @property
     def layer(self) -> str:
