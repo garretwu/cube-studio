@@ -1,34 +1,26 @@
 """
-Pydantic v2 配置模型
-
-定义 Fault Injector 的完整配置 Schema。
+Pydantic schemas for fault injector configuration and runtime records.
 """
 from __future__ import annotations
 
 from datetime import datetime
 from enum import Enum
-from typing import Any, Literal, Optional
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
 
-# ============================================================================
-# SSH 和节点配置
-# ============================================================================
-
 class SSHConfig(BaseModel):
-    """SSH 连接配置"""
     host: str
     port: int = 22
     user: str = "root"
     key_file: str | None = None
     password: str | None = None
     timeout: int = 30
-    use_sudo: bool = True  # 默认使用 sudo 执行命令
+    use_sudo: bool = True
 
 
 class RedfishConfig(BaseModel):
-    """Redfish BMC connection config."""
     bmc_host: str
     username: str | None = None
     password: str | None = None
@@ -38,75 +30,77 @@ class RedfishConfig(BaseModel):
 
 
 class TargetNodeConfig(BaseModel):
-    """目标节点配置"""
     name: str
     ssh: SSHConfig
     redfish: RedfishConfig | None = None
-    interface: str = "eth0"  # 网络接口
-    roles: list[str] = []
+    interface: str = "eth0"
+    roles: list[str] = Field(default_factory=list)
 
-
-# ============================================================================
-# 安全配置
-# ============================================================================
 
 class SafetyConfig(BaseModel):
-    """安全配置"""
     require_confirmation: bool = True
     auto_recover_timeout: int = 600
     dry_run: bool = False
     max_concurrent_faults: int = 3
-    excluded_nodes: list[str] = []
+    excluded_nodes: list[str] = Field(default_factory=list)
 
 
 class GlobalConfig(BaseModel):
-    """全局配置"""
     session_dir: str = "./fault-reports/sessions/"
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
     safety: SafetyConfig = Field(default_factory=SafetyConfig)
 
 
-# ============================================================================
-# 场景参数配置
-# ============================================================================
+class OrchestratorConfig(BaseModel):
+    max_parallel_agents: int = 1
+    observe_interval: int = 15
+    session_dir: str = "./fault-reports/sessions/"
+
+
+class MonitorConfig(BaseModel):
+    baseline_duration: int = 60
+    post_recovery_duration: int = 60
+
+
+class CombinedPhaseConfig(BaseModel):
+    time: str | int | float = "0s"
+    inject: list[str] = Field(default_factory=list)
+    recover: list[str] = Field(default_factory=list)
+
+
+class CombinedScenarioConfig(BaseModel):
+    name: str = ""
+    phases: list[CombinedPhaseConfig] = Field(default_factory=list)
+
+
+class ScenarioConfig(BaseModel):
+    name: str
+    enabled: bool = True
+    target_nodes: list[str] = Field(default_factory=list)
+    params: dict[str, Any] = Field(default_factory=dict)
+
 
 class NetworkJitterParams(BaseModel):
-    """网络延迟场景参数 (RC-2)"""
-    delay_ms: int = 50              # 基础延迟 (毫秒)
-    jitter_ms: int = 100            # 抖动范围 (毫秒)
+    delay_ms: int = 50
+    jitter_ms: int = 100
     distribution: Literal["normal", "pareto", "paretonormal"] = "pareto"
-    loss_pct: float = 0             # 丢包率 (%)
-    duration: int = 300             # 持续时间 (秒)
-    interface: str = "eth0"         # 网络接口
+    loss_pct: float = 0
+    duration: int = 300
+    interface: str = "eth0"
 
 
 class CPUStressParams(BaseModel):
-    """CPU 压力场景参数"""
     workers: int = 64
     load_percent: int = 95
     duration: int = 300
 
 
 class MemoryPressureParams(BaseModel):
-    """内存压力场景参数"""
     vm_bytes_percent: int = 85
     duration: int = 300
 
 
-class ScenarioConfig(BaseModel):
-    """场景配置"""
-    name: str
-    enabled: bool = True
-    target_nodes: list[str] = []
-    params: dict[str, Any] = {}
-
-
-# ============================================================================
-# Session 状态
-# ============================================================================
-
 class SessionStatus(str, Enum):
-    """Session 状态"""
     RUNNING = "running"
     COMPLETED = "completed"
     FAILED = "failed"
@@ -114,7 +108,6 @@ class SessionStatus(str, Enum):
 
 
 class SessionPhase(str, Enum):
-    """Session 阶段"""
     INIT = "init"
     INJECT = "inject"
     OBSERVE = "observe"
@@ -123,26 +116,20 @@ class SessionPhase(str, Enum):
 
 
 class Session(BaseModel):
-    """Session 状态模型"""
     session_id: str
     config_hash: str = ""
     started_at: datetime = Field(default_factory=datetime.now)
     status: SessionStatus = SessionStatus.RUNNING
     phase: SessionPhase = SessionPhase.INIT
-    active_faults: list[str] = []
+    active_faults: list[str] = Field(default_factory=list)
     rollback_journal_path: str = ""
-    events: list[dict] = []
+    events: list[dict[str, Any]] = Field(default_factory=list)
 
     class Config:
         use_enum_values = True
 
 
-# ============================================================================
-# 执行结果
-# ============================================================================
-
 class ChannelResult(BaseModel):
-    """Channel 执行结果"""
     success: bool
     output: str = ""
     error: str = ""
@@ -151,7 +138,6 @@ class ChannelResult(BaseModel):
 
 
 class InjectResult(BaseModel):
-    """故障注入结果"""
     success: bool
     fault_id: str = ""
     error: str | None = None
@@ -159,7 +145,6 @@ class InjectResult(BaseModel):
 
 
 class RecoverResult(BaseModel):
-    """故障恢复结果"""
     success: bool
     fault_id: str = ""
     error: str | None = None
@@ -167,50 +152,41 @@ class RecoverResult(BaseModel):
 
 
 class ScenarioResult(BaseModel):
-    """场景执行结果"""
     scenario_name: str
     success: bool
     inject_time: datetime | None = None
     recover_time: datetime | None = None
     verification_passed: bool | None = None
     error: str | None = None
-    metrics: dict[str, Any] = {}
+    metrics: dict[str, Any] = Field(default_factory=dict)
 
-
-# ============================================================================
-# 回滚日志
-# ============================================================================
 
 class RollbackEntryStatus(str, Enum):
-    """回滚条目状态"""
     ACTIVE = "active"
     RECOVERED = "recovered"
     FAILED = "failed"
 
 
 class RollbackEntry(BaseModel):
-    """回滚日志条目"""
     fault_id: str
     injected_at: datetime = Field(default_factory=datetime.now)
-    channel: str                       # ssh / redfish / k8s / switch
-    target: str                        # 目标节点/设备
-    inject_action: str                 # 注入操作描述
-    inject_params: dict = {}           # 注入参数
-    recover_action: str                # 恢复操作
-    recover_params: dict = {}          # 恢复参数
+    channel: str
+    target: str
+    inject_action: str
+    inject_params: dict[str, Any] = Field(default_factory=dict)
+    recover_action: str
+    recover_params: dict[str, Any] = Field(default_factory=dict)
     status: RollbackEntryStatus = RollbackEntryStatus.ACTIVE
 
     class Config:
         use_enum_values = True
 
 
-# ============================================================================
-# 主配置
-# ============================================================================
-
 class FaultInjectorConfig(BaseModel):
-    """Fault Injector 完整配置"""
     global_: GlobalConfig = Field(default_factory=GlobalConfig)
-    inventory: dict[str, list[TargetNodeConfig]] = {}
-    scenarios: dict[str, ScenarioConfig] = {}
+    orchestrator: OrchestratorConfig = Field(default_factory=OrchestratorConfig)
+    monitor: MonitorConfig = Field(default_factory=MonitorConfig)
+    inventory: dict[str, list[TargetNodeConfig]] = Field(default_factory=dict)
+    scenarios: dict[str, ScenarioConfig] = Field(default_factory=dict)
+    combined_scenario: CombinedScenarioConfig | None = None
     config_hash: str = ""

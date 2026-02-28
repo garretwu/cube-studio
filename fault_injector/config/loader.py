@@ -1,7 +1,5 @@
 """
-配置加载器
-
-从 YAML 文件加载配置并进行校验。
+Configuration loader for fault injector YAML files.
 """
 from __future__ import annotations
 
@@ -12,58 +10,36 @@ from typing import Any
 import yaml
 
 from fault_injector.config.schema import (
+    CombinedPhaseConfig,
+    CombinedScenarioConfig,
     FaultInjectorConfig,
     GlobalConfig,
-    SafetyConfig,
-    TargetNodeConfig,
-    SSHConfig,
+    MonitorConfig,
+    OrchestratorConfig,
     RedfishConfig,
+    SSHConfig,
+    SafetyConfig,
     ScenarioConfig,
+    TargetNodeConfig,
 )
-from fault_injector.config.defaults import get_default_config
 
 
 def load_config(path: str) -> FaultInjectorConfig:
-    """
-    从 YAML 文件加载配置。
-    
-    Args:
-        path: YAML 配置文件路径
-        
-    Returns:
-        FaultInjectorConfig: 校验后的配置对象
-        
-    Raises:
-        FileNotFoundError: 配置文件不存在
-        ValueError: 配置校验失败
-    """
     config_path = Path(path)
     if not config_path.exists():
-        raise FileNotFoundError(f"配置文件不存在: {path}")
-    
-    # 读取 YAML 文件
+        raise FileNotFoundError(f"Config file not found: {path}")
+
     with open(config_path, "r", encoding="utf-8") as f:
-        raw_config = yaml.safe_load(f)
-    
-    if raw_config is None:
-        raw_config = {}
-    
-    # 解析并校验配置
-    try:
-        config = _parse_config(raw_config)
-    except Exception as e:
-        raise ValueError(f"配置校验失败: {e}") from e
-    
+        raw = yaml.safe_load(f) or {}
+
+    config = _parse_config(raw)
+    config.config_hash = _compute_hash(config_path)
     return config
 
 
 def _parse_config(raw: dict[str, Any]) -> FaultInjectorConfig:
-    """解析原始配置字典为 FaultInjectorConfig"""
-    
-    # 解析全局配置
     global_raw = raw.get("global", {})
     safety_raw = global_raw.get("safety", {})
-    
     safety = SafetyConfig(
         require_confirmation=safety_raw.get("require_confirmation", True),
         auto_recover_timeout=safety_raw.get("auto_recover_timeout", 600),
@@ -71,21 +47,34 @@ def _parse_config(raw: dict[str, Any]) -> FaultInjectorConfig:
         max_concurrent_faults=safety_raw.get("max_concurrent_faults", 3),
         excluded_nodes=safety_raw.get("excluded_nodes", []),
     )
-    
     global_config = GlobalConfig(
         session_dir=global_raw.get("session_dir", "./fault-reports/sessions/"),
         log_level=global_raw.get("log_level", "INFO"),
         safety=safety,
     )
-    
-    # 解析节点清单
-    inventory: dict[str, list[TargetNodeConfig]] = {}
+
+    orchestrator_raw = raw.get("orchestrator", {})
+    orchestrator = OrchestratorConfig(
+        max_parallel_agents=orchestrator_raw.get("max_parallel_agents", 1),
+        observe_interval=orchestrator_raw.get("observe_interval", 15),
+        session_dir=orchestrator_raw.get(
+            "session_dir",
+            global_config.session_dir,
+        ),
+    )
+
+    monitor_raw = raw.get("monitor", {})
+    monitor = MonitorConfig(
+        baseline_duration=monitor_raw.get("baseline_duration", 60),
+        post_recovery_duration=monitor_raw.get("post_recovery_duration", 60),
+    )
+
     inventory_raw = raw.get("inventory", {})
-    
+    inventory: dict[str, list[TargetNodeConfig]] = {}
     for group_name, nodes in inventory_raw.items():
         if not isinstance(nodes, list):
             continue
-        inventory[group_name] = []
+        group_nodes: list[TargetNodeConfig] = []
         for node_raw in nodes:
             if not isinstance(node_raw, dict):
                 continue
@@ -99,10 +88,10 @@ def _parse_config(raw: dict[str, Any]) -> FaultInjectorConfig:
                 timeout=ssh_raw.get("timeout", 30),
                 use_sudo=ssh_raw.get("use_sudo", True),
             )
+            redfish_cfg = None
             redfish_raw = node_raw.get("redfish")
-            redfish = None
             if isinstance(redfish_raw, dict):
-                redfish = RedfishConfig(
+                redfish_cfg = RedfishConfig(
                     bmc_host=redfish_raw.get("bmc_host", ""),
                     username=redfish_raw.get("username"),
                     password=redfish_raw.get("password"),
@@ -110,41 +99,62 @@ def _parse_config(raw: dict[str, Any]) -> FaultInjectorConfig:
                     verify_tls=redfish_raw.get("verify_tls", True),
                     timeout=redfish_raw.get("timeout", 30),
                 )
-            node = TargetNodeConfig(
-                name=node_raw.get("name", ""),
-                ssh=ssh,
-                redfish=redfish,
-                interface=node_raw.get("interface", "eth0"),
-                roles=node_raw.get("roles", []),
+            group_nodes.append(
+                TargetNodeConfig(
+                    name=node_raw.get("name", ""),
+                    ssh=ssh,
+                    redfish=redfish_cfg,
+                    interface=node_raw.get("interface", "eth0"),
+                    roles=node_raw.get("roles", []),
+                )
             )
-            inventory[group_name].append(node)
-    
-    # 解析场景配置
-    scenarios: dict[str, ScenarioConfig] = {}
+        inventory[group_name] = group_nodes
+
     scenarios_raw = raw.get("scenarios", {})
-    
+    scenarios: dict[str, ScenarioConfig] = {}
     for scenario_name, scenario_raw in scenarios_raw.items():
         if not isinstance(scenario_raw, dict):
             continue
-        scenario = ScenarioConfig(
+        scenarios[scenario_name] = ScenarioConfig(
             name=scenario_raw.get("name", scenario_name),
             enabled=scenario_raw.get("enabled", True),
             target_nodes=scenario_raw.get("target_nodes", []),
             params=scenario_raw.get("params", {}),
         )
-        scenarios[scenario_name] = scenario
-    
+
+    combined = None
+    combined_raw = raw.get("combined_scenario")
+    if isinstance(combined_raw, dict):
+        phases: list[CombinedPhaseConfig] = []
+        for phase_raw in combined_raw.get("phases", []):
+            if not isinstance(phase_raw, dict):
+                continue
+            phases.append(
+                CombinedPhaseConfig(
+                    time=phase_raw.get("time", "0s"),
+                    inject=phase_raw.get("inject", []),
+                    recover=phase_raw.get("recover", []),
+                )
+            )
+        combined = CombinedScenarioConfig(
+            name=combined_raw.get("name", ""),
+            phases=phases,
+        )
+
     return FaultInjectorConfig(
         global_=global_config,
+        orchestrator=orchestrator,
+        monitor=monitor,
         inventory=inventory,
         scenarios=scenarios,
+        combined_scenario=combined,
     )
 
 
 def _compute_hash(path: Path) -> str:
-    """计算文件 SHA256 哈希"""
     sha256 = hashlib.sha256()
     with open(path, "rb") as f:
         for chunk in iter(lambda: f.read(4096), b""):
             sha256.update(chunk)
     return sha256.hexdigest()[:16]
+

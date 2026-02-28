@@ -1,473 +1,426 @@
 """
-FaultOrchestrator - Deterministic fault injection orchestration engine.
-
-This module manages the complete lifecycle of fault injection:
-1. Configuration parsing
-2. Preflight connectivity check
-3. Baseline collection
-4. Fault injection
-5. Observation period
-6. Fault recovery
-7. Recovery verification
-8. Report generation
+Fault orchestrator engine.
 """
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import uuid
+from datetime import datetime
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
+from fault_injector.agents import (
+    HardwareFaultAgent,
+    MonitorAgent,
+    OSFaultAgent,
+    PlatformFaultAgent,
+    ServiceFaultAgent,
+)
 from fault_injector.config.schema import FaultInjectorConfig, ScenarioConfig
+from fault_injector.orchestrator.scheduler import ScenarioScheduler
 from fault_injector.orchestrator.session import (
+    ActiveFault,
+    ScenarioResult,
     Session,
     SessionPhase,
     SessionStatus,
-    ActiveFault,
-    ScenarioResult,
 )
 from fault_injector.orchestrator.watchdog import FaultWatchdog
-from lib.channels.ssh import SSHChannel
-from lib.channels.prometheus import PrometheusChannel
-from lib.channels.kubernetes import K8sChannel
-from lib.channels.redfish import RedfishChannel
-from lib.channels.switch import SwitchChannel
-from fault_injector.safety.rollback import RollbackJournal
 from fault_injector.safety.guard import SafetyGuard
-from fault_injector.scenarios.registry import SCENARIO_REGISTRY
+from fault_injector.safety.rollback import RollbackJournal
 from fault_injector.scenarios.base import FaultContext
+from fault_injector.scenarios.registry import SCENARIO_REGISTRY
+from lib.channels.kubernetes import K8sChannel
+from lib.channels.prometheus import PrometheusChannel
+from lib.channels.redfish import RedfishChannel
+from lib.channels.ssh import SSHChannel
+from lib.channels.switch import SwitchChannel
 
 logger = logging.getLogger(__name__)
 
 
 class OrchestrationError(Exception):
-    """Orchestration error."""
     pass
 
 
 class FaultOrchestrator:
-    """
-    Deterministic fault injection orchestration engine.
-    
-    Execution flow:
-    1. Config parsing → Session initialization
-    2. Preflight check → Connectivity verification
-    3. Baseline collection → Metric baseline
-    4. Fault injection → Per-scenario execution
-    5. Observation → Metric collection
-    6. Recovery → Fault rollback
-    7. Verification → Baseline comparison
-    8. Report generation → HTML/JSON output
-    """
-    
-    def __init__(
-        self,
-        config: FaultInjectorConfig,
-        dry_run: bool = False,
-        session_dir: str = "./fault-reports/sessions/",
-    ):
-        """
-        Initialize the orchestrator.
-        
-        Args:
-            config: Fault injector configuration
-            dry_run: Dry-run mode (no actual injection)
-            session_dir: Directory for session persistence
-        """
+    """Deterministic orchestrator with agent-centric execution."""
+
+    def __init__(self, config: FaultInjectorConfig, dry_run: bool = False, session_dir: str | None = None):
         self.config = config
         self.dry_run = dry_run
-        self.session_dir = session_dir
-        
-        # Session state
-        self.session: Optional[Session] = None
-        
-        # Channels
-        self.ssh: Optional[SSHChannel] = None
-        self.prometheus: Optional[PrometheusChannel] = None
-        self.kubernetes: Optional[K8sChannel] = None
-        self.redfish: Optional[RedfishChannel] = None
-        self.switch: Optional[SwitchChannel] = None
-        
-        # Safety components
-        self.rollback: Optional[RollbackJournal] = None
-        self.guard: Optional[SafetyGuard] = None
-        self.watchdog: Optional[FaultWatchdog] = None
-    
+        self.session_dir = session_dir or config.global_.session_dir
+
+        self.session: Session | None = None
+        self.rollback: RollbackJournal | None = None
+        self.guard: SafetyGuard | None = None
+        self.watchdog: FaultWatchdog | None = None
+
+        self.ssh: SSHChannel | None = None
+        self.prometheus: PrometheusChannel | None = None
+        self.kubernetes: K8sChannel | None = None
+        self.redfish: RedfishChannel | None = None
+        self.switch: SwitchChannel | None = None
+
+        self.monitor_agent: MonitorAgent | None = None
+        self.layer_agents: dict[str, Any] = {}
+        self.scheduler = ScenarioScheduler(config)
+
     async def run(self) -> Session:
-        """
-        Execute the complete fault injection flow.
-        
-        Returns:
-            Session: Completed session with results
-        """
-        # Phase 1: Initialize session
-        self.session = Session.create(
-            config_hash="",
-            session_dir=self.session_dir,
-        )
+        self.session = Session.create(config_hash=self.config.config_hash, session_dir=self.session_dir)
         self.session.save(self.session_dir)
-        
-        logger.info(f"Session {self.session.session_id}: Starting fault injection")
-        
         try:
-            # Initialize components
             await self._init_components()
-            
-            # Start watchdog
-            if self.watchdog:
-                await self.watchdog.start()
-            
-            # Phase 2: Preflight check
-            self.session.set_phase(SessionPhase.INIT)
-            self.session.save(self.session_dir)
+            await self.watchdog.start()
             await self._preflight_check()
-            
-            # Phase 3: Baseline collection
-            self.session.set_phase(SessionPhase.BASELINE)
-            self.session.save(self.session_dir)
             baseline = await self._collect_baseline()
             self.session.baseline_metrics = baseline
-            
-            # Phase 4-7: Execute scenarios
-            scenarios = self._resolve_scenarios()
-            for scenario_config in scenarios:
-                await self._run_scenario(scenario_config, baseline)
-            
-            # Phase 8: Report generation
-            self.session.set_phase(SessionPhase.REPORT)
-            self.session.save(self.session_dir)
+
+            if self.scheduler.has_combined_plan():
+                await self._run_combined_plan(baseline)
+            else:
+                await self._run_sequential_plan(baseline)
+
             await self._generate_report()
-            
-            # Complete session
             self.session.complete()
             self.session.save(self.session_dir)
-            
-            logger.info(f"Session {self.session.session_id}: Completed successfully")
-            
-        except Exception as e:
-            logger.error(f"Session {self.session.session_id}: Failed - {e}")
-            self.session.fail(str(e))
-            self.session.save(self.session_dir)
-            
-            # Trigger recovery on failure
+            return self.session
+        except Exception as exc:
+            if self.session:
+                self.session.fail(str(exc))
+                self.session.save(self.session_dir)
             if self.rollback:
-                logger.info("Triggering recovery due to failure")
                 await self.rollback.recover_all()
             raise
-        
         finally:
-            # Stop watchdog
             if self.watchdog:
                 self.watchdog.cancel()
-            
-            # Close channels
             await self._close_channels()
-        
-        return self.session
-    
+
     async def _init_components(self) -> None:
-        """Initialize channels and safety components."""
+        assert self.session is not None
         session_path = Path(self.session_dir) / self.session.session_id
         session_path.mkdir(parents=True, exist_ok=True)
-        
-        # Safety components
-        self.rollback = RollbackJournal(session_path)
-        self.guard = SafetyGuard()
-        
-        # Watchdog
-        timeout = getattr(self.config.global_.safety, 'auto_recover_timeout', 600)
+
+        self.rollback = RollbackJournal(session_path / "rollback.jsonl")
+        self.guard = SafetyGuard(self.config.global_.safety)
         self.watchdog = FaultWatchdog(
-            timeout_seconds=timeout,
+            timeout_seconds=self.config.global_.safety.auto_recover_timeout,
             rollback_journal=self.rollback,
             session_id=self.session.session_id,
         )
-        
-        # Build inventory
+
         inventory = self._build_inventory()
-        
-        # SSH Channel
         self.ssh = SSHChannel(
             inventory=inventory,
-            dry_run=self.dry_run,
+            dry_run=self.dry_run or self.config.global_.safety.dry_run,
             wal=self.rollback,
             guard=self.guard,
         )
-        
-        # Prometheus Channel
-        prometheus_url = getattr(self.config.global_, 'prometheus_url', 'http://localhost:9090')
-        self.prometheus = PrometheusChannel(
-            base_url=prometheus_url,
-            dry_run=self.dry_run,
-        )
-        
-        # K8s Channel
-        kubeconfig = getattr(self.config.channels.kubernetes, 'kubeconfig', '~/.kube/config') if hasattr(self.config, 'channels') else '~/.kube/config'
-        self.kubernetes = K8sChannel(
-            kubeconfig=kubeconfig,
-            dry_run=self.dry_run,
-            wal=self.rollback,
-        )
-        
-        # Redfish Channel (BMC)
-        bmc_devices = self._build_bmc_inventory()
-        if bmc_devices:
-            self.redfish = RedfishChannel(
-                devices=bmc_devices,
-                dry_run=self.dry_run,
-                wal=self.rollback,
-                guard=self.guard,
-            )
-        
-        # Switch Channel
+        self.prometheus = PrometheusChannel(base_url="http://localhost:9090", dry_run=self.dry_run)
+        self.kubernetes = K8sChannel(dry_run=self.dry_run, wal=self.rollback)
+        self.redfish = RedfishChannel(dry_run=self.dry_run, wal=self.rollback, guard=self.guard)
+
         switch_devices = self._build_switch_inventory()
-        if switch_devices:
-            self.switch = SwitchChannel(
-                devices=switch_devices,
-                dry_run=self.dry_run,
-                wal=self.rollback,
-                guard=self.guard,
-            )
-        
-        self.session.add_event("Components initialized")
-    
-    def _build_inventory(self) -> dict:
-        """Build node inventory from config."""
-        inventory = {}
-        if hasattr(self.config, 'inventory') and self.config.inventory:
-            for group_name, nodes in self.config.inventory.items():
-                if isinstance(nodes, list):
-                    for node in nodes:
-                        if hasattr(node, 'name'):
-                            inventory[node.name] = node
+        self.switch = SwitchChannel(
+            devices=switch_devices,
+            dry_run=self.dry_run or not bool(switch_devices),
+            wal=self.rollback,
+            guard=self.guard,
+        )
+
+        channels = {
+            "ssh": self.ssh,
+            "prometheus": self.prometheus,
+            "kubernetes": self.kubernetes,
+            "redfish": self.redfish,
+            "switch": self.switch,
+        }
+        self.monitor_agent = MonitorAgent(channels=channels)
+        self.layer_agents = {
+            "hardware": HardwareFaultAgent(channels=channels),
+            "os": OSFaultAgent(channels=channels),
+            "platform": PlatformFaultAgent(channels=channels),
+            "service": ServiceFaultAgent(channels=channels),
+        }
+        self.session.add_event("components_initialized")
+        self.session.save(self.session_dir)
+
+    def _build_inventory(self) -> dict[str, Any]:
+        inventory: dict[str, Any] = {}
+        for _, nodes in self.config.inventory.items():
+            for node in nodes:
+                inventory[node.name] = node
         return inventory
-    
-    def _build_bmc_inventory(self) -> dict:
-        """Build BMC device inventory."""
-        devices = {}
-        if hasattr(self.config, 'inventory') and self.config.inventory:
-            for group_name, nodes in self.config.inventory.items():
-                if isinstance(nodes, list):
-                    for node in nodes:
-                        if hasattr(node, 'bmc') and node.bmc:
-                            devices[node.name] = {
-                                "host": node.bmc.host,
-                                "user": node.bmc.user,
-                                "password": node.bmc.password,
-                            }
-        return devices
-    
-    def _build_switch_inventory(self) -> dict:
-        """Build switch device inventory."""
-        devices = {}
-        # TODO: Parse switch inventory from config
-        return devices
-    
+
+    def _build_switch_inventory(self) -> dict[str, dict[str, Any]]:
+        # Optional switch inventory can be attached in future config extension.
+        return {}
+
     async def _preflight_check(self) -> None:
-        """Verify connectivity to all targets."""
-        self.session.add_event("Preflight check started")
-        
-        # Check SSH connectivity
-        if self.ssh:
-            # TODO: Implement connectivity check
-            pass
-        
-        # Check Prometheus connectivity
+        assert self.session is not None
+        self.session.set_phase(SessionPhase.INIT)
+        self.session.add_event("preflight_started")
+        self.session.save(self.session_dir)
         if self.prometheus:
             try:
                 await self.prometheus.query_instant("up")
-                logger.info("Prometheus connectivity: OK")
-            except Exception as e:
-                logger.warning(f"Prometheus connectivity check failed: {e}")
-        
-        self.session.add_event("Preflight check completed")
-    
-    async def _collect_baseline(self) -> dict:
-        """Collect baseline metrics before fault injection."""
-        self.session.add_event("Baseline collection started")
-        
-        baseline = {}
-        duration = getattr(self.config.monitor, 'baseline_duration', 60) if hasattr(self.config, 'monitor') else 60
-        
-        # Collect from Prometheus
-        if self.prometheus:
-            queries = {
-                "cpu_util": "avg(rate(node_cpu_seconds_total{mode!='idle'}[1m]))",
-                "memory_util": "avg(node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)",
-            }
-            try:
-                baseline = await self.prometheus.collect_baseline(queries, duration=duration)
-            except Exception as e:
-                logger.warning(f"Baseline collection failed: {e}")
-        
-        self.session.add_event("Baseline collection completed")
+            except Exception as exc:
+                logger.warning("Prometheus preflight warning: %s", exc)
+        self.session.add_event("preflight_completed")
+        self.session.save(self.session_dir)
+
+    async def _collect_baseline(self) -> dict[str, list[float]]:
+        assert self.session is not None
+        self.session.set_phase(SessionPhase.BASELINE)
+        self.session.add_event("baseline_started")
+        self.session.save(self.session_dir)
+
+        queries = self._aggregate_monitor_queries()
+        duration = self.config.monitor.baseline_duration
+        interval = self.config.orchestrator.observe_interval
+        baseline = await self.monitor_agent.collect_baseline(
+            queries=queries,
+            duration=duration,
+            interval=interval,
+        )
+
+        baseline_path = Path(self.session.baseline_path)
+        baseline_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(baseline_path, "w", encoding="utf-8") as f:
+            json.dump(baseline, f, indent=2, ensure_ascii=False)
+
+        self.session.add_event("baseline_completed", {"baseline_path": str(baseline_path)})
+        self.session.save(self.session_dir)
         return baseline
-    
+
+    def _aggregate_monitor_queries(self) -> dict[str, str]:
+        queries: dict[str, str] = {
+            "cpu_util": "avg(rate(node_cpu_seconds_total{mode!='idle'}[1m]))",
+            "memory_util": "avg(node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)",
+        }
+        for sc_cfg in self._resolve_scenarios():
+            scenario_cls = SCENARIO_REGISTRY.get(sc_cfg.name)
+            if not scenario_cls:
+                continue
+            scenario = scenario_cls()
+            for key, value in scenario.monitor_queries().items():
+                queries[f"{sc_cfg.name}:{key}"] = value
+        return queries
+
     def _resolve_scenarios(self) -> list[ScenarioConfig]:
-        """Resolve enabled scenarios from config."""
-        scenarios = []
-        if hasattr(self.config, 'scenarios') and self.config.scenarios:
-            for name, config in self.config.scenarios.items():
-                if hasattr(config, 'enabled') and config.enabled:
-                    scenarios.append(config)
+        scenarios: list[ScenarioConfig] = []
+        for _, sc in self.config.scenarios.items():
+            if sc.enabled:
+                scenarios.append(sc)
         return scenarios
-    
-    async def _run_scenario(
-        self,
-        config: ScenarioConfig,
-        baseline: dict,
-    ) -> None:
-        """Execute a single fault scenario."""
-        scenario_name = getattr(config, 'name', 'unknown')
-        
-        # Get scenario class from registry
-        scenario_class = SCENARIO_REGISTRY.get(scenario_name)
-        if not scenario_class:
-            logger.warning(f"Scenario not found in registry: {scenario_name}")
-            return
-        
-        scenario = scenario_class()
-        
-        # Create fault context
-        target_nodes = getattr(config, 'target_nodes', [])
-        target_node = target_nodes[0] if target_nodes else ""
-        params = getattr(config, 'params', {})
-        
-        # Generate fault ID
-        import uuid
-        fault_id = uuid.uuid4().hex[:8]
-        
-        ctx = FaultContext(
+
+    def _build_context(self, scenario_name: str, config: ScenarioConfig) -> FaultContext:
+        target_nodes = config.target_nodes
+        target = target_nodes[0] if target_nodes else ""
+        fault_id = f"{scenario_name}_{uuid.uuid4().hex[:8]}"
+        return FaultContext(
             ssh=self.ssh,
             rollback=self.rollback,
             guard=self.guard,
-            target_node=target_node,
-            params=params,
+            target_node=target,
+            params=config.params,
             fault_id=fault_id,
-            prometheus=self.prometheus,
-            kubernetes=self.kubernetes,
             redfish=self.redfish,
             switch=self.switch,
+            k8s=self.kubernetes,
+            prometheus=self.prometheus,
+            session_id=self.session.session_id if self.session else "",
+            interface=config.params.get("interface", "eth0"),
         )
-        
-        # Track result
+
+    def _get_layer_agent(self, scenario_name: str) -> Any:
+        scenario_class = SCENARIO_REGISTRY.get(scenario_name)
+        if scenario_class is None:
+            raise OrchestrationError(f"Scenario not found: {scenario_name}")
+        layer = scenario_class().layer
+        agent = self.layer_agents.get(layer)
+        if agent is None:
+            raise OrchestrationError(f"No agent for layer: {layer} (scenario={scenario_name})")
+        return agent
+
+    async def _run_sequential_plan(self, baseline: dict[str, list[float]]) -> None:
+        del baseline  # baseline is persisted and used by reports/verification context.
+        scenario_configs = self._resolve_scenarios()
+        for config in scenario_configs:
+            await self._run_single_scenario(config)
+
+    async def _run_single_scenario(self, config: ScenarioConfig) -> None:
+        assert self.session is not None
+        scenario_name = config.name
+        agent = self._get_layer_agent(scenario_name)
+        ctx = self._build_context(scenario_name, config)
         result = ScenarioResult(scenario_name=scenario_name)
-        
-        try:
-            # Phase 4: Inject
-            self.session.set_phase(SessionPhase.INJECT)
-            self.session.save(self.session_dir)
-            
-            inject_result = await scenario.inject(ctx)
-            result.inject_success = inject_result.success
-            
-            if not inject_result.success:
-                result.error = inject_result.error or "Injection failed"
-                logger.error(f"Scenario {scenario_name} injection failed: {result.error}")
-                return
-            
-            # Track active fault
-            from datetime import datetime
-            self.session.add_active_fault(ActiveFault(
-                fault_id=fault_id,
-                scenario_name=scenario_name,
-                target_node=target_node,
-                injected_at=datetime.now(),
-                params=params,
-            ))
-            self.session.save(self.session_dir)
-            
-            # Phase 5: Observe
-            self.session.set_phase(SessionPhase.OBSERVE)
-            self.session.save(self.session_dir)
-            
-            duration = params.get("duration", 60)
-            if not self.dry_run:
-                await asyncio.sleep(duration)
-            else:
-                logger.info(f"[DRY-RUN] Skip observation period ({duration}s)")
-            
-            # Phase 6: Recover
-            self.session.set_phase(SessionPhase.RECOVER)
-            self.session.save(self.session_dir)
-            
-            recover_result = await scenario.recover(ctx)
-            result.recover_success = recover_result.success
-            
-            # Also run WAL recovery
-            if self.rollback:
-                await self.rollback.recover_fault(fault_id)
-            
-            # Remove from active faults
-            self.session.remove_active_fault(fault_id)
-            
-            # Phase 7: Verify
-            self.session.set_phase(SessionPhase.VERIFY)
-            self.session.save(self.session_dir)
-            
-            result.verified = await scenario.verify(ctx)
-            
-        except Exception as e:
-            logger.error(f"Scenario {scenario_name} execution failed: {e}")
-            result.error = str(e)
-        
-        finally:
-            # Store result
+
+        self.session.set_phase(SessionPhase.INJECT)
+        self.session.save(self.session_dir)
+        inject_result = await agent.inject(scenario_name, ctx)
+        result.inject_success = inject_result.success
+        if not inject_result.success:
+            result.error = inject_result.error
             self.session.scenario_results[scenario_name] = result
             self.session.save(self.session_dir)
-    
+            return
+
+        self.session.add_active_fault(
+            ActiveFault(
+                fault_id=ctx.fault_id,
+                scenario_name=scenario_name,
+                target_node=ctx.target_node,
+                injected_at=datetime.now(),
+                params=config.params,
+            )
+        )
+        self.session.save(self.session_dir)
+
+        self.session.set_phase(SessionPhase.OBSERVE)
+        self.session.save(self.session_dir)
+        observe_duration = int(config.params.get("duration", 60))
+        if not self.dry_run:
+            await asyncio.sleep(observe_duration)
+
+        queries = {}
+        scenario_class = SCENARIO_REGISTRY.get(scenario_name)
+        if scenario_class:
+            queries = scenario_class().monitor_queries()
+        if queries:
+            result.metrics["during"] = await self.monitor_agent.observe(
+                queries=queries,
+                duration=min(observe_duration, self.config.orchestrator.observe_interval),
+                interval=self.config.orchestrator.observe_interval,
+            )
+
+        self.session.set_phase(SessionPhase.RECOVER)
+        self.session.save(self.session_dir)
+        recover_result = await agent.recover(scenario_name, ctx)
+        result.recover_success = recover_result.success
+        self.session.remove_active_fault(ctx.fault_id)
+        self.session.save(self.session_dir)
+
+        self.session.set_phase(SessionPhase.VERIFY)
+        self.session.save(self.session_dir)
+        verify_result = await agent.verify(scenario_name, ctx)
+        result.verified = verify_result.success
+        if not verify_result.success and not result.error:
+            result.error = verify_result.error
+
+        self.session.scenario_results[scenario_name] = result
+        self.session.save(self.session_dir)
+
+    async def _run_combined_plan(self, baseline: dict[str, list[float]]) -> None:
+        del baseline
+        assert self.session is not None
+        events = self.scheduler.build_events()
+        config_map = {sc.name: sc for sc in self._resolve_scenarios()}
+        active_contexts: dict[str, FaultContext] = {}
+        cursor = 0
+
+        for event in events:
+            wait_seconds = max(0, event.time_offset - cursor)
+            cursor = event.time_offset
+            if wait_seconds > 0:
+                self.session.set_phase(SessionPhase.OBSERVE)
+                self.session.add_event("combined_wait", {"seconds": wait_seconds})
+                self.session.save(self.session_dir)
+                if not self.dry_run:
+                    await asyncio.sleep(wait_seconds)
+
+            for scenario_name in event.targets:
+                config = config_map.get(scenario_name, ScenarioConfig(name=scenario_name, enabled=True))
+                agent = self._get_layer_agent(scenario_name)
+
+                if event.action == "inject":
+                    ctx = self._build_context(scenario_name, config)
+                    self.session.set_phase(SessionPhase.INJECT)
+                    self.session.save(self.session_dir)
+                    inject_result = await agent.inject(scenario_name, ctx)
+                    if inject_result.success:
+                        active_contexts[scenario_name] = ctx
+                        self.session.add_active_fault(
+                            ActiveFault(
+                                fault_id=ctx.fault_id,
+                                scenario_name=scenario_name,
+                                target_node=ctx.target_node,
+                                injected_at=datetime.now(),
+                                params=config.params,
+                            )
+                        )
+                    self.session.add_event(
+                        "combined_inject",
+                        {"scenario": scenario_name, "success": inject_result.success, "error": inject_result.error},
+                    )
+                    self.session.save(self.session_dir)
+                else:
+                    ctx = active_contexts.get(scenario_name)
+                    if ctx is None:
+                        continue
+                    self.session.set_phase(SessionPhase.RECOVER)
+                    self.session.save(self.session_dir)
+                    recover_result = await agent.recover(scenario_name, ctx)
+                    self.session.remove_active_fault(ctx.fault_id)
+                    self.session.add_event(
+                        "combined_recover",
+                        {"scenario": scenario_name, "success": recover_result.success, "error": recover_result.error},
+                    )
+                    self.session.set_phase(SessionPhase.VERIFY)
+                    verify_result = await agent.verify(scenario_name, ctx)
+                    self.session.add_event(
+                        "combined_verify",
+                        {"scenario": scenario_name, "verified": verify_result.success, "error": verify_result.error},
+                    )
+                    self.session.save(self.session_dir)
+                    active_contexts.pop(scenario_name, None)
+
     async def _generate_report(self) -> None:
-        """Generate fault injection report."""
-        self.session.add_event("Report generation started")
-        
-        # TODO: Implement report generation
-        # - Timeline
-        # - HTML report
-        # - Charts
-        # - Resilience score
-        
-        self.session.add_event("Report generation completed")
-    
+        assert self.session is not None
+        self.session.set_phase(SessionPhase.REPORT)
+        self.session.add_event("report_started")
+        self.session.save(self.session_dir)
+
+        report_dir = Path(self.session.report_dir)
+        report_dir.mkdir(parents=True, exist_ok=True)
+        report_payload = {
+            "session_id": self.session.session_id,
+            "status": self.session.status.value,
+            "phase": self.session.phase.value,
+            "started_at": self.session.started_at.isoformat(),
+            "finished_at": datetime.now().isoformat(),
+            "baseline_metrics": self.session.baseline_metrics,
+            "scenario_results": {k: v.to_dict() for k, v in self.session.scenario_results.items()},
+            "events": self.session.events,
+        }
+        with open(report_dir / "report.json", "w", encoding="utf-8") as f:
+            json.dump(report_payload, f, indent=2, ensure_ascii=False)
+        self.session.add_event("report_completed", {"report_path": str(report_dir / "report.json")})
+        self.session.save(self.session_dir)
+
     async def _close_channels(self) -> None:
-        """Close all channel connections."""
         if self.ssh:
             await self.ssh.close()
         if self.prometheus:
             await self.prometheus.close()
         if self.switch:
-            await self.switch.close()
-    
+            self.switch.close()
+
     @classmethod
-    async def resume(
-        cls,
-        session_id: str,
-        session_dir: str = "./fault-reports/sessions/",
-    ) -> Session:
-        """
-        Resume a paused or interrupted session.
-        
-        Args:
-            session_id: Session ID to resume
-            session_dir: Session directory
-            
-        Returns:
-            Session: Resumed session
-        """
-        session = Session.load(session_id, session_dir)
-        if not session:
+    async def resume(cls, session_id: str, session_dir: str = "./fault-reports/sessions/") -> Session:
+        session = Session.load(session_id=session_id, session_dir=session_dir)
+        if session is None:
             raise OrchestrationError(f"Session not found: {session_id}")
-        
-        # Check if session can be resumed
         if session.status == SessionStatus.COMPLETED:
-            logger.info(f"Session {session_id} already completed")
             return session
-        
-        # Recover active faults first
-        if session.active_faults:
-            logger.info(f"Recovering {len(session.active_faults)} active faults")
-            session_path = Path(session_dir) / session_id
-            rollback = RollbackJournal(session_path)
-            await rollback.recover_all()
-        
-        # TODO: Continue from interrupted phase
-        
+
+        rollback = RollbackJournal(Path(session_dir) / session_id / "rollback.jsonl")
+        await rollback.recover_all()
+        session.active_faults = []
+        session.set_phase(SessionPhase.RECOVER)
+        session.mark_recovered()
+        session.save(session_dir=session_dir)
         return session

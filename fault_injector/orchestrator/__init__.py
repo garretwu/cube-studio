@@ -8,10 +8,13 @@ This module manages the complete lifecycle of fault injection:
 - Scheduler for combined scenarios
 """
 from fault_injector.orchestrator.engine import FaultOrchestrator
+from fault_injector.orchestrator.scheduler import ScheduledEvent, ScenarioScheduler
 from fault_injector.orchestrator.session import Session, SessionPhase, SessionStatus
 
 __all__ = [
     "FaultOrchestrator",
+    "ScheduledEvent",
+    "ScenarioScheduler",
     "Session",
     "SessionPhase",
     "SessionStatus",

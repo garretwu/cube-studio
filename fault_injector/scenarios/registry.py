@@ -30,36 +30,6 @@ from fault_injector.scenarios.rdma_anomaly import (
     RDMAQoSDowngradeScenario,    # F-6
 )
 
-# Hardware extension scenarios
-from fault_injector.scenarios.hardware import (
-    CPUStressScenario,
-    GPURemovalScenario,
-    ThermalThrottleHWScenario,
-    NetworkDelayHWScenario,
-)
-
-# OS extension scenarios
-from fault_injector.scenarios.os_fault import (
-    MemoryPressureScenario,
-    DiskFullScenario,
-    TimeSkewScenario,
-)
-
-# Platform extension scenarios
-from fault_injector.scenarios.platform import (
-    MySQLConnectionDropScenario,
-    RedisUnavailableScenario,
-    CeleryWorkerKillScenario,
-    IstioGatewayKillScenario,
-)
-
-# Service extension scenarios
-from fault_injector.scenarios.service import (
-    InferencePodKillScenario,
-    PipelineWorkflowCancelScenario,
-    NotebookPodKillScenario,
-)
-
 logger = logging.getLogger(__name__)
 
 SCENARIO_REGISTRY: dict[str, Type[BaseScenario]] = {
@@ -78,28 +48,6 @@ SCENARIO_REGISTRY: dict[str, Type[BaseScenario]] = {
     "rdma_link_flap": RDMALinkFlapScenario,
     "roce_mtu_mismatch": RoCEMTUMismatchScenario,
     "rdma_qos_downgrade": RDMAQoSDowngradeScenario,
-
-    # hardware extension
-    "cpu_stress": CPUStressScenario,
-    "gpu_removal": GPURemovalScenario,
-    "thermal_throttle_hw": ThermalThrottleHWScenario,
-    "network_delay_hw": NetworkDelayHWScenario,
-
-    # os extension
-    "memory_pressure": MemoryPressureScenario,
-    "disk_full": DiskFullScenario,
-    "time_skew": TimeSkewScenario,
-
-    # platform extension
-    "mysql_connection_drop": MySQLConnectionDropScenario,
-    "redis_unavailable": RedisUnavailableScenario,
-    "celery_worker_kill": CeleryWorkerKillScenario,
-    "istio_gateway_kill": IstioGatewayKillScenario,
-
-    # service extension
-    "inference_pod_kill": InferencePodKillScenario,
-    "pipeline_workflow_cancel": PipelineWorkflowCancelScenario,
-    "notebook_pod_kill": NotebookPodKillScenario,
 }
 
 
@@ -147,4 +95,3 @@ def get_scenario_info(name: str) -> dict[str, str | list[str]] | None:
         "layer": instance.layer,
         "monitor_queries": list(instance.monitor_queries().keys()),
     }
-

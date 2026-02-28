@@ -29,7 +29,7 @@ Key principles:
 1. Safety first (recoverable operations only)
 2. Async by default for I/O
 3. Channel-based communication abstraction
-4. Scenario-driven fault logic
+4. Agent-centric execution with scenario adapters
 
 ---
 
@@ -78,6 +78,9 @@ fault_injector/
 ├── safety/
 ├── scenarios/
 └── tests/
+    ├── unit/features/agents/
+    ├── unit/features/orchestrator/
+    ├── unit/features/cli/
     ├── unit/features/channels/
     ├── unit/features/scenarios/
     ├── integration/
@@ -123,15 +126,34 @@ lib/channels/
 
 ---
 
+## Vibe Coding Guidance
+
+- Keep changes small and reversible.
+- Prefer editing existing modules; create new files only if required.
+- Use `rg` to locate references before editing.
+- When intent is unclear, ask one targeted question.
+- Keep docs/tests aligned with changes, especially `docs/techdesign.md` and `agents.md`.
+- Avoid inventing APIs or paths not present in the tree.
+
+---
+
 ## Common Tasks
+
+### Adding a New Agent
+
+1. Add file under `fault_injector/agents/`
+2. Inherit `BaseAgent`
+3. Implement `inject()`, `recover()`, `verify()`, `status()`
+4. Keep execution channel-driven
+5. Add tests in `fault_injector/tests/unit/features/agents/`
 
 ### Adding a New Scenario
 
-1. Add file under `fault_injector/scenarios/`
-2. Inherit `BaseScenario`
-3. Implement `inject()`, `recover()`, `verify()`
-4. Register in `fault_injector/scenarios/registry.py`
-5. Add tests in `fault_injector/tests/unit/features/scenarios/`
+1. Prefer implementing execution in layer agents (`fault_injector/agents/`)
+2. Keep `fault_injector/scenarios/` for active RC/F scenario families only
+3. If adding an RC/F scenario class, register in `fault_injector/scenarios/registry.py`
+4. Add/adjust agent tests in `fault_injector/tests/unit/features/agents/`
+5. Add/adjust scenario tests in `fault_injector/tests/unit/features/scenarios/` when registry behavior changes
 
 ### Adding a New Channel
 
@@ -192,4 +214,6 @@ See `fault_injector/testing.md` for detailed strategy.
 
 | Date | Version | Changes |
 |------|---------|---------|
+| 2026-02-28 | 1.3 | Clarified agent-centric ownership and scenario-layer scope (RC/F families only) |
+| 2026-02-28 | 1.2 | Added agent-centric workflow guidance and new test tree entries |
 | 2026-02-27 | 1.1 | Updated project trees and moved channel module location to `lib/channels` |
