@@ -65,6 +65,7 @@ def _parse_config(raw: dict[str, Any]) -> FaultInjectorConfig:
 
     monitor_raw = raw.get("monitor", {})
     monitor = MonitorConfig(
+        prometheus_url=monitor_raw.get("prometheus_url", "http://localhost:9090"),
         baseline_duration=monitor_raw.get("baseline_duration", 60),
         post_recovery_duration=monitor_raw.get("post_recovery_duration", 60),
     )
@@ -157,4 +158,3 @@ def _compute_hash(path: Path) -> str:
         for chunk in iter(lambda: f.read(4096), b""):
             sha256.update(chunk)
     return sha256.hexdigest()[:16]
-

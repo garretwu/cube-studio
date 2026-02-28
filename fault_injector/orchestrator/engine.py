@@ -119,7 +119,11 @@ class FaultOrchestrator:
             wal=self.rollback,
             guard=self.guard,
         )
-        self.prometheus = PrometheusChannel(base_url="http://localhost:9090", dry_run=self.dry_run)
+        prom_dry_run = self.dry_run or self.config.global_.safety.dry_run
+        self.prometheus = PrometheusChannel(
+            base_url=self.config.monitor.prometheus_url,
+            dry_run=prom_dry_run,
+        )
         self.kubernetes = K8sChannel(dry_run=self.dry_run, wal=self.rollback)
         self.redfish = RedfishChannel(dry_run=self.dry_run, wal=self.rollback, guard=self.guard)
 
@@ -165,6 +169,12 @@ class FaultOrchestrator:
         self.session.add_event("preflight_started")
         self.session.save(self.session_dir)
         if self.prometheus:
+            if self.prometheus.dry_run:
+                self.session.add_event("preflight_prometheus_skipped", {"dry_run": True})
+                self.session.save(self.session_dir)
+                self.session.add_event("preflight_completed")
+                self.session.save(self.session_dir)
+                return
             try:
                 await self.prometheus.query_instant("up")
             except Exception as exc:

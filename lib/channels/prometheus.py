@@ -42,6 +42,8 @@ class PrometheusChannel(BaseChannel):
         return ChannelResult(success=False, error=f"Unknown action: {action}")
 
     async def query_instant(self, promql: str) -> float:
+        if self.dry_run:
+            return 0.0
         client = await self._client_get()
         resp = await client.get("/api/v1/query", params={"query": promql})
         resp.raise_for_status()
@@ -58,6 +60,8 @@ class PrometheusChannel(BaseChannel):
         end: datetime,
         step: str = "15s",
     ) -> list[tuple[float, float]]:
+        if self.dry_run:
+            return []
         client = await self._client_get()
         resp = await client.get(
             "/api/v1/query_range",
@@ -81,6 +85,8 @@ class PrometheusChannel(BaseChannel):
         duration: int = 120,
         interval: int = 15,
     ) -> dict[str, list[float]]:
+        if self.dry_run:
+            return {name: [] for name in queries}
         out: dict[str, list[float]] = {name: [] for name in queries}
         end_ts = asyncio.get_event_loop().time() + duration
         while asyncio.get_event_loop().time() < end_ts:

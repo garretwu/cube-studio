@@ -46,6 +46,11 @@ global:
     max_concurrent_faults: 3
     excluded_nodes: []
 
+monitor:
+  prometheus_url: "http://localhost:9090"
+  baseline_duration: 60
+  post_recovery_duration: 60
+
 inventory:
   nodes:
     - name: "test-vm-1"
