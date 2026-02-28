@@ -1,0 +1,59 @@
+{
+  "session_id": "d8ec7185",
+  "config_hash": "5099f73e838a4e51",
+  "started_at": "2026-02-28T14:59:59.378947",
+  "finished_at": null,
+  "status": "running",
+  "phase": "baseline",
+  "active_faults": [],
+  "rollback_journal_path": "fault-reports\\sessions\\d8ec7185\\rollback.jsonl",
+  "baseline_path": "fault-reports\\sessions\\d8ec7185\\baseline.json",
+  "metrics_dir": "fault-reports\\sessions\\d8ec7185\\metrics",
+  "report_dir": "fault-reports\\sessions\\d8ec7185\\report",
+  "events": [
+    {
+      "timestamp": "2026-02-28T14:59:59.380372",
+      "phase": "init",
+      "event": "components_initialized",
+      "details": {}
+    },
+    {
+      "timestamp": "2026-02-28T14:59:59.381195",
+      "phase": "init",
+      "event": "phase_changed",
+      "details": {
+        "from": "init",
+        "to": "init"
+      }
+    },
+    {
+      "timestamp": "2026-02-28T14:59:59.381201",
+      "phase": "init",
+      "event": "preflight_started",
+      "details": {}
+    },
+    {
+      "timestamp": "2026-02-28T15:00:03.926244",
+      "phase": "init",
+      "event": "preflight_completed",
+      "details": {}
+    },
+    {
+      "timestamp": "2026-02-28T15:00:03.927020",
+      "phase": "baseline",
+      "event": "phase_changed",
+      "details": {
+        "from": "init",
+        "to": "baseline"
+      }
+    },
+    {
+      "timestamp": "2026-02-28T15:00:03.927025",
+      "phase": "baseline",
+      "event": "baseline_started",
+      "details": {}
+    }
+  ],
+  "scenario_results": {},
+  "baseline_metrics": {}
+}

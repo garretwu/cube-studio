@@ -1,18 +1,19 @@
-"""
-Agents module - Fault injection agents for different layers.
+"""Agent implementations for fault injector orchestration."""
 
-This module provides specialized agents for injecting faults at different
-infrastructure layers:
-- HardwareFaultAgent: CPU, GPU, Memory, Network hardware
-- OSFaultAgent: OS-level faults via SSH
-- PlatformFaultAgent: K8s, MySQL, Redis, Celery
-- ServiceFaultAgent: Inference services, Pipelines, Notebooks
-- MonitorAgent: Metric collection
-- DiagnosisAgent: LLM-powered fault diagnosis
-"""
-from fault_injector.agents.base import BaseAgent, AgentResult
+from fault_injector.agents.base import AgentResult, BaseAgent
+from fault_injector.agents.hardware import HardwareFaultAgent
+from fault_injector.agents.monitor import MonitorAgent
+from fault_injector.agents.os_fault import OSFaultAgent
+from fault_injector.agents.platform import PlatformFaultAgent
+from fault_injector.agents.service import ServiceFaultAgent
 
 __all__ = [
-    "BaseAgent",
     "AgentResult",
+    "BaseAgent",
+    "HardwareFaultAgent",
+    "OSFaultAgent",
+    "PlatformFaultAgent",
+    "ServiceFaultAgent",
+    "MonitorAgent",
 ]
+

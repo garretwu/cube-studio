@@ -1,0 +1,144 @@
+{
+  "session_id": "35674faf",
+  "status": "running",
+  "phase": "report",
+  "started_at": "2026-02-28T17:18:02.306191",
+  "finished_at": "2026-02-28T17:19:07.871559",
+  "baseline_metrics": {},
+  "scenario_results": {
+    "pfc_deadlock": {
+      "scenario_name": "pfc_deadlock",
+      "inject_success": true,
+      "recover_success": true,
+      "verified": true,
+      "inject_duration_ms": 0,
+      "observe_duration_ms": 0,
+      "recover_duration_ms": 0,
+      "error": "",
+      "metrics": {
+        "during": {}
+      }
+    }
+  },
+  "events": [
+    {
+      "timestamp": "2026-02-28T17:18:02.307176",
+      "phase": "init",
+      "event": "components_initialized",
+      "details": {}
+    },
+    {
+      "timestamp": "2026-02-28T17:18:02.307777",
+      "phase": "init",
+      "event": "phase_changed",
+      "details": {
+        "from": "init",
+        "to": "init"
+      }
+    },
+    {
+      "timestamp": "2026-02-28T17:18:02.307781",
+      "phase": "init",
+      "event": "preflight_started",
+      "details": {}
+    },
+    {
+      "timestamp": "2026-02-28T17:18:02.308263",
+      "phase": "init",
+      "event": "preflight_completed",
+      "details": {}
+    },
+    {
+      "timestamp": "2026-02-28T17:18:02.308704",
+      "phase": "baseline",
+      "event": "phase_changed",
+      "details": {
+        "from": "init",
+        "to": "baseline"
+      }
+    },
+    {
+      "timestamp": "2026-02-28T17:18:02.308708",
+      "phase": "baseline",
+      "event": "baseline_started",
+      "details": {}
+    },
+    {
+      "timestamp": "2026-02-28T17:18:02.309693",
+      "phase": "baseline",
+      "event": "baseline_completed",
+      "details": {
+        "baseline_path": "fault-reports\\sessions\\35674faf\\baseline.json"
+      }
+    },
+    {
+      "timestamp": "2026-02-28T17:18:02.310291",
+      "phase": "inject",
+      "event": "phase_changed",
+      "details": {
+        "from": "baseline",
+        "to": "inject"
+      }
+    },
+    {
+      "timestamp": "2026-02-28T17:18:07.076583",
+      "phase": "inject",
+      "event": "fault_injected",
+      "details": {
+        "fault_id": "pfc_deadlock_5c70476b",
+        "scenario_name": "pfc_deadlock"
+      }
+    },
+    {
+      "timestamp": "2026-02-28T17:18:07.077416",
+      "phase": "observe",
+      "event": "phase_changed",
+      "details": {
+        "from": "inject",
+        "to": "observe"
+      }
+    },
+    {
+      "timestamp": "2026-02-28T17:19:07.083853",
+      "phase": "recover",
+      "event": "phase_changed",
+      "details": {
+        "from": "observe",
+        "to": "recover"
+      }
+    },
+    {
+      "timestamp": "2026-02-28T17:19:07.867803",
+      "phase": "recover",
+      "event": "fault_recovered",
+      "details": {
+        "fault_id": "pfc_deadlock_5c70476b",
+        "scenario_name": "pfc_deadlock"
+      }
+    },
+    {
+      "timestamp": "2026-02-28T17:19:07.868798",
+      "phase": "verify",
+      "event": "phase_changed",
+      "details": {
+        "from": "recover",
+        "to": "verify"
+      }
+    },
+    {
+      "timestamp": "2026-02-28T17:19:07.870735",
+      "phase": "report",
+      "event": "phase_changed",
+      "details": {
+        "from": "verify",
+        "to": "report"
+      }
+    },
+    {
+      "timestamp": "2026-02-28T17:19:07.870740",
+      "phase": "report",
+      "event": "report_started",
+      "details": {}
+    }
+  ]
+}

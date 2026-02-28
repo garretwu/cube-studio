@@ -34,6 +34,16 @@ global:
     # Nodes to exclude from fault injection
     excluded_nodes: []
 
+monitor:
+  # Enable/disable Prometheus monitoring entirely
+  enabled: true
+  # Prometheus base URL used by MonitorAgent
+  prometheus_url: "http://10.11.4.3:31260"
+  # Baseline metrics collection duration (seconds)
+  baseline_duration: 60
+  # Post-recovery observation duration (seconds)
+  post_recovery_duration: 60
+
 # =============================================================================
 # Target Node Inventory
 # =============================================================================

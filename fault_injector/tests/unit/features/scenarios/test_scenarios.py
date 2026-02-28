@@ -199,8 +199,8 @@ class TestNetworkJitterScenario:
     def test_scenario_description(self, scenario):
         """Test scenario description."""
         assert "tc netem" in scenario.description.lower()
-        assert "延迟" in scenario.description
-    
+        assert "network jitter" in scenario.description.lower()
+
     def test_scenario_layer(self, scenario):
         """Test scenario layer."""
         assert scenario.layer == "os"
@@ -223,7 +223,7 @@ class TestNetworkJitterScenario:
             "delay_ms": 50,
         })
         
-        assert "tc qdisc add dev eth0 root netem delay 50ms" in cmd
+        assert "tc qdisc replace dev eth0 root netem delay 50ms" in cmd
     
     def test_build_tc_command_with_jitter(self, scenario):
         """Test TC command with jitter."""
@@ -263,7 +263,7 @@ class TestNetworkJitterScenario:
         cmd = scenario._build_recovery_command("eth0")
         
         assert "tc qdisc del dev eth0 root" in cmd
-        assert "sudo" in cmd
+        assert "sudo" not in cmd
     
     # Inject/Recover/Verify Tests
     
@@ -680,3 +680,4 @@ class ScenarioTestTemplate:
         await scenario.recover(context)
         result = await scenario.verify(context)
         assert isinstance(result, bool)
+

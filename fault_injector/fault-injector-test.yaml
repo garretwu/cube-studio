@@ -14,7 +14,7 @@ global:
   session_dir: "./fault-reports/sessions/"
   
   # Logging level: DEBUG, INFO, WARNING, ERROR
-  log_level: "INFO"
+  log_level: "DEBUG"
   
   # Safety settings
   safety:
@@ -34,6 +34,16 @@ global:
     # Nodes to exclude from fault injection
     excluded_nodes: []
 
+monitor:
+  # Enable/disable Prometheus monitoring entirely
+  enabled: false
+  # Prometheus base URL used by MonitorAgent
+  prometheus_url: "http://10.11.4.3:31260"
+  # Baseline metrics collection duration (seconds)
+  baseline_duration: 60
+  # Post-recovery observation duration (seconds)
+  post_recovery_duration: 60
+
 # =============================================================================
 # Target Node Inventory
 # =============================================================================
@@ -48,14 +58,27 @@ inventory:
         host: "10.11.4.13"
         port: 22
         user: "yuyonghao"
-        key_file: "~/.ssh/id_rsa"
-        password: null
+        #key_file: "~/.ssh/id_rsa"
+        password: Yuyonghao@123
         timeout: 30
         use_sudo: true
       interface: "roce200"
       roles:
         - "compute"
         - "rdma"
+
+# =============================================================================
+# Switch Inventory (required for switch-based RDMA scenarios)
+# =============================================================================
+switches:
+  sw-200g:
+    host: "10.11.8.52"
+    port: 830
+    username: "apitest"
+    password: "ApiTest@2026"
+    timeout: 30
+    type: "H3C S9855-24B8D"
+    description: "200G Data Network Switch"
     
 # =============================================================================
 # Fault Scenarios Configuration
@@ -65,7 +88,7 @@ inventory:
 
 scenarios:
   # ---------------------------------------------------------------------------
-  # RC-2: Network Jitter (网络延迟抖动)
+  # RC-2: Network Jitter
   # ---------------------------------------------------------------------------
   # Uses tc netem to inject network delay and jitter
   # Effect: P95/P50 latency ratio > 10, intermittent token output
@@ -93,12 +116,12 @@ scenarios:
       duration: 30
 
   # ---------------------------------------------------------------------------
-  # F-5: RoCE MTU Mismatch (RoCE 网络 MTU 不一致)
+  # F-5: RoCE MTU Mismatch
   # ---------------------------------------------------------------------------
   # Modifies network interface MTU to create mismatch
   # Effect: Large packet loss, throughput drop, RDMA connection retries
   roce_mtu_mismatch:
-    enabled: true
+    enabled: false
     target_nodes:
       - "worker-01"
     params:
@@ -111,78 +134,81 @@ scenarios:
       original_mtu: 9000
 
   # ---------------------------------------------------------------------------
-  # F-1: PFC Deadlock (PFC 死锁)
+  # F-1: PFC Deadlock
   # ---------------------------------------------------------------------------
   # Configures PFC priority mapping to cause Head-of-Line Blocking
   # Effect: RDMA traffic blocked, NCCL AllReduce timeout
-  # Note: Requires SwitchChannel (not yet implemented)
+  # Requires configured switches entry above.
   pfc_deadlock:
-    enabled: false
+    enabled: true
     target_nodes:
       - "worker-01"
     params:
       switch: "sw-200g"
-      interface: "HundredGigE 1/0/1"
+      interface: "200GE1/0/4"
       priority: 3
 
   # ---------------------------------------------------------------------------
-  # F-2: ECN Misconfiguration (ECN 标记阈值错配)
+  # F-2: ECN Misconfiguration
   # ---------------------------------------------------------------------------
   # Modifies ECN threshold settings on switch
   # Effect: DCQCN rate reduction, unstable RDMA throughput
-  # Note: Requires SwitchChannel (not yet implemented)
+  # Requires configured switches entry above.
   ecn_misconfiguration:
-    enabled: false
+    enabled: true
     target_nodes:
       - "worker-01"
     params:
       switch: "sw-200g"
-      interface: "HundredGigE 1/0/1"
+      interface: "200GE1/0/4"
       min_threshold: 10
       max_threshold: 20
 
   # ---------------------------------------------------------------------------
-  # F-3: RDMA Load Imbalance (不均衡 RDMA 负载)
+  # F-3: RDMA Load Imbalance
   # ---------------------------------------------------------------------------
   # Modifies ECMP hash configuration for uneven load distribution
   # Effect: Some links congested, some idle, reduced throughput
-  # Note: Requires SwitchChannel (not yet implemented)
+  # Requires configured switches entry above.
   rdma_load_imbalance:
-    enabled: false
+    enabled: true
     target_nodes:
       - "worker-01"
     params:
       switch: "sw-200g"
+      interface: "200GE1/0/4"
       hash_algorithm: "src-dst-ip"
 
   # ---------------------------------------------------------------------------
-  # F-4: RDMA Link Flap (RDMA 链路间歇性中断)
+  # F-4: RDMA Link Flap
   # ---------------------------------------------------------------------------
   # Periodically shutdown/undo shutdown switch port
   # Effect: RDMA connection drop/rebuild, NCCL timeout/retry
-  # Note: Requires SwitchChannel (not yet implemented)
+  # Requires configured switches entry above.
   rdma_link_flap:
     enabled: false
     target_nodes:
       - "worker-01"
     params:
       switch: "sw-200g"
-      interface: "HundredGigE 1/0/1"
+      interface: "200GE1/0/4"
       flap_interval: 30
       flap_duration: 5
 
   # ---------------------------------------------------------------------------
-  # F-6: RDMA QoS Downgrade (RDMA QoS 降级)
+  # F-6: RDMA QoS Downgrade
   # ---------------------------------------------------------------------------
   # Reduces RDMA traffic priority via DSCP/CoS mapping
   # Effect: RDMA competes with TCP, unstable throughput/latency
   rdma_qos_downgrade:
-    enabled: false
+    enabled: true
     target_nodes:
       - "worker-01"
     params:
-      interface: "eth0"
-      dscp_value: 0
+      switch: "sw-200g"
+      interface: "200GE1/0/4"
+      dscp: 0
+      downgraded_tc: 0
 
 # =============================================================================
 # Example: Minimal Test Configuration

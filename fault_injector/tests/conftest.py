@@ -176,6 +176,99 @@ def mock_ssh_channel_with_mocks(
         yield channel, mock_conn
 
 
+class FakeSwitchChannel:
+    """Configurable fake switch channel for RDMA scenario tests."""
+
+    def __init__(
+        self,
+        *,
+        missing_status: bool = False,
+        missing_config: bool = False,
+        apply_fail: bool = False,
+        shutdown_fail: bool = False,
+        bringup_fail: bool = False,
+        verify_false: bool = False,
+    ):
+        self.missing_status = missing_status
+        self.missing_config = missing_config
+        self.apply_fail = apply_fail
+        self.shutdown_fail = shutdown_fail
+        self.bringup_fail = bringup_fail
+        self.verify_false = verify_false
+
+        self.admin_status = "up"
+        self.description = "baseline"
+        self.pvid = 1
+        self.link_type = "trunk"
+
+    def get_interface_status(self, switch: str, interface: str):
+        _ = (switch, interface)
+        if self.missing_status:
+            return None
+        return MagicMock(admin_status=self.admin_status)
+
+    def get_interface_config(self, switch: str, interface: str):
+        _ = (switch, interface)
+        if self.missing_config:
+            return None
+        return MagicMock(
+            description=self.description,
+            pvid=self.pvid,
+            link_type=self.link_type,
+        )
+
+    def apply_interface_config(self, switch: str, interface: str, **kwargs: Any) -> ChannelResult:
+        _ = (switch, interface)
+        if self.apply_fail:
+            return ChannelResult(success=False, error="apply failed")
+
+        if "description" in kwargs and kwargs["description"] is not None:
+            self.description = kwargs["description"]
+        if "admin_status" in kwargs and kwargs["admin_status"] is not None:
+            self.admin_status = "up" if kwargs["admin_status"] == 1 else "down"
+        if "pvid" in kwargs and kwargs["pvid"] is not None:
+            self.pvid = kwargs["pvid"]
+        if "link_type" in kwargs and kwargs["link_type"] is not None:
+            self.link_type = {1: "access", 2: "trunk", 3: "hybrid"}.get(kwargs["link_type"], "trunk")
+
+        return ChannelResult(success=True)
+
+    def shutdown_port(self, switch: str, interface: str, fault_id: str | None = None) -> ChannelResult:
+        _ = (switch, interface, fault_id)
+        if self.shutdown_fail:
+            return ChannelResult(success=False, error="shutdown failed")
+        self.admin_status = "down"
+        return ChannelResult(success=True)
+
+    def bringup_port(self, switch: str, interface: str, fault_id: str | None = None) -> ChannelResult:
+        _ = (switch, interface, fault_id)
+        if self.bringup_fail:
+            return ChannelResult(success=False, error="bringup failed")
+        self.admin_status = "up"
+        return ChannelResult(success=True)
+
+    def verify_admin_state(self, switch: str, interface: str, expected: str) -> bool:
+        _ = (switch, interface)
+        if self.verify_false:
+            return False
+        return self.admin_status == expected
+
+
+@pytest.fixture
+def fake_switch_channel_factory():
+    """Factory fixture to build switch channel doubles with failure toggles."""
+
+    def _build(**kwargs: Any) -> FakeSwitchChannel:
+        return FakeSwitchChannel(**kwargs)
+
+    return _build
+
+
+@pytest.fixture
+def fake_switch_channel() -> FakeSwitchChannel:
+    return FakeSwitchChannel()
+
+
 # =============================================================================
 # Fault Context Fixtures
 # =============================================================================
