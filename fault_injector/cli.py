@@ -117,6 +117,7 @@ def validate_config_cmd(config_path: str) -> None:
         console.print(f"  session_dir: {config.global_.session_dir}")
         console.print(f"  log_level: {config.global_.log_level}")
         console.print(f"  inventory_groups: {list(config.inventory.keys())}")
+        console.print(f"  switches: {list(config.switches.keys())}")
         console.print(f"  scenarios: {list(config.scenarios.keys())}")
     except Exception as exc:
         console.print(f"[red]Config validation failed: {exc}[/red]")

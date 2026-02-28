@@ -37,6 +37,17 @@ class TargetNodeConfig(BaseModel):
     roles: list[str] = Field(default_factory=list)
 
 
+class SwitchConfig(BaseModel):
+    host: str
+    port: int = 830
+    username: str | None = None
+    user: str | None = None
+    password: str | None = None
+    timeout: int = 30
+    type: str | None = None
+    description: str | None = None
+
+
 class SafetyConfig(BaseModel):
     require_confirmation: bool = True
     auto_recover_timeout: int = 600
@@ -189,6 +200,7 @@ class FaultInjectorConfig(BaseModel):
     orchestrator: OrchestratorConfig = Field(default_factory=OrchestratorConfig)
     monitor: MonitorConfig = Field(default_factory=MonitorConfig)
     inventory: dict[str, list[TargetNodeConfig]] = Field(default_factory=dict)
+    switches: dict[str, SwitchConfig] = Field(default_factory=dict)
     scenarios: dict[str, ScenarioConfig] = Field(default_factory=dict)
     combined_scenario: CombinedScenarioConfig | None = None
     config_hash: str = ""

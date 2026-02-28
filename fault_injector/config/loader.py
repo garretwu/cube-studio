@@ -20,6 +20,7 @@ from fault_injector.config.schema import (
     SSHConfig,
     SafetyConfig,
     ScenarioConfig,
+    SwitchConfig,
     TargetNodeConfig,
 )
 
@@ -124,6 +125,23 @@ def _parse_config(raw: dict[str, Any]) -> FaultInjectorConfig:
             params=scenario_raw.get("params", {}),
         )
 
+    switches_raw = raw.get("switches", {})
+    switches: dict[str, SwitchConfig] = {}
+    if isinstance(switches_raw, dict):
+        for switch_name, switch_raw in switches_raw.items():
+            if not isinstance(switch_raw, dict):
+                continue
+            switches[switch_name] = SwitchConfig(
+                host=switch_raw.get("host", ""),
+                port=switch_raw.get("port", 830),
+                username=switch_raw.get("username"),
+                user=switch_raw.get("user"),
+                password=switch_raw.get("password"),
+                timeout=switch_raw.get("timeout", 30),
+                type=switch_raw.get("type"),
+                description=switch_raw.get("description"),
+            )
+
     combined = None
     combined_raw = raw.get("combined_scenario")
     if isinstance(combined_raw, dict):
@@ -148,6 +166,7 @@ def _parse_config(raw: dict[str, Any]) -> FaultInjectorConfig:
         orchestrator=orchestrator,
         monitor=monitor,
         inventory=inventory,
+        switches=switches,
         scenarios=scenarios,
         combined_scenario=combined,
     )

@@ -1,0 +1,1 @@
+{"fault_id":"roce_mtu_mismatch_ef6d8df1","injected_at":"2026-02-28T16:27:47.905405","channel":"ssh","target":"worker-01","inject_action":"mtu_change","inject_params":{"interface":"roce200","mtu":1500},"recover_action":"mtu_restore","recover_params":{"interface":"roce200","mtu":9000},"status":"active"}

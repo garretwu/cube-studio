@@ -14,7 +14,7 @@ global:
   session_dir: "./fault-reports/sessions/"
   
   # Logging level: DEBUG, INFO, WARNING, ERROR
-  log_level: "INFO"
+  log_level: "DEBUG"
   
   # Safety settings
   safety:
@@ -58,7 +58,7 @@ inventory:
         host: "10.11.4.13"
         port: 22
         user: "yuyonghao"
-        key_file: "~/.ssh/id_rsa"
+        #key_file: "~/.ssh/id_rsa"
         password: Yuyonghao@123
         timeout: 30
         use_sudo: true
@@ -66,6 +66,19 @@ inventory:
       roles:
         - "compute"
         - "rdma"
+
+# =============================================================================
+# Switch Inventory (required for switch-based RDMA scenarios)
+# =============================================================================
+switches:
+  sw-200g:
+    host: "10.11.8.52"
+    port: 830
+    username: "apitest"
+    password: "ApiTest@2026"
+    timeout: 30
+    type: "H3C S9855-24B8D"
+    description: "200G Data Network Switch"
     
 # =============================================================================
 # Fault Scenarios Configuration
@@ -125,7 +138,7 @@ scenarios:
   # ---------------------------------------------------------------------------
   # Configures PFC priority mapping to cause Head-of-Line Blocking
   # Effect: RDMA traffic blocked, NCCL AllReduce timeout
-  # Note: Requires SwitchChannel (not yet implemented)
+  # Requires configured switches entry above.
   pfc_deadlock:
     enabled: false
     target_nodes:
@@ -140,7 +153,7 @@ scenarios:
   # ---------------------------------------------------------------------------
   # Modifies ECN threshold settings on switch
   # Effect: DCQCN rate reduction, unstable RDMA throughput
-  # Note: Requires SwitchChannel (not yet implemented)
+  # Requires configured switches entry above.
   ecn_misconfiguration:
     enabled: false
     target_nodes:
@@ -156,7 +169,7 @@ scenarios:
   # ---------------------------------------------------------------------------
   # Modifies ECMP hash configuration for uneven load distribution
   # Effect: Some links congested, some idle, reduced throughput
-  # Note: Requires SwitchChannel (not yet implemented)
+  # Requires configured switches entry above.
   rdma_load_imbalance:
     enabled: false
     target_nodes:
@@ -170,7 +183,7 @@ scenarios:
   # ---------------------------------------------------------------------------
   # Periodically shutdown/undo shutdown switch port
   # Effect: RDMA connection drop/rebuild, NCCL timeout/retry
-  # Note: Requires SwitchChannel (not yet implemented)
+  # Requires configured switches entry above.
   rdma_link_flap:
     enabled: true
     target_nodes:

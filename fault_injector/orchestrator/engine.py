@@ -133,7 +133,7 @@ class FaultOrchestrator:
         switch_devices = self._build_switch_inventory()
         self.switch = SwitchChannel(
             devices=switch_devices,
-            dry_run=self.dry_run or not bool(switch_devices),
+            dry_run=self.dry_run or self.config.global_.safety.dry_run,
             wal=self.rollback,
             guard=self.guard,
         )
@@ -163,8 +163,15 @@ class FaultOrchestrator:
         return inventory
 
     def _build_switch_inventory(self) -> dict[str, dict[str, Any]]:
-        # Optional switch inventory can be attached in future config extension.
-        return {}
+        inventory: dict[str, dict[str, Any]] = {}
+        for name, switch in self.config.switches.items():
+            data: dict[str, Any]
+            if hasattr(switch, "model_dump"):
+                data = switch.model_dump(exclude_none=True)  # pydantic v2
+            else:
+                data = switch.dict(exclude_none=True)  # pydantic v1
+            inventory[name] = data
+        return inventory
 
     async def _preflight_check(self) -> None:
         assert self.session is not None

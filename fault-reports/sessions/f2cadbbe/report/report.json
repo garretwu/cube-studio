@@ -1,0 +1,144 @@
+{
+  "session_id": "f2cadbbe",
+  "status": "running",
+  "phase": "report",
+  "started_at": "2026-02-28T16:22:18.153175",
+  "finished_at": "2026-02-28T16:23:23.193128",
+  "baseline_metrics": {},
+  "scenario_results": {
+    "rdma_link_flap": {
+      "scenario_name": "rdma_link_flap",
+      "inject_success": true,
+      "recover_success": true,
+      "verified": true,
+      "inject_duration_ms": 0,
+      "observe_duration_ms": 0,
+      "recover_duration_ms": 0,
+      "error": "",
+      "metrics": {
+        "during": {}
+      }
+    }
+  },
+  "events": [
+    {
+      "timestamp": "2026-02-28T16:22:18.154526",
+      "phase": "init",
+      "event": "components_initialized",
+      "details": {}
+    },
+    {
+      "timestamp": "2026-02-28T16:22:18.155288",
+      "phase": "init",
+      "event": "phase_changed",
+      "details": {
+        "from": "init",
+        "to": "init"
+      }
+    },
+    {
+      "timestamp": "2026-02-28T16:22:18.155293",
+      "phase": "init",
+      "event": "preflight_started",
+      "details": {}
+    },
+    {
+      "timestamp": "2026-02-28T16:22:18.155843",
+      "phase": "init",
+      "event": "preflight_completed",
+      "details": {}
+    },
+    {
+      "timestamp": "2026-02-28T16:22:18.156309",
+      "phase": "baseline",
+      "event": "phase_changed",
+      "details": {
+        "from": "init",
+        "to": "baseline"
+      }
+    },
+    {
+      "timestamp": "2026-02-28T16:22:18.156314",
+      "phase": "baseline",
+      "event": "baseline_started",
+      "details": {}
+    },
+    {
+      "timestamp": "2026-02-28T16:22:18.157133",
+      "phase": "baseline",
+      "event": "baseline_completed",
+      "details": {
+        "baseline_path": "fault-reports\\sessions\\f2cadbbe\\baseline.json"
+      }
+    },
+    {
+      "timestamp": "2026-02-28T16:22:18.157686",
+      "phase": "inject",
+      "event": "phase_changed",
+      "details": {
+        "from": "baseline",
+        "to": "inject"
+      }
+    },
+    {
+      "timestamp": "2026-02-28T16:22:23.177011",
+      "phase": "inject",
+      "event": "fault_injected",
+      "details": {
+        "fault_id": "rdma_link_flap_377f62be",
+        "scenario_name": "rdma_link_flap"
+      }
+    },
+    {
+      "timestamp": "2026-02-28T16:22:23.178206",
+      "phase": "observe",
+      "event": "phase_changed",
+      "details": {
+        "from": "inject",
+        "to": "observe"
+      }
+    },
+    {
+      "timestamp": "2026-02-28T16:23:23.181687",
+      "phase": "recover",
+      "event": "phase_changed",
+      "details": {
+        "from": "observe",
+        "to": "recover"
+      }
+    },
+    {
+      "timestamp": "2026-02-28T16:23:23.188206",
+      "phase": "recover",
+      "event": "fault_recovered",
+      "details": {
+        "fault_id": "rdma_link_flap_377f62be",
+        "scenario_name": "rdma_link_flap"
+      }
+    },
+    {
+      "timestamp": "2026-02-28T16:23:23.189514",
+      "phase": "verify",
+      "event": "phase_changed",
+      "details": {
+        "from": "recover",
+        "to": "verify"
+      }
+    },
+    {
+      "timestamp": "2026-02-28T16:23:23.191574",
+      "phase": "report",
+      "event": "phase_changed",
+      "details": {
+        "from": "verify",
+        "to": "report"
+      }
+    },
+    {
+      "timestamp": "2026-02-28T16:23:23.191583",
+      "phase": "report",
+      "event": "report_started",
+      "details": {}
+    }
+  ]
+}
