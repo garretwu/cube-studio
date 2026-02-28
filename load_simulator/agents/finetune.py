@@ -2,9 +2,14 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 import uuid
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
+
+from rich.console import Console
+from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn, TimeRemainingColumn
 
 from load_simulator.agents.base import AgentResult, BaseAgent
 from lib.channels.cube_studio import CubeStudioChannel
@@ -13,6 +18,8 @@ from load_simulator.metrics.aggregator import compute_percentiles
 if TYPE_CHECKING:
     from load_simulator.config.schema import FineTuneConfig
 
+console = Console(stderr=True)
+logger = logging.getLogger("load_simulator.agents.finetune")
 
 # Default training config sent to LLaMA-Factory Gradio/REST API
 _DEFAULT_TRAIN_CONFIG = {
@@ -34,6 +41,32 @@ _DEFAULT_TRAIN_CONFIG = {
 }
 
 
+def setup_file_logger(log_dir: str | Path) -> None:
+    """Attach a FileHandler to the ``load_simulator`` logger hierarchy.
+
+    Writes to ``<log_dir>/finetune-agent.log``.  Safe to call multiple times —
+    duplicate handlers are skipped.
+    """
+    log_dir = Path(log_dir)
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_file = log_dir / "finetune-agent.log"
+
+    root = logging.getLogger("load_simulator")
+    for h in root.handlers:
+        if isinstance(h, logging.FileHandler) and Path(h.baseFilename) == log_file.resolve():
+            return
+
+    fh = logging.FileHandler(log_file, encoding="utf-8")
+    fh.setLevel(logging.DEBUG)
+    fh.setFormatter(logging.Formatter(
+        "%(asctime)s  %(levelname)-5s  %(name)s  %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    ))
+    root.addHandler(fh)
+    root.setLevel(logging.DEBUG)
+    logger.info("Log file initialised: %s", log_file)
+
+
 class FineTuneAgent(BaseAgent):
     """Exercises the LLaMA-Factory training API.
 
@@ -45,7 +78,12 @@ class FineTuneAgent(BaseAgent):
 
     agent_name = "finetune"
 
-    def __init__(self, config: "FineTuneConfig", channel: CubeStudioChannel | None = None) -> None:
+    def __init__(
+        self,
+        config: "FineTuneConfig",
+        channel: CubeStudioChannel | None = None,
+        log_dir: str | Path | None = None,
+    ) -> None:
         self._config = config
         auth_method = str(getattr(config, "auth_method", "username"))
         auth_username = str(getattr(config, "auth_username", "admin"))
@@ -60,6 +98,8 @@ class FineTuneAgent(BaseAgent):
             retry_count=2,
             retry_backoff=0.5,
         )
+        if log_dir is not None:
+            setup_file_logger(log_dir)
 
     async def run(self, duration_seconds: int) -> AgentResult:
         return await self._timed_run(duration_seconds)
@@ -76,69 +116,111 @@ class FineTuneAgent(BaseAgent):
         jobs_started = 0
         jobs_completed = 0
 
-        while time.time() < deadline:
-            job_start = time.time()
-            jobs_started += 1
-            url = f"{cfg.llama_factory_url}/pipeline_modelview/api/"
-            try:
-                # Prefer unified CubeStudio channel workflow.
+        logger.info(
+            "FineTune agent starting  url=%s  duration=%ds  max_steps=%d",
+            cfg.llama_factory_url, duration_seconds, _DEFAULT_TRAIN_CONFIG["max_steps"],
+        )
+
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
+            TimeRemainingColumn(),
+            console=console,
+        ) as progress:
+            progress_task = progress.add_task(
+                f"[cyan]FineTune load test ({cfg.llama_factory_url})",
+                total=int(duration_seconds),
+            )
+
+            while time.time() < deadline:
+                elapsed_sec = int(time.time() - start_time)
+                progress.update(progress_task, completed=elapsed_sec)
+
+                job_start = time.time()
+                jobs_started += 1
                 run_id = uuid.uuid4().hex[:8]
-                pipeline = await self._channel.create_pipeline(
-                    {"name": f"load-finetune-{run_id}", "project_id": 1}
-                )
-                pipeline_id = int(pipeline.get("id", 0) or 0)
-                if pipeline_id <= 0:
-                    raise RuntimeError("finetune pipeline creation returned invalid id")
+                url = f"{cfg.llama_factory_url}/pipeline_modelview/api/"
 
-                _ = await self._channel.create_task(
-                    {
-                        "name": f"finetune-task-{run_id}",
-                        "pipeline_id": pipeline_id,
-                        "args": _DEFAULT_TRAIN_CONFIG,
-                    }
+                logger.info(
+                    "Job starting  run_id=%s  job_num=%d  elapsed=%ds/%ds",
+                    run_id, jobs_started, elapsed_sec, duration_seconds,
                 )
-                body = await self._channel.run_pipeline(pipeline_id)
-                steps = body.get("steps_completed", _DEFAULT_TRAIN_CONFIG["max_steps"])
-                elapsed_for_job = time.time() - job_start
-                step_times.append(elapsed_for_job / max(1, int(steps)))
-                gpu_util = body.get("gpu_util_pct", None)
-                if gpu_util is not None:
-                    gpu_utils.append(float(gpu_util))
-                jobs_completed += 1
-                request_logs.append({
-                    "timestamp": job_start,
-                    "method": "POST",
-                    "url": url,
-                    "status_code": 200,
-                    "latency_ms": round(elapsed_for_job * 1000, 2),
-                    "error_message": None,
-                })
-            except Exception as exc:  # noqa: BLE001
-                # API path unavailable — fallback to deterministic local simulation.
-                sim_result = await _simulate_training(
-                    max_steps=_DEFAULT_TRAIN_CONFIG["max_steps"],
-                    deadline=deadline,
-                )
-                step_times.extend(sim_result["step_times"])
-                gpu_utils.extend(sim_result["gpu_utils"])
-                jobs_completed += 1
-                errors.append(f"{type(exc).__name__}: {exc}")
-                request_logs.append({
-                    "timestamp": job_start,
-                    "method": "POST",
-                    "url": url,
-                    "status_code": 0,
-                    "latency_ms": round((time.time() - job_start) * 1000, 2),
-                    "error_message": f"{type(exc).__name__}: {exc}",
-                })
 
-            # Pause between job submissions to avoid hammering the server
-            remaining = deadline - time.time()
-            if remaining <= 0:
-                break
-            await asyncio.sleep(min(5.0, remaining))
+                try:
+                    # Prefer unified CubeStudio channel workflow.
+                    pipeline = await self._channel.create_pipeline(
+                        {"name": f"load-finetune-{run_id}", "project_id": 1}
+                    )
+                    pipeline_id = int(pipeline.get("id", 0) or 0)
+                    if pipeline_id <= 0:
+                        raise RuntimeError("finetune pipeline creation returned invalid id")
+
+                    _ = await self._channel.create_task(
+                        {
+                            "name": f"finetune-task-{run_id}",
+                            "pipeline_id": pipeline_id,
+                            "args": _DEFAULT_TRAIN_CONFIG,
+                        }
+                    )
+                    body = await self._channel.run_pipeline(pipeline_id)
+                    steps = body.get("steps_completed", _DEFAULT_TRAIN_CONFIG["max_steps"])
+                    elapsed_for_job = time.time() - job_start
+                    step_times.append(elapsed_for_job / max(1, int(steps)))
+                    gpu_util = body.get("gpu_util_pct", None)
+                    if gpu_util is not None:
+                        gpu_utils.append(float(gpu_util))
+                    jobs_completed += 1
+                    logger.info(
+                        "Job completed  run_id=%s  pipeline_id=%d  steps=%s  latency=%.1fms",
+                        run_id, pipeline_id, steps, elapsed_for_job * 1000,
+                    )
+                    request_logs.append({
+                        "timestamp": job_start,
+                        "method": "POST",
+                        "url": url,
+                        "status_code": 200,
+                        "latency_ms": round(elapsed_for_job * 1000, 2),
+                        "error_message": None,
+                    })
+                except Exception as exc:  # noqa: BLE001
+                    # API path unavailable — fallback to deterministic local simulation.
+                    logger.warning(
+                        "finetune API unavailable, using simulation  run_id=%s  error=%s",
+                        run_id, exc,
+                    )
+                    sim_result = await _simulate_training(
+                        max_steps=_DEFAULT_TRAIN_CONFIG["max_steps"],
+                        deadline=deadline,
+                    )
+                    step_times.extend(sim_result["step_times"])
+                    gpu_utils.extend(sim_result["gpu_utils"])
+                    jobs_completed += 1
+                    err = f"{type(exc).__name__}: {exc}"
+                    errors.append(err)
+                    elapsed_for_job = time.time() - job_start
+                    logger.info(
+                        "Job completed (simulated)  run_id=%s  steps=%d  latency=%.1fms",
+                        run_id, len(sim_result["step_times"]), elapsed_for_job * 1000,
+                    )
+                    request_logs.append({
+                        "timestamp": job_start,
+                        "method": "POST",
+                        "url": url,
+                        "status_code": 0,
+                        "latency_ms": round(elapsed_for_job * 1000, 2),
+                        "error_message": err,
+                    })
+
+                # Pause between job submissions to avoid hammering the server
+                remaining = deadline - time.time()
+                if remaining <= 0:
+                    break
+                await asyncio.sleep(min(5.0, remaining))
 
         end_time = time.time()
+        elapsed = end_time - start_time
 
         pct = compute_percentiles([t * 1000 for t in step_times])  # ms per step
         avg_gpu = sum(gpu_utils) / len(gpu_utils) if gpu_utils else 0.0
@@ -159,6 +241,24 @@ class FineTuneAgent(BaseAgent):
         }
 
         status = "success" if jobs_completed > 0 else "error"
+
+        logger.info(
+            "FineTune agent finished  status=%s  duration=%.1fs  "
+            "jobs_started=%d  jobs_completed=%d  errors=%d  "
+            "steps=%d  steps/s=%.3f  gpu_util=%.1f%%  "
+            "step_p50=%.1fms  step_p99=%.1fms",
+            status, elapsed,
+            jobs_started, jobs_completed, len(errors),
+            len(step_times), steps_per_sec, avg_gpu,
+            pct["p50"], pct["p99"],
+        )
+
+        console.print(
+            f"[green]FineTune agent completed:[/green] {jobs_completed}/{jobs_started} jobs, "
+            f"{len(step_times)} steps in {elapsed:.1f}s  "
+            f"(gpu_util={avg_gpu:.1f}%, {steps_per_sec:.2f} steps/s)"
+        )
+
         return AgentResult(
             name=self.agent_name,
             status=status,

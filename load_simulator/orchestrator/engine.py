@@ -465,6 +465,10 @@ class LoadOrchestrator:
         if factory is None:
             raise ValueError(f"Unknown agent: {name!r}")
 
+        log_dir = None
+        if self._session_store is not None:
+            log_dir = self._session_store.session_dir(self._session_tracker.session_id)
+
         if name == "inference":
             sec = _scaled(cfg.inference)
             channel = InferenceChannel(
@@ -473,17 +477,17 @@ class LoadOrchestrator:
                 timeout=int(self._channel_runtime("inference").timeout),
             )
             duration = max(1, int(round(sec.duration_seconds * duration_scale)))
-            return self._create_agent(factory, sec, channel), duration
+            return self._create_agent(factory, sec, channel, log_dir=log_dir), duration
         if name == "pipeline":
             sec = _scaled(cfg.pipeline)
             channel = self._build_cube_channel(base_url=sec.cube_studio_url)
             duration = max(1, int(round(sec.duration_seconds * duration_scale)))
-            return self._create_agent(factory, sec, channel), duration
+            return self._create_agent(factory, sec, channel, log_dir=log_dir), duration
         if name == "finetune":
             sec = _scaled(cfg.finetune)
             channel = self._build_cube_channel(base_url=sec.llama_factory_url)
             duration = max(1, int(round(sec.duration_seconds * duration_scale)))
-            return self._create_agent(factory, sec, channel), duration
+            return self._create_agent(factory, sec, channel, log_dir=log_dir), duration
         if name == "notebook":
             sec = _scaled(cfg.notebook)
             runtime = self._channel_runtime("notebook")
@@ -501,12 +505,22 @@ class LoadOrchestrator:
             return agent, duration
         raise ValueError(f"Unsupported agent: {name!r}")
 
-    def _create_agent(self, factory: type[BaseAgent], section: Any, channel: Any) -> BaseAgent:
+    def _create_agent(
+        self,
+        factory: type[BaseAgent],
+        section: Any,
+        channel: Any,
+        log_dir: Any = None,
+    ) -> BaseAgent:
         try:
-            return factory(section, channel=channel)
+            return factory(section, channel=channel, log_dir=log_dir)
         except TypeError:
-            # Some test stubs may not accept `channel=...`.
-            return factory(section)
+            try:
+                # Some agents or test stubs may not accept `log_dir=`.
+                return factory(section, channel=channel)
+            except TypeError:
+                # Minimal stubs accept only the config section.
+                return factory(section)
 
     def _channel_runtime(self, name: str) -> Any:
         channels = getattr(self._config, "channels", None)
