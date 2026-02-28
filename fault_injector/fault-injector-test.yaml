@@ -59,7 +59,7 @@ inventory:
         port: 22
         user: "yuyonghao"
         key_file: "~/.ssh/id_rsa"
-        password: null
+        password: Yuyonghao@123
         timeout: 30
         use_sudo: true
       interface: "roce200"
@@ -132,7 +132,7 @@ scenarios:
       - "worker-01"
     params:
       switch: "sw-200g"
-      interface: "HundredGigE 1/0/1"
+      interface: "200GE1/0/4"
       priority: 3
 
   # ---------------------------------------------------------------------------
@@ -147,7 +147,7 @@ scenarios:
       - "worker-01"
     params:
       switch: "sw-200g"
-      interface: "HundredGigE 1/0/1"
+      interface: "200GE1/0/4"
       min_threshold: 10
       max_threshold: 20
 
@@ -172,12 +172,12 @@ scenarios:
   # Effect: RDMA connection drop/rebuild, NCCL timeout/retry
   # Note: Requires SwitchChannel (not yet implemented)
   rdma_link_flap:
-    enabled: false
+    enabled: true
     target_nodes:
       - "worker-01"
     params:
       switch: "sw-200g"
-      interface: "HundredGigE 1/0/1"
+      interface: "200GE1/0/4"
       flap_interval: 30
       flap_duration: 5
 
@@ -191,7 +191,7 @@ scenarios:
     target_nodes:
       - "worker-01"
     params:
-      interface: "eth0"
+      interface: "roce200"
       dscp_value: 0
 
 # =============================================================================

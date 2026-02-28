@@ -1,0 +1,1 @@
+{"fault_id":"rdma_link_flap_a0e01577","injected_at":"2026-02-28T16:06:30.573385","channel":"switch","target":"sw-200g","inject_action":"rdma_link_flap","inject_params":{"interface":"HundredGigE 1/0/1","flap_duration":5},"recover_action":"restore_interface_baseline","recover_params":{"interface":"HundredGigE 1/0/1"},"status":"recovered"}
