@@ -1,0 +1,97 @@
+{
+  "session_id": "d7acc446",
+  "status": "running",
+  "phase": "report",
+  "started_at": "2026-03-02T10:27:45.149113",
+  "finished_at": "2026-03-02T10:27:45.806421",
+  "baseline_metrics": {},
+  "scenario_results": {
+    "os_resource_pressure": {
+      "scenario_name": "os_resource_pressure",
+      "inject_success": false,
+      "recover_success": false,
+      "verified": false,
+      "inject_duration_ms": 0,
+      "observe_duration_ms": 0,
+      "recover_duration_ms": 0,
+      "error": "sudo: python: command not found\n",
+      "metrics": {}
+    }
+  },
+  "events": [
+    {
+      "timestamp": "2026-03-02T10:27:45.150204",
+      "phase": "init",
+      "event": "components_initialized",
+      "details": {}
+    },
+    {
+      "timestamp": "2026-03-02T10:27:45.150928",
+      "phase": "init",
+      "event": "phase_changed",
+      "details": {
+        "from": "init",
+        "to": "init"
+      }
+    },
+    {
+      "timestamp": "2026-03-02T10:27:45.150934",
+      "phase": "init",
+      "event": "preflight_started",
+      "details": {}
+    },
+    {
+      "timestamp": "2026-03-02T10:27:45.151459",
+      "phase": "init",
+      "event": "preflight_completed",
+      "details": {}
+    },
+    {
+      "timestamp": "2026-03-02T10:27:45.151901",
+      "phase": "baseline",
+      "event": "phase_changed",
+      "details": {
+        "from": "init",
+        "to": "baseline"
+      }
+    },
+    {
+      "timestamp": "2026-03-02T10:27:45.151905",
+      "phase": "baseline",
+      "event": "baseline_started",
+      "details": {}
+    },
+    {
+      "timestamp": "2026-03-02T10:27:45.152840",
+      "phase": "baseline",
+      "event": "baseline_completed",
+      "details": {
+        "baseline_path": "fault-reports\\sessions\\d7acc446\\baseline.json"
+      }
+    },
+    {
+      "timestamp": "2026-03-02T10:27:45.153386",
+      "phase": "inject",
+      "event": "phase_changed",
+      "details": {
+        "from": "baseline",
+        "to": "inject"
+      }
+    },
+    {
+      "timestamp": "2026-03-02T10:27:45.805608",
+      "phase": "report",
+      "event": "phase_changed",
+      "details": {
+        "from": "inject",
+        "to": "report"
+      }
+    },
+    {
+      "timestamp": "2026-03-02T10:27:45.805613",
+      "phase": "report",
+      "event": "report_started",
+      "details": {}
+    }
+  ]
+}

@@ -62,6 +62,12 @@ inventory:
         password: Yuyonghao@123
         timeout: 30
         use_sudo: true
+      redfish:
+        bmc_host: "10.11.8.13"
+        username: "admin"
+        password: "Admin@9000"
+        verify_tls: false
+        timeout: 30
       interface: "roce200"
       roles:
         - "compute"
@@ -88,59 +94,94 @@ switches:
 
 scenarios:
   # ---------------------------------------------------------------------------
+  # RC-1: GPU Contention
+  # ---------------------------------------------------------------------------
+  # Uses gpu-burn to saturate one GPU and create inference contention.
+  gpu_contention:
+    enabled: true
+    target_nodes:
+      - "worker-01"
+    params:
+      duration: 180
+      gpu_id: 0
+      intensity: 100
+
+  # ---------------------------------------------------------------------------
   # RC-2: Network Jitter
   # ---------------------------------------------------------------------------
-  # Uses tc netem to inject network delay and jitter
-  # Effect: P95/P50 latency ratio > 10, intermittent token output
+  # Uses tc netem to inject network delay and jitter.
   network_jitter:
     enabled: true
     target_nodes:
       - "worker-01"
     params:
-      # Network interface to apply delay
       interface: "roce200"
-      
-      # Base delay in milliseconds
-      delay_ms: 50
-      
-      # Jitter range in milliseconds
-      jitter_ms: 100
-      
-      # Distribution: normal, pareto, paretonormal
+      delay_ms: 30
+      jitter_ms: 60
       distribution: "pareto"
-      
-      # Packet loss percentage (0-100)
       loss_pct: 0
-      
-      # Duration in seconds
-      duration: 30
+      duration: 120
 
   # ---------------------------------------------------------------------------
-  # F-5: RoCE MTU Mismatch
+  # RC-3: Storage I/O Interference
   # ---------------------------------------------------------------------------
-  # Modifies network interface MTU to create mismatch
-  # Effect: Large packet loss, throughput drop, RDMA connection retries
-  roce_mtu_mismatch:
-    enabled: false
+  # Uses fio to add storage pressure that impacts latency.
+  storage_io_interference:
+    enabled: true
     target_nodes:
       - "worker-01"
     params:
-      interface: "roce200"
-      
-      # Target MTU (set lower to cause issues)
-      mtu: 1500
-      
-      # Original MTU for recovery
-      original_mtu: 9000
+      duration: 180
+      filename: "/data/fault-injector-fio-testfile"
+      rw_mode: "randwrite"
+      bs: "4k"
+      iodepth: 64
+      numjobs: 4
 
   # ---------------------------------------------------------------------------
-  # F-1: PFC Deadlock
+  # RC-4: Platform Cascade
   # ---------------------------------------------------------------------------
-  # Configures PFC priority mapping to cause Head-of-Line Blocking
-  # Effect: RDMA traffic blocked, NCCL AllReduce timeout
-  # Requires configured switches entry above.
-  pfc_deadlock:
+  # Injects platform dependency delay through tc netem.
+  platform_cascade:
     enabled: true
+    target_nodes:
+      - "worker-01"
+    params:
+      target_component: "mysql"
+      interface: "roce200"
+      delay_ms: 120
+      port: 3306
+
+  # ---------------------------------------------------------------------------
+  # RC-5: OS Resource Pressure
+  # ---------------------------------------------------------------------------
+  # Uses stress-ng to create CPU + memory pressure.
+  os_resource_pressure:
+    enabled: true
+    target_nodes:
+      - "worker-01"
+    params:
+      duration: 180
+      vm_bytes_percent: 75
+      cpu_workers: 32
+      cpu_load: 90
+      io_workers: 4
+
+  # ---------------------------------------------------------------------------
+  # RC-6: Thermal Throttling
+  # ---------------------------------------------------------------------------
+  # Lowers GPU power limit to emulate thermal throttling behavior.
+  thermal_throttling:
+    enabled: true
+    target_nodes:
+      - "worker-01"
+    params:
+      gpu_id: 0
+      power_limit: 500
+
+  # Keep RDMA scenarios disabled for this vLLM latency test cycle.
+  pfc_deadlock:
+    enabled: false
     target_nodes:
       - "worker-01"
     params:
@@ -148,14 +189,8 @@ scenarios:
       interface: "200GE1/0/4"
       priority: 3
 
-  # ---------------------------------------------------------------------------
-  # F-2: ECN Misconfiguration
-  # ---------------------------------------------------------------------------
-  # Modifies ECN threshold settings on switch
-  # Effect: DCQCN rate reduction, unstable RDMA throughput
-  # Requires configured switches entry above.
   ecn_misconfiguration:
-    enabled: true
+    enabled: false
     target_nodes:
       - "worker-01"
     params:
@@ -164,14 +199,8 @@ scenarios:
       min_threshold: 10
       max_threshold: 20
 
-  # ---------------------------------------------------------------------------
-  # F-3: RDMA Load Imbalance
-  # ---------------------------------------------------------------------------
-  # Modifies ECMP hash configuration for uneven load distribution
-  # Effect: Some links congested, some idle, reduced throughput
-  # Requires configured switches entry above.
   rdma_load_imbalance:
-    enabled: true
+    enabled: false
     target_nodes:
       - "worker-01"
     params:
@@ -179,12 +208,6 @@ scenarios:
       interface: "200GE1/0/4"
       hash_algorithm: "src-dst-ip"
 
-  # ---------------------------------------------------------------------------
-  # F-4: RDMA Link Flap
-  # ---------------------------------------------------------------------------
-  # Periodically shutdown/undo shutdown switch port
-  # Effect: RDMA connection drop/rebuild, NCCL timeout/retry
-  # Requires configured switches entry above.
   rdma_link_flap:
     enabled: false
     target_nodes:
@@ -195,13 +218,17 @@ scenarios:
       flap_interval: 30
       flap_duration: 5
 
-  # ---------------------------------------------------------------------------
-  # F-6: RDMA QoS Downgrade
-  # ---------------------------------------------------------------------------
-  # Reduces RDMA traffic priority via DSCP/CoS mapping
-  # Effect: RDMA competes with TCP, unstable throughput/latency
+  roce_mtu_mismatch:
+    enabled: false
+    target_nodes:
+      - "worker-01"
+    params:
+      interface: "roce200"
+      mtu: 1500
+      original_mtu: 9000
+
   rdma_qos_downgrade:
-    enabled: true
+    enabled: false
     target_nodes:
       - "worker-01"
     params:

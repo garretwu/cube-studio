@@ -68,6 +68,7 @@ class FaultOrchestrator:
 
         self.monitor_agent: MonitorAgent | None = None
         self.layer_agents: dict[str, Any] = {}
+        self.inventory: dict[str, Any] = {}
         self.scheduler = ScenarioScheduler(config)
 
     async def run(self) -> Session:
@@ -115,6 +116,7 @@ class FaultOrchestrator:
         )
 
         inventory = self._build_inventory()
+        self.inventory = inventory
         self.ssh = SSHChannel(
             inventory=inventory,
             dry_run=self.dry_run or self.config.global_.safety.dry_run,
@@ -310,6 +312,7 @@ class FaultOrchestrator:
         target_nodes = config.target_nodes
         target = target_nodes[0] if target_nodes else ""
         fault_id = f"{scenario_name}_{uuid.uuid4().hex[:8]}"
+        target_cfg = self.inventory.get(target)
         return FaultContext(
             ssh=self.ssh,
             rollback=self.rollback,
@@ -318,6 +321,7 @@ class FaultOrchestrator:
             params=config.params,
             fault_id=fault_id,
             redfish=self.redfish,
+            target_redfish=getattr(target_cfg, "redfish", None),
             switch=self.switch,
             k8s=self.kubernetes,
             prometheus=self.prometheus,
@@ -352,6 +356,19 @@ class FaultOrchestrator:
         self.session.save(self.session_dir)
         inject_result = await agent.inject(scenario_name, ctx)
         result.inject_success = inject_result.success
+
+        bmc_precheck = ctx.params.get("bmc_precheck")
+        if isinstance(bmc_precheck, dict):
+            self.session.add_event(
+                "bmc_precheck_completed",
+                {
+                    "scenario": scenario_name,
+                    "fault_id": ctx.fault_id,
+                    "precheck": bmc_precheck,
+                },
+            )
+            self.session.save(self.session_dir)
+
         if not inject_result.success:
             result.error = inject_result.error
             self.session.scenario_results[scenario_name] = result

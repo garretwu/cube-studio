@@ -13,6 +13,7 @@ from typing import Any, Optional, TYPE_CHECKING
 
 from fault_injector.config.schema import (
     InjectResult,
+    RedfishConfig,
     RecoverResult,
     ScenarioResult,
 )
@@ -43,6 +44,7 @@ class FaultContext:
     params: dict[str, Any]
     fault_id: str
     redfish: "RedfishChannel | None" = None
+    target_redfish: RedfishConfig | None = None
     switch: "SwitchChannel | None" = None
     k8s: "K8sChannel | None" = None
     prometheus: "PrometheusChannel | None" = None

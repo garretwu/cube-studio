@@ -1,0 +1,182 @@
+{
+  "session_id": "50e4bf48",
+  "config_hash": "5ab6c4d4420916e7",
+  "started_at": "2026-03-02T11:01:41.723158",
+  "finished_at": "2026-03-02T11:02:57.239266",
+  "status": "completed",
+  "phase": "report",
+  "active_faults": [],
+  "rollback_journal_path": "fault-reports\\sessions\\50e4bf48\\rollback.jsonl",
+  "baseline_path": "fault-reports\\sessions\\50e4bf48\\baseline.json",
+  "metrics_dir": "fault-reports\\sessions\\50e4bf48\\metrics",
+  "report_dir": "fault-reports\\sessions\\50e4bf48\\report",
+  "events": [
+    {
+      "timestamp": "2026-03-02T11:01:41.724285",
+      "phase": "init",
+      "event": "components_initialized",
+      "details": {}
+    },
+    {
+      "timestamp": "2026-03-02T11:01:41.724949",
+      "phase": "init",
+      "event": "phase_changed",
+      "details": {
+        "from": "init",
+        "to": "init"
+      }
+    },
+    {
+      "timestamp": "2026-03-02T11:01:41.724955",
+      "phase": "init",
+      "event": "preflight_started",
+      "details": {}
+    },
+    {
+      "timestamp": "2026-03-02T11:01:41.725589",
+      "phase": "init",
+      "event": "preflight_completed",
+      "details": {}
+    },
+    {
+      "timestamp": "2026-03-02T11:01:41.726126",
+      "phase": "baseline",
+      "event": "phase_changed",
+      "details": {
+        "from": "init",
+        "to": "baseline"
+      }
+    },
+    {
+      "timestamp": "2026-03-02T11:01:41.726132",
+      "phase": "baseline",
+      "event": "baseline_started",
+      "details": {}
+    },
+    {
+      "timestamp": "2026-03-02T11:01:41.727202",
+      "phase": "baseline",
+      "event": "baseline_completed",
+      "details": {
+        "baseline_path": "fault-reports\\sessions\\50e4bf48\\baseline.json"
+      }
+    },
+    {
+      "timestamp": "2026-03-02T11:01:41.727790",
+      "phase": "inject",
+      "event": "phase_changed",
+      "details": {
+        "from": "baseline",
+        "to": "inject"
+      }
+    },
+    {
+      "timestamp": "2026-03-02T11:01:48.964001",
+      "phase": "inject",
+      "event": "bmc_precheck_completed",
+      "details": {
+        "scenario": "thermal_throttling",
+        "fault_id": "thermal_throttling_d0324326",
+        "precheck": {
+          "bmc_host": "10.11.8.13",
+          "verify_tls": false,
+          "fan_count": 28,
+          "temperature_count": 56,
+          "power_control_count": 1,
+          "sensor_member_count": 50,
+          "sensor_query_success": true
+        }
+      }
+    },
+    {
+      "timestamp": "2026-03-02T11:01:48.965613",
+      "phase": "inject",
+      "event": "fault_injected",
+      "details": {
+        "fault_id": "thermal_throttling_d0324326",
+        "scenario_name": "thermal_throttling"
+      }
+    },
+    {
+      "timestamp": "2026-03-02T11:01:48.966761",
+      "phase": "observe",
+      "event": "phase_changed",
+      "details": {
+        "from": "inject",
+        "to": "observe"
+      }
+    },
+    {
+      "timestamp": "2026-03-02T11:02:48.970927",
+      "phase": "recover",
+      "event": "phase_changed",
+      "details": {
+        "from": "observe",
+        "to": "recover"
+      }
+    },
+    {
+      "timestamp": "2026-03-02T11:02:56.113585",
+      "phase": "recover",
+      "event": "fault_recovered",
+      "details": {
+        "fault_id": "thermal_throttling_d0324326",
+        "scenario_name": "thermal_throttling"
+      }
+    },
+    {
+      "timestamp": "2026-03-02T11:02:56.115160",
+      "phase": "verify",
+      "event": "phase_changed",
+      "details": {
+        "from": "recover",
+        "to": "verify"
+      }
+    },
+    {
+      "timestamp": "2026-03-02T11:02:57.236956",
+      "phase": "report",
+      "event": "phase_changed",
+      "details": {
+        "from": "verify",
+        "to": "report"
+      }
+    },
+    {
+      "timestamp": "2026-03-02T11:02:57.236963",
+      "phase": "report",
+      "event": "report_started",
+      "details": {}
+    },
+    {
+      "timestamp": "2026-03-02T11:02:57.238533",
+      "phase": "report",
+      "event": "report_completed",
+      "details": {
+        "report_path": "fault-reports\\sessions\\50e4bf48\\report\\report.json"
+      }
+    },
+    {
+      "timestamp": "2026-03-02T11:02:57.239267",
+      "phase": "report",
+      "event": "session_completed",
+      "details": {}
+    }
+  ],
+  "scenario_results": {
+    "thermal_throttling": {
+      "scenario_name": "thermal_throttling",
+      "inject_success": true,
+      "recover_success": true,
+      "verified": true,
+      "inject_duration_ms": 0,
+      "observe_duration_ms": 0,
+      "recover_duration_ms": 0,
+      "error": "",
+      "metrics": {
+        "during": {}
+      }
+    }
+  },
+  "baseline_metrics": {}
+}
