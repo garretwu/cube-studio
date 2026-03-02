@@ -62,8 +62,20 @@ class IPMIChannel(BaseChannel):
             return False, None, str(exc)
 
     @staticmethod
+    def _json_safe(value: Any) -> Any:
+        if isinstance(value, (bytes, bytearray)):
+            return list(value)
+        if isinstance(value, dict):
+            return {str(k): IPMIChannel._json_safe(v) for k, v in value.items()}
+        if isinstance(value, list):
+            return [IPMIChannel._json_safe(v) for v in value]
+        if isinstance(value, tuple):
+            return [IPMIChannel._json_safe(v) for v in value]
+        return value
+
+    @staticmethod
     def _dumps(data: Any) -> str:
-        return json.dumps(data, ensure_ascii=False)
+        return json.dumps(IPMIChannel._json_safe(data), ensure_ascii=False)
 
     async def connect(
         self,

@@ -53,3 +53,32 @@
 - Do not commit `.only`/`.skip` style focused tests.
 - Keep assertions specific and behavior-oriented.
 - Keep fixture data centralized; avoid duplicating setup in each test.
+
+## RC-6 Real Inject Validation (Thermal Throttling)
+- Date: `2026-03-02`
+- Config mode: `thermal_throttling.params.fan_control_backend: "ipmi"`
+- Test command:
+  - `python -m fault_injector run --config fault_injector/fault-injector-test.yaml --scenario thermal_throttling -y`
+
+### Expected pass criteria
+- `inject_success: true`
+- `recover_success: true`
+- `verified: true`
+- Session event `bmc_precheck_completed` exists and contains:
+  - `fan_injected_backend: "ipmi"`
+  - `fan_inject_applied: true`
+  - `fan_inject_warning: ""` (empty or absent warning)
+
+### Last verified session
+- Session ID: `d022cf8d`
+- Result: pass (`inject/recover/verify` all true)
+- Evidence file:
+  - `fault-reports/sessions/d022cf8d/session.json`
+
+### Common failure patterns and fixes
+- If error contains `pyghmi is not installed`:
+  - Install dependency: `python -m pip install pyghmi`
+- If Redfish post-inject check returns `401 Unauthorized`:
+  - Current code already retries with re-auth for RC-6 post-check.
+- If IPMI raw command serialization fails with `bytearray is not JSON serializable`:
+  - Current `IPMIChannel` already converts `bytes/bytearray` to JSON-safe lists.

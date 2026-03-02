@@ -87,6 +87,11 @@ def _is_endpoint_not_supported(message: str) -> bool:
     return "404" in text or "not found" in text or "http status error '404" in text
 
 
+def _is_unauthorized_error(message: str) -> bool:
+    text = (message or "").lower()
+    return "401" in text or "unauthorized" in text
+
+
 def _parse_json_payload(raw: str) -> dict[str, Any]:
     try:
         data = json.loads(raw)
@@ -1036,6 +1041,21 @@ class ThermalThrottlingScenario(BaseScenario):
                             fan_injected_backend = "ipmi"
 
             thermal_after_result = await ctx.redfish.get_thermal(bmc_host=bmc_host, verify_tls=verify_tls)
+            if (
+                not thermal_after_result.success
+                and _is_unauthorized_error(_result_error(thermal_after_result))
+                and not bmc_cfg.token
+                and bmc_cfg.username
+                and bmc_cfg.password
+            ):
+                reauth = await ctx.redfish.authenticate(
+                    bmc_host=bmc_host,
+                    username=bmc_cfg.username,
+                    password=bmc_cfg.password,
+                    verify_tls=verify_tls,
+                )
+                if reauth.success:
+                    thermal_after_result = await ctx.redfish.get_thermal(bmc_host=bmc_host, verify_tls=verify_tls)
             if not thermal_after_result.success:
                 return InjectResult(
                     success=False,
