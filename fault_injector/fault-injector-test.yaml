@@ -161,7 +161,7 @@ scenarios:
     target_nodes:
       - "worker-01"
     params:
-      duration: 60
+      duration: 120
       vm_bytes_percent: 75
       cpu_workers: 32
       cpu_load: 90
