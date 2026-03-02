@@ -1,0 +1,144 @@
+{
+  "session_id": "8edc1e85",
+  "status": "running",
+  "phase": "report",
+  "started_at": "2026-03-02T16:02:52.907445",
+  "finished_at": "2026-03-02T16:04:01.635803",
+  "baseline_metrics": {},
+  "scenario_results": {
+    "roce_mtu_mismatch": {
+      "scenario_name": "roce_mtu_mismatch",
+      "inject_success": true,
+      "recover_success": true,
+      "verified": true,
+      "inject_duration_ms": 0,
+      "observe_duration_ms": 0,
+      "recover_duration_ms": 0,
+      "error": "",
+      "metrics": {
+        "during": {}
+      }
+    }
+  },
+  "events": [
+    {
+      "timestamp": "2026-03-02T16:02:52.908927",
+      "phase": "init",
+      "event": "components_initialized",
+      "details": {}
+    },
+    {
+      "timestamp": "2026-03-02T16:02:52.909689",
+      "phase": "init",
+      "event": "phase_changed",
+      "details": {
+        "from": "init",
+        "to": "init"
+      }
+    },
+    {
+      "timestamp": "2026-03-02T16:02:52.909695",
+      "phase": "init",
+      "event": "preflight_started",
+      "details": {}
+    },
+    {
+      "timestamp": "2026-03-02T16:02:52.910314",
+      "phase": "init",
+      "event": "preflight_completed",
+      "details": {}
+    },
+    {
+      "timestamp": "2026-03-02T16:02:52.910751",
+      "phase": "baseline",
+      "event": "phase_changed",
+      "details": {
+        "from": "init",
+        "to": "baseline"
+      }
+    },
+    {
+      "timestamp": "2026-03-02T16:02:52.910756",
+      "phase": "baseline",
+      "event": "baseline_started",
+      "details": {}
+    },
+    {
+      "timestamp": "2026-03-02T16:02:52.911683",
+      "phase": "baseline",
+      "event": "baseline_completed",
+      "details": {
+        "baseline_path": "fault-reports\\sessions\\8edc1e85\\baseline.json"
+      }
+    },
+    {
+      "timestamp": "2026-03-02T16:02:52.912278",
+      "phase": "inject",
+      "event": "phase_changed",
+      "details": {
+        "from": "baseline",
+        "to": "inject"
+      }
+    },
+    {
+      "timestamp": "2026-03-02T16:02:56.673785",
+      "phase": "inject",
+      "event": "fault_injected",
+      "details": {
+        "fault_id": "roce_mtu_mismatch_3b2de378",
+        "scenario_name": "roce_mtu_mismatch"
+      }
+    },
+    {
+      "timestamp": "2026-03-02T16:02:56.674954",
+      "phase": "observe",
+      "event": "phase_changed",
+      "details": {
+        "from": "inject",
+        "to": "observe"
+      }
+    },
+    {
+      "timestamp": "2026-03-02T16:03:56.684565",
+      "phase": "recover",
+      "event": "phase_changed",
+      "details": {
+        "from": "observe",
+        "to": "recover"
+      }
+    },
+    {
+      "timestamp": "2026-03-02T16:04:01.570846",
+      "phase": "recover",
+      "event": "fault_recovered",
+      "details": {
+        "fault_id": "roce_mtu_mismatch_3b2de378",
+        "scenario_name": "roce_mtu_mismatch"
+      }
+    },
+    {
+      "timestamp": "2026-03-02T16:04:01.571712",
+      "phase": "verify",
+      "event": "phase_changed",
+      "details": {
+        "from": "recover",
+        "to": "verify"
+      }
+    },
+    {
+      "timestamp": "2026-03-02T16:04:01.634614",
+      "phase": "report",
+      "event": "phase_changed",
+      "details": {
+        "from": "verify",
+        "to": "report"
+      }
+    },
+    {
+      "timestamp": "2026-03-02T16:04:01.634663",
+      "phase": "report",
+      "event": "report_started",
+      "details": {}
+    }
+  ]
+}
