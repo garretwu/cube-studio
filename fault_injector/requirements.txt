@@ -1,0 +1,10 @@
+﻿click>=8.0
+rich>=13.0
+pydantic>=2.0
+PyYAML>=6.0
+httpx>=0.25
+asyncssh>=2.14
+ncclient>=0.6
+kubernetes>=28.0
+pytest>=7.0
+pytest-asyncio>=0.21

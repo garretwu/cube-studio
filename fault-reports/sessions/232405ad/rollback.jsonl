@@ -1,0 +1,1 @@
+{"fault_id":"pfc_deadlock_188f7767","injected_at":"2026-03-02T16:01:30.651337","channel":"switch","target":"sw-200g","inject_action":"pfc_deadlock","inject_params":{"interface":"200GE1/0/4","marker":"[fi:pfc_deadlock:pfc_deadlock_188f7767]"},"recover_action":"restore_interface_baseline","recover_params":{"interface":"200GE1/0/4"},"status":"recovered"}
