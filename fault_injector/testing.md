@@ -1,51 +1,55 @@
-# Testing Strategy
+# Fault Injector Testing Strategy
 
 ## Stack
-- Unit/Integration: Vitest (or Jest)
-- E2E: Playwright
-- Coverage: V8
+- Unit and integration: `pytest`
+- Async support: `pytest-asyncio`
+- Coverage: `pytest-cov`
 
-## Coverage Targets
-- Unit: 80% minimum
-- Integration: All critical paths (auth, payments, data mutations)
-- E2E: All main user journeys (signup, checkout, onboarding)
-
-## Folder Rules
-- Unit tests → tests/unit/ (mirror src/ structure exactly)
-- Integration tests → tests/integration/
-- E2E tests → tests/e2e/journeys/
-- All mock data → tests/fixtures/ (never inline)
-- All shared mocks → tests/mocks/
+## Test Layout
+- Unit: `fault_injector/tests/unit/features/`
+- Integration: `fault_injector/tests/integration/`
+- E2E placeholders: `fault_injector/tests/e2e/`
+- Shared fixtures: `fault_injector/tests/fixtures/`
+- Shared mocks/helpers: `fault_injector/tests/mocks/`, `fault_injector/tests/helpers/`
 
 ## Naming Conventions
-- Unit: [module].test.ts
-- Integration: [feature].integration.test.ts
-- E2E: [journey].e2e.ts
-- Test names: "should [expected behavior] when [condition]"
+- Files: `test_<feature>.py`
+- Async tests: `@pytest.mark.asyncio`
+- Test names: `test_<expected_behavior>_<condition>()`
 
-## What to Test
-- Happy path (valid inputs)
-- Edge cases (empty, null, zero, max values)
-- Error cases (invalid input, failed external calls)
-- Security-sensitive paths (auth, permissions) — always double-cover
+## Minimum Test Expectations For Scenario Changes
+- Happy path: inject -> recover -> verify.
+- Guard behavior: blocked command path returns failed result.
+- Failure path: recovery failures must mark WAL entry as `failed`.
+- Dry-run behavior: should remain supported and deterministic.
+- Monitor query contract: `monitor_queries()` returns non-empty dict for scenario metrics.
 
-## What NOT to Test
-- Private methods or internal implementation
-- Third-party library internals
-- Trivial getters/setters with no logic
+## What Not To Test
+- Third-party library internals (`asyncssh`, `httpx`, `ncclient`).
+- Private helpers with no behavior impact.
+- Trivial passthroughs without branch logic.
 
-## Mocking Rules
-- External services (Stripe, email, S3) → always mock in unit and integration
-- Database → use test DB with real queries in integration, mock in unit
-- Never mock the module you are testing
+## Validation Command Matrix
+- Scenario unit tests:
+  - `pytest fault_injector/tests/unit/features/scenarios/test_rdma_anomaly.py -q`
+  - `pytest fault_injector/tests/unit/features/scenarios/test_scenarios.py -q`
+  - `pytest fault_injector/tests/unit/features/scenarios/test_vllm_latency_hardening.py -q`
+- Orchestrator unit tests:
+  - `pytest fault_injector/tests/unit/features/orchestrator/test_engine.py -q`
+- Broad unit gate:
+  - `pytest fault_injector/tests/unit -q`
+- CLI/config sanity:
+  - `python -m fault_injector validate-config fault_injector/fault-injector-test.yaml`
+  - `python -m fault_injector list-scenarios`
+- Optional dry-run smoke:
+  - `python -m fault_injector run --config fault_injector/fault-injector-test.yaml --dry-run`
 
-## Assertions
-- Always use specific assertions (toBe, toEqual) over generic (toBeTruthy)
-- Every test must have at least one assertion
-- Test one concept per test — split if testing multiple behaviors
+## Optional Integration Gate
+- Switch live integration tests are opt-in and require dedicated lab config:
+  - `pytest fault_injector/tests/integration -q`
+- Use markers/prerequisites in integration modules (for example `live_netconf`) to avoid accidental live execution.
 
-## Forbidden Patterns
-- No Date.now() or Math.random() without mocking
-- No hardcoded test data outside fixtures/
-- No .only or .skip in committed code
-- No testing implementation details
+## Quality Guardrails
+- Do not commit `.only`/`.skip` style focused tests.
+- Keep assertions specific and behavior-oriented.
+- Keep fixture data centralized; avoid duplicating setup in each test.

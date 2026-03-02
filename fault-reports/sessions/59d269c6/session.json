@@ -1,0 +1,291 @@
+{
+  "session_id": "59d269c6",
+  "config_hash": "845a195dc6a8338e",
+  "started_at": "2026-03-02T09:43:25.600919",
+  "finished_at": "2026-03-02T09:43:25.654587",
+  "status": "completed",
+  "phase": "report",
+  "active_faults": [],
+  "rollback_journal_path": "fault-reports\\sessions\\59d269c6\\rollback.jsonl",
+  "baseline_path": "fault-reports\\sessions\\59d269c6\\baseline.json",
+  "metrics_dir": "fault-reports\\sessions\\59d269c6\\metrics",
+  "report_dir": "fault-reports\\sessions\\59d269c6\\report",
+  "events": [
+    {
+      "timestamp": "2026-03-02T09:43:25.603204",
+      "phase": "init",
+      "event": "components_initialized",
+      "details": {}
+    },
+    {
+      "timestamp": "2026-03-02T09:43:25.604436",
+      "phase": "init",
+      "event": "phase_changed",
+      "details": {
+        "from": "init",
+        "to": "init"
+      }
+    },
+    {
+      "timestamp": "2026-03-02T09:43:25.604446",
+      "phase": "init",
+      "event": "preflight_started",
+      "details": {}
+    },
+    {
+      "timestamp": "2026-03-02T09:43:25.605521",
+      "phase": "init",
+      "event": "preflight_completed",
+      "details": {}
+    },
+    {
+      "timestamp": "2026-03-02T09:43:25.606542",
+      "phase": "baseline",
+      "event": "phase_changed",
+      "details": {
+        "from": "init",
+        "to": "baseline"
+      }
+    },
+    {
+      "timestamp": "2026-03-02T09:43:25.606553",
+      "phase": "baseline",
+      "event": "baseline_started",
+      "details": {}
+    },
+    {
+      "timestamp": "2026-03-02T09:43:25.607991",
+      "phase": "baseline",
+      "event": "baseline_completed",
+      "details": {
+        "baseline_path": "fault-reports\\sessions\\59d269c6\\baseline.json"
+      }
+    },
+    {
+      "timestamp": "2026-03-02T09:43:25.608707",
+      "phase": "inject",
+      "event": "phase_changed",
+      "details": {
+        "from": "baseline",
+        "to": "inject"
+      }
+    },
+    {
+      "timestamp": "2026-03-02T09:43:25.622494",
+      "phase": "inject",
+      "event": "fault_injected",
+      "details": {
+        "fault_id": "network_jitter_0e901c80",
+        "scenario_name": "network_jitter"
+      }
+    },
+    {
+      "timestamp": "2026-03-02T09:43:25.623928",
+      "phase": "observe",
+      "event": "phase_changed",
+      "details": {
+        "from": "inject",
+        "to": "observe"
+      }
+    },
+    {
+      "timestamp": "2026-03-02T09:43:25.624824",
+      "phase": "recover",
+      "event": "phase_changed",
+      "details": {
+        "from": "observe",
+        "to": "recover"
+      }
+    },
+    {
+      "timestamp": "2026-03-02T09:43:25.630127",
+      "phase": "recover",
+      "event": "fault_recovered",
+      "details": {
+        "fault_id": "network_jitter_0e901c80",
+        "scenario_name": "network_jitter"
+      }
+    },
+    {
+      "timestamp": "2026-03-02T09:43:25.630924",
+      "phase": "verify",
+      "event": "phase_changed",
+      "details": {
+        "from": "recover",
+        "to": "verify"
+      }
+    },
+    {
+      "timestamp": "2026-03-02T09:43:25.632282",
+      "phase": "inject",
+      "event": "phase_changed",
+      "details": {
+        "from": "verify",
+        "to": "inject"
+      }
+    },
+    {
+      "timestamp": "2026-03-02T09:43:25.633795",
+      "phase": "inject",
+      "event": "phase_changed",
+      "details": {
+        "from": "inject",
+        "to": "inject"
+      }
+    },
+    {
+      "timestamp": "2026-03-02T09:43:25.635136",
+      "phase": "inject",
+      "event": "phase_changed",
+      "details": {
+        "from": "inject",
+        "to": "inject"
+      }
+    },
+    {
+      "timestamp": "2026-03-02T09:43:25.641107",
+      "phase": "inject",
+      "event": "fault_injected",
+      "details": {
+        "fault_id": "rdma_load_imbalance_bd6a5d48",
+        "scenario_name": "rdma_load_imbalance"
+      }
+    },
+    {
+      "timestamp": "2026-03-02T09:43:25.641953",
+      "phase": "observe",
+      "event": "phase_changed",
+      "details": {
+        "from": "inject",
+        "to": "observe"
+      }
+    },
+    {
+      "timestamp": "2026-03-02T09:43:25.643487",
+      "phase": "recover",
+      "event": "phase_changed",
+      "details": {
+        "from": "observe",
+        "to": "recover"
+      }
+    },
+    {
+      "timestamp": "2026-03-02T09:43:25.648139",
+      "phase": "recover",
+      "event": "fault_recovered",
+      "details": {
+        "fault_id": "rdma_load_imbalance_bd6a5d48",
+        "scenario_name": "rdma_load_imbalance"
+      }
+    },
+    {
+      "timestamp": "2026-03-02T09:43:25.649225",
+      "phase": "verify",
+      "event": "phase_changed",
+      "details": {
+        "from": "recover",
+        "to": "verify"
+      }
+    },
+    {
+      "timestamp": "2026-03-02T09:43:25.651340",
+      "phase": "inject",
+      "event": "phase_changed",
+      "details": {
+        "from": "verify",
+        "to": "inject"
+      }
+    },
+    {
+      "timestamp": "2026-03-02T09:43:25.652637",
+      "phase": "report",
+      "event": "phase_changed",
+      "details": {
+        "from": "inject",
+        "to": "report"
+      }
+    },
+    {
+      "timestamp": "2026-03-02T09:43:25.652642",
+      "phase": "report",
+      "event": "report_started",
+      "details": {}
+    },
+    {
+      "timestamp": "2026-03-02T09:43:25.653953",
+      "phase": "report",
+      "event": "report_completed",
+      "details": {
+        "report_path": "fault-reports\\sessions\\59d269c6\\report\\report.json"
+      }
+    },
+    {
+      "timestamp": "2026-03-02T09:43:25.654588",
+      "phase": "report",
+      "event": "session_completed",
+      "details": {}
+    }
+  ],
+  "scenario_results": {
+    "network_jitter": {
+      "scenario_name": "network_jitter",
+      "inject_success": true,
+      "recover_success": true,
+      "verified": true,
+      "inject_duration_ms": 0,
+      "observe_duration_ms": 0,
+      "recover_duration_ms": 0,
+      "error": "",
+      "metrics": {
+        "during": {}
+      }
+    },
+    "pfc_deadlock": {
+      "scenario_name": "pfc_deadlock",
+      "inject_success": false,
+      "recover_success": false,
+      "verified": false,
+      "inject_duration_ms": 0,
+      "observe_duration_ms": 0,
+      "recover_duration_ms": 0,
+      "error": "Baseline description is empty; this device cannot safely restore empty description after marker injection.",
+      "metrics": {}
+    },
+    "ecn_misconfiguration": {
+      "scenario_name": "ecn_misconfiguration",
+      "inject_success": false,
+      "recover_success": false,
+      "verified": false,
+      "inject_duration_ms": 0,
+      "observe_duration_ms": 0,
+      "recover_duration_ms": 0,
+      "error": "Baseline description is empty; this device cannot safely restore empty description after marker injection.",
+      "metrics": {}
+    },
+    "rdma_load_imbalance": {
+      "scenario_name": "rdma_load_imbalance",
+      "inject_success": true,
+      "recover_success": true,
+      "verified": true,
+      "inject_duration_ms": 0,
+      "observe_duration_ms": 0,
+      "recover_duration_ms": 0,
+      "error": "",
+      "metrics": {
+        "during": {}
+      }
+    },
+    "rdma_qos_downgrade": {
+      "scenario_name": "rdma_qos_downgrade",
+      "inject_success": false,
+      "recover_success": false,
+      "verified": false,
+      "inject_duration_ms": 0,
+      "observe_duration_ms": 0,
+      "recover_duration_ms": 0,
+      "error": "Baseline description is empty; this device cannot safely restore empty description after marker injection.",
+      "metrics": {}
+    }
+  },
+  "baseline_metrics": {}
+}
