@@ -34,6 +34,7 @@ from fault_injector.safety.rollback import RollbackJournal
 from fault_injector.scenarios.base import FaultContext
 from fault_injector.scenarios.registry import SCENARIO_REGISTRY
 from lib.channels.kubernetes import K8sChannel
+from lib.channels.ipmi import IPMIChannel
 from lib.channels.prometheus import PrometheusChannel
 from lib.channels.redfish import RedfishChannel
 from lib.channels.ssh import SSHChannel
@@ -64,6 +65,7 @@ class FaultOrchestrator:
         self.prometheus: PrometheusChannel | None = None
         self.kubernetes: K8sChannel | None = None
         self.redfish: RedfishChannel | None = None
+        self.ipmi: IPMIChannel | None = None
         self.switch: SwitchChannel | None = None
 
         self.monitor_agent: MonitorAgent | None = None
@@ -133,6 +135,7 @@ class FaultOrchestrator:
             self.prometheus = None
         self.kubernetes = K8sChannel(dry_run=self.dry_run, wal=self.rollback)
         self.redfish = RedfishChannel(dry_run=self.dry_run, wal=self.rollback, guard=self.guard)
+        self.ipmi = IPMIChannel(dry_run=self.dry_run, wal=self.rollback, guard=self.guard)
 
         switch_devices = self._build_switch_inventory()
         self.switch = SwitchChannel(
@@ -147,6 +150,7 @@ class FaultOrchestrator:
             "prometheus": self.prometheus,
             "kubernetes": self.kubernetes,
             "redfish": self.redfish,
+            "ipmi": self.ipmi,
             "switch": self.switch,
         }
         self.monitor_agent = MonitorAgent(channels=channels)
@@ -321,7 +325,9 @@ class FaultOrchestrator:
             params=config.params,
             fault_id=fault_id,
             redfish=self.redfish,
+            ipmi=self.ipmi,
             target_redfish=getattr(target_cfg, "redfish", None),
+            target_ipmi=getattr(target_cfg, "ipmi", None),
             switch=self.switch,
             k8s=self.kubernetes,
             prometheus=self.prometheus,
@@ -514,6 +520,8 @@ class FaultOrchestrator:
             await self.prometheus.close()
         if self.switch:
             self.switch.close()
+        if self.ipmi:
+            await self.ipmi.close()
 
     @classmethod
     async def resume(cls, session_id: str, session_dir: str = "./fault-reports/sessions/") -> Session:

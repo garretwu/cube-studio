@@ -14,6 +14,7 @@ from fault_injector.config.schema import (
     CombinedScenarioConfig,
     FaultInjectorConfig,
     GlobalConfig,
+    IPMIConfig,
     MonitorConfig,
     OrchestratorConfig,
     RedfishConfig,
@@ -102,11 +103,25 @@ def _parse_config(raw: dict[str, Any]) -> FaultInjectorConfig:
                     verify_tls=redfish_raw.get("verify_tls", True),
                     timeout=redfish_raw.get("timeout", 30),
                 )
+            ipmi_cfg = None
+            ipmi_raw = node_raw.get("ipmi")
+            if isinstance(ipmi_raw, dict):
+                ipmi_cfg = IPMIConfig(
+                    host=ipmi_raw.get("host", ""),
+                    username=ipmi_raw.get("username"),
+                    password=ipmi_raw.get("password"),
+                    interface=ipmi_raw.get("interface", "lanplus"),
+                    port=ipmi_raw.get("port", 623),
+                    tool_path=ipmi_raw.get("tool_path", "ipmitool"),
+                    cipher_suite=ipmi_raw.get("cipher_suite"),
+                    timeout=ipmi_raw.get("timeout", 30),
+                )
             group_nodes.append(
                 TargetNodeConfig(
                     name=node_raw.get("name", ""),
                     ssh=ssh,
                     redfish=redfish_cfg,
+                    ipmi=ipmi_cfg,
                     interface=node_raw.get("interface", "eth0"),
                     roles=node_raw.get("roles", []),
                 )

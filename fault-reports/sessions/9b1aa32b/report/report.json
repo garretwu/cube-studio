@@ -1,0 +1,144 @@
+{
+  "session_id": "9b1aa32b",
+  "status": "running",
+  "phase": "report",
+  "started_at": "2026-03-02T12:59:54.410812",
+  "finished_at": "2026-03-02T13:00:55.822357",
+  "baseline_metrics": {},
+  "scenario_results": {
+    "gpu_contention": {
+      "scenario_name": "gpu_contention",
+      "inject_success": true,
+      "recover_success": true,
+      "verified": false,
+      "inject_duration_ms": 0,
+      "observe_duration_ms": 0,
+      "recover_duration_ms": 0,
+      "error": "",
+      "metrics": {
+        "during": {}
+      }
+    }
+  },
+  "events": [
+    {
+      "timestamp": "2026-03-02T12:59:54.411813",
+      "phase": "init",
+      "event": "components_initialized",
+      "details": {}
+    },
+    {
+      "timestamp": "2026-03-02T12:59:54.412499",
+      "phase": "init",
+      "event": "phase_changed",
+      "details": {
+        "from": "init",
+        "to": "init"
+      }
+    },
+    {
+      "timestamp": "2026-03-02T12:59:54.412505",
+      "phase": "init",
+      "event": "preflight_started",
+      "details": {}
+    },
+    {
+      "timestamp": "2026-03-02T12:59:54.413049",
+      "phase": "init",
+      "event": "preflight_completed",
+      "details": {}
+    },
+    {
+      "timestamp": "2026-03-02T12:59:54.413547",
+      "phase": "baseline",
+      "event": "phase_changed",
+      "details": {
+        "from": "init",
+        "to": "baseline"
+      }
+    },
+    {
+      "timestamp": "2026-03-02T12:59:54.413553",
+      "phase": "baseline",
+      "event": "baseline_started",
+      "details": {}
+    },
+    {
+      "timestamp": "2026-03-02T12:59:54.414509",
+      "phase": "baseline",
+      "event": "baseline_completed",
+      "details": {
+        "baseline_path": "fault-reports\\sessions\\9b1aa32b\\baseline.json"
+      }
+    },
+    {
+      "timestamp": "2026-03-02T12:59:54.415117",
+      "phase": "inject",
+      "event": "phase_changed",
+      "details": {
+        "from": "baseline",
+        "to": "inject"
+      }
+    },
+    {
+      "timestamp": "2026-03-02T12:59:55.508139",
+      "phase": "inject",
+      "event": "fault_injected",
+      "details": {
+        "fault_id": "gpu_contention_01b67e89",
+        "scenario_name": "gpu_contention"
+      }
+    },
+    {
+      "timestamp": "2026-03-02T12:59:55.508886",
+      "phase": "observe",
+      "event": "phase_changed",
+      "details": {
+        "from": "inject",
+        "to": "observe"
+      }
+    },
+    {
+      "timestamp": "2026-03-02T13:00:55.510737",
+      "phase": "recover",
+      "event": "phase_changed",
+      "details": {
+        "from": "observe",
+        "to": "recover"
+      }
+    },
+    {
+      "timestamp": "2026-03-02T13:00:55.709930",
+      "phase": "recover",
+      "event": "fault_recovered",
+      "details": {
+        "fault_id": "gpu_contention_01b67e89",
+        "scenario_name": "gpu_contention"
+      }
+    },
+    {
+      "timestamp": "2026-03-02T13:00:55.710707",
+      "phase": "verify",
+      "event": "phase_changed",
+      "details": {
+        "from": "recover",
+        "to": "verify"
+      }
+    },
+    {
+      "timestamp": "2026-03-02T13:00:55.821122",
+      "phase": "report",
+      "event": "phase_changed",
+      "details": {
+        "from": "verify",
+        "to": "report"
+      }
+    },
+    {
+      "timestamp": "2026-03-02T13:00:55.821129",
+      "phase": "report",
+      "event": "report_started",
+      "details": {}
+    }
+  ]
+}

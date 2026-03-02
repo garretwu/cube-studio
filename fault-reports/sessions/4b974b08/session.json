@@ -1,0 +1,164 @@
+{
+  "session_id": "4b974b08",
+  "config_hash": "0387c5889803473d",
+  "started_at": "2026-03-02T13:31:40.250209",
+  "finished_at": "2026-03-02T13:32:41.657684",
+  "status": "completed",
+  "phase": "report",
+  "active_faults": [],
+  "rollback_journal_path": "fault-reports\\sessions\\4b974b08\\rollback.jsonl",
+  "baseline_path": "fault-reports\\sessions\\4b974b08\\baseline.json",
+  "metrics_dir": "fault-reports\\sessions\\4b974b08\\metrics",
+  "report_dir": "fault-reports\\sessions\\4b974b08\\report",
+  "events": [
+    {
+      "timestamp": "2026-03-02T13:31:40.251301",
+      "phase": "init",
+      "event": "components_initialized",
+      "details": {}
+    },
+    {
+      "timestamp": "2026-03-02T13:31:40.251981",
+      "phase": "init",
+      "event": "phase_changed",
+      "details": {
+        "from": "init",
+        "to": "init"
+      }
+    },
+    {
+      "timestamp": "2026-03-02T13:31:40.251986",
+      "phase": "init",
+      "event": "preflight_started",
+      "details": {}
+    },
+    {
+      "timestamp": "2026-03-02T13:31:40.252455",
+      "phase": "init",
+      "event": "preflight_completed",
+      "details": {}
+    },
+    {
+      "timestamp": "2026-03-02T13:31:40.252871",
+      "phase": "baseline",
+      "event": "phase_changed",
+      "details": {
+        "from": "init",
+        "to": "baseline"
+      }
+    },
+    {
+      "timestamp": "2026-03-02T13:31:40.252875",
+      "phase": "baseline",
+      "event": "baseline_started",
+      "details": {}
+    },
+    {
+      "timestamp": "2026-03-02T13:31:40.253760",
+      "phase": "baseline",
+      "event": "baseline_completed",
+      "details": {
+        "baseline_path": "fault-reports\\sessions\\4b974b08\\baseline.json"
+      }
+    },
+    {
+      "timestamp": "2026-03-02T13:31:40.254318",
+      "phase": "inject",
+      "event": "phase_changed",
+      "details": {
+        "from": "baseline",
+        "to": "inject"
+      }
+    },
+    {
+      "timestamp": "2026-03-02T13:31:41.338821",
+      "phase": "inject",
+      "event": "fault_injected",
+      "details": {
+        "fault_id": "storage_io_interference_233fa9a5",
+        "scenario_name": "storage_io_interference"
+      }
+    },
+    {
+      "timestamp": "2026-03-02T13:31:41.339645",
+      "phase": "observe",
+      "event": "phase_changed",
+      "details": {
+        "from": "inject",
+        "to": "observe"
+      }
+    },
+    {
+      "timestamp": "2026-03-02T13:32:41.341895",
+      "phase": "recover",
+      "event": "phase_changed",
+      "details": {
+        "from": "observe",
+        "to": "recover"
+      }
+    },
+    {
+      "timestamp": "2026-03-02T13:32:41.540552",
+      "phase": "recover",
+      "event": "fault_recovered",
+      "details": {
+        "fault_id": "storage_io_interference_233fa9a5",
+        "scenario_name": "storage_io_interference"
+      }
+    },
+    {
+      "timestamp": "2026-03-02T13:32:41.541427",
+      "phase": "verify",
+      "event": "phase_changed",
+      "details": {
+        "from": "recover",
+        "to": "verify"
+      }
+    },
+    {
+      "timestamp": "2026-03-02T13:32:41.655498",
+      "phase": "report",
+      "event": "phase_changed",
+      "details": {
+        "from": "verify",
+        "to": "report"
+      }
+    },
+    {
+      "timestamp": "2026-03-02T13:32:41.655506",
+      "phase": "report",
+      "event": "report_started",
+      "details": {}
+    },
+    {
+      "timestamp": "2026-03-02T13:32:41.657066",
+      "phase": "report",
+      "event": "report_completed",
+      "details": {
+        "report_path": "fault-reports\\sessions\\4b974b08\\report\\report.json"
+      }
+    },
+    {
+      "timestamp": "2026-03-02T13:32:41.657685",
+      "phase": "report",
+      "event": "session_completed",
+      "details": {}
+    }
+  ],
+  "scenario_results": {
+    "storage_io_interference": {
+      "scenario_name": "storage_io_interference",
+      "inject_success": true,
+      "recover_success": true,
+      "verified": false,
+      "inject_duration_ms": 0,
+      "observe_duration_ms": 0,
+      "recover_duration_ms": 0,
+      "error": "",
+      "metrics": {
+        "during": {}
+      }
+    }
+  },
+  "baseline_metrics": {}
+}

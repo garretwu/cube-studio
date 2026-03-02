@@ -1,0 +1,117 @@
+{
+  "session_id": "a36dbaee",
+  "config_hash": "3d36d9b53724e836",
+  "started_at": "2026-03-02T14:51:27.270985",
+  "finished_at": "2026-03-02T14:52:11.787809",
+  "status": "completed",
+  "phase": "report",
+  "active_faults": [],
+  "rollback_journal_path": "fault-reports\\sessions\\a36dbaee\\rollback.jsonl",
+  "baseline_path": "fault-reports\\sessions\\a36dbaee\\baseline.json",
+  "metrics_dir": "fault-reports\\sessions\\a36dbaee\\metrics",
+  "report_dir": "fault-reports\\sessions\\a36dbaee\\report",
+  "events": [
+    {
+      "timestamp": "2026-03-02T14:51:27.272333",
+      "phase": "init",
+      "event": "components_initialized",
+      "details": {}
+    },
+    {
+      "timestamp": "2026-03-02T14:51:27.273115",
+      "phase": "init",
+      "event": "phase_changed",
+      "details": {
+        "from": "init",
+        "to": "init"
+      }
+    },
+    {
+      "timestamp": "2026-03-02T14:51:27.273123",
+      "phase": "init",
+      "event": "preflight_started",
+      "details": {}
+    },
+    {
+      "timestamp": "2026-03-02T14:51:27.273767",
+      "phase": "init",
+      "event": "preflight_completed",
+      "details": {}
+    },
+    {
+      "timestamp": "2026-03-02T14:51:27.274345",
+      "phase": "baseline",
+      "event": "phase_changed",
+      "details": {
+        "from": "init",
+        "to": "baseline"
+      }
+    },
+    {
+      "timestamp": "2026-03-02T14:51:27.274350",
+      "phase": "baseline",
+      "event": "baseline_started",
+      "details": {}
+    },
+    {
+      "timestamp": "2026-03-02T14:51:27.275304",
+      "phase": "baseline",
+      "event": "baseline_completed",
+      "details": {
+        "baseline_path": "fault-reports\\sessions\\a36dbaee\\baseline.json"
+      }
+    },
+    {
+      "timestamp": "2026-03-02T14:51:27.275909",
+      "phase": "inject",
+      "event": "phase_changed",
+      "details": {
+        "from": "baseline",
+        "to": "inject"
+      }
+    },
+    {
+      "timestamp": "2026-03-02T14:52:11.784924",
+      "phase": "report",
+      "event": "phase_changed",
+      "details": {
+        "from": "inject",
+        "to": "report"
+      }
+    },
+    {
+      "timestamp": "2026-03-02T14:52:11.784930",
+      "phase": "report",
+      "event": "report_started",
+      "details": {}
+    },
+    {
+      "timestamp": "2026-03-02T14:52:11.786444",
+      "phase": "report",
+      "event": "report_completed",
+      "details": {
+        "report_path": "fault-reports\\sessions\\a36dbaee\\report\\report.json"
+      }
+    },
+    {
+      "timestamp": "2026-03-02T14:52:11.787814",
+      "phase": "report",
+      "event": "session_completed",
+      "details": {}
+    }
+  ],
+  "scenario_results": {
+    "thermal_throttling": {
+      "scenario_name": "thermal_throttling",
+      "inject_success": false,
+      "recover_success": false,
+      "verified": false,
+      "inject_duration_ms": 0,
+      "observe_duration_ms": 0,
+      "recover_duration_ms": 0,
+      "error": "Redfish thermal post-inject check failed: Redfish request failed: Client error '401 Unauthorized' for url 'https://10.11.8.13/redfish/v1/Chassis/Self/Thermal'\nFor more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/401",
+      "metrics": {}
+    }
+  },
+  "baseline_metrics": {}
+}

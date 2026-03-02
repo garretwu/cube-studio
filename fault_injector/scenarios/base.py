@@ -12,6 +12,7 @@ from datetime import datetime
 from typing import Any, Optional, TYPE_CHECKING
 
 from fault_injector.config.schema import (
+    IPMIConfig,
     InjectResult,
     RedfishConfig,
     RecoverResult,
@@ -22,6 +23,7 @@ from fault_injector.safety.rollback import RollbackJournal
 from fault_injector.safety.guard import SafetyGuard
 
 if TYPE_CHECKING:
+    from lib.channels.ipmi import IPMIChannel
     from lib.channels.redfish import RedfishChannel
     from lib.channels.switch import SwitchChannel
     from lib.channels.kubernetes import K8sChannel
@@ -44,7 +46,9 @@ class FaultContext:
     params: dict[str, Any]
     fault_id: str
     redfish: "RedfishChannel | None" = None
+    ipmi: "IPMIChannel | None" = None
     target_redfish: RedfishConfig | None = None
+    target_ipmi: IPMIConfig | None = None
     switch: "SwitchChannel | None" = None
     k8s: "K8sChannel | None" = None
     prometheus: "PrometheusChannel | None" = None

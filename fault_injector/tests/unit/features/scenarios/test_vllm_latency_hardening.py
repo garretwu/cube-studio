@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 
 import pytest
 
-from fault_injector.config.schema import ChannelResult, RedfishConfig
+from fault_injector.config.schema import ChannelResult, IPMIConfig, RedfishConfig
 from fault_injector.scenarios.base import FaultContext
 from fault_injector.scenarios.vllm_latency import (
     GPUContentionScenario,
@@ -35,6 +35,8 @@ class _DummyRedfish:
     thermal_success: bool = True
     power_success: bool = True
     sensors_success: bool = True
+    fan_set_success: bool = True
+    fan_set_error: str = "fan set failed"
     calls: list[str] = field(default_factory=list)
     token_set: bool = False
 
@@ -66,6 +68,21 @@ class _DummyRedfish:
             return ChannelResult(success=True, output='{"Members":[{"@odata.id":"/redfish/v1/Chassis/Self/Sensors/1"}]}')
         return ChannelResult(success=False, error="sensors failed")
 
+    async def set_fan_control(
+        self,
+        bmc_host: str,
+        fan_index: int,
+        mode: str,
+        pwm: int | None = None,
+        verify_tls: bool = True,
+        fault_id: str | None = None,
+    ):
+        _ = (bmc_host, fan_index, mode, pwm, verify_tls, fault_id)
+        self.calls.append("set_fan_control")
+        if self.fan_set_success:
+            return ChannelResult(success=True, output="ok")
+        return ChannelResult(success=False, error=self.fan_set_error)
+
     async def logout(self, bmc_host: str, verify_tls: bool = True):
         _ = (bmc_host, verify_tls)
         self.calls.append("logout")
@@ -77,6 +94,39 @@ class _DummyRedfish:
         self.calls.append("set_token")
 
 
+@dataclass
+class _DummyIPMI:
+    mc_success: bool = True
+    sensor_success: bool = True
+    raw_success: bool = True
+    raw_error: str = "ipmi raw failed"
+    calls: list[str] = field(default_factory=list)
+
+    async def get_mc_info(self, **kwargs):
+        _ = kwargs
+        self.calls.append("get_mc_info")
+        if self.mc_success:
+            return ChannelResult(success=True, output='{"device_id":1}')
+        return ChannelResult(success=False, error="mc info failed")
+
+    async def get_sensor_data(self, **kwargs):
+        sensor_type = str(kwargs.get("sensor_type", ""))
+        self.calls.append(f"get_sensor_data:{sensor_type}")
+        if self.sensor_success:
+            return ChannelResult(
+                success=True,
+                output='{"count":1,"sensors":[{"name":"Fan1","type":"Fan","value":7600,"units":"RPM"}]}',
+            )
+        return ChannelResult(success=False, error="sensor failed")
+
+    async def raw_command(self, **kwargs):
+        _ = kwargs
+        self.calls.append("raw_command")
+        if self.raw_success:
+            return ChannelResult(success=True, output='{"code":0}')
+        return ChannelResult(success=False, error=self.raw_error)
+
+
 def _build_context(
     mock_fault_context,
     ssh: _DummySSH,
@@ -84,7 +134,9 @@ def _build_context(
     fault_id: str,
     *,
     redfish=None,
+    ipmi=None,
     target_redfish=None,
+    target_ipmi=None,
 ) -> FaultContext:
     return FaultContext(
         ssh=ssh,
@@ -94,7 +146,9 @@ def _build_context(
         params=params,
         fault_id=fault_id,
         redfish=redfish,
+        ipmi=ipmi,
         target_redfish=target_redfish,
+        target_ipmi=target_ipmi,
         session_id=mock_fault_context.session_id,
     )
 
@@ -105,6 +159,18 @@ def _test_redfish_config() -> RedfishConfig:
         username="admin",
         password="Admin@9000",
         verify_tls=False,
+        timeout=30,
+    )
+
+
+def _test_ipmi_config() -> IPMIConfig:
+    return IPMIConfig(
+        host="10.11.8.13",
+        username="admin",
+        password="Admin@9000",
+        interface="lanplus",
+        port=623,
+        tool_path="ipmitool",
         timeout=30,
     )
 
@@ -175,14 +241,15 @@ async def test_thermal_inject_propagates_original_power_and_uses_non_sudo_payloa
     inject = await scenario.inject(ctx)
     assert inject.success is True
     assert int(ctx.params["original_power"]) == 275
-    assert ctx.params["bmc_precheck"]["fan_count"] == 1
+    assert ctx.params["bmc_precheck"]["fan_before"]["fan_count"] == 1
+    assert ctx.params["bmc_precheck"]["fan_after_inject"]["fan_count"] == 1
     assert "sudo " not in str(ssh.calls[1]["command"])
 
     recover = await scenario.recover(ctx)
     assert recover.success is True
     assert "sudo " not in str(ssh.calls[2]["command"])
     assert "275" in str(ssh.calls[2]["command"])
-    assert redfish.calls[:3] == ["authenticate", "get_thermal", "get_power"]
+    assert "set_fan_control" in redfish.calls
 
 
 @pytest.mark.asyncio
@@ -352,11 +419,57 @@ async def test_thermal_inject_runs_redfish_precheck_before_ssh_power_limit(mock_
 
     inject = await scenario.inject(ctx)
     assert inject.success is True
-    assert redfish.calls[:4] == ["authenticate", "get_thermal", "get_power", "get_sensors"]
-    assert redfish.calls[-1] == "logout"
+    assert redfish.calls[:5] == ["authenticate", "get_thermal", "get_power", "get_sensors", "set_fan_control"]
+    assert redfish.calls[5] == "get_thermal"
+    assert redfish.calls[6] == "logout"
     assert ctx.params["bmc_precheck"]["bmc_host"] == "10.11.8.13"
+    assert ctx.params["bmc_precheck"]["fan_inject"]["mode"] == "Manual"
     assert str(ssh.calls[0]["command"]).startswith("nvidia-smi -i 0 --query-gpu=power.limit")
     assert str(ssh.calls[1]["command"]).startswith("nvidia-smi -i 0 -pl 170")
+
+
+@pytest.mark.asyncio
+async def test_thermal_inject_returns_clear_error_when_redfish_fan_inject_fails(mock_fault_context):
+    scenario = ThermalThrottlingScenario()
+    redfish = _DummyRedfish(fan_set_success=False, fan_set_error="500 internal error")
+    ssh = _DummySSH(responses=[])
+    ctx = _build_context(
+        mock_fault_context,
+        ssh,
+        {"gpu_id": 0, "power_limit": 170},
+        "thermal-fan-inject-failed",
+        redfish=redfish,
+        target_redfish=_test_redfish_config(),
+    )
+
+    inject = await scenario.inject(ctx)
+    assert inject.success is False
+    assert "Redfish fan inject failed" in (inject.error or "")
+
+
+@pytest.mark.asyncio
+async def test_thermal_inject_does_not_fail_on_unsupported_fan_endpoint(mock_fault_context):
+    scenario = ThermalThrottlingScenario()
+    redfish = _DummyRedfish(fan_set_success=False, fan_set_error="HTTP status error '404 Not Found'")
+    ssh = _DummySSH(
+        responses=[
+            ChannelResult(success=True, output="299\n"),
+            ChannelResult(success=True),
+        ]
+    )
+    ctx = _build_context(
+        mock_fault_context,
+        ssh,
+        {"gpu_id": 0, "power_limit": 170},
+        "thermal-fan-endpoint-unsupported",
+        redfish=redfish,
+        target_redfish=_test_redfish_config(),
+    )
+
+    inject = await scenario.inject(ctx)
+    assert inject.success is True
+    assert ctx.params["bmc_precheck"]["fan_inject_applied"] is False
+    assert "404" in str(ctx.params["bmc_precheck"]["fan_inject_warning"])
 
 
 @pytest.mark.asyncio
@@ -377,3 +490,56 @@ async def test_thermal_inject_returns_clear_error_when_redfish_auth_fails(mock_f
     assert inject.success is False
     assert "Redfish auth failed" in (inject.error or "")
     assert redfish.calls == ["authenticate"]
+
+
+@pytest.mark.asyncio
+async def test_thermal_inject_fails_fast_when_ipmi_backend_requires_config(mock_fault_context):
+    scenario = ThermalThrottlingScenario()
+    redfish = _DummyRedfish()
+    ssh = _DummySSH(responses=[])
+    ctx = _build_context(
+        mock_fault_context,
+        ssh,
+        {"gpu_id": 0, "power_limit": 170, "fan_control_backend": "ipmi", "ipmi_profile": "supermicro_raw"},
+        "thermal-ipmi-missing-config",
+        redfish=redfish,
+        target_redfish=_test_redfish_config(),
+        target_ipmi=None,
+    )
+
+    inject = await scenario.inject(ctx)
+    assert inject.success is False
+    assert "Missing target IPMI config" in (inject.error or "")
+
+
+@pytest.mark.asyncio
+async def test_thermal_inject_auto_mode_survives_ipmi_tool_missing(mock_fault_context):
+    scenario = ThermalThrottlingScenario()
+    redfish = _DummyRedfish(fan_set_success=False, fan_set_error="HTTP status error '404 Not Found'")
+    ipmi = _DummyIPMI(raw_success=False, raw_error="ipmi raw failed")
+    ssh = _DummySSH(
+        responses=[
+            ChannelResult(success=True, output="299\n"),
+            ChannelResult(success=True),
+        ]
+    )
+    ctx = _build_context(
+        mock_fault_context,
+        ssh,
+        {
+            "gpu_id": 0,
+            "power_limit": 170,
+            "fan_control_backend": "auto",
+            "ipmi_profile": "supermicro_raw",
+            "ipmi_target_pwm": 30,
+        },
+        "thermal-auto-ipmi-missing-tool",
+        redfish=redfish,
+        ipmi=ipmi,
+        target_redfish=_test_redfish_config(),
+        target_ipmi=_test_ipmi_config(),
+    )
+    inject = await scenario.inject(ctx)
+
+    assert inject.success is True
+    assert "IPMI fan inject skipped" in str(ctx.params["bmc_precheck"]["fan_inject_warning"])

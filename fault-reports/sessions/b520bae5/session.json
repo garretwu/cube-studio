@@ -1,0 +1,164 @@
+{
+  "session_id": "b520bae5",
+  "config_hash": "0387c5889803473d",
+  "started_at": "2026-03-02T14:35:15.076466",
+  "finished_at": "2026-03-02T14:36:17.106627",
+  "status": "completed",
+  "phase": "report",
+  "active_faults": [],
+  "rollback_journal_path": "fault-reports\\sessions\\b520bae5\\rollback.jsonl",
+  "baseline_path": "fault-reports\\sessions\\b520bae5\\baseline.json",
+  "metrics_dir": "fault-reports\\sessions\\b520bae5\\metrics",
+  "report_dir": "fault-reports\\sessions\\b520bae5\\report",
+  "events": [
+    {
+      "timestamp": "2026-03-02T14:35:15.078009",
+      "phase": "init",
+      "event": "components_initialized",
+      "details": {}
+    },
+    {
+      "timestamp": "2026-03-02T14:35:15.079012",
+      "phase": "init",
+      "event": "phase_changed",
+      "details": {
+        "from": "init",
+        "to": "init"
+      }
+    },
+    {
+      "timestamp": "2026-03-02T14:35:15.079024",
+      "phase": "init",
+      "event": "preflight_started",
+      "details": {}
+    },
+    {
+      "timestamp": "2026-03-02T14:35:15.080111",
+      "phase": "init",
+      "event": "preflight_completed",
+      "details": {}
+    },
+    {
+      "timestamp": "2026-03-02T14:35:15.081045",
+      "phase": "baseline",
+      "event": "phase_changed",
+      "details": {
+        "from": "init",
+        "to": "baseline"
+      }
+    },
+    {
+      "timestamp": "2026-03-02T14:35:15.081054",
+      "phase": "baseline",
+      "event": "baseline_started",
+      "details": {}
+    },
+    {
+      "timestamp": "2026-03-02T14:35:15.082754",
+      "phase": "baseline",
+      "event": "baseline_completed",
+      "details": {
+        "baseline_path": "fault-reports\\sessions\\b520bae5\\baseline.json"
+      }
+    },
+    {
+      "timestamp": "2026-03-02T14:35:15.083728",
+      "phase": "inject",
+      "event": "phase_changed",
+      "details": {
+        "from": "baseline",
+        "to": "inject"
+      }
+    },
+    {
+      "timestamp": "2026-03-02T14:35:16.297448",
+      "phase": "inject",
+      "event": "fault_injected",
+      "details": {
+        "fault_id": "network_jitter_f6a213b8",
+        "scenario_name": "network_jitter"
+      }
+    },
+    {
+      "timestamp": "2026-03-02T14:35:16.298726",
+      "phase": "observe",
+      "event": "phase_changed",
+      "details": {
+        "from": "inject",
+        "to": "observe"
+      }
+    },
+    {
+      "timestamp": "2026-03-02T14:36:16.306193",
+      "phase": "recover",
+      "event": "phase_changed",
+      "details": {
+        "from": "observe",
+        "to": "recover"
+      }
+    },
+    {
+      "timestamp": "2026-03-02T14:36:16.949405",
+      "phase": "recover",
+      "event": "fault_recovered",
+      "details": {
+        "fault_id": "network_jitter_f6a213b8",
+        "scenario_name": "network_jitter"
+      }
+    },
+    {
+      "timestamp": "2026-03-02T14:36:16.950102",
+      "phase": "verify",
+      "event": "phase_changed",
+      "details": {
+        "from": "recover",
+        "to": "verify"
+      }
+    },
+    {
+      "timestamp": "2026-03-02T14:36:17.104215",
+      "phase": "report",
+      "event": "phase_changed",
+      "details": {
+        "from": "verify",
+        "to": "report"
+      }
+    },
+    {
+      "timestamp": "2026-03-02T14:36:17.104220",
+      "phase": "report",
+      "event": "report_started",
+      "details": {}
+    },
+    {
+      "timestamp": "2026-03-02T14:36:17.105739",
+      "phase": "report",
+      "event": "report_completed",
+      "details": {
+        "report_path": "fault-reports\\sessions\\b520bae5\\report\\report.json"
+      }
+    },
+    {
+      "timestamp": "2026-03-02T14:36:17.106630",
+      "phase": "report",
+      "event": "session_completed",
+      "details": {}
+    }
+  ],
+  "scenario_results": {
+    "network_jitter": {
+      "scenario_name": "network_jitter",
+      "inject_success": true,
+      "recover_success": true,
+      "verified": true,
+      "inject_duration_ms": 0,
+      "observe_duration_ms": 0,
+      "recover_duration_ms": 0,
+      "error": "",
+      "metrics": {
+        "during": {}
+      }
+    }
+  },
+  "baseline_metrics": {}
+}

@@ -1,0 +1,5133 @@
+{
+  "target": "10.11.8.13",
+  "started_at": "2026-03-02T12:16:25.948709",
+  "max_depth": 4,
+  "max_nodes": 250,
+  "visited_count": 250,
+  "errors": [],
+  "resources": [
+    {
+      "path": "/redfish/v1/",
+      "odata_type": "#ServiceRoot.v1_13_0.ServiceRoot",
+      "name": "Root Service",
+      "id": "RootService",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {
+        "Ami": {
+          "@odata.type": "#AMIServiceRoot.v1_0_0.AMIServiceRoot",
+          "Configurations": {
+            "@odata.id": "/redfish/v1/Oem/Ami/Configurations"
+          },
+          "InventoryDataStatus": {
+            "@odata.id": "/redfish/v1/Oem/Ami/InventoryData/Status"
+          },
+          "MappingOut": {
+            "@odata.id": "/redfish/v1/Oem/Ami/MappingOut"
+          },
+          "RtpVersion": "13.08"
+        }
+      }
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self",
+      "odata_type": "#Chassis.v1_15_0.Chassis",
+      "name": "Computer System Chassis",
+      "id": "Self",
+      "related": true,
+      "related_keys": [
+        "Thermal",
+        "ThermalSubsystem"
+      ],
+      "actions": [
+        {
+          "action": "#Chassis.Reset",
+          "target": "/redfish/v1/Chassis/Self/Actions/Chassis.Reset",
+          "allowable_values": [],
+          "fan_thermal_related": false
+        }
+      ],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Power",
+      "odata_type": "#Power.v1_5_4.Power",
+      "name": "Power",
+      "id": "Power",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Sensors",
+      "odata_type": "#SensorCollection.SensorCollection",
+      "name": "Sensor Collection",
+      "id": null,
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Managers/Self",
+      "odata_type": "#Manager.v1_13_0.Manager",
+      "name": "Manager",
+      "id": "Self",
+      "related": false,
+      "related_keys": [],
+      "actions": [
+        {
+          "action": "#Manager.Reset",
+          "target": "/redfish/v1/Managers/Self/Actions/Manager.Reset",
+          "allowable_values": [],
+          "fan_thermal_related": false
+        },
+        {
+          "action": "#Manager.ResetToDefaults",
+          "target": "/redfish/v1/Managers/Self/Actions/Manager.ResetToDefaults",
+          "allowable_values": [],
+          "fan_thermal_related": false
+        },
+        {
+          "action": "Oem",
+          "target": "",
+          "allowable_values": [],
+          "fan_thermal_related": false
+        }
+      ],
+      "value_hints": {},
+      "oem": {
+        "Ami": {
+          "@odata.type": "#AMIManager.v1_0_0.AMIManager",
+          "ManagerServiceInfo": {
+            "CommandShellServiceInfo": {
+              "IPMI": {
+                "MaxConcurrentSessions": 36
+              }
+            },
+            "Links": {
+              "NetworkProtocol": {
+                "@odata.id": "/redfish/v1/Managers/Self/NetworkProtocol"
+              }
+            }
+          },
+          "PowerSaveMode": "Disable",
+          "VirtualMedia": {
+            "CDInstances": 4,
+            "HDInstances": 4,
+            "RMediaStatus": "Disabled",
+            "RemoteKVMCDInstances": 4,
+            "RemoteKVMHDInstances": 4
+          }
+        }
+      }
+    },
+    {
+      "path": "/redfish/v1/Systems/Self",
+      "odata_type": "#ComputerSystem.v1_16_2.ComputerSystem",
+      "name": "System",
+      "id": "Self",
+      "related": false,
+      "related_keys": [],
+      "actions": [
+        {
+          "action": "#ComputerSystem.Reset",
+          "target": "/redfish/v1/Systems/Self/Actions/ComputerSystem.Reset",
+          "allowable_values": [],
+          "fan_thermal_related": false
+        }
+      ],
+      "value_hints": {},
+      "oem": {
+        "Ami": {
+          "@odata.type": "#AMIBIOSInventoryCRC.v1_0_0.AMIBIOSInventoryCRC",
+          "Bios": {
+            "Inventory": {
+              "Crc": {
+                "@odata.id": "/redfish/v1/Systems/Self/Oem/Ami/Inventory/Crc",
+                "GroupCrcList": [
+                  {
+                    "PCIE": 305487123
+                  },
+                  {
+                    "CERTIFICATE": 4201943494
+                  },
+                  {
+                    "CPU": 1858398367
+                  },
+                  {
+                    "DIMM": 3576900784
+                  },
+                  {
+                    "SECUREBOOT": 4147902609
+                  }
+                ]
+              }
+            },
+            "RedfishVersion": "1.15.1",
+            "RtpVersion": "RB_1.0.20"
+          },
+          "ManagerBootConfiguration": {
+            "ManagerBootMode": null,
+            "ManagerBootMode@Redfish.AllowableValues": [
+              "None",
+              "SoftReset",
+              "ResetTimeout"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "path": "/redfish/v1/AccountService",
+      "odata_type": "#AccountService.v1_8_0.AccountService",
+      "name": "Account Service",
+      "id": "AccountService",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {
+        "Ami": {
+          "@odata.type": "#AMIAccountService.v1_0_0.AMIAccountService",
+          "Configuration": {
+            "@odata.id": "/redfish/v1/AccountService/Oem/Ami/Configurations"
+          }
+        }
+      }
+    },
+    {
+      "path": "/redfish/v1/CertificateService",
+      "odata_type": "#CertificateService.v1_0_2.CertificateService",
+      "name": "Certificate Service",
+      "id": "CertificateService",
+      "related": false,
+      "related_keys": [],
+      "actions": [
+        {
+          "action": "#CertificateService.GenerateCSR",
+          "target": "/redfish/v1/CertificateService/Actions/CertificateService.GenerateCSR",
+          "allowable_values": [],
+          "fan_thermal_related": false
+        },
+        {
+          "action": "#CertificateService.ReplaceCertificate",
+          "target": "/redfish/v1/CertificateService/Actions/CertificateService.ReplaceCertificate",
+          "allowable_values": [],
+          "fan_thermal_related": false
+        }
+      ],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis",
+      "odata_type": "#ChassisCollection.ChassisCollection",
+      "name": "Chassis Collection",
+      "id": null,
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/ComponentIntegrity",
+      "odata_type": "#ComponentIntegrityCollection.ComponentIntegrityCollection",
+      "name": "ComponentIntegrity Collection",
+      "id": null,
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/CompositionService",
+      "odata_type": "#CompositionService.v1_1_2.CompositionService",
+      "name": "Composition Service",
+      "id": "CompositionService",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/EventService",
+      "odata_type": "#EventService.v1_5_0.EventService",
+      "name": "Event Service",
+      "id": "EventService",
+      "related": true,
+      "related_keys": [
+        "DeliveryRetryAttempts"
+      ],
+      "actions": [
+        {
+          "action": "#EventService.SubmitTestEvent",
+          "target": "/redfish/v1/EventService/Actions/EventService.SubmitTestEvent",
+          "allowable_values": [],
+          "fan_thermal_related": false
+        }
+      ],
+      "value_hints": {},
+      "oem": {
+        "Ami": {
+          "@odata.type": "#AMIEventService.v1_0_0.AMIEventService",
+          "Certificates": {
+            "@odata.id": "/redfish/v1/EventService/Oem/Ami/SMTP/Certificates"
+          },
+          "SecondarySMTP": {
+            "Authentication": "None",
+            "ConnectionProtocol": "None",
+            "FromAddress": null,
+            "Password": null,
+            "Port": 25,
+            "ServerAddress": null,
+            "ServiceEnabled": false,
+            "Username": null
+          }
+        }
+      }
+    },
+    {
+      "path": "/redfish/v1/Fabrics",
+      "odata_type": "#FabricCollection.FabricCollection",
+      "name": "Fabric Collection",
+      "id": null,
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/JsonSchemas",
+      "odata_type": "#JsonSchemaFileCollection.JsonSchemaFileCollection",
+      "name": "Schema Repository",
+      "id": null,
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Managers",
+      "odata_type": "#ManagerCollection.ManagerCollection",
+      "name": "Manager Collection",
+      "id": null,
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Oem/Ami/Configurations",
+      "odata_type": "#AMIConfigurations.v1_0_0.AMIConfigurations",
+      "name": "Configurations",
+      "id": "Configurations",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Oem/Ami/InventoryData/Status",
+      "odata_type": "#AMIInventoryStatus.v1_0_0.AMIInventoryStatus",
+      "name": "PostStatus for Bios Inventory file",
+      "id": "InventoryDataStatus",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Oem/Ami/MappingOut",
+      "odata_type": "#AMIMappingOut.v1_0_0.AMIMappingOut",
+      "name": "Bios ChangeState MappingOut",
+      "id": "MappingOut",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Registries",
+      "odata_type": "#MessageRegistryFileCollection.MessageRegistryFileCollection",
+      "name": "Registry Repository",
+      "id": null,
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/SessionService",
+      "odata_type": "#SessionService.v1_1_6.SessionService",
+      "name": "Session Service",
+      "id": "SessionService",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/SessionService/Sessions",
+      "odata_type": "#SessionCollection.SessionCollection",
+      "name": "Session Collection",
+      "id": null,
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Systems",
+      "odata_type": "#ComputerSystemCollection.ComputerSystemCollection",
+      "name": "Systems Collection",
+      "id": null,
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/TaskService",
+      "odata_type": "#TaskService.v1_1_4.TaskService",
+      "name": "Task Service",
+      "id": "TaskService",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/TelemetryService",
+      "odata_type": "#TelemetryService.v1_2_4.TelemetryService",
+      "name": "TelemetryService",
+      "id": "TelemetryService",
+      "related": false,
+      "related_keys": [],
+      "actions": [
+        {
+          "action": "#TelemetryService.SubmitTestMetricReport",
+          "target": "/redfish/v1/TelemetryService/Actions/TelemetryService.SubmitTestMetricReport",
+          "allowable_values": [],
+          "fan_thermal_related": false
+        }
+      ],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/UpdateService",
+      "odata_type": "#UpdateService.v1_11_0.UpdateService",
+      "name": "Update Service",
+      "id": "UpdateService",
+      "related": false,
+      "related_keys": [],
+      "actions": [
+        {
+          "action": "#UpdateService.SimpleUpdate",
+          "target": "/redfish/v1/UpdateService/Actions/SimpleUpdate",
+          "allowable_values": [],
+          "fan_thermal_related": false
+        },
+        {
+          "action": "Oem",
+          "target": "",
+          "allowable_values": [],
+          "fan_thermal_related": false
+        }
+      ],
+      "value_hints": {},
+      "oem": {
+        "AMIUpdateService": {
+          "@odata.type": "#AMIUpdateService.v1_0_0.AMIUpdateService",
+          "FlashPercentage": null,
+          "PreserveConfiguration": {
+            "Authentication": false,
+            "EXTLOG": false,
+            "FRU": false,
+            "IPMI": false,
+            "KVM": false,
+            "NTP": false,
+            "Network": false,
+            "REDFISH": false,
+            "SDR": false,
+            "SEL": false,
+            "SNMP": false,
+            "SSH": false,
+            "Syslog": false,
+            "WEB": false
+          },
+          "UpdateStatus": null,
+          "UpdateTarget": null
+        },
+        "BMC": {
+          "@odata.type": "#AMIUpdateService.v1_0_0.BMC",
+          "DualImageConfigurations": {
+            "ActiveImage": "1",
+            "BootImage": "1",
+            "FirmwareImage1Name": "Image1",
+            "FirmwareImage1Version": "2.18.01",
+            "FirmwareImage2Name": "Image2",
+            "FirmwareImage2Version": "2.18.01"
+          }
+        }
+      }
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Certificates",
+      "odata_type": "#CertificateCollection.CertificateCollection",
+      "name": "Certificate Collection",
+      "id": null,
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/LogServices",
+      "odata_type": "#LogServiceCollection.LogServiceCollection",
+      "name": "Log Service Collection",
+      "id": null,
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/NetworkAdapters",
+      "odata_type": "#NetworkAdapterCollection.NetworkAdapterCollection",
+      "name": "NetworkAdapter Collection",
+      "id": null,
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/PCIeDevices",
+      "odata_type": "#PCIeDeviceCollection.PCIeDeviceCollection",
+      "name": "PCIeDevice Collection",
+      "id": null,
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/PCIeSlots",
+      "odata_type": "#PCIeSlots.v1_5_0.PCIeSlots",
+      "name": "PcieSlot_0",
+      "id": "PcieSlot_0",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/PowerSubsystem",
+      "odata_type": "#PowerSubsystem.v1_1_0.PowerSubsystem",
+      "name": "PowerSubsytem",
+      "id": "PowerSubsytem",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/ThermalSubsystem",
+      "odata_type": "#ThermalSubsystem.v1_0_0.ThermalSubsystem",
+      "name": "ThermalSubsytem",
+      "id": "ThermalSubsytem",
+      "related": true,
+      "related_keys": [
+        "FanRedundancy",
+        "Fans",
+        "ThermalMetrics"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Systems/Self/Storage/StorageUnit_3/Drives/NVMe0_NSID1",
+      "odata_type": "#Drive.v1_13_0.Drive",
+      "name": "NVMe0_NSID1",
+      "id": "NVMe0_NSID1",
+      "related": true,
+      "related_keys": [
+        "RotationSpeedRPM"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Systems/Self/Storage/StorageUnit_4/Drives/NVMe1_NSID1",
+      "odata_type": "#Drive.v1_13_0.Drive",
+      "name": "NVMe1_NSID1",
+      "id": "NVMe1_NSID1",
+      "related": true,
+      "related_keys": [
+        "RotationSpeedRPM"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Fans/0",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Fans/1",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Fans/10",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Fans/11",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Fans/12",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Fans/13",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Fans/14",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Fans/15",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Fans/16",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Fans/17",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Fans/18",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Fans/19",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Fans/2",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Fans/20",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Fans/21",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Fans/22",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Fans/23",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Fans/24",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Fans/25",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Fans/26",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Fans/27",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Fans/3",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Fans/4",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Fans/5",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Fans/6",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Fans/7",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Fans/8",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Fans/9",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Temperatures/0",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Temperatures/1",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Temperatures/10",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Temperatures/11",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Temperatures/12",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Temperatures/13",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Temperatures/14",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Temperatures/15",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Temperatures/16",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Temperatures/17",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Temperatures/18",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Temperatures/19",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Temperatures/2",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Temperatures/20",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Temperatures/21",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Temperatures/22",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Temperatures/23",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Temperatures/24",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Temperatures/25",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Temperatures/26",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Temperatures/27",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Temperatures/28",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Temperatures/29",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Temperatures/3",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Temperatures/30",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Temperatures/31",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Temperatures/32",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Temperatures/33",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Temperatures/34",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Temperatures/35",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Temperatures/36",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Temperatures/37",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Temperatures/38",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Temperatures/39",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Temperatures/4",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Temperatures/40",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Temperatures/41",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Temperatures/42",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Temperatures/43",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Temperatures/44",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Temperatures/45",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Temperatures/46",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Temperatures/47",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Temperatures/48",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Temperatures/49",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Temperatures/5",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Temperatures/50",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Temperatures/51",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Temperatures/52",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Temperatures/53",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Temperatures/54",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Temperatures/55",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Temperatures/6",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Temperatures/7",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Temperatures/8",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Temperatures/9",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Power#/PowerControl/0",
+      "odata_type": "#Power.v1_5_4.Power",
+      "name": "Power",
+      "id": "Power",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Power#/Voltages/0",
+      "odata_type": "#Power.v1_5_4.Power",
+      "name": "Power",
+      "id": "Power",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Power#/Voltages/1",
+      "odata_type": "#Power.v1_5_4.Power",
+      "name": "Power",
+      "id": "Power",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Power#/Voltages/10",
+      "odata_type": "#Power.v1_5_4.Power",
+      "name": "Power",
+      "id": "Power",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Power#/Voltages/11",
+      "odata_type": "#Power.v1_5_4.Power",
+      "name": "Power",
+      "id": "Power",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Power#/Voltages/12",
+      "odata_type": "#Power.v1_5_4.Power",
+      "name": "Power",
+      "id": "Power",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Power#/Voltages/13",
+      "odata_type": "#Power.v1_5_4.Power",
+      "name": "Power",
+      "id": "Power",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Power#/Voltages/2",
+      "odata_type": "#Power.v1_5_4.Power",
+      "name": "Power",
+      "id": "Power",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Power#/Voltages/3",
+      "odata_type": "#Power.v1_5_4.Power",
+      "name": "Power",
+      "id": "Power",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Power#/Voltages/4",
+      "odata_type": "#Power.v1_5_4.Power",
+      "name": "Power",
+      "id": "Power",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Power#/Voltages/5",
+      "odata_type": "#Power.v1_5_4.Power",
+      "name": "Power",
+      "id": "Power",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Power#/Voltages/6",
+      "odata_type": "#Power.v1_5_4.Power",
+      "name": "Power",
+      "id": "Power",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Power#/Voltages/7",
+      "odata_type": "#Power.v1_5_4.Power",
+      "name": "Power",
+      "id": "Power",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Power#/Voltages/8",
+      "odata_type": "#Power.v1_5_4.Power",
+      "name": "Power",
+      "id": "Power",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Power#/Voltages/9",
+      "odata_type": "#Power.v1_5_4.Power",
+      "name": "Power",
+      "id": "Power",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Sensors/10",
+      "odata_type": "#Sensor.v1_1_0.Sensor",
+      "name": "P0_DIMM1_Temp",
+      "id": "10",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {
+        "Reading": 31,
+        "ReadingUnits": "Cel"
+      },
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Sensors/100",
+      "odata_type": "#Sensor.v1_1_0.Sensor",
+      "name": "F_FAN5_F_Speed",
+      "id": "100",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {
+        "Reading": 7600,
+        "ReadingUnits": "RPM"
+      },
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Sensors/101",
+      "odata_type": "#Sensor.v1_1_0.Sensor",
+      "name": "F_FAN6_F_Speed",
+      "id": "101",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {
+        "Reading": 7600,
+        "ReadingUnits": "RPM"
+      },
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Sensors/102",
+      "odata_type": "#Sensor.v1_1_0.Sensor",
+      "name": "F_FAN1_R_Speed",
+      "id": "102",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {
+        "Reading": 0,
+        "ReadingUnits": "RPM"
+      },
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Sensors/103",
+      "odata_type": "#Sensor.v1_1_0.Sensor",
+      "name": "F_FAN2_R_Speed",
+      "id": "103",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {
+        "Reading": 6800,
+        "ReadingUnits": "RPM"
+      },
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Sensors/104",
+      "odata_type": "#Sensor.v1_1_0.Sensor",
+      "name": "F_FAN3_R_Speed",
+      "id": "104",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {
+        "Reading": 0,
+        "ReadingUnits": "RPM"
+      },
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Sensors/105",
+      "odata_type": "#Sensor.v1_1_0.Sensor",
+      "name": "F_FAN4_R_Speed",
+      "id": "105",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {
+        "Reading": 0,
+        "ReadingUnits": "RPM"
+      },
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Sensors/106",
+      "odata_type": "#Sensor.v1_1_0.Sensor",
+      "name": "F_FAN5_R_Speed",
+      "id": "106",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {
+        "Reading": 6800,
+        "ReadingUnits": "RPM"
+      },
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Sensors/107",
+      "odata_type": "#Sensor.v1_1_0.Sensor",
+      "name": "F_FAN6_R_Speed",
+      "id": "107",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {
+        "Reading": 0,
+        "ReadingUnits": "RPM"
+      },
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Sensors/11",
+      "odata_type": "#Sensor.v1_1_0.Sensor",
+      "name": "P1_DIMM0_Temp",
+      "id": "11",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {
+        "Reading": 0,
+        "ReadingUnits": "Cel"
+      },
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Sensors/112",
+      "odata_type": "#Sensor.v1_1_0.Sensor",
+      "name": "M_FAN1_F_Speed",
+      "id": "112",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {
+        "Reading": 5600,
+        "ReadingUnits": "RPM"
+      },
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Sensors/113",
+      "odata_type": "#Sensor.v1_1_0.Sensor",
+      "name": "M_FAN2_F_Speed",
+      "id": "113",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {
+        "Reading": 5600,
+        "ReadingUnits": "RPM"
+      },
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Sensors/114",
+      "odata_type": "#Sensor.v1_1_0.Sensor",
+      "name": "M_FAN3_F_Speed",
+      "id": "114",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {
+        "Reading": 5600,
+        "ReadingUnits": "RPM"
+      },
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Sensors/115",
+      "odata_type": "#Sensor.v1_1_0.Sensor",
+      "name": "M_FAN4_F_Speed",
+      "id": "115",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {
+        "Reading": 5600,
+        "ReadingUnits": "RPM"
+      },
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Sensors/116",
+      "odata_type": "#Sensor.v1_1_0.Sensor",
+      "name": "M_FAN5_F_Speed",
+      "id": "116",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {
+        "Reading": 0,
+        "ReadingUnits": "RPM"
+      },
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Sensors/117",
+      "odata_type": "#Sensor.v1_1_0.Sensor",
+      "name": "M_FAN6_F_Speed",
+      "id": "117",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {
+        "ReadingUnits": "RPM"
+      },
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Sensors/118",
+      "odata_type": "#Sensor.v1_1_0.Sensor",
+      "name": "M_FAN7_F_Speed",
+      "id": "118",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {
+        "ReadingUnits": "RPM"
+      },
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Sensors/119",
+      "odata_type": "#Sensor.v1_1_0.Sensor",
+      "name": "M_FAN8_F_Speed",
+      "id": "119",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {
+        "ReadingUnits": "RPM"
+      },
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Sensors/12",
+      "odata_type": "#Sensor.v1_1_0.Sensor",
+      "name": "P1_DIMM1_Temp",
+      "id": "12",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {
+        "Reading": 32,
+        "ReadingUnits": "Cel"
+      },
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Sensors/120",
+      "odata_type": "#Sensor.v1_1_0.Sensor",
+      "name": "M_FAN1_R_Speed",
+      "id": "120",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {
+        "Reading": 4600,
+        "ReadingUnits": "RPM"
+      },
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Sensors/121",
+      "odata_type": "#Sensor.v1_1_0.Sensor",
+      "name": "M_FAN2_R_Speed",
+      "id": "121",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {
+        "Reading": 4800,
+        "ReadingUnits": "RPM"
+      },
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Sensors/122",
+      "odata_type": "#Sensor.v1_1_0.Sensor",
+      "name": "M_FAN3_R_Speed",
+      "id": "122",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {
+        "Reading": 4800,
+        "ReadingUnits": "RPM"
+      },
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Sensors/123",
+      "odata_type": "#Sensor.v1_1_0.Sensor",
+      "name": "M_FAN4_R_Speed",
+      "id": "123",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {
+        "Reading": 4600,
+        "ReadingUnits": "RPM"
+      },
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Sensors/124",
+      "odata_type": "#Sensor.v1_1_0.Sensor",
+      "name": "M_FAN5_R_Speed",
+      "id": "124",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {
+        "Reading": 4800,
+        "ReadingUnits": "RPM"
+      },
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Sensors/125",
+      "odata_type": "#Sensor.v1_1_0.Sensor",
+      "name": "M_FAN6_R_Speed",
+      "id": "125",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {
+        "ReadingUnits": "RPM"
+      },
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Sensors/126",
+      "odata_type": "#Sensor.v1_1_0.Sensor",
+      "name": "M_FAN7_R_Speed",
+      "id": "126",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {
+        "ReadingUnits": "RPM"
+      },
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Sensors/127",
+      "odata_type": "#Sensor.v1_1_0.Sensor",
+      "name": "M_FAN8_R_Speed",
+      "id": "127",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {
+        "ReadingUnits": "RPM"
+      },
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Sensors/128",
+      "odata_type": "#Sensor.v1_1_0.Sensor",
+      "name": "F_FAN1_Present",
+      "id": "128",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {
+        "Reading": 32770
+      },
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Sensors/129",
+      "odata_type": "#Sensor.v1_1_0.Sensor",
+      "name": "F_FAN2_Present",
+      "id": "129",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {
+        "Reading": 32770
+      },
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Sensors/130",
+      "odata_type": "#Sensor.v1_1_0.Sensor",
+      "name": "F_FAN3_Present",
+      "id": "130",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {
+        "Reading": 32770
+      },
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Sensors/131",
+      "odata_type": "#Sensor.v1_1_0.Sensor",
+      "name": "F_FAN4_Present",
+      "id": "131",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {
+        "Reading": 32770
+      },
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Sensors/132",
+      "odata_type": "#Sensor.v1_1_0.Sensor",
+      "name": "F_FAN5_Present",
+      "id": "132",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {
+        "Reading": 32770
+      },
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Sensors/133",
+      "odata_type": "#Sensor.v1_1_0.Sensor",
+      "name": "F_FAN6_Present",
+      "id": "133",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {
+        "Reading": 32770
+      },
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Sensors/134",
+      "odata_type": "#Sensor.v1_1_0.Sensor",
+      "name": "M_FAN1_Present",
+      "id": "134",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {
+        "Reading": 32770
+      },
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Sensors/135",
+      "odata_type": "#Sensor.v1_1_0.Sensor",
+      "name": "M_FAN2_Present",
+      "id": "135",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {
+        "Reading": 32768
+      },
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Sensors/136",
+      "odata_type": "#Sensor.v1_1_0.Sensor",
+      "name": "M_FAN3_Present",
+      "id": "136",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {
+        "Reading": 32770
+      },
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Sensors/137",
+      "odata_type": "#Sensor.v1_1_0.Sensor",
+      "name": "M_FAN4_Present",
+      "id": "137",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {
+        "Reading": 32768
+      },
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Sensors/138",
+      "odata_type": "#Sensor.v1_1_0.Sensor",
+      "name": "M_FAN5_Present",
+      "id": "138",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {
+        "Reading": 32770
+      },
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Sensors/GPU2_Power",
+      "odata_type": "#Sensor.v1_1_0.Sensor",
+      "name": "GPU2_Power",
+      "id": "GPU2_Power",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {
+        "Reading": "0",
+        "ReadingUnits": "Watt"
+      },
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Sensors/GPU2_TLimitTemp",
+      "odata_type": "#Sensor.v1_1_0.Sensor",
+      "name": "GPU2_TLimitTemp",
+      "id": "GPU2_TLimitTemp",
+      "related": true,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {
+        "Reading": "0",
+        "ReadingUnits": "Celsius"
+      },
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Sensors/GPU2_Temp",
+      "odata_type": "#Sensor.v1_1_0.Sensor",
+      "name": "GPU2_Temp",
+      "id": "GPU2_Temp",
+      "related": true,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {
+        "Reading": "30",
+        "ReadingUnits": "Celsius"
+      },
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Sensors/GPU3_Power",
+      "odata_type": "#Sensor.v1_1_0.Sensor",
+      "name": "GPU3_Power",
+      "id": "GPU3_Power",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {
+        "Reading": "0",
+        "ReadingUnits": "Watt"
+      },
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Sensors/GPU3_TLimitTemp",
+      "odata_type": "#Sensor.v1_1_0.Sensor",
+      "name": "GPU3_TLimitTemp",
+      "id": "GPU3_TLimitTemp",
+      "related": true,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {
+        "Reading": "0",
+        "ReadingUnits": "Celsius"
+      },
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Sensors/GPU3_Temp",
+      "odata_type": "#Sensor.v1_1_0.Sensor",
+      "name": "GPU3_Temp",
+      "id": "GPU3_Temp",
+      "related": true,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {
+        "Reading": "32",
+        "ReadingUnits": "Celsius"
+      },
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Sensors/GPU5_Power",
+      "odata_type": "#Sensor.v1_1_0.Sensor",
+      "name": "GPU5_Power",
+      "id": "GPU5_Power",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {
+        "Reading": "0",
+        "ReadingUnits": "Watt"
+      },
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Sensors/GPU5_TLimitTemp",
+      "odata_type": "#Sensor.v1_1_0.Sensor",
+      "name": "GPU5_TLimitTemp",
+      "id": "GPU5_TLimitTemp",
+      "related": true,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {
+        "Reading": "0",
+        "ReadingUnits": "Celsius"
+      },
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Sensors/GPU5_Temp",
+      "odata_type": "#Sensor.v1_1_0.Sensor",
+      "name": "GPU5_Temp",
+      "id": "GPU5_Temp",
+      "related": true,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {
+        "Reading": "29",
+        "ReadingUnits": "Celsius"
+      },
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Sensors/GPU8_Power",
+      "odata_type": "#Sensor.v1_1_0.Sensor",
+      "name": "GPU8_Power",
+      "id": "GPU8_Power",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {
+        "Reading": "0",
+        "ReadingUnits": "Watt"
+      },
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Sensors/GPU8_TLimitTemp",
+      "odata_type": "#Sensor.v1_1_0.Sensor",
+      "name": "GPU8_TLimitTemp",
+      "id": "GPU8_TLimitTemp",
+      "related": true,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {
+        "Reading": "0",
+        "ReadingUnits": "Celsius"
+      },
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Sensors/GPU8_Temp",
+      "odata_type": "#Sensor.v1_1_0.Sensor",
+      "name": "GPU8_Temp",
+      "id": "GPU8_Temp",
+      "related": true,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {
+        "Reading": "25",
+        "ReadingUnits": "Celsius"
+      },
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Managers/Self/Certificates",
+      "odata_type": "#CertificateCollection.CertificateCollection",
+      "name": "Certificate Collection",
+      "id": null,
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Managers/Self/EthernetInterfaces",
+      "odata_type": "#EthernetInterfaceCollection.EthernetInterfaceCollection",
+      "name": "Ethernet Network Interface Collection",
+      "id": null,
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Managers/Self/HostInterfaces",
+      "odata_type": "#HostInterfaceCollection.HostInterfaceCollection",
+      "name": "HostInterface Collection",
+      "id": null,
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Managers/Self/LogServices",
+      "odata_type": "#LogServiceCollection.LogServiceCollection",
+      "name": "Log Service Collection",
+      "id": null,
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Managers/Self/NetworkProtocol",
+      "odata_type": "#ManagerNetworkProtocol.v1_6_0.ManagerNetworkProtocol",
+      "name": "Manager Network Protocol",
+      "id": "NetworkProtocol",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Managers/Self/SerialInterfaces",
+      "odata_type": "#SerialInterfaceCollection.SerialInterfaceCollection",
+      "name": "Serial Interface Collection",
+      "id": null,
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Managers/Self/VirtualMedia",
+      "odata_type": "#VirtualMediaCollection.VirtualMediaCollection",
+      "name": "Virtual Media Collection",
+      "id": null,
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/PCIeDevices/00_01_00",
+      "odata_type": "#PCIeDevice.v1_9_0.PCIeDevice",
+      "name": "Slot4",
+      "id": "00_01_00",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/PCIeDevices/00_01_00/PCIeFunctions/DevType3__DevIndex3",
+      "odata_type": "#PCIeFunction.v1_2_3.PCIeFunction",
+      "name": "NVIDIA GB202 [GeForce RTX 5090]",
+      "id": "DevType3__DevIndex3",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/PCIeDevices/00_01_00/PCIeFunctions/DevType3__DevIndex4",
+      "odata_type": "#PCIeFunction.v1_2_3.PCIeFunction",
+      "name": "NVIDIA Corporation Device 22e8",
+      "id": "DevType3__DevIndex4",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/PCIeDevices/00_23_00",
+      "odata_type": "#PCIeDevice.v1_9_0.PCIeDevice",
+      "name": "NVMe0",
+      "id": "00_23_00",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/PCIeDevices/00_23_00/PCIeFunctions/DevType3__DevIndex2A",
+      "odata_type": "#PCIeFunction.v1_2_3.PCIeFunction",
+      "name": "Samsung NVMe SSD Controller PM9A1/PM9A3/980PRO",
+      "id": "DevType3__DevIndex2A",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/PCIeDevices/00_24_00",
+      "odata_type": "#PCIeDevice.v1_9_0.PCIeDevice",
+      "name": "NVMe1",
+      "id": "00_24_00",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/PCIeDevices/00_24_00/PCIeFunctions/DevType3__DevIndex2C",
+      "odata_type": "#PCIeFunction.v1_2_3.PCIeFunction",
+      "name": "Samsung NVMe SSD Controller PM9A1/PM9A3/980PRO",
+      "id": "DevType3__DevIndex2C",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/PCIeDevices/00_25_00",
+      "odata_type": "#PCIeDevice.v1_9_0.PCIeDevice",
+      "name": "Slot1",
+      "id": "00_25_00",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/PCIeDevices/00_25_00/PCIeFunctions/DevType3__DevIndex2E",
+      "odata_type": "#PCIeFunction.v1_2_3.PCIeFunction",
+      "name": "MegaRAID 9560-8i",
+      "id": "DevType3__DevIndex2E",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/PCIeDevices/00_41_00",
+      "odata_type": "#PCIeDevice.v1_9_0.PCIeDevice",
+      "name": "Slot2",
+      "id": "00_41_00",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/PCIeDevices/00_41_00/PCIeFunctions/DevType3__DevIndex37",
+      "odata_type": "#PCIeFunction.v1_2_3.PCIeFunction",
+      "name": "MCX631102AN-ADAT",
+      "id": "DevType3__DevIndex37",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/PCIeDevices/00_41_00/PCIeFunctions/DevType3__DevIndex38",
+      "odata_type": "#PCIeFunction.v1_2_3.PCIeFunction",
+      "name": "MCX631102AN-ADAT",
+      "id": "DevType3__DevIndex38",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/PCIeDevices/00_61_00",
+      "odata_type": "#PCIeDevice.v1_9_0.PCIeDevice",
+      "name": "Slot3",
+      "id": "00_61_00",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/PCIeDevices/00_61_00/PCIeFunctions/DevType3__DevIndex43",
+      "odata_type": "#PCIeFunction.v1_2_3.PCIeFunction",
+      "name": "NVIDIA GB202 [GeForce RTX 5090]",
+      "id": "DevType3__DevIndex43",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/PCIeDevices/00_61_00/PCIeFunctions/DevType3__DevIndex44",
+      "odata_type": "#PCIeFunction.v1_2_3.PCIeFunction",
+      "name": "NVIDIA Corporation Device 22e8",
+      "id": "DevType3__DevIndex44",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/PCIeDevices/00_62_00",
+      "odata_type": "#PCIeDevice.v1_9_0.PCIeDevice",
+      "name": "BMC Aspeed2600",
+      "id": "00_62_00",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/PCIeDevices/00_62_00/PCIeFunctions/DevType3__DevIndex4A",
+      "odata_type": "#PCIeFunction.v1_2_3.PCIeFunction",
+      "name": "PCIeFunction_4A",
+      "id": "DevType3__DevIndex4A",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/PCIeDevices/00_63_00",
+      "odata_type": "#PCIeDevice.v1_9_0.PCIeDevice",
+      "name": "BMC Aspeed2600",
+      "id": "00_63_00",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/PCIeDevices/00_63_00/PCIeFunctions/DevType3_VGFX_DevIndex4B",
+      "odata_type": "#PCIeFunction.v1_2_3.PCIeFunction",
+      "name": "PCIeFunction_4B",
+      "id": "DevType3_VGFX_DevIndex4B",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/PCIeDevices/00_81_00",
+      "odata_type": "#PCIeDevice.v1_9_0.PCIeDevice",
+      "name": "Slot9",
+      "id": "00_81_00",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/PCIeDevices/00_81_00/PCIeFunctions/DevType3__DevIndex56",
+      "odata_type": "#PCIeFunction.v1_2_3.PCIeFunction",
+      "name": "NVIDIA GB202 [GeForce RTX 5090]",
+      "id": "DevType3__DevIndex56",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/PCIeDevices/00_81_00/PCIeFunctions/DevType3__DevIndex57",
+      "odata_type": "#PCIeFunction.v1_2_3.PCIeFunction",
+      "name": "NVIDIA Corporation Device 22e8",
+      "id": "DevType3__DevIndex57",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/PCIeDevices/00_C3_00",
+      "odata_type": "#PCIeDevice.v1_9_0.PCIeDevice",
+      "name": "Slot10",
+      "id": "00_C3_00",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/PCIeDevices/00_C3_00/PCIeFunctions/DevType3__DevIndex73",
+      "odata_type": "#PCIeFunction.v1_2_3.PCIeFunction",
+      "name": "MCX653105A-HDAT",
+      "id": "DevType3__DevIndex73",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/PCIeDevices/00_E1_00",
+      "odata_type": "#PCIeDevice.v1_9_0.PCIeDevice",
+      "name": "Slot6",
+      "id": "00_E1_00",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/PCIeDevices/00_E1_00/PCIeFunctions/DevType3__DevIndex7C",
+      "odata_type": "#PCIeFunction.v1_2_3.PCIeFunction",
+      "name": "NVIDIA GB202 [GeForce RTX 5090]",
+      "id": "DevType3__DevIndex7C",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/PCIeDevices/00_E1_00/PCIeFunctions/DevType3__DevIndex7D",
+      "odata_type": "#PCIeFunction.v1_2_3.PCIeFunction",
+      "name": "NVIDIA Corporation Device 22e8",
+      "id": "DevType3__DevIndex7D",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Systems/Self/Bios",
+      "odata_type": "#Bios.v1_2_0.Bios",
+      "name": "Current BIOS Settings",
+      "id": "Bios",
+      "related": false,
+      "related_keys": [],
+      "actions": [
+        {
+          "action": "#Bios.ChangePassword",
+          "target": "/redfish/v1/Systems/Self/Bios/Actions/Bios.ChangePassword",
+          "allowable_values": [],
+          "fan_thermal_related": false
+        },
+        {
+          "action": "#Bios.ResetBios",
+          "target": "/redfish/v1/Systems/Self/Bios/Actions/Bios.ResetBios",
+          "allowable_values": [],
+          "fan_thermal_related": false
+        }
+      ],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Systems/Self/Boot/Certificates",
+      "odata_type": "#CertificateCollection.CertificateCollection",
+      "name": "Certificate Collection",
+      "id": null,
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Systems/Self/BootOptions",
+      "odata_type": "#BootOptionCollection.BootOptionCollection",
+      "name": "BootOption Collection",
+      "id": null,
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Systems/Self/EthernetInterfaces",
+      "odata_type": "#EthernetInterfaceCollection.EthernetInterfaceCollection",
+      "name": "Ethernet Interface Collection",
+      "id": null,
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Systems/Self/GraphicsControllers",
+      "odata_type": "#GraphicsControllerCollection.GraphicsControllerCollection",
+      "name": "GraphicsControllers Collection",
+      "id": null,
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Systems/Self/LogServices",
+      "odata_type": "#LogServiceCollection.LogServiceCollection",
+      "name": "Log Services Collection",
+      "id": null,
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Systems/Self/Memory",
+      "odata_type": "#MemoryCollection.MemoryCollection",
+      "name": "Memory Collection",
+      "id": null,
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Systems/Self/MemoryDomains",
+      "odata_type": "#MemoryDomainCollection.MemoryDomainCollection",
+      "name": "MemoryDomain Collection",
+      "id": null,
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Systems/Self/MemorySummary/MemoryMetrics",
+      "odata_type": "#MemoryMetrics.v1_7_0.MemoryMetrics",
+      "name": "MemorySummaryMetrics",
+      "id": "MemorySummaryMetrics",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Systems/Self/NetworkInterfaces",
+      "odata_type": "#NetworkInterfaceCollection.NetworkInterfaceCollection",
+      "name": "NetworkInterface Collection",
+      "id": null,
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Systems/Self/Oem/Ami/Inventory/Crc",
+      "odata_type": "#InventoryCRC.v1_0_0.InventoryCRC",
+      "name": "Inventory CRC",
+      "id": "InventoryCRC",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Systems/Self/Processors",
+      "odata_type": "#ProcessorCollection.ProcessorCollection",
+      "name": "Processors Collection",
+      "id": null,
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Systems/Self/SD",
+      "odata_type": "#ComputerSystem.v1_16_2.ComputerSystem",
+      "name": "System",
+      "id": "SD",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Systems/Self/SecureBoot",
+      "odata_type": "#SecureBoot.v1_1_0.SecureBoot",
+      "name": "UEFI Secure Boot",
+      "id": "SecureBoot",
+      "related": false,
+      "related_keys": [],
+      "actions": [
+        {
+          "action": "#SecureBoot.ResetKeys",
+          "target": "/redfish/v1/Systems/Self/SecureBoot/Actions/SecureBoot.ResetKeys",
+          "allowable_values": [],
+          "fan_thermal_related": false
+        }
+      ],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Systems/Self/SimpleStorage",
+      "odata_type": "#SimpleStorageCollection.SimpleStorageCollection",
+      "name": "Simple Storage Collection",
+      "id": null,
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Systems/Self/Storage",
+      "odata_type": "#StorageCollection.StorageCollection",
+      "name": "Storage Collection",
+      "id": null,
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Systems/Self/USBControllers",
+      "odata_type": "#USBControllerCollection.USBControllerCollection",
+      "name": "USBControllers Collection",
+      "id": null,
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/AccountService/Accounts",
+      "odata_type": "#ManagerAccountCollection.ManagerAccountCollection",
+      "name": "Accounts Collection",
+      "id": null,
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/AccountService/ExternalAccountProviders",
+      "odata_type": "#ExternalAccountProviderCollection.ExternalAccountProviderCollection",
+      "name": "External Accounts Provider Collection",
+      "id": null,
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/AccountService/Oem/Ami/Configurations",
+      "odata_type": "#AMIAccountServiceConfigurations.v1_0_0.AMIAccountServiceConfigurations",
+      "name": "AccountService Configurations",
+      "id": "Configurations",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/AccountService/Roles",
+      "odata_type": "#RoleCollection.RoleCollection",
+      "name": "Roles Collection",
+      "id": null,
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Registries/Redfish_1.5.0_PrivilegeRegistry.json",
+      "odata_type": "#PrivilegeRegistry.v1_1_4.PrivilegeRegistry",
+      "name": "Privilege Mapping array collection",
+      "id": "Redfish_1.5.0_PrivilegeRegistry",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/CertificateService/CertificateLocations",
+      "odata_type": "#CertificateLocations.v1_0_2.CertificateLocations",
+      "name": "Certificate Locations",
+      "id": "CertificateLocations",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/CompositionService/ResourceBlocks",
+      "odata_type": "#ResourceBlockCollection.ResourceBlockCollection",
+      "name": "ResourceBlock Collection",
+      "id": null,
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/CompositionService/ResourceZones",
+      "odata_type": "#ZoneCollection.ZoneCollection",
+      "name": "Zone Collection",
+      "id": null,
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/EventService/Oem/Ami/SMTP/Certificates",
+      "odata_type": "#AMISMTPCertificateCollection.AMISMTPCertificateCollection",
+      "name": "SMTP Certificate Collection",
+      "id": null,
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/EventService/Subscriptions",
+      "odata_type": "#EventDestinationCollection.EventDestinationCollection",
+      "name": "Event Subscriptions Collection",
+      "id": null,
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/JsonSchemas/AMIAccountService.v1_0_0",
+      "odata_type": "#JsonSchemaFile.v1_1_4.JsonSchemaFile",
+      "name": "AMIAccountService.v1_0_0 schema",
+      "id": "AMIAccountService.v1_0_0",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/JsonSchemas/AMIAccountServiceConfigurations.v1_0_0",
+      "odata_type": "#JsonSchemaFile.v1_1_4.JsonSchemaFile",
+      "name": "AMIAccountServiceConfigurations.v1_0_0 schema",
+      "id": "AMIAccountServiceConfigurations.v1_0_0",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/JsonSchemas/AMIAdvanceRADIUSSetting.v1_0_0",
+      "odata_type": "#JsonSchemaFile.v1_1_4.JsonSchemaFile",
+      "name": "AMIAdvanceRADIUSSetting.v1_0_0 schema",
+      "id": "AMIAdvanceRADIUSSetting.v1_0_0",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/JsonSchemas/AMIBIOSInventoryCRC.v1_0_0",
+      "odata_type": "#JsonSchemaFile.v1_1_4.JsonSchemaFile",
+      "name": "AMIBIOSInventoryCRC.v1_0_0 schema",
+      "id": "AMIBIOSInventoryCRC.v1_0_0",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/JsonSchemas/AMIBiosTable.v1_0_0",
+      "odata_type": "#JsonSchemaFile.v1_1_4.JsonSchemaFile",
+      "name": "AMIBiosTable.v1_0_0 schema",
+      "id": "AMIBiosTable.v1_0_0",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    }
+  ],
+  "fan_thermal_candidates": [
+    {
+      "path": "/redfish/v1/Chassis/Self",
+      "odata_type": "#Chassis.v1_15_0.Chassis",
+      "name": "Computer System Chassis",
+      "id": "Self",
+      "related": true,
+      "related_keys": [
+        "Thermal",
+        "ThermalSubsystem"
+      ],
+      "actions": [
+        {
+          "action": "#Chassis.Reset",
+          "target": "/redfish/v1/Chassis/Self/Actions/Chassis.Reset",
+          "allowable_values": [],
+          "fan_thermal_related": false
+        }
+      ],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/EventService",
+      "odata_type": "#EventService.v1_5_0.EventService",
+      "name": "Event Service",
+      "id": "EventService",
+      "related": true,
+      "related_keys": [
+        "DeliveryRetryAttempts"
+      ],
+      "actions": [
+        {
+          "action": "#EventService.SubmitTestEvent",
+          "target": "/redfish/v1/EventService/Actions/EventService.SubmitTestEvent",
+          "allowable_values": [],
+          "fan_thermal_related": false
+        }
+      ],
+      "value_hints": {},
+      "oem": {
+        "Ami": {
+          "@odata.type": "#AMIEventService.v1_0_0.AMIEventService",
+          "Certificates": {
+            "@odata.id": "/redfish/v1/EventService/Oem/Ami/SMTP/Certificates"
+          },
+          "SecondarySMTP": {
+            "Authentication": "None",
+            "ConnectionProtocol": "None",
+            "FromAddress": null,
+            "Password": null,
+            "Port": 25,
+            "ServerAddress": null,
+            "ServiceEnabled": false,
+            "Username": null
+          }
+        }
+      }
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/ThermalSubsystem",
+      "odata_type": "#ThermalSubsystem.v1_0_0.ThermalSubsystem",
+      "name": "ThermalSubsytem",
+      "id": "ThermalSubsytem",
+      "related": true,
+      "related_keys": [
+        "FanRedundancy",
+        "Fans",
+        "ThermalMetrics"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Systems/Self/Storage/StorageUnit_3/Drives/NVMe0_NSID1",
+      "odata_type": "#Drive.v1_13_0.Drive",
+      "name": "NVMe0_NSID1",
+      "id": "NVMe0_NSID1",
+      "related": true,
+      "related_keys": [
+        "RotationSpeedRPM"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Systems/Self/Storage/StorageUnit_4/Drives/NVMe1_NSID1",
+      "odata_type": "#Drive.v1_13_0.Drive",
+      "name": "NVMe1_NSID1",
+      "id": "NVMe1_NSID1",
+      "related": true,
+      "related_keys": [
+        "RotationSpeedRPM"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Fans/0",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Fans/1",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Fans/10",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Fans/11",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Fans/12",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Fans/13",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Fans/14",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Fans/15",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Fans/16",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Fans/17",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Fans/18",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Fans/19",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Fans/2",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Fans/20",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Fans/21",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Fans/22",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Fans/23",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Fans/24",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Fans/25",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Fans/26",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Fans/27",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Fans/3",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Fans/4",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Fans/5",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Fans/6",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Fans/7",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Fans/8",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Fans/9",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Temperatures/0",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Temperatures/1",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Temperatures/10",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Temperatures/11",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Temperatures/12",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Temperatures/13",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Temperatures/14",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Temperatures/15",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Temperatures/16",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Temperatures/17",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Temperatures/18",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Temperatures/19",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Temperatures/2",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Temperatures/20",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Temperatures/21",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Temperatures/22",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Temperatures/23",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Temperatures/24",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Temperatures/25",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Temperatures/26",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Temperatures/27",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Temperatures/28",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Temperatures/29",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Temperatures/3",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Temperatures/30",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Temperatures/31",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Temperatures/32",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Temperatures/33",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Temperatures/34",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Temperatures/35",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Temperatures/36",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Temperatures/37",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Temperatures/38",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Temperatures/39",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Temperatures/4",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Temperatures/40",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Temperatures/41",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Temperatures/42",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Temperatures/43",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Temperatures/44",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Temperatures/45",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Temperatures/46",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Temperatures/47",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Temperatures/48",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Temperatures/49",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Temperatures/5",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Temperatures/50",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Temperatures/51",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Temperatures/52",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Temperatures/53",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Temperatures/54",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Temperatures/55",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Temperatures/6",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Temperatures/7",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Temperatures/8",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal#/Temperatures/9",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Sensors/GPU2_TLimitTemp",
+      "odata_type": "#Sensor.v1_1_0.Sensor",
+      "name": "GPU2_TLimitTemp",
+      "id": "GPU2_TLimitTemp",
+      "related": true,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {
+        "Reading": "0",
+        "ReadingUnits": "Celsius"
+      },
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Sensors/GPU2_Temp",
+      "odata_type": "#Sensor.v1_1_0.Sensor",
+      "name": "GPU2_Temp",
+      "id": "GPU2_Temp",
+      "related": true,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {
+        "Reading": "30",
+        "ReadingUnits": "Celsius"
+      },
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Sensors/GPU3_TLimitTemp",
+      "odata_type": "#Sensor.v1_1_0.Sensor",
+      "name": "GPU3_TLimitTemp",
+      "id": "GPU3_TLimitTemp",
+      "related": true,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {
+        "Reading": "0",
+        "ReadingUnits": "Celsius"
+      },
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Sensors/GPU3_Temp",
+      "odata_type": "#Sensor.v1_1_0.Sensor",
+      "name": "GPU3_Temp",
+      "id": "GPU3_Temp",
+      "related": true,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {
+        "Reading": "32",
+        "ReadingUnits": "Celsius"
+      },
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Sensors/GPU5_TLimitTemp",
+      "odata_type": "#Sensor.v1_1_0.Sensor",
+      "name": "GPU5_TLimitTemp",
+      "id": "GPU5_TLimitTemp",
+      "related": true,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {
+        "Reading": "0",
+        "ReadingUnits": "Celsius"
+      },
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Sensors/GPU5_Temp",
+      "odata_type": "#Sensor.v1_1_0.Sensor",
+      "name": "GPU5_Temp",
+      "id": "GPU5_Temp",
+      "related": true,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {
+        "Reading": "29",
+        "ReadingUnits": "Celsius"
+      },
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Sensors/GPU8_TLimitTemp",
+      "odata_type": "#Sensor.v1_1_0.Sensor",
+      "name": "GPU8_TLimitTemp",
+      "id": "GPU8_TLimitTemp",
+      "related": true,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {
+        "Reading": "0",
+        "ReadingUnits": "Celsius"
+      },
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Sensors/GPU8_Temp",
+      "odata_type": "#Sensor.v1_1_0.Sensor",
+      "name": "GPU8_Temp",
+      "id": "GPU8_Temp",
+      "related": true,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {
+        "Reading": "25",
+        "ReadingUnits": "Celsius"
+      },
+      "oem": {}
+    }
+  ],
+  "candidate_count": 98,
+  "finished_at": "2026-03-02T12:17:10.146768"
+}

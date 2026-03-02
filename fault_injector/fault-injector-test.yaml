@@ -68,6 +68,13 @@ inventory:
         password: "Admin@9000"
         verify_tls: false
         timeout: 30
+      ipmi:
+        host: "10.11.8.13"
+        username: "admin"
+        password: "Admin@9000"
+        interface: "lanplus"
+        port: 623
+        timeout: 30
       interface: "roce200"
       roles:
         - "compute"
@@ -178,6 +185,13 @@ scenarios:
     params:
       gpu_id: 0
       power_limit: 500
+      fan_index: 0
+      fan_mode: "Manual"
+      fan_pwm: 30
+      fan_recover_mode: "Auto"
+      fan_control_backend: "ipmi"
+      ipmi_profile: "supermicro_raw"
+      ipmi_target_pwm: 30
 
   # Keep RDMA scenarios disabled for this vLLM latency test cycle.
   pfc_deadlock:
