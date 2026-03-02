@@ -15,6 +15,7 @@ from fault_injector.config.schema import (
     FaultInjectorConfig,
     GlobalConfig,
     IPMIConfig,
+    LoadSimulatorConfig,
     MonitorConfig,
     OrchestratorConfig,
     RedfishConfig,
@@ -133,11 +134,24 @@ def _parse_config(raw: dict[str, Any]) -> FaultInjectorConfig:
     for scenario_name, scenario_raw in scenarios_raw.items():
         if not isinstance(scenario_raw, dict):
             continue
+        params = scenario_raw.get("params", {})
+        if not isinstance(params, dict):
+            params = {}
+
+        # Support both:
+        # 1) scenarios.<name>.params.load_simulator
+        # 2) scenarios.<name>.load_simulator
+        load_sim_raw = params.get("load_simulator")
+        if load_sim_raw is None:
+            load_sim_raw = scenario_raw.get("load_simulator")
+        if isinstance(load_sim_raw, dict):
+            params["load_simulator"] = LoadSimulatorConfig(**load_sim_raw).model_dump()
+
         scenarios[scenario_name] = ScenarioConfig(
             name=scenario_raw.get("name", scenario_name),
             enabled=scenario_raw.get("enabled", True),
             target_nodes=scenario_raw.get("target_nodes", []),
-            params=scenario_raw.get("params", {}),
+            params=params,
         )
 
     switches_raw = raw.get("switches", {})

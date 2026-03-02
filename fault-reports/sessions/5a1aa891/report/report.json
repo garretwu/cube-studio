@@ -1,0 +1,520 @@
+{
+  "session_id": "5a1aa891",
+  "status": "running",
+  "phase": "report",
+  "started_at": "2026-03-02T17:18:33.746845",
+  "finished_at": "2026-03-02T17:18:33.840514",
+  "baseline_metrics": {},
+  "scenario_results": {
+    "gpu_contention": {
+      "scenario_name": "gpu_contention",
+      "inject_success": true,
+      "recover_success": true,
+      "verified": false,
+      "inject_duration_ms": 0,
+      "observe_duration_ms": 0,
+      "recover_duration_ms": 0,
+      "error": "",
+      "metrics": {
+        "during": {}
+      }
+    },
+    "network_jitter": {
+      "scenario_name": "network_jitter",
+      "inject_success": true,
+      "recover_success": true,
+      "verified": true,
+      "inject_duration_ms": 0,
+      "observe_duration_ms": 0,
+      "recover_duration_ms": 0,
+      "error": "",
+      "metrics": {
+        "during": {}
+      }
+    },
+    "storage_io_interference": {
+      "scenario_name": "storage_io_interference",
+      "inject_success": true,
+      "recover_success": true,
+      "verified": false,
+      "inject_duration_ms": 0,
+      "observe_duration_ms": 0,
+      "recover_duration_ms": 0,
+      "error": "",
+      "metrics": {
+        "during": {}
+      }
+    },
+    "platform_cascade": {
+      "scenario_name": "platform_cascade",
+      "inject_success": true,
+      "recover_success": true,
+      "verified": false,
+      "inject_duration_ms": 0,
+      "observe_duration_ms": 0,
+      "recover_duration_ms": 0,
+      "error": "",
+      "metrics": {
+        "during": {}
+      }
+    },
+    "os_resource_pressure": {
+      "scenario_name": "os_resource_pressure",
+      "inject_success": true,
+      "recover_success": true,
+      "verified": false,
+      "inject_duration_ms": 0,
+      "observe_duration_ms": 0,
+      "recover_duration_ms": 0,
+      "error": "",
+      "metrics": {
+        "during": {}
+      }
+    },
+    "thermal_throttling": {
+      "scenario_name": "thermal_throttling",
+      "inject_success": true,
+      "recover_success": true,
+      "verified": true,
+      "inject_duration_ms": 0,
+      "observe_duration_ms": 0,
+      "recover_duration_ms": 0,
+      "error": "",
+      "metrics": {
+        "during": {}
+      }
+    }
+  },
+  "events": [
+    {
+      "timestamp": "2026-03-02T17:18:33.747918",
+      "phase": "init",
+      "event": "components_initialized",
+      "details": {}
+    },
+    {
+      "timestamp": "2026-03-02T17:18:33.748603",
+      "phase": "init",
+      "event": "phase_changed",
+      "details": {
+        "from": "init",
+        "to": "init"
+      }
+    },
+    {
+      "timestamp": "2026-03-02T17:18:33.748609",
+      "phase": "init",
+      "event": "preflight_started",
+      "details": {}
+    },
+    {
+      "timestamp": "2026-03-02T17:18:33.749169",
+      "phase": "init",
+      "event": "preflight_completed",
+      "details": {}
+    },
+    {
+      "timestamp": "2026-03-02T17:18:33.749688",
+      "phase": "baseline",
+      "event": "phase_changed",
+      "details": {
+        "from": "init",
+        "to": "baseline"
+      }
+    },
+    {
+      "timestamp": "2026-03-02T17:18:33.749694",
+      "phase": "baseline",
+      "event": "baseline_started",
+      "details": {}
+    },
+    {
+      "timestamp": "2026-03-02T17:18:33.750667",
+      "phase": "baseline",
+      "event": "baseline_completed",
+      "details": {
+        "baseline_path": "fault-reports\\sessions\\5a1aa891\\baseline.json"
+      }
+    },
+    {
+      "timestamp": "2026-03-02T17:18:33.751196",
+      "phase": "inject",
+      "event": "phase_changed",
+      "details": {
+        "from": "baseline",
+        "to": "inject"
+      }
+    },
+    {
+      "timestamp": "2026-03-02T17:18:33.758202",
+      "phase": "inject",
+      "event": "fault_injected",
+      "details": {
+        "fault_id": "gpu_contention_4436e94d",
+        "scenario_name": "gpu_contention"
+      }
+    },
+    {
+      "timestamp": "2026-03-02T17:18:33.758967",
+      "phase": "observe",
+      "event": "phase_changed",
+      "details": {
+        "from": "inject",
+        "to": "observe"
+      }
+    },
+    {
+      "timestamp": "2026-03-02T17:18:33.759657",
+      "phase": "recover",
+      "event": "phase_changed",
+      "details": {
+        "from": "observe",
+        "to": "recover"
+      }
+    },
+    {
+      "timestamp": "2026-03-02T17:18:33.765006",
+      "phase": "recover",
+      "event": "fault_recovered",
+      "details": {
+        "fault_id": "gpu_contention_4436e94d",
+        "scenario_name": "gpu_contention"
+      }
+    },
+    {
+      "timestamp": "2026-03-02T17:18:33.765667",
+      "phase": "verify",
+      "event": "phase_changed",
+      "details": {
+        "from": "recover",
+        "to": "verify"
+      }
+    },
+    {
+      "timestamp": "2026-03-02T17:18:33.766894",
+      "phase": "inject",
+      "event": "phase_changed",
+      "details": {
+        "from": "verify",
+        "to": "inject"
+      }
+    },
+    {
+      "timestamp": "2026-03-02T17:18:33.771378",
+      "phase": "inject",
+      "event": "fault_injected",
+      "details": {
+        "fault_id": "network_jitter_65c254ae",
+        "scenario_name": "network_jitter"
+      }
+    },
+    {
+      "timestamp": "2026-03-02T17:18:33.772476",
+      "phase": "observe",
+      "event": "phase_changed",
+      "details": {
+        "from": "inject",
+        "to": "observe"
+      }
+    },
+    {
+      "timestamp": "2026-03-02T17:18:33.773386",
+      "phase": "recover",
+      "event": "phase_changed",
+      "details": {
+        "from": "observe",
+        "to": "recover"
+      }
+    },
+    {
+      "timestamp": "2026-03-02T17:18:33.777081",
+      "phase": "recover",
+      "event": "fault_recovered",
+      "details": {
+        "fault_id": "network_jitter_65c254ae",
+        "scenario_name": "network_jitter"
+      }
+    },
+    {
+      "timestamp": "2026-03-02T17:18:33.778268",
+      "phase": "verify",
+      "event": "phase_changed",
+      "details": {
+        "from": "recover",
+        "to": "verify"
+      }
+    },
+    {
+      "timestamp": "2026-03-02T17:18:33.779625",
+      "phase": "inject",
+      "event": "phase_changed",
+      "details": {
+        "from": "verify",
+        "to": "inject"
+      }
+    },
+    {
+      "timestamp": "2026-03-02T17:18:33.783203",
+      "phase": "inject",
+      "event": "fault_injected",
+      "details": {
+        "fault_id": "storage_io_interference_e5eba2cc",
+        "scenario_name": "storage_io_interference"
+      }
+    },
+    {
+      "timestamp": "2026-03-02T17:18:33.784594",
+      "phase": "observe",
+      "event": "phase_changed",
+      "details": {
+        "from": "inject",
+        "to": "observe"
+      }
+    },
+    {
+      "timestamp": "2026-03-02T17:18:33.785772",
+      "phase": "recover",
+      "event": "phase_changed",
+      "details": {
+        "from": "observe",
+        "to": "recover"
+      }
+    },
+    {
+      "timestamp": "2026-03-02T17:18:33.790132",
+      "phase": "recover",
+      "event": "fault_recovered",
+      "details": {
+        "fault_id": "storage_io_interference_e5eba2cc",
+        "scenario_name": "storage_io_interference"
+      }
+    },
+    {
+      "timestamp": "2026-03-02T17:18:33.791453",
+      "phase": "verify",
+      "event": "phase_changed",
+      "details": {
+        "from": "recover",
+        "to": "verify"
+      }
+    },
+    {
+      "timestamp": "2026-03-02T17:18:33.793245",
+      "phase": "inject",
+      "event": "phase_changed",
+      "details": {
+        "from": "verify",
+        "to": "inject"
+      }
+    },
+    {
+      "timestamp": "2026-03-02T17:18:33.797225",
+      "phase": "inject",
+      "event": "fault_injected",
+      "details": {
+        "fault_id": "platform_cascade_faef1077",
+        "scenario_name": "platform_cascade"
+      }
+    },
+    {
+      "timestamp": "2026-03-02T17:18:33.798535",
+      "phase": "observe",
+      "event": "phase_changed",
+      "details": {
+        "from": "inject",
+        "to": "observe"
+      }
+    },
+    {
+      "timestamp": "2026-03-02T17:18:33.799337",
+      "phase": "recover",
+      "event": "phase_changed",
+      "details": {
+        "from": "observe",
+        "to": "recover"
+      }
+    },
+    {
+      "timestamp": "2026-03-02T17:18:33.803247",
+      "phase": "recover",
+      "event": "fault_recovered",
+      "details": {
+        "fault_id": "platform_cascade_faef1077",
+        "scenario_name": "platform_cascade"
+      }
+    },
+    {
+      "timestamp": "2026-03-02T17:18:33.804524",
+      "phase": "verify",
+      "event": "phase_changed",
+      "details": {
+        "from": "recover",
+        "to": "verify"
+      }
+    },
+    {
+      "timestamp": "2026-03-02T17:18:33.806858",
+      "phase": "inject",
+      "event": "phase_changed",
+      "details": {
+        "from": "verify",
+        "to": "inject"
+      }
+    },
+    {
+      "timestamp": "2026-03-02T17:18:33.810082",
+      "phase": "inject",
+      "event": "fault_injected",
+      "details": {
+        "fault_id": "os_resource_pressure_cd81f8aa",
+        "scenario_name": "os_resource_pressure"
+      }
+    },
+    {
+      "timestamp": "2026-03-02T17:18:33.810878",
+      "phase": "observe",
+      "event": "phase_changed",
+      "details": {
+        "from": "inject",
+        "to": "observe"
+      }
+    },
+    {
+      "timestamp": "2026-03-02T17:18:33.811652",
+      "phase": "recover",
+      "event": "phase_changed",
+      "details": {
+        "from": "observe",
+        "to": "recover"
+      }
+    },
+    {
+      "timestamp": "2026-03-02T17:18:33.816101",
+      "phase": "recover",
+      "event": "fault_recovered",
+      "details": {
+        "fault_id": "os_resource_pressure_cd81f8aa",
+        "scenario_name": "os_resource_pressure"
+      }
+    },
+    {
+      "timestamp": "2026-03-02T17:18:33.816975",
+      "phase": "verify",
+      "event": "phase_changed",
+      "details": {
+        "from": "recover",
+        "to": "verify"
+      }
+    },
+    {
+      "timestamp": "2026-03-02T17:18:33.820377",
+      "phase": "inject",
+      "event": "phase_changed",
+      "details": {
+        "from": "verify",
+        "to": "inject"
+      }
+    },
+    {
+      "timestamp": "2026-03-02T17:18:33.826048",
+      "phase": "inject",
+      "event": "bmc_precheck_completed",
+      "details": {
+        "scenario": "thermal_throttling",
+        "fault_id": "thermal_throttling_8f501d70",
+        "precheck": {
+          "bmc_host": "10.11.8.13",
+          "verify_tls": false,
+          "fan_before": {
+            "fan_count": 0,
+            "fans_sample": []
+          },
+          "fan_after_inject": {
+            "fan_count": 0,
+            "fans_sample": []
+          },
+          "temperature_before": {
+            "temperature_count": 0,
+            "temperatures_sample": []
+          },
+          "temperature_after_inject": {
+            "temperature_count": 0,
+            "temperatures_sample": []
+          },
+          "power_control_count": 0,
+          "sensor_member_count": 0,
+          "sensor_query_success": true,
+          "fan_inject": {
+            "fan_index": 0,
+            "mode": "Manual",
+            "pwm": 30
+          },
+          "fan_control_backend": "ipmi",
+          "fan_injected_backend": "ipmi",
+          "fan_inject_applied": true,
+          "fan_inject_warning": ""
+        }
+      }
+    },
+    {
+      "timestamp": "2026-03-02T17:18:33.827178",
+      "phase": "inject",
+      "event": "fault_injected",
+      "details": {
+        "fault_id": "thermal_throttling_8f501d70",
+        "scenario_name": "thermal_throttling"
+      }
+    },
+    {
+      "timestamp": "2026-03-02T17:18:33.828609",
+      "phase": "observe",
+      "event": "phase_changed",
+      "details": {
+        "from": "inject",
+        "to": "observe"
+      }
+    },
+    {
+      "timestamp": "2026-03-02T17:18:33.829699",
+      "phase": "recover",
+      "event": "phase_changed",
+      "details": {
+        "from": "observe",
+        "to": "recover"
+      }
+    },
+    {
+      "timestamp": "2026-03-02T17:18:33.834110",
+      "phase": "recover",
+      "event": "fault_recovered",
+      "details": {
+        "fault_id": "thermal_throttling_8f501d70",
+        "scenario_name": "thermal_throttling"
+      }
+    },
+    {
+      "timestamp": "2026-03-02T17:18:33.835774",
+      "phase": "verify",
+      "event": "phase_changed",
+      "details": {
+        "from": "recover",
+        "to": "verify"
+      }
+    },
+    {
+      "timestamp": "2026-03-02T17:18:33.839092",
+      "phase": "report",
+      "event": "phase_changed",
+      "details": {
+        "from": "verify",
+        "to": "report"
+      }
+    },
+    {
+      "timestamp": "2026-03-02T17:18:33.839101",
+      "phase": "report",
+      "event": "report_started",
+      "details": {}
+    }
+  ]
+}

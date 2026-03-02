@@ -98,6 +98,14 @@ class CombinedScenarioConfig(BaseModel):
     phases: list[CombinedPhaseConfig] = Field(default_factory=list)
 
 
+class LoadSimulatorConfig(BaseModel):
+    enabled: bool = False
+    config_path: str = ""
+    only: list[Literal["inference", "pipeline", "finetune", "notebook"]] = Field(default_factory=list)
+    timeout_seconds: int = 900
+    strict: bool = True
+
+
 class ScenarioConfig(BaseModel):
     name: str
     enabled: bool = True

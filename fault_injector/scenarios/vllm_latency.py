@@ -298,6 +298,10 @@ class NetworkJitterScenario(BaseScenario):
         return f"tc qdisc del dev {interface} root"
 
     async def inject(self, ctx: FaultContext) -> InjectResult:
+        ls_error = await self._maybe_run_load_simulator(ctx)
+        if ls_error:
+            return InjectResult(success=False, fault_id=ctx.fault_id, error=ls_error)
+
         interface = ctx.params.get("interface", "eth0")
         delay_ms = ctx.params.get("delay_ms", 50)
         jitter_ms = ctx.params.get("jitter_ms", 100)
@@ -634,6 +638,10 @@ class PlatformCascadeScenario(BaseScenario):
         return "platform"
 
     async def inject(self, ctx: FaultContext) -> InjectResult:
+        ls_error = await self._maybe_run_load_simulator(ctx)
+        if ls_error:
+            return InjectResult(success=False, fault_id=ctx.fault_id, error=ls_error)
+
         target_component = ctx.params.get("target_component", "mysql")
         delay_ms = int(ctx.params.get("delay_ms", 100))
         port = int(ctx.params.get("port", 3306))

@@ -375,6 +375,35 @@ class FaultOrchestrator:
             )
             self.session.save(self.session_dir)
 
+        ls_runs = ctx.params.get("_load_simulator_runs")
+        if isinstance(ls_runs, list):
+            for idx, run_detail in enumerate(ls_runs):
+                if not isinstance(run_detail, dict):
+                    continue
+                self.session.add_event(
+                    "load_simulator_run",
+                    {
+                        "scenario": scenario_name,
+                        "fault_id": ctx.fault_id,
+                        "index": idx,
+                        **run_detail,
+                    },
+                )
+            self.session.save(self.session_dir)
+
+        ls_warnings = ctx.params.get("_load_simulator_warnings")
+        if isinstance(ls_warnings, list):
+            for warning in ls_warnings:
+                self.session.add_event(
+                    "load_simulator_warning",
+                    {
+                        "scenario": scenario_name,
+                        "fault_id": ctx.fault_id,
+                        "warning": str(warning),
+                    },
+                )
+            self.session.save(self.session_dir)
+
         if not inject_result.success:
             result.error = inject_result.error
             self.session.scenario_results[scenario_name] = result
@@ -468,6 +497,31 @@ class FaultOrchestrator:
                         "combined_inject",
                         {"scenario": scenario_name, "success": inject_result.success, "error": inject_result.error},
                     )
+                    ls_runs = ctx.params.get("_load_simulator_runs")
+                    if isinstance(ls_runs, list):
+                        for idx, run_detail in enumerate(ls_runs):
+                            if not isinstance(run_detail, dict):
+                                continue
+                            self.session.add_event(
+                                "load_simulator_run",
+                                {
+                                    "scenario": scenario_name,
+                                    "fault_id": ctx.fault_id,
+                                    "index": idx,
+                                    **run_detail,
+                                },
+                            )
+                    ls_warnings = ctx.params.get("_load_simulator_warnings")
+                    if isinstance(ls_warnings, list):
+                        for warning in ls_warnings:
+                            self.session.add_event(
+                                "load_simulator_warning",
+                                {
+                                    "scenario": scenario_name,
+                                    "fault_id": ctx.fault_id,
+                                    "warning": str(warning),
+                                },
+                            )
                     self.session.save(self.session_dir)
                 else:
                     ctx = active_contexts.get(scenario_name)
