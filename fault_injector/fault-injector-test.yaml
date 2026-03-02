@@ -102,7 +102,7 @@ scenarios:
     target_nodes:
       - "worker-01"
     params:
-      duration: 180
+      duration: 60
       gpu_id: 0
       intensity: 100
 
@@ -120,7 +120,7 @@ scenarios:
       jitter_ms: 60
       distribution: "pareto"
       loss_pct: 0
-      duration: 120
+      duration: 60
 
   # ---------------------------------------------------------------------------
   # RC-3: Storage I/O Interference
@@ -131,7 +131,7 @@ scenarios:
     target_nodes:
       - "worker-01"
     params:
-      duration: 180
+      duration: 60
       filename: "/data/fault-injector-fio-testfile"
       rw_mode: "randwrite"
       bs: "4k"
@@ -161,7 +161,7 @@ scenarios:
     target_nodes:
       - "worker-01"
     params:
-      duration: 180
+      duration: 60
       vm_bytes_percent: 75
       cpu_workers: 32
       cpu_load: 90
