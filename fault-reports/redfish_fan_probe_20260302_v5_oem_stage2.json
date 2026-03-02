@@ -1,0 +1,6200 @@
+{
+  "target": "10.11.8.13",
+  "started_at": "2026-03-02T12:34:52.704617",
+  "max_depth": 5,
+  "max_nodes": 350,
+  "visited_count": 350,
+  "errors": [],
+  "resources": [
+    {
+      "path": "/redfish/v1/",
+      "odata_type": "#ServiceRoot.v1_13_0.ServiceRoot",
+      "name": "Root Service",
+      "id": "RootService",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {
+        "Ami": {
+          "@odata.type": "#AMIServiceRoot.v1_0_0.AMIServiceRoot",
+          "Configurations": {
+            "@odata.id": "/redfish/v1/Oem/Ami/Configurations"
+          },
+          "InventoryDataStatus": {
+            "@odata.id": "/redfish/v1/Oem/Ami/InventoryData/Status"
+          },
+          "MappingOut": {
+            "@odata.id": "/redfish/v1/Oem/Ami/MappingOut"
+          },
+          "RtpVersion": "13.08"
+        }
+      }
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self",
+      "odata_type": "#Chassis.v1_15_0.Chassis",
+      "name": "Computer System Chassis",
+      "id": "Self",
+      "related": true,
+      "related_keys": [
+        "Thermal",
+        "ThermalSubsystem"
+      ],
+      "actions": [
+        {
+          "action": "#Chassis.Reset",
+          "target": "/redfish/v1/Chassis/Self/Actions/Chassis.Reset",
+          "allowable_values": [],
+          "fan_thermal_related": false
+        }
+      ],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Power",
+      "odata_type": "#Power.v1_5_4.Power",
+      "name": "Power",
+      "id": "Power",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Sensors",
+      "odata_type": "#SensorCollection.SensorCollection",
+      "name": "Sensor Collection",
+      "id": null,
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Managers/Self",
+      "odata_type": "#Manager.v1_13_0.Manager",
+      "name": "Manager",
+      "id": "Self",
+      "related": false,
+      "related_keys": [],
+      "actions": [
+        {
+          "action": "#Manager.Reset",
+          "target": "/redfish/v1/Managers/Self/Actions/Manager.Reset",
+          "allowable_values": [],
+          "fan_thermal_related": false
+        },
+        {
+          "action": "#Manager.ResetToDefaults",
+          "target": "/redfish/v1/Managers/Self/Actions/Manager.ResetToDefaults",
+          "allowable_values": [],
+          "fan_thermal_related": false
+        },
+        {
+          "action": "Oem",
+          "target": "",
+          "allowable_values": [],
+          "fan_thermal_related": false
+        }
+      ],
+      "value_hints": {},
+      "oem": {
+        "Ami": {
+          "@odata.type": "#AMIManager.v1_0_0.AMIManager",
+          "ManagerServiceInfo": {
+            "CommandShellServiceInfo": {
+              "IPMI": {
+                "MaxConcurrentSessions": 36
+              }
+            },
+            "Links": {
+              "NetworkProtocol": {
+                "@odata.id": "/redfish/v1/Managers/Self/NetworkProtocol"
+              }
+            }
+          },
+          "PowerSaveMode": "Disable",
+          "VirtualMedia": {
+            "CDInstances": 4,
+            "HDInstances": 4,
+            "RMediaStatus": "Disabled",
+            "RemoteKVMCDInstances": 4,
+            "RemoteKVMHDInstances": 4
+          }
+        }
+      }
+    },
+    {
+      "path": "/redfish/v1/Systems/Self",
+      "odata_type": "#ComputerSystem.v1_16_2.ComputerSystem",
+      "name": "System",
+      "id": "Self",
+      "related": false,
+      "related_keys": [],
+      "actions": [
+        {
+          "action": "#ComputerSystem.Reset",
+          "target": "/redfish/v1/Systems/Self/Actions/ComputerSystem.Reset",
+          "allowable_values": [],
+          "fan_thermal_related": false
+        }
+      ],
+      "value_hints": {},
+      "oem": {
+        "Ami": {
+          "@odata.type": "#AMIBIOSInventoryCRC.v1_0_0.AMIBIOSInventoryCRC",
+          "Bios": {
+            "Inventory": {
+              "Crc": {
+                "@odata.id": "/redfish/v1/Systems/Self/Oem/Ami/Inventory/Crc",
+                "GroupCrcList": [
+                  {
+                    "PCIE": 305487123
+                  },
+                  {
+                    "CERTIFICATE": 4201943494
+                  },
+                  {
+                    "CPU": 1858398367
+                  },
+                  {
+                    "DIMM": 3576900784
+                  },
+                  {
+                    "SECUREBOOT": 4147902609
+                  }
+                ]
+              }
+            },
+            "RedfishVersion": "1.15.1",
+            "RtpVersion": "RB_1.0.20"
+          },
+          "ManagerBootConfiguration": {
+            "ManagerBootMode": null,
+            "ManagerBootMode@Redfish.AllowableValues": [
+              "None",
+              "SoftReset",
+              "ResetTimeout"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "path": "/redfish/v1/AccountService",
+      "odata_type": "#AccountService.v1_8_0.AccountService",
+      "name": "Account Service",
+      "id": "AccountService",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {
+        "Ami": {
+          "@odata.type": "#AMIAccountService.v1_0_0.AMIAccountService",
+          "Configuration": {
+            "@odata.id": "/redfish/v1/AccountService/Oem/Ami/Configurations"
+          }
+        }
+      }
+    },
+    {
+      "path": "/redfish/v1/CertificateService",
+      "odata_type": "#CertificateService.v1_0_2.CertificateService",
+      "name": "Certificate Service",
+      "id": "CertificateService",
+      "related": false,
+      "related_keys": [],
+      "actions": [
+        {
+          "action": "#CertificateService.GenerateCSR",
+          "target": "/redfish/v1/CertificateService/Actions/CertificateService.GenerateCSR",
+          "allowable_values": [],
+          "fan_thermal_related": false
+        },
+        {
+          "action": "#CertificateService.ReplaceCertificate",
+          "target": "/redfish/v1/CertificateService/Actions/CertificateService.ReplaceCertificate",
+          "allowable_values": [],
+          "fan_thermal_related": false
+        }
+      ],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis",
+      "odata_type": "#ChassisCollection.ChassisCollection",
+      "name": "Chassis Collection",
+      "id": null,
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/ComponentIntegrity",
+      "odata_type": "#ComponentIntegrityCollection.ComponentIntegrityCollection",
+      "name": "ComponentIntegrity Collection",
+      "id": null,
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/CompositionService",
+      "odata_type": "#CompositionService.v1_1_2.CompositionService",
+      "name": "Composition Service",
+      "id": "CompositionService",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/EventService",
+      "odata_type": "#EventService.v1_5_0.EventService",
+      "name": "Event Service",
+      "id": "EventService",
+      "related": true,
+      "related_keys": [
+        "DeliveryRetryAttempts"
+      ],
+      "actions": [
+        {
+          "action": "#EventService.SubmitTestEvent",
+          "target": "/redfish/v1/EventService/Actions/EventService.SubmitTestEvent",
+          "allowable_values": [],
+          "fan_thermal_related": false
+        }
+      ],
+      "value_hints": {},
+      "oem": {
+        "Ami": {
+          "@odata.type": "#AMIEventService.v1_0_0.AMIEventService",
+          "Certificates": {
+            "@odata.id": "/redfish/v1/EventService/Oem/Ami/SMTP/Certificates"
+          },
+          "SecondarySMTP": {
+            "Authentication": "None",
+            "ConnectionProtocol": "None",
+            "FromAddress": null,
+            "Password": null,
+            "Port": 25,
+            "ServerAddress": null,
+            "ServiceEnabled": false,
+            "Username": null
+          }
+        }
+      }
+    },
+    {
+      "path": "/redfish/v1/Fabrics",
+      "odata_type": "#FabricCollection.FabricCollection",
+      "name": "Fabric Collection",
+      "id": null,
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/JsonSchemas",
+      "odata_type": "#JsonSchemaFileCollection.JsonSchemaFileCollection",
+      "name": "Schema Repository",
+      "id": null,
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Managers",
+      "odata_type": "#ManagerCollection.ManagerCollection",
+      "name": "Manager Collection",
+      "id": null,
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Oem/Ami/Configurations",
+      "odata_type": "#AMIConfigurations.v1_0_0.AMIConfigurations",
+      "name": "Configurations",
+      "id": "Configurations",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Oem/Ami/InventoryData/Status",
+      "odata_type": "#AMIInventoryStatus.v1_0_0.AMIInventoryStatus",
+      "name": "PostStatus for Bios Inventory file",
+      "id": "InventoryDataStatus",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Oem/Ami/MappingOut",
+      "odata_type": "#AMIMappingOut.v1_0_0.AMIMappingOut",
+      "name": "Bios ChangeState MappingOut",
+      "id": "MappingOut",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Registries",
+      "odata_type": "#MessageRegistryFileCollection.MessageRegistryFileCollection",
+      "name": "Registry Repository",
+      "id": null,
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/SessionService",
+      "odata_type": "#SessionService.v1_1_6.SessionService",
+      "name": "Session Service",
+      "id": "SessionService",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/SessionService/Sessions",
+      "odata_type": "#SessionCollection.SessionCollection",
+      "name": "Session Collection",
+      "id": null,
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Systems",
+      "odata_type": "#ComputerSystemCollection.ComputerSystemCollection",
+      "name": "Systems Collection",
+      "id": null,
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/TaskService",
+      "odata_type": "#TaskService.v1_1_4.TaskService",
+      "name": "Task Service",
+      "id": "TaskService",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/TelemetryService",
+      "odata_type": "#TelemetryService.v1_2_4.TelemetryService",
+      "name": "TelemetryService",
+      "id": "TelemetryService",
+      "related": false,
+      "related_keys": [],
+      "actions": [
+        {
+          "action": "#TelemetryService.SubmitTestMetricReport",
+          "target": "/redfish/v1/TelemetryService/Actions/TelemetryService.SubmitTestMetricReport",
+          "allowable_values": [],
+          "fan_thermal_related": false
+        }
+      ],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/UpdateService",
+      "odata_type": "#UpdateService.v1_11_0.UpdateService",
+      "name": "Update Service",
+      "id": "UpdateService",
+      "related": false,
+      "related_keys": [],
+      "actions": [
+        {
+          "action": "#UpdateService.SimpleUpdate",
+          "target": "/redfish/v1/UpdateService/Actions/SimpleUpdate",
+          "allowable_values": [],
+          "fan_thermal_related": false
+        },
+        {
+          "action": "Oem",
+          "target": "",
+          "allowable_values": [],
+          "fan_thermal_related": false
+        }
+      ],
+      "value_hints": {},
+      "oem": {
+        "AMIUpdateService": {
+          "@odata.type": "#AMIUpdateService.v1_0_0.AMIUpdateService",
+          "FlashPercentage": null,
+          "PreserveConfiguration": {
+            "Authentication": false,
+            "EXTLOG": false,
+            "FRU": false,
+            "IPMI": false,
+            "KVM": false,
+            "NTP": false,
+            "Network": false,
+            "REDFISH": false,
+            "SDR": false,
+            "SEL": false,
+            "SNMP": false,
+            "SSH": false,
+            "Syslog": false,
+            "WEB": false
+          },
+          "UpdateStatus": null,
+          "UpdateTarget": null
+        },
+        "BMC": {
+          "@odata.type": "#AMIUpdateService.v1_0_0.BMC",
+          "DualImageConfigurations": {
+            "ActiveImage": "1",
+            "BootImage": "1",
+            "FirmwareImage1Name": "Image1",
+            "FirmwareImage1Version": "2.18.01",
+            "FirmwareImage2Name": "Image2",
+            "FirmwareImage2Version": "2.18.01"
+          }
+        }
+      }
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Certificates",
+      "odata_type": "#CertificateCollection.CertificateCollection",
+      "name": "Certificate Collection",
+      "id": null,
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/LogServices",
+      "odata_type": "#LogServiceCollection.LogServiceCollection",
+      "name": "Log Service Collection",
+      "id": null,
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/NetworkAdapters",
+      "odata_type": "#NetworkAdapterCollection.NetworkAdapterCollection",
+      "name": "NetworkAdapter Collection",
+      "id": null,
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/PCIeDevices",
+      "odata_type": "#PCIeDeviceCollection.PCIeDeviceCollection",
+      "name": "PCIeDevice Collection",
+      "id": null,
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/PCIeSlots",
+      "odata_type": "#PCIeSlots.v1_5_0.PCIeSlots",
+      "name": "PcieSlot_0",
+      "id": "PcieSlot_0",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/PowerSubsystem",
+      "odata_type": "#PowerSubsystem.v1_1_0.PowerSubsystem",
+      "name": "PowerSubsytem",
+      "id": "PowerSubsytem",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/ThermalSubsystem",
+      "odata_type": "#ThermalSubsystem.v1_0_0.ThermalSubsystem",
+      "name": "ThermalSubsytem",
+      "id": "ThermalSubsytem",
+      "related": true,
+      "related_keys": [
+        "FanRedundancy",
+        "Fans",
+        "ThermalMetrics"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Systems/Self/Storage/StorageUnit_3/Drives/NVMe0_NSID1",
+      "odata_type": "#Drive.v1_13_0.Drive",
+      "name": "NVMe0_NSID1",
+      "id": "NVMe0_NSID1",
+      "related": true,
+      "related_keys": [
+        "RotationSpeedRPM"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Systems/Self/Storage/StorageUnit_4/Drives/NVMe1_NSID1",
+      "odata_type": "#Drive.v1_13_0.Drive",
+      "name": "NVMe1_NSID1",
+      "id": "NVMe1_NSID1",
+      "related": true,
+      "related_keys": [
+        "RotationSpeedRPM"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Sensors/10",
+      "odata_type": "#Sensor.v1_1_0.Sensor",
+      "name": "P0_DIMM1_Temp",
+      "id": "10",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {
+        "Reading": 30,
+        "ReadingUnits": "Cel"
+      },
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Sensors/100",
+      "odata_type": "#Sensor.v1_1_0.Sensor",
+      "name": "F_FAN5_F_Speed",
+      "id": "100",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {
+        "Reading": 7600,
+        "ReadingUnits": "RPM"
+      },
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Sensors/101",
+      "odata_type": "#Sensor.v1_1_0.Sensor",
+      "name": "F_FAN6_F_Speed",
+      "id": "101",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {
+        "Reading": 7600,
+        "ReadingUnits": "RPM"
+      },
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Sensors/102",
+      "odata_type": "#Sensor.v1_1_0.Sensor",
+      "name": "F_FAN1_R_Speed",
+      "id": "102",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {
+        "Reading": 6800,
+        "ReadingUnits": "RPM"
+      },
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Sensors/103",
+      "odata_type": "#Sensor.v1_1_0.Sensor",
+      "name": "F_FAN2_R_Speed",
+      "id": "103",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {
+        "Reading": 6800,
+        "ReadingUnits": "RPM"
+      },
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Sensors/104",
+      "odata_type": "#Sensor.v1_1_0.Sensor",
+      "name": "F_FAN3_R_Speed",
+      "id": "104",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {
+        "Reading": 0,
+        "ReadingUnits": "RPM"
+      },
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Sensors/105",
+      "odata_type": "#Sensor.v1_1_0.Sensor",
+      "name": "F_FAN4_R_Speed",
+      "id": "105",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {
+        "Reading": 0,
+        "ReadingUnits": "RPM"
+      },
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Sensors/106",
+      "odata_type": "#Sensor.v1_1_0.Sensor",
+      "name": "F_FAN5_R_Speed",
+      "id": "106",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {
+        "Reading": 6800,
+        "ReadingUnits": "RPM"
+      },
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Sensors/107",
+      "odata_type": "#Sensor.v1_1_0.Sensor",
+      "name": "F_FAN6_R_Speed",
+      "id": "107",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {
+        "Reading": 0,
+        "ReadingUnits": "RPM"
+      },
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Sensors/11",
+      "odata_type": "#Sensor.v1_1_0.Sensor",
+      "name": "P1_DIMM0_Temp",
+      "id": "11",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {
+        "Reading": 0,
+        "ReadingUnits": "Cel"
+      },
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Sensors/112",
+      "odata_type": "#Sensor.v1_1_0.Sensor",
+      "name": "M_FAN1_F_Speed",
+      "id": "112",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {
+        "Reading": 5600,
+        "ReadingUnits": "RPM"
+      },
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Sensors/113",
+      "odata_type": "#Sensor.v1_1_0.Sensor",
+      "name": "M_FAN2_F_Speed",
+      "id": "113",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {
+        "Reading": 5600,
+        "ReadingUnits": "RPM"
+      },
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Sensors/114",
+      "odata_type": "#Sensor.v1_1_0.Sensor",
+      "name": "M_FAN3_F_Speed",
+      "id": "114",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {
+        "Reading": 0,
+        "ReadingUnits": "RPM"
+      },
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Sensors/115",
+      "odata_type": "#Sensor.v1_1_0.Sensor",
+      "name": "M_FAN4_F_Speed",
+      "id": "115",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {
+        "Reading": 5600,
+        "ReadingUnits": "RPM"
+      },
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Sensors/116",
+      "odata_type": "#Sensor.v1_1_0.Sensor",
+      "name": "M_FAN5_F_Speed",
+      "id": "116",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {
+        "Reading": 5600,
+        "ReadingUnits": "RPM"
+      },
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Sensors/117",
+      "odata_type": "#Sensor.v1_1_0.Sensor",
+      "name": "M_FAN6_F_Speed",
+      "id": "117",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {
+        "ReadingUnits": "RPM"
+      },
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Sensors/118",
+      "odata_type": "#Sensor.v1_1_0.Sensor",
+      "name": "M_FAN7_F_Speed",
+      "id": "118",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {
+        "ReadingUnits": "RPM"
+      },
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Sensors/119",
+      "odata_type": "#Sensor.v1_1_0.Sensor",
+      "name": "M_FAN8_F_Speed",
+      "id": "119",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {
+        "ReadingUnits": "RPM"
+      },
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Sensors/12",
+      "odata_type": "#Sensor.v1_1_0.Sensor",
+      "name": "P1_DIMM1_Temp",
+      "id": "12",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {
+        "Reading": 0,
+        "ReadingUnits": "Cel"
+      },
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Sensors/120",
+      "odata_type": "#Sensor.v1_1_0.Sensor",
+      "name": "M_FAN1_R_Speed",
+      "id": "120",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {
+        "Reading": 4600,
+        "ReadingUnits": "RPM"
+      },
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Sensors/121",
+      "odata_type": "#Sensor.v1_1_0.Sensor",
+      "name": "M_FAN2_R_Speed",
+      "id": "121",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {
+        "Reading": 4800,
+        "ReadingUnits": "RPM"
+      },
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Sensors/122",
+      "odata_type": "#Sensor.v1_1_0.Sensor",
+      "name": "M_FAN3_R_Speed",
+      "id": "122",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {
+        "Reading": 4600,
+        "ReadingUnits": "RPM"
+      },
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Sensors/123",
+      "odata_type": "#Sensor.v1_1_0.Sensor",
+      "name": "M_FAN4_R_Speed",
+      "id": "123",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {
+        "Reading": 4800,
+        "ReadingUnits": "RPM"
+      },
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Sensors/124",
+      "odata_type": "#Sensor.v1_1_0.Sensor",
+      "name": "M_FAN5_R_Speed",
+      "id": "124",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {
+        "Reading": 4800,
+        "ReadingUnits": "RPM"
+      },
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Sensors/125",
+      "odata_type": "#Sensor.v1_1_0.Sensor",
+      "name": "M_FAN6_R_Speed",
+      "id": "125",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {
+        "ReadingUnits": "RPM"
+      },
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Sensors/126",
+      "odata_type": "#Sensor.v1_1_0.Sensor",
+      "name": "M_FAN7_R_Speed",
+      "id": "126",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {
+        "ReadingUnits": "RPM"
+      },
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Sensors/127",
+      "odata_type": "#Sensor.v1_1_0.Sensor",
+      "name": "M_FAN8_R_Speed",
+      "id": "127",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {
+        "ReadingUnits": "RPM"
+      },
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Sensors/128",
+      "odata_type": "#Sensor.v1_1_0.Sensor",
+      "name": "F_FAN1_Present",
+      "id": "128",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {
+        "Reading": 32770
+      },
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Sensors/129",
+      "odata_type": "#Sensor.v1_1_0.Sensor",
+      "name": "F_FAN2_Present",
+      "id": "129",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {
+        "Reading": 32770
+      },
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Sensors/130",
+      "odata_type": "#Sensor.v1_1_0.Sensor",
+      "name": "F_FAN3_Present",
+      "id": "130",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {
+        "Reading": 32770
+      },
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Sensors/131",
+      "odata_type": "#Sensor.v1_1_0.Sensor",
+      "name": "F_FAN4_Present",
+      "id": "131",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {
+        "Reading": 32770
+      },
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Sensors/132",
+      "odata_type": "#Sensor.v1_1_0.Sensor",
+      "name": "F_FAN5_Present",
+      "id": "132",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {
+        "Reading": 32770
+      },
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Sensors/133",
+      "odata_type": "#Sensor.v1_1_0.Sensor",
+      "name": "F_FAN6_Present",
+      "id": "133",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {
+        "Reading": 32770
+      },
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Sensors/134",
+      "odata_type": "#Sensor.v1_1_0.Sensor",
+      "name": "M_FAN1_Present",
+      "id": "134",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {
+        "Reading": 32770
+      },
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Sensors/135",
+      "odata_type": "#Sensor.v1_1_0.Sensor",
+      "name": "M_FAN2_Present",
+      "id": "135",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {
+        "Reading": 32768
+      },
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Sensors/136",
+      "odata_type": "#Sensor.v1_1_0.Sensor",
+      "name": "M_FAN3_Present",
+      "id": "136",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {
+        "Reading": 32770
+      },
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Sensors/137",
+      "odata_type": "#Sensor.v1_1_0.Sensor",
+      "name": "M_FAN4_Present",
+      "id": "137",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {
+        "Reading": 32770
+      },
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Sensors/138",
+      "odata_type": "#Sensor.v1_1_0.Sensor",
+      "name": "M_FAN5_Present",
+      "id": "138",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {
+        "Reading": 32770
+      },
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Sensors/GPU2_Power",
+      "odata_type": "#Sensor.v1_1_0.Sensor",
+      "name": "GPU2_Power",
+      "id": "GPU2_Power",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {
+        "Reading": "0",
+        "ReadingUnits": "Watt"
+      },
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Sensors/GPU2_TLimitTemp",
+      "odata_type": "#Sensor.v1_1_0.Sensor",
+      "name": "GPU2_TLimitTemp",
+      "id": "GPU2_TLimitTemp",
+      "related": true,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {
+        "Reading": "0",
+        "ReadingUnits": "Celsius"
+      },
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Sensors/GPU2_Temp",
+      "odata_type": "#Sensor.v1_1_0.Sensor",
+      "name": "GPU2_Temp",
+      "id": "GPU2_Temp",
+      "related": true,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {
+        "Reading": "29",
+        "ReadingUnits": "Celsius"
+      },
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Sensors/GPU3_Power",
+      "odata_type": "#Sensor.v1_1_0.Sensor",
+      "name": "GPU3_Power",
+      "id": "GPU3_Power",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {
+        "Reading": "0",
+        "ReadingUnits": "Watt"
+      },
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Sensors/GPU3_TLimitTemp",
+      "odata_type": "#Sensor.v1_1_0.Sensor",
+      "name": "GPU3_TLimitTemp",
+      "id": "GPU3_TLimitTemp",
+      "related": true,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {
+        "Reading": "0",
+        "ReadingUnits": "Celsius"
+      },
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Sensors/GPU3_Temp",
+      "odata_type": "#Sensor.v1_1_0.Sensor",
+      "name": "GPU3_Temp",
+      "id": "GPU3_Temp",
+      "related": true,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {
+        "Reading": "32",
+        "ReadingUnits": "Celsius"
+      },
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Sensors/GPU5_Power",
+      "odata_type": "#Sensor.v1_1_0.Sensor",
+      "name": "GPU5_Power",
+      "id": "GPU5_Power",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {
+        "Reading": "0",
+        "ReadingUnits": "Watt"
+      },
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Sensors/GPU5_TLimitTemp",
+      "odata_type": "#Sensor.v1_1_0.Sensor",
+      "name": "GPU5_TLimitTemp",
+      "id": "GPU5_TLimitTemp",
+      "related": true,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {
+        "Reading": "0",
+        "ReadingUnits": "Celsius"
+      },
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Sensors/GPU5_Temp",
+      "odata_type": "#Sensor.v1_1_0.Sensor",
+      "name": "GPU5_Temp",
+      "id": "GPU5_Temp",
+      "related": true,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {
+        "Reading": "29",
+        "ReadingUnits": "Celsius"
+      },
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Sensors/GPU8_Power",
+      "odata_type": "#Sensor.v1_1_0.Sensor",
+      "name": "GPU8_Power",
+      "id": "GPU8_Power",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {
+        "Reading": "0",
+        "ReadingUnits": "Watt"
+      },
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Sensors/GPU8_TLimitTemp",
+      "odata_type": "#Sensor.v1_1_0.Sensor",
+      "name": "GPU8_TLimitTemp",
+      "id": "GPU8_TLimitTemp",
+      "related": true,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {
+        "Reading": "0",
+        "ReadingUnits": "Celsius"
+      },
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Sensors/GPU8_Temp",
+      "odata_type": "#Sensor.v1_1_0.Sensor",
+      "name": "GPU8_Temp",
+      "id": "GPU8_Temp",
+      "related": true,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {
+        "Reading": "25",
+        "ReadingUnits": "Celsius"
+      },
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Managers/Self/Certificates",
+      "odata_type": "#CertificateCollection.CertificateCollection",
+      "name": "Certificate Collection",
+      "id": null,
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Managers/Self/EthernetInterfaces",
+      "odata_type": "#EthernetInterfaceCollection.EthernetInterfaceCollection",
+      "name": "Ethernet Network Interface Collection",
+      "id": null,
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Managers/Self/HostInterfaces",
+      "odata_type": "#HostInterfaceCollection.HostInterfaceCollection",
+      "name": "HostInterface Collection",
+      "id": null,
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Managers/Self/LogServices",
+      "odata_type": "#LogServiceCollection.LogServiceCollection",
+      "name": "Log Service Collection",
+      "id": null,
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Managers/Self/NetworkProtocol",
+      "odata_type": "#ManagerNetworkProtocol.v1_6_0.ManagerNetworkProtocol",
+      "name": "Manager Network Protocol",
+      "id": "NetworkProtocol",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Managers/Self/SerialInterfaces",
+      "odata_type": "#SerialInterfaceCollection.SerialInterfaceCollection",
+      "name": "Serial Interface Collection",
+      "id": null,
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Managers/Self/VirtualMedia",
+      "odata_type": "#VirtualMediaCollection.VirtualMediaCollection",
+      "name": "Virtual Media Collection",
+      "id": null,
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/PCIeDevices/00_01_00",
+      "odata_type": "#PCIeDevice.v1_9_0.PCIeDevice",
+      "name": "Slot4",
+      "id": "00_01_00",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/PCIeDevices/00_01_00/PCIeFunctions/DevType3__DevIndex3",
+      "odata_type": "#PCIeFunction.v1_2_3.PCIeFunction",
+      "name": "NVIDIA GB202 [GeForce RTX 5090]",
+      "id": "DevType3__DevIndex3",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/PCIeDevices/00_01_00/PCIeFunctions/DevType3__DevIndex4",
+      "odata_type": "#PCIeFunction.v1_2_3.PCIeFunction",
+      "name": "NVIDIA Corporation Device 22e8",
+      "id": "DevType3__DevIndex4",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/PCIeDevices/00_23_00",
+      "odata_type": "#PCIeDevice.v1_9_0.PCIeDevice",
+      "name": "NVMe0",
+      "id": "00_23_00",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/PCIeDevices/00_23_00/PCIeFunctions/DevType3__DevIndex2A",
+      "odata_type": "#PCIeFunction.v1_2_3.PCIeFunction",
+      "name": "Samsung NVMe SSD Controller PM9A1/PM9A3/980PRO",
+      "id": "DevType3__DevIndex2A",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/PCIeDevices/00_24_00",
+      "odata_type": "#PCIeDevice.v1_9_0.PCIeDevice",
+      "name": "NVMe1",
+      "id": "00_24_00",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/PCIeDevices/00_24_00/PCIeFunctions/DevType3__DevIndex2C",
+      "odata_type": "#PCIeFunction.v1_2_3.PCIeFunction",
+      "name": "Samsung NVMe SSD Controller PM9A1/PM9A3/980PRO",
+      "id": "DevType3__DevIndex2C",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/PCIeDevices/00_25_00",
+      "odata_type": "#PCIeDevice.v1_9_0.PCIeDevice",
+      "name": "Slot1",
+      "id": "00_25_00",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/PCIeDevices/00_25_00/PCIeFunctions/DevType3__DevIndex2E",
+      "odata_type": "#PCIeFunction.v1_2_3.PCIeFunction",
+      "name": "MegaRAID 9560-8i",
+      "id": "DevType3__DevIndex2E",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/PCIeDevices/00_41_00",
+      "odata_type": "#PCIeDevice.v1_9_0.PCIeDevice",
+      "name": "Slot2",
+      "id": "00_41_00",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/PCIeDevices/00_41_00/PCIeFunctions/DevType3__DevIndex37",
+      "odata_type": "#PCIeFunction.v1_2_3.PCIeFunction",
+      "name": "MCX631102AN-ADAT",
+      "id": "DevType3__DevIndex37",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/PCIeDevices/00_41_00/PCIeFunctions/DevType3__DevIndex38",
+      "odata_type": "#PCIeFunction.v1_2_3.PCIeFunction",
+      "name": "MCX631102AN-ADAT",
+      "id": "DevType3__DevIndex38",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/PCIeDevices/00_61_00",
+      "odata_type": "#PCIeDevice.v1_9_0.PCIeDevice",
+      "name": "Slot3",
+      "id": "00_61_00",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/PCIeDevices/00_61_00/PCIeFunctions/DevType3__DevIndex43",
+      "odata_type": "#PCIeFunction.v1_2_3.PCIeFunction",
+      "name": "NVIDIA GB202 [GeForce RTX 5090]",
+      "id": "DevType3__DevIndex43",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/PCIeDevices/00_61_00/PCIeFunctions/DevType3__DevIndex44",
+      "odata_type": "#PCIeFunction.v1_2_3.PCIeFunction",
+      "name": "NVIDIA Corporation Device 22e8",
+      "id": "DevType3__DevIndex44",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/PCIeDevices/00_62_00",
+      "odata_type": "#PCIeDevice.v1_9_0.PCIeDevice",
+      "name": "BMC Aspeed2600",
+      "id": "00_62_00",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/PCIeDevices/00_62_00/PCIeFunctions/DevType3__DevIndex4A",
+      "odata_type": "#PCIeFunction.v1_2_3.PCIeFunction",
+      "name": "PCIeFunction_4A",
+      "id": "DevType3__DevIndex4A",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/PCIeDevices/00_63_00",
+      "odata_type": "#PCIeDevice.v1_9_0.PCIeDevice",
+      "name": "BMC Aspeed2600",
+      "id": "00_63_00",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/PCIeDevices/00_63_00/PCIeFunctions/DevType3_VGFX_DevIndex4B",
+      "odata_type": "#PCIeFunction.v1_2_3.PCIeFunction",
+      "name": "PCIeFunction_4B",
+      "id": "DevType3_VGFX_DevIndex4B",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/PCIeDevices/00_81_00",
+      "odata_type": "#PCIeDevice.v1_9_0.PCIeDevice",
+      "name": "Slot9",
+      "id": "00_81_00",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/PCIeDevices/00_81_00/PCIeFunctions/DevType3__DevIndex56",
+      "odata_type": "#PCIeFunction.v1_2_3.PCIeFunction",
+      "name": "NVIDIA GB202 [GeForce RTX 5090]",
+      "id": "DevType3__DevIndex56",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/PCIeDevices/00_81_00/PCIeFunctions/DevType3__DevIndex57",
+      "odata_type": "#PCIeFunction.v1_2_3.PCIeFunction",
+      "name": "NVIDIA Corporation Device 22e8",
+      "id": "DevType3__DevIndex57",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/PCIeDevices/00_C3_00",
+      "odata_type": "#PCIeDevice.v1_9_0.PCIeDevice",
+      "name": "Slot10",
+      "id": "00_C3_00",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/PCIeDevices/00_C3_00/PCIeFunctions/DevType3__DevIndex73",
+      "odata_type": "#PCIeFunction.v1_2_3.PCIeFunction",
+      "name": "MCX653105A-HDAT",
+      "id": "DevType3__DevIndex73",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/PCIeDevices/00_E1_00",
+      "odata_type": "#PCIeDevice.v1_9_0.PCIeDevice",
+      "name": "Slot6",
+      "id": "00_E1_00",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/PCIeDevices/00_E1_00/PCIeFunctions/DevType3__DevIndex7C",
+      "odata_type": "#PCIeFunction.v1_2_3.PCIeFunction",
+      "name": "NVIDIA GB202 [GeForce RTX 5090]",
+      "id": "DevType3__DevIndex7C",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/PCIeDevices/00_E1_00/PCIeFunctions/DevType3__DevIndex7D",
+      "odata_type": "#PCIeFunction.v1_2_3.PCIeFunction",
+      "name": "NVIDIA Corporation Device 22e8",
+      "id": "DevType3__DevIndex7D",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Systems/Self/Bios",
+      "odata_type": "#Bios.v1_2_0.Bios",
+      "name": "Current BIOS Settings",
+      "id": "Bios",
+      "related": false,
+      "related_keys": [],
+      "actions": [
+        {
+          "action": "#Bios.ChangePassword",
+          "target": "/redfish/v1/Systems/Self/Bios/Actions/Bios.ChangePassword",
+          "allowable_values": [],
+          "fan_thermal_related": false
+        },
+        {
+          "action": "#Bios.ResetBios",
+          "target": "/redfish/v1/Systems/Self/Bios/Actions/Bios.ResetBios",
+          "allowable_values": [],
+          "fan_thermal_related": false
+        }
+      ],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Systems/Self/Boot/Certificates",
+      "odata_type": "#CertificateCollection.CertificateCollection",
+      "name": "Certificate Collection",
+      "id": null,
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Systems/Self/BootOptions",
+      "odata_type": "#BootOptionCollection.BootOptionCollection",
+      "name": "BootOption Collection",
+      "id": null,
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Systems/Self/EthernetInterfaces",
+      "odata_type": "#EthernetInterfaceCollection.EthernetInterfaceCollection",
+      "name": "Ethernet Interface Collection",
+      "id": null,
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Systems/Self/GraphicsControllers",
+      "odata_type": "#GraphicsControllerCollection.GraphicsControllerCollection",
+      "name": "GraphicsControllers Collection",
+      "id": null,
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Systems/Self/LogServices",
+      "odata_type": "#LogServiceCollection.LogServiceCollection",
+      "name": "Log Services Collection",
+      "id": null,
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Systems/Self/Memory",
+      "odata_type": "#MemoryCollection.MemoryCollection",
+      "name": "Memory Collection",
+      "id": null,
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Systems/Self/MemoryDomains",
+      "odata_type": "#MemoryDomainCollection.MemoryDomainCollection",
+      "name": "MemoryDomain Collection",
+      "id": null,
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Systems/Self/MemorySummary/MemoryMetrics",
+      "odata_type": "#MemoryMetrics.v1_7_0.MemoryMetrics",
+      "name": "MemorySummaryMetrics",
+      "id": "MemorySummaryMetrics",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Systems/Self/NetworkInterfaces",
+      "odata_type": "#NetworkInterfaceCollection.NetworkInterfaceCollection",
+      "name": "NetworkInterface Collection",
+      "id": null,
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Systems/Self/Oem/Ami/Inventory/Crc",
+      "odata_type": "#InventoryCRC.v1_0_0.InventoryCRC",
+      "name": "Inventory CRC",
+      "id": "InventoryCRC",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Systems/Self/Processors",
+      "odata_type": "#ProcessorCollection.ProcessorCollection",
+      "name": "Processors Collection",
+      "id": null,
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Systems/Self/SD",
+      "odata_type": "#ComputerSystem.v1_16_2.ComputerSystem",
+      "name": "System",
+      "id": "SD",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Systems/Self/SecureBoot",
+      "odata_type": "#SecureBoot.v1_1_0.SecureBoot",
+      "name": "UEFI Secure Boot",
+      "id": "SecureBoot",
+      "related": false,
+      "related_keys": [],
+      "actions": [
+        {
+          "action": "#SecureBoot.ResetKeys",
+          "target": "/redfish/v1/Systems/Self/SecureBoot/Actions/SecureBoot.ResetKeys",
+          "allowable_values": [],
+          "fan_thermal_related": false
+        }
+      ],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Systems/Self/SimpleStorage",
+      "odata_type": "#SimpleStorageCollection.SimpleStorageCollection",
+      "name": "Simple Storage Collection",
+      "id": null,
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Systems/Self/Storage",
+      "odata_type": "#StorageCollection.StorageCollection",
+      "name": "Storage Collection",
+      "id": null,
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Systems/Self/USBControllers",
+      "odata_type": "#USBControllerCollection.USBControllerCollection",
+      "name": "USBControllers Collection",
+      "id": null,
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/AccountService/Accounts",
+      "odata_type": "#ManagerAccountCollection.ManagerAccountCollection",
+      "name": "Accounts Collection",
+      "id": null,
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/AccountService/ExternalAccountProviders",
+      "odata_type": "#ExternalAccountProviderCollection.ExternalAccountProviderCollection",
+      "name": "External Accounts Provider Collection",
+      "id": null,
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/AccountService/Oem/Ami/Configurations",
+      "odata_type": "#AMIAccountServiceConfigurations.v1_0_0.AMIAccountServiceConfigurations",
+      "name": "AccountService Configurations",
+      "id": "Configurations",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/AccountService/Roles",
+      "odata_type": "#RoleCollection.RoleCollection",
+      "name": "Roles Collection",
+      "id": null,
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Registries/Redfish_1.5.0_PrivilegeRegistry.json",
+      "odata_type": "#PrivilegeRegistry.v1_1_4.PrivilegeRegistry",
+      "name": "Privilege Mapping array collection",
+      "id": "Redfish_1.5.0_PrivilegeRegistry",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/CertificateService/CertificateLocations",
+      "odata_type": "#CertificateLocations.v1_0_2.CertificateLocations",
+      "name": "Certificate Locations",
+      "id": "CertificateLocations",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/CompositionService/ResourceBlocks",
+      "odata_type": "#ResourceBlockCollection.ResourceBlockCollection",
+      "name": "ResourceBlock Collection",
+      "id": null,
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/CompositionService/ResourceZones",
+      "odata_type": "#ZoneCollection.ZoneCollection",
+      "name": "Zone Collection",
+      "id": null,
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/EventService/Oem/Ami/SMTP/Certificates",
+      "odata_type": "#AMISMTPCertificateCollection.AMISMTPCertificateCollection",
+      "name": "SMTP Certificate Collection",
+      "id": null,
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/EventService/Subscriptions",
+      "odata_type": "#EventDestinationCollection.EventDestinationCollection",
+      "name": "Event Subscriptions Collection",
+      "id": null,
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/JsonSchemas/AMIAccountService.v1_0_0",
+      "odata_type": "#JsonSchemaFile.v1_1_4.JsonSchemaFile",
+      "name": "AMIAccountService.v1_0_0 schema",
+      "id": "AMIAccountService.v1_0_0",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/JsonSchemas/AMIAccountServiceConfigurations.v1_0_0",
+      "odata_type": "#JsonSchemaFile.v1_1_4.JsonSchemaFile",
+      "name": "AMIAccountServiceConfigurations.v1_0_0 schema",
+      "id": "AMIAccountServiceConfigurations.v1_0_0",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/JsonSchemas/AMIAdvanceRADIUSSetting.v1_0_0",
+      "odata_type": "#JsonSchemaFile.v1_1_4.JsonSchemaFile",
+      "name": "AMIAdvanceRADIUSSetting.v1_0_0 schema",
+      "id": "AMIAdvanceRADIUSSetting.v1_0_0",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/JsonSchemas/AMIBIOSInventoryCRC.v1_0_0",
+      "odata_type": "#JsonSchemaFile.v1_1_4.JsonSchemaFile",
+      "name": "AMIBIOSInventoryCRC.v1_0_0 schema",
+      "id": "AMIBIOSInventoryCRC.v1_0_0",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/JsonSchemas/AMIBiosTable.v1_0_0",
+      "odata_type": "#JsonSchemaFile.v1_1_4.JsonSchemaFile",
+      "name": "AMIBiosTable.v1_0_0 schema",
+      "id": "AMIBiosTable.v1_0_0",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/JsonSchemas/AMIBiosTableTags.v1_0_0",
+      "odata_type": "#JsonSchemaFile.v1_1_4.JsonSchemaFile",
+      "name": "AMIBiosTableTags.v1_0_0 schema",
+      "id": "AMIBiosTableTags.v1_0_0",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/JsonSchemas/AMICaCert.v1_0_0",
+      "odata_type": "#JsonSchemaFile.v1_1_4.JsonSchemaFile",
+      "name": "AMICaCert.v1_0_0 schema",
+      "id": "AMICaCert.v1_0_0",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/JsonSchemas/AMICertificateCollection",
+      "odata_type": "#JsonSchemaFile.v1_1_4.JsonSchemaFile",
+      "name": "AMICertificateCollection schema",
+      "id": "AMICertificateCollection",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/JsonSchemas/AMIChassisPowerThermal.v1_0_0",
+      "odata_type": "#JsonSchemaFile.v1_1_4.JsonSchemaFile",
+      "name": "AMIChassisPowerThermal.v1_0_0 schema",
+      "id": "AMIChassisPowerThermal.v1_0_0",
+      "related": true,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/JsonSchemas/AMIConfigurations.v1_0_0",
+      "odata_type": "#JsonSchemaFile.v1_1_4.JsonSchemaFile",
+      "name": "AMIConfigurations.v1_0_0 schema",
+      "id": "AMIConfigurations.v1_0_0",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/JsonSchemas/AMIDNSConfiguration.v1_0_0",
+      "odata_type": "#JsonSchemaFile.v1_1_4.JsonSchemaFile",
+      "name": "AMIDNSConfiguration.v1_0_0 schema",
+      "id": "AMIDNSConfiguration.v1_0_0",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/JsonSchemas/AMIDrive.v1.0.0",
+      "odata_type": "#JsonSchemaFile.v1_1_4.JsonSchemaFile",
+      "name": "AMIDrive.v1.0.0 schema",
+      "id": "AMIDrive.v1.0.0",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/JsonSchemas/AMIEventDestination.v1_0_0",
+      "odata_type": "#JsonSchemaFile.v1_1_4.JsonSchemaFile",
+      "name": "AMIEventDestination.v1_0_0 schema",
+      "id": "AMIEventDestination.v1_0_0",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/JsonSchemas/AMIEventService",
+      "odata_type": "#JsonSchemaFile.v1_1_4.JsonSchemaFile",
+      "name": "AMIEventService schema",
+      "id": "AMIEventService",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/JsonSchemas/AMIEventService.v1_0_0",
+      "odata_type": "#JsonSchemaFile.v1_1_4.JsonSchemaFile",
+      "name": "AMIEventService.v1_0_0 schema",
+      "id": "AMIEventService.v1_0_0",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/JsonSchemas/AMIExternalAccountProvider.v1_0_0",
+      "odata_type": "#JsonSchemaFile.v1_1_4.JsonSchemaFile",
+      "name": "AMIExternalAccountProvider.v1_0_0 schema",
+      "id": "AMIExternalAccountProvider.v1_0_0",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/JsonSchemas/AMIIPV6.v1_0_0",
+      "odata_type": "#JsonSchemaFile.v1_1_4.JsonSchemaFile",
+      "name": "AMIIPV6.v1_0_0 schema",
+      "id": "AMIIPV6.v1_0_0",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/JsonSchemas/AMIInventoryStatus.v1_0_0",
+      "odata_type": "#JsonSchemaFile.v1_1_4.JsonSchemaFile",
+      "name": "AMIInventoryStatus.v1_0_0 schema",
+      "id": "AMIInventoryStatus.v1_0_0",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/JsonSchemas/AMIManager.v1_0_0",
+      "odata_type": "#JsonSchemaFile.v1_1_4.JsonSchemaFile",
+      "name": "AMIManager.v1_0_0 schema",
+      "id": "AMIManager.v1_0_0",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/JsonSchemas/AMIManagerAccount.v1_0_0",
+      "odata_type": "#JsonSchemaFile.v1_1_4.JsonSchemaFile",
+      "name": "AMIManagerAccount.v1_0_0 schema",
+      "id": "AMIManagerAccount.v1_0_0",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/JsonSchemas/AMIMappingOut.v1_0_0",
+      "odata_type": "#JsonSchemaFile.v1_1_4.JsonSchemaFile",
+      "name": "AMIMappingOut.v1_0_0 schema",
+      "id": "AMIMappingOut.v1_0_0",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/JsonSchemas/AMISMTP.v1_0_0",
+      "odata_type": "#JsonSchemaFile.v1_1_4.JsonSchemaFile",
+      "name": "AMISMTP.v1_0_0 schema",
+      "id": "AMISMTP.v1_0_0",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/JsonSchemas/AMISMTPCertificate",
+      "odata_type": "#JsonSchemaFile.v1_1_4.JsonSchemaFile",
+      "name": "AMISMTPCertificate schema",
+      "id": "AMISMTPCertificate",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/JsonSchemas/AMISMTPCertificate.v1_0_0",
+      "odata_type": "#JsonSchemaFile.v1_1_4.JsonSchemaFile",
+      "name": "AMISMTPCertificate.v1_0_0 schema",
+      "id": "AMISMTPCertificate.v1_0_0",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/JsonSchemas/AMISMTPCertificateCollection",
+      "odata_type": "#JsonSchemaFile.v1_1_4.JsonSchemaFile",
+      "name": "AMISMTPCertificateCollection schema",
+      "id": "AMISMTPCertificateCollection",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/JsonSchemas/AMIServiceRoot.v1_0_0",
+      "odata_type": "#JsonSchemaFile.v1_1_4.JsonSchemaFile",
+      "name": "AMIServiceRoot.v1_0_0 schema",
+      "id": "AMIServiceRoot.v1_0_0",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/JsonSchemas/AMIStorage.v1_0_0",
+      "odata_type": "#JsonSchemaFile.v1_1_4.JsonSchemaFile",
+      "name": "AMIStorage.v1_0_0 schema",
+      "id": "AMIStorage.v1_0_0",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/JsonSchemas/AMITriggers.v1_0_0",
+      "odata_type": "#JsonSchemaFile.v1_1_4.JsonSchemaFile",
+      "name": "AMITriggers.v1_0_0 schema",
+      "id": "AMITriggers.v1_0_0",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/JsonSchemas/AMIUpdateService.v1_0_0",
+      "odata_type": "#JsonSchemaFile.v1_1_4.JsonSchemaFile",
+      "name": "AMIUpdateService.v1_0_0 schema",
+      "id": "AMIUpdateService.v1_0_0",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/JsonSchemas/AMIVirtualMedia.v1_0_0",
+      "odata_type": "#JsonSchemaFile.v1_1_4.JsonSchemaFile",
+      "name": "AMIVirtualMedia.v1_0_0 schema",
+      "id": "AMIVirtualMedia.v1_0_0",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/JsonSchemas/AmiBios.v1_0_0",
+      "odata_type": "#JsonSchemaFile.v1_1_4.JsonSchemaFile",
+      "name": "AmiBios.v1_0_0 schema",
+      "id": "AmiBios.v1_0_0",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/JsonSchemas/BiosStaticFile.v1_0_0",
+      "odata_type": "#JsonSchemaFile.v1_1_4.JsonSchemaFile",
+      "name": "BiosStaticFile.v1_0_0 schema",
+      "id": "BiosStaticFile.v1_0_0",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/JsonSchemas/BiosStaticFileCollection",
+      "odata_type": "#JsonSchemaFile.v1_1_4.JsonSchemaFile",
+      "name": "BiosStaticFileCollection schema",
+      "id": "BiosStaticFileCollection",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/JsonSchemas/ChangePassword.v1_0_0",
+      "odata_type": "#JsonSchemaFile.v1_1_4.JsonSchemaFile",
+      "name": "ChangePassword.v1_0_0 schema",
+      "id": "ChangePassword.v1_0_0",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/JsonSchemas/DefaultSD.v1_0_0",
+      "odata_type": "#JsonSchemaFile.v1_1_4.JsonSchemaFile",
+      "name": "DefaultSD.v1_0_0 schema",
+      "id": "DefaultSD.v1_0_0",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/JsonSchemas/InventoryCRC.v1_0_0",
+      "odata_type": "#JsonSchemaFile.v1_1_4.JsonSchemaFile",
+      "name": "InventoryCRC.v1_0_0 schema",
+      "id": "InventoryCRC.v1_0_0",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/JsonSchemas/ResetBios.v1_0_0",
+      "odata_type": "#JsonSchemaFile.v1_1_4.JsonSchemaFile",
+      "name": "ResetBios.v1_0_0 schema",
+      "id": "ResetBios.v1_0_0",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Registries/Ami.1.0.0",
+      "odata_type": "#MessageRegistryFile.v1_1_3.MessageRegistryFile",
+      "name": "Ami.1.0.0 Registry",
+      "id": "Ami.1.0.0",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Registries/AmiOem.1.0.0",
+      "odata_type": "#MessageRegistryFile.v1_1_3.MessageRegistryFile",
+      "name": "AmiOem.1.0.0 Registry",
+      "id": "AmiOem.1.0.0",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Registries/Base.1.12.0",
+      "odata_type": "#MessageRegistryFile.v1_1_3.MessageRegistryFile",
+      "name": "Base.1.12.0 Registry",
+      "id": "Base.1.12.0",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Registries/BiosAttributeRegistryHK621.2.13.0",
+      "odata_type": "#MessageRegistryFile.v1_1_3.MessageRegistryFile",
+      "name": "BiosAttributeRegistryHK621.2.13.0 Registry",
+      "id": "BiosAttributeRegistryHK621.2.13.0",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Registries/CertificateService.1.0.0",
+      "odata_type": "#MessageRegistryFile.v1_1_3.MessageRegistryFile",
+      "name": "CertificateService.1.0.0 Registry",
+      "id": "CertificateService.1.0.0",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Registries/EventLog.1.0.0",
+      "odata_type": "#MessageRegistryFile.v1_1_3.MessageRegistryFile",
+      "name": "EventLog.1.0.0 Registry",
+      "id": "EventLog.1.0.0",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Registries/HttpStatus.1.0.0",
+      "odata_type": "#MessageRegistryFile.v1_1_3.MessageRegistryFile",
+      "name": "HttpStatus.1.0.0 Registry",
+      "id": "HttpStatus.1.0.0",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Registries/IPMI.1.0.0",
+      "odata_type": "#MessageRegistryFile.v1_1_3.MessageRegistryFile",
+      "name": "IPMI.1.0.0 Registry",
+      "id": "IPMI.1.0.0",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Registries/RedfishDeviceEnablement.1.0.0",
+      "odata_type": "#MessageRegistryFile.v1_1_3.MessageRegistryFile",
+      "name": "RedfishDeviceEnablement.1.0.0 Registry",
+      "id": "RedfishDeviceEnablement.1.0.0",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Registries/Redfish_1.5.0_PrivilegeRegistry",
+      "odata_type": "#MessageRegistryFile.v1_1_3.MessageRegistryFile",
+      "name": "Redfish_1.5.0_PrivilegeRegistry Registry",
+      "id": "Redfish_1.5.0_PrivilegeRegistry",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Registries/ResourceEvent.1.3.1",
+      "odata_type": "#MessageRegistryFile.v1_1_3.MessageRegistryFile",
+      "name": "ResourceEvent.1.3.1 Registry",
+      "id": "ResourceEvent.1.3.1",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Registries/Security.1.0.0",
+      "odata_type": "#MessageRegistryFile.v1_1_3.MessageRegistryFile",
+      "name": "Security.1.0.0 Registry",
+      "id": "Security.1.0.0",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Registries/StorageDevice.1.0.0",
+      "odata_type": "#MessageRegistryFile.v1_1_3.MessageRegistryFile",
+      "name": "StorageDevice.1.0.0 Registry",
+      "id": "StorageDevice.1.0.0",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Registries/SyncAgent.1.0.0",
+      "odata_type": "#MessageRegistryFile.v1_1_3.MessageRegistryFile",
+      "name": "SyncAgent.1.0.0 Registry",
+      "id": "SyncAgent.1.0.0",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Registries/Task.1.0.0",
+      "odata_type": "#MessageRegistryFile.v1_1_3.MessageRegistryFile",
+      "name": "Task.1.0.0 Registry",
+      "id": "Task.1.0.0",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Registries/TaskEvent.1.0.1",
+      "odata_type": "#MessageRegistryFile.v1_1_3.MessageRegistryFile",
+      "name": "TaskEvent.1.0.1 Registry",
+      "id": "TaskEvent.1.0.1",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Registries/UpdateService.1.0.0",
+      "odata_type": "#MessageRegistryFile.v1_1_3.MessageRegistryFile",
+      "name": "UpdateService.1.0.0 Registry",
+      "id": "UpdateService.1.0.0",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/SessionService/Sessions/599f47544cb108dce9abb98c023d64a1",
+      "odata_type": "#Session.v1_2_1.Session",
+      "name": "admin Session",
+      "id": "599f47544cb108dce9abb98c023d64a1",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/CompositionService/ResourceZones/1",
+      "odata_type": "#Zone.v1_3_1.Zone",
+      "name": "Resource Zone 1",
+      "id": "1",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Systems/Capabilities",
+      "odata_type": "#ComputerSystem.v1_16_2.ComputerSystem",
+      "name": "Capabilities for the Zone",
+      "id": "Capabilities",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/TaskService/Tasks",
+      "odata_type": "#TaskCollection.TaskCollection",
+      "name": "Task Collection",
+      "id": null,
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/TelemetryService/LogService",
+      "odata_type": "#LogService.v1_1_3.LogService",
+      "name": "Telemetry Log Service",
+      "id": "TelemetryLogService",
+      "related": false,
+      "related_keys": [],
+      "actions": [
+        {
+          "action": "#LogService.ClearLog",
+          "target": "/redfish/v1/TelemetryService/LogService/Actions/LogService.ClearLog",
+          "allowable_values": [],
+          "fan_thermal_related": false
+        }
+      ],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/TelemetryService/MetricDefinitions",
+      "odata_type": "#MetricDefinitionCollection.MetricDefinitionCollection",
+      "name": "MetricDefinitions",
+      "id": null,
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/TelemetryService/MetricReportDefinitions",
+      "odata_type": "#MetricReportDefinitionCollection.MetricReportDefinitionCollection",
+      "name": "MetricReportDefinitions",
+      "id": null,
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/TelemetryService/MetricReports",
+      "odata_type": "#MetricReportCollection.MetricReportCollection",
+      "name": "MetricReports",
+      "id": null,
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/TelemetryService/Triggers",
+      "odata_type": "#TriggersCollection.TriggersCollection",
+      "name": "Triggers",
+      "id": null,
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/UpdateService/FirmwareInventory",
+      "odata_type": "#SoftwareInventoryCollection.SoftwareInventoryCollection",
+      "name": "Firmware Inventory Collection",
+      "id": null,
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/UpdateService/SoftwareInventory",
+      "odata_type": "#SoftwareInventoryCollection.SoftwareInventoryCollection",
+      "name": "Software Inventory Collection",
+      "id": null,
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/LogServices/Logs",
+      "odata_type": "#LogService.v1_1_3.LogService",
+      "name": "IPMI Chassis Logs",
+      "id": "Logs",
+      "related": false,
+      "related_keys": [],
+      "actions": [
+        {
+          "action": "#LogService.ClearLog",
+          "target": "/redfish/v1/Chassis/Self/LogServices/Logs/Actions/LogService.ClearLog",
+          "allowable_values": [],
+          "fan_thermal_related": false
+        }
+      ],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/NetworkAdapters/DevType7_NIC0",
+      "odata_type": "#NetworkAdapter.v1_8_0.NetworkAdapter",
+      "name": "NetworkAdapter_0",
+      "id": "DevType7_NIC0",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/NetworkAdapters/DevType7_NIC1",
+      "odata_type": "#NetworkAdapter.v1_8_0.NetworkAdapter",
+      "name": "NetworkAdapter_1",
+      "id": "DevType7_NIC1",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/NetworkAdapters/DevType7_VirtualNic2",
+      "odata_type": "#NetworkAdapter.v1_8_0.NetworkAdapter",
+      "name": "Virtual_NetworkAdapter_2",
+      "id": "DevType7_VirtualNic2",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/PowerSubsystem/PowerSupplies",
+      "odata_type": "#PowerSupplyCollection.PowerSupplyCollection",
+      "name": "PowerSupplies Collection",
+      "id": null,
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/PowerSubsystem/PowerSupplies/47",
+      "odata_type": "#PowerSupply.v1_3_0.PowerSupply",
+      "name": "Total_Power",
+      "id": "47",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/ThermalSubsystem/Fans",
+      "odata_type": "#FanCollection.FanCollection",
+      "name": "Fans Collection",
+      "id": null,
+      "related": true,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/ThermalSubsystem/ThermalMetrics",
+      "odata_type": "#ThermalMetrics.v1_0_1.ThermalMetrics",
+      "name": "Thermal Metrics",
+      "id": "ThermalMetrics",
+      "related": true,
+      "related_keys": [
+        "TemperatureReadingsCelsius",
+        "TemperatureReadingsCelsius@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Systems/Self/Storage/StorageUnit_3",
+      "odata_type": "#Storage.v1_9_0.Storage",
+      "name": "StorageUnit_3",
+      "id": "StorageUnit_3",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Systems/Self/Storage/StorageUnit_3/Volumes/VOL0",
+      "odata_type": "#Volume.v1_5_0.Volume",
+      "name": "Volume_0",
+      "id": "VOL0",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Systems/Self/Storage/StorageUnit_4",
+      "odata_type": "#Storage.v1_9_0.Storage",
+      "name": "StorageUnit_4",
+      "id": "StorageUnit_4",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Managers/Self/EthernetInterfaces/eth0",
+      "odata_type": "#EthernetInterface.v1_6_2.EthernetInterface",
+      "name": "eth0",
+      "id": "eth0",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {
+        "Ami": {
+          "@odata.type": "#AMIDNSConfiguration.v1_0_0.AMIDNSConfiguration",
+          "DNSEnabled": true,
+          "HostNameSetting": "Auto"
+        }
+      }
+    },
+    {
+      "path": "/redfish/v1/Managers/Self/EthernetInterfaces/eth1",
+      "odata_type": "#EthernetInterface.v1_6_2.EthernetInterface",
+      "name": "eth1",
+      "id": "eth1",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Managers/Self/LogServices/AuditLog",
+      "odata_type": "#LogService.v1_1_3.LogService",
+      "name": "Audit Log",
+      "id": "AuditLog",
+      "related": false,
+      "related_keys": [],
+      "actions": [
+        {
+          "action": "#LogService.ClearLog",
+          "target": "/redfish/v1/Managers/Self/LogServices/AuditLog/Actions/LogService.ClearLog",
+          "allowable_values": [],
+          "fan_thermal_related": false
+        }
+      ],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Managers/Self/LogServices/EventLog",
+      "odata_type": "#LogService.v1_1_3.LogService",
+      "name": "Event Log",
+      "id": "EventLog",
+      "related": false,
+      "related_keys": [],
+      "actions": [
+        {
+          "action": "#LogService.ClearLog",
+          "target": "/redfish/v1/Managers/Self/LogServices/EventLog/Actions/LogService.ClearLog",
+          "allowable_values": [],
+          "fan_thermal_related": false
+        }
+      ],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Managers/Self/LogServices/SEL",
+      "odata_type": "#LogService.v1_1_3.LogService",
+      "name": "IPMI SEL",
+      "id": "SEL",
+      "related": false,
+      "related_keys": [],
+      "actions": [
+        {
+          "action": "#LogService.ClearLog",
+          "target": "/redfish/v1/Managers/Self/LogServices/SEL/Actions/LogService.ClearLog",
+          "allowable_values": [],
+          "fan_thermal_related": false
+        }
+      ],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Managers/Self/NetworkProtocol/HTTPS/Certificates",
+      "odata_type": "#CertificateCollection.CertificateCollection",
+      "name": "HTTPS Certificates",
+      "id": null,
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Managers/Self/SerialInterfaces/IPMI-SOL",
+      "odata_type": "#SerialInterface.v1_1_5.SerialInterface",
+      "name": "IPMI-SOL",
+      "id": "IPMI-SOL",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Managers/Self/SerialInterfaces/ttyS2",
+      "odata_type": "#SerialInterface.v1_1_5.SerialInterface",
+      "name": "ttyS2",
+      "id": "ttyS2",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Managers/Self/SerialInterfaces/ttyS3",
+      "odata_type": "#SerialInterface.v1_1_5.SerialInterface",
+      "name": "ttyS3",
+      "id": "ttyS3",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Managers/Self/SerialInterfaces/ttyS4",
+      "odata_type": "#SerialInterface.v1_1_5.SerialInterface",
+      "name": "ttyS4",
+      "id": "ttyS4",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/PCIeDevices/00_01_00/PCIeFunctions",
+      "odata_type": "#PCIeFunctionCollection.PCIeFunctionCollection",
+      "name": "PCIeFunction Collection",
+      "id": null,
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/PCIeDevices/00_23_00/PCIeFunctions",
+      "odata_type": "#PCIeFunctionCollection.PCIeFunctionCollection",
+      "name": "PCIeFunction Collection",
+      "id": null,
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/PCIeDevices/00_24_00/PCIeFunctions",
+      "odata_type": "#PCIeFunctionCollection.PCIeFunctionCollection",
+      "name": "PCIeFunction Collection",
+      "id": null,
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/PCIeDevices/00_25_00/PCIeFunctions",
+      "odata_type": "#PCIeFunctionCollection.PCIeFunctionCollection",
+      "name": "PCIeFunction Collection",
+      "id": null,
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/PCIeDevices/00_41_00/PCIeFunctions",
+      "odata_type": "#PCIeFunctionCollection.PCIeFunctionCollection",
+      "name": "PCIeFunction Collection",
+      "id": null,
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/NetworkAdapters/DevType7_NIC0/NetworkDeviceFunctions/NetworkDeviceFunction0",
+      "odata_type": "#NetworkDeviceFunction.v1_5_0.NetworkDeviceFunction",
+      "name": "NetworkDeviceFunction0",
+      "id": "NetworkDeviceFunction0",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Systems/Self/EthernetInterfaces/EthernetInterface0",
+      "odata_type": "#EthernetInterface.v1_6_2.EthernetInterface",
+      "name": "EthernetInterface0",
+      "id": "EthernetInterface0",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/NetworkAdapters/DevType7_NIC0/NetworkDeviceFunctions/NetworkDeviceFunction1",
+      "odata_type": "#NetworkDeviceFunction.v1_5_0.NetworkDeviceFunction",
+      "name": "NetworkDeviceFunction1",
+      "id": "NetworkDeviceFunction1",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Systems/Self/EthernetInterfaces/EthernetInterface1",
+      "odata_type": "#EthernetInterface.v1_6_2.EthernetInterface",
+      "name": "EthernetInterface1",
+      "id": "EthernetInterface1",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/PCIeDevices/00_61_00/PCIeFunctions",
+      "odata_type": "#PCIeFunctionCollection.PCIeFunctionCollection",
+      "name": "PCIeFunction Collection",
+      "id": null,
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/PCIeDevices/00_62_00/PCIeFunctions",
+      "odata_type": "#PCIeFunctionCollection.PCIeFunctionCollection",
+      "name": "PCIeFunction Collection",
+      "id": null,
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/PCIeDevices/00_63_00/PCIeFunctions",
+      "odata_type": "#PCIeFunctionCollection.PCIeFunctionCollection",
+      "name": "PCIeFunction Collection",
+      "id": null,
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/PCIeDevices/00_81_00/PCIeFunctions",
+      "odata_type": "#PCIeFunctionCollection.PCIeFunctionCollection",
+      "name": "PCIeFunction Collection",
+      "id": null,
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/PCIeDevices/00_C3_00/PCIeFunctions",
+      "odata_type": "#PCIeFunctionCollection.PCIeFunctionCollection",
+      "name": "PCIeFunction Collection",
+      "id": null,
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/NetworkAdapters/DevType7_NIC1/NetworkDeviceFunctions/NetworkDeviceFunction2",
+      "odata_type": "#NetworkDeviceFunction.v1_5_0.NetworkDeviceFunction",
+      "name": "NetworkDeviceFunction2",
+      "id": "NetworkDeviceFunction2",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Systems/Self/EthernetInterfaces/EthernetInterface2",
+      "odata_type": "#EthernetInterface.v1_6_2.EthernetInterface",
+      "name": "EthernetInterface2",
+      "id": "EthernetInterface2",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/PCIeDevices/00_E1_00/PCIeFunctions",
+      "odata_type": "#PCIeFunctionCollection.PCIeFunctionCollection",
+      "name": "PCIeFunction Collection",
+      "id": null,
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Systems/Self/Bios/SD",
+      "odata_type": "#Bios.v1_2_0.Bios",
+      "name": "Future BIOS Settings",
+      "id": "SD",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Systems/Self/Boot/Certificates/1",
+      "odata_type": "#Certificate.v1_4_0.Certificate",
+      "name": "Certificate Instance 1",
+      "id": "1",
+      "related": false,
+      "related_keys": [],
+      "actions": [
+        {
+          "action": "#Certificate.Rekey",
+          "target": "/redfish/v1/Systems/Self/Boot/Certificates/1/Actions/Certificate.Rekey",
+          "allowable_values": [],
+          "fan_thermal_related": false
+        },
+        {
+          "action": "#Certificate.Renew",
+          "target": "/redfish/v1/Systems/Self/Boot/Certificates/1/Actions/Certificate.Renew",
+          "allowable_values": [],
+          "fan_thermal_related": false
+        }
+      ],
+      "value_hints": {},
+      "oem": {
+        "Ami": {
+          "@odata.type": "#AMICaCert.v1_0_0.AMICaCert",
+          "OwnerGuid": "FE9C6606-8B49-44A3-8B6B-DEA3A0E0324D"
+        }
+      }
+    },
+    {
+      "path": "/redfish/v1/Systems/Self/BootOptions/0000",
+      "odata_type": "#BootOption.v1_0_3.BootOption",
+      "name": "Boot0000",
+      "id": "0000",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Systems/Self/BootOptions/0001",
+      "odata_type": "#BootOption.v1_0_3.BootOption",
+      "name": "Boot0001",
+      "id": "0001",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Systems/Self/BootOptions/0003",
+      "odata_type": "#BootOption.v1_0_3.BootOption",
+      "name": "Boot0003",
+      "id": "0003",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Systems/Self/BootOptions/0004",
+      "odata_type": "#BootOption.v1_0_3.BootOption",
+      "name": "Boot0004",
+      "id": "0004",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Systems/Self/BootOptions/0005",
+      "odata_type": "#BootOption.v1_0_3.BootOption",
+      "name": "Boot0005",
+      "id": "0005",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Systems/Self/EthernetInterfaces/VirtualEthernetInterface3",
+      "odata_type": "#EthernetInterface.v1_6_2.EthernetInterface",
+      "name": "VirtualEthernetInterface3",
+      "id": "VirtualEthernetInterface3",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Systems/Self/LogServices/BIOS",
+      "odata_type": "#LogService.v1_1_3.LogService",
+      "name": "System BIOS Log Service",
+      "id": "BIOS",
+      "related": false,
+      "related_keys": [],
+      "actions": [
+        {
+          "action": "#LogService.ClearLog",
+          "target": "/redfish/v1/Systems/Self/LogServices/BIOS/Actions/LogService.ClearLog",
+          "allowable_values": [],
+          "fan_thermal_related": false
+        }
+      ],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Systems/Self/LogServices/Crashdump",
+      "odata_type": "#LogService.v1_1_3.LogService",
+      "name": "AMD ADDC Crashdump Log Service",
+      "id": "Crashdump",
+      "related": false,
+      "related_keys": [],
+      "actions": [
+        {
+          "action": "#LogService.ClearLog",
+          "target": "/redfish/v1/Systems/Self/LogServices/Crashdump/Actions/LogService.ClearLog",
+          "allowable_values": [],
+          "fan_thermal_related": false
+        }
+      ],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Systems/Self/LogServices/SMI",
+      "odata_type": "#LogService.v1_1_3.LogService",
+      "name": "SMI Log Service",
+      "id": "SMI",
+      "related": false,
+      "related_keys": [],
+      "actions": [
+        {
+          "action": "#LogService.ClearLog",
+          "target": "/redfish/v1/Systems/Self/LogServices/SMI/Actions/LogService.ClearLog",
+          "allowable_values": [],
+          "fan_thermal_related": false
+        }
+      ],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Systems/Self/Memory/DevType2_DIMM0",
+      "odata_type": "#Memory.v1_19_0.Memory",
+      "name": "P0_CA",
+      "id": "DevType2_DIMM0",
+      "related": false,
+      "related_keys": [],
+      "actions": [
+        {
+          "action": "Oem",
+          "target": "",
+          "allowable_values": [],
+          "fan_thermal_related": false
+        }
+      ],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Systems/Self/Memory/DevType2_DIMM1",
+      "odata_type": "#Memory.v1_19_0.Memory",
+      "name": "P0_CC",
+      "id": "DevType2_DIMM1",
+      "related": false,
+      "related_keys": [],
+      "actions": [
+        {
+          "action": "Oem",
+          "target": "",
+          "allowable_values": [],
+          "fan_thermal_related": false
+        }
+      ],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Systems/Self/Memory/DevType2_DIMM2",
+      "odata_type": "#Memory.v1_19_0.Memory",
+      "name": "P0_CG",
+      "id": "DevType2_DIMM2",
+      "related": false,
+      "related_keys": [],
+      "actions": [
+        {
+          "action": "Oem",
+          "target": "",
+          "allowable_values": [],
+          "fan_thermal_related": false
+        }
+      ],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Systems/Self/Memory/DevType2_DIMM3",
+      "odata_type": "#Memory.v1_19_0.Memory",
+      "name": "P0_CI",
+      "id": "DevType2_DIMM3",
+      "related": false,
+      "related_keys": [],
+      "actions": [
+        {
+          "action": "Oem",
+          "target": "",
+          "allowable_values": [],
+          "fan_thermal_related": false
+        }
+      ],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Systems/Self/Memory/DevType2_DIMM4",
+      "odata_type": "#Memory.v1_19_0.Memory",
+      "name": "P1_CA",
+      "id": "DevType2_DIMM4",
+      "related": false,
+      "related_keys": [],
+      "actions": [
+        {
+          "action": "Oem",
+          "target": "",
+          "allowable_values": [],
+          "fan_thermal_related": false
+        }
+      ],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Systems/Self/Memory/DevType2_DIMM5",
+      "odata_type": "#Memory.v1_19_0.Memory",
+      "name": "P1_CC",
+      "id": "DevType2_DIMM5",
+      "related": false,
+      "related_keys": [],
+      "actions": [
+        {
+          "action": "Oem",
+          "target": "",
+          "allowable_values": [],
+          "fan_thermal_related": false
+        }
+      ],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Systems/Self/Memory/DevType2_DIMM6",
+      "odata_type": "#Memory.v1_19_0.Memory",
+      "name": "P1_CG",
+      "id": "DevType2_DIMM6",
+      "related": false,
+      "related_keys": [],
+      "actions": [
+        {
+          "action": "Oem",
+          "target": "",
+          "allowable_values": [],
+          "fan_thermal_related": false
+        }
+      ],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Systems/Self/Memory/DevType2_DIMM7",
+      "odata_type": "#Memory.v1_19_0.Memory",
+      "name": "P1_CI",
+      "id": "DevType2_DIMM7",
+      "related": false,
+      "related_keys": [],
+      "actions": [
+        {
+          "action": "Oem",
+          "target": "",
+          "allowable_values": [],
+          "fan_thermal_related": false
+        }
+      ],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Systems/Self/MemoryDomains/MemoryDomain_SystemMemory_0",
+      "odata_type": "#MemoryDomain.v1_2_3.MemoryDomain",
+      "name": "MemoryDomain_SystemMemory_0",
+      "id": "MemoryDomain_SystemMemory_0",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Systems/Self/MemoryDomains/MemoryDomain_SystemMemory_1",
+      "odata_type": "#MemoryDomain.v1_2_3.MemoryDomain",
+      "name": "MemoryDomain_SystemMemory_1",
+      "id": "MemoryDomain_SystemMemory_1",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Systems/Self/NetworkInterfaces/DevType7_NIC0",
+      "odata_type": "#NetworkInterface.v1_2_0.NetworkInterface",
+      "name": "NetworkAdapter_0",
+      "id": "DevType7_NIC0",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Systems/Self/NetworkInterfaces/DevType7_NIC1",
+      "odata_type": "#NetworkInterface.v1_2_0.NetworkInterface",
+      "name": "NetworkAdapter_1",
+      "id": "DevType7_NIC1",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Systems/Self/NetworkInterfaces/DevType7_VirtualNic2",
+      "odata_type": "#NetworkInterface.v1_2_0.NetworkInterface",
+      "name": "Virtual_NetworkAdapter_2",
+      "id": "DevType7_VirtualNic2",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Systems/Self/Processors/CPU0",
+      "odata_type": "#Processor.v1_15_0.Processor",
+      "name": "CPU0",
+      "id": "CPU0",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Systems/Self/Processors/CPU1",
+      "odata_type": "#Processor.v1_15_0.Processor",
+      "name": "CPU1",
+      "id": "CPU1",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Systems/Self/Processors/GPU2",
+      "odata_type": "#Processor.v1_15_0.Processor",
+      "name": "GPU2",
+      "id": "GPU2",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Systems/Self/Processors/GPU3",
+      "odata_type": "#Processor.v1_15_0.Processor",
+      "name": "GPU3",
+      "id": "GPU3",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Systems/Self/Processors/GPU5",
+      "odata_type": "#Processor.v1_15_0.Processor",
+      "name": "GPU5",
+      "id": "GPU5",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Systems/Self/Processors/GPU8",
+      "odata_type": "#Processor.v1_15_0.Processor",
+      "name": "GPU8",
+      "id": "GPU8",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Systems/Self/SecureBoot/SecureBootDatabases",
+      "odata_type": "#SecureBootDatabaseCollection.SecureBootDatabaseCollection",
+      "name": "UEFI SecureBoot Database Collection",
+      "id": null,
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Systems/Self/SimpleStorage/0",
+      "odata_type": "#SimpleStorage.v1_3_0.SimpleStorage",
+      "name": "USB_Controller0",
+      "id": "0",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Systems/Self/SimpleStorage/1",
+      "odata_type": "#SimpleStorage.v1_3_0.SimpleStorage",
+      "name": "SATA_Controller_0",
+      "id": "1",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Systems/Self/SimpleStorage/2",
+      "odata_type": "#SimpleStorage.v1_3_0.SimpleStorage",
+      "name": "SATA_Controller_0",
+      "id": "2",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Systems/Self/SimpleStorage/3",
+      "odata_type": "#SimpleStorage.v1_3_0.SimpleStorage",
+      "name": "NVMe_Controller_3",
+      "id": "3",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Systems/Self/SimpleStorage/4",
+      "odata_type": "#SimpleStorage.v1_3_0.SimpleStorage",
+      "name": "NVMe_Controller_4",
+      "id": "4",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Systems/Self/SimpleStorage/6",
+      "odata_type": "#SimpleStorage.v1_3_0.SimpleStorage",
+      "name": "USB_Controller0",
+      "id": "6",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Systems/Self/SimpleStorage/7",
+      "odata_type": "#SimpleStorage.v1_3_0.SimpleStorage",
+      "name": "SATA_Controller_0",
+      "id": "7",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Systems/Self/SimpleStorage/8",
+      "odata_type": "#SimpleStorage.v1_3_0.SimpleStorage",
+      "name": "SATA_Controller_0",
+      "id": "8",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Systems/Self/SimpleStorage/9",
+      "odata_type": "#SimpleStorage.v1_3_0.SimpleStorage",
+      "name": "SATA_Controller_0",
+      "id": "9",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Systems/Self/SimpleStorage/A",
+      "odata_type": "#SimpleStorage.v1_3_0.SimpleStorage",
+      "name": "SATA_Controller_0",
+      "id": "A",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Systems/Self/SimpleStorage/B",
+      "odata_type": "#SimpleStorage.v1_3_0.SimpleStorage",
+      "name": "SATA_Controller_0",
+      "id": "B",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Systems/Self/SimpleStorage/C",
+      "odata_type": "#SimpleStorage.v1_3_0.SimpleStorage",
+      "name": "SATA_Controller_0",
+      "id": "C",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Systems/Self/Storage/StorageController_BRCM_0",
+      "odata_type": "#Storage.v1_9_0.Storage",
+      "name": "StorageController_BRCM_0",
+      "id": "StorageController_BRCM_0",
+      "related": true,
+      "related_keys": [],
+      "actions": [
+        {
+          "action": "Oem",
+          "target": "",
+          "allowable_values": [],
+          "fan_thermal_related": false
+        }
+      ],
+      "value_hints": {},
+      "oem": {
+        "Ami": {
+          "BBUInfo": {
+            "BBUStatus": "BBU Missing",
+            "BBUType": "Unknown",
+            "Current": "0",
+            "Temperature": "0",
+            "Voltage": "0"
+          }
+        }
+      }
+    },
+    {
+      "path": "/redfish/v1/Systems/Self/Storage/StorageUnit_0",
+      "odata_type": "#Storage.v1_9_0.Storage",
+      "name": "StorageUnit_0",
+      "id": "StorageUnit_0",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Systems/Self/Storage/StorageUnit_1",
+      "odata_type": "#Storage.v1_9_0.Storage",
+      "name": "StorageUnit_1",
+      "id": "StorageUnit_1",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Systems/Self/Storage/StorageUnit_2",
+      "odata_type": "#Storage.v1_9_0.Storage",
+      "name": "StorageUnit_2",
+      "id": "StorageUnit_2",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Systems/Self/Storage/StorageUnit_5",
+      "odata_type": "#Storage.v1_9_0.Storage",
+      "name": "StorageUnit_5",
+      "id": "StorageUnit_5",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Systems/Self/Storage/StorageUnit_6",
+      "odata_type": "#Storage.v1_9_0.Storage",
+      "name": "StorageUnit_6",
+      "id": "StorageUnit_6",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Systems/Self/Storage/StorageUnit_7",
+      "odata_type": "#Storage.v1_9_0.Storage",
+      "name": "StorageUnit_7",
+      "id": "StorageUnit_7",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Systems/Self/Storage/StorageUnit_8",
+      "odata_type": "#Storage.v1_9_0.Storage",
+      "name": "StorageUnit_8",
+      "id": "StorageUnit_8",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Systems/Self/Storage/StorageUnit_9",
+      "odata_type": "#Storage.v1_9_0.Storage",
+      "name": "StorageUnit_9",
+      "id": "StorageUnit_9",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Systems/Self/Storage/StorageUnit_A",
+      "odata_type": "#Storage.v1_9_0.Storage",
+      "name": "StorageUnit_A",
+      "id": "StorageUnit_A",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Systems/Self/Storage/StorageUnit_B",
+      "odata_type": "#Storage.v1_9_0.Storage",
+      "name": "StorageUnit_B",
+      "id": "StorageUnit_B",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Systems/Self/Storage/StorageUnit_C",
+      "odata_type": "#Storage.v1_9_0.Storage",
+      "name": "StorageUnit_C",
+      "id": "StorageUnit_C",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Systems/Self/USBControllers/DevTypeC_USB_0",
+      "odata_type": "#USBController.v1_0_0.USBController",
+      "name": "DevTypeC_USB_0",
+      "id": "DevTypeC_USB_0",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Systems/Self/USBControllers/DevTypeC_USB_1",
+      "odata_type": "#USBController.v1_0_0.USBController",
+      "name": "DevTypeC_USB_1",
+      "id": "DevTypeC_USB_1",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/AccountService/Accounts/108",
+      "odata_type": "#ManagerAccount.v1_5_0.ManagerAccount",
+      "name": "Internal Account",
+      "id": "108",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/AccountService/Accounts/2",
+      "odata_type": "#ManagerAccount.v1_5_0.ManagerAccount",
+      "name": "Internal Account",
+      "id": "2",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/AccountService/Accounts/3",
+      "odata_type": "#ManagerAccount.v1_5_0.ManagerAccount",
+      "name": "Internal Account",
+      "id": "3",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/AccountService/Accounts/4",
+      "odata_type": "#ManagerAccount.v1_5_0.ManagerAccount",
+      "name": "admin",
+      "id": "4",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/AccountService/ExternalAccountProviders/RADIUS",
+      "odata_type": "#ExternalAccountProvider.v1_1_2.ExternalAccountProvider",
+      "name": "RADIUS Settings",
+      "id": "RADIUS",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {
+        "Ami": {
+          "@odata.type": "#AMIExternalAccountProvider.v1_0_0.AMIExternalAccountProvider",
+          "ExtendedPrivilege": {
+            "KVMAccess": false,
+            "VMediaAccess": false
+          },
+          "Secret": null,
+          "ServiceAddress": null,
+          "ServicePort": 1812,
+          "Timeout": 3
+        }
+      }
+    },
+    {
+      "path": "/redfish/v1/AccountService/Roles/Administrator",
+      "odata_type": "#Role.v1_3_0.Role",
+      "name": "User Role",
+      "id": "Administrator",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/AccountService/Roles/HostInterfaceAdministrator",
+      "odata_type": "#Role.v1_3_0.Role",
+      "name": "Host Interface Administrator",
+      "id": "HostInterfaceAdministrator",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/AccountService/Roles/Operator",
+      "odata_type": "#Role.v1_3_0.Role",
+      "name": "User Role",
+      "id": "Operator",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/AccountService/Roles/ReadOnly",
+      "odata_type": "#Role.v1_3_0.Role",
+      "name": "User Role",
+      "id": "ReadOnly",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Managers/Self/NetworkProtocol/HTTPS/Certificates/1",
+      "odata_type": "#Certificate.v1_4_0.Certificate",
+      "name": "Certificate Instance",
+      "id": "1",
+      "related": false,
+      "related_keys": [],
+      "actions": [
+        {
+          "action": "#Certificate.Rekey",
+          "target": "/redfish/v1/Managers/Self/NetworkProtocol/HTTPS/Certificates/1/Actions/Certificate.Rekey",
+          "allowable_values": [],
+          "fan_thermal_related": false
+        },
+        {
+          "action": "#Certificate.Renew",
+          "target": "/redfish/v1/Managers/Self/NetworkProtocol/HTTPS/Certificates/1/Actions/Certificate.Renew",
+          "allowable_values": [],
+          "fan_thermal_related": false
+        }
+      ],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Systems/Self/SecureBoot/SecureBootDatabases/KEK/Certificates/1",
+      "odata_type": "#Certificate.v1_4_0.Certificate",
+      "name": "Certificate Instance 1",
+      "id": "1",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Systems/Self/SecureBoot/SecureBootDatabases/KEK/Certificates/2",
+      "odata_type": "#Certificate.v1_4_0.Certificate",
+      "name": "Certificate Instance 2",
+      "id": "2",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Systems/Self/SecureBoot/SecureBootDatabases/KEKDefault/Certificates/1",
+      "odata_type": "#Certificate.v1_4_0.Certificate",
+      "name": "Certificate Instance 1",
+      "id": "1",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Systems/Self/SecureBoot/SecureBootDatabases/KEKDefault/Certificates/2",
+      "odata_type": "#Certificate.v1_4_0.Certificate",
+      "name": "Certificate Instance 2",
+      "id": "2",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Systems/Self/SecureBoot/SecureBootDatabases/PK/Certificates/1",
+      "odata_type": "#Certificate.v1_4_0.Certificate",
+      "name": "Certificate Instance 1",
+      "id": "1",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Systems/Self/SecureBoot/SecureBootDatabases/PKDefault/Certificates/1",
+      "odata_type": "#Certificate.v1_4_0.Certificate",
+      "name": "Certificate Instance 1",
+      "id": "1",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Systems/Self/SecureBoot/SecureBootDatabases/db/Certificates/1",
+      "odata_type": "#Certificate.v1_4_0.Certificate",
+      "name": "Certificate Instance 1",
+      "id": "1",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Systems/Self/SecureBoot/SecureBootDatabases/db/Certificates/2",
+      "odata_type": "#Certificate.v1_4_0.Certificate",
+      "name": "Certificate Instance 2",
+      "id": "2",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Systems/Self/SecureBoot/SecureBootDatabases/db/Certificates/3",
+      "odata_type": "#Certificate.v1_4_0.Certificate",
+      "name": "Certificate Instance 3",
+      "id": "3",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Systems/Self/SecureBoot/SecureBootDatabases/dbDefault/Certificates/1",
+      "odata_type": "#Certificate.v1_4_0.Certificate",
+      "name": "Certificate Instance 1",
+      "id": "1",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Systems/Self/SecureBoot/SecureBootDatabases/dbDefault/Certificates/2",
+      "odata_type": "#Certificate.v1_4_0.Certificate",
+      "name": "Certificate Instance 2",
+      "id": "2",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Systems/Self/SecureBoot/SecureBootDatabases/dbDefault/Certificates/3",
+      "odata_type": "#Certificate.v1_4_0.Certificate",
+      "name": "Certificate Instance 3",
+      "id": "3",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Systems/Self/SecureBoot/SecureBootDatabases/dbDefault/Certificates/4",
+      "odata_type": "#Certificate.v1_4_0.Certificate",
+      "name": "Certificate Instance 4",
+      "id": "4",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/CompositionService/ResourceBlocks/ComputeBlock",
+      "odata_type": "#ResourceBlock.v1_3_2.ResourceBlock",
+      "name": "ComputeBlock",
+      "id": "ComputeBlock",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/CompositionService/ResourceBlocks/DrivesBlock",
+      "odata_type": "#ResourceBlock.v1_3_2.ResourceBlock",
+      "name": "DrivesBlock",
+      "id": "DrivesBlock",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/CompositionService/ResourceBlocks/NetworkBlock",
+      "odata_type": "#ResourceBlock.v1_3_2.ResourceBlock",
+      "name": "NetworkBlock",
+      "id": "NetworkBlock",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/TelemetryService/LogService/Entries",
+      "odata_type": "#LogEntryCollection.LogEntryCollection",
+      "name": "Metric Report Log Service Entries Collection",
+      "id": null,
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/TelemetryService/MetricDefinitions/Fan_Reading",
+      "odata_type": "#MetricDefinition.v1_0_3.MetricDefinition",
+      "name": "Fan Reading",
+      "id": "Fan_Reading",
+      "related": true,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/TelemetryService/MetricDefinitions/Temperature_Reading",
+      "odata_type": "#MetricDefinition.v1_0_3.MetricDefinition",
+      "name": "Temperature Reading",
+      "id": "Temperature_Reading",
+      "related": true,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/TelemetryService/MetricDefinitions/Voltage_Reading",
+      "odata_type": "#MetricDefinition.v1_0_3.MetricDefinition",
+      "name": "Voltage Reading",
+      "id": "Voltage_Reading",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/UpdateService/FirmwareInventory/BIOS",
+      "odata_type": "#SoftwareInventory.v1_4_0.SoftwareInventory",
+      "name": "BIOS",
+      "id": "BIOS",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/UpdateService/FirmwareInventory/BMCImage1",
+      "odata_type": "#SoftwareInventory.v1_4_0.SoftwareInventory",
+      "name": "BMCImage1",
+      "id": "BMCImage1",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/UpdateService/FirmwareInventory/BMCImage2",
+      "odata_type": "#SoftwareInventory.v1_4_0.SoftwareInventory",
+      "name": "BMCImage2",
+      "id": "BMCImage2",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/UpdateService/FirmwareInventory/CPLD",
+      "odata_type": "#SoftwareInventory.v1_4_0.SoftwareInventory",
+      "name": "CPLD",
+      "id": "CPLD",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/LogServices/Logs/Entries",
+      "odata_type": "#LogEntryCollection.LogEntryCollection",
+      "name": "Log Service Entries Collection",
+      "id": null,
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/NetworkAdapters/DevType7_NIC0/NetworkDeviceFunctions",
+      "odata_type": "#NetworkDeviceFunctionCollection.NetworkDeviceFunctionCollection",
+      "name": "NetworkDeviceFunction Collection",
+      "id": null,
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/NetworkAdapters/DevType7_NIC0/Ports",
+      "odata_type": "#PortCollection.PortCollection",
+      "name": "Port Collection",
+      "id": null,
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/NetworkAdapters/DevType7_NIC0/Ports/DevTypeE_Slot2_Instance0_PORT0",
+      "odata_type": "#Port.v1_6_0.Port",
+      "name": "NetworkPort_0",
+      "id": "DevTypeE_Slot2_Instance0_PORT0",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/NetworkAdapters/DevType7_NIC0/Ports/DevTypeE_Slot2_Instance1_PORT1",
+      "odata_type": "#Port.v1_6_0.Port",
+      "name": "NetworkPort_1",
+      "id": "DevTypeE_Slot2_Instance1_PORT1",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/NetworkAdapters/DevType7_NIC0/Processors",
+      "odata_type": "#ProcessorCollection.ProcessorCollection",
+      "name": "Processors Collection",
+      "id": null,
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/NetworkAdapters/DevType7_NIC1/NetworkDeviceFunctions",
+      "odata_type": "#NetworkDeviceFunctionCollection.NetworkDeviceFunctionCollection",
+      "name": "NetworkDeviceFunction Collection",
+      "id": null,
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/NetworkAdapters/DevType7_NIC1/Ports",
+      "odata_type": "#PortCollection.PortCollection",
+      "name": "Port Collection",
+      "id": null,
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/NetworkAdapters/DevType7_NIC1/Ports/DevTypeE_SlotA_Instance9_PORT0",
+      "odata_type": "#Port.v1_6_0.Port",
+      "name": "NetworkPort_9",
+      "id": "DevTypeE_SlotA_Instance9_PORT0",
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/NetworkAdapters/DevType7_NIC1/Processors",
+      "odata_type": "#ProcessorCollection.ProcessorCollection",
+      "name": "Processors Collection",
+      "id": null,
+      "related": false,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    }
+  ],
+  "fan_thermal_candidates": [
+    {
+      "path": "/redfish/v1/Chassis/Self",
+      "odata_type": "#Chassis.v1_15_0.Chassis",
+      "name": "Computer System Chassis",
+      "id": "Self",
+      "related": true,
+      "related_keys": [
+        "Thermal",
+        "ThermalSubsystem"
+      ],
+      "actions": [
+        {
+          "action": "#Chassis.Reset",
+          "target": "/redfish/v1/Chassis/Self/Actions/Chassis.Reset",
+          "allowable_values": [],
+          "fan_thermal_related": false
+        }
+      ],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Thermal",
+      "odata_type": "#Thermal.v1_5_3.Thermal",
+      "name": "Thermal",
+      "id": "Thermal",
+      "related": true,
+      "related_keys": [
+        "Fans",
+        "Fans@odata.count",
+        "Temperatures",
+        "Temperatures@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/EventService",
+      "odata_type": "#EventService.v1_5_0.EventService",
+      "name": "Event Service",
+      "id": "EventService",
+      "related": true,
+      "related_keys": [
+        "DeliveryRetryAttempts"
+      ],
+      "actions": [
+        {
+          "action": "#EventService.SubmitTestEvent",
+          "target": "/redfish/v1/EventService/Actions/EventService.SubmitTestEvent",
+          "allowable_values": [],
+          "fan_thermal_related": false
+        }
+      ],
+      "value_hints": {},
+      "oem": {
+        "Ami": {
+          "@odata.type": "#AMIEventService.v1_0_0.AMIEventService",
+          "Certificates": {
+            "@odata.id": "/redfish/v1/EventService/Oem/Ami/SMTP/Certificates"
+          },
+          "SecondarySMTP": {
+            "Authentication": "None",
+            "ConnectionProtocol": "None",
+            "FromAddress": null,
+            "Password": null,
+            "Port": 25,
+            "ServerAddress": null,
+            "ServiceEnabled": false,
+            "Username": null
+          }
+        }
+      }
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/ThermalSubsystem",
+      "odata_type": "#ThermalSubsystem.v1_0_0.ThermalSubsystem",
+      "name": "ThermalSubsytem",
+      "id": "ThermalSubsytem",
+      "related": true,
+      "related_keys": [
+        "FanRedundancy",
+        "Fans",
+        "ThermalMetrics"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Systems/Self/Storage/StorageUnit_3/Drives/NVMe0_NSID1",
+      "odata_type": "#Drive.v1_13_0.Drive",
+      "name": "NVMe0_NSID1",
+      "id": "NVMe0_NSID1",
+      "related": true,
+      "related_keys": [
+        "RotationSpeedRPM"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Systems/Self/Storage/StorageUnit_4/Drives/NVMe1_NSID1",
+      "odata_type": "#Drive.v1_13_0.Drive",
+      "name": "NVMe1_NSID1",
+      "id": "NVMe1_NSID1",
+      "related": true,
+      "related_keys": [
+        "RotationSpeedRPM"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Sensors/GPU2_TLimitTemp",
+      "odata_type": "#Sensor.v1_1_0.Sensor",
+      "name": "GPU2_TLimitTemp",
+      "id": "GPU2_TLimitTemp",
+      "related": true,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {
+        "Reading": "0",
+        "ReadingUnits": "Celsius"
+      },
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Sensors/GPU2_Temp",
+      "odata_type": "#Sensor.v1_1_0.Sensor",
+      "name": "GPU2_Temp",
+      "id": "GPU2_Temp",
+      "related": true,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {
+        "Reading": "29",
+        "ReadingUnits": "Celsius"
+      },
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Sensors/GPU3_TLimitTemp",
+      "odata_type": "#Sensor.v1_1_0.Sensor",
+      "name": "GPU3_TLimitTemp",
+      "id": "GPU3_TLimitTemp",
+      "related": true,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {
+        "Reading": "0",
+        "ReadingUnits": "Celsius"
+      },
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Sensors/GPU3_Temp",
+      "odata_type": "#Sensor.v1_1_0.Sensor",
+      "name": "GPU3_Temp",
+      "id": "GPU3_Temp",
+      "related": true,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {
+        "Reading": "32",
+        "ReadingUnits": "Celsius"
+      },
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Sensors/GPU5_TLimitTemp",
+      "odata_type": "#Sensor.v1_1_0.Sensor",
+      "name": "GPU5_TLimitTemp",
+      "id": "GPU5_TLimitTemp",
+      "related": true,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {
+        "Reading": "0",
+        "ReadingUnits": "Celsius"
+      },
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Sensors/GPU5_Temp",
+      "odata_type": "#Sensor.v1_1_0.Sensor",
+      "name": "GPU5_Temp",
+      "id": "GPU5_Temp",
+      "related": true,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {
+        "Reading": "29",
+        "ReadingUnits": "Celsius"
+      },
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Sensors/GPU8_TLimitTemp",
+      "odata_type": "#Sensor.v1_1_0.Sensor",
+      "name": "GPU8_TLimitTemp",
+      "id": "GPU8_TLimitTemp",
+      "related": true,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {
+        "Reading": "0",
+        "ReadingUnits": "Celsius"
+      },
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/Sensors/GPU8_Temp",
+      "odata_type": "#Sensor.v1_1_0.Sensor",
+      "name": "GPU8_Temp",
+      "id": "GPU8_Temp",
+      "related": true,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {
+        "Reading": "25",
+        "ReadingUnits": "Celsius"
+      },
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/JsonSchemas/AMIChassisPowerThermal.v1_0_0",
+      "odata_type": "#JsonSchemaFile.v1_1_4.JsonSchemaFile",
+      "name": "AMIChassisPowerThermal.v1_0_0 schema",
+      "id": "AMIChassisPowerThermal.v1_0_0",
+      "related": true,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/ThermalSubsystem/Fans",
+      "odata_type": "#FanCollection.FanCollection",
+      "name": "Fans Collection",
+      "id": null,
+      "related": true,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Chassis/Self/ThermalSubsystem/ThermalMetrics",
+      "odata_type": "#ThermalMetrics.v1_0_1.ThermalMetrics",
+      "name": "Thermal Metrics",
+      "id": "ThermalMetrics",
+      "related": true,
+      "related_keys": [
+        "TemperatureReadingsCelsius",
+        "TemperatureReadingsCelsius@odata.count"
+      ],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/Systems/Self/Storage/StorageController_BRCM_0",
+      "odata_type": "#Storage.v1_9_0.Storage",
+      "name": "StorageController_BRCM_0",
+      "id": "StorageController_BRCM_0",
+      "related": true,
+      "related_keys": [],
+      "actions": [
+        {
+          "action": "Oem",
+          "target": "",
+          "allowable_values": [],
+          "fan_thermal_related": false
+        }
+      ],
+      "value_hints": {},
+      "oem": {
+        "Ami": {
+          "BBUInfo": {
+            "BBUStatus": "BBU Missing",
+            "BBUType": "Unknown",
+            "Current": "0",
+            "Temperature": "0",
+            "Voltage": "0"
+          }
+        }
+      }
+    },
+    {
+      "path": "/redfish/v1/TelemetryService/MetricDefinitions/Fan_Reading",
+      "odata_type": "#MetricDefinition.v1_0_3.MetricDefinition",
+      "name": "Fan Reading",
+      "id": "Fan_Reading",
+      "related": true,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    },
+    {
+      "path": "/redfish/v1/TelemetryService/MetricDefinitions/Temperature_Reading",
+      "odata_type": "#MetricDefinition.v1_0_3.MetricDefinition",
+      "name": "Temperature Reading",
+      "id": "Temperature_Reading",
+      "related": true,
+      "related_keys": [],
+      "actions": [],
+      "value_hints": {},
+      "oem": {}
+    }
+  ],
+  "write_probe": {
+    "enabled": true,
+    "candidate_count": 16,
+    "results": [
+      {
+        "path": "/redfish/v1/Chassis/Self/Sensors/GPU2_TLimitTemp",
+        "source": "resource_path",
+        "kind": "resource",
+        "action": "",
+        "probes": [
+          {
+            "method": "GET",
+            "path": "/redfish/v1/Chassis/Self/Sensors/GPU2_TLimitTemp",
+            "status_code": 200,
+            "ok": true,
+            "body_excerpt": "{\"@odata.context\":\"/redfish/v1/$metadata#Sensor.Sensor\",\"@odata.etag\":\"\\\"1771959445\\\"\",\"@odata.id\":\"/redfish/v1/Chassis/Self/Sensors/GPU2_TLimitTemp\",\"@odata.type\":\"#Sensor.v1_1_0.Sensor\",\"Id\":\"GPU2_TLimitTemp\",\"Name\":\"GPU2_TLimitTemp\",\"Rea...(truncated)",
+            "error": ""
+          },
+          {
+            "method": "OPTIONS",
+            "path": "/redfish/v1/Chassis/Self/Sensors/GPU2_TLimitTemp",
+            "status_code": 501,
+            "ok": false,
+            "body_excerpt": "{\"error\":{\"@Message.ExtendedInfo\":[{\"@odata.type\":\"#Message.v1_0_8.Message\",\"Message\":\"The request to /redfish/v1/Chassis/Self/Sensors/GPU2_TLimitTemp cannot be completed because the server does not support the OPTIONS method for any resour...(truncated)",
+            "error": ""
+          },
+          {
+            "method": "PATCH",
+            "path": "/redfish/v1/Chassis/Self/Sensors/GPU2_TLimitTemp",
+            "status_code": 405,
+            "ok": false,
+            "body_excerpt": "{\"error\":{\"@Message.ExtendedInfo\":[{\"@odata.type\":\"#Message.v1_0_8.Message\",\"Message\":\"The method PATCH is not allowed for the URI /redfish/v1/Chassis/Self/Sensors/GPU2_TLimitTemp\",\"MessageArgs\":[\"PATCH\",\"/redfish/v1/Chassis/Self/Sensors/GP...(truncated)",
+            "error": ""
+          }
+        ]
+      },
+      {
+        "path": "/redfish/v1/Chassis/Self/Sensors/GPU2_Temp",
+        "source": "resource_path",
+        "kind": "resource",
+        "action": "",
+        "probes": [
+          {
+            "method": "GET",
+            "path": "/redfish/v1/Chassis/Self/Sensors/GPU2_Temp",
+            "status_code": 200,
+            "ok": true,
+            "body_excerpt": "{\"@odata.context\":\"/redfish/v1/$metadata#Sensor.Sensor\",\"@odata.etag\":\"\\\"1771959445\\\"\",\"@odata.id\":\"/redfish/v1/Chassis/Self/Sensors/GPU2_Temp\",\"@odata.type\":\"#Sensor.v1_1_0.Sensor\",\"Id\":\"GPU2_Temp\",\"Name\":\"GPU2_Temp\",\"Reading\":\"29\",\"Readin...(truncated)",
+            "error": ""
+          },
+          {
+            "method": "OPTIONS",
+            "path": "/redfish/v1/Chassis/Self/Sensors/GPU2_Temp",
+            "status_code": 501,
+            "ok": false,
+            "body_excerpt": "{\"error\":{\"@Message.ExtendedInfo\":[{\"@odata.type\":\"#Message.v1_0_8.Message\",\"Message\":\"The request to /redfish/v1/Chassis/Self/Sensors/GPU2_Temp cannot be completed because the server does not support the OPTIONS method for any resource\",\"M...(truncated)",
+            "error": ""
+          },
+          {
+            "method": "PATCH",
+            "path": "/redfish/v1/Chassis/Self/Sensors/GPU2_Temp",
+            "status_code": 405,
+            "ok": false,
+            "body_excerpt": "{\"error\":{\"@Message.ExtendedInfo\":[{\"@odata.type\":\"#Message.v1_0_8.Message\",\"Message\":\"The method PATCH is not allowed for the URI /redfish/v1/Chassis/Self/Sensors/GPU2_Temp\",\"MessageArgs\":[\"PATCH\",\"/redfish/v1/Chassis/Self/Sensors/GPU2_Tem...(truncated)",
+            "error": ""
+          }
+        ]
+      },
+      {
+        "path": "/redfish/v1/Chassis/Self/Sensors/GPU3_TLimitTemp",
+        "source": "resource_path",
+        "kind": "resource",
+        "action": "",
+        "probes": [
+          {
+            "method": "GET",
+            "path": "/redfish/v1/Chassis/Self/Sensors/GPU3_TLimitTemp",
+            "status_code": 200,
+            "ok": true,
+            "body_excerpt": "{\"@odata.context\":\"/redfish/v1/$metadata#Sensor.Sensor\",\"@odata.etag\":\"\\\"1771959445\\\"\",\"@odata.id\":\"/redfish/v1/Chassis/Self/Sensors/GPU3_TLimitTemp\",\"@odata.type\":\"#Sensor.v1_1_0.Sensor\",\"Id\":\"GPU3_TLimitTemp\",\"Name\":\"GPU3_TLimitTemp\",\"Rea...(truncated)",
+            "error": ""
+          },
+          {
+            "method": "OPTIONS",
+            "path": "/redfish/v1/Chassis/Self/Sensors/GPU3_TLimitTemp",
+            "status_code": 501,
+            "ok": false,
+            "body_excerpt": "{\"error\":{\"@Message.ExtendedInfo\":[{\"@odata.type\":\"#Message.v1_0_8.Message\",\"Message\":\"The request to /redfish/v1/Chassis/Self/Sensors/GPU3_TLimitTemp cannot be completed because the server does not support the OPTIONS method for any resour...(truncated)",
+            "error": ""
+          },
+          {
+            "method": "PATCH",
+            "path": "/redfish/v1/Chassis/Self/Sensors/GPU3_TLimitTemp",
+            "status_code": 405,
+            "ok": false,
+            "body_excerpt": "{\"error\":{\"@Message.ExtendedInfo\":[{\"@odata.type\":\"#Message.v1_0_8.Message\",\"Message\":\"The method PATCH is not allowed for the URI /redfish/v1/Chassis/Self/Sensors/GPU3_TLimitTemp\",\"MessageArgs\":[\"PATCH\",\"/redfish/v1/Chassis/Self/Sensors/GP...(truncated)",
+            "error": ""
+          }
+        ]
+      },
+      {
+        "path": "/redfish/v1/Chassis/Self/Sensors/GPU3_Temp",
+        "source": "resource_path",
+        "kind": "resource",
+        "action": "",
+        "probes": [
+          {
+            "method": "GET",
+            "path": "/redfish/v1/Chassis/Self/Sensors/GPU3_Temp",
+            "status_code": 200,
+            "ok": true,
+            "body_excerpt": "{\"@odata.context\":\"/redfish/v1/$metadata#Sensor.Sensor\",\"@odata.etag\":\"\\\"1771959445\\\"\",\"@odata.id\":\"/redfish/v1/Chassis/Self/Sensors/GPU3_Temp\",\"@odata.type\":\"#Sensor.v1_1_0.Sensor\",\"Id\":\"GPU3_Temp\",\"Name\":\"GPU3_Temp\",\"Reading\":\"31\",\"Readin...(truncated)",
+            "error": ""
+          },
+          {
+            "method": "OPTIONS",
+            "path": "/redfish/v1/Chassis/Self/Sensors/GPU3_Temp",
+            "status_code": 501,
+            "ok": false,
+            "body_excerpt": "{\"error\":{\"@Message.ExtendedInfo\":[{\"@odata.type\":\"#Message.v1_0_8.Message\",\"Message\":\"The request to /redfish/v1/Chassis/Self/Sensors/GPU3_Temp cannot be completed because the server does not support the OPTIONS method for any resource\",\"M...(truncated)",
+            "error": ""
+          },
+          {
+            "method": "PATCH",
+            "path": "/redfish/v1/Chassis/Self/Sensors/GPU3_Temp",
+            "status_code": 405,
+            "ok": false,
+            "body_excerpt": "{\"error\":{\"@Message.ExtendedInfo\":[{\"@odata.type\":\"#Message.v1_0_8.Message\",\"Message\":\"The method PATCH is not allowed for the URI /redfish/v1/Chassis/Self/Sensors/GPU3_Temp\",\"MessageArgs\":[\"PATCH\",\"/redfish/v1/Chassis/Self/Sensors/GPU3_Tem...(truncated)",
+            "error": ""
+          }
+        ]
+      },
+      {
+        "path": "/redfish/v1/Chassis/Self/Sensors/GPU5_TLimitTemp",
+        "source": "resource_path",
+        "kind": "resource",
+        "action": "",
+        "probes": [
+          {
+            "method": "GET",
+            "path": "/redfish/v1/Chassis/Self/Sensors/GPU5_TLimitTemp",
+            "status_code": 200,
+            "ok": true,
+            "body_excerpt": "{\"@odata.context\":\"/redfish/v1/$metadata#Sensor.Sensor\",\"@odata.etag\":\"\\\"1771959445\\\"\",\"@odata.id\":\"/redfish/v1/Chassis/Self/Sensors/GPU5_TLimitTemp\",\"@odata.type\":\"#Sensor.v1_1_0.Sensor\",\"Id\":\"GPU5_TLimitTemp\",\"Name\":\"GPU5_TLimitTemp\",\"Rea...(truncated)",
+            "error": ""
+          },
+          {
+            "method": "OPTIONS",
+            "path": "/redfish/v1/Chassis/Self/Sensors/GPU5_TLimitTemp",
+            "status_code": 501,
+            "ok": false,
+            "body_excerpt": "{\"error\":{\"@Message.ExtendedInfo\":[{\"@odata.type\":\"#Message.v1_0_8.Message\",\"Message\":\"The request to /redfish/v1/Chassis/Self/Sensors/GPU5_TLimitTemp cannot be completed because the server does not support the OPTIONS method for any resour...(truncated)",
+            "error": ""
+          },
+          {
+            "method": "PATCH",
+            "path": "/redfish/v1/Chassis/Self/Sensors/GPU5_TLimitTemp",
+            "status_code": 405,
+            "ok": false,
+            "body_excerpt": "{\"error\":{\"@Message.ExtendedInfo\":[{\"@odata.type\":\"#Message.v1_0_8.Message\",\"Message\":\"The method PATCH is not allowed for the URI /redfish/v1/Chassis/Self/Sensors/GPU5_TLimitTemp\",\"MessageArgs\":[\"PATCH\",\"/redfish/v1/Chassis/Self/Sensors/GP...(truncated)",
+            "error": ""
+          }
+        ]
+      },
+      {
+        "path": "/redfish/v1/Chassis/Self/Sensors/GPU5_Temp",
+        "source": "resource_path",
+        "kind": "resource",
+        "action": "",
+        "probes": [
+          {
+            "method": "GET",
+            "path": "/redfish/v1/Chassis/Self/Sensors/GPU5_Temp",
+            "status_code": 200,
+            "ok": true,
+            "body_excerpt": "{\"@odata.context\":\"/redfish/v1/$metadata#Sensor.Sensor\",\"@odata.etag\":\"\\\"1771959445\\\"\",\"@odata.id\":\"/redfish/v1/Chassis/Self/Sensors/GPU5_Temp\",\"@odata.type\":\"#Sensor.v1_1_0.Sensor\",\"Id\":\"GPU5_Temp\",\"Name\":\"GPU5_Temp\",\"Reading\":\"28\",\"Readin...(truncated)",
+            "error": ""
+          },
+          {
+            "method": "OPTIONS",
+            "path": "/redfish/v1/Chassis/Self/Sensors/GPU5_Temp",
+            "status_code": 501,
+            "ok": false,
+            "body_excerpt": "{\"error\":{\"@Message.ExtendedInfo\":[{\"@odata.type\":\"#Message.v1_0_8.Message\",\"Message\":\"The request to /redfish/v1/Chassis/Self/Sensors/GPU5_Temp cannot be completed because the server does not support the OPTIONS method for any resource\",\"M...(truncated)",
+            "error": ""
+          },
+          {
+            "method": "PATCH",
+            "path": "/redfish/v1/Chassis/Self/Sensors/GPU5_Temp",
+            "status_code": 405,
+            "ok": false,
+            "body_excerpt": "{\"error\":{\"@Message.ExtendedInfo\":[{\"@odata.type\":\"#Message.v1_0_8.Message\",\"Message\":\"The method PATCH is not allowed for the URI /redfish/v1/Chassis/Self/Sensors/GPU5_Temp\",\"MessageArgs\":[\"PATCH\",\"/redfish/v1/Chassis/Self/Sensors/GPU5_Tem...(truncated)",
+            "error": ""
+          }
+        ]
+      },
+      {
+        "path": "/redfish/v1/Chassis/Self/Sensors/GPU8_TLimitTemp",
+        "source": "resource_path",
+        "kind": "resource",
+        "action": "",
+        "probes": [
+          {
+            "method": "GET",
+            "path": "/redfish/v1/Chassis/Self/Sensors/GPU8_TLimitTemp",
+            "status_code": 200,
+            "ok": true,
+            "body_excerpt": "{\"@odata.context\":\"/redfish/v1/$metadata#Sensor.Sensor\",\"@odata.etag\":\"\\\"1771959445\\\"\",\"@odata.id\":\"/redfish/v1/Chassis/Self/Sensors/GPU8_TLimitTemp\",\"@odata.type\":\"#Sensor.v1_1_0.Sensor\",\"Id\":\"GPU8_TLimitTemp\",\"Name\":\"GPU8_TLimitTemp\",\"Rea...(truncated)",
+            "error": ""
+          },
+          {
+            "method": "OPTIONS",
+            "path": "/redfish/v1/Chassis/Self/Sensors/GPU8_TLimitTemp",
+            "status_code": 501,
+            "ok": false,
+            "body_excerpt": "{\"error\":{\"@Message.ExtendedInfo\":[{\"@odata.type\":\"#Message.v1_0_8.Message\",\"Message\":\"The request to /redfish/v1/Chassis/Self/Sensors/GPU8_TLimitTemp cannot be completed because the server does not support the OPTIONS method for any resour...(truncated)",
+            "error": ""
+          },
+          {
+            "method": "PATCH",
+            "path": "/redfish/v1/Chassis/Self/Sensors/GPU8_TLimitTemp",
+            "status_code": 405,
+            "ok": false,
+            "body_excerpt": "{\"error\":{\"@Message.ExtendedInfo\":[{\"@odata.type\":\"#Message.v1_0_8.Message\",\"Message\":\"The method PATCH is not allowed for the URI /redfish/v1/Chassis/Self/Sensors/GPU8_TLimitTemp\",\"MessageArgs\":[\"PATCH\",\"/redfish/v1/Chassis/Self/Sensors/GP...(truncated)",
+            "error": ""
+          }
+        ]
+      },
+      {
+        "path": "/redfish/v1/Chassis/Self/Sensors/GPU8_Temp",
+        "source": "resource_path",
+        "kind": "resource",
+        "action": "",
+        "probes": [
+          {
+            "method": "GET",
+            "path": "/redfish/v1/Chassis/Self/Sensors/GPU8_Temp",
+            "status_code": 200,
+            "ok": true,
+            "body_excerpt": "{\"@odata.context\":\"/redfish/v1/$metadata#Sensor.Sensor\",\"@odata.etag\":\"\\\"1771959445\\\"\",\"@odata.id\":\"/redfish/v1/Chassis/Self/Sensors/GPU8_Temp\",\"@odata.type\":\"#Sensor.v1_1_0.Sensor\",\"Id\":\"GPU8_Temp\",\"Name\":\"GPU8_Temp\",\"Reading\":\"25\",\"Readin...(truncated)",
+            "error": ""
+          },
+          {
+            "method": "OPTIONS",
+            "path": "/redfish/v1/Chassis/Self/Sensors/GPU8_Temp",
+            "status_code": 501,
+            "ok": false,
+            "body_excerpt": "{\"error\":{\"@Message.ExtendedInfo\":[{\"@odata.type\":\"#Message.v1_0_8.Message\",\"Message\":\"The request to /redfish/v1/Chassis/Self/Sensors/GPU8_Temp cannot be completed because the server does not support the OPTIONS method for any resource\",\"M...(truncated)",
+            "error": ""
+          },
+          {
+            "method": "PATCH",
+            "path": "/redfish/v1/Chassis/Self/Sensors/GPU8_Temp",
+            "status_code": 405,
+            "ok": false,
+            "body_excerpt": "{\"error\":{\"@Message.ExtendedInfo\":[{\"@odata.type\":\"#Message.v1_0_8.Message\",\"Message\":\"The method PATCH is not allowed for the URI /redfish/v1/Chassis/Self/Sensors/GPU8_Temp\",\"MessageArgs\":[\"PATCH\",\"/redfish/v1/Chassis/Self/Sensors/GPU8_Tem...(truncated)",
+            "error": ""
+          }
+        ]
+      },
+      {
+        "path": "/redfish/v1/Chassis/Self/Thermal",
+        "source": "resource_path",
+        "kind": "resource",
+        "action": "",
+        "probes": [
+          {
+            "method": "GET",
+            "path": "/redfish/v1/Chassis/Self/Thermal",
+            "status_code": 200,
+            "ok": true,
+            "body_excerpt": "{\"@odata.context\":\"/redfish/v1/$metadata#Thermal.Thermal\",\"@odata.etag\":\"\\\"1772199546\\\"\",\"@odata.id\":\"/redfish/v1/Chassis/Self/Thermal\",\"@odata.type\":\"#Thermal.v1_5_3.Thermal\",\"Description\":\"Thermal sensor readings\",\"Fans\":[{\"@odata.id\":\"/r...(truncated)",
+            "error": ""
+          },
+          {
+            "method": "OPTIONS",
+            "path": "/redfish/v1/Chassis/Self/Thermal",
+            "status_code": 501,
+            "ok": false,
+            "body_excerpt": "{\"error\":{\"@Message.ExtendedInfo\":[{\"@odata.type\":\"#Message.v1_0_8.Message\",\"Message\":\"The request to /redfish/v1/Chassis/Self/Thermal cannot be completed because the server does not support the OPTIONS method for any resource\",\"MessageArgs...(truncated)",
+            "error": ""
+          },
+          {
+            "method": "PATCH",
+            "path": "/redfish/v1/Chassis/Self/Thermal",
+            "status_code": 405,
+            "ok": false,
+            "body_excerpt": "{\"error\":{\"@Message.ExtendedInfo\":[{\"@odata.type\":\"#Message.v1_0_8.Message\",\"Message\":\"The method PATCH is not allowed for the URI /redfish/v1/Chassis/Self/Thermal\",\"MessageArgs\":[\"PATCH\",\"/redfish/v1/Chassis/Self/Thermal\"],\"MessageId\":\"Htt...(truncated)",
+            "error": ""
+          }
+        ]
+      },
+      {
+        "path": "/redfish/v1/Chassis/Self/Thermal/ThermalManagement",
+        "source": "hint_path",
+        "kind": "resource",
+        "action": "",
+        "probes": [
+          {
+            "method": "GET",
+            "path": "/redfish/v1/Chassis/Self/Thermal/ThermalManagement",
+            "status_code": 404,
+            "ok": false,
+            "body_excerpt": "{\"error\":{\"@Message.ExtendedInfo\":[{\"@odata.type\":\"#Message.v1_0_8.Message\",\"Message\":\"The URI /redfish/v1/Chassis/Self/Thermal/ThermalManagement was not found.\",\"MessageArgs\":[\"/redfish/v1/Chassis/Self/Thermal/ThermalManagement\"],\"MessageI...(truncated)",
+            "error": ""
+          },
+          {
+            "method": "OPTIONS",
+            "path": "/redfish/v1/Chassis/Self/Thermal/ThermalManagement",
+            "status_code": 501,
+            "ok": false,
+            "body_excerpt": "{\"error\":{\"@Message.ExtendedInfo\":[{\"@odata.type\":\"#Message.v1_0_8.Message\",\"Message\":\"The request to /redfish/v1/Chassis/Self/Thermal/ThermalManagement cannot be completed because the server does not support the OPTIONS method for any reso...(truncated)",
+            "error": ""
+          },
+          {
+            "method": "PATCH",
+            "path": "/redfish/v1/Chassis/Self/Thermal/ThermalManagement",
+            "status_code": 404,
+            "ok": false,
+            "body_excerpt": "{\"error\":{\"@Message.ExtendedInfo\":[{\"@odata.type\":\"#Message.v1_0_8.Message\",\"Message\":\"The URI /redfish/v1/Chassis/Self/Thermal/ThermalManagement was not found.\",\"MessageArgs\":[\"/redfish/v1/Chassis/Self/Thermal/ThermalManagement\"],\"MessageI...(truncated)",
+            "error": ""
+          }
+        ]
+      },
+      {
+        "path": "/redfish/v1/Chassis/Self/ThermalSubsystem",
+        "source": "hint_path",
+        "kind": "resource",
+        "action": "",
+        "probes": [
+          {
+            "method": "GET",
+            "path": "/redfish/v1/Chassis/Self/ThermalSubsystem",
+            "status_code": 200,
+            "ok": true,
+            "body_excerpt": "{\"@odata.context\":\"/redfish/v1/$metadata#ThermalSubsystem.ThermalSubsystem\",\"@odata.etag\":\"\\\"1772453777\\\"\",\"@odata.id\":\"/redfish/v1/Chassis/Self/ThermalSubsystem\",\"@odata.type\":\"#ThermalSubsystem.v1_0_0.ThermalSubsystem\",\"Description\":\"Ther...(truncated)",
+            "error": ""
+          },
+          {
+            "method": "OPTIONS",
+            "path": "/redfish/v1/Chassis/Self/ThermalSubsystem",
+            "status_code": 501,
+            "ok": false,
+            "body_excerpt": "{\"error\":{\"@Message.ExtendedInfo\":[{\"@odata.type\":\"#Message.v1_0_8.Message\",\"Message\":\"The request to /redfish/v1/Chassis/Self/ThermalSubsystem cannot be completed because the server does not support the OPTIONS method for any resource\",\"Me...(truncated)",
+            "error": ""
+          },
+          {
+            "method": "PATCH",
+            "path": "/redfish/v1/Chassis/Self/ThermalSubsystem",
+            "status_code": 405,
+            "ok": false,
+            "body_excerpt": "{\"error\":{\"@Message.ExtendedInfo\":[{\"@odata.type\":\"#Message.v1_0_8.Message\",\"Message\":\"The method PATCH is not allowed for the URI /redfish/v1/Chassis/Self/ThermalSubsystem\",\"MessageArgs\":[\"PATCH\",\"/redfish/v1/Chassis/Self/ThermalSubsystem\"...(truncated)",
+            "error": ""
+          }
+        ]
+      },
+      {
+        "path": "/redfish/v1/Chassis/Self/ThermalSubsystem/Fans",
+        "source": "hint_path",
+        "kind": "resource",
+        "action": "",
+        "probes": [
+          {
+            "method": "GET",
+            "path": "/redfish/v1/Chassis/Self/ThermalSubsystem/Fans",
+            "status_code": 200,
+            "ok": true,
+            "body_excerpt": "{\"@odata.context\":\"/redfish/v1/$metadata#FanCollection.FanCollection\",\"@odata.etag\":\"\\\"1772453895\\\"\",\"@odata.id\":\"/redfish/v1/Chassis/Self/ThermalSubsystem/Fans\",\"@odata.type\":\"#FanCollection.FanCollection\",\"Description\":\"Resource Collectio...(truncated)",
+            "error": ""
+          },
+          {
+            "method": "OPTIONS",
+            "path": "/redfish/v1/Chassis/Self/ThermalSubsystem/Fans",
+            "status_code": 501,
+            "ok": false,
+            "body_excerpt": "{\"error\":{\"@Message.ExtendedInfo\":[{\"@odata.type\":\"#Message.v1_0_8.Message\",\"Message\":\"The request to /redfish/v1/Chassis/Self/ThermalSubsystem/Fans cannot be completed because the server does not support the OPTIONS method for any resource...(truncated)",
+            "error": ""
+          },
+          {
+            "method": "PATCH",
+            "path": "/redfish/v1/Chassis/Self/ThermalSubsystem/Fans",
+            "status_code": 405,
+            "ok": false,
+            "body_excerpt": "{\"error\":{\"@Message.ExtendedInfo\":[{\"@odata.type\":\"#Message.v1_0_8.Message\",\"Message\":\"The method PATCH is not allowed for the URI /redfish/v1/Chassis/Self/ThermalSubsystem/Fans\",\"MessageArgs\":[\"PATCH\",\"/redfish/v1/Chassis/Self/ThermalSubsy...(truncated)",
+            "error": ""
+          }
+        ]
+      },
+      {
+        "path": "/redfish/v1/Chassis/Self/ThermalSubsystem/ThermalMetrics",
+        "source": "resource_path",
+        "kind": "resource",
+        "action": "",
+        "probes": [
+          {
+            "method": "GET",
+            "path": "/redfish/v1/Chassis/Self/ThermalSubsystem/ThermalMetrics",
+            "status_code": 200,
+            "ok": true,
+            "body_excerpt": "{\"@odata.context\":\"/redfish/v1/$metadata#ThermalMetrics.ThermalMetrics\",\"@odata.etag\":\"\\\"1772453895\\\"\",\"@odata.id\":\"/redfish/v1/Chassis/Self/ThermalSubsystem/ThermalMetrics\",\"@odata.type\":\"#ThermalMetrics.v1_0_1.ThermalMetrics\",\"Description...(truncated)",
+            "error": ""
+          },
+          {
+            "method": "OPTIONS",
+            "path": "/redfish/v1/Chassis/Self/ThermalSubsystem/ThermalMetrics",
+            "status_code": 501,
+            "ok": false,
+            "body_excerpt": "{\"error\":{\"@Message.ExtendedInfo\":[{\"@odata.type\":\"#Message.v1_0_8.Message\",\"Message\":\"The request to /redfish/v1/Chassis/Self/ThermalSubsystem/ThermalMetrics cannot be completed because the server does not support the OPTIONS method for an...(truncated)",
+            "error": ""
+          },
+          {
+            "method": "PATCH",
+            "path": "/redfish/v1/Chassis/Self/ThermalSubsystem/ThermalMetrics",
+            "status_code": 405,
+            "ok": false,
+            "body_excerpt": "{\"error\":{\"@Message.ExtendedInfo\":[{\"@odata.type\":\"#Message.v1_0_8.Message\",\"Message\":\"The method PATCH is not allowed for the URI /redfish/v1/Chassis/Self/ThermalSubsystem/ThermalMetrics\",\"MessageArgs\":[\"PATCH\",\"/redfish/v1/Chassis/Self/Th...(truncated)",
+            "error": ""
+          }
+        ]
+      },
+      {
+        "path": "/redfish/v1/JsonSchemas/AMIChassisPowerThermal.v1_0_0",
+        "source": "resource_path",
+        "kind": "resource",
+        "action": "",
+        "probes": [
+          {
+            "method": "GET",
+            "path": "/redfish/v1/JsonSchemas/AMIChassisPowerThermal.v1_0_0",
+            "status_code": 200,
+            "ok": true,
+            "body_excerpt": "{\"@odata.context\":\"/redfish/v1/$metadata#JsonSchemaFile.JsonSchemaFile\",\"@odata.etag\":\"\\\"1772453895\\\"\",\"@odata.id\":\"/redfish/v1/JsonSchemas/AMIChassisPowerThermal.v1_0_0\",\"@odata.type\":\"#JsonSchemaFile.v1_1_4.JsonSchemaFile\",\"Description\":\"...(truncated)",
+            "error": ""
+          },
+          {
+            "method": "OPTIONS",
+            "path": "/redfish/v1/JsonSchemas/AMIChassisPowerThermal.v1_0_0",
+            "status_code": 501,
+            "ok": false,
+            "body_excerpt": "{\"error\":{\"@Message.ExtendedInfo\":[{\"@odata.type\":\"#Message.v1_0_8.Message\",\"Message\":\"The request to /redfish/v1/JsonSchemas/AMIChassisPowerThermal.v1_0_0 cannot be completed because the server does not support the OPTIONS method for any r...(truncated)",
+            "error": ""
+          },
+          {
+            "method": "PATCH",
+            "path": "/redfish/v1/JsonSchemas/AMIChassisPowerThermal.v1_0_0",
+            "status_code": 405,
+            "ok": false,
+            "body_excerpt": "{\"error\":{\"@Message.ExtendedInfo\":[{\"@odata.type\":\"#Message.v1_0_8.Message\",\"Message\":\"The method PATCH is not allowed for the URI /redfish/v1/JsonSchemas/AMIChassisPowerThermal.v1_0_0\",\"MessageArgs\":[\"PATCH\",\"/redfish/v1/JsonSchemas/AMICha...(truncated)",
+            "error": ""
+          }
+        ]
+      },
+      {
+        "path": "/redfish/v1/TelemetryService/MetricDefinitions/Fan_Reading",
+        "source": "resource_path",
+        "kind": "resource",
+        "action": "",
+        "probes": [
+          {
+            "method": "GET",
+            "path": "/redfish/v1/TelemetryService/MetricDefinitions/Fan_Reading",
+            "status_code": 200,
+            "ok": true,
+            "body_excerpt": "{\"@odata.context\":\"/redfish/v1/$metadata#MetricDefinition.MetricDefinition\",\"@odata.etag\":\"\\\"1771006466\\\"\",\"@odata.id\":\"/redfish/v1/TelemetryService/MetricDefinitions/Fan_Reading\",\"@odata.type\":\"#MetricDefinition.v1_0_3.MetricDefinition\",\"A...(truncated)",
+            "error": ""
+          },
+          {
+            "method": "OPTIONS",
+            "path": "/redfish/v1/TelemetryService/MetricDefinitions/Fan_Reading",
+            "status_code": 501,
+            "ok": false,
+            "body_excerpt": "{\"error\":{\"@Message.ExtendedInfo\":[{\"@odata.type\":\"#Message.v1_0_8.Message\",\"Message\":\"The request to /redfish/v1/TelemetryService/MetricDefinitions/Fan_Reading cannot be completed because the server does not support the OPTIONS method for ...(truncated)",
+            "error": ""
+          },
+          {
+            "method": "PATCH",
+            "path": "/redfish/v1/TelemetryService/MetricDefinitions/Fan_Reading",
+            "status_code": 405,
+            "ok": false,
+            "body_excerpt": "{\"error\":{\"@Message.ExtendedInfo\":[{\"@odata.type\":\"#Message.v1_0_8.Message\",\"Message\":\"The method PATCH is not allowed for the URI /redfish/v1/TelemetryService/MetricDefinitions/Fan_Reading\",\"MessageArgs\":[\"PATCH\",\"/redfish/v1/TelemetryServ...(truncated)",
+            "error": ""
+          }
+        ]
+      },
+      {
+        "path": "/redfish/v1/TelemetryService/MetricDefinitions/Temperature_Reading",
+        "source": "resource_path",
+        "kind": "resource",
+        "action": "",
+        "probes": [
+          {
+            "method": "GET",
+            "path": "/redfish/v1/TelemetryService/MetricDefinitions/Temperature_Reading",
+            "status_code": 200,
+            "ok": true,
+            "body_excerpt": "{\"@odata.context\":\"/redfish/v1/$metadata#MetricDefinition.MetricDefinition\",\"@odata.etag\":\"\\\"1771006466\\\"\",\"@odata.id\":\"/redfish/v1/TelemetryService/MetricDefinitions/Temperature_Reading\",\"@odata.type\":\"#MetricDefinition.v1_0_3.MetricDefini...(truncated)",
+            "error": ""
+          },
+          {
+            "method": "OPTIONS",
+            "path": "/redfish/v1/TelemetryService/MetricDefinitions/Temperature_Reading",
+            "status_code": 501,
+            "ok": false,
+            "body_excerpt": "{\"error\":{\"@Message.ExtendedInfo\":[{\"@odata.type\":\"#Message.v1_0_8.Message\",\"Message\":\"The request to /redfish/v1/TelemetryService/MetricDefinitions/Temperature_Reading cannot be completed because the server does not support the OPTIONS met...(truncated)",
+            "error": ""
+          },
+          {
+            "method": "PATCH",
+            "path": "/redfish/v1/TelemetryService/MetricDefinitions/Temperature_Reading",
+            "status_code": 405,
+            "ok": false,
+            "body_excerpt": "{\"error\":{\"@Message.ExtendedInfo\":[{\"@odata.type\":\"#Message.v1_0_8.Message\",\"Message\":\"The method PATCH is not allowed for the URI /redfish/v1/TelemetryService/MetricDefinitions/Temperature_Reading\",\"MessageArgs\":[\"PATCH\",\"/redfish/v1/Telem...(truncated)",
+            "error": ""
+          }
+        ]
+      }
+    ],
+    "writable_like": [
+      {
+        "path": "/redfish/v1/Chassis/Self/Sensors/GPU2_TLimitTemp",
+        "probe": {
+          "method": "GET",
+          "path": "/redfish/v1/Chassis/Self/Sensors/GPU2_TLimitTemp",
+          "status_code": 200,
+          "ok": true,
+          "body_excerpt": "{\"@odata.context\":\"/redfish/v1/$metadata#Sensor.Sensor\",\"@odata.etag\":\"\\\"1771959445\\\"\",\"@odata.id\":\"/redfish/v1/Chassis/Self/Sensors/GPU2_TLimitTemp\",\"@odata.type\":\"#Sensor.v1_1_0.Sensor\",\"Id\":\"GPU2_TLimitTemp\",\"Name\":\"GPU2_TLimitTemp\",\"Rea...(truncated)",
+          "error": ""
+        }
+      },
+      {
+        "path": "/redfish/v1/Chassis/Self/Sensors/GPU2_Temp",
+        "probe": {
+          "method": "GET",
+          "path": "/redfish/v1/Chassis/Self/Sensors/GPU2_Temp",
+          "status_code": 200,
+          "ok": true,
+          "body_excerpt": "{\"@odata.context\":\"/redfish/v1/$metadata#Sensor.Sensor\",\"@odata.etag\":\"\\\"1771959445\\\"\",\"@odata.id\":\"/redfish/v1/Chassis/Self/Sensors/GPU2_Temp\",\"@odata.type\":\"#Sensor.v1_1_0.Sensor\",\"Id\":\"GPU2_Temp\",\"Name\":\"GPU2_Temp\",\"Reading\":\"29\",\"Readin...(truncated)",
+          "error": ""
+        }
+      },
+      {
+        "path": "/redfish/v1/Chassis/Self/Sensors/GPU3_TLimitTemp",
+        "probe": {
+          "method": "GET",
+          "path": "/redfish/v1/Chassis/Self/Sensors/GPU3_TLimitTemp",
+          "status_code": 200,
+          "ok": true,
+          "body_excerpt": "{\"@odata.context\":\"/redfish/v1/$metadata#Sensor.Sensor\",\"@odata.etag\":\"\\\"1771959445\\\"\",\"@odata.id\":\"/redfish/v1/Chassis/Self/Sensors/GPU3_TLimitTemp\",\"@odata.type\":\"#Sensor.v1_1_0.Sensor\",\"Id\":\"GPU3_TLimitTemp\",\"Name\":\"GPU3_TLimitTemp\",\"Rea...(truncated)",
+          "error": ""
+        }
+      },
+      {
+        "path": "/redfish/v1/Chassis/Self/Sensors/GPU3_Temp",
+        "probe": {
+          "method": "GET",
+          "path": "/redfish/v1/Chassis/Self/Sensors/GPU3_Temp",
+          "status_code": 200,
+          "ok": true,
+          "body_excerpt": "{\"@odata.context\":\"/redfish/v1/$metadata#Sensor.Sensor\",\"@odata.etag\":\"\\\"1771959445\\\"\",\"@odata.id\":\"/redfish/v1/Chassis/Self/Sensors/GPU3_Temp\",\"@odata.type\":\"#Sensor.v1_1_0.Sensor\",\"Id\":\"GPU3_Temp\",\"Name\":\"GPU3_Temp\",\"Reading\":\"31\",\"Readin...(truncated)",
+          "error": ""
+        }
+      },
+      {
+        "path": "/redfish/v1/Chassis/Self/Sensors/GPU5_TLimitTemp",
+        "probe": {
+          "method": "GET",
+          "path": "/redfish/v1/Chassis/Self/Sensors/GPU5_TLimitTemp",
+          "status_code": 200,
+          "ok": true,
+          "body_excerpt": "{\"@odata.context\":\"/redfish/v1/$metadata#Sensor.Sensor\",\"@odata.etag\":\"\\\"1771959445\\\"\",\"@odata.id\":\"/redfish/v1/Chassis/Self/Sensors/GPU5_TLimitTemp\",\"@odata.type\":\"#Sensor.v1_1_0.Sensor\",\"Id\":\"GPU5_TLimitTemp\",\"Name\":\"GPU5_TLimitTemp\",\"Rea...(truncated)",
+          "error": ""
+        }
+      },
+      {
+        "path": "/redfish/v1/Chassis/Self/Sensors/GPU5_Temp",
+        "probe": {
+          "method": "GET",
+          "path": "/redfish/v1/Chassis/Self/Sensors/GPU5_Temp",
+          "status_code": 200,
+          "ok": true,
+          "body_excerpt": "{\"@odata.context\":\"/redfish/v1/$metadata#Sensor.Sensor\",\"@odata.etag\":\"\\\"1771959445\\\"\",\"@odata.id\":\"/redfish/v1/Chassis/Self/Sensors/GPU5_Temp\",\"@odata.type\":\"#Sensor.v1_1_0.Sensor\",\"Id\":\"GPU5_Temp\",\"Name\":\"GPU5_Temp\",\"Reading\":\"28\",\"Readin...(truncated)",
+          "error": ""
+        }
+      },
+      {
+        "path": "/redfish/v1/Chassis/Self/Sensors/GPU8_TLimitTemp",
+        "probe": {
+          "method": "GET",
+          "path": "/redfish/v1/Chassis/Self/Sensors/GPU8_TLimitTemp",
+          "status_code": 200,
+          "ok": true,
+          "body_excerpt": "{\"@odata.context\":\"/redfish/v1/$metadata#Sensor.Sensor\",\"@odata.etag\":\"\\\"1771959445\\\"\",\"@odata.id\":\"/redfish/v1/Chassis/Self/Sensors/GPU8_TLimitTemp\",\"@odata.type\":\"#Sensor.v1_1_0.Sensor\",\"Id\":\"GPU8_TLimitTemp\",\"Name\":\"GPU8_TLimitTemp\",\"Rea...(truncated)",
+          "error": ""
+        }
+      },
+      {
+        "path": "/redfish/v1/Chassis/Self/Sensors/GPU8_Temp",
+        "probe": {
+          "method": "GET",
+          "path": "/redfish/v1/Chassis/Self/Sensors/GPU8_Temp",
+          "status_code": 200,
+          "ok": true,
+          "body_excerpt": "{\"@odata.context\":\"/redfish/v1/$metadata#Sensor.Sensor\",\"@odata.etag\":\"\\\"1771959445\\\"\",\"@odata.id\":\"/redfish/v1/Chassis/Self/Sensors/GPU8_Temp\",\"@odata.type\":\"#Sensor.v1_1_0.Sensor\",\"Id\":\"GPU8_Temp\",\"Name\":\"GPU8_Temp\",\"Reading\":\"25\",\"Readin...(truncated)",
+          "error": ""
+        }
+      },
+      {
+        "path": "/redfish/v1/Chassis/Self/Thermal",
+        "probe": {
+          "method": "GET",
+          "path": "/redfish/v1/Chassis/Self/Thermal",
+          "status_code": 200,
+          "ok": true,
+          "body_excerpt": "{\"@odata.context\":\"/redfish/v1/$metadata#Thermal.Thermal\",\"@odata.etag\":\"\\\"1772199546\\\"\",\"@odata.id\":\"/redfish/v1/Chassis/Self/Thermal\",\"@odata.type\":\"#Thermal.v1_5_3.Thermal\",\"Description\":\"Thermal sensor readings\",\"Fans\":[{\"@odata.id\":\"/r...(truncated)",
+          "error": ""
+        }
+      },
+      {
+        "path": "/redfish/v1/Chassis/Self/ThermalSubsystem",
+        "probe": {
+          "method": "GET",
+          "path": "/redfish/v1/Chassis/Self/ThermalSubsystem",
+          "status_code": 200,
+          "ok": true,
+          "body_excerpt": "{\"@odata.context\":\"/redfish/v1/$metadata#ThermalSubsystem.ThermalSubsystem\",\"@odata.etag\":\"\\\"1772453777\\\"\",\"@odata.id\":\"/redfish/v1/Chassis/Self/ThermalSubsystem\",\"@odata.type\":\"#ThermalSubsystem.v1_0_0.ThermalSubsystem\",\"Description\":\"Ther...(truncated)",
+          "error": ""
+        }
+      },
+      {
+        "path": "/redfish/v1/Chassis/Self/ThermalSubsystem/Fans",
+        "probe": {
+          "method": "GET",
+          "path": "/redfish/v1/Chassis/Self/ThermalSubsystem/Fans",
+          "status_code": 200,
+          "ok": true,
+          "body_excerpt": "{\"@odata.context\":\"/redfish/v1/$metadata#FanCollection.FanCollection\",\"@odata.etag\":\"\\\"1772453895\\\"\",\"@odata.id\":\"/redfish/v1/Chassis/Self/ThermalSubsystem/Fans\",\"@odata.type\":\"#FanCollection.FanCollection\",\"Description\":\"Resource Collectio...(truncated)",
+          "error": ""
+        }
+      },
+      {
+        "path": "/redfish/v1/Chassis/Self/ThermalSubsystem/ThermalMetrics",
+        "probe": {
+          "method": "GET",
+          "path": "/redfish/v1/Chassis/Self/ThermalSubsystem/ThermalMetrics",
+          "status_code": 200,
+          "ok": true,
+          "body_excerpt": "{\"@odata.context\":\"/redfish/v1/$metadata#ThermalMetrics.ThermalMetrics\",\"@odata.etag\":\"\\\"1772453895\\\"\",\"@odata.id\":\"/redfish/v1/Chassis/Self/ThermalSubsystem/ThermalMetrics\",\"@odata.type\":\"#ThermalMetrics.v1_0_1.ThermalMetrics\",\"Description...(truncated)",
+          "error": ""
+        }
+      },
+      {
+        "path": "/redfish/v1/JsonSchemas/AMIChassisPowerThermal.v1_0_0",
+        "probe": {
+          "method": "GET",
+          "path": "/redfish/v1/JsonSchemas/AMIChassisPowerThermal.v1_0_0",
+          "status_code": 200,
+          "ok": true,
+          "body_excerpt": "{\"@odata.context\":\"/redfish/v1/$metadata#JsonSchemaFile.JsonSchemaFile\",\"@odata.etag\":\"\\\"1772453895\\\"\",\"@odata.id\":\"/redfish/v1/JsonSchemas/AMIChassisPowerThermal.v1_0_0\",\"@odata.type\":\"#JsonSchemaFile.v1_1_4.JsonSchemaFile\",\"Description\":\"...(truncated)",
+          "error": ""
+        }
+      },
+      {
+        "path": "/redfish/v1/TelemetryService/MetricDefinitions/Fan_Reading",
+        "probe": {
+          "method": "GET",
+          "path": "/redfish/v1/TelemetryService/MetricDefinitions/Fan_Reading",
+          "status_code": 200,
+          "ok": true,
+          "body_excerpt": "{\"@odata.context\":\"/redfish/v1/$metadata#MetricDefinition.MetricDefinition\",\"@odata.etag\":\"\\\"1771006466\\\"\",\"@odata.id\":\"/redfish/v1/TelemetryService/MetricDefinitions/Fan_Reading\",\"@odata.type\":\"#MetricDefinition.v1_0_3.MetricDefinition\",\"A...(truncated)",
+          "error": ""
+        }
+      },
+      {
+        "path": "/redfish/v1/TelemetryService/MetricDefinitions/Temperature_Reading",
+        "probe": {
+          "method": "GET",
+          "path": "/redfish/v1/TelemetryService/MetricDefinitions/Temperature_Reading",
+          "status_code": 200,
+          "ok": true,
+          "body_excerpt": "{\"@odata.context\":\"/redfish/v1/$metadata#MetricDefinition.MetricDefinition\",\"@odata.etag\":\"\\\"1771006466\\\"\",\"@odata.id\":\"/redfish/v1/TelemetryService/MetricDefinitions/Temperature_Reading\",\"@odata.type\":\"#MetricDefinition.v1_0_3.MetricDefini...(truncated)",
+          "error": ""
+        }
+      }
+    ]
+  },
+  "oem_stage2": {
+    "seed_paths": [
+      "/redfish/v1/AccountService/Oem/Ami/Configurations",
+      "/redfish/v1/EventService/Oem/Ami/SMTP/Certificates",
+      "/redfish/v1/JsonSchemas/AMIAccountService.v1_0_0",
+      "/redfish/v1/JsonSchemas/AMIAccountServiceConfigurations.v1_0_0",
+      "/redfish/v1/JsonSchemas/AMIAdvanceRADIUSSetting.v1_0_0",
+      "/redfish/v1/JsonSchemas/AMIBIOSInventoryCRC.v1_0_0",
+      "/redfish/v1/JsonSchemas/AMIBiosTable.v1_0_0",
+      "/redfish/v1/JsonSchemas/AMIBiosTableTags.v1_0_0",
+      "/redfish/v1/JsonSchemas/AMICaCert.v1_0_0",
+      "/redfish/v1/JsonSchemas/AMICertificateCollection",
+      "/redfish/v1/JsonSchemas/AMIChassisPowerThermal.v1_0_0",
+      "/redfish/v1/JsonSchemas/AMIConfigurations.v1_0_0",
+      "/redfish/v1/JsonSchemas/AMIDNSConfiguration.v1_0_0",
+      "/redfish/v1/JsonSchemas/AMIDrive.v1.0.0",
+      "/redfish/v1/JsonSchemas/AMIEventDestination.v1_0_0",
+      "/redfish/v1/JsonSchemas/AMIEventService",
+      "/redfish/v1/JsonSchemas/AMIEventService.v1_0_0",
+      "/redfish/v1/JsonSchemas/AMIExternalAccountProvider.v1_0_0",
+      "/redfish/v1/JsonSchemas/AMIIPV6.v1_0_0",
+      "/redfish/v1/JsonSchemas/AMIInventoryStatus.v1_0_0",
+      "/redfish/v1/JsonSchemas/AMIManager.v1_0_0",
+      "/redfish/v1/JsonSchemas/AMIManagerAccount.v1_0_0",
+      "/redfish/v1/JsonSchemas/AMIMappingOut.v1_0_0",
+      "/redfish/v1/JsonSchemas/AMISMTP.v1_0_0",
+      "/redfish/v1/JsonSchemas/AMISMTPCertificate",
+      "/redfish/v1/JsonSchemas/AMISMTPCertificate.v1_0_0",
+      "/redfish/v1/JsonSchemas/AMISMTPCertificateCollection",
+      "/redfish/v1/JsonSchemas/AMIServiceRoot.v1_0_0",
+      "/redfish/v1/JsonSchemas/AMIStorage.v1_0_0",
+      "/redfish/v1/JsonSchemas/AMITriggers.v1_0_0",
+      "/redfish/v1/JsonSchemas/AMIUpdateService.v1_0_0",
+      "/redfish/v1/JsonSchemas/AMIVirtualMedia.v1_0_0",
+      "/redfish/v1/JsonSchemas/AmiBios.v1_0_0",
+      "/redfish/v1/Oem/Ami/Configurations",
+      "/redfish/v1/Oem/Ami/InventoryData/Status",
+      "/redfish/v1/Oem/Ami/MappingOut",
+      "/redfish/v1/Registries/Ami.1.0.0",
+      "/redfish/v1/Registries/AmiOem.1.0.0",
+      "/redfish/v1/Systems/Self/Oem/Ami/Inventory/Crc"
+    ],
+    "visited_count": 39,
+    "resource_count": 39,
+    "errors": [],
+    "resources": [
+      {
+        "path": "/redfish/v1/AccountService/Oem/Ami/Configurations",
+        "odata_type": "#AMIAccountServiceConfigurations.v1_0_0.AMIAccountServiceConfigurations",
+        "name": "AccountService Configurations",
+        "id": "Configurations",
+        "keys": [
+          "@odata.context",
+          "@odata.etag",
+          "@odata.id",
+          "@odata.type",
+          "Id",
+          "Name",
+          "PAMEnabled",
+          "PAMOrder"
+        ],
+        "actions": []
+      },
+      {
+        "path": "/redfish/v1/EventService/Oem/Ami/SMTP/Certificates",
+        "odata_type": "#AMISMTPCertificateCollection.AMISMTPCertificateCollection",
+        "name": "SMTP Certificate Collection",
+        "id": null,
+        "keys": [
+          "@odata.context",
+          "@odata.etag",
+          "@odata.id",
+          "@odata.type",
+          "Description",
+          "Members",
+          "Members@odata.count",
+          "Name"
+        ],
+        "actions": []
+      },
+      {
+        "path": "/redfish/v1/JsonSchemas/AMIAccountService.v1_0_0",
+        "odata_type": "#JsonSchemaFile.v1_1_4.JsonSchemaFile",
+        "name": "AMIAccountService.v1_0_0 schema",
+        "id": "AMIAccountService.v1_0_0",
+        "keys": [
+          "@odata.context",
+          "@odata.etag",
+          "@odata.id",
+          "@odata.type",
+          "Description",
+          "Id",
+          "Languages",
+          "Location",
+          "Name",
+          "Schema"
+        ],
+        "actions": []
+      },
+      {
+        "path": "/redfish/v1/JsonSchemas/AMIAccountServiceConfigurations.v1_0_0",
+        "odata_type": "#JsonSchemaFile.v1_1_4.JsonSchemaFile",
+        "name": "AMIAccountServiceConfigurations.v1_0_0 schema",
+        "id": "AMIAccountServiceConfigurations.v1_0_0",
+        "keys": [
+          "@odata.context",
+          "@odata.etag",
+          "@odata.id",
+          "@odata.type",
+          "Description",
+          "Id",
+          "Languages",
+          "Location",
+          "Name",
+          "Schema"
+        ],
+        "actions": []
+      },
+      {
+        "path": "/redfish/v1/JsonSchemas/AMIAdvanceRADIUSSetting.v1_0_0",
+        "odata_type": "#JsonSchemaFile.v1_1_4.JsonSchemaFile",
+        "name": "AMIAdvanceRADIUSSetting.v1_0_0 schema",
+        "id": "AMIAdvanceRADIUSSetting.v1_0_0",
+        "keys": [
+          "@odata.context",
+          "@odata.etag",
+          "@odata.id",
+          "@odata.type",
+          "Description",
+          "Id",
+          "Languages",
+          "Location",
+          "Name",
+          "Schema"
+        ],
+        "actions": []
+      },
+      {
+        "path": "/redfish/v1/JsonSchemas/AMIBIOSInventoryCRC.v1_0_0",
+        "odata_type": "#JsonSchemaFile.v1_1_4.JsonSchemaFile",
+        "name": "AMIBIOSInventoryCRC.v1_0_0 schema",
+        "id": "AMIBIOSInventoryCRC.v1_0_0",
+        "keys": [
+          "@odata.context",
+          "@odata.etag",
+          "@odata.id",
+          "@odata.type",
+          "Description",
+          "Id",
+          "Languages",
+          "Location",
+          "Name",
+          "Schema"
+        ],
+        "actions": []
+      },
+      {
+        "path": "/redfish/v1/JsonSchemas/AMIBiosTable.v1_0_0",
+        "odata_type": "#JsonSchemaFile.v1_1_4.JsonSchemaFile",
+        "name": "AMIBiosTable.v1_0_0 schema",
+        "id": "AMIBiosTable.v1_0_0",
+        "keys": [
+          "@odata.context",
+          "@odata.etag",
+          "@odata.id",
+          "@odata.type",
+          "Description",
+          "Id",
+          "Languages",
+          "Location",
+          "Name",
+          "Schema"
+        ],
+        "actions": []
+      },
+      {
+        "path": "/redfish/v1/JsonSchemas/AMIBiosTableTags.v1_0_0",
+        "odata_type": "#JsonSchemaFile.v1_1_4.JsonSchemaFile",
+        "name": "AMIBiosTableTags.v1_0_0 schema",
+        "id": "AMIBiosTableTags.v1_0_0",
+        "keys": [
+          "@odata.context",
+          "@odata.etag",
+          "@odata.id",
+          "@odata.type",
+          "Description",
+          "Id",
+          "Languages",
+          "Location",
+          "Name",
+          "Schema"
+        ],
+        "actions": []
+      },
+      {
+        "path": "/redfish/v1/JsonSchemas/AMICaCert.v1_0_0",
+        "odata_type": "#JsonSchemaFile.v1_1_4.JsonSchemaFile",
+        "name": "AMICaCert.v1_0_0 schema",
+        "id": "AMICaCert.v1_0_0",
+        "keys": [
+          "@odata.context",
+          "@odata.etag",
+          "@odata.id",
+          "@odata.type",
+          "Description",
+          "Id",
+          "Languages",
+          "Location",
+          "Name",
+          "Schema"
+        ],
+        "actions": []
+      },
+      {
+        "path": "/redfish/v1/JsonSchemas/AMICertificateCollection",
+        "odata_type": "#JsonSchemaFile.v1_1_4.JsonSchemaFile",
+        "name": "AMICertificateCollection schema",
+        "id": "AMICertificateCollection",
+        "keys": [
+          "@odata.context",
+          "@odata.etag",
+          "@odata.id",
+          "@odata.type",
+          "Description",
+          "Id",
+          "Languages",
+          "Location",
+          "Name",
+          "Schema"
+        ],
+        "actions": []
+      },
+      {
+        "path": "/redfish/v1/JsonSchemas/AMIChassisPowerThermal.v1_0_0",
+        "odata_type": "#JsonSchemaFile.v1_1_4.JsonSchemaFile",
+        "name": "AMIChassisPowerThermal.v1_0_0 schema",
+        "id": "AMIChassisPowerThermal.v1_0_0",
+        "keys": [
+          "@odata.context",
+          "@odata.etag",
+          "@odata.id",
+          "@odata.type",
+          "Description",
+          "Id",
+          "Languages",
+          "Location",
+          "Name",
+          "Schema"
+        ],
+        "actions": []
+      },
+      {
+        "path": "/redfish/v1/JsonSchemas/AMIConfigurations.v1_0_0",
+        "odata_type": "#JsonSchemaFile.v1_1_4.JsonSchemaFile",
+        "name": "AMIConfigurations.v1_0_0 schema",
+        "id": "AMIConfigurations.v1_0_0",
+        "keys": [
+          "@odata.context",
+          "@odata.etag",
+          "@odata.id",
+          "@odata.type",
+          "Description",
+          "Id",
+          "Languages",
+          "Location",
+          "Name",
+          "Schema"
+        ],
+        "actions": []
+      },
+      {
+        "path": "/redfish/v1/JsonSchemas/AMIDNSConfiguration.v1_0_0",
+        "odata_type": "#JsonSchemaFile.v1_1_4.JsonSchemaFile",
+        "name": "AMIDNSConfiguration.v1_0_0 schema",
+        "id": "AMIDNSConfiguration.v1_0_0",
+        "keys": [
+          "@odata.context",
+          "@odata.etag",
+          "@odata.id",
+          "@odata.type",
+          "Description",
+          "Id",
+          "Languages",
+          "Location",
+          "Name",
+          "Schema"
+        ],
+        "actions": []
+      },
+      {
+        "path": "/redfish/v1/JsonSchemas/AMIDrive.v1.0.0",
+        "odata_type": "#JsonSchemaFile.v1_1_4.JsonSchemaFile",
+        "name": "AMIDrive.v1.0.0 schema",
+        "id": "AMIDrive.v1.0.0",
+        "keys": [
+          "@odata.context",
+          "@odata.etag",
+          "@odata.id",
+          "@odata.type",
+          "Description",
+          "Id",
+          "Languages",
+          "Location",
+          "Name",
+          "Schema"
+        ],
+        "actions": []
+      },
+      {
+        "path": "/redfish/v1/JsonSchemas/AMIEventDestination.v1_0_0",
+        "odata_type": "#JsonSchemaFile.v1_1_4.JsonSchemaFile",
+        "name": "AMIEventDestination.v1_0_0 schema",
+        "id": "AMIEventDestination.v1_0_0",
+        "keys": [
+          "@odata.context",
+          "@odata.etag",
+          "@odata.id",
+          "@odata.type",
+          "Description",
+          "Id",
+          "Languages",
+          "Location",
+          "Name",
+          "Schema"
+        ],
+        "actions": []
+      },
+      {
+        "path": "/redfish/v1/JsonSchemas/AMIEventService",
+        "odata_type": "#JsonSchemaFile.v1_1_4.JsonSchemaFile",
+        "name": "AMIEventService schema",
+        "id": "AMIEventService",
+        "keys": [
+          "@odata.context",
+          "@odata.etag",
+          "@odata.id",
+          "@odata.type",
+          "Description",
+          "Id",
+          "Languages",
+          "Location",
+          "Name",
+          "Schema"
+        ],
+        "actions": []
+      },
+      {
+        "path": "/redfish/v1/JsonSchemas/AMIEventService.v1_0_0",
+        "odata_type": "#JsonSchemaFile.v1_1_4.JsonSchemaFile",
+        "name": "AMIEventService.v1_0_0 schema",
+        "id": "AMIEventService.v1_0_0",
+        "keys": [
+          "@odata.context",
+          "@odata.etag",
+          "@odata.id",
+          "@odata.type",
+          "Description",
+          "Id",
+          "Languages",
+          "Location",
+          "Name",
+          "Schema"
+        ],
+        "actions": []
+      },
+      {
+        "path": "/redfish/v1/JsonSchemas/AMIExternalAccountProvider.v1_0_0",
+        "odata_type": "#JsonSchemaFile.v1_1_4.JsonSchemaFile",
+        "name": "AMIExternalAccountProvider.v1_0_0 schema",
+        "id": "AMIExternalAccountProvider.v1_0_0",
+        "keys": [
+          "@odata.context",
+          "@odata.etag",
+          "@odata.id",
+          "@odata.type",
+          "Description",
+          "Id",
+          "Languages",
+          "Location",
+          "Name",
+          "Schema"
+        ],
+        "actions": []
+      },
+      {
+        "path": "/redfish/v1/JsonSchemas/AMIIPV6.v1_0_0",
+        "odata_type": "#JsonSchemaFile.v1_1_4.JsonSchemaFile",
+        "name": "AMIIPV6.v1_0_0 schema",
+        "id": "AMIIPV6.v1_0_0",
+        "keys": [
+          "@odata.context",
+          "@odata.etag",
+          "@odata.id",
+          "@odata.type",
+          "Description",
+          "Id",
+          "Languages",
+          "Location",
+          "Name",
+          "Schema"
+        ],
+        "actions": []
+      },
+      {
+        "path": "/redfish/v1/JsonSchemas/AMIInventoryStatus.v1_0_0",
+        "odata_type": "#JsonSchemaFile.v1_1_4.JsonSchemaFile",
+        "name": "AMIInventoryStatus.v1_0_0 schema",
+        "id": "AMIInventoryStatus.v1_0_0",
+        "keys": [
+          "@odata.context",
+          "@odata.etag",
+          "@odata.id",
+          "@odata.type",
+          "Description",
+          "Id",
+          "Languages",
+          "Location",
+          "Name",
+          "Schema"
+        ],
+        "actions": []
+      },
+      {
+        "path": "/redfish/v1/JsonSchemas/AMIManager.v1_0_0",
+        "odata_type": "#JsonSchemaFile.v1_1_4.JsonSchemaFile",
+        "name": "AMIManager.v1_0_0 schema",
+        "id": "AMIManager.v1_0_0",
+        "keys": [
+          "@odata.context",
+          "@odata.etag",
+          "@odata.id",
+          "@odata.type",
+          "Description",
+          "Id",
+          "Languages",
+          "Location",
+          "Name",
+          "Schema"
+        ],
+        "actions": []
+      },
+      {
+        "path": "/redfish/v1/JsonSchemas/AMIManagerAccount.v1_0_0",
+        "odata_type": "#JsonSchemaFile.v1_1_4.JsonSchemaFile",
+        "name": "AMIManagerAccount.v1_0_0 schema",
+        "id": "AMIManagerAccount.v1_0_0",
+        "keys": [
+          "@odata.context",
+          "@odata.etag",
+          "@odata.id",
+          "@odata.type",
+          "Description",
+          "Id",
+          "Languages",
+          "Location",
+          "Name",
+          "Schema"
+        ],
+        "actions": []
+      },
+      {
+        "path": "/redfish/v1/JsonSchemas/AMIMappingOut.v1_0_0",
+        "odata_type": "#JsonSchemaFile.v1_1_4.JsonSchemaFile",
+        "name": "AMIMappingOut.v1_0_0 schema",
+        "id": "AMIMappingOut.v1_0_0",
+        "keys": [
+          "@odata.context",
+          "@odata.etag",
+          "@odata.id",
+          "@odata.type",
+          "Description",
+          "Id",
+          "Languages",
+          "Location",
+          "Name",
+          "Schema"
+        ],
+        "actions": []
+      },
+      {
+        "path": "/redfish/v1/JsonSchemas/AMISMTP.v1_0_0",
+        "odata_type": "#JsonSchemaFile.v1_1_4.JsonSchemaFile",
+        "name": "AMISMTP.v1_0_0 schema",
+        "id": "AMISMTP.v1_0_0",
+        "keys": [
+          "@odata.context",
+          "@odata.etag",
+          "@odata.id",
+          "@odata.type",
+          "Description",
+          "Id",
+          "Languages",
+          "Location",
+          "Name",
+          "Schema"
+        ],
+        "actions": []
+      },
+      {
+        "path": "/redfish/v1/JsonSchemas/AMISMTPCertificate",
+        "odata_type": "#JsonSchemaFile.v1_1_4.JsonSchemaFile",
+        "name": "AMISMTPCertificate schema",
+        "id": "AMISMTPCertificate",
+        "keys": [
+          "@odata.context",
+          "@odata.etag",
+          "@odata.id",
+          "@odata.type",
+          "Description",
+          "Id",
+          "Languages",
+          "Location",
+          "Name",
+          "Schema"
+        ],
+        "actions": []
+      },
+      {
+        "path": "/redfish/v1/JsonSchemas/AMISMTPCertificate.v1_0_0",
+        "odata_type": "#JsonSchemaFile.v1_1_4.JsonSchemaFile",
+        "name": "AMISMTPCertificate.v1_0_0 schema",
+        "id": "AMISMTPCertificate.v1_0_0",
+        "keys": [
+          "@odata.context",
+          "@odata.etag",
+          "@odata.id",
+          "@odata.type",
+          "Description",
+          "Id",
+          "Languages",
+          "Location",
+          "Name",
+          "Schema"
+        ],
+        "actions": []
+      },
+      {
+        "path": "/redfish/v1/JsonSchemas/AMISMTPCertificateCollection",
+        "odata_type": "#JsonSchemaFile.v1_1_4.JsonSchemaFile",
+        "name": "AMISMTPCertificateCollection schema",
+        "id": "AMISMTPCertificateCollection",
+        "keys": [
+          "@odata.context",
+          "@odata.etag",
+          "@odata.id",
+          "@odata.type",
+          "Description",
+          "Id",
+          "Languages",
+          "Location",
+          "Name",
+          "Schema"
+        ],
+        "actions": []
+      },
+      {
+        "path": "/redfish/v1/JsonSchemas/AMIServiceRoot.v1_0_0",
+        "odata_type": "#JsonSchemaFile.v1_1_4.JsonSchemaFile",
+        "name": "AMIServiceRoot.v1_0_0 schema",
+        "id": "AMIServiceRoot.v1_0_0",
+        "keys": [
+          "@odata.context",
+          "@odata.etag",
+          "@odata.id",
+          "@odata.type",
+          "Description",
+          "Id",
+          "Languages",
+          "Location",
+          "Name",
+          "Schema"
+        ],
+        "actions": []
+      },
+      {
+        "path": "/redfish/v1/JsonSchemas/AMIStorage.v1_0_0",
+        "odata_type": "#JsonSchemaFile.v1_1_4.JsonSchemaFile",
+        "name": "AMIStorage.v1_0_0 schema",
+        "id": "AMIStorage.v1_0_0",
+        "keys": [
+          "@odata.context",
+          "@odata.etag",
+          "@odata.id",
+          "@odata.type",
+          "Description",
+          "Id",
+          "Languages",
+          "Location",
+          "Name",
+          "Schema"
+        ],
+        "actions": []
+      },
+      {
+        "path": "/redfish/v1/JsonSchemas/AMITriggers.v1_0_0",
+        "odata_type": "#JsonSchemaFile.v1_1_4.JsonSchemaFile",
+        "name": "AMITriggers.v1_0_0 schema",
+        "id": "AMITriggers.v1_0_0",
+        "keys": [
+          "@odata.context",
+          "@odata.etag",
+          "@odata.id",
+          "@odata.type",
+          "Description",
+          "Id",
+          "Languages",
+          "Location",
+          "Name",
+          "Schema"
+        ],
+        "actions": []
+      },
+      {
+        "path": "/redfish/v1/JsonSchemas/AMIUpdateService.v1_0_0",
+        "odata_type": "#JsonSchemaFile.v1_1_4.JsonSchemaFile",
+        "name": "AMIUpdateService.v1_0_0 schema",
+        "id": "AMIUpdateService.v1_0_0",
+        "keys": [
+          "@odata.context",
+          "@odata.etag",
+          "@odata.id",
+          "@odata.type",
+          "Description",
+          "Id",
+          "Languages",
+          "Location",
+          "Name",
+          "Schema"
+        ],
+        "actions": []
+      },
+      {
+        "path": "/redfish/v1/JsonSchemas/AMIVirtualMedia.v1_0_0",
+        "odata_type": "#JsonSchemaFile.v1_1_4.JsonSchemaFile",
+        "name": "AMIVirtualMedia.v1_0_0 schema",
+        "id": "AMIVirtualMedia.v1_0_0",
+        "keys": [
+          "@odata.context",
+          "@odata.etag",
+          "@odata.id",
+          "@odata.type",
+          "Description",
+          "Id",
+          "Languages",
+          "Location",
+          "Name",
+          "Schema"
+        ],
+        "actions": []
+      },
+      {
+        "path": "/redfish/v1/JsonSchemas/AmiBios.v1_0_0",
+        "odata_type": "#JsonSchemaFile.v1_1_4.JsonSchemaFile",
+        "name": "AmiBios.v1_0_0 schema",
+        "id": "AmiBios.v1_0_0",
+        "keys": [
+          "@odata.context",
+          "@odata.etag",
+          "@odata.id",
+          "@odata.type",
+          "Description",
+          "Id",
+          "Languages",
+          "Location",
+          "Name",
+          "Schema"
+        ],
+        "actions": []
+      },
+      {
+        "path": "/redfish/v1/Oem/Ami/Configurations",
+        "odata_type": "#AMIConfigurations.v1_0_0.AMIConfigurations",
+        "name": "Configurations",
+        "id": "Configurations",
+        "keys": [
+          "@odata.context",
+          "@odata.etag",
+          "@odata.id",
+          "@odata.type",
+          "CertificateAuthorityUrl",
+          "Id",
+          "Name"
+        ],
+        "actions": []
+      },
+      {
+        "path": "/redfish/v1/Oem/Ami/InventoryData/Status",
+        "odata_type": "#AMIInventoryStatus.v1_0_0.AMIInventoryStatus",
+        "name": "PostStatus for Bios Inventory file",
+        "id": "InventoryDataStatus",
+        "keys": [
+          "@odata.context",
+          "@odata.etag",
+          "@odata.id",
+          "@odata.type",
+          "Description",
+          "Id",
+          "InventoryData",
+          "Name"
+        ],
+        "actions": []
+      },
+      {
+        "path": "/redfish/v1/Oem/Ami/MappingOut",
+        "odata_type": "#AMIMappingOut.v1_0_0.AMIMappingOut",
+        "name": "Bios ChangeState MappingOut",
+        "id": "MappingOut",
+        "keys": [
+          "@odata.context",
+          "@odata.etag",
+          "@odata.id",
+          "@odata.type",
+          "DeviceList",
+          "Id",
+          "Name"
+        ],
+        "actions": []
+      },
+      {
+        "path": "/redfish/v1/Registries/Ami.1.0.0",
+        "odata_type": "#MessageRegistryFile.v1_1_3.MessageRegistryFile",
+        "name": "Ami.1.0.0 Registry",
+        "id": "Ami.1.0.0",
+        "keys": [
+          "@odata.context",
+          "@odata.etag",
+          "@odata.id",
+          "@odata.type",
+          "Description",
+          "Id",
+          "Languages",
+          "Location",
+          "Name",
+          "Registry"
+        ],
+        "actions": []
+      },
+      {
+        "path": "/redfish/v1/Registries/AmiOem.1.0.0",
+        "odata_type": "#MessageRegistryFile.v1_1_3.MessageRegistryFile",
+        "name": "AmiOem.1.0.0 Registry",
+        "id": "AmiOem.1.0.0",
+        "keys": [
+          "@odata.context",
+          "@odata.etag",
+          "@odata.id",
+          "@odata.type",
+          "Description",
+          "Id",
+          "Languages",
+          "Location",
+          "Name",
+          "Registry"
+        ],
+        "actions": []
+      },
+      {
+        "path": "/redfish/v1/Systems/Self/Oem/Ami/Inventory/Crc",
+        "odata_type": "#InventoryCRC.v1_0_0.InventoryCRC",
+        "name": "Inventory CRC",
+        "id": "InventoryCRC",
+        "keys": [
+          "@odata.context",
+          "@odata.etag",
+          "@odata.id",
+          "@odata.type",
+          "GroupCrcList",
+          "Id",
+          "Name"
+        ],
+        "actions": []
+      }
+    ],
+    "write_probe": {
+      "enabled": true,
+      "candidate_count": 0,
+      "results": []
+    }
+  },
+  "candidate_count": 20,
+  "finished_at": "2026-03-02T12:35:47.634163"
+}

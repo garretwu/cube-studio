@@ -1,33 +1,271 @@
-﻿"""
-VLLM Latency Scenarios 鈥?RC-1, RC-3~RC-6 浜斾釜 vLLM 寤惰繜鍦烘櫙
-
-蹇呴€夊満鏅細鍒堕€?vLLM 鎺ㄧ悊寤惰繜涓嶇ǔ瀹氥€?
-
-鍦烘櫙鍒楄〃锛?
-- RC-1: gpu_contention - GPU 璧勬簮浜夋姠
-- RC-3: storage_io_interference - 瀛樺偍 I/O 骞叉壈
-- RC-4: platform_cascade - 骞冲彴缁勪欢绾ц仈寤惰繜
-- RC-5: os_resource_pressure - OS 璧勬簮鍘嬪姏
-- RC-6: thermal_throttling - 鐑檷棰?
+"""
+VLLM Latency Scenarios - RC-1~RC-6.
 """
 from __future__ import annotations
 
+import json
 import logging
+import re
 from typing import Any
 
-from fault_injector.scenarios.base import BaseScenario, FaultContext
 from fault_injector.config.schema import InjectResult, RecoverResult
+from fault_injector.scenarios.base import BaseScenario, FaultContext
 
 logger = logging.getLogger(__name__)
 
 
-# ============================================================================
-# RC-2: Network Jitter
-# ============================================================================
+_FAULT_TOKEN_RE = re.compile(r"[^a-zA-Z0-9_-]+")
+
+
+def _safe_fault_token(fault_id: str) -> str:
+    token = _FAULT_TOKEN_RE.sub("_", fault_id)
+    return token or "fault"
+
+
+def _pid_file_path(fault_id: str, suffix: str) -> str:
+    return f"/tmp/fault_injector_{_safe_fault_token(fault_id)}_{suffix}.pid"
+
+
+def _python_c_command(code: str, interpreter: str) -> str:
+    escaped = code.replace("\\", "\\\\").replace('"', '\\"')
+    return f'{interpreter} -c "{escaped}"'
+
+
+def _pid_recover_command(pid_file: str, interpreter: str) -> str:
+    code = (
+        "import os,signal\n"
+        f"pid_file = {pid_file!r}\n"
+        "if os.path.exists(pid_file):\n"
+        "    with open(pid_file, 'r', encoding='utf-8') as f:\n"
+        "        raw = f.read().strip()\n"
+        "    if raw:\n"
+        "        pid = int(raw)\n"
+        "        try:\n"
+        "            os.kill(pid, signal.SIGTERM)\n"
+        "            print('killed')\n"
+        "        except ProcessLookupError:\n"
+        "            print('already_stopped')\n"
+        "    else:\n"
+        "        print('already_stopped')\n"
+        "    try:\n"
+        "        os.remove(pid_file)\n"
+        "    except FileNotFoundError:\n"
+        "        pass\n"
+        "else:\n"
+        "    print('pid_missing')\n"
+    )
+    return _python_c_command(code, interpreter=interpreter)
+
+
+def _mark_recovered_or_failed(ctx: FaultContext, success: bool) -> None:
+    if success:
+        ctx.rollback.mark_recovered(ctx.fault_id)
+    else:
+        ctx.rollback.mark_failed(ctx.fault_id)
+
+
+def _guard_check(ctx: FaultContext, command: str) -> None:
+    try:
+        ctx.guard.check_command(command, "ssh")
+    except Exception as exc:
+        raise RuntimeError(str(exc)) from exc
+
+
+def _pkill_idempotent(result) -> bool:
+    if result.success:
+        return True
+    err = (result.error or "").lower()
+    return "no process found" in err or "not found" in err or not err
+
+
+def _result_error(result) -> str:
+    return (result.error or result.output or "").strip()
+
+
+def _is_endpoint_not_supported(message: str) -> bool:
+    text = (message or "").lower()
+    return "404" in text or "not found" in text or "http status error '404" in text
+
+
+def _is_unauthorized_error(message: str) -> bool:
+    text = (message or "").lower()
+    return "401" in text or "unauthorized" in text
+
+
+def _parse_json_payload(raw: str) -> dict[str, Any]:
+    try:
+        data = json.loads(raw)
+        if isinstance(data, dict):
+            return data
+    except json.JSONDecodeError:
+        pass
+    return {}
+
+
+def _fan_snapshot(thermal_payload: dict[str, Any]) -> dict[str, Any]:
+    fans = thermal_payload.get("Fans", [])
+    if not isinstance(fans, list):
+        fans = []
+    sample: list[dict[str, Any]] = []
+    for fan in fans[:5]:
+        if not isinstance(fan, dict):
+            continue
+        sample.append(
+            {
+                "name": fan.get("Name"),
+                "reading": fan.get("Reading"),
+                "reading_units": fan.get("ReadingUnits"),
+                "status": fan.get("Status"),
+            }
+        )
+    return {"fan_count": len(fans), "fans_sample": sample}
+
+
+def _temperature_snapshot(thermal_payload: dict[str, Any]) -> dict[str, Any]:
+    temps = thermal_payload.get("Temperatures", [])
+    if not isinstance(temps, list):
+        temps = []
+    sample: list[dict[str, Any]] = []
+    for temp in temps[:5]:
+        if not isinstance(temp, dict):
+            continue
+        sample.append(
+            {
+                "name": temp.get("Name"),
+                "reading_celsius": temp.get("ReadingCelsius"),
+                "status": temp.get("Status"),
+            }
+        )
+    return {"temperature_count": len(temps), "temperatures_sample": sample}
+
+
+def _extract_sensor_list(payload: dict[str, Any], limit: int = 12) -> list[dict[str, Any]]:
+    sensors = payload.get("sensors", [])
+    if not isinstance(sensors, list):
+        return []
+    out: list[dict[str, Any]] = []
+    for item in sensors[:limit]:
+        if isinstance(item, dict):
+            out.append(item)
+    return out
+
+
+async def _ipmi_collect_snapshot(ctx: FaultContext, ipmi_cfg: Any) -> dict[str, Any]:
+    if not ctx.ipmi:
+        return {
+            "host": ipmi_cfg.host,
+            "interface": ipmi_cfg.interface,
+            "mc_info_ok": False,
+            "fan_query_ok": False,
+            "temp_query_ok": False,
+            "mc_info_excerpt": "",
+            "fan_sensors": [],
+            "temperature_sensors": [],
+            "errors": ["IPMI channel not initialized"],
+        }
+
+    timeout = int(getattr(ipmi_cfg, "timeout", 30) or 30)
+    host = str(ipmi_cfg.host)
+    username = str(ipmi_cfg.username or "")
+    password = str(ipmi_cfg.password or "")
+    port = int(getattr(ipmi_cfg, "port", 623) or 623)
+    interface = str(getattr(ipmi_cfg, "interface", "lanplus") or "lanplus")
+
+    mc_info = await ctx.ipmi.get_mc_info(
+        host=host,
+        username=username,
+        password=password,
+        port=port,
+        interface=interface,
+        timeout=timeout,
+    )
+    fan_data = await ctx.ipmi.get_sensor_data(
+        host=host,
+        username=username,
+        password=password,
+        sensor_type="fan",
+        port=port,
+        interface=interface,
+        timeout=timeout,
+    )
+    temp_data = await ctx.ipmi.get_sensor_data(
+        host=host,
+        username=username,
+        password=password,
+        sensor_type="temperature",
+        port=port,
+        interface=interface,
+        timeout=timeout,
+    )
+
+    mc_payload = _parse_json_payload(mc_info.output)
+    fan_payload = _parse_json_payload(fan_data.output)
+    temp_payload = _parse_json_payload(temp_data.output)
+    return {
+        "host": host,
+        "interface": interface,
+        "mc_info_ok": bool(mc_info.success),
+        "fan_query_ok": bool(fan_data.success),
+        "temp_query_ok": bool(temp_data.success),
+        "mc_info_excerpt": json.dumps(mc_payload, ensure_ascii=False)[:400] if mc_payload else "",
+        "fan_sensors": _extract_sensor_list(fan_payload),
+        "temperature_sensors": _extract_sensor_list(temp_payload),
+        "errors": [e for e in [mc_info.error, fan_data.error, temp_data.error] if e],
+    }
+
+
+def _build_ipmi_profile_commands(profile: str, target_pwm: int) -> tuple[list[dict[str, Any]] | None, dict[str, Any] | None]:
+    if profile == "supermicro_raw":
+        percent = max(0, min(100, target_pwm))
+        pwm_byte = int(round((percent / 100.0) * 255))
+        set_manual_and_pwm = [
+            {"netfn": 0x30, "command": 0x30, "data": [0x01, 0x00]},
+            {"netfn": 0x30, "command": 0x30, "data": [0x02, 0xFF, pwm_byte]},
+        ]
+        set_auto = {"netfn": 0x30, "command": 0x30, "data": [0x01, 0x01]}
+        return set_manual_and_pwm, set_auto
+    return None, None
+
+
+async def _resolve_python_interpreter(ctx: FaultContext) -> str:
+    cached = ctx.params.get("_python_exec")
+    if isinstance(cached, str) and cached:
+        return cached
+
+    candidates = ["/usr/bin/python3", "python3", "python"]
+    failures: list[str] = []
+    for candidate in candidates:
+        probe_cmd = f"{candidate} -V"
+        try:
+            _guard_check(ctx, probe_cmd)
+        except Exception as exc:
+            failures.append(f"{candidate}: {exc}")
+            continue
+
+        probe = await ctx.ssh.run_command(node=ctx.target_node, command=probe_cmd, use_sudo=True)
+        if probe.success:
+            ctx.params["_python_exec"] = candidate
+            return candidate
+        failures.append(f"{candidate}: {_result_error(probe)}")
+
+    raise RuntimeError("No usable python interpreter found for sudo context: " + " | ".join(failures))
+
+
+def _platform_error_details(
+    *,
+    target_component: str,
+    interface: str,
+    port: int,
+    delay_ms: int,
+    message: str,
+) -> str:
+    return (
+        f"{message} "
+        f"(target_component={target_component}, interface={interface}, port={port}, delay_ms={delay_ms})"
+    )
+
 
 class NetworkJitterScenario(BaseScenario):
-    """RC-2: network_jitter - 网络延迟抖动 (tc netem)."""
-
     @property
     def name(self) -> str:
         return "network_jitter"
@@ -47,8 +285,6 @@ class NetworkJitterScenario(BaseScenario):
         distribution = params.get("distribution", "pareto")
         loss_pct = params.get("loss_pct", 0)
 
-        # SSHChannel handles sudo; keep command body raw to avoid "sudo sudo ...".
-        # Use replace to make injection idempotent and avoid exclusivity errors.
         cmd = f"tc qdisc replace dev {interface} root netem delay {delay_ms}ms"
         if jitter_ms > 0:
             cmd += f" {jitter_ms}ms"
@@ -67,8 +303,12 @@ class NetworkJitterScenario(BaseScenario):
         jitter_ms = ctx.params.get("jitter_ms", 100)
         distribution = ctx.params.get("distribution", "pareto")
         loss_pct = ctx.params.get("loss_pct", 0)
-
         inject_cmd = self._build_tc_command(ctx.params)
+
+        try:
+            _guard_check(ctx, inject_cmd)
+        except Exception as exc:
+            return InjectResult(success=False, fault_id=ctx.fault_id, error=str(exc))
 
         ctx.rollback.record(
             fault_id=ctx.fault_id,
@@ -95,13 +335,17 @@ class NetworkJitterScenario(BaseScenario):
     async def recover(self, ctx: FaultContext) -> RecoverResult:
         interface = ctx.params.get("interface", "eth0")
         recover_cmd = self._build_recovery_command(interface)
+        try:
+            _guard_check(ctx, recover_cmd)
+        except Exception as exc:
+            _mark_recovered_or_failed(ctx, False)
+            return RecoverResult(success=False, fault_id=ctx.fault_id, error=str(exc))
+
         result = await ctx.ssh.run_command(node=ctx.target_node, command=recover_cmd, use_sudo=True)
-
-        if result.success or "No such file or directory" in result.error or "Cannot delete" in result.error:
-            ctx.rollback.mark_recovered(ctx.fault_id)
+        success = bool(result.success or "No such file or directory" in result.error or "Cannot delete" in result.error)
+        _mark_recovered_or_failed(ctx, success)
+        if success:
             return RecoverResult(success=True, fault_id=ctx.fault_id)
-
-        ctx.rollback.mark_failed(ctx.fault_id)
         return RecoverResult(success=False, fault_id=ctx.fault_id, error=result.error)
 
     async def verify(self, ctx: FaultContext) -> bool:
@@ -123,50 +367,57 @@ class NetworkJitterScenario(BaseScenario):
             "network_latency": 'histogram_quantile(0.95, rate(network_latency_seconds_bucket[1m]))',
         }
 
-# ============================================================================
-# RC-1: GPU 璧勬簮浜夋姠
-# ============================================================================
 
 class GPUContentionScenario(BaseScenario):
-    """
-    RC-1: GPU 璧勬簮浜夋姠銆?
-    
-    浣跨敤 gpu-burn 鍦ㄥ悓涓€ GPU 涓婅繍琛屽涓绠椾换鍔′簤鎶?SM 鍜屾樉瀛樺甫瀹姐€?
-    
-    鏁堟灉锛?
-    - 鎺ㄧ悊寤惰繜 P50 澧炲姞 3-5x
-    - P99 灏惧欢杩熷嚭鐜板懆鏈熸€ф尝鍔?
-    - TTFT (Time To First Token) 涓嶇ǔ瀹?
-    """
-    
     @property
     def name(self) -> str:
         return "gpu_contention"
-    
+
     @property
     def description(self) -> str:
         return "GPU resource contention via gpu-burn saturation"
-    
+
     @property
     def layer(self) -> str:
         return "hardware"
-    
+
     async def inject(self, ctx: FaultContext) -> InjectResult:
-        duration = ctx.params.get("duration", 300)
-        gpu_id = ctx.params.get("gpu_id", 0)
-        intensity = ctx.params.get("intensity", 100)  # GPU 浣跨敤鐜囩櫨鍒嗘瘮
-        
-        # 鏋勫缓鍛戒护 - 浣跨敤 gpu-burn 鎴栧鐢ㄦ柟妗?
-        # gpu-burn 闇€瑕侀鍏堝畨瑁咃細git clone https://github.com/wilicc/gpu-burn
-        inject_cmd = f"cd /tmp/gpu-burn && CUDA_VISIBLE_DEVICES={gpu_id} ./gpu_burn {duration} &"
-        recover_cmd = "pkill -f gpu_burn"
-        
-        logger.info(
-            f"娉ㄥ叆 GPU 浜夋姠: node={ctx.target_node}, "
-            f"gpu_id={gpu_id}, duration={duration}s, intensity={intensity}%"
+        duration = int(ctx.params.get("duration", 300))
+        gpu_id = int(ctx.params.get("gpu_id", 0))
+        intensity = int(ctx.params.get("intensity", 100))
+        marker = f"fi_gpu_burn_{_safe_fault_token(ctx.fault_id)}"
+        pid_file = _pid_file_path(ctx.fault_id, "gpu_burn")
+        try:
+            python_exec = await _resolve_python_interpreter(ctx)
+        except Exception as exc:
+            return InjectResult(success=False, fault_id=ctx.fault_id, error=str(exc))
+        inject_code = (
+            "import os,subprocess\n"
+            f"marker = {marker!r}\n"
+            f"log_file = '/tmp/{marker}.log'\n"
+            f"pid_file = {pid_file!r}\n"
+            "env = dict(os.environ)\n"
+            f"env['CUDA_VISIBLE_DEVICES'] = {str(gpu_id)!r}\n"
+            "with open(log_file, 'w', encoding='utf-8') as log:\n"
+            "    proc = subprocess.Popen(\n"
+            f"        [marker, {str(duration)!r}],\n"
+            "        executable='/tmp/gpu-burn/gpu_burn',\n"
+            "        cwd='/tmp/gpu-burn',\n"
+            "        stdout=log,\n"
+            "        stderr=subprocess.STDOUT,\n"
+            "        env=env,\n"
+            "    )\n"
+            "with open(pid_file, 'w', encoding='utf-8') as f:\n"
+            "    f.write(str(proc.pid))\n"
+            "print(proc.pid)\n"
         )
-        
-        # 鍐欏叆 WAL
+        inject_cmd = _python_c_command(inject_code, interpreter=python_exec)
+
+        try:
+            _guard_check(ctx, inject_cmd)
+        except Exception as exc:
+            return InjectResult(success=False, fault_id=ctx.fault_id, error=str(exc))
+
         ctx.rollback.record(
             fault_id=ctx.fault_id,
             channel="ssh",
@@ -176,49 +427,56 @@ class GPUContentionScenario(BaseScenario):
                 "duration": duration,
                 "gpu_id": gpu_id,
                 "intensity": intensity,
+                "marker": marker,
+                "pid_file": pid_file,
             },
             recover_action="kill_gpu_burn",
-            recover_params={},
+            recover_params={"marker": marker, "pid_file": pid_file},
         )
-        
-        # 鎵ц娉ㄥ叆
-        result = await ctx.ssh.run_command(
-            node=ctx.target_node,
-            command=inject_cmd,
-        )
-        
-        # gpu-burn 鍦ㄥ悗鍙拌繍琛岋紝鍛戒护浼氱珛鍗宠繑鍥?
-        if result.success or "GPU burn" in result.output:
-            logger.info(f"GPU 浜夋姠娉ㄥ叆鎴愬姛: {ctx.fault_id}")
+
+        result = await ctx.ssh.run_command(node=ctx.target_node, command=inject_cmd, use_sudo=True)
+        if result.success:
             return InjectResult(success=True, fault_id=ctx.fault_id)
-        else:
-            logger.error(f"GPU 浜夋姠娉ㄥ叆澶辫触: {result.error}")
-            return InjectResult(success=False, fault_id=ctx.fault_id, error=result.error)
-    
+        return InjectResult(success=False, fault_id=ctx.fault_id, error=_result_error(result))
+
     async def recover(self, ctx: FaultContext) -> RecoverResult:
-        logger.info(f"鎭㈠ GPU 浜夋姠: node={ctx.target_node}")
-        
-        result = await ctx.ssh.run_command(
-            node=ctx.target_node,
-            command="pkill -f gpu_burn || pkill -f gpu-burn",
-        )
-        
-        # pkill 澶辫触鍙兘鏄洜涓鸿繘绋嬩笉瀛樺湪锛岃繖鏄彲鎺ュ彈鐨?
-        ctx.rollback.mark_recovered(ctx.fault_id)
-        return RecoverResult(success=True, fault_id=ctx.fault_id)
-    
+        marker = f"fi_gpu_burn_{_safe_fault_token(ctx.fault_id)}"
+        pid_file = _pid_file_path(ctx.fault_id, "gpu_burn")
+        try:
+            python_exec = await _resolve_python_interpreter(ctx)
+        except Exception as exc:
+            _mark_recovered_or_failed(ctx, False)
+            return RecoverResult(success=False, fault_id=ctx.fault_id, error=str(exc))
+        pid_cmd = _pid_recover_command(pid_file, interpreter=python_exec)
+        pkill_cmd = f"pkill -f '{marker}'"
+        try:
+            _guard_check(ctx, pid_cmd)
+            _guard_check(ctx, pkill_cmd)
+        except Exception as exc:
+            _mark_recovered_or_failed(ctx, False)
+            return RecoverResult(success=False, fault_id=ctx.fault_id, error=str(exc))
+
+        pid_result = await ctx.ssh.run_command(node=ctx.target_node, command=pid_cmd, use_sudo=True)
+        if not pid_result.success:
+            _mark_recovered_or_failed(ctx, False)
+            return RecoverResult(success=False, fault_id=ctx.fault_id, error=pid_result.error)
+
+        pkill_result = await ctx.ssh.run_command(node=ctx.target_node, command=pkill_cmd, use_sudo=True)
+        success = _pkill_idempotent(pkill_result)
+        _mark_recovered_or_failed(ctx, success)
+        if success:
+            return RecoverResult(success=True, fault_id=ctx.fault_id)
+        return RecoverResult(success=False, fault_id=ctx.fault_id, error=pkill_result.error)
+
     async def verify(self, ctx: FaultContext) -> bool:
-        # 妫€鏌?gpu-burn 鏄惁杩樺湪杩愯
+        marker = f"fi_gpu_burn_{_safe_fault_token(ctx.fault_id)}"
         result = await ctx.ssh.run_command(
             node=ctx.target_node,
-            command="pgrep -f gpu_burn || pgrep -f gpu-burn || echo 'not_running'",
+            command=f"pgrep -f '{marker}' || echo 'not_running'",
+            use_sudo=True,
         )
-        if "not_running" in result.output:
-            logger.info("验证通过: gpu-burn 已停止")
-            return True
-        logger.warning("楠岃瘉澶辫触: gpu-burn 浠嶅湪杩愯")
-        return False
-    
+        return "not_running" in result.output
+
     def monitor_queries(self) -> dict[str, str]:
         return {
             "gpu_util": 'DCGM_FI_DEV_GPU_UTIL{{node="{node}"}}',
@@ -229,56 +487,67 @@ class GPUContentionScenario(BaseScenario):
         }
 
 
-# ============================================================================
-# RC-3: 瀛樺偍 I/O 骞叉壈
-# ============================================================================
-
 class StorageIOInterferenceScenario(BaseScenario):
-    """
-    RC-3: 瀛樺偍 I/O 骞叉壈銆?
-    
-    浣跨敤 fio 鍦ㄦ帹鐞嗚妭鐐圭殑鏁版嵁鐩樺彂璧峰ぇ閲忛殢鏈?I/O銆?
-    
-    鏁堟灉锛?
-    - 妯″瀷鍐峰惎鍔ㄦ椂闂村鍔?3-6x
-    - KV Cache 钀界洏鏃跺欢杩熷嚭鐜伴棿姝囨€у皷宄?
-    - 妯″瀷鍔犺浇鏃堕棿寤堕暱
-    """
-    
     @property
     def name(self) -> str:
         return "storage_io_interference"
-    
+
     @property
     def description(self) -> str:
         return "Storage I/O interference via fio stress workload"
-    
+
     @property
     def layer(self) -> str:
         return "os"
-    
+
     async def inject(self, ctx: FaultContext) -> InjectResult:
-        duration = ctx.params.get("duration", 300)
-        filename = ctx.params.get("filename", "/data/testfile")
-        rw_mode = ctx.params.get("rw_mode", "randwrite")  # randwrite/randread/rw
-        bs = ctx.params.get("bs", "4k")
-        iodepth = ctx.params.get("iodepth", 128)
-        numjobs = ctx.params.get("numjobs", 8)
-        
-        # 鏋勫缓鍛戒护
-        inject_cmd = (
-            f"fio --name=disturb --filename={filename} "
-            f"--rw={rw_mode} --bs={bs} --iodepth={iodepth} --numjobs={numjobs} "
-            f"--size=10G --time_based --runtime={duration} &"
+        duration = int(ctx.params.get("duration", 300))
+        filename = str(ctx.params.get("filename", "/data/testfile"))
+        rw_mode = str(ctx.params.get("rw_mode", "randwrite"))
+        bs = str(ctx.params.get("bs", "4k"))
+        iodepth = int(ctx.params.get("iodepth", 128))
+        numjobs = int(ctx.params.get("numjobs", 8))
+        marker = f"fi_fio_{_safe_fault_token(ctx.fault_id)}"
+        pid_file = _pid_file_path(ctx.fault_id, "fio")
+        try:
+            python_exec = await _resolve_python_interpreter(ctx)
+        except Exception as exc:
+            return InjectResult(success=False, fault_id=ctx.fault_id, error=str(exc))
+        inject_code = (
+            "import subprocess\n"
+            f"marker = {marker!r}\n"
+            f"log_file = '/tmp/{marker}.log'\n"
+            f"pid_file = {pid_file!r}\n"
+            "args = [\n"
+            "    marker,\n"
+            f"    '--name={marker}',\n"
+            f"    '--filename={filename}',\n"
+            f"    '--rw={rw_mode}',\n"
+            f"    '--bs={bs}',\n"
+            f"    '--iodepth={iodepth}',\n"
+            f"    '--numjobs={numjobs}',\n"
+            "    '--size=10G',\n"
+            "    '--time_based',\n"
+            f"    '--runtime={duration}',\n"
+            "]\n"
+            "with open(log_file, 'w', encoding='utf-8') as log:\n"
+            "    proc = subprocess.Popen(\n"
+            "        args,\n"
+            "        executable='fio',\n"
+            "        stdout=log,\n"
+            "        stderr=subprocess.STDOUT,\n"
+            "    )\n"
+            "with open(pid_file, 'w', encoding='utf-8') as f:\n"
+            "    f.write(str(proc.pid))\n"
+            "print(proc.pid)\n"
         )
-        recover_cmd = "pkill -f 'fio.*disturb'"
-        
-        logger.info(
-            f"娉ㄥ叆瀛樺偍 I/O 骞叉壈: node={ctx.target_node}, "
-            f"filename={filename}, rw={rw_mode}, duration={duration}s"
-        )
-        
-        # 鍐欏叆 WAL
+        inject_cmd = _python_c_command(inject_code, interpreter=python_exec)
+
+        try:
+            _guard_check(ctx, inject_cmd)
+        except Exception as exc:
+            return InjectResult(success=False, fault_id=ctx.fault_id, error=str(exc))
+
         ctx.rollback.record(
             fault_id=ctx.fault_id,
             channel="ssh",
@@ -291,46 +560,56 @@ class StorageIOInterferenceScenario(BaseScenario):
                 "bs": bs,
                 "iodepth": iodepth,
                 "numjobs": numjobs,
+                "marker": marker,
+                "pid_file": pid_file,
             },
             recover_action="kill_fio",
-            recover_params={},
+            recover_params={"marker": marker, "pid_file": pid_file},
         )
-        
-        # 鎵ц娉ㄥ叆
-        result = await ctx.ssh.run_command(
-            node=ctx.target_node,
-            command=inject_cmd,
-        )
-        
+
+        result = await ctx.ssh.run_command(node=ctx.target_node, command=inject_cmd, use_sudo=True)
         if result.success:
-            logger.info(f"瀛樺偍 I/O 骞叉壈娉ㄥ叆鎴愬姛: {ctx.fault_id}")
             return InjectResult(success=True, fault_id=ctx.fault_id)
-        else:
-            logger.error(f"瀛樺偍 I/O 骞叉壈娉ㄥ叆澶辫触: {result.error}")
-            return InjectResult(success=False, fault_id=ctx.fault_id, error=result.error)
-    
+        return InjectResult(success=False, fault_id=ctx.fault_id, error=_result_error(result))
+
     async def recover(self, ctx: FaultContext) -> RecoverResult:
-        logger.info(f"鎭㈠瀛樺偍 I/O 骞叉壈: node={ctx.target_node}")
-        
-        result = await ctx.ssh.run_command(
-            node=ctx.target_node,
-            command="pkill -f 'fio.*disturb' || pkill -f 'fio'",
-        )
-        
-        ctx.rollback.mark_recovered(ctx.fault_id)
-        return RecoverResult(success=True, fault_id=ctx.fault_id)
-    
+        marker = f"fi_fio_{_safe_fault_token(ctx.fault_id)}"
+        pid_file = _pid_file_path(ctx.fault_id, "fio")
+        try:
+            python_exec = await _resolve_python_interpreter(ctx)
+        except Exception as exc:
+            _mark_recovered_or_failed(ctx, False)
+            return RecoverResult(success=False, fault_id=ctx.fault_id, error=str(exc))
+        pid_cmd = _pid_recover_command(pid_file, interpreter=python_exec)
+        pkill_cmd = f"pkill -f '{marker}'"
+        try:
+            _guard_check(ctx, pid_cmd)
+            _guard_check(ctx, pkill_cmd)
+        except Exception as exc:
+            _mark_recovered_or_failed(ctx, False)
+            return RecoverResult(success=False, fault_id=ctx.fault_id, error=str(exc))
+
+        pid_result = await ctx.ssh.run_command(node=ctx.target_node, command=pid_cmd, use_sudo=True)
+        if not pid_result.success:
+            _mark_recovered_or_failed(ctx, False)
+            return RecoverResult(success=False, fault_id=ctx.fault_id, error=pid_result.error)
+
+        pkill_result = await ctx.ssh.run_command(node=ctx.target_node, command=pkill_cmd, use_sudo=True)
+        success = _pkill_idempotent(pkill_result)
+        _mark_recovered_or_failed(ctx, success)
+        if success:
+            return RecoverResult(success=True, fault_id=ctx.fault_id)
+        return RecoverResult(success=False, fault_id=ctx.fault_id, error=pkill_result.error)
+
     async def verify(self, ctx: FaultContext) -> bool:
+        marker = f"fi_fio_{_safe_fault_token(ctx.fault_id)}"
         result = await ctx.ssh.run_command(
             node=ctx.target_node,
-            command="pgrep -f 'fio.*disturb' || echo 'not_running'",
+            command=f"pgrep -f '{marker}' || echo 'not_running'",
+            use_sudo=True,
         )
-        if "not_running" in result.output:
-            logger.info("验证通过: fio 已停止")
-            return True
-        logger.warning("楠岃瘉澶辫触: fio 浠嶅湪杩愯")
-        return False
-    
+        return "not_running" in result.output
+
     def monitor_queries(self) -> dict[str, str]:
         return {
             "disk_io_util": 'node_disk_io_utilization_seconds{{device="{device}"}}',
@@ -341,56 +620,31 @@ class StorageIOInterferenceScenario(BaseScenario):
         }
 
 
-# ============================================================================
-# RC-4: 骞冲彴缁勪欢绾ц仈寤惰繜
-# ============================================================================
-
 class PlatformCascadeScenario(BaseScenario):
-    """
-    RC-4: 骞冲彴缁勪欢绾ц仈寤惰繜銆?
-    
-    閫氳繃瀵瑰钩鍙板叧閿粍浠讹紙MySQL銆丷edis銆並8s API锛夋敞鍏ュ欢杩燂紝
-    鍒堕€犵骇鑱旀晥搴斿奖鍝嶆帹鐞嗘湇鍔°€?
-    
-    鏁堟灉锛?
-    - 璇锋眰鎺掗槦锛屽欢杩熺疮绉?
-    - 鎺ㄧ悊鏈嶅姟瓒呮椂閲嶈瘯
-    - 鏁翠綋鍚炲悙涓嬮檷
-    """
-    
     @property
     def name(self) -> str:
         return "platform_cascade"
-    
+
     @property
     def description(self) -> str:
         return "Platform cascade latency via MySQL/Redis delay injection"
-    
+
     @property
     def layer(self) -> str:
         return "platform"
-    
+
     async def inject(self, ctx: FaultContext) -> InjectResult:
-        target_component = ctx.params.get("target_component", "mysql")  # mysql/redis/k8s
-        delay_ms = ctx.params.get("delay_ms", 100)
-        duration = ctx.params.get("duration", 300)
-        port = ctx.params.get("port", 3306)  # MySQL 榛樿绔彛
-        
-        # 浣跨敤 tc netem 瀵圭壒瀹氱鍙ｆ敞鍏ュ欢杩?
-        inject_cmd = (
-            f"sudo tc qdisc add dev eth0 root handle 1: prio bands 4 "
-            f"&& sudo tc filter add dev eth0 protocol ip parent 1:0 prio 1 u32 "
-            f"match ip dport {port} 0xffff flowid 1:1 "
-            f"&& sudo tc qdisc add dev eth0 parent 1:1 handle 10: netem delay {delay_ms}ms"
-        )
-        recover_cmd = "sudo tc qdisc del dev eth0 root"
-        
-        logger.info(
-            f"娉ㄥ叆骞冲彴绾ц仈寤惰繜: node={ctx.target_node}, "
-            f"component={target_component}, port={port}, delay={delay_ms}ms"
-        )
-        
-        # 鍐欏叆 WAL
+        target_component = ctx.params.get("target_component", "mysql")
+        delay_ms = int(ctx.params.get("delay_ms", 100))
+        port = int(ctx.params.get("port", 3306))
+        interface = str(ctx.params.get("interface", "eth0"))
+
+        inject_cmd = f"tc qdisc replace dev {interface} root netem delay {delay_ms}ms"
+        try:
+            _guard_check(ctx, inject_cmd)
+        except Exception as exc:
+            return InjectResult(success=False, fault_id=ctx.fault_id, error=str(exc))
+
         ctx.rollback.record(
             fault_id=ctx.fault_id,
             channel="ssh",
@@ -400,107 +654,123 @@ class PlatformCascadeScenario(BaseScenario):
                 "target_component": target_component,
                 "delay_ms": delay_ms,
                 "port": port,
+                "interface": interface,
             },
             recover_action="tc_del_qdisc",
-            recover_params={},
+            recover_params={"interface": interface},
         )
-        
-        # 鎵ц娉ㄥ叆
-        result = await ctx.ssh.run_command(
-            node=ctx.target_node,
-            command=inject_cmd,
-        )
-        
+
+        result = await ctx.ssh.run_command(node=ctx.target_node, command=inject_cmd, use_sudo=True)
         if result.success:
-            logger.info(f"骞冲彴绾ц仈寤惰繜娉ㄥ叆鎴愬姛: {ctx.fault_id}")
             return InjectResult(success=True, fault_id=ctx.fault_id)
-        else:
-            logger.error(f"骞冲彴绾ц仈寤惰繜娉ㄥ叆澶辫触: {result.error}")
-            return InjectResult(success=False, fault_id=ctx.fault_id, error=result.error)
-    
+        details = _platform_error_details(
+            target_component=str(target_component),
+            interface=interface,
+            port=port,
+            delay_ms=delay_ms,
+            message=_result_error(result),
+        )
+        return InjectResult(success=False, fault_id=ctx.fault_id, error=details)
+
     async def recover(self, ctx: FaultContext) -> RecoverResult:
-        logger.info(f"鎭㈠骞冲彴绾ц仈寤惰繜: node={ctx.target_node}")
-        
-        result = await ctx.ssh.run_command(
-            node=ctx.target_node,
-            command="sudo tc qdisc del dev eth0 root 2>/dev/null || true",
+        interface = str(ctx.params.get("interface", "eth0"))
+        recover_cmd = f"tc qdisc del dev {interface} root"
+        try:
+            _guard_check(ctx, recover_cmd)
+        except Exception as exc:
+            _mark_recovered_or_failed(ctx, False)
+            return RecoverResult(success=False, fault_id=ctx.fault_id, error=str(exc))
+
+        result = await ctx.ssh.run_command(node=ctx.target_node, command=recover_cmd, use_sudo=True)
+        success = bool(result.success or "No such file or directory" in result.error or "Cannot delete" in result.error)
+        _mark_recovered_or_failed(ctx, success)
+        if success:
+            return RecoverResult(success=True, fault_id=ctx.fault_id)
+        details = _platform_error_details(
+            target_component=str(ctx.params.get("target_component", "mysql")),
+            interface=interface,
+            port=int(ctx.params.get("port", 3306)),
+            delay_ms=int(ctx.params.get("delay_ms", 100)),
+            message=_result_error(result),
         )
-        
-        ctx.rollback.mark_recovered(ctx.fault_id)
-        return RecoverResult(success=True, fault_id=ctx.fault_id)
-    
+        return RecoverResult(success=False, fault_id=ctx.fault_id, error=details)
+
     async def verify(self, ctx: FaultContext) -> bool:
+        interface = str(ctx.params.get("interface", "eth0"))
         result = await ctx.ssh.run_command(
             node=ctx.target_node,
-            command="sudo tc qdisc show dev eth0 | grep -q netem && echo 'exists' || echo 'not_exists'",
+            command=f"tc qdisc show dev {interface} | grep -q netem && echo 'exists' || echo 'not_exists'",
+            use_sudo=True,
         )
-        if "not_exists" in result.output:
-            logger.info("验证通过: tc netem 已删除")
-            return True
-        logger.warning("验证失败: tc netem 仍存在")
-        return False
-    
+        return "not_exists" in result.output
+
     def monitor_queries(self) -> dict[str, str]:
         return {
-            "mysql_latency": 'mysql_query_duration_seconds',
-            "redis_latency": 'redis_command_duration_seconds',
-            "k8s_api_latency": 'kubernetes_api_request_duration_seconds',
+            "mysql_latency": "mysql_query_duration_seconds",
+            "redis_latency": "redis_command_duration_seconds",
+            "k8s_api_latency": "kubernetes_api_request_duration_seconds",
             "inference_p99": 'histogram_quantile(0.99, rate(vllm:request_duration_seconds_bucket[1m]))',
-            "request_queue_depth": 'vllm:request_queue_depth',
+            "request_queue_depth": "vllm:request_queue_depth",
         }
 
 
-# ============================================================================
-# RC-5: OS 璧勬簮鍘嬪姏
-# ============================================================================
-
 class OSResourcePressureScenario(BaseScenario):
-    """
-    RC-5: OS 璧勬簮鍘嬪姏銆?
-    
-    浣跨敤 stress-ng 鍒堕€犲唴瀛樺拰 CPU 鍘嬪姏銆?
-    
-    鏁堟灉锛?
-    - 寤惰繜鏁翠綋鍗囬珮涓旀尝鍔ㄥぇ
-    - 鍑虹幇闂存瓏鎬ц秴鏃?
-    - OOM Killer 鍙兘鏉€姝绘帹鐞嗚繘绋?
-    """
-    
     @property
     def name(self) -> str:
         return "os_resource_pressure"
-    
+
     @property
     def description(self) -> str:
         return "OS resource pressure via stress-ng CPU and memory load"
-    
+
     @property
     def layer(self) -> str:
         return "os"
-    
+
     async def inject(self, ctx: FaultContext) -> InjectResult:
-        duration = ctx.params.get("duration", 300)
-        vm_bytes_percent = ctx.params.get("vm_bytes_percent", 80)
-        cpu_workers = ctx.params.get("cpu_workers", 64)
-        cpu_load = ctx.params.get("cpu_load", 90)
-        io_workers = ctx.params.get("io_workers", 4)
-        
-        # 鏋勫缓鍛戒护
-        inject_cmd = (
-            f"stress-ng "
-            f"--vm 4 --vm-bytes {vm_bytes_percent}% "
-            f"--cpu {cpu_workers} --cpu-load {cpu_load} "
-            f"--io {io_workers} "
-            f"--timeout {duration}s &"
+        duration = int(ctx.params.get("duration", 300))
+        vm_bytes_percent = int(ctx.params.get("vm_bytes_percent", 80))
+        cpu_workers = int(ctx.params.get("cpu_workers", 64))
+        cpu_load = int(ctx.params.get("cpu_load", 90))
+        io_workers = int(ctx.params.get("io_workers", 4))
+        marker = f"fi_stress_ng_{_safe_fault_token(ctx.fault_id)}"
+        pid_file = _pid_file_path(ctx.fault_id, "stress_ng")
+        try:
+            python_exec = await _resolve_python_interpreter(ctx)
+        except Exception as exc:
+            return InjectResult(success=False, fault_id=ctx.fault_id, error=str(exc))
+        inject_code = (
+            "import subprocess\n"
+            f"marker = {marker!r}\n"
+            f"log_file = '/tmp/{marker}.log'\n"
+            f"pid_file = {pid_file!r}\n"
+            "args = [\n"
+            "    marker,\n"
+            "    '--vm', '4',\n"
+            f"    '--vm-bytes', '{vm_bytes_percent}%',\n"
+            f"    '--cpu', '{cpu_workers}',\n"
+            f"    '--cpu-load', '{cpu_load}',\n"
+            f"    '--io', '{io_workers}',\n"
+            f"    '--timeout', '{duration}s',\n"
+            "]\n"
+            "with open(log_file, 'w', encoding='utf-8') as log:\n"
+            "    proc = subprocess.Popen(\n"
+            "        args,\n"
+            "        executable='stress-ng',\n"
+            "        stdout=log,\n"
+            "        stderr=subprocess.STDOUT,\n"
+            "    )\n"
+            "with open(pid_file, 'w', encoding='utf-8') as f:\n"
+            "    f.write(str(proc.pid))\n"
+            "print(proc.pid)\n"
         )
-        recover_cmd = "pkill -f stress-ng"
-        
-        logger.info(
-            f"娉ㄥ叆 OS 璧勬簮鍘嬪姏: node={ctx.target_node}, "
-            f"vm={vm_bytes_percent}%, cpu_workers={cpu_workers}, cpu_load={cpu_load}%"
-        )
-        
-        # 鍐欏叆 WAL
+        inject_cmd = _python_c_command(inject_code, interpreter=python_exec)
+
+        try:
+            _guard_check(ctx, inject_cmd)
+        except Exception as exc:
+            return InjectResult(success=False, fault_id=ctx.fault_id, error=str(exc))
+
         ctx.rollback.record(
             fault_id=ctx.fault_id,
             channel="ssh",
@@ -512,184 +782,506 @@ class OSResourcePressureScenario(BaseScenario):
                 "cpu_workers": cpu_workers,
                 "cpu_load": cpu_load,
                 "io_workers": io_workers,
+                "marker": marker,
+                "pid_file": pid_file,
             },
             recover_action="kill_stress_ng",
-            recover_params={},
+            recover_params={"marker": marker, "pid_file": pid_file},
         )
-        
-        # 鎵ц娉ㄥ叆
-        result = await ctx.ssh.run_command(
-            node=ctx.target_node,
-            command=inject_cmd,
-        )
-        
-        # stress-ng 鍦ㄥ悗鍙拌繍琛岋紝鍓嶅彴鍛戒护浼氱珛鍗宠繑鍥?
-        if result.success or "dispatching hogs" in result.output.lower():
-            logger.info(f"OS 璧勬簮鍘嬪姏娉ㄥ叆鎴愬姛: {ctx.fault_id}")
+
+        result = await ctx.ssh.run_command(node=ctx.target_node, command=inject_cmd, use_sudo=True)
+        if result.success:
             return InjectResult(success=True, fault_id=ctx.fault_id)
-        else:
-            logger.error(f"OS 璧勬簮鍘嬪姏娉ㄥ叆澶辫触: {result.error}")
-            return InjectResult(success=False, fault_id=ctx.fault_id, error=result.error)
-    
+        return InjectResult(success=False, fault_id=ctx.fault_id, error=_result_error(result))
+
     async def recover(self, ctx: FaultContext) -> RecoverResult:
-        logger.info(f"鎭㈠ OS 璧勬簮鍘嬪姏: node={ctx.target_node}")
-        
-        result = await ctx.ssh.run_command(
-            node=ctx.target_node,
-            command="pkill -f stress-ng || pkill -f stress",
-        )
-        
-        ctx.rollback.mark_recovered(ctx.fault_id)
-        return RecoverResult(success=True, fault_id=ctx.fault_id)
-    
+        marker = f"fi_stress_ng_{_safe_fault_token(ctx.fault_id)}"
+        pid_file = _pid_file_path(ctx.fault_id, "stress_ng")
+        try:
+            python_exec = await _resolve_python_interpreter(ctx)
+        except Exception as exc:
+            _mark_recovered_or_failed(ctx, False)
+            return RecoverResult(success=False, fault_id=ctx.fault_id, error=str(exc))
+        pid_cmd = _pid_recover_command(pid_file, interpreter=python_exec)
+        pkill_cmd = f"pkill -f '{marker}'"
+        try:
+            _guard_check(ctx, pid_cmd)
+            _guard_check(ctx, pkill_cmd)
+        except Exception as exc:
+            _mark_recovered_or_failed(ctx, False)
+            return RecoverResult(success=False, fault_id=ctx.fault_id, error=str(exc))
+
+        pid_result = await ctx.ssh.run_command(node=ctx.target_node, command=pid_cmd, use_sudo=True)
+        if not pid_result.success:
+            _mark_recovered_or_failed(ctx, False)
+            return RecoverResult(success=False, fault_id=ctx.fault_id, error=pid_result.error)
+
+        pkill_result = await ctx.ssh.run_command(node=ctx.target_node, command=pkill_cmd, use_sudo=True)
+        success = _pkill_idempotent(pkill_result)
+        _mark_recovered_or_failed(ctx, success)
+        if success:
+            return RecoverResult(success=True, fault_id=ctx.fault_id)
+        return RecoverResult(success=False, fault_id=ctx.fault_id, error=pkill_result.error)
+
     async def verify(self, ctx: FaultContext) -> bool:
+        marker = f"fi_stress_ng_{_safe_fault_token(ctx.fault_id)}"
         result = await ctx.ssh.run_command(
             node=ctx.target_node,
-            command="pgrep -f stress-ng || pgrep -f stress || echo 'not_running'",
+            command=f"pgrep -f '{marker}' || echo 'not_running'",
+            use_sudo=True,
         )
-        if "not_running" in result.output:
-            logger.info("验证通过: stress-ng 已停止")
-            return True
-        logger.warning("楠岃瘉澶辫触: stress-ng 浠嶅湪杩愯")
-        return False
-    
+        return "not_running" in result.output
+
     def monitor_queries(self) -> dict[str, str]:
         return {
             "cpu_util": '1 - rate(node_cpu_seconds_total{{mode="idle"}}[1m])',
             "memory_util": '1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)',
-            "io_util": 'rate(node_disk_io_time_seconds_total[1m])',
+            "io_util": "rate(node_disk_io_time_seconds_total[1m])",
             "inference_p50": 'histogram_quantile(0.5, rate(vllm:request_duration_seconds_bucket[1m]))',
             "inference_p99": 'histogram_quantile(0.99, rate(vllm:request_duration_seconds_bucket[1m]))',
-            "oom_events": 'increase(node_oom_events_total[5m])',
+            "oom_events": "increase(node_oom_events_total[5m])",
         }
 
 
-# ============================================================================
-# RC-6: 鐑檷棰?
-# ============================================================================
-
 class ThermalThrottlingScenario(BaseScenario):
-    """
-    RC-6: 鐑檷棰戙€?
-    
-    閫氳繃闄愬埗 GPU 椋庢墖杞€熸垨浣跨敤 nvidia-smi 璁剧疆鍔熺巼闄愬埗锛?
-    妯℃嫙 GPU 鐑檷棰戝満鏅€?
-    
-    鏁堟灉锛?
-    - GPU 鏍稿績棰戠巼闄嶄綆
-    - 鎺ㄧ悊寤惰繜澧炲姞
-    - 鍚炲悙涓嬮檷
-    """
-    
     @property
     def name(self) -> str:
         return "thermal_throttling"
-    
+
     @property
     def description(self) -> str:
         return "Thermal throttling simulation via GPU power limit"
-    
+
     @property
     def layer(self) -> str:
         return "hardware"
-    
+
     async def inject(self, ctx: FaultContext) -> InjectResult:
-        gpu_id = ctx.params.get("gpu_id", 0)
-        power_limit = ctx.params.get("power_limit", 150)  # 鐡︾壒锛岄粯璁ら檷浣庡埌 150W
-        duration = ctx.params.get("duration", 300)
-        
-        # 鍏堣幏鍙栧綋鍓嶅姛鐜囬檺鍒剁敤浜庢仮澶?
+        gpu_id = int(ctx.params.get("gpu_id", 0))
+        power_limit = int(ctx.params.get("power_limit", 150))
+        fan_backend = str(ctx.params.get("fan_control_backend", "auto")).strip().lower()
+        ipmi_profile = str(ctx.params.get("ipmi_profile", "read_only")).strip().lower()
+        ipmi_target_pwm = int(ctx.params.get("ipmi_target_pwm", ctx.params.get("fan_pwm", 30)))
+        if not ctx.redfish:
+            return InjectResult(success=False, fault_id=ctx.fault_id, error="Redfish channel not initialized")
+        if not ctx.target_redfish:
+            return InjectResult(success=False, fault_id=ctx.fault_id, error="Missing target Redfish config for node")
+
+        bmc_cfg = ctx.target_redfish
+        bmc_host = bmc_cfg.bmc_host
+        verify_tls = bool(bmc_cfg.verify_tls)
+        fan_index = int(ctx.params.get("fan_index", 0))
+        fan_mode = str(ctx.params.get("fan_mode", "Manual"))
+        fan_pwm_raw = ctx.params.get("fan_pwm", 30)
+        fan_pwm = int(fan_pwm_raw) if fan_pwm_raw is not None else None
+        fan_inject_applied = False
+        fan_inject_warning = ""
+        fan_injected_backend = ""
+        created_session = False
+        try:
+            if bmc_cfg.token:
+                ctx.redfish.set_token(bmc_host, bmc_cfg.token)
+            else:
+                if not bmc_cfg.username or not bmc_cfg.password:
+                    return InjectResult(
+                        success=False,
+                        fault_id=ctx.fault_id,
+                        error="Missing Redfish credentials (username/password)",
+                    )
+                auth = await ctx.redfish.authenticate(
+                    bmc_host=bmc_host,
+                    username=bmc_cfg.username,
+                    password=bmc_cfg.password,
+                    verify_tls=verify_tls,
+                )
+                if not auth.success:
+                    return InjectResult(success=False, fault_id=ctx.fault_id, error=f"Redfish auth failed: {auth.error}")
+                created_session = True
+
+            thermal = await ctx.redfish.get_thermal(bmc_host=bmc_host, verify_tls=verify_tls)
+            if not thermal.success:
+                return InjectResult(
+                    success=False,
+                    fault_id=ctx.fault_id,
+                    error=f"Redfish thermal precheck failed: {_result_error(thermal)}",
+                )
+
+            power = await ctx.redfish.get_power(bmc_host=bmc_host, verify_tls=verify_tls)
+            if not power.success:
+                return InjectResult(
+                    success=False,
+                    fault_id=ctx.fault_id,
+                    error=f"Redfish power precheck failed: {_result_error(power)}",
+                )
+
+            sensors = await ctx.redfish.get_sensors(bmc_host=bmc_host, verify_tls=verify_tls)
+            thermal_payload = _parse_json_payload(thermal.output)
+            power_payload = _parse_json_payload(power.output)
+            sensors_payload = _parse_json_payload(sensors.output) if sensors.success else {}
+
+            fan_before = _fan_snapshot(thermal_payload)
+            temp_before = _temperature_snapshot(thermal_payload)
+            power_controls = (
+                power_payload.get("PowerControl", [])
+                if isinstance(power_payload.get("PowerControl", []), list)
+                else []
+            )
+            sensor_members = (
+                sensors_payload.get("Members", [])
+                if isinstance(sensors_payload.get("Members", []), list)
+                else []
+            )
+
+            if fan_backend != "ipmi":
+                set_fan = await ctx.redfish.set_fan_control(
+                    bmc_host=bmc_host,
+                    fan_index=fan_index,
+                    mode=fan_mode,
+                    pwm=fan_pwm,
+                    verify_tls=verify_tls,
+                    fault_id=ctx.fault_id,
+                )
+                if not set_fan.success:
+                    set_fan_error = _result_error(set_fan)
+                    if _is_endpoint_not_supported(set_fan_error):
+                        fan_inject_warning = set_fan_error
+                        logger.warning("Redfish fan inject endpoint unsupported on %s: %s", bmc_host, set_fan_error)
+                    else:
+                        return InjectResult(
+                            success=False,
+                            fault_id=ctx.fault_id,
+                            error=f"Redfish fan inject failed: {set_fan_error}",
+                        )
+                else:
+                    fan_inject_applied = True
+                    fan_injected_backend = "redfish"
+
+            should_try_ipmi = fan_backend == "ipmi" or (fan_backend == "auto" and not fan_inject_applied)
+            if should_try_ipmi:
+                strict_ipmi = fan_backend == "ipmi"
+                if not ctx.target_ipmi:
+                    if strict_ipmi:
+                        return InjectResult(success=False, fault_id=ctx.fault_id, error="Missing target IPMI config for node")
+                    fan_inject_warning = f"{fan_inject_warning}; Missing target IPMI config for node".strip("; ")
+                else:
+                    ipmi_cfg = ctx.target_ipmi
+                    ipmi_pre = await _ipmi_collect_snapshot(ctx, ipmi_cfg)
+                    ctx.params["ipmi_precheck"] = ipmi_pre
+                    manual_cmds, auto_cmd = _build_ipmi_profile_commands(ipmi_profile, ipmi_target_pwm)
+                    if ipmi_profile == "read_only":
+                        if strict_ipmi:
+                            return InjectResult(
+                                success=False,
+                                fault_id=ctx.fault_id,
+                                error="IPMI backend requested but ipmi_profile is read_only",
+                            )
+                        fan_inject_warning = f"{fan_inject_warning}; IPMI profile read_only, skipped injection".strip("; ")
+                    elif manual_cmds is None or auto_cmd is None:
+                        if strict_ipmi:
+                            return InjectResult(
+                                success=False,
+                                fault_id=ctx.fault_id,
+                                error=f"Unsupported IPMI profile: {ipmi_profile}",
+                            )
+                        fan_inject_warning = f"{fan_inject_warning}; Unsupported IPMI profile: {ipmi_profile}".strip("; ")
+                    else:
+                        command_results: list[dict[str, Any]] = []
+                        ipmi_ok = True
+                        ipmi_error = ""
+                        if not ctx.ipmi:
+                            ipmi_ok = False
+                            ipmi_error = "IPMI channel not initialized"
+                        for raw_cmd in manual_cmds:
+                            if not ctx.ipmi:
+                                break
+                            raw_result = await ctx.ipmi.raw_command(
+                                host=str(ipmi_cfg.host),
+                                username=str(ipmi_cfg.username or ""),
+                                password=str(ipmi_cfg.password or ""),
+                                netfn=int(raw_cmd["netfn"]),
+                                command=int(raw_cmd["command"]),
+                                data=[int(x) for x in raw_cmd.get("data", [])],
+                                port=int(getattr(ipmi_cfg, "port", 623) or 623),
+                                interface=str(getattr(ipmi_cfg, "interface", "lanplus") or "lanplus"),
+                                timeout=int(getattr(ipmi_cfg, "timeout", 30) or 30),
+                            )
+                            command_results.append(
+                                {
+                                    "command": raw_cmd,
+                                    "success": bool(raw_result.success),
+                                    "output": raw_result.output,
+                                    "error": raw_result.error,
+                                }
+                            )
+                            if not raw_result.success:
+                                ipmi_ok = False
+                                ipmi_error = _result_error(raw_result)
+                                break
+                        ipmi_post = await _ipmi_collect_snapshot(ctx, ipmi_cfg)
+                        ctx.params["ipmi_inject"] = {
+                            "profile": ipmi_profile,
+                            "target_pwm": ipmi_target_pwm,
+                            "before": ipmi_pre,
+                            "after": ipmi_post,
+                            "commands": command_results,
+                            "recover_command": auto_cmd,
+                            "applied": ipmi_ok,
+                            "error": ipmi_error,
+                        }
+                        if not ipmi_ok:
+                            if strict_ipmi:
+                                return InjectResult(
+                                    success=False,
+                                    fault_id=ctx.fault_id,
+                                    error=f"IPMI fan inject command failed: {ipmi_error}",
+                                )
+                            fan_inject_warning = f"{fan_inject_warning}; IPMI fan inject skipped: {ipmi_error}".strip("; ")
+                        else:
+                            fan_inject_applied = True
+                            fan_injected_backend = "ipmi"
+
+            thermal_after_result = await ctx.redfish.get_thermal(bmc_host=bmc_host, verify_tls=verify_tls)
+            if (
+                not thermal_after_result.success
+                and _is_unauthorized_error(_result_error(thermal_after_result))
+                and not bmc_cfg.token
+                and bmc_cfg.username
+                and bmc_cfg.password
+            ):
+                reauth = await ctx.redfish.authenticate(
+                    bmc_host=bmc_host,
+                    username=bmc_cfg.username,
+                    password=bmc_cfg.password,
+                    verify_tls=verify_tls,
+                )
+                if reauth.success:
+                    thermal_after_result = await ctx.redfish.get_thermal(bmc_host=bmc_host, verify_tls=verify_tls)
+            if not thermal_after_result.success:
+                return InjectResult(
+                    success=False,
+                    fault_id=ctx.fault_id,
+                    error=f"Redfish thermal post-inject check failed: {_result_error(thermal_after_result)}",
+                )
+            thermal_after_payload = _parse_json_payload(thermal_after_result.output)
+
+            ctx.params["bmc_precheck"] = {
+                "bmc_host": bmc_host,
+                "verify_tls": verify_tls,
+                "fan_before": fan_before,
+                "fan_after_inject": _fan_snapshot(thermal_after_payload),
+                "temperature_before": temp_before,
+                "temperature_after_inject": _temperature_snapshot(thermal_after_payload),
+                "power_control_count": len(power_controls),
+                "sensor_member_count": len(sensor_members),
+                "sensor_query_success": bool(sensors.success),
+                "fan_inject": {
+                    "fan_index": fan_index,
+                    "mode": fan_mode,
+                    "pwm": fan_pwm,
+                },
+                "fan_control_backend": fan_backend,
+                "fan_injected_backend": fan_injected_backend,
+                "fan_inject_applied": fan_inject_applied,
+                "fan_inject_warning": fan_inject_warning,
+            }
+            ctx.params["_fan_injected"] = fan_inject_applied
+            ctx.params["_fan_injected_backend"] = fan_injected_backend
+        finally:
+            if created_session:
+                logout = await ctx.redfish.logout(bmc_host=bmc_host, verify_tls=verify_tls)
+                if not logout.success:
+                    logger.warning("Redfish logout failed for %s: %s", bmc_host, logout.error)
+
         get_power_cmd = f"nvidia-smi -i {gpu_id} --query-gpu=power.limit --format=csv,noheader,nounits"
-        get_result = await ctx.ssh.run_command(
-            node=ctx.target_node,
-            command=get_power_cmd,
-        )
-        
-        original_power = 300  # 榛樿鍊?
+        get_result = await ctx.ssh.run_command(node=ctx.target_node, command=get_power_cmd, use_sudo=False)
+
+        original_power = 300
         if get_result.success:
             try:
                 original_power = int(float(get_result.output.strip()))
             except ValueError:
-                logger.warning(f"鏃犳硶瑙ｆ瀽鍘熷鍔熺巼闄愬埗: {get_result.output}")
-        
-        # 璁剧疆鍔熺巼闄愬埗
-        inject_cmd = f"sudo nvidia-smi -i {gpu_id} -pl {power_limit}"
-        recover_cmd = f"sudo nvidia-smi -i {gpu_id} -pl {original_power}"
-        
-        logger.info(
-            f"娉ㄥ叆鐑檷棰? node={ctx.target_node}, "
-            f"gpu_id={gpu_id}, power_limit={power_limit}W (鍘? {original_power}W)"
-        )
-        
-        # 鍐欏叆 WAL
+                logger.warning("Unable to parse original power limit: %s", get_result.output)
+        ctx.params["original_power"] = original_power
+
+        inject_cmd = f"nvidia-smi -i {gpu_id} -pl {power_limit}"
+        try:
+            _guard_check(ctx, inject_cmd)
+        except Exception as exc:
+            return InjectResult(success=False, fault_id=ctx.fault_id, error=str(exc))
+
         ctx.rollback.record(
             fault_id=ctx.fault_id,
             channel="ssh",
             target=ctx.target_node,
             inject_action="gpu_power_limit",
-            inject_params={
-                "gpu_id": gpu_id,
-                "power_limit": power_limit,
-            },
+            inject_params={"gpu_id": gpu_id, "power_limit": power_limit},
             recover_action="gpu_power_restore",
-            recover_params={
-                "gpu_id": gpu_id,
-                "original_power": original_power,
-            },
+            recover_params={"gpu_id": gpu_id, "original_power": original_power},
         )
-        
-        # 鎵ц娉ㄥ叆
-        result = await ctx.ssh.run_command(
-            node=ctx.target_node,
-            command=inject_cmd,
-        )
-        
+
+        result = await ctx.ssh.run_command(node=ctx.target_node, command=inject_cmd, use_sudo=True)
         if result.success:
-            logger.info(f"鐑檷棰戞敞鍏ユ垚鍔? {ctx.fault_id}")
             return InjectResult(success=True, fault_id=ctx.fault_id)
-        else:
-            logger.error(f"鐑檷棰戞敞鍏ュけ璐? {result.error}")
-            return InjectResult(success=False, fault_id=ctx.fault_id, error=result.error)
-    
+        return InjectResult(success=False, fault_id=ctx.fault_id, error=_result_error(result))
+
     async def recover(self, ctx: FaultContext) -> RecoverResult:
-        gpu_id = ctx.params.get("gpu_id", 0)
-        original_power = ctx.params.get("original_power", 300)
-        
-        logger.info(f"鎭㈠鐑檷棰? node={ctx.target_node}, gpu_id={gpu_id}")
-        
-        result = await ctx.ssh.run_command(
-            node=ctx.target_node,
-            command=f"sudo nvidia-smi -i {gpu_id} -pl {original_power}",
-        )
-        
-        ctx.rollback.mark_recovered(ctx.fault_id)
-        return RecoverResult(success=True, fault_id=ctx.fault_id)
-    
+        gpu_id = int(ctx.params.get("gpu_id", 0))
+        original_power = int(ctx.params.get("original_power", 300))
+        injected_backend = str(ctx.params.get("_fan_injected_backend", "")).strip().lower()
+        recover_cmd = f"nvidia-smi -i {gpu_id} -pl {original_power}"
+        try:
+            _guard_check(ctx, recover_cmd)
+        except Exception as exc:
+            _mark_recovered_or_failed(ctx, False)
+            return RecoverResult(success=False, fault_id=ctx.fault_id, error=str(exc))
+
+        result = await ctx.ssh.run_command(node=ctx.target_node, command=recover_cmd, use_sudo=True)
+        ssh_recover_success = bool(result.success or result.dry_run)
+
+        redfish_recover_success = True
+        redfish_recover_error = ""
+        bmc_cfg = ctx.target_redfish
+        if ctx.params.get("_fan_injected") and injected_backend == "redfish" and ctx.redfish and bmc_cfg:
+            bmc_host = bmc_cfg.bmc_host
+            verify_tls = bool(bmc_cfg.verify_tls)
+            created_session = False
+            try:
+                if bmc_cfg.token:
+                    ctx.redfish.set_token(bmc_host, bmc_cfg.token)
+                else:
+                    if not bmc_cfg.username or not bmc_cfg.password:
+                        redfish_recover_success = False
+                        redfish_recover_error = "Missing Redfish credentials for fan recovery"
+                    else:
+                        auth = await ctx.redfish.authenticate(
+                            bmc_host=bmc_host,
+                            username=bmc_cfg.username,
+                            password=bmc_cfg.password,
+                            verify_tls=verify_tls,
+                        )
+                        if not auth.success:
+                            redfish_recover_success = False
+                            redfish_recover_error = f"Redfish auth failed in recovery: {auth.error}"
+                        else:
+                            created_session = True
+
+                if redfish_recover_success:
+                    pre = await ctx.redfish.get_thermal(bmc_host=bmc_host, verify_tls=verify_tls)
+                    set_auto = await ctx.redfish.set_fan_control(
+                        bmc_host=bmc_host,
+                        fan_index=int(ctx.params.get("fan_index", 0)),
+                        mode=str(ctx.params.get("fan_recover_mode", "Auto")),
+                        pwm=None,
+                        verify_tls=verify_tls,
+                        fault_id=ctx.fault_id,
+                    )
+                    post = await ctx.redfish.get_thermal(bmc_host=bmc_host, verify_tls=verify_tls)
+                    if not set_auto.success:
+                        redfish_recover_success = False
+                        redfish_recover_error = f"Redfish fan recovery failed: {_result_error(set_auto)}"
+                    else:
+                        pre_payload = _parse_json_payload(pre.output) if pre.success else {}
+                        post_payload = _parse_json_payload(post.output) if post.success else {}
+                        ctx.params["bmc_recover_snapshot"] = {
+                            "fan_before_recover": _fan_snapshot(pre_payload),
+                            "fan_after_recover": _fan_snapshot(post_payload),
+                            "temperature_before_recover": _temperature_snapshot(pre_payload),
+                            "temperature_after_recover": _temperature_snapshot(post_payload),
+                        }
+            finally:
+                if created_session:
+                    logout = await ctx.redfish.logout(bmc_host=bmc_host, verify_tls=verify_tls)
+                    if not logout.success:
+                        logger.warning("Redfish logout failed for %s during recovery: %s", bmc_host, logout.error)
+
+        ipmi_recover_success = True
+        ipmi_recover_error = ""
+        if ctx.params.get("_fan_injected") and injected_backend == "ipmi":
+            if not ctx.target_ipmi:
+                ipmi_recover_success = False
+                ipmi_recover_error = "Missing target IPMI config for fan recovery"
+            else:
+                ipmi_cfg = ctx.target_ipmi
+                profile = str(ctx.params.get("ipmi_profile", "read_only")).strip().lower()
+                _, auto_cmd = _build_ipmi_profile_commands(profile, int(ctx.params.get("ipmi_target_pwm", 30)))
+                if not auto_cmd:
+                    ipmi_recover_success = False
+                    ipmi_recover_error = f"Unsupported IPMI profile for recovery: {profile}"
+                else:
+                    pre = await _ipmi_collect_snapshot(ctx, ipmi_cfg)
+                    if not ctx.ipmi:
+                        ipmi_recover_success = False
+                        ipmi_recover_error = "IPMI channel not initialized"
+                        post = await _ipmi_collect_snapshot(ctx, ipmi_cfg)
+                        ctx.params["ipmi_recover_snapshot"] = {
+                            "before": pre,
+                            "after": post,
+                            "command": auto_cmd,
+                            "command_success": False,
+                            "output": "",
+                            "error": ipmi_recover_error,
+                        }
+                    else:
+                        recover_result = await ctx.ipmi.raw_command(
+                            host=str(ipmi_cfg.host),
+                            username=str(ipmi_cfg.username or ""),
+                            password=str(ipmi_cfg.password or ""),
+                            netfn=int(auto_cmd["netfn"]),
+                            command=int(auto_cmd["command"]),
+                            data=[int(x) for x in auto_cmd.get("data", [])],
+                            port=int(getattr(ipmi_cfg, "port", 623) or 623),
+                            interface=str(getattr(ipmi_cfg, "interface", "lanplus") or "lanplus"),
+                            timeout=int(getattr(ipmi_cfg, "timeout", 30) or 30),
+                        )
+                        ok = bool(recover_result.success)
+                        out = recover_result.output
+                        err = recover_result.error
+                        post = await _ipmi_collect_snapshot(ctx, ipmi_cfg)
+                        ctx.params["ipmi_recover_snapshot"] = {
+                            "before": pre,
+                            "after": post,
+                            "command": auto_cmd,
+                            "command_success": ok,
+                            "output": out,
+                            "error": err,
+                        }
+                        if not ok:
+                            ipmi_recover_success = False
+                            ipmi_recover_error = f"IPMI fan recovery failed: {err or out or auto_cmd}"
+
+        success = bool(ssh_recover_success and redfish_recover_success and ipmi_recover_success)
+        _mark_recovered_or_failed(ctx, success)
+        if success:
+            return RecoverResult(success=True, fault_id=ctx.fault_id)
+        error = _result_error(result)
+        if redfish_recover_error:
+            if error:
+                error = f"{error}; {redfish_recover_error}"
+            else:
+                error = redfish_recover_error
+        if ipmi_recover_error:
+            if error:
+                error = f"{error}; {ipmi_recover_error}"
+            else:
+                error = ipmi_recover_error
+        return RecoverResult(success=False, fault_id=ctx.fault_id, error=error)
+
     async def verify(self, ctx: FaultContext) -> bool:
-        gpu_id = ctx.params.get("gpu_id", 0)
-        original_power = ctx.params.get("original_power", 300)
-        
+        gpu_id = int(ctx.params.get("gpu_id", 0))
+        original_power = int(ctx.params.get("original_power", 300))
         result = await ctx.ssh.run_command(
             node=ctx.target_node,
             command=f"nvidia-smi -i {gpu_id} --query-gpu=power.limit --format=csv,noheader,nounits",
+            use_sudo=False,
         )
-        
-        if result.success:
-            try:
-                current_power = int(float(result.output.strip()))
-                if current_power >= original_power - 10:  # 鍏佽 10W 璇樊
-                    logger.info(f"楠岃瘉閫氳繃: 鍔熺巼闄愬埗宸叉仮澶嶅埌 {current_power}W")
-                    return True
-                else:
-                    logger.warning(f"楠岃瘉澶辫触: 鍔熺巼闄愬埗涓?{current_power}W锛屾湡鏈?>= {original_power}W")
-                    return False
-            except ValueError:
-                logger.warning(f"鏃犳硶瑙ｆ瀽鍔熺巼闄愬埗: {result.output}")
-                return True
-        
-        logger.warning(f"鏃犳硶妫€鏌ュ姛鐜囬檺鍒? {result.error}")
-        return True
-    
+        if not result.success:
+            return True
+        try:
+            current_power = int(float(result.output.strip()))
+            return current_power >= original_power - 10
+        except ValueError:
+            return True
+
     def monitor_queries(self) -> dict[str, str]:
         return {
             "gpu_temp": 'DCGM_FI_DEV_GPU_TEMP{{node="{node}"}}',
@@ -697,13 +1289,9 @@ class ThermalThrottlingScenario(BaseScenario):
             "gpu_sm_clock": 'DCGM_FI_DEV_SM_CLOCK{{node="{node}"}}',
             "gpu_throttle_reason": 'DCGM_FI_DEV_GPU_UTIL{{node="{node}"}}',
             "inference_p50": 'histogram_quantile(0.5, rate(vllm:request_duration_seconds_bucket[1m]))',
-            "inference_throughput": 'rate(vllm:request_duration_seconds_count[1m])',
+            "inference_throughput": "rate(vllm:request_duration_seconds_count[1m])",
         }
 
-
-# ============================================================================
-# 鍦烘櫙娉ㄥ唽鍒楄〃
-# ============================================================================
 
 SCENARIOS = [
     GPUContentionScenario,

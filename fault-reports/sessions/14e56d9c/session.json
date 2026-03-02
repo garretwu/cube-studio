@@ -1,0 +1,117 @@
+{
+  "session_id": "14e56d9c",
+  "config_hash": "cf984462696842c4",
+  "started_at": "2026-03-02T10:21:57.867659",
+  "finished_at": "2026-03-02T10:21:58.880664",
+  "status": "completed",
+  "phase": "report",
+  "active_faults": [],
+  "rollback_journal_path": "fault-reports\\sessions\\14e56d9c\\rollback.jsonl",
+  "baseline_path": "fault-reports\\sessions\\14e56d9c\\baseline.json",
+  "metrics_dir": "fault-reports\\sessions\\14e56d9c\\metrics",
+  "report_dir": "fault-reports\\sessions\\14e56d9c\\report",
+  "events": [
+    {
+      "timestamp": "2026-03-02T10:21:57.868822",
+      "phase": "init",
+      "event": "components_initialized",
+      "details": {}
+    },
+    {
+      "timestamp": "2026-03-02T10:21:57.869597",
+      "phase": "init",
+      "event": "phase_changed",
+      "details": {
+        "from": "init",
+        "to": "init"
+      }
+    },
+    {
+      "timestamp": "2026-03-02T10:21:57.869603",
+      "phase": "init",
+      "event": "preflight_started",
+      "details": {}
+    },
+    {
+      "timestamp": "2026-03-02T10:21:57.870127",
+      "phase": "init",
+      "event": "preflight_completed",
+      "details": {}
+    },
+    {
+      "timestamp": "2026-03-02T10:21:57.870618",
+      "phase": "baseline",
+      "event": "phase_changed",
+      "details": {
+        "from": "init",
+        "to": "baseline"
+      }
+    },
+    {
+      "timestamp": "2026-03-02T10:21:57.870624",
+      "phase": "baseline",
+      "event": "baseline_started",
+      "details": {}
+    },
+    {
+      "timestamp": "2026-03-02T10:21:57.871507",
+      "phase": "baseline",
+      "event": "baseline_completed",
+      "details": {
+        "baseline_path": "fault-reports\\sessions\\14e56d9c\\baseline.json"
+      }
+    },
+    {
+      "timestamp": "2026-03-02T10:21:57.872024",
+      "phase": "inject",
+      "event": "phase_changed",
+      "details": {
+        "from": "baseline",
+        "to": "inject"
+      }
+    },
+    {
+      "timestamp": "2026-03-02T10:21:58.878300",
+      "phase": "report",
+      "event": "phase_changed",
+      "details": {
+        "from": "inject",
+        "to": "report"
+      }
+    },
+    {
+      "timestamp": "2026-03-02T10:21:58.878305",
+      "phase": "report",
+      "event": "report_started",
+      "details": {}
+    },
+    {
+      "timestamp": "2026-03-02T10:21:58.880080",
+      "phase": "report",
+      "event": "report_completed",
+      "details": {
+        "report_path": "fault-reports\\sessions\\14e56d9c\\report\\report.json"
+      }
+    },
+    {
+      "timestamp": "2026-03-02T10:21:58.880666",
+      "phase": "report",
+      "event": "session_completed",
+      "details": {}
+    }
+  ],
+  "scenario_results": {
+    "gpu_contention": {
+      "scenario_name": "gpu_contention",
+      "inject_success": false,
+      "recover_success": false,
+      "verified": false,
+      "inject_duration_ms": 0,
+      "observe_duration_ms": 0,
+      "recover_duration_ms": 0,
+      "error": "sudo: python: command not found\n",
+      "metrics": {}
+    }
+  },
+  "baseline_metrics": {}
+}

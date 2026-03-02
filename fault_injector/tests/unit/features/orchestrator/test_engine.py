@@ -4,6 +4,9 @@ import pytest
 
 from fault_injector.config.schema import FaultInjectorConfig, SSHConfig, TargetNodeConfig, ScenarioConfig
 from fault_injector.orchestrator.engine import FaultOrchestrator
+from fault_injector.orchestrator.session import Session
+from fault_injector.scenarios.base import BaseScenario
+from fault_injector.scenarios.registry import SCENARIO_REGISTRY
 
 
 @pytest.mark.asyncio
@@ -112,3 +115,91 @@ async def test_engine_should_disable_prometheus_when_monitor_disabled(tmp_path):
 
     assert session.status.value == "completed"
     assert orchestrator.prometheus is None
+
+
+def test_engine_aggregate_queries_should_render_node_and_device_placeholders(tmp_path):
+    cfg = FaultInjectorConfig(
+        monitor={"enabled": False, "baseline_duration": 0, "post_recovery_duration": 0},
+        inventory={
+            "nodes": [
+                TargetNodeConfig(
+                    name="node-1",
+                    ssh=SSHConfig(host="127.0.0.1", user="root"),
+                    interface="eth0",
+                )
+            ]
+        },
+        scenarios={
+            "gpu_contention": ScenarioConfig(
+                name="gpu_contention",
+                enabled=True,
+                target_nodes=["node-1"],
+                params={"duration": 0, "interface": "eth7"},
+            ),
+            "storage_io_interference": ScenarioConfig(
+                name="storage_io_interference",
+                enabled=True,
+                target_nodes=["node-1"],
+                params={"duration": 0, "interface": "nvme0n1"},
+            ),
+        },
+    )
+    cfg.global_.session_dir = str(tmp_path)
+    orchestrator = FaultOrchestrator(cfg, dry_run=True, session_dir=str(tmp_path))
+
+    queries = orchestrator._aggregate_monitor_queries()
+    assert queries["gpu_contention:gpu_util"] == 'DCGM_FI_DEV_GPU_UTIL{node="node-1"}'
+    assert queries["storage_io_interference:disk_io_util"] == 'node_disk_io_utilization_seconds{device="nvme0n1"}'
+
+
+def test_engine_should_keep_raw_query_and_emit_warning_for_unresolved_placeholder(tmp_path):
+    class _UnknownPlaceholderScenario(BaseScenario):
+        @property
+        def name(self) -> str:
+            return "unknown_placeholder_scenario"
+
+        @property
+        def layer(self) -> str:
+            return "os"
+
+        async def inject(self, ctx):
+            raise NotImplementedError
+
+        def monitor_queries(self) -> dict[str, str]:
+            return {
+                "bad": 'metric_total{label="{unknown}"}',
+                "ok": 'metric_total{label="{interface}"}',
+            }
+
+    SCENARIO_REGISTRY["unknown_placeholder_scenario"] = _UnknownPlaceholderScenario
+    try:
+        cfg = FaultInjectorConfig(
+            monitor={"enabled": False, "baseline_duration": 0, "post_recovery_duration": 0},
+            inventory={
+                "nodes": [
+                    TargetNodeConfig(
+                        name="node-1",
+                        ssh=SSHConfig(host="127.0.0.1", user="root"),
+                        interface="eth0",
+                    )
+                ]
+            },
+            scenarios={
+                "unknown_placeholder_scenario": ScenarioConfig(
+                    name="unknown_placeholder_scenario",
+                    enabled=True,
+                    target_nodes=["node-1"],
+                    params={"interface": "eth9"},
+                )
+            },
+        )
+        cfg.global_.session_dir = str(tmp_path)
+        orchestrator = FaultOrchestrator(cfg, dry_run=True, session_dir=str(tmp_path))
+        orchestrator.session = Session.create(config_hash="", session_dir=str(tmp_path))
+
+        queries = orchestrator._aggregate_monitor_queries()
+        assert queries["unknown_placeholder_scenario:bad"] == 'metric_total{label="{unknown}"}'
+        assert queries["unknown_placeholder_scenario:ok"] == 'metric_total{label="eth9"}'
+        assert any(event["event"] == "monitor_query_render_warning" for event in orchestrator.session.events)
+    finally:
+        SCENARIO_REGISTRY.pop("unknown_placeholder_scenario", None)

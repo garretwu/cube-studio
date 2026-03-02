@@ -6,6 +6,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -33,12 +34,14 @@ from fault_injector.safety.rollback import RollbackJournal
 from fault_injector.scenarios.base import FaultContext
 from fault_injector.scenarios.registry import SCENARIO_REGISTRY
 from lib.channels.kubernetes import K8sChannel
+from lib.channels.ipmi import IPMIChannel
 from lib.channels.prometheus import PrometheusChannel
 from lib.channels.redfish import RedfishChannel
 from lib.channels.ssh import SSHChannel
 from lib.channels.switch import SwitchChannel
 
 logger = logging.getLogger(__name__)
+_MONITOR_PLACEHOLDER_PATTERN = re.compile(r"\{([a-zA-Z_][a-zA-Z0-9_]*)\}")
 
 
 class OrchestrationError(Exception):
@@ -62,10 +65,12 @@ class FaultOrchestrator:
         self.prometheus: PrometheusChannel | None = None
         self.kubernetes: K8sChannel | None = None
         self.redfish: RedfishChannel | None = None
+        self.ipmi: IPMIChannel | None = None
         self.switch: SwitchChannel | None = None
 
         self.monitor_agent: MonitorAgent | None = None
         self.layer_agents: dict[str, Any] = {}
+        self.inventory: dict[str, Any] = {}
         self.scheduler = ScenarioScheduler(config)
 
     async def run(self) -> Session:
@@ -113,6 +118,7 @@ class FaultOrchestrator:
         )
 
         inventory = self._build_inventory()
+        self.inventory = inventory
         self.ssh = SSHChannel(
             inventory=inventory,
             dry_run=self.dry_run or self.config.global_.safety.dry_run,
@@ -129,6 +135,7 @@ class FaultOrchestrator:
             self.prometheus = None
         self.kubernetes = K8sChannel(dry_run=self.dry_run, wal=self.rollback)
         self.redfish = RedfishChannel(dry_run=self.dry_run, wal=self.rollback, guard=self.guard)
+        self.ipmi = IPMIChannel(dry_run=self.dry_run, wal=self.rollback, guard=self.guard)
 
         switch_devices = self._build_switch_inventory()
         self.switch = SwitchChannel(
@@ -143,6 +150,7 @@ class FaultOrchestrator:
             "prometheus": self.prometheus,
             "kubernetes": self.kubernetes,
             "redfish": self.redfish,
+            "ipmi": self.ipmi,
             "switch": self.switch,
         }
         self.monitor_agent = MonitorAgent(channels=channels)
@@ -226,9 +234,76 @@ class FaultOrchestrator:
             if not scenario_cls:
                 continue
             scenario = scenario_cls()
-            for key, value in scenario.monitor_queries().items():
+            rendered_queries = self._render_monitor_queries(scenario.monitor_queries(), sc_cfg, sc_cfg.name)
+            for key, value in rendered_queries.items():
                 queries[f"{sc_cfg.name}:{key}"] = value
         return queries
+
+    def _monitor_render_values(self, config: ScenarioConfig) -> dict[str, str]:
+        target_nodes = config.target_nodes
+        node = target_nodes[0] if target_nodes else ""
+        interface = str(config.params.get("interface", "eth0"))
+        device = str(config.params.get("device", interface))
+        return {
+            "node": node,
+            "device": device,
+            "interface": interface,
+        }
+
+    def _record_query_render_warning(
+        self,
+        *,
+        scenario_name: str,
+        metric_key: str,
+        query: str,
+        unresolved: list[str],
+    ) -> None:
+        if self.session is None:
+            return
+        self.session.add_event(
+            "monitor_query_render_warning",
+            {
+                "scenario": scenario_name,
+                "metric": metric_key,
+                "query": query,
+                "unresolved_placeholders": unresolved,
+            },
+        )
+        self.session.save(self.session_dir)
+
+    def _render_monitor_queries(
+        self,
+        queries: dict[str, str],
+        config: ScenarioConfig,
+        scenario_name: str,
+    ) -> dict[str, str]:
+        values = self._monitor_render_values(config)
+        rendered: dict[str, str] = {}
+
+        for key, query in queries.items():
+            placeholders = sorted(set(_MONITOR_PLACEHOLDER_PATTERN.findall(query)))
+            if not placeholders:
+                rendered[key] = query
+                continue
+
+            unresolved = [placeholder for placeholder in placeholders if placeholder not in values]
+            if unresolved:
+                self._record_query_render_warning(
+                    scenario_name=scenario_name,
+                    metric_key=key,
+                    query=query,
+                    unresolved=unresolved,
+                )
+                rendered[key] = query
+                continue
+
+            query_rendered = query
+            for placeholder in placeholders:
+                query_rendered = query_rendered.replace(f"{{{placeholder}}}", values[placeholder])
+            query_rendered = query_rendered.replace("{{", "{").replace("}}", "}")
+            rendered[key] = query_rendered
+
+        return rendered
 
     def _resolve_scenarios(self) -> list[ScenarioConfig]:
         scenarios: list[ScenarioConfig] = []
@@ -241,6 +316,7 @@ class FaultOrchestrator:
         target_nodes = config.target_nodes
         target = target_nodes[0] if target_nodes else ""
         fault_id = f"{scenario_name}_{uuid.uuid4().hex[:8]}"
+        target_cfg = self.inventory.get(target)
         return FaultContext(
             ssh=self.ssh,
             rollback=self.rollback,
@@ -249,6 +325,9 @@ class FaultOrchestrator:
             params=config.params,
             fault_id=fault_id,
             redfish=self.redfish,
+            ipmi=self.ipmi,
+            target_redfish=getattr(target_cfg, "redfish", None),
+            target_ipmi=getattr(target_cfg, "ipmi", None),
             switch=self.switch,
             k8s=self.kubernetes,
             prometheus=self.prometheus,
@@ -283,6 +362,19 @@ class FaultOrchestrator:
         self.session.save(self.session_dir)
         inject_result = await agent.inject(scenario_name, ctx)
         result.inject_success = inject_result.success
+
+        bmc_precheck = ctx.params.get("bmc_precheck")
+        if isinstance(bmc_precheck, dict):
+            self.session.add_event(
+                "bmc_precheck_completed",
+                {
+                    "scenario": scenario_name,
+                    "fault_id": ctx.fault_id,
+                    "precheck": bmc_precheck,
+                },
+            )
+            self.session.save(self.session_dir)
+
         if not inject_result.success:
             result.error = inject_result.error
             self.session.scenario_results[scenario_name] = result
@@ -309,7 +401,7 @@ class FaultOrchestrator:
         queries = {}
         scenario_class = SCENARIO_REGISTRY.get(scenario_name)
         if scenario_class:
-            queries = scenario_class().monitor_queries()
+            queries = self._render_monitor_queries(scenario_class().monitor_queries(), config, scenario_name)
         if queries:
             result.metrics["during"] = await self.monitor_agent.observe(
                 queries=queries,
@@ -428,6 +520,8 @@ class FaultOrchestrator:
             await self.prometheus.close()
         if self.switch:
             self.switch.close()
+        if self.ipmi:
+            await self.ipmi.close()
 
     @classmethod
     async def resume(cls, session_id: str, session_dir: str = "./fault-reports/sessions/") -> Session:

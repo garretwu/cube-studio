@@ -1,0 +1,144 @@
+{
+  "session_id": "87878771",
+  "status": "running",
+  "phase": "report",
+  "started_at": "2026-03-02T10:55:25.349772",
+  "finished_at": "2026-03-02T10:56:27.190704",
+  "baseline_metrics": {},
+  "scenario_results": {
+    "platform_cascade": {
+      "scenario_name": "platform_cascade",
+      "inject_success": true,
+      "recover_success": true,
+      "verified": true,
+      "inject_duration_ms": 0,
+      "observe_duration_ms": 0,
+      "recover_duration_ms": 0,
+      "error": "",
+      "metrics": {
+        "during": {}
+      }
+    }
+  },
+  "events": [
+    {
+      "timestamp": "2026-03-02T10:55:25.350927",
+      "phase": "init",
+      "event": "components_initialized",
+      "details": {}
+    },
+    {
+      "timestamp": "2026-03-02T10:55:25.351696",
+      "phase": "init",
+      "event": "phase_changed",
+      "details": {
+        "from": "init",
+        "to": "init"
+      }
+    },
+    {
+      "timestamp": "2026-03-02T10:55:25.351701",
+      "phase": "init",
+      "event": "preflight_started",
+      "details": {}
+    },
+    {
+      "timestamp": "2026-03-02T10:55:25.352379",
+      "phase": "init",
+      "event": "preflight_completed",
+      "details": {}
+    },
+    {
+      "timestamp": "2026-03-02T10:55:25.352921",
+      "phase": "baseline",
+      "event": "phase_changed",
+      "details": {
+        "from": "init",
+        "to": "baseline"
+      }
+    },
+    {
+      "timestamp": "2026-03-02T10:55:25.352927",
+      "phase": "baseline",
+      "event": "baseline_started",
+      "details": {}
+    },
+    {
+      "timestamp": "2026-03-02T10:55:25.354141",
+      "phase": "baseline",
+      "event": "baseline_completed",
+      "details": {
+        "baseline_path": "fault-reports\\sessions\\87878771\\baseline.json"
+      }
+    },
+    {
+      "timestamp": "2026-03-02T10:55:25.354760",
+      "phase": "inject",
+      "event": "phase_changed",
+      "details": {
+        "from": "baseline",
+        "to": "inject"
+      }
+    },
+    {
+      "timestamp": "2026-03-02T10:55:26.713164",
+      "phase": "inject",
+      "event": "fault_injected",
+      "details": {
+        "fault_id": "platform_cascade_92799835",
+        "scenario_name": "platform_cascade"
+      }
+    },
+    {
+      "timestamp": "2026-03-02T10:55:26.714062",
+      "phase": "observe",
+      "event": "phase_changed",
+      "details": {
+        "from": "inject",
+        "to": "observe"
+      }
+    },
+    {
+      "timestamp": "2026-03-02T10:56:26.722257",
+      "phase": "recover",
+      "event": "phase_changed",
+      "details": {
+        "from": "observe",
+        "to": "recover"
+      }
+    },
+    {
+      "timestamp": "2026-03-02T10:56:27.108398",
+      "phase": "recover",
+      "event": "fault_recovered",
+      "details": {
+        "fault_id": "platform_cascade_92799835",
+        "scenario_name": "platform_cascade"
+      }
+    },
+    {
+      "timestamp": "2026-03-02T10:56:27.109719",
+      "phase": "verify",
+      "event": "phase_changed",
+      "details": {
+        "from": "recover",
+        "to": "verify"
+      }
+    },
+    {
+      "timestamp": "2026-03-02T10:56:27.189545",
+      "phase": "report",
+      "event": "phase_changed",
+      "details": {
+        "from": "verify",
+        "to": "report"
+      }
+    },
+    {
+      "timestamp": "2026-03-02T10:56:27.189555",
+      "phase": "report",
+      "event": "report_started",
+      "details": {}
+    }
+  ]
+}

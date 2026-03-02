@@ -1,0 +1,97 @@
+{
+  "session_id": "b1dd4793",
+  "status": "running",
+  "phase": "report",
+  "started_at": "2026-03-02T15:18:17.426915",
+  "finished_at": "2026-03-02T15:19:02.700216",
+  "baseline_metrics": {},
+  "scenario_results": {
+    "thermal_throttling": {
+      "scenario_name": "thermal_throttling",
+      "inject_success": false,
+      "recover_success": false,
+      "verified": false,
+      "inject_duration_ms": 0,
+      "observe_duration_ms": 0,
+      "recover_duration_ms": 0,
+      "error": "Redfish thermal post-inject check failed: Redfish request failed: Client error '401 Unauthorized' for url 'https://10.11.8.13/redfish/v1/Chassis/Self/Thermal'\nFor more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/401",
+      "metrics": {}
+    }
+  },
+  "events": [
+    {
+      "timestamp": "2026-03-02T15:18:17.427999",
+      "phase": "init",
+      "event": "components_initialized",
+      "details": {}
+    },
+    {
+      "timestamp": "2026-03-02T15:18:17.428634",
+      "phase": "init",
+      "event": "phase_changed",
+      "details": {
+        "from": "init",
+        "to": "init"
+      }
+    },
+    {
+      "timestamp": "2026-03-02T15:18:17.428639",
+      "phase": "init",
+      "event": "preflight_started",
+      "details": {}
+    },
+    {
+      "timestamp": "2026-03-02T15:18:17.429151",
+      "phase": "init",
+      "event": "preflight_completed",
+      "details": {}
+    },
+    {
+      "timestamp": "2026-03-02T15:18:17.429696",
+      "phase": "baseline",
+      "event": "phase_changed",
+      "details": {
+        "from": "init",
+        "to": "baseline"
+      }
+    },
+    {
+      "timestamp": "2026-03-02T15:18:17.429707",
+      "phase": "baseline",
+      "event": "baseline_started",
+      "details": {}
+    },
+    {
+      "timestamp": "2026-03-02T15:18:17.431097",
+      "phase": "baseline",
+      "event": "baseline_completed",
+      "details": {
+        "baseline_path": "fault-reports\\sessions\\b1dd4793\\baseline.json"
+      }
+    },
+    {
+      "timestamp": "2026-03-02T15:18:17.432384",
+      "phase": "inject",
+      "event": "phase_changed",
+      "details": {
+        "from": "baseline",
+        "to": "inject"
+      }
+    },
+    {
+      "timestamp": "2026-03-02T15:19:02.691896",
+      "phase": "report",
+      "event": "phase_changed",
+      "details": {
+        "from": "inject",
+        "to": "report"
+      }
+    },
+    {
+      "timestamp": "2026-03-02T15:19:02.691903",
+      "phase": "report",
+      "event": "report_started",
+      "details": {}
+    }
+  ]
+}

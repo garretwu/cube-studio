@@ -29,10 +29,22 @@ class RedfishConfig(BaseModel):
     timeout: int = 30
 
 
+class IPMIConfig(BaseModel):
+    host: str
+    username: str | None = None
+    password: str | None = None
+    interface: str = "lanplus"
+    port: int = 623
+    tool_path: str = "ipmitool"
+    cipher_suite: int | None = None
+    timeout: int = 30
+
+
 class TargetNodeConfig(BaseModel):
     name: str
     ssh: SSHConfig
     redfish: RedfishConfig | None = None
+    ipmi: IPMIConfig | None = None
     interface: str = "eth0"
     roles: list[str] = Field(default_factory=list)
 
