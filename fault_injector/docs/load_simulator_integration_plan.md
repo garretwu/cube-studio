@@ -68,7 +68,7 @@ scenarios:
         enabled: true
         config_path: load_simulator/config/notebook-soak-only.yaml
         only: [inference]
-        timeout_seconds: 900
+        timeout_seconds: 1000
         strict: true
 ```
 
