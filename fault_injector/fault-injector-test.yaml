@@ -128,6 +128,13 @@ scenarios:
       distribution: "pareto"
       loss_pct: 0
       duration: 60
+      load_simulator:
+        enabled: true
+        config_path: "load_simulator/config/notebook-soak-only.yaml"
+        only:
+          - "notebook"
+        timeout_seconds: 30
+        strict: true
 
   # ---------------------------------------------------------------------------
   # RC-3: Storage I/O Interference

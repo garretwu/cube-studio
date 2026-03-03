@@ -1,0 +1,8 @@
+{
+  "cpu_util": [],
+  "memory_util": [],
+  "network_jitter:inference_p50": [],
+  "network_jitter:inference_p95": [],
+  "network_jitter:inference_p99": [],
+  "network_jitter:network_latency": []
+}
