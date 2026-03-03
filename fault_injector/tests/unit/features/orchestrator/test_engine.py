@@ -203,3 +203,52 @@ def test_engine_should_keep_raw_query_and_emit_warning_for_unresolved_placeholde
         assert any(event["event"] == "monitor_query_render_warning" for event in orchestrator.session.events)
     finally:
         SCENARIO_REGISTRY.pop("unknown_placeholder_scenario", None)
+
+
+@pytest.mark.asyncio
+async def test_engine_should_record_load_simulator_events(tmp_path, monkeypatch):
+    async def _fake_ls(*args, **kwargs):  # noqa: ANN002,ANN003
+        _ = (args, kwargs)
+        return {"exit_code": 0, "summary": {"session_id": "ls1"}}
+
+    monkeypatch.setattr("fault_injector.scenarios.base._run_load_simulator", _fake_ls)
+
+    cfg = FaultInjectorConfig(
+        monitor={"baseline_duration": 0, "post_recovery_duration": 0},
+        inventory={
+            "nodes": [
+                TargetNodeConfig(
+                    name="node-1",
+                    ssh=SSHConfig(host="127.0.0.1", user="root"),
+                    interface="eth0",
+                )
+            ]
+        },
+        scenarios={
+            "network_jitter": ScenarioConfig(
+                name="network_jitter",
+                enabled=True,
+                target_nodes=["node-1"],
+                params={
+                    "duration": 0,
+                    "interface": "eth0",
+                    "delay_ms": 5,
+                    "load_simulator": {
+                        "enabled": True,
+                        "config_path": "load_simulator/config/notebook-soak-only.yaml",
+                        "only": ["inference"],
+                        "timeout_seconds": 5,
+                        "strict": True,
+                    },
+                },
+            )
+        },
+    )
+    cfg.global_.session_dir = str(tmp_path)
+    cfg.orchestrator.observe_interval = 1
+    cfg.monitor.baseline_duration = 0
+
+    orchestrator = FaultOrchestrator(cfg, dry_run=True, session_dir=str(tmp_path))
+    session = await orchestrator.run()
+    assert session.status.value == "completed"
+    assert any(event["event"] == "load_simulator_run" for event in session.events)

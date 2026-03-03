@@ -298,6 +298,10 @@ class NetworkJitterScenario(BaseScenario):
         return f"tc qdisc del dev {interface} root"
 
     async def inject(self, ctx: FaultContext) -> InjectResult:
+        ls_error = self._start_load_simulator_task(ctx)
+        if ls_error:
+            return InjectResult(success=False, fault_id=ctx.fault_id, error=ls_error)
+
         interface = ctx.params.get("interface", "eth0")
         delay_ms = ctx.params.get("delay_ms", 50)
         jitter_ms = ctx.params.get("jitter_ms", 100)
@@ -330,6 +334,7 @@ class NetworkJitterScenario(BaseScenario):
         result = await ctx.ssh.run_command(node=ctx.target_node, command=inject_cmd, use_sudo=True)
         if result.success:
             return InjectResult(success=True, fault_id=ctx.fault_id)
+        await self._cancel_load_simulator_task(ctx)
         return InjectResult(success=False, fault_id=ctx.fault_id, error=result.error)
 
     async def recover(self, ctx: FaultContext) -> RecoverResult:
@@ -653,6 +658,10 @@ class PlatformCascadeScenario(BaseScenario):
         return "platform"
 
     async def inject(self, ctx: FaultContext) -> InjectResult:
+        ls_error = self._start_load_simulator_task(ctx)
+        if ls_error:
+            return InjectResult(success=False, fault_id=ctx.fault_id, error=ls_error)
+
         target_component = ctx.params.get("target_component", "mysql")
         delay_ms = int(ctx.params.get("delay_ms", 100))
         port = int(ctx.params.get("port", 3306))
@@ -682,6 +691,7 @@ class PlatformCascadeScenario(BaseScenario):
         result = await ctx.ssh.run_command(node=ctx.target_node, command=inject_cmd, use_sudo=True)
         if result.success:
             return InjectResult(success=True, fault_id=ctx.fault_id)
+        await self._cancel_load_simulator_task(ctx)
         details = _platform_error_details(
             target_component=str(target_component),
             interface=interface,

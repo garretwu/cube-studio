@@ -130,7 +130,16 @@ scenarios:
       loss_pct: 0
       
       # Duration in seconds
-      duration: 300
+      duration: 60
+
+      # Optional load_simulator integration (scenario-level)
+      load_simulator:
+        enabled: true
+        config_path: "load_simulator/config/notebook-soak-only.yaml"
+        only:
+          - "notebook"
+        timeout_seconds: 300
+        strict: true
 
   # ---------------------------------------------------------------------------
   # F-5: RoCE MTU Mismatch (RoCE 网络 MTU 不一致)

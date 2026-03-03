@@ -1,11 +1,7 @@
-<!--
+﻿<!--
 =============================================================================
 FILE: project_brief.md
 PURPOSE: High-level project context for AI agents and contributors
-GUIDANCE:
-- Read this file first to understand scope, architecture, and current state
-- Treat this as the source of truth for "what exists now"
-- Keep this document concise and current as implementation evolves
 =============================================================================
 -->
 
@@ -13,146 +9,97 @@ GUIDANCE:
 
 ## Quick Summary
 
-**What:** A multi-layer fault injection system for Cube Studio resilience validation  
-**Why:** Validate failure handling, recovery, and observability before production incidents  
-**Who:** Platform SRE and engineering teams  
-**Status:** Stage 1 implemented (core system + required scenarios complete)
+What:
+- A deterministic multi-layer fault injection system for Cube Studio resilience validation.
 
----
+Why:
+- Reproduce failures safely, validate rollback paths, and measure impact under real or synthetic load.
 
-## Purpose and Scope
+Who:
+- Platform SRE and engineering teams.
 
-Fault Injector executes controlled chaos experiments across four layers:
+Status (2026-03-02):
+- Core architecture is implemented and runnable.
+- Required vLLM/RDMA scenario families are implemented.
+- Fault Injector to Load Simulator integration is partially present by pattern, but not yet standardized as a unified adapter.
 
-- Hardware
+## Scope
+
+Fault Injector executes controlled experiments across:
+- hardware
 - OS
-- Platform
-- Service
+- platform
+- service
 
-Design goals:
+Design principles:
+1. Deterministic orchestration (no LLM in execution-critical path)
+2. Safety-first guardrails
+3. WAL-backed recovery-first operations
+4. Composable scenario/channel abstractions
 
-1. Deterministic orchestration (no LLM dependency for fault execution flow)
-2. Safety-first execution with hard guards
-3. Recovery-first operations with WAL-backed rollback
-4. Reusable channel/scenario abstraction for rapid extension
+## Architecture Snapshot
 
----
+Core modules under `fault_injector/`:
+- `cli.py`, `__main__.py`: command entry and orchestration trigger
+- `config/`: schema/defaults/loader
+- `orchestrator/`: engine, session, scheduler, watchdog
+- `scenarios/`: scenario implementations and registry
+- `agents/`: layer agents
+- `safety/`: safety guard and rollback journal
+- `reporting/`: reporting package scaffold
 
-## Architecture
+Shared channel integrations in `lib/channels/`:
+- SSH, Redfish, Switch(NETCONF), Kubernetes, Prometheus
 
-Core modules in `fault_injector/`:
+## Integration with load_simulator
 
-- `cli.py`, `__main__.py`: command entry and execution interface
-- `config/`: schema, defaults, and loader
-- `channels/`: target integrations (SSH, K8s, Redfish, Switch, Prometheus)
-- `scenarios/`: fault definitions and registry
-- `safety/`: safety guard + rollback journal
-- `orchestrator/`: engine, session, watchdog
-- `agents/`: agent base layer scaffold
-- `reporting/`: reporting layer scaffold
-- `tests/`: unit/integration/e2e-oriented test structure
+Current state:
+- Both CLIs are independently operational.
+- fault scenarios can be extended to invoke load simulator runs during fault windows.
+- A standardized integration adapter and output contract should be finalized before broad adoption.
 
-Execution flow:
+Planned contract:
+- `fault_injector` scenario invokes:
+  - `python -m load_simulator run --config <path> --output-format json [--only ...]`
+- parse structured result
+- attach summary and artifacts to fault session report
+- enforce timeout and failure policy (`strict` / `best-effort`)
 
-1. Select scenario + target
-2. Pre-check safety constraints
-3. Write rollback intent to WAL
-4. Inject fault through channel
-5. Observe and verify
-6. Recover and mark WAL entry recovered
+See detailed plan:
+- `fault_injector/docs/load_simulator_integration_plan.md`
 
----
+## Current Capabilities
 
-## Integration Points
+Implemented and in active use:
+- scenario execution via orchestrator
+- rollback journal + recovery flows
+- safety guard checks
+- dry-run support
+- unit/integration test suites under `fault_injector/tests`
 
-| System | Channel | Purpose |
-|---|---|---|
-| SSH targets | `SSHChannel` | command execution and OS-level fault injection |
-| Kubernetes | `K8sChannel` | pod/deployment operations |
-| Redfish/BMC | `RedfishChannel` | hardware/BMC management |
-| H3C Switch | `SwitchChannel` | switch/network fault operations |
-| Prometheus | `PrometheusChannel` | metric queries for observation and verification |
-
----
-
-## Current Implementation State
-
-### Completed
-
-- Channel layer implemented:
-  - `BaseChannel`, `SSHChannel`, `PrometheusChannel`, `RedfishChannel`, `SwitchChannel`, `K8sChannel`
-- Required scenario sets implemented and registered:
-  - vLLM latency scenarios `RC-1` to `RC-6`
-  - RDMA anomaly scenarios `F-1` to `F-6`
-- Extended scenario packs implemented across all layers
-- `safety/guard.py` and `safety/rollback.py` implemented
-- Orchestrator framework (`engine.py`, `session.py`, `watchdog.py`) present
-- Agent base framework (`agents/base.py`) present
-- Reporting framework package present
-- Tests reorganized under:
-  - `tests/unit/features/...`
-  - `tests/integration/...`
-  - `tests/e2e/...`
-  - shared `tests/fixtures`, `tests/mocks`, `tests/helpers`
-
-### Not Yet Complete
-
-- Concrete agent implementations beyond base class
-- Full reporting implementation details (beyond framework scaffolding)
-- Broader scenario test coverage and end-to-end automation depth
-
----
-
-## Scenario Coverage Snapshot
-
-Implemented scenario families include:
-
-- Required vLLM latency scenarios: 6
-- Required RDMA anomaly scenarios: 6
-- Additional hardware scenarios: 4
-- Additional OS scenarios: 3
-- Additional platform scenarios: 4
-- Additional service scenarios: 3
-
-Total implemented scenarios: **26**
-
----
-
-## Safety and Constraints
+## Constraints
 
 Must:
-
 - keep every injection recoverable
-- write rollback metadata before risky operations
-- support and preserve `dry_run` behavior
-- enforce safety guard checks
+- write rollback intent before risky mutation
+- preserve dry-run behavior
+- enforce safety guard policy
 
 Must not:
-
-- execute forbidden dangerous commands
-- bypass safety checks
-- run irreversible fault operations
-
----
-
-## Testing and Docs
-
-- Test guide: `fault_injector/TEST_GUIDE.md`
-- Testing policy placeholder: `fault_injector/testing.md`
-- Technical design and product docs: `fault_injector/docs/`
-
----
+- execute forbidden destructive commands
+- bypass guardrails
+- perform irreversible actions without explicit safeguards
 
 ## Quick Commands
 
 ```bash
-# dry-run execution
-python -m fault_injector run --config fault-injector.yaml --dry-run
-
-# real execution
-python -m fault_injector run --config fault-injector.yaml
-
-# recovery by session
+python -m fault_injector list-scenarios
+python -m fault_injector validate-config fault_injector/fault-injector-test.yaml
+python -m fault_injector run --config fault_injector/fault-injector-test.yaml --dry-run
 python -m fault_injector recover --session-id <session_id>
 ```
 
+```bash
+python -m load_simulator list-scenarios
+python -m load_simulator run --config load_simulator/config/notebook-soak-only.yaml --output-format json
+```

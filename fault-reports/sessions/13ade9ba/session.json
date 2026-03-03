@@ -1,0 +1,135 @@
+{
+  "session_id": "13ade9ba",
+  "config_hash": "97835b814140e061",
+  "started_at": "2026-03-03T10:04:49.037376",
+  "finished_at": "2026-03-03T10:09:49.077547",
+  "status": "completed",
+  "phase": "report",
+  "active_faults": [],
+  "rollback_journal_path": "fault-reports\\sessions\\13ade9ba\\rollback.jsonl",
+  "baseline_path": "fault-reports\\sessions\\13ade9ba\\baseline.json",
+  "metrics_dir": "fault-reports\\sessions\\13ade9ba\\metrics",
+  "report_dir": "fault-reports\\sessions\\13ade9ba\\report",
+  "events": [
+    {
+      "timestamp": "2026-03-03T10:04:49.038360",
+      "phase": "init",
+      "event": "components_initialized",
+      "details": {}
+    },
+    {
+      "timestamp": "2026-03-03T10:04:49.038970",
+      "phase": "init",
+      "event": "phase_changed",
+      "details": {
+        "from": "init",
+        "to": "init"
+      }
+    },
+    {
+      "timestamp": "2026-03-03T10:04:49.038975",
+      "phase": "init",
+      "event": "preflight_started",
+      "details": {}
+    },
+    {
+      "timestamp": "2026-03-03T10:04:49.039449",
+      "phase": "init",
+      "event": "preflight_completed",
+      "details": {}
+    },
+    {
+      "timestamp": "2026-03-03T10:04:49.040010",
+      "phase": "baseline",
+      "event": "phase_changed",
+      "details": {
+        "from": "init",
+        "to": "baseline"
+      }
+    },
+    {
+      "timestamp": "2026-03-03T10:04:49.040017",
+      "phase": "baseline",
+      "event": "baseline_started",
+      "details": {}
+    },
+    {
+      "timestamp": "2026-03-03T10:04:49.040955",
+      "phase": "baseline",
+      "event": "baseline_completed",
+      "details": {
+        "baseline_path": "fault-reports\\sessions\\13ade9ba\\baseline.json"
+      }
+    },
+    {
+      "timestamp": "2026-03-03T10:04:49.041450",
+      "phase": "inject",
+      "event": "phase_changed",
+      "details": {
+        "from": "baseline",
+        "to": "inject"
+      }
+    },
+    {
+      "timestamp": "2026-03-03T10:09:49.073308",
+      "phase": "inject",
+      "event": "load_simulator_run",
+      "details": {
+        "scenario": "network_jitter",
+        "fault_id": "network_jitter_581f105f",
+        "index": 0,
+        "config_path": "load_simulator/config/notebook-soak-only.yaml",
+        "only": [
+          "notebook"
+        ],
+        "timeout_seconds": 300,
+        "strict": true,
+        "success": false,
+        "error": "load_simulator timeout after 300s"
+      }
+    },
+    {
+      "timestamp": "2026-03-03T10:09:49.075211",
+      "phase": "report",
+      "event": "phase_changed",
+      "details": {
+        "from": "inject",
+        "to": "report"
+      }
+    },
+    {
+      "timestamp": "2026-03-03T10:09:49.075218",
+      "phase": "report",
+      "event": "report_started",
+      "details": {}
+    },
+    {
+      "timestamp": "2026-03-03T10:09:49.076823",
+      "phase": "report",
+      "event": "report_completed",
+      "details": {
+        "report_path": "fault-reports\\sessions\\13ade9ba\\report\\report.json"
+      }
+    },
+    {
+      "timestamp": "2026-03-03T10:09:49.077550",
+      "phase": "report",
+      "event": "session_completed",
+      "details": {}
+    }
+  ],
+  "scenario_results": {
+    "network_jitter": {
+      "scenario_name": "network_jitter",
+      "inject_success": false,
+      "recover_success": false,
+      "verified": false,
+      "inject_duration_ms": 0,
+      "observe_duration_ms": 0,
+      "recover_duration_ms": 0,
+      "error": "load_simulator timeout after 300s",
+      "metrics": {}
+    }
+  },
+  "baseline_metrics": {}
+}

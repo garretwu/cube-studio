@@ -358,6 +358,19 @@ class FaultOrchestrator:
         ctx = self._build_context(scenario_name, config)
         result = ScenarioResult(scenario_name=scenario_name)
 
+        ls_cfg = config.params.get("load_simulator")
+        if isinstance(ls_cfg, dict) and ls_cfg.get("enabled"):
+            ls_timeout = int(ls_cfg.get("timeout_seconds", 900) or 900)
+            watchdog_timeout = int(self.config.global_.safety.auto_recover_timeout)
+            if ls_timeout >= watchdog_timeout:
+                logger.warning(
+                    "load_simulator timeout_seconds (%s) >= watchdog auto_recover_timeout (%s) for scenario=%s; "
+                    "watchdog may trigger before load_simulator finishes",
+                    ls_timeout,
+                    watchdog_timeout,
+                    scenario_name,
+                )
+
         self.session.set_phase(SessionPhase.INJECT)
         self.session.save(self.session_dir)
         inject_result = await agent.inject(scenario_name, ctx)
@@ -373,6 +386,39 @@ class FaultOrchestrator:
                     "precheck": bmc_precheck,
                 },
             )
+            self.session.save(self.session_dir)
+
+        ls_runs = ctx.params.get("_load_simulator_runs")
+        ls_runs_emitted = 0
+        if isinstance(ls_runs, list):
+            for idx, run_detail in enumerate(ls_runs):
+                if not isinstance(run_detail, dict):
+                    continue
+                ls_runs_emitted = idx + 1
+                self.session.add_event(
+                    "load_simulator_run",
+                    {
+                        "scenario": scenario_name,
+                        "fault_id": ctx.fault_id,
+                        "index": idx,
+                        **run_detail,
+                    },
+                )
+            self.session.save(self.session_dir)
+
+        ls_warnings = ctx.params.get("_load_simulator_warnings")
+        ls_warnings_emitted = 0
+        if isinstance(ls_warnings, list):
+            for warning in ls_warnings:
+                ls_warnings_emitted += 1
+                self.session.add_event(
+                    "load_simulator_warning",
+                    {
+                        "scenario": scenario_name,
+                        "fault_id": ctx.fault_id,
+                        "warning": str(warning),
+                    },
+                )
             self.session.save(self.session_dir)
 
         if not inject_result.success:
@@ -395,8 +441,63 @@ class FaultOrchestrator:
         self.session.set_phase(SessionPhase.OBSERVE)
         self.session.save(self.session_dir)
         observe_duration = int(config.params.get("duration", 60))
+        post_inject_hook = getattr(agent, "post_inject", None)
+        post_inject_task: asyncio.Task | None = None
+        if callable(post_inject_hook):
+            post_inject_task = asyncio.create_task(post_inject_hook(scenario_name, ctx))
+
         if not self.dry_run:
-            await asyncio.sleep(observe_duration)
+            sleep_task = asyncio.create_task(asyncio.sleep(observe_duration))
+            if post_inject_task is not None:
+                await asyncio.gather(sleep_task, post_inject_task)
+            else:
+                await sleep_task
+        elif post_inject_task is not None:
+            await post_inject_task
+
+        if post_inject_task is not None:
+            post_inject_result = post_inject_task.result()
+            if not post_inject_result.success:
+                self.session.add_event(
+                    "load_simulator_warning",
+                    {
+                        "scenario": scenario_name,
+                        "fault_id": ctx.fault_id,
+                        "warning": post_inject_result.error or "post_inject hook failed",
+                    },
+                )
+                if not result.error:
+                    result.error = post_inject_result.error or "post_inject hook failed"
+                self.session.save(self.session_dir)
+
+        ls_runs_after = ctx.params.get("_load_simulator_runs")
+        if isinstance(ls_runs_after, list):
+            for idx, run_detail in enumerate(ls_runs_after[ls_runs_emitted:], start=ls_runs_emitted):
+                if not isinstance(run_detail, dict):
+                    continue
+                self.session.add_event(
+                    "load_simulator_run",
+                    {
+                        "scenario": scenario_name,
+                        "fault_id": ctx.fault_id,
+                        "index": idx,
+                        **run_detail,
+                    },
+                )
+            self.session.save(self.session_dir)
+
+        ls_warnings_after = ctx.params.get("_load_simulator_warnings")
+        if isinstance(ls_warnings_after, list):
+            for warning in ls_warnings_after[ls_warnings_emitted:]:
+                self.session.add_event(
+                    "load_simulator_warning",
+                    {
+                        "scenario": scenario_name,
+                        "fault_id": ctx.fault_id,
+                        "warning": str(warning),
+                    },
+                )
+            self.session.save(self.session_dir)
 
         queries = {}
         scenario_class = SCENARIO_REGISTRY.get(scenario_name)
@@ -468,6 +569,31 @@ class FaultOrchestrator:
                         "combined_inject",
                         {"scenario": scenario_name, "success": inject_result.success, "error": inject_result.error},
                     )
+                    ls_runs = ctx.params.get("_load_simulator_runs")
+                    if isinstance(ls_runs, list):
+                        for idx, run_detail in enumerate(ls_runs):
+                            if not isinstance(run_detail, dict):
+                                continue
+                            self.session.add_event(
+                                "load_simulator_run",
+                                {
+                                    "scenario": scenario_name,
+                                    "fault_id": ctx.fault_id,
+                                    "index": idx,
+                                    **run_detail,
+                                },
+                            )
+                    ls_warnings = ctx.params.get("_load_simulator_warnings")
+                    if isinstance(ls_warnings, list):
+                        for warning in ls_warnings:
+                            self.session.add_event(
+                                "load_simulator_warning",
+                                {
+                                    "scenario": scenario_name,
+                                    "fault_id": ctx.fault_id,
+                                    "warning": str(warning),
+                                },
+                            )
                     self.session.save(self.session_dir)
                 else:
                     ctx = active_contexts.get(scenario_name)
