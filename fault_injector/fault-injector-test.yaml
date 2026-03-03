@@ -133,7 +133,7 @@ scenarios:
         config_path: "load_simulator/config/notebook-soak-only.yaml"
         only:
           - "notebook"
-        timeout_seconds: 300
+        timeout_seconds: 900
         strict: true
 
   # ---------------------------------------------------------------------------

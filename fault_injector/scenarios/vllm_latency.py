@@ -298,7 +298,7 @@ class NetworkJitterScenario(BaseScenario):
         return f"tc qdisc del dev {interface} root"
 
     async def inject(self, ctx: FaultContext) -> InjectResult:
-        ls_error = await self._maybe_run_load_simulator(ctx)
+        ls_error = self._start_load_simulator_task(ctx)
         if ls_error:
             return InjectResult(success=False, fault_id=ctx.fault_id, error=ls_error)
 
@@ -334,6 +334,7 @@ class NetworkJitterScenario(BaseScenario):
         result = await ctx.ssh.run_command(node=ctx.target_node, command=inject_cmd, use_sudo=True)
         if result.success:
             return InjectResult(success=True, fault_id=ctx.fault_id)
+        await self._cancel_load_simulator_task(ctx)
         return InjectResult(success=False, fault_id=ctx.fault_id, error=result.error)
 
     async def recover(self, ctx: FaultContext) -> RecoverResult:
@@ -638,7 +639,7 @@ class PlatformCascadeScenario(BaseScenario):
         return "platform"
 
     async def inject(self, ctx: FaultContext) -> InjectResult:
-        ls_error = await self._maybe_run_load_simulator(ctx)
+        ls_error = self._start_load_simulator_task(ctx)
         if ls_error:
             return InjectResult(success=False, fault_id=ctx.fault_id, error=ls_error)
 
@@ -671,6 +672,7 @@ class PlatformCascadeScenario(BaseScenario):
         result = await ctx.ssh.run_command(node=ctx.target_node, command=inject_cmd, use_sudo=True)
         if result.success:
             return InjectResult(success=True, fault_id=ctx.fault_id)
+        await self._cancel_load_simulator_task(ctx)
         details = _platform_error_details(
             target_component=str(target_component),
             interface=interface,

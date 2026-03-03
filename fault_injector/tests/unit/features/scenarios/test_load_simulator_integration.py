@@ -96,8 +96,9 @@ async def test_network_jitter_should_fail_when_ls_fails_in_strict_mode(tmp_path,
     ctx = _context(tmp_path, strict=True)
 
     result = await scenario.inject(ctx)
-    assert result.success is False
-    assert "ls failed" in (result.error or "")
+    assert result.success is True
+    post_err = await scenario.post_inject(ctx)
+    assert "ls failed" in (post_err or "")
 
 
 @pytest.mark.asyncio
@@ -112,5 +113,7 @@ async def test_network_jitter_should_continue_when_ls_fails_in_best_effort_mode(
 
     result = await scenario.inject(ctx)
     assert result.success is True
+    post_err = await scenario.post_inject(ctx)
+    assert post_err is None
     warnings = ctx.params.get("_load_simulator_warnings", [])
     assert any("ls failed" in str(w) for w in warnings)

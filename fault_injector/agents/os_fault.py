@@ -99,6 +99,37 @@ class OSFaultAgent(BaseAgent):
                 duration_ms=int((time.monotonic() - start) * 1000),
             )
 
+    async def post_inject(self, scenario_name: str, ctx: FaultContext) -> AgentResult:
+        start = time.monotonic()
+        try:
+            scenario = self._active.get(ctx.fault_id) or self._resolve(scenario_name)
+            if not hasattr(scenario, "post_inject"):
+                return AgentResult(
+                    success=True,
+                    agent_name=self.name,
+                    operation="post_inject",
+                    scenario_name=scenario_name,
+                    duration_ms=int((time.monotonic() - start) * 1000),
+                )
+            err = await scenario.post_inject(ctx)
+            return AgentResult(
+                success=not bool(err),
+                agent_name=self.name,
+                operation="post_inject",
+                scenario_name=scenario_name,
+                error=str(err or ""),
+                duration_ms=int((time.monotonic() - start) * 1000),
+            )
+        except Exception as exc:
+            return AgentResult(
+                success=False,
+                agent_name=self.name,
+                operation="post_inject",
+                scenario_name=scenario_name,
+                error=str(exc),
+                duration_ms=int((time.monotonic() - start) * 1000),
+            )
+
     def status(self) -> dict[str, Any]:
         return {
             "agent_name": self.name,

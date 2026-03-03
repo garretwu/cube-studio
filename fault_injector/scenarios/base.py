@@ -121,6 +121,10 @@ async def _run_load_simulator(config_path: str, only: list[str], timeout_seconds
         proc.kill()
         await proc.communicate()
         raise LoadSimulatorError(f"load_simulator timeout after {timeout_seconds}s") from exc
+    except asyncio.CancelledError:
+        proc.kill()
+        await proc.communicate()
+        raise
 
     stdout = stdout_b.decode("utf-8", errors="replace")
     stderr = stderr_b.decode("utf-8", errors="replace")
@@ -185,12 +189,19 @@ class BaseScenario(ABC):
     def generate_fault_id(self, ctx: FaultContext) -> str:
         return f"{self.name}_{ctx.target_node}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
 
-    async def _maybe_run_load_simulator(self, ctx: FaultContext) -> str | None:
+    def _ls_state(self) -> dict[str, Any]:
+        state = getattr(self, "_load_simulator_state", None)
+        if state is None:
+            state = {}
+            setattr(self, "_load_simulator_state", state)
+        return state
+
+    def _start_load_simulator_task(self, ctx: FaultContext) -> str | None:
         """
-        Optionally run load_simulator from scenario params.
+        Start load_simulator in background task.
 
         Returns:
-            None on success / skipped, or an error string in strict mode.
+            strict-mode configuration error string when pre-check fails, else None.
         """
         cfg = _extract_load_simulator_config(ctx.params)
         if not cfg.enabled:
@@ -211,18 +222,87 @@ class BaseScenario(ABC):
             "strict": cfg.strict,
         }
 
-        try:
-            payload = await _run_load_simulator(cfg.config_path, cfg.only, timeout_seconds=cfg.timeout_seconds)
-            run_detail["success"] = True
-            run_detail["result"] = payload.get("summary", payload)
-        except Exception as exc:  # noqa: BLE001
-            run_detail["success"] = False
-            run_detail["error"] = str(exc)
-            ctx.params.setdefault("_load_simulator_runs", []).append(run_detail)
-            if cfg.strict:
-                return str(exc)
-            ctx.params.setdefault("_load_simulator_warnings", []).append(str(exc))
+        async def _runner() -> dict[str, Any]:
+            try:
+                payload = await _run_load_simulator(cfg.config_path, cfg.only, timeout_seconds=cfg.timeout_seconds)
+                run_detail["success"] = True
+                run_detail["result"] = payload.get("summary", payload)
+                return run_detail
+            except Exception as exc:  # noqa: BLE001
+                run_detail["success"] = False
+                run_detail["error"] = str(exc)
+                return run_detail
+
+        task = asyncio.create_task(_runner())
+        state = self._ls_state()
+        state[ctx.fault_id] = {
+            "task": task,
+            "strict": cfg.strict,
+        }
+        return None
+
+    async def _await_load_simulator_task(self, ctx: FaultContext) -> str | None:
+        """
+        Wait for background load_simulator task and persist run metadata.
+
+        Returns:
+            strict-mode runtime error string when task failed, else None.
+        """
+        state = self._ls_state()
+        slot = state.pop(ctx.fault_id, None)
+        if not isinstance(slot, dict):
             return None
 
-        ctx.params.setdefault("_load_simulator_runs", []).append(run_detail)
+        task = slot.get("task")
+        strict = bool(slot.get("strict", True))
+        if not isinstance(task, asyncio.Task):
+            return None
+
+        try:
+            run_detail = await task
+        except asyncio.CancelledError:
+            run_detail = {
+                "scenario": self.name,
+                "success": False,
+                "error": "load_simulator task cancelled",
+            }
+
+        if isinstance(run_detail, dict):
+            ctx.params.setdefault("_load_simulator_runs", []).append(run_detail)
+            if not bool(run_detail.get("success", False)):
+                err = str(run_detail.get("error", "load_simulator failed"))
+                ctx.params.setdefault("_load_simulator_warnings", []).append(err)
+                if strict:
+                    return err
         return None
+
+    async def _cancel_load_simulator_task(self, ctx: FaultContext) -> None:
+        state = self._ls_state()
+        slot = state.pop(ctx.fault_id, None)
+        if not isinstance(slot, dict):
+            return
+        task = slot.get("task")
+        if isinstance(task, asyncio.Task) and not task.done():
+            task.cancel()
+            try:
+                await task
+            except Exception:  # noqa: BLE001
+                pass
+
+    async def post_inject(self, ctx: FaultContext) -> str | None:
+        """
+        Optional post-inject hook invoked by orchestrator during observe phase.
+        """
+        return await self._await_load_simulator_task(ctx)
+
+    async def _maybe_run_load_simulator(self, ctx: FaultContext) -> str | None:
+        """
+        Optionally run load_simulator from scenario params.
+
+        Returns:
+            None on success / skipped, or an error string in strict mode.
+        """
+        precheck_error = self._start_load_simulator_task(ctx)
+        if precheck_error:
+            return precheck_error
+        return await self._await_load_simulator_task(ctx)
