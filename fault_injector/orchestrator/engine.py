@@ -358,6 +358,19 @@ class FaultOrchestrator:
         ctx = self._build_context(scenario_name, config)
         result = ScenarioResult(scenario_name=scenario_name)
 
+        ls_cfg = config.params.get("load_simulator")
+        if isinstance(ls_cfg, dict) and ls_cfg.get("enabled"):
+            ls_timeout = int(ls_cfg.get("timeout_seconds", 900) or 900)
+            watchdog_timeout = int(self.config.global_.safety.auto_recover_timeout)
+            if ls_timeout >= watchdog_timeout:
+                logger.warning(
+                    "load_simulator timeout_seconds (%s) >= watchdog auto_recover_timeout (%s) for scenario=%s; "
+                    "watchdog may trigger before load_simulator finishes",
+                    ls_timeout,
+                    watchdog_timeout,
+                    scenario_name,
+                )
+
         self.session.set_phase(SessionPhase.INJECT)
         self.session.save(self.session_dir)
         inject_result = await agent.inject(scenario_name, ctx)

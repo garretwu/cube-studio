@@ -7,6 +7,7 @@ import asyncio
 import json
 import logging
 import sys
+import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import datetime
@@ -105,6 +106,13 @@ async def _run_load_simulator(config_path: str, only: list[str], timeout_seconds
     ]
     for scenario in only:
         cmd.extend(["--only", scenario])
+    logger.info(
+        "load_simulator subprocess starting: config=%s only=%s timeout=%ss",
+        config_path,
+        only,
+        timeout_seconds,
+    )
+    started = time.monotonic()
 
     try:
         proc = await asyncio.create_subprocess_exec(
@@ -152,6 +160,16 @@ async def _run_load_simulator(config_path: str, only: list[str], timeout_seconds
             f"load_simulator exit_code={exit_code} "
             f"(stderr={_sanitize_text(stderr)})"
         )
+    elapsed = time.monotonic() - started
+    summary = payload.get("summary", {})
+    summary_session = summary.get("session_id") if isinstance(summary, dict) else None
+    summary_duration = summary.get("duration_seconds") if isinstance(summary, dict) else None
+    logger.info(
+        "load_simulator subprocess completed: elapsed=%.2fs summary_session_id=%s summary_duration=%s",
+        elapsed,
+        summary_session,
+        summary_duration,
+    )
     return payload
 
 
@@ -221,6 +239,15 @@ class BaseScenario(ABC):
             "timeout_seconds": cfg.timeout_seconds,
             "strict": cfg.strict,
         }
+        logger.info(
+            "load_simulator task scheduled: scenario=%s fault_id=%s strict=%s config=%s only=%s timeout=%ss",
+            self.name,
+            ctx.fault_id,
+            cfg.strict,
+            cfg.config_path,
+            cfg.only,
+            cfg.timeout_seconds,
+        )
 
         async def _runner() -> dict[str, Any]:
             try:
@@ -231,6 +258,12 @@ class BaseScenario(ABC):
             except Exception as exc:  # noqa: BLE001
                 run_detail["success"] = False
                 run_detail["error"] = str(exc)
+                logger.warning(
+                    "load_simulator task failed: scenario=%s fault_id=%s error=%s",
+                    self.name,
+                    ctx.fault_id,
+                    exc,
+                )
                 return run_detail
 
         task = asyncio.create_task(_runner())
@@ -274,6 +307,12 @@ class BaseScenario(ABC):
                 ctx.params.setdefault("_load_simulator_warnings", []).append(err)
                 if strict:
                     return err
+            else:
+                logger.info(
+                    "load_simulator task joined: scenario=%s fault_id=%s success=true",
+                    self.name,
+                    ctx.fault_id,
+                )
         return None
 
     async def _cancel_load_simulator_task(self, ctx: FaultContext) -> None:
@@ -288,6 +327,11 @@ class BaseScenario(ABC):
                 await task
             except Exception:  # noqa: BLE001
                 pass
+            logger.warning(
+                "load_simulator task cancelled: scenario=%s fault_id=%s",
+                self.name,
+                ctx.fault_id,
+            )
 
     async def post_inject(self, ctx: FaultContext) -> str | None:
         """
