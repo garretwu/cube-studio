@@ -1,1 +1,0 @@
-{"fault_id":"ecn_misconfiguration_e5341062","injected_at":"2026-02-28T17:19:12.382084","channel":"switch","target":"sw-200g","inject_action":"ecn_misconfiguration","inject_params":{"interface":"200GE1/0/4","min_threshold":10,"max_threshold":20},"recover_action":"restore_interface_baseline","recover_params":{"interface":"200GE1/0/4"},"status":"recovered"}

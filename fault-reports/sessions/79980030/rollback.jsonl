@@ -1,1 +1,0 @@
-{"fault_id":"thermal_throttling_264b5816","injected_at":"2026-03-02T11:00:55.039877","channel":"ssh","target":"worker-01","inject_action":"gpu_power_limit","inject_params":{"gpu_id":0,"power_limit":180},"recover_action":"gpu_power_restore","recover_params":{"gpu_id":0,"original_power":575},"status":"active"}

@@ -1,1 +1,0 @@
-{"fault_id":"rdma_load_imbalance_29e30635","injected_at":"2026-02-28T17:20:17.618783","channel":"switch","target":"sw-200g","inject_action":"rdma_load_imbalance","inject_params":{"interface":"200GE1/0/4"},"recover_action":"restore_interface_baseline","recover_params":{"interface":"200GE1/0/4"},"status":"recovered"}

@@ -1,1 +1,0 @@
-{"fault_id":"network_jitter_2fdbd512","injected_at":"2026-03-02T17:19:36.742518","channel":"ssh","target":"node-1","inject_action":"tc_add_delay","inject_params":{"node":"node-1","interface":"eth0","delay_ms":5,"jitter_ms":100,"distribution":"pareto","loss_pct":0},"recover_action":"tc_del_qdisc","recover_params":{"node":"node-1","interface":"eth0"},"status":"recovered"}
