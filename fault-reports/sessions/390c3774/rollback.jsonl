@@ -1,1 +1,0 @@
-{"fault_id":"rdma_qos_downgrade_8d50747e","injected_at":"2026-02-28T17:21:23.117702","channel":"switch","target":"sw-200g","inject_action":"rdma_qos_downgrade","inject_params":{"interface":"200GE1/0/4","dscp":0,"tc":0},"recover_action":"restore_interface_baseline","recover_params":{"interface":"200GE1/0/4"},"status":"recovered"}

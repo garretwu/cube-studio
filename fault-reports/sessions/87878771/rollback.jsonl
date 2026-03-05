@@ -1,1 +1,0 @@
-{"fault_id":"platform_cascade_92799835","injected_at":"2026-03-02T10:55:25.356307","channel":"ssh","target":"worker-01","inject_action":"platform_delay","inject_params":{"target_component":"mysql","delay_ms":120,"port":3306,"interface":"roce200"},"recover_action":"tc_del_qdisc","recover_params":{"interface":"roce200"},"status":"recovered"}
