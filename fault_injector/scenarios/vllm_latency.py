@@ -57,6 +57,76 @@ def _pid_recover_command(pid_file: str, interpreter: str) -> str:
     return _python_c_command(code, interpreter=interpreter)
 
 
+def _gpu_burn_pid_recover_command(pid_file: str, interpreter: str) -> str:
+    code = (
+        "import json,os,signal\n"
+        f"pid_file = {pid_file!r}\n"
+        "pids = []\n"
+        "if os.path.exists(pid_file):\n"
+        "    with open(pid_file, 'r', encoding='utf-8') as f:\n"
+        "        raw = f.read().strip()\n"
+        "    if raw:\n"
+        "        parsed = None\n"
+        "        try:\n"
+        "            parsed = json.loads(raw)\n"
+        "        except Exception:\n"
+        "            parsed = None\n"
+        "        if isinstance(parsed, dict):\n"
+        "            for value in parsed.values():\n"
+        "                try:\n"
+        "                    pids.append(int(value))\n"
+        "                except Exception:\n"
+        "                    pass\n"
+        "        elif isinstance(parsed, list):\n"
+        "            for value in parsed:\n"
+        "                try:\n"
+        "                    pids.append(int(value))\n"
+        "                except Exception:\n"
+        "                    pass\n"
+        "        else:\n"
+        "            try:\n"
+        "                pids.append(int(raw))\n"
+        "            except Exception:\n"
+        "                pass\n"
+        "    for pid in pids:\n"
+        "        try:\n"
+        "            os.kill(pid, signal.SIGTERM)\n"
+        "        except ProcessLookupError:\n"
+        "            pass\n"
+        "    try:\n"
+        "        os.remove(pid_file)\n"
+        "    except FileNotFoundError:\n"
+        "        pass\n"
+        "print('killed=' + str(len(pids)))\n"
+    )
+    return _python_c_command(code, interpreter=interpreter)
+
+
+def _parse_gpu_ids(params: dict[str, Any]) -> list[int]:
+    raw_gpu_ids = params.get("gpu_ids")
+    if raw_gpu_ids is None:
+        # Backward compatibility: legacy single-gpu field.
+        legacy_gpu_id = params.get("gpu_id")
+        if legacy_gpu_id is None or str(legacy_gpu_id).strip() == "":
+            return []
+        return [int(legacy_gpu_id)]
+
+    if isinstance(raw_gpu_ids, list):
+        parsed: list[int] = []
+        for value in raw_gpu_ids:
+            parsed.append(int(value))
+        return list(dict.fromkeys(parsed))
+
+    if isinstance(raw_gpu_ids, str):
+        text = raw_gpu_ids.strip()
+        if not text:
+            return []
+        parsed = [int(part.strip()) for part in text.split(",") if part.strip()]
+        return list(dict.fromkeys(parsed))
+
+    return [int(raw_gpu_ids)]
+
+
 def _mark_recovered_or_failed(ctx: FaultContext, success: bool) -> None:
     if success:
         ctx.rollback.mark_recovered(ctx.fault_id)
@@ -388,7 +458,8 @@ class GPUContentionScenario(BaseScenario):
 
     async def inject(self, ctx: FaultContext) -> InjectResult:
         duration = int(ctx.params.get("duration", 300))
-        gpu_id = int(ctx.params.get("gpu_id", 0))
+        gpu_ids = _parse_gpu_ids(ctx.params)
+        memory = str(ctx.params.get("memory", "60%")).strip() or "60%"
         intensity = int(ctx.params.get("intensity", 100))
         marker = f"fi_gpu_burn_{_safe_fault_token(ctx.fault_id)}"
         pid_file = _pid_file_path(ctx.fault_id, "gpu_burn")
@@ -397,24 +468,33 @@ class GPUContentionScenario(BaseScenario):
         except Exception as exc:
             return InjectResult(success=False, fault_id=ctx.fault_id, error=str(exc))
         inject_code = (
-            "import os,subprocess\n"
+            "import json,subprocess\n"
             f"marker = {marker!r}\n"
-            f"log_file = '/tmp/{marker}.log'\n"
+            f"gpu_ids = {gpu_ids!r}\n"
+            f"memory = {memory!r}\n"
+            f"duration = {duration!r}\n"
             f"pid_file = {pid_file!r}\n"
-            "env = dict(os.environ)\n"
-            f"env['CUDA_VISIBLE_DEVICES'] = {str(gpu_id)!r}\n"
-            "with open(log_file, 'w', encoding='utf-8') as log:\n"
-            "    proc = subprocess.Popen(\n"
-            f"        [marker, {str(duration)!r}],\n"
-            "        executable='/tmp/gpu-burn/gpu_burn',\n"
-            "        cwd='/tmp/gpu-burn',\n"
-            "        stdout=log,\n"
-            "        stderr=subprocess.STDOUT,\n"
-            "        env=env,\n"
-            "    )\n"
+            "targets = gpu_ids if gpu_ids else [None]\n"
+            "pid_map = {}\n"
+            "for gpu in targets:\n"
+            "    args = [marker, '-m', memory]\n"
+            "    if gpu is not None:\n"
+            "        args.extend(['-i', str(gpu)])\n"
+            "    args.append(str(duration))\n"
+            "    gpu_suffix = 'all' if gpu is None else f'gpu{gpu}'\n"
+            "    log_file = f'/tmp/{marker}.{gpu_suffix}.log'\n"
+            "    with open(log_file, 'w', encoding='utf-8') as log:\n"
+            "        proc = subprocess.Popen(\n"
+            "            args,\n"
+            "            executable='/tmp/gpu-burn/gpu_burn',\n"
+            "            cwd='/tmp/gpu-burn',\n"
+            "            stdout=log,\n"
+            "            stderr=subprocess.STDOUT,\n"
+            "        )\n"
+            "    pid_map[gpu_suffix] = proc.pid\n"
             "with open(pid_file, 'w', encoding='utf-8') as f:\n"
-            "    f.write(str(proc.pid))\n"
-            "print(proc.pid)\n"
+            "    f.write(json.dumps(pid_map))\n"
+            "print(json.dumps(pid_map))\n"
         )
         inject_cmd = _python_c_command(inject_code, interpreter=python_exec)
 
@@ -430,7 +510,8 @@ class GPUContentionScenario(BaseScenario):
             inject_action="gpu_burn",
             inject_params={
                 "duration": duration,
-                "gpu_id": gpu_id,
+                "gpu_ids": gpu_ids,
+                "memory": memory,
                 "intensity": intensity,
                 "marker": marker,
                 "pid_file": pid_file,
@@ -452,7 +533,7 @@ class GPUContentionScenario(BaseScenario):
         except Exception as exc:
             _mark_recovered_or_failed(ctx, False)
             return RecoverResult(success=False, fault_id=ctx.fault_id, error=str(exc))
-        pid_cmd = _pid_recover_command(pid_file, interpreter=python_exec)
+        pid_cmd = _gpu_burn_pid_recover_command(pid_file, interpreter=python_exec)
         pkill_cmd = f"pkill -f '{marker}'"
         try:
             _guard_check(ctx, pid_cmd)

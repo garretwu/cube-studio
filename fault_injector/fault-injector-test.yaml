@@ -55,7 +55,59 @@ inventory:
   workers:
     - name: "worker-01"
       ssh:
-        host: "10.11.4.13"
+        host: "10.11.4.10"
+        port: 22
+        user: "yuyonghao"
+        #key_file: "~/.ssh/id_rsa"
+        password: Yuyonghao@123
+        timeout: 30
+        use_sudo: true
+      redfish:
+        bmc_host: "10.11.8.13"
+        username: "admin"
+        password: "Admin@9000"
+        verify_tls: false
+        timeout: 30
+      ipmi:
+        host: "10.11.8.13"
+        username: "admin"
+        password: "Admin@9000"
+        interface: "lanplus"
+        port: 623
+        timeout: 30
+      interface: "roce200"
+      roles:
+        - "compute"
+        - "rdma"
+    - name: "worker-02"
+      ssh:
+        host: "10.11.4.11"
+        port: 22
+        user: "yuyonghao"
+        #key_file: "~/.ssh/id_rsa"
+        password: Yuyonghao@123
+        timeout: 30
+        use_sudo: true
+      redfish:
+        bmc_host: "10.11.8.13"
+        username: "admin"
+        password: "Admin@9000"
+        verify_tls: false
+        timeout: 30
+      ipmi:
+        host: "10.11.8.13"
+        username: "admin"
+        password: "Admin@9000"
+        interface: "lanplus"
+        port: 623
+        timeout: 30
+      interface: "roce200"
+      roles:
+        - "compute"
+        - "rdma"
+    - name: "worker-03"
+      ssh:
+        host: "10.11.4.12"
         port: 22
         user: "yuyonghao"
         #key_file: "~/.ssh/id_rsa"
@@ -103,14 +155,20 @@ scenarios:
   # ---------------------------------------------------------------------------
   # RC-1: GPU Contention
   # ---------------------------------------------------------------------------
-  # Uses gpu-burn to saturate one GPU and create inference contention.
+  # Uses gpu-burn to saturate GPU(s) and create inference contention.
   gpu_contention:
     enabled: true
     target_nodes:
       - "worker-01"
+      - "worker-02"
+      - "worker-03"
     params:
       duration: 60
-      gpu_id: 0
+      # Maps to gpu-burn "-m". Supports values like "60%" or "10240" (MB).
+      memory: "60%"
+      # Maps to gpu-burn "-i". Omit or set [] to apply to all GPUs.
+      # gpu_ids: [0]
+      # gpu_ids: [0, 1]
       intensity: 100
 
   # ---------------------------------------------------------------------------
@@ -118,9 +176,11 @@ scenarios:
   # ---------------------------------------------------------------------------
   # Uses tc netem to inject network delay and jitter.
   network_jitter:
-    enabled: true
+    enabled: false
     target_nodes:
       - "worker-01"
+      - "worker-02"
+      - "worker-03"
     params:
       interface: "roce200"
       delay_ms: 30
@@ -141,9 +201,11 @@ scenarios:
   # ---------------------------------------------------------------------------
   # Uses fio to add storage pressure that impacts latency.
   storage_io_interference:
-    enabled: true
+    enabled: false
     target_nodes:
       - "worker-01"
+      - "worker-02"
+      - "worker-03"
     params:
       duration: 60
       filename: "/data/fault-injector-fio-testfile"
@@ -157,9 +219,11 @@ scenarios:
   # ---------------------------------------------------------------------------
   # Injects platform dependency delay through tc netem.
   platform_cascade:
-    enabled: true
+    enabled: false
     target_nodes:
       - "worker-01"
+      - "worker-02"
+      - "worker-03"
     params:
       target_component: "mysql"
       interface: "roce200"
@@ -174,6 +238,8 @@ scenarios:
     enabled: true
     target_nodes:
       - "worker-01"
+      - "worker-02"
+      - "worker-03"
     params:
       duration: 120
       vm_bytes_percent: 75
@@ -186,9 +252,11 @@ scenarios:
   # ---------------------------------------------------------------------------
   # Lowers GPU power limit to emulate thermal throttling behavior.
   thermal_throttling:
-    enabled: true
+    enabled: false
     target_nodes:
       - "worker-01"
+      - "worker-02"
+      - "worker-03"
     params:
       gpu_id: 0
       power_limit: 500
@@ -205,6 +273,8 @@ scenarios:
     enabled: false
     target_nodes:
       - "worker-01"
+      - "worker-02"
+      - "worker-03"
     params:
       switch: "sw-200g"
       interface: "200GE1/0/4"
@@ -214,6 +284,8 @@ scenarios:
     enabled: false
     target_nodes:
       - "worker-01"
+      - "worker-02"
+      - "worker-03"
     params:
       switch: "sw-200g"
       interface: "200GE1/0/4"
@@ -224,6 +296,8 @@ scenarios:
     enabled: false
     target_nodes:
       - "worker-01"
+      - "worker-02"
+      - "worker-03"
     params:
       switch: "sw-200g"
       interface: "200GE1/0/4"
@@ -233,6 +307,8 @@ scenarios:
     enabled: false
     target_nodes:
       - "worker-01"
+      - "worker-02"
+      - "worker-03"
     params:
       switch: "sw-200g"
       interface: "200GE1/0/4"
@@ -243,6 +319,8 @@ scenarios:
     enabled: false
     target_nodes:
       - "worker-01"
+      - "worker-02"
+      - "worker-03"
     params:
       interface: "roce200"
       mtu: 1500
@@ -252,6 +330,8 @@ scenarios:
     enabled: false
     target_nodes:
       - "worker-01"
+      - "worker-02"
+      - "worker-03"
     params:
       switch: "sw-200g"
       interface: "200GE1/0/4"

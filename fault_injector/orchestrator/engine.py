@@ -4,6 +4,7 @@ Fault orchestrator engine.
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 import logging
 import re
@@ -239,9 +240,12 @@ class FaultOrchestrator:
                 queries[f"{sc_cfg.name}:{key}"] = value
         return queries
 
-    def _monitor_render_values(self, config: ScenarioConfig) -> dict[str, str]:
-        target_nodes = config.target_nodes
-        node = target_nodes[0] if target_nodes else ""
+    def _monitor_render_values(self, config: ScenarioConfig, target_node: str | None = None) -> dict[str, str]:
+        if target_node is None:
+            target_nodes = config.target_nodes
+            node = target_nodes[0] if target_nodes else ""
+        else:
+            node = target_node
         interface = str(config.params.get("interface", "eth0"))
         device = str(config.params.get("device", interface))
         return {
@@ -276,8 +280,9 @@ class FaultOrchestrator:
         queries: dict[str, str],
         config: ScenarioConfig,
         scenario_name: str,
+        target_node: str | None = None,
     ) -> dict[str, str]:
-        values = self._monitor_render_values(config)
+        values = self._monitor_render_values(config, target_node=target_node)
         rendered: dict[str, str] = {}
 
         for key, query in queries.items():
@@ -312,9 +317,12 @@ class FaultOrchestrator:
                 scenarios.append(sc)
         return scenarios
 
-    def _build_context(self, scenario_name: str, config: ScenarioConfig) -> FaultContext:
-        target_nodes = config.target_nodes
-        target = target_nodes[0] if target_nodes else ""
+    def _build_context(self, scenario_name: str, config: ScenarioConfig, target_node: str | None = None) -> FaultContext:
+        if target_node is None:
+            target_nodes = config.target_nodes
+            target = target_nodes[0] if target_nodes else ""
+        else:
+            target = target_node
         fault_id = f"{scenario_name}_{uuid.uuid4().hex[:8]}"
         target_cfg = self.inventory.get(target)
         return FaultContext(
@@ -322,7 +330,7 @@ class FaultOrchestrator:
             rollback=self.rollback,
             guard=self.guard,
             target_node=target,
-            params=config.params,
+            params=copy.deepcopy(config.params),
             fault_id=fault_id,
             redfish=self.redfish,
             ipmi=self.ipmi,
@@ -334,6 +342,11 @@ class FaultOrchestrator:
             session_id=self.session.session_id if self.session else "",
             interface=config.params.get("interface", "eth0"),
         )
+
+    def _scenario_result_key(self, scenario_name: str, target_node: str, total_targets: int) -> str:
+        if total_targets <= 1:
+            return scenario_name
+        return f"{scenario_name}@{target_node}"
 
     def _get_layer_agent(self, scenario_name: str) -> Any:
         scenario_class = SCENARIO_REGISTRY.get(scenario_name)
@@ -355,8 +368,8 @@ class FaultOrchestrator:
         assert self.session is not None
         scenario_name = config.name
         agent = self._get_layer_agent(scenario_name)
-        ctx = self._build_context(scenario_name, config)
-        result = ScenarioResult(scenario_name=scenario_name)
+        targets = config.target_nodes if config.target_nodes else [""]
+        total_targets = len(targets)
 
         ls_cfg = config.params.get("load_simulator")
         if isinstance(ls_cfg, dict) and ls_cfg.get("enabled"):
@@ -371,161 +384,178 @@ class FaultOrchestrator:
                     scenario_name,
                 )
 
-        self.session.set_phase(SessionPhase.INJECT)
-        self.session.save(self.session_dir)
-        inject_result = await agent.inject(scenario_name, ctx)
-        result.inject_success = inject_result.success
+        for target_node in targets:
+            result_key = self._scenario_result_key(scenario_name, target_node, total_targets)
+            result_name = result_key if total_targets > 1 else scenario_name
+            ctx = self._build_context(scenario_name, config, target_node=target_node)
+            result = ScenarioResult(scenario_name=result_name)
 
-        bmc_precheck = ctx.params.get("bmc_precheck")
-        if isinstance(bmc_precheck, dict):
-            self.session.add_event(
-                "bmc_precheck_completed",
-                {
-                    "scenario": scenario_name,
-                    "fault_id": ctx.fault_id,
-                    "precheck": bmc_precheck,
-                },
-            )
+            self.session.set_phase(SessionPhase.INJECT)
             self.session.save(self.session_dir)
+            inject_result = await agent.inject(scenario_name, ctx)
+            result.inject_success = inject_result.success
 
-        ls_runs = ctx.params.get("_load_simulator_runs")
-        ls_runs_emitted = 0
-        if isinstance(ls_runs, list):
-            for idx, run_detail in enumerate(ls_runs):
-                if not isinstance(run_detail, dict):
-                    continue
-                ls_runs_emitted = idx + 1
+            bmc_precheck = ctx.params.get("bmc_precheck")
+            if isinstance(bmc_precheck, dict):
                 self.session.add_event(
-                    "load_simulator_run",
+                    "bmc_precheck_completed",
                     {
                         "scenario": scenario_name,
+                        "target_node": ctx.target_node,
                         "fault_id": ctx.fault_id,
-                        "index": idx,
-                        **run_detail,
+                        "precheck": bmc_precheck,
                     },
                 )
-            self.session.save(self.session_dir)
-
-        ls_warnings = ctx.params.get("_load_simulator_warnings")
-        ls_warnings_emitted = 0
-        if isinstance(ls_warnings, list):
-            for warning in ls_warnings:
-                ls_warnings_emitted += 1
-                self.session.add_event(
-                    "load_simulator_warning",
-                    {
-                        "scenario": scenario_name,
-                        "fault_id": ctx.fault_id,
-                        "warning": str(warning),
-                    },
-                )
-            self.session.save(self.session_dir)
-
-        if not inject_result.success:
-            result.error = inject_result.error
-            self.session.scenario_results[scenario_name] = result
-            self.session.save(self.session_dir)
-            return
-
-        self.session.add_active_fault(
-            ActiveFault(
-                fault_id=ctx.fault_id,
-                scenario_name=scenario_name,
-                target_node=ctx.target_node,
-                injected_at=datetime.now(),
-                params=config.params,
-            )
-        )
-        self.session.save(self.session_dir)
-
-        self.session.set_phase(SessionPhase.OBSERVE)
-        self.session.save(self.session_dir)
-        observe_duration = int(config.params.get("duration", 60))
-        post_inject_hook = getattr(agent, "post_inject", None)
-        post_inject_task: asyncio.Task | None = None
-        if callable(post_inject_hook):
-            post_inject_task = asyncio.create_task(post_inject_hook(scenario_name, ctx))
-
-        if not self.dry_run:
-            sleep_task = asyncio.create_task(asyncio.sleep(observe_duration))
-            if post_inject_task is not None:
-                await asyncio.gather(sleep_task, post_inject_task)
-            else:
-                await sleep_task
-        elif post_inject_task is not None:
-            await post_inject_task
-
-        if post_inject_task is not None:
-            post_inject_result = post_inject_task.result()
-            if not post_inject_result.success:
-                self.session.add_event(
-                    "load_simulator_warning",
-                    {
-                        "scenario": scenario_name,
-                        "fault_id": ctx.fault_id,
-                        "warning": post_inject_result.error or "post_inject hook failed",
-                    },
-                )
-                if not result.error:
-                    result.error = post_inject_result.error or "post_inject hook failed"
                 self.session.save(self.session_dir)
 
-        ls_runs_after = ctx.params.get("_load_simulator_runs")
-        if isinstance(ls_runs_after, list):
-            for idx, run_detail in enumerate(ls_runs_after[ls_runs_emitted:], start=ls_runs_emitted):
-                if not isinstance(run_detail, dict):
-                    continue
-                self.session.add_event(
-                    "load_simulator_run",
-                    {
-                        "scenario": scenario_name,
-                        "fault_id": ctx.fault_id,
-                        "index": idx,
-                        **run_detail,
-                    },
-                )
-            self.session.save(self.session_dir)
+            ls_runs = ctx.params.get("_load_simulator_runs")
+            ls_runs_emitted = 0
+            if isinstance(ls_runs, list):
+                for idx, run_detail in enumerate(ls_runs):
+                    if not isinstance(run_detail, dict):
+                        continue
+                    ls_runs_emitted = idx + 1
+                    self.session.add_event(
+                        "load_simulator_run",
+                        {
+                            "scenario": scenario_name,
+                            "target_node": ctx.target_node,
+                            "fault_id": ctx.fault_id,
+                            "index": idx,
+                            **run_detail,
+                        },
+                    )
+                self.session.save(self.session_dir)
 
-        ls_warnings_after = ctx.params.get("_load_simulator_warnings")
-        if isinstance(ls_warnings_after, list):
-            for warning in ls_warnings_after[ls_warnings_emitted:]:
-                self.session.add_event(
-                    "load_simulator_warning",
-                    {
-                        "scenario": scenario_name,
-                        "fault_id": ctx.fault_id,
-                        "warning": str(warning),
-                    },
-                )
-            self.session.save(self.session_dir)
+            ls_warnings = ctx.params.get("_load_simulator_warnings")
+            ls_warnings_emitted = 0
+            if isinstance(ls_warnings, list):
+                for warning in ls_warnings:
+                    ls_warnings_emitted += 1
+                    self.session.add_event(
+                        "load_simulator_warning",
+                        {
+                            "scenario": scenario_name,
+                            "target_node": ctx.target_node,
+                            "fault_id": ctx.fault_id,
+                            "warning": str(warning),
+                        },
+                    )
+                self.session.save(self.session_dir)
 
-        queries = {}
-        scenario_class = SCENARIO_REGISTRY.get(scenario_name)
-        if scenario_class:
-            queries = self._render_monitor_queries(scenario_class().monitor_queries(), config, scenario_name)
-        if queries:
-            result.metrics["during"] = await self.monitor_agent.observe(
-                queries=queries,
-                duration=min(observe_duration, self.config.orchestrator.observe_interval),
-                interval=self.config.orchestrator.observe_interval,
+            if not inject_result.success:
+                result.error = inject_result.error
+                self.session.scenario_results[result_key] = result
+                self.session.save(self.session_dir)
+                continue
+
+            self.session.add_active_fault(
+                ActiveFault(
+                    fault_id=ctx.fault_id,
+                    scenario_name=scenario_name,
+                    target_node=ctx.target_node,
+                    injected_at=datetime.now(),
+                    params=config.params,
+                )
             )
+            self.session.save(self.session_dir)
 
-        self.session.set_phase(SessionPhase.RECOVER)
-        self.session.save(self.session_dir)
-        recover_result = await agent.recover(scenario_name, ctx)
-        result.recover_success = recover_result.success
-        self.session.remove_active_fault(ctx.fault_id)
-        self.session.save(self.session_dir)
+            self.session.set_phase(SessionPhase.OBSERVE)
+            self.session.save(self.session_dir)
+            observe_duration = int(config.params.get("duration", 60))
+            post_inject_hook = getattr(agent, "post_inject", None)
+            post_inject_task: asyncio.Task | None = None
+            if callable(post_inject_hook):
+                post_inject_task = asyncio.create_task(post_inject_hook(scenario_name, ctx))
 
-        self.session.set_phase(SessionPhase.VERIFY)
-        self.session.save(self.session_dir)
-        verify_result = await agent.verify(scenario_name, ctx)
-        result.verified = verify_result.success
-        if not verify_result.success and not result.error:
-            result.error = verify_result.error
+            if not self.dry_run:
+                sleep_task = asyncio.create_task(asyncio.sleep(observe_duration))
+                if post_inject_task is not None:
+                    await asyncio.gather(sleep_task, post_inject_task)
+                else:
+                    await sleep_task
+            elif post_inject_task is not None:
+                await post_inject_task
 
-        self.session.scenario_results[scenario_name] = result
-        self.session.save(self.session_dir)
+            if post_inject_task is not None:
+                post_inject_result = post_inject_task.result()
+                if not post_inject_result.success:
+                    self.session.add_event(
+                        "load_simulator_warning",
+                        {
+                            "scenario": scenario_name,
+                            "target_node": ctx.target_node,
+                            "fault_id": ctx.fault_id,
+                            "warning": post_inject_result.error or "post_inject hook failed",
+                        },
+                    )
+                    if not result.error:
+                        result.error = post_inject_result.error or "post_inject hook failed"
+                    self.session.save(self.session_dir)
+
+            ls_runs_after = ctx.params.get("_load_simulator_runs")
+            if isinstance(ls_runs_after, list):
+                for idx, run_detail in enumerate(ls_runs_after[ls_runs_emitted:], start=ls_runs_emitted):
+                    if not isinstance(run_detail, dict):
+                        continue
+                    self.session.add_event(
+                        "load_simulator_run",
+                        {
+                            "scenario": scenario_name,
+                            "target_node": ctx.target_node,
+                            "fault_id": ctx.fault_id,
+                            "index": idx,
+                            **run_detail,
+                        },
+                    )
+                self.session.save(self.session_dir)
+
+            ls_warnings_after = ctx.params.get("_load_simulator_warnings")
+            if isinstance(ls_warnings_after, list):
+                for warning in ls_warnings_after[ls_warnings_emitted:]:
+                    self.session.add_event(
+                        "load_simulator_warning",
+                        {
+                            "scenario": scenario_name,
+                            "target_node": ctx.target_node,
+                            "fault_id": ctx.fault_id,
+                            "warning": str(warning),
+                        },
+                    )
+                self.session.save(self.session_dir)
+
+            queries = {}
+            scenario_class = SCENARIO_REGISTRY.get(scenario_name)
+            if scenario_class:
+                queries = self._render_monitor_queries(
+                    scenario_class().monitor_queries(),
+                    config,
+                    scenario_name,
+                    target_node=ctx.target_node,
+                )
+            if queries:
+                result.metrics["during"] = await self.monitor_agent.observe(
+                    queries=queries,
+                    duration=min(observe_duration, self.config.orchestrator.observe_interval),
+                    interval=self.config.orchestrator.observe_interval,
+                )
+
+            self.session.set_phase(SessionPhase.RECOVER)
+            self.session.save(self.session_dir)
+            recover_result = await agent.recover(scenario_name, ctx)
+            result.recover_success = recover_result.success
+            self.session.remove_active_fault(ctx.fault_id)
+            self.session.save(self.session_dir)
+
+            self.session.set_phase(SessionPhase.VERIFY)
+            self.session.save(self.session_dir)
+            verify_result = await agent.verify(scenario_name, ctx)
+            result.verified = verify_result.success
+            if not verify_result.success and not result.error:
+                result.error = verify_result.error
+
+            self.session.scenario_results[result_key] = result
+            self.session.save(self.session_dir)
 
     async def _run_combined_plan(self, baseline: dict[str, list[float]]) -> None:
         del baseline
