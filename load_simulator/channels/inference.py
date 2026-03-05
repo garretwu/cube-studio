@@ -28,18 +28,24 @@ class InferenceChannel:
         *,
         endpoint: str,
         model: str,
+        api_key: str = "",
         timeout: int = 60,
         max_connections: int = 200,
         max_keepalive_connections: int = 200,
         metrics_collector: MetricCollector | None = None,
     ) -> None:
-        self.endpoint = endpoint
+        self.endpoint = endpoint.rstrip("/")
         self.model = model
+        self.api_key = api_key
         self.timeout = timeout
         self.metrics_collector = metrics_collector
+        headers: dict[str, str] = {}
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
         self._client = httpx.AsyncClient(
-            base_url=endpoint,
+            base_url=self.endpoint,
             timeout=httpx.Timeout(timeout),
+            headers=headers,
             limits=httpx.Limits(
                 max_connections=max_connections,
                 max_keepalive_connections=max_keepalive_connections,
