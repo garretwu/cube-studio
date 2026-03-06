@@ -694,7 +694,26 @@ class StorageIOInterferenceScenario(BaseScenario):
             command=f"pgrep -f '{marker}' || echo 'not_running'",
             use_sudo=True,
         )
-        return "not_running" in result.output
+        
+        if "not_running" in result.output:
+            logger.info("验证通过: gpu-burn 已停止")
+            return True
+
+        # 检查返回的 PID 是否真的存在
+        pid = result.output.strip()
+        if pid:
+            check_result = await ctx.ssh.run_command(
+                node=ctx.target_node,
+                command=f"ps -p {pid} -o pid= || echo 'not_exists'",
+                use_sudo=False,
+            )
+            if "not_exists" in check_result.output:
+                logger.info(f"验证通过: PID {pid} 已不存在")
+                return True
+
+        logger.warning(f"验证失败: gpu-burn 仍在运行, PID={pid}")
+        return False
+
 
     def monitor_queries(self) -> dict[str, str]:
         return {

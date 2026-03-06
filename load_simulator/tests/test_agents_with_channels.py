@@ -11,6 +11,7 @@ from load_simulator.channels.inference import InferenceResult
 
 class _InferenceCfg:
     endpoint = "http://localhost:8000/v1/chat/completions"
+    api_key = ""
     model = "test-model"
     max_tokens = 32
     concurrency = 2
@@ -34,6 +35,9 @@ class _FineTuneCfg:
 
 
 class _FakeInferenceChannel:
+    endpoint = "http://fake:8000"
+    model = "fake-model"
+
     async def chat_completion(self, messages, *, max_tokens=256, stream=False, extra=None):  # noqa: ANN001, ANN201
         _ = messages, extra
         return InferenceResult(
@@ -124,6 +128,7 @@ class AgentChannelIntegrationTests(unittest.IsolatedAsyncioTestCase):
 
         class _StreamCfg:
             endpoint = "http://localhost:8000/v1/chat/completions"
+            api_key = ""
             model = "test-model"
             max_tokens = 32
             concurrency = 2
@@ -154,6 +159,36 @@ class AgentChannelIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("ttft_p50_ms", result.metrics)
         # Request logs should still be present
         self.assertIn("request_logs", result.raw)
+
+    async def test_inference_agent_metrics_report_channel_endpoint(self) -> None:
+        """Metrics should report the channel's endpoint/model, not the config's."""
+
+        class _ChannelWithCustomEndpoint(_FakeInferenceChannel):
+            endpoint = "http://custom-host:9000"
+            model = "custom-model"
+
+        agent = InferenceAgent(_InferenceCfg(), channel=_ChannelWithCustomEndpoint())
+        result = await agent.run(duration_seconds=1)
+        self.assertEqual(result.metrics["endpoint"], "http://custom-host:9000")
+        self.assertEqual(result.metrics["model"], "custom-model")
+
+    async def test_inference_agent_request_logs_use_channel_endpoint(self) -> None:
+        """Request log URLs should come from the channel, not the config."""
+
+        class _ChannelWithUrl(_FakeInferenceChannel):
+            endpoint = "http://real-endpoint:7000"
+
+        agent = InferenceAgent(_InferenceCfg(), channel=_ChannelWithUrl())
+        result = await agent.run(duration_seconds=1)
+        for log in result.raw["request_logs"]:
+            self.assertEqual(log["url"], "http://real-endpoint:7000")
+
+    async def test_inference_agent_name_override(self) -> None:
+        """Setting agent_name on the instance should be reflected in the result."""
+        agent = InferenceAgent(_InferenceCfg(), channel=_FakeInferenceChannel())
+        agent.agent_name = "inference:qwen3-32b"
+        result = await agent.run(duration_seconds=1)
+        self.assertEqual(result.name, "inference:qwen3-32b")
 
 
 if __name__ == "__main__":

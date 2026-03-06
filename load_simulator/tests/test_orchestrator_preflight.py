@@ -7,10 +7,22 @@ from load_simulator.agents.base import AgentResult
 from load_simulator.orchestrator.engine import LoadOrchestrator
 
 
+class _InferenceTarget:
+    def __init__(self, name: str = "default", endpoint: str = "http://infer.local/v1/chat/completions",
+                 api_key: str = "", model: str = "m") -> None:
+        self.name = name
+        self.endpoint = endpoint
+        self.api_key = api_key
+        self.model = model
+
+
 @dataclass
 class _InferenceCfg:
     endpoint: str = "http://infer.local/v1/chat/completions"
     duration_seconds: int = 1
+
+    def resolved_targets(self) -> list:
+        return [_InferenceTarget(endpoint=self.endpoint)]
 
 
 @dataclass
@@ -68,6 +80,11 @@ class _TestOrchestrator(LoadOrchestrator):
         _ = duration_scale, concurrency_scale
         return _FakeAgent(name), 0
 
+    def _build_inference_agents(self, *, duration_scale=1.0, concurrency_scale=1.0):  # noqa: ANN001, ANN201
+        _ = duration_scale, concurrency_scale
+        targets = self._config.inference.resolved_targets()
+        return [(f"inference:{t.name}", _FakeAgent(f"inference:{t.name}"), 0) for t in targets]
+
 
 class OrchestratorPreflightTests(unittest.IsolatedAsyncioTestCase):
     async def test_run_preflight_keys(self) -> None:
@@ -76,10 +93,10 @@ class OrchestratorPreflightTests(unittest.IsolatedAsyncioTestCase):
 
         orch = _TestOrchestrator(_Cfg(), preflight_checker=checker, enable_monitor=False)
         result = await orch.run(only=["inference", "notebook"])
-        self.assertIn("inference_endpoint", result.preflight)
+        self.assertIn("inference_endpoint:default", result.preflight)
         self.assertIn("notebook_api", result.preflight)
         self.assertIn("prometheus", result.preflight)
-        self.assertEqual(result.preflight["inference_endpoint"]["ok"], True)
+        self.assertEqual(result.preflight["inference_endpoint:default"]["ok"], True)
         self.assertIsNone(result.preflight["prometheus"]["ok"])
 
     async def test_preflight_failure_propagates_to_result(self) -> None:
