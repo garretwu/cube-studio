@@ -221,15 +221,17 @@ class FaultOrchestrator:
         with open(baseline_path, "w", encoding="utf-8") as f:
             json.dump(baseline, f, indent=2, ensure_ascii=False)
 
+        self._evaluate_baseline_quality(baseline)
         self.session.add_event("baseline_completed", {"baseline_path": str(baseline_path)})
         self.session.save(self.session_dir)
         return baseline
 
     def _aggregate_monitor_queries(self) -> dict[str, str]:
-        queries: dict[str, str] = {
-            "cpu_util": "avg(rate(node_cpu_seconds_total{mode!='idle'}[1m]))",
-            "memory_util": "avg(node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)",
-        }
+        configured = self.config.monitor.baseline_queries
+        if configured:
+            return dict(configured)
+
+        queries: dict[str, str] = self._default_monitor_queries()
         for sc_cfg in self._resolve_scenarios():
             scenario_cls = SCENARIO_REGISTRY.get(sc_cfg.name)
             if not scenario_cls:
@@ -239,6 +241,66 @@ class FaultOrchestrator:
             for key, value in rendered_queries.items():
                 queries[f"{sc_cfg.name}:{key}"] = value
         return queries
+
+    def _default_monitor_queries(self) -> dict[str, str]:
+        return {
+            "cpu_util": "avg(rate(node_cpu_seconds_total{mode!='idle'}[1m]))",
+            "memory_util": "avg(node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)",
+        }
+
+    def _evaluate_baseline_quality(self, baseline: dict[str, list[float]]) -> None:
+        if self.session is None:
+            return
+
+        quality: dict[str, dict[str, Any]] = {}
+        warnings: list[dict[str, Any]] = []
+        min_samples = max(1, int(self.config.monitor.baseline_min_samples))
+        max_error_ratio = float(self.config.monitor.baseline_max_error_ratio)
+        required_non_zero = set(self.config.monitor.baseline_require_non_zero)
+        stats_map: dict[str, dict[str, Any]] = {}
+        if self.prometheus is not None:
+            stats_map = getattr(self.prometheus, "last_baseline_stats", {}) or {}
+
+        for metric, values in baseline.items():
+            sample_count = len(values)
+            has_non_zero = any(abs(v) > 1e-12 for v in values)
+            zero_ratio = (
+                float(sum(1 for v in values if abs(v) <= 1e-12)) / float(sample_count)
+                if sample_count
+                else 0.0
+            )
+            stats = stats_map.get(metric, {})
+            error_ratio = float(stats.get("error_ratio", 0.0))
+            issues: list[str] = []
+            if sample_count < min_samples:
+                issues.append(f"sample_count<{min_samples}")
+            if error_ratio > max_error_ratio:
+                issues.append(f"error_ratio>{max_error_ratio}")
+            if metric in required_non_zero and not has_non_zero:
+                issues.append("all_zero_but_required_non_zero")
+
+            quality[metric] = {
+                "sample_count": sample_count,
+                "zero_ratio": zero_ratio,
+                "error_ratio": error_ratio,
+                "has_non_zero": has_non_zero,
+                "status": "ok" if not issues else "warn",
+                "issues": issues,
+            }
+            if issues:
+                warning = {"metric": metric, "issues": issues}
+                warnings.append(warning)
+                self.session.add_event("baseline_quality_warning", warning)
+
+        self.session.add_event(
+            "baseline_quality_evaluated",
+            {"metrics": len(quality), "warnings": len(warnings), "quality": quality},
+        )
+        if warnings and self.config.monitor.baseline_strict:
+            raise OrchestrationError(
+                "Baseline quality check failed in strict mode: "
+                + ", ".join(sorted({w["metric"] for w in warnings}))
+            )
 
     def _monitor_render_values(self, config: ScenarioConfig, target_node: str | None = None) -> dict[str, str]:
         if target_node is None:
@@ -536,7 +598,7 @@ class FaultOrchestrator:
             if queries:
                 result.metrics["during"] = await self.monitor_agent.observe(
                     queries=queries,
-                    duration=min(observe_duration, self.config.orchestrator.observe_interval),
+                    duration=observe_duration,
                     interval=self.config.orchestrator.observe_interval,
                 )
 

@@ -439,7 +439,7 @@ class NetworkJitterScenario(BaseScenario):
             "inference_p50": 'histogram_quantile(0.5, rate(vllm:request_duration_seconds_bucket[1m]))',
             "inference_p95": 'histogram_quantile(0.95, rate(vllm:request_duration_seconds_bucket[1m]))',
             "inference_p99": 'histogram_quantile(0.99, rate(vllm:request_duration_seconds_bucket[1m]))',
-            "network_latency": 'histogram_quantile(0.95, rate(network_latency_seconds_bucket[1m]))',
+            "network_latency": 'histogram_quantile(0.95, sum(rate(vllm:e2e_request_latency_seconds_bucket[1m])) by (le))',
         }
 
 

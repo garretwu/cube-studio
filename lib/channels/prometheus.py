@@ -21,6 +21,7 @@ class PrometheusChannel(BaseChannel):
         self.base_url = base_url
         self.timeout = timeout
         self._client: httpx.AsyncClient | None = None
+        self.last_baseline_stats: dict[str, dict[str, Any]] = {}
 
     async def _client_get(self) -> httpx.AsyncClient:
         if self._client is None:
@@ -86,16 +87,47 @@ class PrometheusChannel(BaseChannel):
         interval: int = 15,
     ) -> dict[str, list[float]]:
         if self.dry_run:
+            self.last_baseline_stats = {
+                name: {
+                    "sample_count": 0,
+                    "error_count": 0,
+                    "error_ratio": 0.0,
+                    "zero_ratio": 0.0,
+                    "last_error": "",
+                }
+                for name in queries
+            }
             return {name: [] for name in queries}
         out: dict[str, list[float]] = {name: [] for name in queries}
+        stats: dict[str, dict[str, Any]] = {
+            name: {
+                "sample_count": 0,
+                "error_count": 0,
+                "error_ratio": 0.0,
+                "zero_ratio": 0.0,
+                "last_error": "",
+            }
+            for name in queries
+        }
         end_ts = asyncio.get_event_loop().time() + duration
         while asyncio.get_event_loop().time() < end_ts:
             for name, promql in queries.items():
                 try:
-                    out[name].append(await self.query_instant(promql))
-                except Exception:
+                    value = await self.query_instant(promql)
+                    out[name].append(value)
+                except Exception as exc:
+                    stats[name]["error_count"] += 1
+                    stats[name]["last_error"] = str(exc)
                     out[name].append(0.0)
+                stats[name]["sample_count"] += 1
             await asyncio.sleep(interval)
+        for name, values in out.items():
+            sample_count = int(stats[name]["sample_count"])
+            if sample_count > 0:
+                zero_count = sum(1 for v in values if abs(v) <= 1e-12)
+                stats[name]["error_ratio"] = float(stats[name]["error_count"]) / float(sample_count)
+                stats[name]["zero_ratio"] = float(zero_count) / float(sample_count)
+        self.last_baseline_stats = stats
         return out
 
     async def close(self) -> None:

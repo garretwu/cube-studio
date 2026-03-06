@@ -11,6 +11,8 @@ GUIDANCE FOR AI AGENTS:
 
 # AI Agent Instructions: Fault Injector
 
+最后更新: 2026-03-06
+
 ## Quick Start for AI Agents
 
 1. Read this file (`agents.md`)
@@ -33,22 +35,9 @@ Key principles:
 
 ---
 
-## Important Files
+## Current Code Structure
 
-| File | Purpose | Read When |
-|------|---------|-----------|
-| `agent_docs/project_brief.md` | Project overview and status | Starting work |
-| `agent_docs/tech_stack.md` | Tech constraints | Adding dependencies |
-| `agent_docs/code_patterns.md` | Coding conventions | Writing code |
-| `agent_docs/product_requirements.md` | Requirements | Implementing features |
-| `docs/PRD.md` | Product requirements | Understanding scope |
-| `docs/techdesign.md` | Technical design | Architecture decisions |
-
----
-
-## Project Trees
-
-### cube-studio (workspace)
+### Workspace tree
 
 ```text
 cube-studio/
@@ -62,7 +51,7 @@ cube-studio/
 └── job-template/
 ```
 
-### fault_injector
+### fault_injector tree
 
 ```text
 fault_injector/
@@ -72,25 +61,28 @@ fault_injector/
 ├── agent_docs/
 ├── docs/
 ├── agents/
+├── channels/
 ├── config/
 ├── orchestrator/
 ├── reporting/
 ├── safety/
 ├── scenarios/
-└── tests/
-    ├── unit/features/agents/
-    ├── unit/features/orchestrator/
-    ├── unit/features/cli/
-    ├── unit/features/channels/
-    ├── unit/features/scenarios/
-    ├── integration/
-    ├── e2e/
-    ├── fixtures/
-    ├── mocks/
-    └── helpers/
+├── tests/
+│   ├── channel/
+│   ├── common/
+│   ├── config/
+│   ├── e2e/
+│   ├── fixtures/
+│   ├── helpers/
+│   ├── integration/
+│   ├── mocks/
+│   ├── mocktest/
+│   ├── scenario/
+│   └── unit/features/
+└── tools/
 ```
 
-### Public Channel Modules
+### Runtime channel modules
 
 ```text
 lib/channels/
@@ -98,10 +90,57 @@ lib/channels/
 ├── kubernetes.py
 ├── prometheus.py
 ├── redfish.py
+├── ipmi.py
 ├── ssh.py
 ├── switch.py
 └── __init__.py
 ```
+
+---
+
+## 已完成项目（截至 2026-03-06）
+
+1. 完成 CLI + Orchestrator 主链路（run/recover/resume/validate/list）。
+2. 完成 12 个场景注册（vLLM RC-1~RC-6，RDMA F-1~F-6）。
+3. 完成场景级 load_simulator 联动（`network_jitter`、`platform_cascade`）。
+4. 完成 load_simulator strict/best-effort 策略和事件落盘（`load_simulator_run`、`load_simulator_warning`）。
+5. 完成 monitor baseline 配置化（`monitor.baseline_queries`）。
+6. 完成 baseline 质量门禁（最小样本、错误率阈值、非零要求、strict 模式）。
+7. 完成 Prometheus baseline 采样统计字段（`sample_count/error_count/error_ratio/zero_ratio/last_error`）。
+8. 完成 observe 窗口时长修复（使用完整 `observe_duration`）。
+9. 完成关键单测覆盖（LS 联动、baseline 质量告警、query render 告警、observe duration 行为）。
+
+---
+
+## Progress Snapshot
+
+- P0 核心可运行能力: Done
+- P1 监控可信度改造: In Progress（核心实现完成，报告聚合展示待补）
+- P2 联动统一编排层: Todo
+
+---
+
+## Next Plan
+
+1. 扩展 load_simulator 接入范围，优先补 `gpu_contention`。
+2. 报告增加 baseline 质量摘要与联动结果聚合字段。
+3. 增加 watchdog 与 load_simulator 超时关系的前置校验。
+4. 收敛联动 warning 事件重复记录。
+5. 增补 combined 模式与多节点联动失败路径回归测试。
+
+---
+
+## Important Files
+
+| File | Purpose | Read When |
+|------|---------|-----------|
+| `agent_docs/project_brief.md` | Project overview and status | Starting work |
+| `agent_docs/tech_stack.md` | Tech constraints | Adding dependencies |
+| `agent_docs/code_patterns.md` | Coding conventions | Writing code |
+| `agent_docs/product_requirements.md` | Requirements | Implementing features |
+| `docs/PRD.md` | Product requirements | Understanding scope |
+| `docs/techdesign.md` | Technical design | Architecture decisions |
+| `docs/architecture.md` | Runtime architecture + progress | Syncing implementation status |
 
 ---
 
@@ -132,7 +171,7 @@ lib/channels/
 - Prefer editing existing modules; create new files only if required.
 - Use `rg` to locate references before editing.
 - When intent is unclear, ask one targeted question.
-- Keep docs/tests aligned with changes, especially `docs/techdesign.md` and `agents.md`.
+- Keep docs/tests aligned with changes, especially `docs/architecture.md`, `docs/techdesign.md`, and `agents.md`.
 - Avoid inventing APIs or paths not present in the tree.
 
 ---
@@ -149,11 +188,11 @@ lib/channels/
 
 ### Adding a New Scenario
 
-1. Prefer implementing execution in layer agents (`fault_injector/agents/`)
-2. Keep `fault_injector/scenarios/` for active RC/F scenario families only
-3. If adding an RC/F scenario class, register in `fault_injector/scenarios/registry.py`
-4. Add/adjust agent tests in `fault_injector/tests/unit/features/agents/`
-5. Add/adjust scenario tests in `fault_injector/tests/unit/features/scenarios/` when registry behavior changes
+1. Add scenario class under `fault_injector/scenarios/`
+2. Register in `fault_injector/scenarios/registry.py`
+3. Keep scenario logic recoverable and guard-checked
+4. Add/adjust tests in `fault_injector/tests/unit/features/scenarios/`
+5. Update docs (`docs/architecture.md` and this file) for status changes
 
 ### Adding a New Channel
 
@@ -179,7 +218,7 @@ lib/channels/
 pytest fault_injector/tests/
 
 # scenario unit tests
-pytest fault_injector/tests/unit/features/scenarios/test_scenarios.py
+pytest fault_injector/tests/unit/features/scenarios/
 
 # channel unit tests
 pytest fault_injector/tests/unit/features/channels/
@@ -194,9 +233,9 @@ See `fault_injector/testing.md` for detailed strategy.
 
 ## Safety Notes
 
-- All injections must have rollback/recovery behavior
-- Recovery info should be written before risky operations
-- Do not bypass guardrails for destructive operations
+- All injections must have rollback/recovery behavior.
+- Recovery info should be written before risky operations.
+- Do not bypass guardrails for destructive operations.
 
 ---
 
@@ -214,6 +253,7 @@ See `fault_injector/testing.md` for detailed strategy.
 
 | Date | Version | Changes |
 |------|---------|---------|
+| 2026-03-06 | 1.4 | Updated code structure, completion status, progress snapshot, and next plan |
 | 2026-02-28 | 1.3 | Clarified agent-centric ownership and scenario-layer scope (RC/F families only) |
 | 2026-02-28 | 1.2 | Added agent-centric workflow guidance and new test tree entries |
 | 2026-02-27 | 1.1 | Updated project trees and moved channel module location to `lib/channels` |

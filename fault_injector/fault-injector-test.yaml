@@ -238,14 +238,14 @@ scenarios:
     enabled: true
     target_nodes:
       - "worker-01"
-      - "worker-02"
-      - "worker-03"
+      #- "worker-02"
+      #- "worker-03"
     params:
-      duration: 120
+      duration: 30
       vm_bytes_percent: 85
       cpu_workers: 32
       cpu_load: 90
-      io_workers: 4
+      io_workers: 8
 
   # ---------------------------------------------------------------------------
   # RC-6: Thermal Throttling
