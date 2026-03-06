@@ -163,11 +163,11 @@ scenarios:
       - "worker-02"
       - "worker-03"
     params:
-      duration: 60
+      duration: 180
       # Maps to gpu-burn "-m". Supports values like "60%" or "10240" (MB).
-      memory: "60%"
+      memory: "90%"
       # Maps to gpu-burn "-i". Omit or set [] to apply to all GPUs.
-      # gpu_ids: [0]
+      gpu_ids: []
       # gpu_ids: [0, 1]
       intensity: 100
 
@@ -176,20 +176,20 @@ scenarios:
   # ---------------------------------------------------------------------------
   # Uses tc netem to inject network delay and jitter.
   network_jitter:
-    enabled: false
+    enabled: true
     target_nodes:
-      - "worker-01"
+      #- "worker-01"
       - "worker-02"
       - "worker-03"
     params:
       interface: "roce200"
-      delay_ms: 30
-      jitter_ms: 60
+      delay_ms: 45
+      jitter_ms: 90
       distribution: "pareto"
       loss_pct: 0
-      duration: 60
+      duration: 180
       load_simulator:
-        enabled: true
+        enabled: false
         config_path: "load_simulator/config/notebook-soak-only.yaml"
         only:
           - "notebook"
@@ -242,7 +242,7 @@ scenarios:
       - "worker-03"
     params:
       duration: 120
-      vm_bytes_percent: 75
+      vm_bytes_percent: 85
       cpu_workers: 32
       cpu_load: 90
       io_workers: 4
@@ -270,27 +270,29 @@ scenarios:
 
   # Keep RDMA scenarios disabled for this vLLM latency test cycle.
   pfc_deadlock:
-    enabled: false
+    enabled: true
     target_nodes:
-      - "worker-01"
-      - "worker-02"
+      #- "worker-01"
+      #- "worker-02"
       - "worker-03"
     params:
       switch: "sw-200g"
-      interface: "200GE1/0/4"
+      interface: "200GE1/0/3"
       priority: 3
+      duration: 120
 
   ecn_misconfiguration:
-    enabled: false
+    enabled: true
     target_nodes:
-      - "worker-01"
-      - "worker-02"
+      #- "worker-01"
+      #- "worker-02"
       - "worker-03"
     params:
       switch: "sw-200g"
-      interface: "200GE1/0/4"
+      interface: "200GE1/0/3"
       min_threshold: 10
       max_threshold: 20
+      duration: 120
 
   rdma_load_imbalance:
     enabled: false
@@ -304,19 +306,19 @@ scenarios:
       hash_algorithm: "src-dst-ip"
 
   rdma_link_flap:
-    enabled: false
+    enabled: true
     target_nodes:
-      - "worker-01"
-      - "worker-02"
+      #- "worker-01"
+      #- "worker-02"
       - "worker-03"
     params:
       switch: "sw-200g"
-      interface: "200GE1/0/4"
-      flap_interval: 30
-      flap_duration: 5
+      interface: "200GE1/0/3"
+      flap_interval: 1
+      flap_duration: 30
 
   roce_mtu_mismatch:
-    enabled: false
+    enabled: true
     target_nodes:
       - "worker-01"
       - "worker-02"
@@ -325,6 +327,7 @@ scenarios:
       interface: "roce200"
       mtu: 1500
       original_mtu: 9000
+      duration: 120
 
   rdma_qos_downgrade:
     enabled: false

@@ -167,6 +167,109 @@ scenarios:
       # gpu_ids: [0, 1]
 ```
 
+## 5.2 GPU Contention 与 Load Simulator 联动设计（新增方案）
+
+目标: 在 `gpu_contention` 故障窗口内稳定施加真实业务负载，形成“GPU 资源争用 -> 服务指标抖动 -> 恢复后回归”的完整证据链。
+
+### 5.2.1 设计原则
+
+1. 保持现有场景级联动契约，不引入破坏性配置变更。
+2. 默认“先启动负载，再注入争用，再共同观测”，确保故障发生在有业务压力的窗口内。
+3. 严格区分 `strict=true/false` 行为，避免联动失败时语义不清。
+4. 结果可追踪: `session.json` 与 `report/report.json` 必须能还原关键时间线。
+
+### 5.2.2 建议配置契约（gpu_contention）
+
+在 `scenarios.gpu_contention.params` 下新增（或复用）:
+
+- `load_simulator.enabled`: 是否启用联动。
+- `load_simulator.config_path`: LS 配置文件路径。
+- `load_simulator.only`: 可选，限制执行 agent（如 `["inference"]`）。
+- `load_simulator.timeout_seconds`: LS 子进程超时。
+- `load_simulator.strict`: 联动失败是否判定场景失败。
+- `load_simulator.preload_seconds`: 预热窗口（建议 15~30 秒），给 LS 建连与流量爬坡。
+
+参考配置:
+
+```yaml
+scenarios:
+  gpu_contention:
+    enabled: true
+    target_nodes: ["worker-01", "worker-02"]
+    params:
+      duration: 180
+      memory: "70%"
+      gpu_ids: [0, 1]
+      load_simulator:
+        enabled: true
+        config_path: "load_simulator/config/inference-soak.yaml"
+        only: ["inference"]
+        timeout_seconds: 600
+        strict: true
+        preload_seconds: 20
+```
+
+### 5.2.3 时序编排（建议）
+
+1. `inject` 前启动 LS 后台任务，并等待 `preload_seconds`。
+2. 执行 `gpu_burn` 注入（按 `gpu_ids` 并发拉起）。
+3. 进入 `observe`，并行等待:
+   - `gpu_contention.duration`
+   - LS 任务完成
+4. `recover` 阶段停止全部 `gpu_burn` 进程。
+5. `verify` 阶段检查 GPU 利用率/温度/服务延迟是否回落到阈值内。
+
+说明: 若 LS 执行时长大于故障时长，可在 `observe` 末尾继续等待 LS；若希望严格同窗，可在后续迭代增加 `stop_with_fault=true` 策略。
+
+### 5.2.4 失败策略（建议）
+
+1. LS 启动失败:
+   - `strict=true`: 直接标记场景失败，不执行注入。
+   - `strict=false`: 记录 `load_simulator_warning`，继续执行 `gpu_contention`。
+2. LS 运行超时:
+   - kill 子进程并记录超时原因。
+   - `strict=true` 标记失败；`strict=false` 降级为 warning。
+3. `gpu_burn` 注入失败:
+   - 立即进入恢复，回收已启动进程。
+   - 无论 strict 与否，场景判定失败（故障本体失败）。
+
+### 5.2.5 可观测性与证据模型（建议）
+
+`session.json` 至少记录:
+- `gpu_contention_inject_start/end`
+- `load_simulator_run.start/end/success/error`
+- `gpu_contention_recover_start/end`
+
+`report/report.json` 增加聚合字段:
+- `gpu_contention.active_gpu_ids`
+- `gpu_contention.memory_setting`
+- `integration.overlap_seconds`（LS 与故障窗口重叠时长）
+- `integration.strict_mode`
+- `integration.final_status`
+
+### 5.2.6 与 watchdog 协同（硬约束）
+
+建议在配置校验阶段增加:
+1. `load_simulator.timeout_seconds < global.safety.auto_recover_timeout`
+2. `preload_seconds < params.duration`
+3. `timeout_seconds >= preload_seconds + params.duration`
+
+不满足时:
+- `strict=true` 配置校验失败；
+- `strict=false` 输出 warning 并允许执行（用于测试环境）。
+
+### 5.2.7 分阶段落地建议
+
+P0（本周）:
+1. `gpu_contention` 接入与 `network_jitter` 一致的 LS 运行契约。
+2. 新增 `preload_seconds`，打通“预热 + 注入 + 并行观测”。
+3. 增补单测: 成功、超时、strict 降级。
+
+P1（下周）:
+1. 补充 `report` 聚合字段与时间线对齐展示。
+2. 增加配置前置校验（watchdog 协同约束）。
+3. 输出 runbook（含推荐参数组合）。
+
 ## 6. 待完善项
 
 1. 联动覆盖范围有限  
