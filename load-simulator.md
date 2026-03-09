@@ -1,32 +1,89 @@
 # Cube Studio Load Simulator 设计规格
 
-> **实现状态**：v0.1.0 已实现 | 更新日期：2026-02-19 | 分支：claude/phased-development-plan-ZTWRB
+> **实现状态**：v0.3.0 | 更新日期：2026-02-24 | 分支：feature-edge-load-simulator
 
-## 实现状态（v0.1.0 — 2026-02-19）
+## 实现状态（v0.3.0 — 2026-02-24）
 
-### 已实现模块（`load_simulator/` 包，25 个文件，2229 行）
+### 已实现模块（`load_simulator/` 包，54 个源文件 + 31 个测试文件 = 85 文件，7871 行）
+
+#### 核心框架
 
 | 模块 | 文件 | 状态 | 说明 |
 |------|------|------|------|
-| CLI 入口 | `cli.py`, `__main__.py` | ✅ 完成 | `run` / `validate-config` / `list-scenarios` 三个子命令；支持 `--output-format json\|html\|none`、`--only`、`--duration`、`--concurrency` |
-| 配置 | `config/schema.py` | ✅ 完成 | Pydantic v2，含 `InferenceConfig` / `PipelineConfig` / `FineTuneConfig` / `NotebookConfig` / `LLMConfig` / `LoadSimulatorConfig` |
-| 配置 | `config/defaults.py` | ✅ 完成 | 内置默认 YAML（agents、各 Agent 参数、bottleneck_analysis） |
-| 配置 | `config/loader.py` | ✅ 完成 | YAML 加载 + Pydantic 校验，含 `load_config()` / `load_default_config()` |
-| 编排器 | `orchestrator/engine.py` | ✅ 完成 | `LoadOrchestrator` 并发调度所有 Agent，收集 `SessionResult` |
-| 编排器 | `orchestrator/scheduler.py` | ✅ 完成 | 调度辅助逻辑 |
-| 编排器 | `orchestrator/session.py` | ✅ 完成 | Session 状态管理 |
-| Agent 基类 | `agents/base.py` | ✅ 完成 | `BaseAgent`、`AgentResult` dataclass |
-| InferenceAgent | `agents/inference.py` | ✅ 完成 | vLLM `/v1/chat/completions` 并发压测（httpx async） |
-| PipelineAgent | `agents/pipeline.py` | ✅ 完成 | Cube Studio Argo Workflow 提交模拟 |
-| FineTuneAgent | `agents/finetune.py` | ✅ 完成 | LLaMA-Factory API 负载模拟 |
-| NotebookAgent | `agents/notebook.py` | ✅ 完成 | Jupyter Kernel API 执行模拟 |
-| MonitorAgent | `agents/monitor.py` | ✅ 完成 | 后台系统指标采集（CPU/MEM/GPU 轮询） |
-| BottleneckAnalyzer | `agents/bottleneck.py` | ✅ 完成 | 6 层阈值规则引擎（v0.1 为确定性，非 LLM） |
-| 指标采集 | `metrics/collector.py` | ✅ 完成 | 指标点采集 |
-| 指标聚合 | `metrics/aggregator.py` | ✅ 完成 | 聚合计算（P50/P95/P99 等） |
-| 时序存储 | `metrics/time_series.py` | ✅ 完成 | 内存时序数据结构 |
+| CLI 入口 | `cli.py`, `__main__.py` | ✅ 完成 | `run` / `validate-config` / `list-scenarios` 三个子命令；支持 `--output-format json\|html\|none`、`--only`、`--duration`、`--concurrency`、`--mode`、`--dry-run`、`--strict-preflight`、`--session-dir`、`--resume` |
+| 配置 Schema | `config/schema.py` | ✅ 完成 | Pydantic v2 严格模型，含 `LoadSimulatorConfig` / `InferenceConfig` / `PipelineConfig` / `FineTuneConfig` / `NotebookConfig` / `LLMConfig` / `GlobalConfig` / `ChannelConfig` / `ChannelRuntimeConfig` / `SystemCapacityConfig` / `AdaptiveRulesConfig` / `PrometheusQueriesConfig` / `LoadProfileConfig` |
+| 配置默认值 | `config/defaults.py` | ✅ 完成 | 内置默认 YAML，包含所有 Agent 参数、channels 运行时配置、system_capacity、adaptive_rules、prometheus_queries |
+| 配置加载 | `config/loader.py` | ✅ 完成 | YAML 加载 + Pydantic 校验 + 环境变量展开，含 `load_config()` / `load_default_config()` |
+
+#### Agent 层
+
+| 模块 | 文件 | 状态 | 说明 |
+|------|------|------|------|
+| Agent 基类 | `agents/base.py` | ✅ 完成 | `BaseAgent` ABC + `AgentResult` dataclass（含 `raw` 字段用于 per-request logs） |
+| InferenceAgent | `agents/inference.py` | ✅ 完成 | vLLM `/v1/chat/completions` 并发压测，TTFT 追踪（stream 模式），per-request 日志 |
+| PipelineAgent | `agents/pipeline.py` | ✅ 完成 | Cube Studio Argo Workflow 提交模拟 + 回退本地模拟，per-request 日志 |
+| FineTuneAgent | `agents/finetune.py` | ✅ 完成 | LLaMA-Factory API 负载模拟 + 回退本地 mock 训练，per-request 日志 |
+| NotebookAgent | `agents/notebook.py` | ✅ 完成 | Jupyter Kernel API 执行模拟（create kernel → execute code → list），per-request 日志 |
+| MetricsMonitor | `agents/monitor.py` | ✅ 完成 | 三层指标采集：OS 层（CPU/MEM/GPU/Disk/IO wait）+ Prometheus 系统指标 + 聚合输出 |
+| BottleneckAnalyzer | `agents/bottleneck.py` | ✅ 完成 | 6 层阈值规则引擎（确定性，非 LLM） |
+
+#### Channel 层
+
+| 模块 | 文件 | 状态 | 说明 |
+|------|------|------|------|
+| Channel 基类 | `channels/base.py` | ✅ 完成 | `BaseChannel` ABC + `ChannelResult` + `SafetyViolationError`，含 dry_run / WAL / 禁止操作守卫 |
+| CubeStudioChannel | `channels/cube_studio.py` | ✅ 完成 | httpx AsyncClient，retry/backoff，JWT/username 认证，CRUD（pipeline、task、notebook、inference service） |
+| InferenceChannel | `channels/inference.py` | ✅ 完成 | httpx AsyncClient + 连接池（max_connections/max_keepalive），`MetricCollector` 集成，TTFT 估算 |
+| K8sChannel | `channels/kubernetes.py` | ✅ 完成 | K8s API 操作（list/delete pod, scale deployment, count pending/OOMKilled），安全守卫（禁止删除 Namespace/CRD），WAL 恢复 |
+| NotebookChannel | `channels/notebook.py` | ✅ 完成 | Jupyter REST API（create/delete/list kernels, execute code） |
+| PrometheusChannel | `channels/prometheus.py` | ✅ 完成 | PromQL instant query + range query，自动解析 Prometheus response |
+
+#### 编排器层
+
+| 模块 | 文件 | 状态 | 说明 |
+|------|------|------|------|
+| LoadOrchestrator | `orchestrator/engine.py` | ✅ 完成 | 多模式调度（single/mixed/stress/soak），阶段递进，自适应规则，channel 生命周期管理，SessionTracker + MetricCollector 集成 |
+| AdaptiveRules | `orchestrator/adaptive.py` | ✅ 完成 | 5 条自适应规则（error_rate → p99 breaking → OOMKilled → GPU mem → CPU pause），优先级排序 |
+| PlatformMonitor | `orchestrator/platform_monitor.py` | ✅ 完成 | 轮询 Cube Studio API 采集平台资源计数（active notebooks / pipelines / inference services） |
+| SessionTracker | `orchestrator/session.py` | ✅ 完成 | Session 生命周期（created → running → completed/failed/cancelled），Agent 级别事件追踪 |
+| SessionStore | `orchestrator/session_store.py` | ✅ 完成 | Session 持久化到磁盘（JSON），支持 resume |
+| LoadScheduler | `orchestrator/scheduler.py` | ✅ 完成 | 通用异步任务调度器（延迟启动、重复执行、ramp-up），编排器使用阶段递进代替 |
+| Preflight | `orchestrator/preflight.py` | ✅ 完成 | 预检结果判定（`failed_checks` / `has_blocking_failure`） |
+
+#### 负载引擎层
+
+| 模块 | 文件 | 状态 | 说明 |
+|------|------|------|------|
+| LoadProfile | `load/profile.py` | ✅ 完成 | 三种负载曲线：constant / stepped（多阶段）/ spike（脉冲），支持 `value_at(second)` 时间索引查询 |
+| TokenDistribution | `load/token_distribution.py` | ✅ 完成 | Token 长度采样（short/medium/long/mixed），可配置权重 |
+| PromptPool | `load/prompt_pool.py` | ✅ 完成 | 预生成提示词池（避免热路径字符串生成），基于 TokenDistribution 采样 |
+| RateLimiter | `load/rate_limiter.py` | ✅ 完成 | 异步 Token Bucket 速率限制器，支持 capacity + timeout |
+| LoadProfile 类型 | `load/__init__.py` | ✅ 完成 | LoadProfile 类型定义与导出 |
+
+#### 指标层
+
+| 模块 | 文件 | 状态 | 说明 |
+|------|------|------|------|
+| MetricCollector | `metrics/collector.py` | ✅ 完成 | 异步/同步指标样本采集，支持标签，`collect_periodic` 定时采集 |
+| 聚合器 | `metrics/aggregator.py` | ✅ 完成 | P50/P95/P99/mean 百分位计算 + 速率计算 |
+| 时序存储 | `metrics/time_series.py` | ✅ 完成 | 内存时序数据结构（append、range query、downsample） |
 | 阈值引擎 | `metrics/thresholds.py` | ✅ 完成 | 6 层 13 条阈值规则（GPU_COMPUTE / GPU_MEMORY / NVLINK_PCIE / NETWORK_RDMA / STORAGE_IO / CPU_SYSTEM） |
-| 负载类型 | `load/__init__.py` | ✅ 完成 | LoadProfile 类型定义 |
+
+#### 报告层
+
+| 模块 | 文件 | 状态 | 说明 |
+|------|------|------|------|
+| Report Bundle | `reporting/bundle.py` | ✅ 完成 | 生成完整报告目录：`session.json` / `events.jsonl` / `metrics/` / `request_logs/*.jsonl` / `report/`（HTML + JSON + CSV + charts） |
+| HTML 报告 | `reporting/html_report.py` | ✅ 完成 | 独立 HTML 页面：Agent 汇总表 + 指标矩阵 + Preflight + Adaptive Events + 瓶颈 + 历史对比 |
+| Plotly 图表 | `reporting/charts.py` | ✅ 完成 | 6 个交互式 Plotly 图表（CDN v2.35.2，无 pip 依赖）：latency-timeline / throughput-timeline / error-rate-timeline / resource-utilization / bottleneck-heatmap / stage-comparison |
+| 历史对比 | `reporting/comparison.py` | ✅ 完成 | 双 session 对比（duration delta + per-agent per-metric delta） |
+| JSON 输出 | `reporting/session_output.py` | ✅ 完成 | `build_json_payload` 构建标准化 JSON 输出 |
+
+#### 测试
+
+| 模块 | 文件数 | 状态 | 说明 |
+|------|--------|------|------|
+| 单元测试 | 31 个测试文件，2985 行 | ✅ 完成 | 191 个测试全部通过。覆盖：channels（28 tests）、agents（12）、orchestrator 各模式（12）、adaptive rules（10）、config/schema（4）、metrics（8）、monitor（4）、platform monitor（6）、reporting（6）、load 引擎（7）、session（14）、scheduler（5）等 |
 
 ### 联动接口（对外契约 §9.2）
 
@@ -50,29 +107,29 @@ python -m load_simulator run --config config.yaml --output-format json
 }
 ```
 
-### 尚未实现（设计文档 vs v0.1.0 差距）
+### 尚未实现（设计文档 vs 当前实现差距）
 
-| 模块 | 状态 | 计划阶段 |
-|------|------|---------|
-| `channels/` — CubeStudio/Inference/Prometheus/Notebook/K8s Channel | ❌ 待实现 | Sprint 2 Track A |
-| `load/profile.py` — LoadProfile 完整实现（stepped/spike） | ❌ 待实现 | Sprint 2 Track A |
-| `load/rate_limiter.py` — token bucket 速率限制 | ❌ 待实现 | Sprint 3 Track A |
-| `load/token_distribution.py` — token 分布采样 | ❌ 待实现 | Sprint 2 Track A |
-| `load/prompt_pool.py` — 提示词池 | ❌ 待实现 | Sprint 2 Track A |
-| `reporting/html_report.py` — HTML 报告（Plotly 图表） | ❌ 待实现 | Sprint 2 Track A |
-| `reporting/charts.py` — 延迟分布/吞吐/资源时间线图 | ❌ 待实现 | Sprint 2 Track A |
-| `reporting/comparison.py` — 版本对比报告 | ❌ 待实现 | Sprint 2 Track A |
-| `tests/` — 单元测试 + E2E 测试 | ❌ 待实现 | Sprint 4 Track A |
-| BottleneckAnalyzer LLM 模式（MiniMax-2.1） | ❌ 待实现（v0.1 用确定性阈值） | Sprint 2 Track A |
+| 模块 | 说明 | 影响 |
+|------|------|------|
+| BottleneckAnalyzer LLM 模式 | 设计要求 MiniMax-2.1 跨层关联推理，当前为确定性 6 层阈值引擎 | 低 — 阈值引擎已覆盖核心瓶颈检测 |
+| InferenceChannel 真实 SSE 流式 | `stream=true` 已传递给服务端，但客户端仍一次性读取完整响应，TTFT 从 usage metadata 估算而非从首个 SSE chunk 计时 | 中 — TTFT 为估算值而非实际测量 |
+| NotebookChannel / PrometheusChannel async 化 | 这两个 Channel 仍使用 sync `urllib.request`，其余已迁移到 httpx AsyncClient | 低 — 非高并发热路径 |
+| `metrics/` 快照文件持久化 | 报告目录创建了 `metrics/` 子目录但未写入 `{timestamp}.json` 快照文件（数据在 `SessionResult.system_metrics_series` 中，未序列化为独立文件） | 低 — 数据已采集，仅缺持久化写入 |
+| Per-request 日志 `request_size_bytes` / `response_size_bytes` | 设计 §4.2 `RequestMetrics` 包含请求/响应体大小字段，当前未采集 | 低 — 需在 Channel 层获取 |
+| Soak 模式趋势分析 | 设计要求内存泄漏检测、连接泄漏检测等长期趋势分析，当前 soak 模式仅做多阶段稳态重复 | 低 — 需长时间运行数据积累 |
+| LoadProfile 与 Agent 集成 | `load/profile.py` 已实现 constant/stepped/spike 三种曲线，但 Agent 运行时未引用 `LoadProfileConfig` 动态调整 RPS | 中 — 负载曲线定义已就绪，待接入 Agent 循环 |
+| PromptPool 与 InferenceAgent 集成 | `load/prompt_pool.py` 已实现，但 InferenceAgent 使用硬编码 prompt 而非从 pool 采样 | 低 — 接入简单 |
+| RateLimiter 与 Agent 集成 | `load/rate_limiter.py` 已实现 token bucket，但 Agent 运行时未使用速率限制 | 低 — 接入简单 |
 
-### v0.1.0 与设计文档的已知差异
+### 当前实现与设计文档的已知差异
 
-| 差异点 | 设计文档 | v0.1.0 实现 |
-|--------|---------|------------|
+| 差异点 | 设计文档 | 当前实现 |
+|--------|---------|---------|
 | CLI 入口 | `load-simulator --config config.yaml` | `python -m load_simulator run --config config.yaml` |
 | 瓶颈分析 | MiniMax-2.1 LLM 跨层关联 | 6 层阈值规则（确定性），LLM 未集成 |
-| 配置 schema | 含 `mode` (stress/soak/mixed/single)、`channels`、`system_capacity` 等 | 简化 schema，无 mode/channels 字段 |
-| HTML 报告 | 完整 Plotly 图表 | 入口已定义，`reporting/` 模块待实现 |
+| OOMKilled 响应 | §9.1 规则 4：OOMKilled → REDUCE_LOAD | 实现为 RECORD_BREAKING_POINT（OOMKilled 视为严重事件直接标记断裂点） |
+| TTFT 采集方式 | 从首个 SSE chunk 实际计时 | 从 response `usage.total_time_seconds / completion_tokens` 估算 |
+| HTTP 客户端 | 全部使用 httpx async + 连接池 | InferenceChannel + CubeStudioChannel 已迁移 httpx；NotebookChannel + PrometheusChannel 仍使用 sync urllib |
 
 ---
 
