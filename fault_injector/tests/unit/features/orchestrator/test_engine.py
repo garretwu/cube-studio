@@ -252,3 +252,109 @@ async def test_engine_should_record_load_simulator_events(tmp_path, monkeypatch)
     session = await orchestrator.run()
     assert session.status.value == "completed"
     assert any(event["event"] == "load_simulator_run" for event in session.events)
+
+
+def test_engine_aggregate_queries_should_use_configured_baseline_queries(tmp_path):
+    cfg = FaultInjectorConfig(
+        monitor={
+            "enabled": False,
+            "baseline_duration": 0,
+            "post_recovery_duration": 0,
+            "baseline_queries": {
+                "cpu_util_ratio": "avg(rate(node_cpu_seconds_total{mode!='idle'}[2m]))",
+                "gpu_util": "avg(DCGM_FI_DEV_GPU_UTIL)",
+            },
+        },
+        scenarios={
+            "network_jitter": ScenarioConfig(
+                name="network_jitter",
+                enabled=True,
+                target_nodes=["node-1"],
+                params={"duration": 0, "interface": "eth0", "delay_ms": 5},
+            )
+        },
+    )
+    cfg.global_.session_dir = str(tmp_path)
+    orchestrator = FaultOrchestrator(cfg, dry_run=True, session_dir=str(tmp_path))
+
+    queries = orchestrator._aggregate_monitor_queries()
+    assert queries == {
+        "cpu_util_ratio": "avg(rate(node_cpu_seconds_total{mode!='idle'}[2m]))",
+        "gpu_util": "avg(DCGM_FI_DEV_GPU_UTIL)",
+    }
+
+
+@pytest.mark.asyncio
+async def test_engine_should_emit_baseline_quality_warning_for_required_non_zero_metric(tmp_path):
+    cfg = FaultInjectorConfig(
+        monitor={
+            "baseline_duration": 0,
+            "post_recovery_duration": 0,
+            "baseline_queries": {"must_non_zero": "up"},
+            "baseline_require_non_zero": ["must_non_zero"],
+            "baseline_min_samples": 1,
+        },
+        inventory={
+            "nodes": [
+                TargetNodeConfig(
+                    name="node-1",
+                    ssh=SSHConfig(host="127.0.0.1", user="root"),
+                    interface="eth0",
+                )
+            ]
+        },
+        scenarios={
+            "network_jitter": ScenarioConfig(
+                name="network_jitter",
+                enabled=True,
+                target_nodes=["node-1"],
+                params={"duration": 0, "interface": "eth0", "delay_ms": 5},
+            )
+        },
+    )
+    cfg.global_.session_dir = str(tmp_path)
+    orchestrator = FaultOrchestrator(cfg, dry_run=True, session_dir=str(tmp_path))
+    session = await orchestrator.run()
+
+    assert session.status.value == "completed"
+    assert any(event["event"] == "baseline_quality_warning" for event in session.events)
+
+
+@pytest.mark.asyncio
+async def test_engine_should_use_full_observe_duration_for_monitor_collection(tmp_path, monkeypatch):
+    captured: list[int] = []
+
+    async def _fake_observe(self, queries, duration, interval=15):  # noqa: ANN001, ANN201
+        _ = (self, queries, interval)
+        captured.append(duration)
+        return {"inference_p95": [0.0]}
+
+    monkeypatch.setattr("fault_injector.agents.monitor.MonitorAgent.observe", _fake_observe)
+
+    cfg = FaultInjectorConfig(
+        monitor={"baseline_duration": 0, "post_recovery_duration": 0},
+        inventory={
+            "nodes": [
+                TargetNodeConfig(
+                    name="node-1",
+                    ssh=SSHConfig(host="127.0.0.1", user="root"),
+                    interface="eth0",
+                )
+            ]
+        },
+        scenarios={
+            "network_jitter": ScenarioConfig(
+                name="network_jitter",
+                enabled=True,
+                target_nodes=["node-1"],
+                params={"duration": 7, "interface": "eth0", "delay_ms": 5},
+            )
+        },
+    )
+    cfg.global_.session_dir = str(tmp_path)
+    cfg.orchestrator.observe_interval = 1
+    orchestrator = FaultOrchestrator(cfg, dry_run=True, session_dir=str(tmp_path))
+    session = await orchestrator.run()
+
+    assert session.status.value == "completed"
+    assert captured == [7]

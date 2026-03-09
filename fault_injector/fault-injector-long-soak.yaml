@@ -1,0 +1,285 @@
+# =============================================================================
+# Fault Injector Long Soak Profile (for inference resilience test)
+# =============================================================================
+# Run command:
+#   python -m fault_injector run --config fault_injector/fault-injector-long-soak.yaml -y
+#
+# Design:
+# - Long-running rolling fault injection using combined_scenario phases
+# - Prometheus baseline/post-recovery monitoring enabled
+# - Host-side scenarios enabled by default; switch-side scenarios disabled by default
+# =============================================================================
+
+global:
+  session_dir: "./fault-reports/sessions/"
+  log_level: "INFO"
+  safety:
+    require_confirmation: false
+    auto_recover_timeout: 28800
+    dry_run: false
+    max_concurrent_faults: 2
+    excluded_nodes: []
+
+orchestrator:
+  max_parallel_agents: 1
+  observe_interval: 15
+  session_dir: "./fault-reports/sessions/"
+
+monitor:
+  enabled: true
+  prometheus_url: "http://10.11.4.3:31260"
+  baseline_duration: 180
+  post_recovery_duration: 300
+
+inventory:
+  workers:
+    - name: "worker-01"
+      ssh:
+        host: "10.11.4.10"
+        port: 22
+        user: "yuyonghao"
+        password: "Yuyonghao@123"
+        timeout: 30
+        use_sudo: true
+      redfish:
+        bmc_host: "10.11.8.13"
+        username: "admin"
+        password: "Admin@9000"
+        verify_tls: false
+        timeout: 30
+      ipmi:
+        host: "10.11.8.13"
+        username: "admin"
+        password: "Admin@9000"
+        interface: "lanplus"
+        port: 623
+        timeout: 30
+      interface: "roce200"
+      roles: ["compute", "rdma"]
+
+    - name: "worker-02"
+      ssh:
+        host: "10.11.4.11"
+        port: 22
+        user: "yuyonghao"
+        password: "Yuyonghao@123"
+        timeout: 30
+        use_sudo: true
+      redfish:
+        bmc_host: "10.11.8.13"
+        username: "admin"
+        password: "Admin@9000"
+        verify_tls: false
+        timeout: 30
+      ipmi:
+        host: "10.11.8.13"
+        username: "admin"
+        password: "Admin@9000"
+        interface: "lanplus"
+        port: 623
+        timeout: 30
+      interface: "roce200"
+      roles: ["compute", "rdma"]
+
+    - name: "worker-03"
+      ssh:
+        host: "10.11.4.12"
+        port: 22
+        user: "yuyonghao"
+        password: "Yuyonghao@123"
+        timeout: 30
+        use_sudo: true
+      redfish:
+        bmc_host: "10.11.8.13"
+        username: "admin"
+        password: "Admin@9000"
+        verify_tls: false
+        timeout: 30
+      ipmi:
+        host: "10.11.8.13"
+        username: "admin"
+        password: "Admin@9000"
+        interface: "lanplus"
+        port: 623
+        timeout: 30
+      interface: "roce200"
+      roles: ["compute", "rdma"]
+
+switches:
+  sw-200g:
+    host: "10.11.8.52"
+    port: 830
+    username: "apitest"
+    password: "ApiTest@2026"
+    timeout: 30
+    type: "H3C S9855-24B8D"
+    description: "200G Data Network Switch"
+
+scenarios:
+  gpu_contention:
+    enabled: true
+    target_nodes: ["worker-01"]
+    params:
+      duration: 10800
+      memory: "85%"
+      gpu_ids: []
+      intensity: 90
+
+  network_jitter:
+    enabled: true
+    target_nodes: ["worker-02"]
+    params:
+      interface: "roce200"
+      delay_ms: 20
+      jitter_ms: 40
+      distribution: "pareto"
+      loss_pct: 0
+      duration: 900
+      load_simulator:
+        enabled: false
+        config_path: "load_simulator/config/inference-soak.yaml"
+        only: ["inference"]
+        timeout_seconds: 1200
+        strict: true
+
+  os_resource_pressure:
+    enabled: true
+    target_nodes: ["worker-03"]
+    params:
+      duration: 900
+      vm_bytes_percent: 75
+      cpu_workers: 24
+      cpu_load: 80
+      io_workers: 2
+
+  roce_mtu_mismatch:
+    enabled: true
+    target_nodes: ["worker-02"]
+    params:
+      interface: "roce200"
+      mtu: 1500
+      original_mtu: 9000
+      duration: 600
+
+  storage_io_interference:
+    enabled: false
+    target_nodes: ["worker-01", "worker-02", "worker-03"]
+    params:
+      duration: 900
+      filename: "/data/fault-injector-fio-testfile"
+      rw_mode: "randwrite"
+      bs: "4k"
+      iodepth: 64
+      numjobs: 4
+
+  platform_cascade:
+    enabled: false
+    target_nodes: ["worker-01", "worker-02", "worker-03"]
+    params:
+      target_component: "mysql"
+      interface: "roce200"
+      delay_ms: 120
+      port: 3306
+
+  thermal_throttling:
+    enabled: false
+    target_nodes: ["worker-01", "worker-02", "worker-03"]
+    params:
+      gpu_id: 0
+      power_limit: 500
+      fan_index: 0
+      fan_mode: "Manual"
+      fan_pwm: 30
+      fan_recover_mode: "Auto"
+      fan_control_backend: "ipmi"
+      ipmi_profile: "supermicro_raw"
+      ipmi_target_pwm: 30
+
+  pfc_deadlock:
+    enabled: false
+    target_nodes: ["worker-03"]
+    params:
+      switch: "sw-200g"
+      interface: "200GE1/0/3"
+      priority: 3
+      duration: 600
+
+  ecn_misconfiguration:
+    enabled: false
+    target_nodes: ["worker-03"]
+    params:
+      switch: "sw-200g"
+      interface: "200GE1/0/3"
+      min_threshold: 10
+      max_threshold: 20
+      duration: 600
+
+  rdma_load_imbalance:
+    enabled: false
+    target_nodes: ["worker-03"]
+    params:
+      switch: "sw-200g"
+      interface: "200GE1/0/3"
+      hash_algorithm: "src-dst-ip"
+
+  rdma_link_flap:
+    enabled: false
+    target_nodes: ["worker-03"]
+    params:
+      switch: "sw-200g"
+      interface: "200GE1/0/3"
+      flap_interval: 5
+      flap_duration: 2
+
+  rdma_qos_downgrade:
+    enabled: false
+    target_nodes: ["worker-03"]
+    params:
+      switch: "sw-200g"
+      interface: "200GE1/0/3"
+      dscp: 0
+      downgraded_tc: 0
+
+combined_scenario:
+  name: "inference_resilience_long_soak"
+  phases:
+    - time: "0m"
+      inject: ["gpu_contention"]
+
+    - time: "10m"
+      inject: ["network_jitter"]
+    - time: "25m"
+      recover: ["network_jitter"]
+      inject: ["os_resource_pressure"]
+    - time: "40m"
+      recover: ["os_resource_pressure"]
+      inject: ["roce_mtu_mismatch"]
+    - time: "50m"
+      recover: ["roce_mtu_mismatch"]
+
+    - time: "55m"
+      inject: ["network_jitter"]
+    - time: "70m"
+      recover: ["network_jitter"]
+      inject: ["os_resource_pressure"]
+    - time: "85m"
+      recover: ["os_resource_pressure"]
+
+    - time: "90m"
+      inject: ["network_jitter"]
+    - time: "105m"
+      recover: ["network_jitter"]
+      inject: ["roce_mtu_mismatch"]
+    - time: "115m"
+      recover: ["roce_mtu_mismatch"]
+
+    - time: "120m"
+      inject: ["os_resource_pressure"]
+    - time: "135m"
+      recover: ["os_resource_pressure"]
+      inject: ["network_jitter"]
+    - time: "150m"
+      recover: ["network_jitter"]
+
+    - time: "160m"
+      recover: ["gpu_contention"]

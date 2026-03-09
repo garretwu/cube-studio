@@ -85,6 +85,11 @@ class MonitorConfig(BaseModel):
     prometheus_url: str = "http://10.11.4.3:31260"
     baseline_duration: int = 60
     post_recovery_duration: int = 60
+    baseline_queries: dict[str, str] = Field(default_factory=dict)
+    baseline_require_non_zero: list[str] = Field(default_factory=list)
+    baseline_min_samples: int = 3
+    baseline_max_error_ratio: float = 0.3
+    baseline_strict: bool = False
 
 
 class CombinedPhaseConfig(BaseModel):

@@ -72,6 +72,11 @@ def _parse_config(raw: dict[str, Any]) -> FaultInjectorConfig:
         prometheus_url=monitor_raw.get("prometheus_url", "http://10.11.4.3:31260"),
         baseline_duration=monitor_raw.get("baseline_duration", 60),
         post_recovery_duration=monitor_raw.get("post_recovery_duration", 60),
+        baseline_queries=monitor_raw.get("baseline_queries", {}),
+        baseline_require_non_zero=monitor_raw.get("baseline_require_non_zero", []),
+        baseline_min_samples=monitor_raw.get("baseline_min_samples", 3),
+        baseline_max_error_ratio=monitor_raw.get("baseline_max_error_ratio", 0.3),
+        baseline_strict=monitor_raw.get("baseline_strict", False),
     )
 
     inventory_raw = raw.get("inventory", {})
