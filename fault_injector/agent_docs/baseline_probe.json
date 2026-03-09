@@ -1,0 +1,1530 @@
+{
+  "cpu": {
+    ":node_cpu_utilisation:avg1m": {
+      "present": true,
+      "value": 0.05462500000008719,
+      "non_zero": true
+    },
+    "cilium_operator_process_cpu_seconds_total": {
+      "present": true,
+      "value": 6622.51,
+      "non_zero": true
+    },
+    "cluster:node_cpu_seconds_total:sum_rate5m": {
+      "present": true,
+      "value": 30.57374074074064,
+      "non_zero": true
+    },
+    "container_cpu_cfs_periods_total": {
+      "present": true,
+      "value": 34548193.0,
+      "non_zero": true
+    },
+    "container_cpu_cfs_throttled_periods_total": {
+      "present": true,
+      "value": 60232.0,
+      "non_zero": true
+    },
+    "container_cpu_cfs_throttled_seconds_total": {
+      "present": true,
+      "value": 26294.379435999992,
+      "non_zero": true
+    },
+    "container_cpu_load_average_10s": {
+      "present": true,
+      "value": 0.0,
+      "non_zero": false
+    },
+    "container_cpu_load_d_average_10s": {
+      "present": true,
+      "value": 0.0,
+      "non_zero": false
+    },
+    "container_cpu_system_seconds_total": {
+      "present": true,
+      "value": 4388938.877459002,
+      "non_zero": true
+    },
+    "container_cpu_usage_seconds_total": {
+      "present": true,
+      "value": 16567766.94622801,
+      "non_zero": true
+    },
+    "container_cpu_user_seconds_total": {
+      "present": true,
+      "value": 12178828.068597998,
+      "non_zero": true
+    },
+    "container_pressure_cpu_stalled_seconds_total": {
+      "present": true,
+      "value": 77867.96247299992,
+      "non_zero": true
+    },
+    "container_pressure_cpu_waiting_seconds_total": {
+      "present": true,
+      "value": 86835.86556799995,
+      "non_zero": true
+    },
+    "container_spec_cpu_period": {
+      "present": true,
+      "value": 34200000.0,
+      "non_zero": true
+    },
+    "container_spec_cpu_quota": {
+      "present": true,
+      "value": 12640000.0,
+      "non_zero": true
+    },
+    "container_spec_cpu_shares": {
+      "present": true,
+      "value": 1140891.0,
+      "non_zero": true
+    },
+    "go_cpu_classes_gc_mark_assist_cpu_seconds_total": {
+      "present": true,
+      "value": 1564.215725362,
+      "non_zero": true
+    },
+    "go_cpu_classes_gc_mark_dedicated_cpu_seconds_total": {
+      "present": true,
+      "value": 225360.52132910496,
+      "non_zero": true
+    },
+    "go_cpu_classes_gc_mark_idle_cpu_seconds_total": {
+      "present": true,
+      "value": 276958.229719989,
+      "non_zero": true
+    },
+    "go_cpu_classes_gc_pause_cpu_seconds_total": {
+      "present": true,
+      "value": 21419.925801104997,
+      "non_zero": true
+    },
+    "go_cpu_classes_gc_total_cpu_seconds_total": {
+      "present": true,
+      "value": 525302.892575561,
+      "non_zero": true
+    },
+    "go_cpu_classes_idle_cpu_seconds_total": {
+      "present": true,
+      "value": 1650368715.07339,
+      "non_zero": true
+    },
+    "go_cpu_classes_scavenge_assist_cpu_seconds_total": {
+      "present": true,
+      "value": 0.022363547999999997,
+      "non_zero": true
+    },
+    "go_cpu_classes_scavenge_background_cpu_seconds_total": {
+      "present": true,
+      "value": 447.006378786,
+      "non_zero": true
+    },
+    "go_cpu_classes_scavenge_total_cpu_seconds_total": {
+      "present": true,
+      "value": 447.02874233400007,
+      "non_zero": true
+    },
+    "go_cpu_classes_total_cpu_seconds_total": {
+      "present": true,
+      "value": 1651922791.0878706,
+      "non_zero": true
+    },
+    "go_cpu_classes_user_cpu_seconds_total": {
+      "present": true,
+      "value": 1028326.0931627238,
+      "non_zero": true
+    },
+    "go_memstats_gc_cpu_fraction": {
+      "present": true,
+      "value": 0.0001902096964784892,
+      "non_zero": true
+    },
+    "hh3cEntityExtCpuUsage": {
+      "present": true,
+      "value": 41.0,
+      "non_zero": true
+    },
+    "hh3cEntityExtCpuUsageIn1Minute": {
+      "present": true,
+      "value": 10.0,
+      "non_zero": true
+    },
+    "hh3cEntityExtCpuUsageIn5Minutes": {
+      "present": true,
+      "value": 10.0,
+      "non_zero": true
+    },
+    "hh3cLswSysCpuRatio": {
+      "present": true,
+      "value": 13.0,
+      "non_zero": true
+    },
+    "instance:node_cpu_seconds_total:rate:sum": {
+      "present": true,
+      "value": 32.33880000000001,
+      "non_zero": true
+    },
+    "instance:node_cpu_seconds_total:ratio": {
+      "present": true,
+      "value": 0.23885734953703738,
+      "non_zero": true
+    },
+    "istio_agent_process_cpu_seconds_total": {
+      "present": true,
+      "value": 4380.59,
+      "non_zero": true
+    },
+    "kubelet_cpu_manager_exclusive_cpu_allocation_count": {
+      "present": true,
+      "value": 0.0,
+      "non_zero": false
+    },
+    "kubelet_cpu_manager_pinning_errors_total": {
+      "present": true,
+      "value": 0.0,
+      "non_zero": false
+    },
+    "kubelet_cpu_manager_pinning_requests_total": {
+      "present": true,
+      "value": 0.0,
+      "non_zero": false
+    },
+    "kubelet_cpu_manager_shared_pool_size_millicores": {
+      "present": true,
+      "value": 0.0,
+      "non_zero": false
+    },
+    "machine_cpu_cores": {
+      "present": true,
+      "value": 768.0,
+      "non_zero": true
+    },
+    "machine_cpu_physical_cores": {
+      "present": true,
+      "value": 192.0,
+      "non_zero": true
+    },
+    "machine_cpu_sockets": {
+      "present": true,
+      "value": 12.0,
+      "non_zero": true
+    },
+    "namespace:container_cpu_usage_seconds_total:sum_rate": {
+      "present": true,
+      "value": 27.109877474378013,
+      "non_zero": true
+    },
+    "node_cpu_frequency_max_hertz": {
+      "present": true,
+      "value": 2431854976000.0,
+      "non_zero": true
+    },
+    "node_cpu_frequency_min_hertz": {
+      "present": true,
+      "value": 960000000000.0,
+      "non_zero": true
+    },
+    "node_cpu_guest_seconds_total": {
+      "present": true,
+      "value": 0.0,
+      "non_zero": false
+    },
+    "node_cpu_scaling_frequency_hertz": {
+      "present": true,
+      "value": 1095632071000.0,
+      "non_zero": true
+    },
+    "node_cpu_scaling_frequency_max_hertz": {
+      "present": true,
+      "value": 2080000000000.0,
+      "non_zero": true
+    },
+    "node_cpu_scaling_frequency_min_hertz": {
+      "present": true,
+      "value": 960000000000.0,
+      "non_zero": true
+    },
+    "node_cpu_seconds_total": {
+      "present": true,
+      "value": 680712404.2499974,
+      "non_zero": true
+    },
+    "node_load1": {
+      "present": true,
+      "value": 28.6,
+      "non_zero": true
+    },
+    "node_load15": {
+      "present": true,
+      "value": 21.720000000000002,
+      "non_zero": true
+    },
+    "node_load5": {
+      "present": true,
+      "value": 24.52,
+      "non_zero": true
+    },
+    "node_memory_Percpu_bytes": {
+      "present": true,
+      "value": 2202533888.0,
+      "non_zero": true
+    },
+    "node_pressure_cpu_waiting_seconds_total": {
+      "present": true,
+      "value": 5267.057393,
+      "non_zero": true
+    },
+    "process_cpu_seconds_total": {
+      "present": true,
+      "value": 1716991.11,
+      "non_zero": true
+    }
+  },
+  "gpu": {
+    "DCGM_FI_DEV_DEC_UTIL": {
+      "present": true,
+      "value": 0.0,
+      "non_zero": false
+    },
+    "DCGM_FI_DEV_ENC_UTIL": {
+      "present": true,
+      "value": 0.0,
+      "non_zero": false
+    },
+    "DCGM_FI_DEV_FB_FREE": {
+      "present": true,
+      "value": 52712.0,
+      "non_zero": true
+    },
+    "DCGM_FI_DEV_FB_RESERVED": {
+      "present": true,
+      "value": 5940.0,
+      "non_zero": true
+    },
+    "DCGM_FI_DEV_FB_USED": {
+      "present": true,
+      "value": 332620.0,
+      "non_zero": true
+    },
+    "DCGM_FI_DEV_GPU_TEMP": {
+      "present": true,
+      "value": 491.0,
+      "non_zero": true
+    },
+    "DCGM_FI_DEV_GPU_UTIL": {
+      "present": true,
+      "value": 1108.0,
+      "non_zero": true
+    },
+    "DCGM_FI_DEV_MEMORY_TEMP": {
+      "present": true,
+      "value": 0.0,
+      "non_zero": false
+    },
+    "DCGM_FI_DEV_MEM_CLOCK": {
+      "present": true,
+      "value": 165612.0,
+      "non_zero": true
+    },
+    "DCGM_FI_DEV_MEM_COPY_UTIL": {
+      "present": true,
+      "value": 123.0,
+      "non_zero": true
+    },
+    "DCGM_FI_DEV_PCIE_REPLAY_COUNTER": {
+      "present": true,
+      "value": 0.0,
+      "non_zero": false
+    },
+    "DCGM_FI_DEV_POWER_USAGE": {
+      "present": true,
+      "value": 1895.6799999999998,
+      "non_zero": true
+    },
+    "DCGM_FI_DEV_SM_CLOCK": {
+      "present": true,
+      "value": 34947.0,
+      "non_zero": true
+    },
+    "DCGM_FI_DEV_TOTAL_ENERGY_CONSUMPTION": {
+      "present": true,
+      "value": 90389707506.0,
+      "non_zero": true
+    },
+    "DCGM_FI_DEV_VGPU_LICENSE_STATUS": {
+      "present": true,
+      "value": 0.0,
+      "non_zero": false
+    },
+    "DCGM_FI_PROF_DRAM_ACTIVE": {
+      "present": true,
+      "value": 0.8966160000000001,
+      "non_zero": true
+    },
+    "DCGM_FI_PROF_GR_ENGINE_ACTIVE": {
+      "present": true,
+      "value": 11.099579,
+      "non_zero": true
+    },
+    "DCGM_FI_PROF_PCIE_RX_BYTES": {
+      "present": true,
+      "value": 173422678112.0,
+      "non_zero": true
+    },
+    "DCGM_FI_PROF_PCIE_TX_BYTES": {
+      "present": true,
+      "value": 30192456603.0,
+      "non_zero": true
+    },
+    "DCGM_FI_PROF_PIPE_TENSOR_ACTIVE": {
+      "present": true,
+      "value": 0.386089,
+      "non_zero": true
+    }
+  },
+  "vllm": {
+    "authentication_token_cache_active_fetch_count": {
+      "present": true,
+      "value": 0.0,
+      "non_zero": false
+    },
+    "authentication_token_cache_fetch_total": {
+      "present": true,
+      "value": 2282544.0,
+      "non_zero": true
+    },
+    "authentication_token_cache_request_duration_seconds_bucket": {
+      "present": true,
+      "value": 1882116548.0,
+      "non_zero": true
+    },
+    "authentication_token_cache_request_duration_seconds_count": {
+      "present": true,
+      "value": 156843125.0,
+      "non_zero": true
+    },
+    "authentication_token_cache_request_duration_seconds_sum": {
+      "present": true,
+      "value": 104.70400000000029,
+      "non_zero": true
+    },
+    "authentication_token_cache_request_total": {
+      "present": true,
+      "value": 156843125.0,
+      "non_zero": true
+    },
+    "serviceaccount_invalid_legacy_auto_token_uses_total": {
+      "present": true,
+      "value": 0.0,
+      "non_zero": false
+    },
+    "serviceaccount_legacy_auto_token_uses_total": {
+      "present": true,
+      "value": 0.0,
+      "non_zero": false
+    },
+    "serviceaccount_legacy_manual_token_uses_total": {
+      "present": true,
+      "value": 73064.0,
+      "non_zero": true
+    },
+    "serviceaccount_legacy_tokens_total": {
+      "present": true,
+      "value": 73064.0,
+      "non_zero": true
+    },
+    "serviceaccount_stale_tokens_total": {
+      "present": true,
+      "value": 26.0,
+      "non_zero": true
+    },
+    "serviceaccount_valid_tokens_total": {
+      "present": true,
+      "value": 1831786.0,
+      "non_zero": true
+    },
+    "vllm:cache_config_info": {
+      "present": true,
+      "value": 1.0,
+      "non_zero": true
+    },
+    "vllm:e2e_request_latency_seconds_bucket": {
+      "present": true,
+      "value": 15496.0,
+      "non_zero": true
+    },
+    "vllm:e2e_request_latency_seconds_count": {
+      "present": true,
+      "value": 1202.0,
+      "non_zero": true
+    },
+    "vllm:e2e_request_latency_seconds_created": {
+      "present": true,
+      "value": 1772691556.3103974,
+      "non_zero": true
+    },
+    "vllm:e2e_request_latency_seconds_sum": {
+      "present": true,
+      "value": 19394.13471388817,
+      "non_zero": true
+    },
+    "vllm:engine_sleep_state": {
+      "present": true,
+      "value": 1.0,
+      "non_zero": true
+    },
+    "vllm:external_prefix_cache_hits_created": {
+      "present": true,
+      "value": 1772691556.3094537,
+      "non_zero": true
+    },
+    "vllm:external_prefix_cache_hits_total": {
+      "present": true,
+      "value": 0.0,
+      "non_zero": false
+    },
+    "vllm:external_prefix_cache_queries_created": {
+      "present": true,
+      "value": 1772691556.3094316,
+      "non_zero": true
+    },
+    "vllm:external_prefix_cache_queries_total": {
+      "present": true,
+      "value": 0.0,
+      "non_zero": false
+    },
+    "vllm:generation_tokens_created": {
+      "present": true,
+      "value": 1772691556.3096762,
+      "non_zero": true
+    },
+    "vllm:generation_tokens_total": {
+      "present": true,
+      "value": 273646.0,
+      "non_zero": true
+    },
+    "vllm:inter_token_latency_seconds_bucket": {
+      "present": true,
+      "value": 4627357.0,
+      "non_zero": true
+    },
+    "vllm:inter_token_latency_seconds_count": {
+      "present": true,
+      "value": 272426.0,
+      "non_zero": true
+    },
+    "vllm:inter_token_latency_seconds_created": {
+      "present": true,
+      "value": 1772691556.3102648,
+      "non_zero": true
+    },
+    "vllm:inter_token_latency_seconds_sum": {
+      "present": true,
+      "value": 19114.695467877085,
+      "non_zero": true
+    },
+    "vllm:iteration_tokens_total_bucket": {
+      "present": true,
+      "value": 874754.0,
+      "non_zero": true
+    },
+    "vllm:iteration_tokens_total_count": {
+      "present": true,
+      "value": 67791.0,
+      "non_zero": true
+    },
+    "vllm:iteration_tokens_total_created": {
+      "present": true,
+      "value": 1772691556.309974,
+      "non_zero": true
+    },
+    "vllm:iteration_tokens_total_sum": {
+      "present": true,
+      "value": 597584.0,
+      "non_zero": true
+    },
+    "vllm:kv_cache_usage_perc": {
+      "present": true,
+      "value": 0.10089686098654704,
+      "non_zero": true
+    },
+    "vllm:mm_cache_hits_created": {
+      "present": true,
+      "value": 1772691556.3095,
+      "non_zero": true
+    },
+    "vllm:mm_cache_hits_total": {
+      "present": true,
+      "value": 0.0,
+      "non_zero": false
+    },
+    "vllm:mm_cache_queries_created": {
+      "present": true,
+      "value": 1772691556.3094795,
+      "non_zero": true
+    },
+    "vllm:mm_cache_queries_total": {
+      "present": true,
+      "value": 0.0,
+      "non_zero": false
+    },
+    "vllm:num_preemptions_created": {
+      "present": true,
+      "value": 1772691556.3095217,
+      "non_zero": true
+    },
+    "vllm:num_preemptions_total": {
+      "present": true,
+      "value": 0.0,
+      "non_zero": false
+    },
+    "vllm:num_requests_running": {
+      "present": true,
+      "value": 10.0,
+      "non_zero": true
+    },
+    "vllm:num_requests_waiting": {
+      "present": true,
+      "value": 0.0,
+      "non_zero": false
+    },
+    "vllm:prefix_cache_hits_created": {
+      "present": true,
+      "value": 1772691556.3094084,
+      "non_zero": true
+    },
+    "vllm:prefix_cache_hits_total": {
+      "present": true,
+      "value": 0.0,
+      "non_zero": false
+    },
+    "vllm:prefix_cache_queries_created": {
+      "present": true,
+      "value": 1772691556.30938,
+      "non_zero": true
+    },
+    "vllm:prefix_cache_queries_total": {
+      "present": true,
+      "value": 0.0,
+      "non_zero": false
+    },
+    "vllm:prompt_tokens_by_source_created": {
+      "present": true,
+      "value": 5318074668.928749,
+      "non_zero": true
+    },
+    "vllm:prompt_tokens_by_source_total": {
+      "present": true,
+      "value": 321758.0,
+      "non_zero": true
+    },
+    "vllm:prompt_tokens_cached_created": {
+      "present": true,
+      "value": 1772691556.3096256,
+      "non_zero": true
+    },
+    "vllm:prompt_tokens_cached_total": {
+      "present": true,
+      "value": 0.0,
+      "non_zero": false
+    },
+    "vllm:prompt_tokens_created": {
+      "present": true,
+      "value": 1772691556.3095427,
+      "non_zero": true
+    },
+    "vllm:prompt_tokens_recomputed_created": {
+      "present": true,
+      "value": 1772691556.3096545,
+      "non_zero": true
+    },
+    "vllm:prompt_tokens_recomputed_total": {
+      "present": true,
+      "value": 0.0,
+      "non_zero": false
+    },
+    "vllm:prompt_tokens_total": {
+      "present": true,
+      "value": 321758.0,
+      "non_zero": true
+    },
+    "vllm:request_decode_time_seconds_bucket": {
+      "present": true,
+      "value": 15535.0,
+      "non_zero": true
+    },
+    "vllm:request_decode_time_seconds_count": {
+      "present": true,
+      "value": 1202.0,
+      "non_zero": true
+    },
+    "vllm:request_decode_time_seconds_created": {
+      "present": true,
+      "value": 1772691556.3107865,
+      "non_zero": true
+    },
+    "vllm:request_decode_time_seconds_sum": {
+      "present": true,
+      "value": 18853.351423143176,
+      "non_zero": true
+    },
+    "vllm:request_generation_tokens_bucket": {
+      "present": true,
+      "value": 9054.0,
+      "non_zero": true
+    },
+    "vllm:request_generation_tokens_count": {
+      "present": true,
+      "value": 1202.0,
+      "non_zero": true
+    },
+    "vllm:request_generation_tokens_created": {
+      "present": true,
+      "value": 1772691556.3099122,
+      "non_zero": true
+    },
+    "vllm:request_generation_tokens_sum": {
+      "present": true,
+      "value": 272034.0,
+      "non_zero": true
+    },
+    "vllm:request_inference_time_seconds_bucket": {
+      "present": true,
+      "value": 15521.0,
+      "non_zero": true
+    },
+    "vllm:request_inference_time_seconds_count": {
+      "present": true,
+      "value": 1202.0,
+      "non_zero": true
+    },
+    "vllm:request_inference_time_seconds_created": {
+      "present": true,
+      "value": 1772691556.3106544,
+      "non_zero": true
+    },
+    "vllm:request_inference_time_seconds_sum": {
+      "present": true,
+      "value": 19116.181598931726,
+      "non_zero": true
+    },
+    "vllm:request_max_num_generation_tokens_bucket": {
+      "present": true,
+      "value": 9054.0,
+      "non_zero": true
+    },
+    "vllm:request_max_num_generation_tokens_count": {
+      "present": true,
+      "value": 1202.0,
+      "non_zero": true
+    },
+    "vllm:request_max_num_generation_tokens_created": {
+      "present": true,
+      "value": 1772691556.3100317,
+      "non_zero": true
+    },
+    "vllm:request_max_num_generation_tokens_sum": {
+      "present": true,
+      "value": 272034.0,
+      "non_zero": true
+    },
+    "vllm:request_params_max_tokens_bucket": {
+      "present": true,
+      "value": 9002.0,
+      "non_zero": true
+    },
+    "vllm:request_params_max_tokens_count": {
+      "present": true,
+      "value": 1202.0,
+      "non_zero": true
+    },
+    "vllm:request_params_max_tokens_created": {
+      "present": true,
+      "value": 1772691556.310127,
+      "non_zero": true
+    },
+    "vllm:request_params_max_tokens_sum": {
+      "present": true,
+      "value": 281394.0,
+      "non_zero": true
+    },
+    "vllm:request_params_n_bucket": {
+      "present": true,
+      "value": 7212.0,
+      "non_zero": true
+    },
+    "vllm:request_params_n_count": {
+      "present": true,
+      "value": 1202.0,
+      "non_zero": true
+    },
+    "vllm:request_params_n_created": {
+      "present": true,
+      "value": 1772691556.3100855,
+      "non_zero": true
+    },
+    "vllm:request_params_n_sum": {
+      "present": true,
+      "value": 1202.0,
+      "non_zero": true
+    },
+    "vllm:request_prefill_kv_computed_tokens_bucket": {
+      "present": true,
+      "value": 9945.0,
+      "non_zero": true
+    },
+    "vllm:request_prefill_kv_computed_tokens_count": {
+      "present": true,
+      "value": 1202.0,
+      "non_zero": true
+    },
+    "vllm:request_prefill_kv_computed_tokens_created": {
+      "present": true,
+      "value": 1772691556.3108606,
+      "non_zero": true
+    },
+    "vllm:request_prefill_kv_computed_tokens_sum": {
+      "present": true,
+      "value": 316177.0,
+      "non_zero": true
+    },
+    "vllm:request_prefill_time_seconds_bucket": {
+      "present": true,
+      "value": 26308.0,
+      "non_zero": true
+    },
+    "vllm:request_prefill_time_seconds_count": {
+      "present": true,
+      "value": 1202.0,
+      "non_zero": true
+    },
+    "vllm:request_prefill_time_seconds_created": {
+      "present": true,
+      "value": 1772691556.310722,
+      "non_zero": true
+    },
+    "vllm:request_prefill_time_seconds_sum": {
+      "present": true,
+      "value": 262.83017578854924,
+      "non_zero": true
+    },
+    "vllm:request_prompt_tokens_bucket": {
+      "present": true,
+      "value": 9945.0,
+      "non_zero": true
+    },
+    "vllm:request_prompt_tokens_count": {
+      "present": true,
+      "value": 1202.0,
+      "non_zero": true
+    },
+    "vllm:request_prompt_tokens_created": {
+      "present": true,
+      "value": 1772691556.309819,
+      "non_zero": true
+    },
+    "vllm:request_prompt_tokens_sum": {
+      "present": true,
+      "value": 316177.0,
+      "non_zero": true
+    },
+    "vllm:request_queue_time_seconds_bucket": {
+      "present": true,
+      "value": 26442.0,
+      "non_zero": true
+    },
+    "vllm:request_queue_time_seconds_count": {
+      "present": true,
+      "value": 1202.0,
+      "non_zero": true
+    },
+    "vllm:request_queue_time_seconds_created": {
+      "present": true,
+      "value": 1772691556.310461,
+      "non_zero": true
+    },
+    "vllm:request_queue_time_seconds_sum": {
+      "present": true,
+      "value": 1.939698317379225,
+      "non_zero": true
+    },
+    "vllm:request_success_created": {
+      "present": true,
+      "value": 7090766225.238943,
+      "non_zero": true
+    },
+    "vllm:request_success_total": {
+      "present": true,
+      "value": 1202.0,
+      "non_zero": true
+    },
+    "vllm:request_time_per_output_token_seconds_bucket": {
+      "present": true,
+      "value": 20422.0,
+      "non_zero": true
+    },
+    "vllm:request_time_per_output_token_seconds_count": {
+      "present": true,
+      "value": 1202.0,
+      "non_zero": true
+    },
+    "vllm:request_time_per_output_token_seconds_created": {
+      "present": true,
+      "value": 1772691556.310333,
+      "non_zero": true
+    },
+    "vllm:request_time_per_output_token_seconds_sum": {
+      "present": true,
+      "value": 83.50313178840729,
+      "non_zero": true
+    },
+    "vllm:time_to_first_token_seconds_bucket": {
+      "present": true,
+      "value": 17956.0,
+      "non_zero": true
+    },
+    "vllm:time_to_first_token_seconds_count": {
+      "present": true,
+      "value": 1220.0,
+      "non_zero": true
+    },
+    "vllm:time_to_first_token_seconds_created": {
+      "present": true,
+      "value": 1772691556.3101828,
+      "non_zero": true
+    },
+    "vllm:time_to_first_token_seconds_sum": {
+      "present": true,
+      "value": 547.2693269252777,
+      "non_zero": true
+    }
+  },
+  "network": {
+    "cilium_operator_identity_gc_latency": {
+      "present": true,
+      "value": 0.000112562,
+      "non_zero": true
+    },
+    "cilium_operator_process_network_receive_bytes_total": {
+      "present": true,
+      "value": 306207098575.0,
+      "non_zero": true
+    },
+    "cilium_operator_process_network_transmit_bytes_total": {
+      "present": true,
+      "value": 337354947567.0,
+      "non_zero": true
+    },
+    "cilium_operator_workqueue_latency_bucket": {
+      "present": true,
+      "value": 337.0,
+      "non_zero": true
+    },
+    "cilium_operator_workqueue_latency_count": {
+      "present": true,
+      "value": 44.0,
+      "non_zero": true
+    },
+    "cilium_operator_workqueue_latency_sum": {
+      "present": true,
+      "value": 0.09897767000000002,
+      "non_zero": true
+    },
+    "container_network_receive_bytes_total": {
+      "present": true,
+      "value": 24062214069039.0,
+      "non_zero": true
+    },
+    "container_network_receive_errors_total": {
+      "present": true,
+      "value": 0.0,
+      "non_zero": false
+    },
+    "container_network_receive_packets_dropped_total": {
+      "present": true,
+      "value": 5804010.0,
+      "non_zero": true
+    },
+    "container_network_receive_packets_total": {
+      "present": true,
+      "value": 26199981853.0,
+      "non_zero": true
+    },
+    "container_network_transmit_bytes_total": {
+      "present": true,
+      "value": 22307695500576.0,
+      "non_zero": true
+    },
+    "container_network_transmit_errors_total": {
+      "present": true,
+      "value": 0.0,
+      "non_zero": false
+    },
+    "container_network_transmit_packets_dropped_total": {
+      "present": true,
+      "value": 0.0,
+      "non_zero": false
+    },
+    "container_network_transmit_packets_total": {
+      "present": true,
+      "value": 24937935349.0,
+      "non_zero": true
+    },
+    "envoy_listener_network_extension_config_missing": {
+      "present": true,
+      "value": 0.0,
+      "non_zero": false
+    },
+    "h3c_rdma_check_pass": {
+      "present": true,
+      "value": 10.0,
+      "non_zero": true
+    },
+    "h3c_rdma_ecn_enabled": {
+      "present": true,
+      "value": 2.0,
+      "non_zero": true
+    },
+    "h3c_rdma_exporter_cache_ttl_seconds": {
+      "present": true,
+      "value": 110.0,
+      "non_zero": true
+    },
+    "h3c_rdma_exporter_scrape_success": {
+      "present": true,
+      "value": 2.0,
+      "non_zero": true
+    },
+    "h3c_rdma_interface_mtu_bytes": {
+      "present": true,
+      "value": 18432.0,
+      "non_zero": true
+    },
+    "h3c_rdma_pfc_deadlock_enabled": {
+      "present": true,
+      "value": 2.0,
+      "non_zero": true
+    },
+    "h3c_rdma_pfc_enabled": {
+      "present": true,
+      "value": 2.0,
+      "non_zero": true
+    },
+    "h3c_rdma_queue_stats_scrape_success": {
+      "present": true,
+      "value": 2.0,
+      "non_zero": true
+    },
+    "h3c_rdma_route_present": {
+      "present": true,
+      "value": 2.0,
+      "non_zero": true
+    },
+    "h3c_rdma_vlanif_mtu_bytes": {
+      "present": true,
+      "value": 3000.0,
+      "non_zero": true
+    },
+    "h3c_rdma_wred_high_limit": {
+      "present": true,
+      "value": 16000.0,
+      "non_zero": true
+    },
+    "h3c_rdma_wred_low_limit": {
+      "present": true,
+      "value": 7000.0,
+      "non_zero": true
+    },
+    "instance:node_network_receive_bytes_total:rate:sum": {
+      "present": true,
+      "value": 1289535377.94,
+      "non_zero": true
+    },
+    "instance:node_network_transmit_bytes_total:rate:sum": {
+      "present": true,
+      "value": 1289871328.86,
+      "non_zero": true
+    },
+    "istio_agent_outgoing_latency": {
+      "present": true,
+      "value": 244.262097,
+      "non_zero": true
+    },
+    "kubelet_evented_pleg_connection_latency_seconds_bucket": {
+      "present": true,
+      "value": 0.0,
+      "non_zero": false
+    },
+    "kubelet_evented_pleg_connection_latency_seconds_count": {
+      "present": true,
+      "value": 0.0,
+      "non_zero": false
+    },
+    "kubelet_evented_pleg_connection_latency_seconds_sum": {
+      "present": true,
+      "value": 0.0,
+      "non_zero": false
+    },
+    "kubelet_first_network_pod_start_sli_duration_seconds": {
+      "present": true,
+      "value": 61239.699973238,
+      "non_zero": true
+    },
+    "node_netstat_Icmp6_InErrors": {
+      "present": true,
+      "value": 0.0,
+      "non_zero": false
+    },
+    "node_netstat_Icmp6_InMsgs": {
+      "present": true,
+      "value": 3.0,
+      "non_zero": true
+    },
+    "node_netstat_Icmp6_OutMsgs": {
+      "present": true,
+      "value": 20507.0,
+      "non_zero": true
+    },
+    "node_netstat_Icmp_InErrors": {
+      "present": true,
+      "value": 402.0,
+      "non_zero": true
+    },
+    "node_netstat_Icmp_InMsgs": {
+      "present": true,
+      "value": 1066678.0,
+      "non_zero": true
+    },
+    "node_netstat_Icmp_OutMsgs": {
+      "present": true,
+      "value": 884308.0,
+      "non_zero": true
+    },
+    "node_netstat_Ip6_InOctets": {
+      "present": true,
+      "value": 173240.0,
+      "non_zero": true
+    },
+    "node_netstat_Ip6_OutOctets": {
+      "present": true,
+      "value": 1180996.0,
+      "non_zero": true
+    },
+    "node_netstat_IpExt_InOctets": {
+      "present": true,
+      "value": 4248713452435.0,
+      "non_zero": true
+    },
+    "node_netstat_IpExt_OutOctets": {
+      "present": true,
+      "value": 4404609230145.0,
+      "non_zero": true
+    },
+    "node_netstat_Ip_Forwarding": {
+      "present": true,
+      "value": 5.0,
+      "non_zero": true
+    },
+    "node_netstat_TcpExt_ListenDrops": {
+      "present": true,
+      "value": 27.0,
+      "non_zero": true
+    },
+    "node_netstat_TcpExt_ListenOverflows": {
+      "present": true,
+      "value": 0.0,
+      "non_zero": false
+    },
+    "node_netstat_TcpExt_SyncookiesFailed": {
+      "present": true,
+      "value": 0.0,
+      "non_zero": false
+    },
+    "node_netstat_TcpExt_SyncookiesRecv": {
+      "present": true,
+      "value": 0.0,
+      "non_zero": false
+    },
+    "node_netstat_TcpExt_SyncookiesSent": {
+      "present": true,
+      "value": 0.0,
+      "non_zero": false
+    },
+    "node_netstat_TcpExt_TCPSynRetrans": {
+      "present": true,
+      "value": 17340.0,
+      "non_zero": true
+    },
+    "node_netstat_TcpExt_TCPTimeouts": {
+      "present": true,
+      "value": 18365.0,
+      "non_zero": true
+    },
+    "node_netstat_Tcp_ActiveOpens": {
+      "present": true,
+      "value": 7365243.0,
+      "non_zero": true
+    },
+    "node_netstat_Tcp_CurrEstab": {
+      "present": true,
+      "value": 1323.0,
+      "non_zero": true
+    },
+    "node_netstat_Tcp_InErrs": {
+      "present": true,
+      "value": 18873.0,
+      "non_zero": true
+    },
+    "node_netstat_Tcp_InSegs": {
+      "present": true,
+      "value": 459821524.0,
+      "non_zero": true
+    },
+    "node_netstat_Tcp_OutRsts": {
+      "present": true,
+      "value": 1188266.0,
+      "non_zero": true
+    },
+    "node_netstat_Tcp_OutSegs": {
+      "present": true,
+      "value": 2763939477.0,
+      "non_zero": true
+    },
+    "node_netstat_Tcp_PassiveOpens": {
+      "present": true,
+      "value": 776492.0,
+      "non_zero": true
+    },
+    "node_netstat_Tcp_RetransSegs": {
+      "present": true,
+      "value": 336160.0,
+      "non_zero": true
+    },
+    "node_netstat_Udp6_InDatagrams": {
+      "present": true,
+      "value": 0.0,
+      "non_zero": false
+    },
+    "node_netstat_Udp6_InErrors": {
+      "present": true,
+      "value": 0.0,
+      "non_zero": false
+    },
+    "node_netstat_Udp6_NoPorts": {
+      "present": true,
+      "value": 3.0,
+      "non_zero": true
+    },
+    "node_netstat_Udp6_OutDatagrams": {
+      "present": true,
+      "value": 3.0,
+      "non_zero": true
+    },
+    "node_netstat_Udp6_RcvbufErrors": {
+      "present": true,
+      "value": 0.0,
+      "non_zero": false
+    },
+    "node_netstat_Udp6_SndbufErrors": {
+      "present": true,
+      "value": 0.0,
+      "non_zero": false
+    },
+    "node_netstat_UdpLite6_InErrors": {
+      "present": true,
+      "value": 0.0,
+      "non_zero": false
+    },
+    "node_netstat_UdpLite_InErrors": {
+      "present": true,
+      "value": 0.0,
+      "non_zero": false
+    },
+    "node_netstat_Udp_InDatagrams": {
+      "present": true,
+      "value": 46835549.0,
+      "non_zero": true
+    },
+    "node_netstat_Udp_InErrors": {
+      "present": true,
+      "value": 0.0,
+      "non_zero": false
+    },
+    "node_netstat_Udp_NoPorts": {
+      "present": true,
+      "value": 103.0,
+      "non_zero": true
+    },
+    "node_netstat_Udp_OutDatagrams": {
+      "present": true,
+      "value": 1436647.0,
+      "non_zero": true
+    },
+    "node_netstat_Udp_RcvbufErrors": {
+      "present": true,
+      "value": 0.0,
+      "non_zero": false
+    },
+    "node_netstat_Udp_SndbufErrors": {
+      "present": true,
+      "value": 0.0,
+      "non_zero": false
+    },
+    "node_network_address_assign_type": {
+      "present": true,
+      "value": 258.0,
+      "non_zero": true
+    },
+    "node_network_carrier": {
+      "present": true,
+      "value": 96.0,
+      "non_zero": true
+    },
+    "node_network_carrier_changes_total": {
+      "present": true,
+      "value": 203.0,
+      "non_zero": true
+    },
+    "node_network_carrier_down_changes_total": {
+      "present": true,
+      "value": 99.0,
+      "non_zero": true
+    },
+    "node_network_carrier_up_changes_total": {
+      "present": true,
+      "value": 104.0,
+      "non_zero": true
+    },
+    "node_network_device_id": {
+      "present": true,
+      "value": 0.0,
+      "non_zero": false
+    },
+    "node_network_dormant": {
+      "present": true,
+      "value": 0.0,
+      "non_zero": false
+    },
+    "node_network_flags": {
+      "present": true,
+      "value": 407122.0,
+      "non_zero": true
+    },
+    "node_network_iface_id": {
+      "present": true,
+      "value": 4736.0,
+      "non_zero": true
+    },
+    "node_network_iface_link": {
+      "present": true,
+      "value": 4667.0,
+      "non_zero": true
+    },
+    "node_network_iface_link_mode": {
+      "present": true,
+      "value": 0.0,
+      "non_zero": false
+    },
+    "node_network_info": {
+      "present": true,
+      "value": 104.0,
+      "non_zero": true
+    },
+    "node_network_mtu_bytes": {
+      "present": true,
+      "value": 498680.0,
+      "non_zero": true
+    },
+    "node_network_name_assign_type": {
+      "present": true,
+      "value": 320.0,
+      "non_zero": true
+    },
+    "node_network_net_dev_group": {
+      "present": true,
+      "value": 0.0,
+      "non_zero": false
+    },
+    "node_network_protocol_type": {
+      "present": true,
+      "value": 3959.0,
+      "non_zero": true
+    },
+    "node_network_receive_bytes_total": {
+      "present": true,
+      "value": 4435009561279.0,
+      "non_zero": true
+    },
+    "node_network_receive_compressed_total": {
+      "present": true,
+      "value": 0.0,
+      "non_zero": false
+    },
+    "node_network_receive_drop_total": {
+      "present": true,
+      "value": 831859.0,
+      "non_zero": true
+    },
+    "node_network_receive_errs_total": {
+      "present": true,
+      "value": 0.0,
+      "non_zero": false
+    },
+    "node_network_receive_fifo_total": {
+      "present": true,
+      "value": 0.0,
+      "non_zero": false
+    },
+    "node_network_receive_frame_total": {
+      "present": true,
+      "value": 0.0,
+      "non_zero": false
+    },
+    "node_network_receive_multicast_total": {
+      "present": true,
+      "value": 3392881.0,
+      "non_zero": true
+    },
+    "node_network_receive_nohandler_total": {
+      "present": true,
+      "value": 0.0,
+      "non_zero": false
+    },
+    "node_network_receive_packets_total": {
+      "present": true,
+      "value": 3865825942.0,
+      "non_zero": true
+    },
+    "node_network_speed_bytes": {
+      "present": true,
+      "value": 188123875000.0,
+      "non_zero": true
+    },
+    "node_network_transmit_bytes_total": {
+      "present": true,
+      "value": 4021436935697.0,
+      "non_zero": true
+    },
+    "node_network_transmit_carrier_total": {
+      "present": true,
+      "value": 0.0,
+      "non_zero": false
+    },
+    "node_network_transmit_colls_total": {
+      "present": true,
+      "value": 0.0,
+      "non_zero": false
+    },
+    "node_network_transmit_compressed_total": {
+      "present": true,
+      "value": 0.0,
+      "non_zero": false
+    },
+    "node_network_transmit_drop_total": {
+      "present": true,
+      "value": 0.0,
+      "non_zero": false
+    },
+    "node_network_transmit_errs_total": {
+      "present": true,
+      "value": 0.0,
+      "non_zero": false
+    },
+    "node_network_transmit_fifo_total": {
+      "present": true,
+      "value": 0.0,
+      "non_zero": false
+    },
+    "node_network_transmit_packets_total": {
+      "present": true,
+      "value": 3733034656.0,
+      "non_zero": true
+    },
+    "node_network_transmit_queue_length": {
+      "present": true,
+      "value": 104000.0,
+      "non_zero": true
+    },
+    "node_network_up": {
+      "present": true,
+      "value": 86.0,
+      "non_zero": true
+    },
+    "process_network_receive_bytes_total": {
+      "present": true,
+      "value": 10049202644603.0,
+      "non_zero": true
+    },
+    "process_network_transmit_bytes_total": {
+      "present": true,
+      "value": 10516926936287.0,
+      "non_zero": true
+    },
+    "prometheus_notifications_latency_seconds": {
+      "present": true,
+      "value": 0.008767822,
+      "non_zero": true
+    },
+    "prometheus_notifications_latency_seconds_count": {
+      "present": true,
+      "value": 16146.0,
+      "non_zero": true
+    },
+    "prometheus_notifications_latency_seconds_sum": {
+      "present": true,
+      "value": 13.794244758000003,
+      "non_zero": true
+    },
+    "prometheus_sd_kubernetes_workqueue_latency_seconds_count": {
+      "present": true,
+      "value": 76442.0,
+      "non_zero": true
+    },
+    "prometheus_sd_kubernetes_workqueue_latency_seconds_sum": {
+      "present": true,
+      "value": 166.90440376000097,
+      "non_zero": true
+    },
+    "vllm:e2e_request_latency_seconds_bucket": {
+      "present": true,
+      "value": 15496.0,
+      "non_zero": true
+    },
+    "vllm:e2e_request_latency_seconds_count": {
+      "present": true,
+      "value": 1202.0,
+      "non_zero": true
+    },
+    "vllm:e2e_request_latency_seconds_created": {
+      "present": true,
+      "value": 1772691556.3103974,
+      "non_zero": true
+    },
+    "vllm:e2e_request_latency_seconds_sum": {
+      "present": true,
+      "value": 19394.13471388817,
+      "non_zero": true
+    },
+    "vllm:inter_token_latency_seconds_bucket": {
+      "present": true,
+      "value": 4664417.0,
+      "non_zero": true
+    },
+    "vllm:inter_token_latency_seconds_count": {
+      "present": true,
+      "value": 274606.0,
+      "non_zero": true
+    },
+    "vllm:inter_token_latency_seconds_created": {
+      "present": true,
+      "value": 1772691556.3102648,
+      "non_zero": true
+    },
+    "vllm:inter_token_latency_seconds_sum": {
+      "present": true,
+      "value": 19114.695467877085,
+      "non_zero": true
+    }
+  }
+}

@@ -1,0 +1,376 @@
+# =============================================================================
+# Fault Injector Test Configuration Template
+# =============================================================================
+# This is a template configuration file for testing the Fault Injector.
+# Copy this file and modify it according to your test environment.
+#
+# Usage:
+#   fault-injector inject --config fault-injector-test.yaml --dry-run
+# =============================================================================
+
+# Global Configuration
+global:
+  # Directory to store session data and rollback journals
+  session_dir: "./fault_injector/fault_reports/sessions/"
+  
+  # Logging level: DEBUG, INFO, WARNING, ERROR
+  log_level: "DEBUG"
+  
+  # Safety settings
+  safety:
+    # Require manual confirmation before injecting faults
+    require_confirmation: false
+    
+    # Auto-recovery timeout in seconds (0 to disable)
+    auto_recover_timeout: 600
+    
+    # Dry-run mode: simulate fault injection without actual execution
+    # Set to false for production use
+    dry_run: false
+    
+    # Maximum number of concurrent faults per session
+    max_concurrent_faults: 3
+    
+    # Nodes to exclude from fault injection
+    excluded_nodes: []
+
+monitor:
+  # Enable/disable Prometheus monitoring entirely
+  enabled: false
+  # Prometheus base URL used by MonitorAgent
+  prometheus_url: "http://10.11.4.3:31260"
+  # Baseline metrics collection duration (seconds)
+  baseline_duration: 60
+  # Post-recovery observation duration (seconds)
+  post_recovery_duration: 60
+  # Optional explicit baseline metric profile.
+  baseline_queries:
+    cpu_util: "avg(1 - rate(node_cpu_seconds_total{mode='idle'}[5m]))"
+    memory_util: "avg(1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes))"
+    gpu_util: "avg(DCGM_FI_DEV_GPU_UTIL)"
+    gpu_memory_used_mb: "avg(DCGM_FI_DEV_FB_USED)"
+    gpu_power_watts: "avg(DCGM_FI_DEV_POWER_USAGE)"
+
+# =============================================================================
+# Target Node Inventory
+# =============================================================================
+# Define target nodes for fault injection.
+# Each node requires SSH configuration for command execution.
+
+inventory:
+  # Node group: worker nodes
+  workers:
+    - name: "worker-01"
+      ssh:
+        host: "10.11.4.10"
+        port: 22
+        user: "yuyonghao"
+        #key_file: "~/.ssh/id_rsa"
+        password: Yuyonghao@123
+        timeout: 30
+        use_sudo: true
+      redfish:
+        bmc_host: "10.11.8.13"
+        username: "admin"
+        password: "Admin@9000"
+        verify_tls: false
+        timeout: 30
+      ipmi:
+        host: "10.11.8.13"
+        username: "admin"
+        password: "Admin@9000"
+        interface: "lanplus"
+        port: 623
+        timeout: 30
+      interface: "roce200"
+      roles:
+        - "compute"
+        - "rdma"
+    - name: "worker-02"
+      ssh:
+        host: "10.11.4.11"
+        port: 22
+        user: "yuyonghao"
+        #key_file: "~/.ssh/id_rsa"
+        password: Yuyonghao@123
+        timeout: 30
+        use_sudo: true
+      redfish:
+        bmc_host: "10.11.8.13"
+        username: "admin"
+        password: "Admin@9000"
+        verify_tls: false
+        timeout: 30
+      ipmi:
+        host: "10.11.8.13"
+        username: "admin"
+        password: "Admin@9000"
+        interface: "lanplus"
+        port: 623
+        timeout: 30
+      interface: "roce200"
+      roles:
+        - "compute"
+        - "rdma"
+    - name: "worker-03"
+      ssh:
+        host: "10.11.4.12"
+        port: 22
+        user: "yuyonghao"
+        #key_file: "~/.ssh/id_rsa"
+        password: Yuyonghao@123
+        timeout: 30
+        use_sudo: true
+      redfish:
+        bmc_host: "10.11.8.13"
+        username: "admin"
+        password: "Admin@9000"
+        verify_tls: false
+        timeout: 30
+      ipmi:
+        host: "10.11.8.13"
+        username: "admin"
+        password: "Admin@9000"
+        interface: "lanplus"
+        port: 623
+        timeout: 30
+      interface: "roce200"
+      roles:
+        - "compute"
+        - "rdma"
+
+# =============================================================================
+# Switch Inventory (required for switch-based RDMA scenarios)
+# =============================================================================
+switches:
+  sw-200g:
+    host: "10.11.8.52"
+    port: 830
+    username: "apitest"
+    password: "ApiTest@2026"
+    timeout: 30
+    type: "H3C S9855-24B8D"
+    description: "200G Data Network Switch"
+    
+# =============================================================================
+# Fault Scenarios Configuration
+# =============================================================================
+# Enable and configure fault scenarios to inject.
+# Each scenario can target specific nodes and have custom parameters.
+
+scenarios:
+  # ---------------------------------------------------------------------------
+  # RC-1: GPU Contention
+  # ---------------------------------------------------------------------------
+  # Uses gpu-burn to saturate GPU(s) and create inference contention.
+  gpu_contention:
+    enabled: true
+    target_nodes:
+      - "worker-01"
+      #- "worker-02"
+      #- "worker-03"
+    params:
+      duration: 30
+      # Maps to gpu-burn "-m". Supports values like "60%" or "10240" (MB).
+      memory: "90%"
+      # Maps to gpu-burn "-i". Omit or set [] to apply to all GPUs.
+      gpu_ids: []
+      # gpu_ids: [0, 1]
+      intensity: 100
+
+  # ---------------------------------------------------------------------------
+  # RC-2: Network Jitter
+  # ---------------------------------------------------------------------------
+  # Uses tc netem to inject network delay and jitter.
+  network_jitter:
+    enabled: true
+    target_nodes:
+      #- "worker-01"
+      - "worker-02"
+      #- "worker-03"
+    params:
+      interface: "roce200"
+      delay_ms: 45
+      jitter_ms: 90
+      distribution: "pareto"
+      loss_pct: 0
+      duration: 30
+      load_simulator:
+        enabled: false
+        config_path: "load_simulator/config/notebook-soak-only.yaml"
+        only:
+          - "notebook"
+        timeout_seconds: 900
+        strict: true
+
+  # ---------------------------------------------------------------------------
+  # RC-3: Storage I/O Interference
+  # ---------------------------------------------------------------------------
+  # Uses fio to add storage pressure that impacts latency.
+  storage_io_interference:
+    enabled: true
+    target_nodes:
+      - "worker-01"
+      #- "worker-02"
+      #- "worker-03"
+    params:
+      duration: 30
+      filename: "/data/fault-injector-fio-testfile"
+      rw_mode: "randwrite"
+      bs: "4k"
+      iodepth: 64
+      numjobs: 4
+
+  # ---------------------------------------------------------------------------
+  # RC-4: Platform Cascade
+  # ---------------------------------------------------------------------------
+  # Injects platform dependency delay through tc netem.
+  platform_cascade:
+    enabled: true
+    target_nodes:
+      - "worker-01"
+      #- "worker-02"
+      #- "worker-03"
+    params:
+      target_component: "mysql"
+      interface: "roce200"
+      delay_ms: 120
+      port: 3306
+
+  # ---------------------------------------------------------------------------
+  # RC-5: OS Resource Pressure
+  # ---------------------------------------------------------------------------
+  # Uses stress-ng to create CPU + memory pressure.
+  os_resource_pressure:
+    enabled: true
+    target_nodes:
+      - "worker-01"
+      #- "worker-02"
+      #- "worker-03"
+    params:
+      duration: 30
+      vm_bytes_percent: 85
+      cpu_workers: 32
+      cpu_load: 90
+      io_workers: 8
+
+  # ---------------------------------------------------------------------------
+  # RC-6: Thermal Throttling
+  # ---------------------------------------------------------------------------
+  # Lowers GPU power limit to emulate thermal throttling behavior.
+  thermal_throttling:
+    enabled: true
+    target_nodes:
+      - "worker-01"
+      - "worker-02"
+      - "worker-03"
+    params:
+      gpu_id: 0
+      power_limit: 500
+      fan_index: 0
+      fan_mode: "Manual"
+      fan_pwm: 30
+      fan_recover_mode: "Auto"
+      fan_control_backend: "redfish"
+
+  # Keep RDMA scenarios disabled for this vLLM latency test cycle.
+  pfc_deadlock:
+    enabled: true
+    target_nodes:
+      #- "worker-01"
+      #- "worker-02"
+      - "worker-03"
+    params:
+      switch: "sw-200g"
+      interface: "200GE1/0/3"
+      priority: 3
+      duration: 30
+
+  ecn_misconfiguration:
+    enabled: true
+    target_nodes:
+      #- "worker-01"
+      #- "worker-02"
+      - "worker-03"
+    params:
+      switch: "sw-200g"
+      interface: "200GE1/0/3"
+      min_threshold: 10
+      max_threshold: 20
+      duration: 30
+
+  rdma_load_imbalance:
+    enabled: true
+    target_nodes:
+      - "worker-01"
+      #- "worker-02"
+      #- "worker-03"
+    params:
+      switch: "sw-200g"
+      interface: "200GE1/0/4"
+      hash_algorithm: "src-dst-ip"
+
+  rdma_link_flap:
+    enabled: true
+    target_nodes:
+      #- "worker-01"
+      #- "worker-02"
+      - "worker-03"
+    params:
+      switch: "sw-200g"
+      interface: "200GE1/0/3"
+      flap_interval: 1
+      flap_duration: 30
+
+  roce_mtu_mismatch:
+    enabled: true
+    target_nodes:
+      #- "worker-01"
+      #- "worker-02"
+      - "worker-03"
+    params:
+      interface: "roce200"
+      mtu: 1500
+      original_mtu: 9000
+      duration: 30
+
+  rdma_qos_downgrade:
+    enabled: true
+    target_nodes:
+      - "worker-01"
+      - "worker-02"
+      - "worker-03"
+    params:
+      switch: "sw-200g"
+      interface: "200GE1/0/4"
+      dscp: 0
+      downgraded_tc: 0
+
+# =============================================================================
+# Example: Minimal Test Configuration
+# =============================================================================
+# Uncomment below for a minimal test configuration:
+#
+# global:
+#   session_dir: "./fault_injector/fault_reports/sessions/"
+#   log_level: "DEBUG"
+#   safety:
+#     dry_run: true
+#     require_confirmation: false
+#
+# inventory:
+#   test-nodes:
+#     - name: "test-node-1"
+#       ssh:
+#         host: "192.168.1.100"
+#         user: "testuser"
+#         key_file: "~/.ssh/id_rsa"
+#       interface: "eth0"
+#
+# scenarios:
+#   network_jitter:
+#     enabled: true
+#     target_nodes: ["test-node-1"]
+#     params:
+#       delay_ms: 10
+#       duration: 60

@@ -1,0 +1,116 @@
+# Baseline metric whitelist for fault_injector monitor channel.
+# Source: Prometheus live discovery + non-zero probe in this environment.
+
+version: "2026-03-06"
+prometheus_url: "http://10.11.4.3:31260"
+
+profiles:
+  inference_resilience:
+    cpu:
+      cpu_util_ratio:
+        promql: "avg(rate(node_cpu_seconds_total{mode!='idle'}[2m]))"
+        unit: "ratio"
+        baseline_rule: "median"
+      load1:
+        promql: "avg(node_load1)"
+        unit: "count"
+        baseline_rule: "p95"
+      load5:
+        promql: "avg(node_load5)"
+        unit: "count"
+        baseline_rule: "p95"
+      cpu_pressure_waiting:
+        promql: "sum(rate(node_pressure_cpu_waiting_seconds_total[2m]))"
+        unit: "seconds_per_second"
+        baseline_rule: "p95"
+
+    gpu:
+      gpu_util_avg:
+        promql: "avg(DCGM_FI_DEV_GPU_UTIL)"
+        unit: "percent"
+        baseline_rule: "median"
+      gpu_mem_used_total:
+        promql: "sum(DCGM_FI_DEV_FB_USED)"
+        unit: "MiB"
+        baseline_rule: "median"
+      gpu_power_total:
+        promql: "sum(DCGM_FI_DEV_POWER_USAGE)"
+        unit: "W"
+        baseline_rule: "median"
+      gpu_temp_max:
+        promql: "max(DCGM_FI_DEV_GPU_TEMP)"
+        unit: "C"
+        baseline_rule: "p95"
+      gpu_tensor_active:
+        promql: "avg(DCGM_FI_PROF_PIPE_TENSOR_ACTIVE)"
+        unit: "ratio"
+        baseline_rule: "median"
+      gpu_dram_active:
+        promql: "avg(DCGM_FI_PROF_DRAM_ACTIVE)"
+        unit: "ratio"
+        baseline_rule: "median"
+
+    vllm:
+      e2e_p50:
+        promql: "histogram_quantile(0.50, sum(rate(vllm:e2e_request_latency_seconds_bucket[2m])) by (le))"
+        unit: "seconds"
+        baseline_rule: "median"
+      e2e_p95:
+        promql: "histogram_quantile(0.95, sum(rate(vllm:e2e_request_latency_seconds_bucket[2m])) by (le))"
+        unit: "seconds"
+        baseline_rule: "p95"
+      e2e_p99:
+        promql: "histogram_quantile(0.99, sum(rate(vllm:e2e_request_latency_seconds_bucket[2m])) by (le))"
+        unit: "seconds"
+        baseline_rule: "p99"
+      ttft_p95:
+        promql: "histogram_quantile(0.95, sum(rate(vllm:time_to_first_token_seconds_bucket[2m])) by (le))"
+        unit: "seconds"
+        baseline_rule: "p95"
+      queue_time_p95:
+        promql: "histogram_quantile(0.95, sum(rate(vllm:request_queue_time_seconds_bucket[2m])) by (le))"
+        unit: "seconds"
+        baseline_rule: "p95"
+      req_success_rate:
+        promql: "sum(rate(vllm:request_success_total[2m]))"
+        unit: "req_per_sec"
+        baseline_rule: "median"
+      req_running:
+        promql: "sum(vllm:num_requests_running)"
+        unit: "count"
+        baseline_rule: "p95"
+      req_waiting:
+        promql: "sum(vllm:num_requests_waiting)"
+        unit: "count"
+        baseline_rule: "p95"
+      kv_cache_usage:
+        promql: "avg(vllm:kv_cache_usage_perc)"
+        unit: "ratio"
+        baseline_rule: "median"
+
+    host_network:
+      rx_bandwidth:
+        promql: "sum(rate(node_network_receive_bytes_total{device!~'lo|veth.*|docker.*|cni.*|flannel.*|cali.*'}[2m]))"
+        unit: "bytes_per_sec"
+        baseline_rule: "median"
+      tx_bandwidth:
+        promql: "sum(rate(node_network_transmit_bytes_total{device!~'lo|veth.*|docker.*|cni.*|flannel.*|cali.*'}[2m]))"
+        unit: "bytes_per_sec"
+        baseline_rule: "median"
+      tcp_retrans_rate:
+        promql: "sum(rate(node_netstat_Tcp_RetransSegs[2m]))"
+        unit: "segments_per_sec"
+        baseline_rule: "p95"
+      tcp_timeout_rate:
+        promql: "sum(rate(node_netstat_TcpExt_TCPTimeouts[2m]))"
+        unit: "events_per_sec"
+        baseline_rule: "p95"
+      istio_outgoing_latency:
+        promql: "avg(istio_agent_outgoing_latency)"
+        unit: "milliseconds"
+        baseline_rule: "p95"
+
+notes:
+  - "vLLM histogram queries require active traffic; if idle, values can be 0."
+  - "For per-service baselines, add label filters (instance/pod/model_name) in a dedicated profile."
+  - "Replace current network_jitter:network_latency query (network_latency_seconds_bucket) with e2e_p95 or istio_outgoing_latency."

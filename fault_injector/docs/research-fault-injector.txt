@@ -1,0 +1,68 @@
+<!--
+=============================================================================
+FILE: research-fault-injector.txt
+PURPOSE: Store research notes, findings, and investigation results
+GUIDANCE FOR AI AGENTS:
+- This file is for documenting research findings about the fault_injector project
+- When researching new features, libraries, or patterns, document findings here
+- Include links to relevant documentation, Stack Overflow answers, or code examples
+- Keep notes organized by topic with clear section headers
+- Update this file when discovering new information that affects implementation
+=============================================================================
+-->
+
+# Research Notes: Fault Injector
+
+## Purpose
+This file captures research findings, technical discoveries, and investigation notes related to the fault_injector project.
+
+---
+
+## Research Topics
+
+### Topic 1: [Title]
+**Date:** YYYY-MM-DD
+**Context:** Why this research was needed
+
+**Findings:**
+- Finding 1
+- Finding 2
+- Finding 3
+
+**References:**
+- [Link to documentation]
+- [Link to relevant code]
+
+**Impact on Implementation:**
+- How this affects the project
+
+---
+
+### Topic 2: [Title]
+**Date:** YYYY-MM-DD
+**Context:** 
+
+**Findings:**
+-
+
+**References:**
+-
+
+**Impact on Implementation:**
+-
+
+---
+
+## Open Questions
+- [ ] Question 1
+- [ ] Question 2
+
+---
+
+## Resolved Questions
+- [x] Resolved question - Brief answer
+
+---
+
+## Notes
+<!-- Additional freeform notes -->

@@ -1,0 +1,23 @@
+# Switch Test Configuration (Dev Environment)
+# For H3C S9855-24B8D NETCONF testing
+
+switches:
+  Switch200GE:
+    host: "10.11.8.52"
+    port: 830  # NETCONF port
+    username: "apitest"
+    password: "ApiTest@2026"
+    type: "H3C S9855-24B8D"
+    description: "200G Data Network Switch"
+
+# Test interfaces (use with caution - these will be shut down during tests)
+test_interfaces:
+  - name: "200GE1/0/4"
+    if_index: 4
+    description: "Test port for fault injection"
+    baseline:
+      admin: "UP"
+      speed: "200G(a)"
+      duplex: "F(a)"
+      link_type: "T"
+      pvid: 10
