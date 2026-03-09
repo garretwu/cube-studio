@@ -10,9 +10,7 @@ from typing import Any
 
 import httpx
 
-from lib.fchannels.base import BaseChannel
-from fault_injector.config.schema import ChannelResult
-from fault_injector.safety.guard import SafetyViolationError
+from lib.channels.base import BaseChannel, ChannelResult, SafetyViolationError
 
 logger = logging.getLogger(__name__)
 

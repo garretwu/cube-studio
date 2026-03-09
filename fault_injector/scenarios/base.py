@@ -16,14 +16,14 @@ from typing import TYPE_CHECKING, Any
 from fault_injector.config.schema import IPMIConfig, InjectResult, RedfishConfig, RecoverResult
 from fault_injector.safety.guard import SafetyGuard
 from fault_injector.safety.rollback import RollbackJournal
-from lib.fchannels.ssh import SSHChannel
+from lib.channels.ssh import SSHChannel
 
 if TYPE_CHECKING:
-    from lib.fchannels.ipmi import IPMIChannel
-    from lib.fchannels.kubernetes import K8sChannel
-    from lib.fchannels.prometheus import PrometheusChannel
-    from lib.fchannels.redfish import RedfishChannel
-    from lib.fchannels.switch import SwitchChannel
+    from lib.channels.ipmi import IPMIChannel
+    from lib.channels.kubernetes import K8sChannel
+    from lib.channels.prometheus import PrometheusChannel
+    from lib.channels.redfish import RedfishChannel
+    from lib.channels.switch import SwitchChannel
 
 logger = logging.getLogger(__name__)
 

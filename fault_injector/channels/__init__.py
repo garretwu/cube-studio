@@ -1,16 +1,16 @@
-"""Compatibility imports for channels now hosted under lib.fchannels."""
+"""Compatibility imports for channels now hosted under lib.channels."""
 
-from lib.fchannels import (
+from lib.channels import (
     BaseChannel,
+    ChannelResult,
     IPMIChannel,
     K8sChannel,
     PrometheusChannel,
     RedfishChannel,
     SSHChannel,
     SwitchChannel,
+    SafetyViolationError,
 )
-from fault_injector.config.schema import ChannelResult
-from fault_injector.safety.guard import SafetyViolationError
 
 __all__ = [
     "BaseChannel",

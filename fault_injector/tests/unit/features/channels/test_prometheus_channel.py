@@ -4,7 +4,7 @@ from datetime import datetime
 
 import pytest
 
-from lib.fchannels.prometheus import PrometheusChannel
+from lib.channels.prometheus import PrometheusChannel
 
 
 @pytest.mark.asyncio
@@ -14,7 +14,7 @@ async def test_should_not_call_http_when_query_instant_in_dry_run(monkeypatch):
     async def _boom():
         raise AssertionError("HTTP client should not be created in dry-run")
 
-    monkeypatch.setattr(channel, "_client_get", _boom)
+    monkeypatch.setattr(channel, "_http_get_json", lambda url: (_ for _ in ()).throw(AssertionError("HTTP should not be called in dry-run")))
 
     value = await channel.query_instant("up")
     assert value == 0.0
@@ -27,7 +27,7 @@ async def test_should_not_call_http_when_query_range_in_dry_run(monkeypatch):
     async def _boom():
         raise AssertionError("HTTP client should not be created in dry-run")
 
-    monkeypatch.setattr(channel, "_client_get", _boom)
+    monkeypatch.setattr(channel, "_http_get_json", lambda url: (_ for _ in ()).throw(AssertionError("HTTP should not be called in dry-run")))
 
     values = await channel.query_range("up", datetime.now(), datetime.now())
     assert values == []

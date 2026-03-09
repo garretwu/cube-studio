@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from lib.fchannels.switch import SwitchChannel
+from lib.channels.switch import SwitchChannel
 
 pytestmark = [
     pytest.mark.live_netconf,

@@ -7,8 +7,7 @@ import asyncio
 import json
 from typing import Any
 
-from lib.fchannels.base import BaseChannel
-from fault_injector.config.schema import ChannelResult
+from lib.channels.base import BaseChannel, ChannelResult
 
 try:
     from pyghmi.ipmi import command as pyghmi_command

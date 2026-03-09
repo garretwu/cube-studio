@@ -34,7 +34,7 @@ from fault_injector.config.schema import (
     TargetNodeConfig,
     SafetyConfig,
 )
-from lib.fchannels.ssh import SSHChannel
+from lib.channels.ssh import SSHChannel
 from fault_injector.safety.guard import SafetyGuard
 from fault_injector.safety.rollback import RollbackJournal
 

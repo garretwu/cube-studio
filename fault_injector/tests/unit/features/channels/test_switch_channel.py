@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import pytest
 
-from lib.fchannels.switch import SwitchChannel
+from lib.channels.switch import SwitchChannel
 from fault_injector.tests.fixtures.switch_fixture import (
     MOCK_INTERFACES,
     SAMPLE_INTERFACE_XML,

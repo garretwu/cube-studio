@@ -167,12 +167,7 @@ class Session(BaseModel):
         use_enum_values = True
 
 
-class ChannelResult(BaseModel):
-    success: bool
-    output: str = ""
-    error: str = ""
-    dry_run: bool = False
-    duration_ms: int = 0
+from lib.channels.base import ChannelResult  # noqa: E402 — re-export for backward compat
 
 
 class InjectResult(BaseModel):

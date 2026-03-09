@@ -24,10 +24,11 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from lib.fchannels.base import BaseChannel
-from lib.fchannels.ssh import SSHChannel
+from lib.channels.base import BaseChannel
+from lib.channels.ssh import SSHChannel
 from fault_injector.scenarios.base import BaseScenario, FaultContext
-from fault_injector.config.schema import ChannelResult, InjectResult, RecoverResult
+from lib.channels.base import ChannelResult
+from fault_injector.config.schema import InjectResult, RecoverResult
 
 logger = logging.getLogger(__name__)
 

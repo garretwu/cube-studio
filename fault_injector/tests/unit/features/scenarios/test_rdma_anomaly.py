@@ -4,7 +4,7 @@ from dataclasses import dataclass
 
 import pytest
 
-from fault_injector.config.schema import ChannelResult
+from lib.channels.base import ChannelResult
 from fault_injector.scenarios.base import FaultContext
 from fault_injector.scenarios.rdma_anomaly import (
     ECNMisconfigurationScenario,

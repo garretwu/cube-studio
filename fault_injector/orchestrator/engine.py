@@ -34,12 +34,12 @@ from fault_injector.safety.guard import SafetyGuard
 from fault_injector.safety.rollback import RollbackJournal
 from fault_injector.scenarios.base import FaultContext
 from fault_injector.scenarios.registry import SCENARIO_REGISTRY
-from lib.fchannels.kubernetes import K8sChannel
-from lib.fchannels.ipmi import IPMIChannel
-from lib.fchannels.prometheus import PrometheusChannel
-from lib.fchannels.redfish import RedfishChannel
-from lib.fchannels.ssh import SSHChannel
-from lib.fchannels.switch import SwitchChannel
+from lib.channels.kubernetes import K8sChannel
+from lib.channels.ipmi import IPMIChannel
+from lib.channels.prometheus import PrometheusChannel
+from lib.channels.redfish import RedfishChannel
+from lib.channels.ssh import SSHChannel
+from lib.channels.switch import SwitchChannel
 
 logger = logging.getLogger(__name__)
 _MONITOR_PLACEHOLDER_PATTERN = re.compile(r"\{([a-zA-Z_][a-zA-Z0-9_]*)\}")

@@ -4,7 +4,8 @@ from dataclasses import dataclass, field
 
 import pytest
 
-from fault_injector.config.schema import ChannelResult, RedfishConfig
+from lib.channels.base import ChannelResult
+from fault_injector.config.schema import RedfishConfig
 from fault_injector.scenarios.base import FaultContext
 from fault_injector.scenarios.vllm_latency import (
     GPUContentionScenario,

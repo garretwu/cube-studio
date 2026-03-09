@@ -1,6 +1,7 @@
-"""Prometheus query channel."""
+"""Prometheus query channel (unified for load-simulator and fault-injector)."""
 from __future__ import annotations
 
+import asyncio
 import datetime as dt
 import json
 import urllib.parse
@@ -11,15 +12,28 @@ from .base import BaseChannel, ChannelResult
 
 
 class PrometheusChannel(BaseChannel):
-    def __init__(self, *, base_url: str, timeout: int = 15, dry_run: bool = False) -> None:
-        super().__init__(dry_run=dry_run, wal=None)
+    def __init__(
+        self,
+        base_url: str = "",
+        timeout: int = 15,
+        dry_run: bool = False,
+        wal: Any | None = None,
+        guard: Any | None = None,
+        *,
+        _use_httpx: bool = False,
+    ) -> None:
+        super().__init__(dry_run=dry_run, wal=wal, guard=guard)
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
+        self.last_baseline_stats: dict[str, dict[str, Any]] = {}
+        # httpx client for fault_injector path
+        self._use_httpx = _use_httpx
+        self._client: Any | None = None
 
     async def _execute_impl(self, action: str, params: dict[str, Any]) -> ChannelResult:
         if action == "query_instant":
             value = await self.query_instant(params["promql"])
-            return ChannelResult(success=True, data=value)
+            return ChannelResult(success=True, data=value, output=str(value))
         if action == "query_range":
             value = await self.query_range(
                 params["promql"],
@@ -27,10 +41,12 @@ class PrometheusChannel(BaseChannel):
                 params["end"],
                 params.get("step", "15s"),
             )
-            return ChannelResult(success=True, data=value)
+            return ChannelResult(success=True, data=value, output=str(value))
         return ChannelResult(success=False, error=f"unknown action: {action}")
 
     async def query_instant(self, promql: str) -> float:
+        if self.dry_run:
+            return 0.0
         query = urllib.parse.quote(promql, safe="")
         url = f"{self.base_url}/api/v1/query?query={query}"
         data = self._http_get_json(url)
@@ -47,6 +63,8 @@ class PrometheusChannel(BaseChannel):
         end: dt.datetime,
         step: str = "15s",
     ) -> list[tuple[float, float]]:
+        if self.dry_run:
+            return []
         query = urllib.parse.quote(promql, safe="")
         url = (
             f"{self.base_url}/api/v1/query_range?query={query}"
@@ -64,13 +82,57 @@ class PrometheusChannel(BaseChannel):
         queries: dict[str, str],
         duration: int = 120,
         sample_interval: int = 15,
+        interval: int | None = None,
     ) -> dict[str, list[float]]:
-        rounds = max(1, duration // max(1, sample_interval))
+        # Accept both parameter names for compatibility
+        actual_interval = interval if interval is not None else sample_interval
+
+        if self.dry_run:
+            self.last_baseline_stats = {
+                name: {
+                    "sample_count": 0,
+                    "error_count": 0,
+                    "error_ratio": 0.0,
+                    "zero_ratio": 0.0,
+                    "last_error": "",
+                }
+                for name in queries
+            }
+            return {name: [] for name in queries}
+
         out: dict[str, list[float]] = {k: [] for k in queries}
-        for _ in range(rounds):
+        stats: dict[str, dict[str, Any]] = {
+            name: {
+                "sample_count": 0,
+                "error_count": 0,
+                "error_ratio": 0.0,
+                "zero_ratio": 0.0,
+                "last_error": "",
+            }
+            for name in queries
+        }
+
+        end_ts = asyncio.get_event_loop().time() + duration
+        while asyncio.get_event_loop().time() < end_ts:
             for name, promql in queries.items():
-                out[name].append(await self.query_instant(promql))
-            await _sleep(sample_interval)
+                try:
+                    value = await self.query_instant(promql)
+                    out[name].append(value)
+                except Exception as exc:
+                    stats[name]["error_count"] += 1
+                    stats[name]["last_error"] = str(exc)
+                    out[name].append(0.0)
+                stats[name]["sample_count"] += 1
+            await asyncio.sleep(actual_interval)
+
+        for name, values in out.items():
+            sample_count = int(stats[name]["sample_count"])
+            if sample_count > 0:
+                zero_count = sum(1 for v in values if abs(v) <= 1e-12)
+                stats[name]["error_ratio"] = float(stats[name]["error_count"]) / float(sample_count)
+                stats[name]["zero_ratio"] = float(zero_count) / float(sample_count)
+
+        self.last_baseline_stats = stats
         return out
 
     async def compare_to_baseline(
@@ -100,8 +162,11 @@ class PrometheusChannel(BaseChannel):
             text = resp.read().decode("utf-8")
         return json.loads(text or "{}")
 
+    async def close(self) -> None:
+        if self._client:
+            await self._client.aclose()
+            self._client = None
+
 
 async def _sleep(seconds: int) -> None:
-    import asyncio
-
     await asyncio.sleep(seconds)

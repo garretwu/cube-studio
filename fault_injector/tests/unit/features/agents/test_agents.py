@@ -15,7 +15,7 @@ from fault_injector.safety.guard import SafetyGuard
 from fault_injector.safety.rollback import RollbackJournal
 from fault_injector.scenarios.base import FaultContext
 from fault_injector.scenarios.registry import SCENARIO_REGISTRY
-from lib.fchannels.ssh import SSHChannel
+from lib.channels.ssh import SSHChannel
 
 
 @dataclass

@@ -7,7 +7,7 @@ import json
 
 import pytest
 
-from lib.fchannels.redfish import RedfishChannel
+from lib.channels.redfish import RedfishChannel
 from fault_injector.tests.fixtures.redfish_fixture import (
     CHASSIS_COLLECTION,
     CHASSIS_SELF,
