@@ -54,6 +54,9 @@ class _NotebookCfg:
 # ── Fake channels ─────────────────────────────────────────────────────────────
 
 class _FakeInferenceChannel:
+    endpoint = "http://fake:8000"
+    model = "fake-model"
+
     async def chat_completion(self, messages, *, max_tokens=256, stream=False, extra=None):  # noqa: ANN001
         _ = messages, extra
         return InferenceResult(
@@ -256,6 +259,9 @@ class AgentLogDirTests(unittest.IsolatedAsyncioTestCase):
     async def test_error_logged_on_request_failure(self) -> None:
         """Inference errors are written to the log file."""
         class _FailChannel:
+            endpoint = "http://fake:8000"
+            model = "fake-model"
+
             async def chat_completion(self, messages, *, max_tokens=256, stream=False, extra=None):  # noqa: ANN001
                 raise RuntimeError("connection refused")
 

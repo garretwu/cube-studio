@@ -17,16 +17,36 @@ class LoadProfileConfig(_StrictBaseModel):
     duration_seconds: int = 120
 
 
+class InferenceTargetConfig(_StrictBaseModel):
+    name: str = "default"
+    endpoint: str = "http://localhost:8000"
+    api_key: str = ""
+    model: str = "deepseek-r1"
+
+
 class InferenceConfig(_StrictBaseModel):
     enabled: bool = True
-    endpoint: str = "http://localhost:8000/v1/chat/completions"
+    endpoint: str = "http://localhost:8000"
+    api_key: str = ""
     model: str = "deepseek-r1"
+    targets: list[InferenceTargetConfig] = Field(default_factory=list)
     load_profile: LoadProfileConfig = Field(default_factory=LoadProfileConfig)
     max_tokens: int = 512
     concurrency: int = 4
     duration_seconds: int = 60
     prompt_pool_size: int = 100
     stream: bool = False
+
+    def resolved_targets(self) -> list[InferenceTargetConfig]:
+        """Return explicit targets or fall back to top-level endpoint/model/api_key."""
+        if self.targets:
+            return list(self.targets)
+        return [InferenceTargetConfig(
+            name="default",
+            endpoint=self.endpoint,
+            api_key=self.api_key,
+            model=self.model,
+        )]
 
 
 class PipelineConfig(_StrictBaseModel):

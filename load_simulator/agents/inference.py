@@ -68,6 +68,7 @@ class InferenceAgent(BaseAgent):
         self._channel = channel or InferenceChannel(
             endpoint=config.endpoint,
             model=config.model,
+            api_key=config.api_key,
             timeout=60,
         )
         if log_dir is not None:
@@ -92,8 +93,9 @@ class InferenceAgent(BaseAgent):
         progress_interval = 10  # Log progress every 10 seconds
 
         logger.info(
-            "Inference agent starting  endpoint=%s  model=%s  concurrency=%d  duration=%ds  max_tokens=%d",
-            cfg.endpoint, cfg.model, cfg.concurrency, duration_seconds, cfg.max_tokens,
+            "Inference agent starting  name=%s  endpoint=%s  model=%s  concurrency=%d  duration=%ds  max_tokens=%d",
+            self.agent_name, self._channel.endpoint, self._channel.model,
+            cfg.concurrency, duration_seconds, cfg.max_tokens,
         )
 
         async def _one_request() -> None:
@@ -101,12 +103,14 @@ class InferenceAgent(BaseAgent):
             prompt = self._prompt_pool.sample()
             req_start = time.time()
             try:
-                async with semaphore:
+                try:
                     result = await self._channel.chat_completion(
                         messages=[{"role": "user", "content": prompt}],
                         max_tokens=cfg.max_tokens,
                         stream=getattr(cfg, "stream", False),
                     )
+                finally:
+                    semaphore.release()
                 if not result.ok:
                     err = result.error or "inference request failed"
                     errors.append(err)
@@ -117,7 +121,7 @@ class InferenceAgent(BaseAgent):
                     request_logs.append({
                         "timestamp": req_start,
                         "method": "POST",
-                        "url": cfg.endpoint,
+                        "url": self._channel.endpoint,
                         "status_code": getattr(result, "status_code", 500),
                         "latency_ms": round((time.time() - req_start) * 1000, 2),
                         "error_message": err,
@@ -138,7 +142,7 @@ class InferenceAgent(BaseAgent):
                 request_logs.append({
                     "timestamp": req_start,
                     "method": "POST",
-                    "url": cfg.endpoint,
+                    "url": self._channel.endpoint,
                     "status_code": getattr(result, "status_code", 200),
                     "latency_ms": round(elapsed * 1000, 2),
                     "error_message": None,
@@ -154,12 +158,13 @@ class InferenceAgent(BaseAgent):
                 request_logs.append({
                     "timestamp": req_start,
                     "method": "POST",
-                    "url": cfg.endpoint,
+                    "url": self._channel.endpoint,
                     "status_code": 0,
                     "latency_ms": round((time.time() - req_start) * 1000, 2),
                     "error_message": err,
                 })
 
+        # Progress tracking
         with Progress(
             SpinnerColumn(),
             TextColumn("[progress.description]{task.description}"),
@@ -169,35 +174,48 @@ class InferenceAgent(BaseAgent):
             console=console,
         ) as progress:
             progress_task = progress.add_task(
-                f"[cyan]Inference load test ({cfg.endpoint})",
+                f"[cyan]{self.agent_name} ({self._channel.endpoint})",
                 total=int(duration_seconds),
             )
 
-            # Continuously fire requests until deadline
+            # Continuously fire requests until deadline, respecting concurrency
             while time.time() < deadline:
-                elapsed_sec = int(time.time() - start_time)
-                progress.update(progress_task, completed=elapsed_sec)
+                elapsed_so_far = int(time.time() - start_time)
+                progress.update(progress_task, completed=elapsed_so_far)
 
+                # Periodic console + logger output
                 current_time = time.time()
                 if current_time - last_progress_time >= progress_interval:
+                    elapsed_sec = int(current_time - start_time)
+                    total_tok = sum(token_counts)
+                    tok_rate = total_tok / elapsed_sec if elapsed_sec > 0 else 0
                     console.print(
-                        f"[yellow]Progress:[/yellow] {elapsed_sec}s / {duration_seconds}s, "
-                        f"completed: {completed}, errors: {len(errors)}, in-flight: {len(tasks)}"
+                        f"[yellow]Progress:[/yellow] {self.agent_name}  "
+                        f"{elapsed_sec}s / {duration_seconds}s, "
+                        f"reqs: {completed}, errors: {len(errors)}, "
+                        f"tokens/s: {tok_rate:.1f}"
                     )
                     logger.info(
-                        "Progress  %ds/%ds  completed=%d  errors=%d  in_flight=%d",
-                        elapsed_sec, duration_seconds, completed, len(errors), len(tasks),
+                        "Progress  %s  %ds/%ds  completed=%d  errors=%d  tokens/s=%.1f",
+                        self.agent_name, elapsed_sec, duration_seconds,
+                        completed, len(errors), tok_rate,
                     )
                     last_progress_time = current_time
 
-                t = asyncio.create_task(_one_request())
-                tasks.append(t)
-                # Stagger slightly to avoid a thundering herd at t=0
-                await asyncio.sleep(0.01)
-                # Prune completed tasks to avoid unbounded list growth
-                tasks = [t for t in tasks if not t.done()]
+                await semaphore.acquire()
+                if time.time() >= deadline:
+                    semaphore.release()
+                    break
+                task = asyncio.create_task(_one_request())
+                tasks.append(task)
+                # Prune completed tasks periodically
+                if len(tasks) > cfg.concurrency * 2:
+                    tasks = [t for t in tasks if not t.done()]
 
-        # Wait for all in-flight requests to finish
+            progress.update(progress_task, completed=int(duration_seconds))
+
+        # Wait for in-flight requests (at most concurrency tasks)
+        tasks = [t for t in tasks if not t.done()]
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
 
@@ -224,8 +242,8 @@ class InferenceAgent(BaseAgent):
             "latency_mean_ms": round(pct["mean"], 2),
             "total_tokens": total_tokens,
             "concurrency": cfg.concurrency,
-            "endpoint": cfg.endpoint,
-            "model": cfg.model,
+            "endpoint": self._channel.endpoint,
+            "model": self._channel.model,
         }
 
         if ttft_values:
@@ -238,20 +256,20 @@ class InferenceAgent(BaseAgent):
         status = "success" if completed > 0 else "error"
 
         logger.info(
-            "Inference agent finished  status=%s  duration=%.1fs  "
+            "Inference agent finished  name=%s  status=%s  duration=%.1fs  "
             "completed=%d  failed=%d  error_rate=%.3f  "
             "req/s=%.2f  tokens/s=%.2f  "
             "p50=%.1fms  p95=%.1fms  p99=%.1fms  mean=%.1fms",
-            status, elapsed,
+            self.agent_name, status, elapsed,
             completed, len(errors), error_rate,
             req_rate, token_rate,
             pct["p50"], pct["p95"], pct["p99"], pct["mean"],
         )
 
         console.print(
-            f"[green]Inference agent completed:[/green] {completed} requests, "
-            f"{len(errors)} errors in {elapsed:.1f}s  "
-            f"(p99={pct['p99']:.0f}ms, {req_rate:.1f} req/s)"
+            f"[green]{self.agent_name} completed:[/green] "
+            f"{completed} reqs, {len(errors)} errors, "
+            f"{req_rate:.2f} req/s, {token_rate:.1f} tok/s in {elapsed:.1f}s"
         )
 
         return AgentResult(

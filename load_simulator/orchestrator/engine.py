@@ -330,6 +330,16 @@ class LoadOrchestrator:
         agents: list[tuple[str, BaseAgent, int]] = []
         channels_to_close: list[Any] = []
         for name in selected:
+            if name == "inference":
+                for entry in self._build_inference_agents(
+                    duration_scale=duration_scale,
+                    concurrency_scale=concurrency_scale,
+                ):
+                    agents.append(entry)
+                    channel = getattr(entry[1], "_channel", None)
+                    if channel is not None and hasattr(channel, "close"):
+                        channels_to_close.append(channel)
+                continue
             agent, duration = self._build_agent(name, duration_scale=duration_scale, concurrency_scale=concurrency_scale)
             agents.append((name, agent, duration))
             # Track channels that need closing
@@ -474,6 +484,7 @@ class LoadOrchestrator:
             channel = InferenceChannel(
                 endpoint=sec.endpoint,
                 model=sec.model,
+                api_key=sec.api_key,
                 timeout=int(self._channel_runtime("inference").timeout),
             )
             duration = max(1, int(round(sec.duration_seconds * duration_scale)))
@@ -504,6 +515,44 @@ class LoadOrchestrator:
             agent = factory(sec, channel=channel, log_dir=log_dir)
             return agent, duration
         raise ValueError(f"Unsupported agent: {name!r}")
+
+    def _build_inference_agents(
+        self,
+        *,
+        duration_scale: float = 1.0,
+        concurrency_scale: float = 1.0,
+    ) -> list[tuple[str, BaseAgent, int]]:
+        """Build one InferenceAgent per resolved target."""
+        cfg = self._config
+        factory = self._AGENT_FACTORIES.get("inference")
+        if factory is None:
+            raise ValueError("Unknown agent: 'inference'")
+
+        sec = copy.deepcopy(cfg.inference)
+        if hasattr(sec, "concurrency"):
+            base = int(getattr(sec, "concurrency") or 1)
+            sec.concurrency = max(1, int(round(base * concurrency_scale)))
+
+        log_dir = None
+        if self._session_store is not None:
+            log_dir = self._session_store.session_dir(self._session_tracker.session_id)
+
+        duration = max(1, int(round(sec.duration_seconds * duration_scale)))
+        targets = sec.resolved_targets() if hasattr(sec, "resolved_targets") else [sec]
+        results: list[tuple[str, BaseAgent, int]] = []
+        for target in targets:
+            target_name = getattr(target, "name", "default")
+            channel = InferenceChannel(
+                endpoint=target.endpoint,
+                model=target.model,
+                api_key=getattr(target, "api_key", ""),
+                timeout=int(self._channel_runtime("inference").timeout),
+            )
+            agent = self._create_agent(factory, sec, channel, log_dir=log_dir)
+            agent_name = f"inference:{target_name}"
+            agent.agent_name = agent_name
+            results.append((agent_name, agent, duration))
+        return results
 
     def _create_agent(
         self,
@@ -669,7 +718,8 @@ class LoadOrchestrator:
         if "pipeline" in selected:
             checks["cube_studio_pipeline"] = f"{cfg.pipeline.cube_studio_url.rstrip('/')}/pipeline_modelview/api/"
         if "inference" in selected:
-            checks["inference_endpoint"] = cfg.inference.endpoint
+            for target in cfg.inference.resolved_targets():
+                checks[f"inference_endpoint:{target.name}"] = f"{target.endpoint.rstrip('/')}/v1/models"
             checks["cube_studio_inference"] = f"{cfg.pipeline.cube_studio_url.rstrip('/')}/inferenceservice_modelview/api/"
         if "notebook" in selected:
             checks["notebook_api"] = f"{cfg.notebook.jupyter_url.rstrip('/')}/api/kernels"
