@@ -1,6 +1,6 @@
 # AIDC Auto-SRE 分阶段开发计划
 
-> 文档版本：v2.6 | 更新日期：2026-02-24 | 分支：claude/phased-development-plan-ZTWRB
+> 文档版本：v2.7 | 更新日期：2026-03-11 | 分支：claude/phased-development-plan-ZTWRB
 > v2.0 修订：对照 load-simulator.md / fault-injector.md / AIDC-auto-SRE.md 全文补全 14 项差距
 > v2.1 修订：`load_simulator` 包 v0.1.0 已实现（25 文件，2229 行）；更新实现进度与 Sprint Track A 状态
 > v2.2 修订：全文对照三份设计文档核对，新增 G-15 至 G-32 共 18 项遗漏；更新 Sprint 1-4 Track B/C/D/E；补入验收标准矩阵（修复G-23）；POC 交付物补 P1-10/P2-1
@@ -8,6 +8,7 @@
 > v2.4 修订：对照 AIDC-auto-SRE-review-feedback.md 审查，新增 G-33（OpenTelemetry 分布式追踪）
 > v2.5 修订：对照 aidc-auto-sre-plan-feedback.md 审查，落入以下变更：Demo 2 case 必做（Case 3 → POC）；GUI Skills/知识库/记忆库硬性验收；Gate-1/Gate-2 前置依赖；各阶段 Unit+E2E 测试阈值；文档 DoD；Prod Phase 时长标注 1~1.5 月；补入遗留 v2.4 项（性能基线、LLM 降级验收、resource_lock 分阶段决策、Sprint 7 OpenTelemetry）
 > v2.6 修订：再次全量对照三份设计文档（§1-§18 逐节对比），新增 G-34~G-42：Session 恢复/联动 contract 测试/BMC 写操作硬阻断/15 维 Gate（G-34~G-37）+ reporting 模块/MonitorAgent/combined_scenario 多阶段注入/H3C S6850 25G 场景（G-38~G-41）；补全量覆盖矩阵 + 阶段 Gate 表
+> v2.7 修订：按 2026-03-11 最新分支状态回写当前基线：`load_simulator` / `fault_injector` 视为已完成；共享 Channel 层统一为 `lib/channels/`；GUI 统一为 8 页面（含 Skills）；builtin skills 统一为 6 个；`sre_agent --resume` 前移为 Demo 交付，POC 侧重恢复演练与持久化加固
 
 ---
 
@@ -33,7 +34,7 @@ AIDC Auto-SRE 是面向 AI 数据中心的自主运维智能体系统，通过 L
 | 组件 | 职责 | 优先级 | 状态 |
 |------|------|--------|------|
 | `load_simulator` | 生成确定性推理/训练/微调/Notebook 负载，暴露瓶颈 | 前置依赖，最优先 | **✅ v0.1.0 已实现**（2026-02-19） |
-| `fault_injector` | 多维度故障注入（硬件/OS/平台/服务），驱动 Demo 场景 | 前置依赖，最优先 | ❌ 待实现（Sprint 1-2） |
+| `fault_injector` | 多维度故障注入（硬件/OS/平台/服务），驱动 Demo 场景 | 前置依赖，最优先 | **✅ 已实现**（2026-03-10 基线） |
 | `sre_agent` | LangGraph ReAct 诊断 + NeMo 受控修复 + GUI | 核心交付物 | ❌ 待实现（Sprint 1-4） |
 
 **核心不变量**：LLM 只做只读分析，确定性引擎（asyncio）负责注入/恢复/执行，WAL 保证可回滚。
@@ -44,6 +45,10 @@ AIDC Auto-SRE 是面向 AI 数据中心的自主运维智能体系统，通过 L
 
 ```
 cube-studio/
+├── lib/
+│   └── channels/                      # 共享 Channel 层（base / cube_studio / kubernetes / prometheus
+│                                      # ssh / redfish / ipmi / switch + sre_agent 新增 log / alert / ontology / knowledge）
+│
 ├── load_simulator/
 │   ├── __main__.py / cli.py          # CLI 入口（含 run --output-format json 子命令）
 │   ├── config/                        # schema.py / loader.py / defaults.py
@@ -66,7 +71,7 @@ cube-studio/
 │   ├── config/
 │   ├── orchestrator/                  # engine.py / session.py / scheduler.py / watchdog.py
 │   ├── agents/                        # hardware / os_fault / platform / service / monitor / diagnosis
-│   ├── channels/                      # ssh / redfish / switch / kubernetes / cube_studio / prometheus
+│   ├── channels/                      # re-export shim，复用 lib/channels/
 │   ├── scenarios/
 │   │   ├── vllm_latency.py            # RC-1~RC-6 六个场景
 │   │   ├── rdma_anomaly.py            # F-1~F-6 六个场景
@@ -77,37 +82,39 @@ cube-studio/
 │
 ├── sre_agent/
 │   ├── cli.py / server.py / config.py
+│   ├── models/                        # alert / diagnosis / remediation / ontology / memory / events / common
 │   ├── agent/                         # sre_agent.py / graph.py / state.py / nodes.py
-│   │                                  # discovery_agent.py / monitor_agent.py
-│   │                                  # conversational_agent.py / thinking_trace.py / prompts/
+│   │                                  # discovery_agent.py / monitor_agent.py / conversational_agent.py
+│   │                                  # thinking_trace.py / checkpoint.py / prompts.py
+│   │                                  # （Demo 用 prompts.py 单文件；Prod 演进为 prompts/*.j2 模板）
 │   ├── guardrails/                    # config.yml / rails/{input,output,execution,dialog}.co
 │   │                                  # actions.py / prompts.yml
 │   ├── nat/                           # workflow.yml / eval_dataset.jsonl
-│   ├── channels/                      # ssh / redfish / switch / k8s / cube_studio / prometheus
-│   │                                  # log / alert / ontology / knowledge（新增）
-│   ├── tools/                         # registry.py / definitions.py / metrics / logs / k8s_tools
-│   │                                  # network / bmc / platform / ontology_tools
-│   │                                  # knowledge_tools / remediation_tools
+│   ├── tools/                         # registry.py / definitions.py
+│   │   ├── readonly/                  # k8s / prometheus / gpu / network / logs / bmc / platform / ontology / memory
+│   │   └── write/                     # k8s / remediation / network
 │   ├── skills/
 │   │   ├── runtime/                   # registry.py / executor.py / tools.py（4个固定@tool）/ policy.py
+│   │   ├── creator.py                 # SkillCreator（POC）
 │   │   ├── builtin/                   # vllm-diagnosis / rdma-diagnosis / gpu-health / network-diagnosis
+│   │                                  # storage-diagnosis / platform-health
 │   │   └── custom/                    # 用户热加载目录
 │   ├── ontology/
-│   │   ├── models.py / graph.py / store.py
+│   │   ├── models.py / graph.py / store.py / entities.py / query.py
 │   │   └── discovery/                 # bmc_scanner / switch_scanner / k8s_scanner / prometheus_scanner
 │   ├── remediation/
 │   │   ├── engine.py / loop_orchestrator.py / incident_handler.py
 │   │   ├── planner.py / validator.py / canary.py / approval.py / wal.py
-│   ├── knowledge/                     # store.py / ingest.py / chunker.py / runbook.py
-│   ├── memory/                        # store.py / incident.py / pattern.py / config_memory.py
+│   ├── knowledge/                     # store.py / ingest.py / chunker.py / runbook.py / retriever.py
+│   ├── memory/                        # store.py / store_pg.py / incident.py / pattern.py / config_memory.py / factory.py
 │   ├── concurrency/                   # resource_lock.py / alert_dedup.py / alert_correlator.py
 │   ├── auth/                          # middleware.py / secrets.py
-│   ├── safety/                        # guard.py / forbidden.py
+│   ├── safety/                        # guard.py / forbidden.py / blast_radius.py
 │   ├── ha/                            # heartbeat.py / leader.py
 │   ├── slo/                           # metrics.py / degradation.py
 │   ├── lifecycle/                     # data_lifecycle.py
-│   ├── api/                           # routes/{diagnosis,remediation,topology,knowledge,incidents}
-│   │                                  # websocket.py / auth.py
+│   ├── api/                           # routes.py（Demo 单文件）/ websocket.py / middleware.py
+│   │                                  # Prod 演进为 routes/{diagnosis,remediation,topology,knowledge,incidents}
 │   ├── frontend/                      # React 18 + Ant Design 5 + D3.js（Vite + Zustand）
 │   └── tests/
 │
@@ -206,7 +213,7 @@ v2.5 → v2.6 修订（三份设计文档 §1-§18 全文交叉核验后补入�
 | 维度 | 内容 |
 |------|------|
 | 场景 | **必做**：Case 1 p95 vLLM 延迟异常（2 根因）；Case 2 RDMA 异常（2 根因）；**Stretch/POC**：Case 3 ambiguous 多候选验证 |
-| GUI | 展示 7 个页面：拓扑/告警/诊断/修复/对话/知识库/记忆库；**Skills/知识库/记忆库三页须通过硬性 GUI 验收** |
+| GUI | 展示 8 个页面：拓扑/告警/诊断/修复/对话/知识库/记忆库/Skills；**Skills/知识库/记忆库三页须通过硬性 GUI 验收** |
 | 文档 | 部署手册、Demo 步骤、Config 参考、故障排查（≥ 10 条）、架构图 |
 | 测试 | 单元测试覆盖率 ≥ 70%，E2E 测试跑通 2 核心 Case（4 场景：Case 1-2 + GUI Skills/Knowledge/Memory） |
 
@@ -283,7 +290,7 @@ LoopOrchestrator 循环执行:
     → 验证失败，WAL 回滚 gpu_memory_utilization，进入下一候选
 
   尝试 #2: kill gpu-burn
-    验证结果: GPU-0 util=3.2% ✓，P95 580ms→280ms ✓
+    验证结果: GPU-0 util=3.2% ✓，P95 720ms→420ms ✓
     → 验证成功，结论: 两个根因均存在，gpu-burn 是主因
     → 记忆写入: "低强度 GPU 争用 + KV Cache 偏低可叠加放大延迟"
 ```
@@ -307,47 +314,28 @@ LoopOrchestrator 循环执行:
 ```
 Week 1-2  [Sprint 1 — 骨架与前置依赖]
 ─────────────────────────────────────────────────────────────────────
-Track A │ [✅ 已完成 2026-02-19] load_simulator v0.1.0 实现（详见 load-simulator.md 实现状态节）
-        │ [❌ 待实现] channels/ 模块（Sprint 2 Track A）
-Track B │ fault_injector: CLI 骨架（含 --dry-run 预检 + --resume <session_id> 崩溃恢复，§11.1，修复G-28/G-34）
-        │ + Orchestrator 五阶段执行流（§11.2，修复G-28）
-        │ + channels/: SSHChannel / RedfishChannel / SwitchChannel（§2.6）
-        │ + safety/: WAL rollback.py + SafetyGuard（§2.7 / §13）
-        │ + orchestrator/: session.py --resume 从 rollback.jsonl 恢复活跃故障（§2.9.2，修复G-34）
-        │ + orchestrator/: watchdog.py + Scenario 基类 + 场景注册表（§2.8）
+Track A │ [✅ 已完成 baseline] load_simulator v0.1.0（含 channels / 4 Agents / output-format json / session resume）
+Track B │ [✅ 已完成 baseline] fault_injector（含 CLI / 五阶段编排 / shared channels / SafetyGuard / WAL / session resume）
 Track C │ sre_agent: LangGraph 骨架（agent/: sre_agent/graph/state/nodes，§4.2）
         │ + ToolRegistry + get_gpu_processes（§5.2，修复P0-5）
         │ + SSH 注入防护 shlex.quote + VerificationCondition DSL（§2.6 / Appendix C P0-1/P0-2）
         │ + sre_agent 完整 Config Schema（§12，修复G-22）
 Track D │ sre_agent/frontend: Vite+React18+Zustand+AntDesign5 项目初始化（修复G-04）
-        │ + 7 页面路由 + 布局组件 + WebSocket client
+        │ + 8 页面路由 + 布局组件 + WebSocket client
 Track E │ Docker Compose 部署环境 + 各 Channel mock（Prometheus/K8s/Redfish/Switch）
         │ + CI 骨架（pytest + ruff）
 
 Week 3-4  [Sprint 2 — 核心功能]
 ─────────────────────────────────────────────────────────────────────
-Track A │ load_simulator（Sprint 2 补全）:
-        │ + channels/ 全部实现，含 CubeStudio JWT 认证（§2.6 / §2.9，修复G-31）
-        │ + load/: LoadProfile / RateLimiter / TokenDistribution / PromptPool（§2.7）
-        │ + Monitor Agent 三层架构完整实现（§4，修复G-29）
-        │ + InferenceAgent 完整实现（§3.1）
-        │ + 四种执行模式 + AdaptiveRules（§7 / §9.1，修复G-30）
-        │ + BottleneckAnalyzer LLM 模式（§5.4）
-        │ + reporting/ HTML 报告 + Plotly 图表 + 版本对比（§8）
-Track B │ fault_injector:
-        │ + Demo 场景: gpu_contention(RC-1) + network_jitter(RC-2)（§7.1，修复G-01）
-        │ + Demo 场景: ecn_misconfiguration(F-2) + rdma_link_flap(F-4)（§8.1，修复G-01）
-        │ + HardwareFaultAgent 全部子类型（§3，修复G-27）
-        │ + OSFaultAgent 全部子类型（§4，修复G-27）
-        │ + MonitorAgent: baseline 采集（注入前）/ observe 阶段指标采集 / Prometheus 查询集成（§2.5，修复G-39）
-        │ + DiagnosisAgent 单次 LLM 诊断（§12，修复G-26）
+Track A │ [✅ 已完成 baseline] load_simulator 补全项：JWT 认证 / 三层监控 / 执行模式 / AdaptiveRules / reporting
+Track B │ [✅ 已完成 baseline] fault_injector 补全项：Demo 场景 / MonitorAgent / DiagnosisAgent / 平台与硬件子类型
 Track C │ sre_agent:
         │ + NeMo Guardrails 4 个 rail 文件（§17，修复G-12）
         │ + ReAct 循环（agent_node/conclude_node/remediate_node，§4.2）
         │ + asyncio.wait_for 步级 + 会话级超时（§4.2，修复P0-4）
         │ + skills/runtime/: SkillRegistry + SkillExecutor + 4 个固定 @tool（§10，修复G-03）
         │ + SkillExecutor 脚本沙箱（§10.6，修复G-16）
-        │ + skills/builtin/: vllm-diagnosis + rdma-diagnosis（§10.3）
+        │ + skills/builtin/: 6 个内置 skills（vllm / rdma / gpu-health / network / storage / platform）
 Track D │ sre_agent/frontend: 拓扑页 + 诊断页（ThinkingStep 实时流）+ 告警页
 Track E │ sre_agent/storage（修复G-15，P1-10）:
         │ + KnowledgeStore: ChromaDB + asyncio.to_thread（§8）
@@ -356,18 +344,8 @@ Track E │ sre_agent/storage（修复G-15，P1-10）:
 
 Week 5-6  [Sprint 3 — 场景集成与修复引擎]
 ─────────────────────────────────────────────────────────────────────
-Track A │ load_simulator:
-        │ + load↔fault 联动契约 E2E 测试（联动接口已实现，修复P0-1）
-        │ + 单元测试套件（test_config / test_channels / test_load_profile / test_metrics / test_agents）
-        │ + 四个 Agent E2E 测试
-Track B │ fault_injector:
-        │ + 扩展场景: storage_io_interference(RC-3) + platform_cascade(RC-4)（§7.1）
-        │ + 扩展场景: pfc_deadlock(F-1) + roce_mtu_mismatch(F-5)（§8.1）
-        │ + PlatformFaultAgent 全部子类型（§5，修复G-32）
-        │ + ServiceFaultAgent（§6）
-        │ + load-simulator 联动集成（§9.2）
-        │ + reporting/: timeline.py（执行时间线）/ html_report.py（HTML 摘要）/ charts.py（Matplotlib 图表）
-        │   / resilience.py（弹性评分：auto_recovery/degradation_handling/fault_isolation/data_integrity，§2.10，修复G-38）
+Track A │ [✅ 已完成 baseline] load↔fault 联动契约 / 单测 / E2E
+Track B │ [✅ 已完成 baseline] 扩展场景 / 联动集成 / reporting / 平台与服务故障
 Track C │ sre_agent:
         │ + LoopOrchestrator（§7.7 / §7.8，含终止约束，修复G-05 / G-25）
         │ + IncidentHandler（§7.9，修复G-05）
@@ -378,6 +356,9 @@ Track C │ sre_agent:
         │   [分阶段决策：Demo 用 asyncio.Lock（单进程）；Prod Phase 1 升级为 Redis Redlock（多副本 HA）]
         │ + JWT 鉴权 + RBAC（§13.2 / §15.2，修复P0-3）
         │ + FastAPI REST routes + WebSocket 思考流（§13）
+        │ + LangGraph checkpoint 持久化(AsyncSqliteSaver) + `sre-agent --resume`（Demo 交付）
+        │ + AlertChannel `silence_alert()` 接入 remediation flow
+        │ + SkillCreator + ConfigMemory 显式落位（POC/Prod 接口预留）
 Track D │ sre_agent/frontend:
         │ + 修复页 + 知识库页 + 记忆库页 + Skills 页 + 对话页
         │ + WebSocket backpressure + 断线重连 last_event_id（§13.3，修复G-18）
@@ -390,8 +371,8 @@ Track E │ sre_agent/ontology:
 
 Week 7-8  [Sprint 4 — 测试、文档、Demo 彩排]
 ─────────────────────────────────────────────────────────────────────
-Track A │ load_simulator: 单元测试 + E2E 测试（4 个 Agent 各一个）
-Track B │ fault_injector: 单元测试 + 安全注入测试 + WAL 崩溃恢复测试
+Track A │ [✅ 已完成 baseline] load_simulator: 单元测试 + E2E 测试（4 个 Agent 各一个）
+Track B │ [✅ 已完成 baseline] fault_injector: 单元测试 + 安全注入测试 + WAL 崩溃恢复测试
 Track C │ sre_agent: 单元测试（test_agent / test_ontology / test_remediation / test_tools / test_auth
         │   test_resource_lock / test_alert_correlator / test_slo_degradation）
         │ + nat/workflow.yml（§18.2，修复G-21）+ nat/eval_dataset.jsonl（修复G-13）
@@ -405,27 +386,27 @@ Track E │ 完整文档（docs/demo/ 五篇）+ Demo 彩排 + 问题修复
 
 ### Demo 交付物检查清单
 
-**load_simulator** *(v0.1.0 已实现，2026-02-19)*
+**load_simulator** *(已完成 baseline)*
 - [x] 4 个功能 Agent（inference/pipeline/finetune/notebook）可独立运行（`--only` 参数）
 - [x] `python -m load_simulator run --output-format json` 子命令输出有效 JSON
-- [ ] HTML 报告含延迟分布/吞吐/资源时间线图表 *(reporting/ 模块待实现，Sprint 2 Track A)*
+- [x] HTML 报告含延迟分布/吞吐/资源时间线图表
 - [x] 六层瓶颈阈值引擎检测并报告（`metrics/thresholds.py`）
 
-**fault_injector**
-- [ ] `gpu_contention` / `network_jitter` 场景可注入并自动回滚
-- [ ] `ecn_misconfiguration` / `rdma_link_flap` 场景可注入并自动回滚
-- [ ] WAL 崩溃恢复：进程 kill 后 `--resume` 可恢复所有活跃故障（修复G-34）
-- [ ] MonitorAgent：baseline 采集 + observe 阶段指标可见（修复G-39）
-- [ ] reporting/ 模块：html_report.py 输出完整 HTML + resilience.py 返回四维弹性评分（修复G-38）
-- [ ] load-simulator 联动：子进程调用成功，stdout JSON 解析正确
+**fault_injector** *(已完成 baseline)*
+- [x] `gpu_contention` / `network_jitter` 场景可注入并自动回滚
+- [x] `ecn_misconfiguration` / `rdma_link_flap` 场景可注入并自动回滚
+- [x] WAL 崩溃恢复：进程 kill 后 `--resume` 可恢复所有活跃故障（修复G-34）
+- [x] MonitorAgent：baseline 采集 + observe 阶段指标可见（修复G-39）
+- [x] reporting/ 模块：html_report.py 输出完整 HTML + resilience.py 返回四维弹性评分（修复G-38）
+- [x] load-simulator 联动：子进程调用成功，stdout JSON 解析正确
 
 **sre_agent**
 - [ ] Case 1 RC-A/RC-B：端到端诊断 + 审批 + 修复 + 验证
 - [ ] Case 2 RC-A/RC-B：端到端诊断 + 灰度修复 + 验证
 - [ ] Case 3（Stretch Goal）：ambiguous 诊断 + LoopOrchestrator 两轮验证 + 记忆写入
 - [ ] NeMo Guardrails 4个 rail 文件工作，拦截危险输入/输出
-- [ ] Skills：`list_skills` / `load_skill` / `run_skill` 可用，2 个 builtin skill 内容完整
-- [ ] GUI 7 个页面全部可访问（拓扑/告警/诊断/修复/对话/知识库/记忆库）
+- [ ] Skills：`list_skills` / `load_skill` / `run_skill` 可用，6 个 builtin skill 内容完整
+- [ ] GUI 8 个页面全部可访问（拓扑/告警/诊断/修复/对话/知识库/记忆库/Skills）
 - [ ] GUI Skills 页：list/load/run skill 可视化执行通过（硬性验收）
 - [ ] GUI 知识库页：检索 + 文档详情展示（硬性验收）
 - [ ] GUI 记忆库页：相似事件命中 + 模式置信度展示（硬性验收）
@@ -466,15 +447,10 @@ Track E │ 完整文档（docs/demo/ 五篇）+ Demo 彩排 + 问题修复
 ### 里程碑与并行 Track
 
 ```
-Week 9-10  [Sprint 5 — 扩展故障场景]
+Week 9-10  [Sprint 5 — POC 能力扩展]
 ─────────────────────────────────────────────────────────────────────
-Track A │ fault_injector: vllm_latency.py 补全 RC-3(storage_io_interference)
-        │   RC-4(platform_cascade) + RC-5(os_resource_pressure) + RC-6(thermal_throttling)
-Track B │ fault_injector: rdma_anomaly.py 补全 F-1(pfc_deadlock) + F-3(rdma_load_imbalance)
-        │   + F-5(roce_mtu_mismatch) + F-6(rdma_qos_downgrade)
-        │ + H3C S6850（25G 接入层交换机）专项故障场景（§3.6.2，修复G-41）：
-        │   STP 重收敛（portfast 关闭触发 30s 收敛延迟）/ LACP 降级（active→passive）
-        │   / 路由黑洞（ip route-static Null0）/ ARP 表清空（reset arp）
+Track A │ [✅ 已完成 baseline] fault_injector 扩展场景：RC-3~RC-6 / F-1~F-6
+Track B │ [✅ 已完成 baseline] H3C S6850 专项场景 + 场景库补齐 + 联动稳定性验证
 Track C │ sre_agent: 新增诊断工具(get_ecn_config/get_pfc_counters/check_thermal)
         │ + 写工具 schema 注入 system prompt(修复P1-5)
         │ + LLM 健康监控 + 降级 ThresholdEngine(修复P1-5)
@@ -483,14 +459,10 @@ Track E │ 知识库: Runbook 批量摄入(ingest.py + chunker.py) + 文档版�
 
 Week 11-12 [Sprint 6 — 可靠性与压力测试]
 ─────────────────────────────────────────────────────────────────────
-Track A │ load_simulator: 多 Agent 并发混合压测 + historical comparison 报告
-Track B │ fault_injector: combined_scenario 多阶段顺序注入（§7.2，修复G-40）：
-        │   `realistic_latency_instability` — 6 阶段时间线：
-        │   t=0s gpu_contention(低强度) / t=60s ecn_misconfiguration / t=120s storage_io_interference
-        │   t=300s recover_ecn / t=360s recover_storage / t=420s recover_gpu（全自动回滚验证）
-        │ + 1000 次模拟回放 + WAL 回滚 ≥ 99% 验证
+Track A │ [✅ 已完成 baseline] load_simulator 多 Agent 并发混合压测 + historical comparison 报告
+Track B │ [✅ 已完成 baseline] fault_injector combined_scenario + 1000 次模拟回放 + WAL 回滚验证
 Track C │ sre_agent: 并发诊断 Semaphore(max_concurrent_diagnoses 配置项)
-        │ + LangGraph checkpoint 持久化(AsyncSqliteSaver) + --resume 支持
+        │ + LangGraph checkpoint 持久化 hardening + 恢复演练（Demo 已交付基础能力）
         │ + 对话 Agent function-calling 完整 loop(修复P1-8)
         │ + 记忆置信度双向更新(修复P1-9)
 Track D │ GUI: 多诊断会话列表 + 实时状态 + 拓扑动态高亮
@@ -499,15 +471,15 @@ Track E │ 性能测试: 1000 次告警回放 + 无死锁 + aiosqlite 异步重
 
 ### POC 交付物
 
-- [ ] 全部 6 个 vLLM RC 场景 + 6 个 RDMA F 场景可注入/诊断
-- [ ] H3C S6850（25G 接入层）4 类故障场景（STP/LACP/路由黑洞/ARP 清空）可注入/回滚（修复G-41）
-- [ ] combined_scenario `realistic_latency_instability` 6 阶段时间线完整执行通过（修复G-40）
+- [x] 全部 6 个 vLLM RC 场景 + 6 个 RDMA F 场景可注入/诊断（baseline）
+- [x] H3C S6850（25G 接入层）4 类故障场景（STP/LACP/路由黑洞/ARP 清空）可注入/回滚（修复G-41）
+- [x] combined_scenario `realistic_latency_instability` 6 阶段时间线完整执行通过（修复G-40）
 - [ ] 知识库 Runbook 摄入 pipeline 可用
 - [ ] 并发诊断 ≤ 5，无死锁，ResourceLock 生效
 - [ ] 1000 次告警回放通过（无未恢复会话，内存无泄漏）
 - [ ] WAL 回滚成功率 ≥ 99%（注入 10 类失败场景验证）
 - [ ] 对话 Agent 多步 function-calling 场景通过 E2E 测试
-- [ ] LangGraph checkpoint 持久化，sre-agent --resume 可用
+- [ ] LangGraph checkpoint 持久化 hardening，sre-agent --resume 恢复演练通过
 - [ ] aiosqlite + asyncio.to_thread 异步化验证：事件循环阻塞告警为 0（修复G-15，P1-10）
 - [ ] SQLite/NetworkX 并发安全：锁和事务边界通过并发压测（P2-1）
 - [ ] 降级验收：LLM 不可用时 ≤ 30s 切换到规则引擎，正在处理的会话状态不丢失（修复P1-5，feedback §2.5）
@@ -550,6 +522,7 @@ Track A │ ha/heartbeat.py + ha/leader.py（Redis Redlock 选主）
         │ sre_agent 多副本部署 + 故障切换验证
 Track B │ lifecycle/data_lifecycle.py: 数据归档/清理策略
         │ + 告警风暴抑制（AlertCorrelator 时间窗口聚合）
+        │ + memory/store_pg.py：MemoryStorePG 接口 + PostgreSQL/Qdrant 迁移预留
 Track C │ Helm Chart 生产部署包（load_simulator/fault_injector/sre_agent 各一个）
 Track D │ GUI: 系统健康总览 + SLO 趋势图 + 多副本状态展示
 Track E │ 端到端回归测试（含安全、幂等、HA 故障切换场景）
@@ -564,6 +537,7 @@ Track E │ 端到端回归测试（含安全、幂等、HA 故障切换场景�
 - [ ] NAT profiling + eval_dataset 评估报告（诊断准确率 baseline）
 - [ ] HA：sre_agent 双副本，单副本故障 < 30s 切换
 - [ ] OpenTelemetry 分布式追踪可用，trace_id 贯穿 API→Agent→Channel（修复G-33）
+- [ ] MemoryStorePG 接口与 PostgreSQL/Qdrant 迁移方案完成
 - [ ] Helm Chart 生产部署完整文档
 
 ---
@@ -651,17 +625,17 @@ Track E │ 最终生产文档 + 运营手册 + SLO 验收报告
 
 ## 并行开发 Session 分工
 
-### Demo 阶段（8 个 Session）
+### Demo 阶段（8 个 Session，其中 S1-S3 为已完成 baseline）
 
 | Session | Track | 主目录 | 外部依赖 |
 |---------|-------|--------|---------|
-| S1 | A - load_simulator | `load_simulator/` | 无 |
-| S2 | B - fault_injector 基础 | `fault_injector/` (channels/safety/orchestrator) | 无 |
-| S3 | B - fault_injector 场景 | `fault_injector/scenarios/` | S2 channels 完成 |
+| S1 | A - load_simulator | `load_simulator/` | 无（已完成 baseline） |
+| S2 | B - fault_injector 基础 | `fault_injector/` (channels/safety/orchestrator) | 无（已完成 baseline） |
+| S3 | B - fault_injector 场景 | `fault_injector/scenarios/` | S2 channels 完成（已完成 baseline） |
 | S4 | C - sre_agent core | `sre_agent/agent/` + `guardrails/` + `tools/` + `skills/` | 无 |
 | S5 | C - sre_agent api + remediation | `sre_agent/api/` + `remediation/` + `concurrency/` | S4 agent 骨架 |
 | S6 | D - Frontend | `sre_agent/frontend/` | S5 API 接口定义 |
-| S7 | E - Storage + Ontology | `sre_agent/storage/` + `ontology/` | 无 |
+| S7 | E - Storage + Ontology | `sre_agent/knowledge/` + `sre_agent/memory/` + `sre_agent/ontology/` | 无 |
 | S8 | E - 文档 & 测试 | `docs/` + `tests/` | S1-S7 功能稳定后 |
 
 ### Session 间接口契约
@@ -688,7 +662,8 @@ diagnosis_session:
 
 # S5 → S6: WebSocket 推送格式
 ws_event:
-  type: "step|conclusion|approval_required|loop_start|loop_progress|remediation_progress|done"
+  schema_version: "1.0"
+  type: "thinking_step|tool_call|tool_result|diagnosis_result|approval_required|loop_start|loop_progress|remediation_progress|alert|error|done"
   session_id: str
   payload: dict
 
@@ -708,8 +683,8 @@ storage_interface:
 
 | Gate | 触发条件 | 解锁内容 |
 |------|---------|---------|
-| **Gate-1** | `load_simulator run --output-format json` 输出稳定并通过契约测试（S1 完成） | fault 场景 E2E 联动开发可进入（S3 解锁） |
-| **Gate-2** | fault_injector WAL + rollback 通过崩溃恢复测试（S2 完成） | sre_agent remediation 自动执行路径可开启（S5 解锁） |
+| **Gate-1** | `load_simulator run --output-format json` 输出稳定并通过契约测试（S1 已完成） | 已满足前置条件 |
+| **Gate-2** | fault_injector WAL + rollback 通过崩溃恢复测试（S2 已完成） | 已满足前置条件 |
 
 ### 合并策略
 

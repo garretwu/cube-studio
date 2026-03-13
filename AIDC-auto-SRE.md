@@ -77,7 +77,8 @@
 │                         用户界面层                                       │
 │  ┌──────────┐  ┌──────────────┐  ┌───────────┐  ┌───────────────────┐  │
 │  │   CLI    │  │  REST API    │  │ WebSocket │  │    GUI (React)    │  │
-│  │ (Click)  │  │  (FastAPI)   │  │ 思考流推送 │  │ 拓扑/诊断/修复/对话│  │
+│  │ (Click)  │  │  (FastAPI)   │  │ 思考流推送 │  │ 拓扑/告警/诊断/修复│  │
+│  │          │  │              │  │           │  │ /对话/知识/记忆/技能│  │
 │  └────┬─────┘  └──────┬───────┘  └─────┬─────┘  └────────┬──────────┘  │
 └───────┼───────────────┼────────────────┼─────────────────┼──────────────┘
         │               │                │                 │
@@ -198,10 +199,26 @@
 ### 2.5 项目结构
 
 ```
+lib/
+└── channels/                       # 共享 Channel 层（与 fault-injector / load-simulator 复用）
+    ├── base.py                     # BaseChannel ABC
+    ├── ssh.py                      # SSHChannel
+    ├── redfish.py                  # RedfishChannel
+    ├── switch.py                   # SwitchChannel
+    ├── kubernetes.py                # K8sChannel
+    ├── ipmi.py                     # IPMIChannel（IPMI raw commands）
+    ├── cube_studio.py              # CubeStudioChannel
+    ├── prometheus.py               # PrometheusChannel
+    ├── log.py                      # LogChannel（新增）
+    ├── alert.py                    # AlertChannel（新增）
+    ├── ontology.py                 # OntologyChannel（新增）
+    └── knowledge.py                # KnowledgeBaseChannel（新增）
+
 sre_agent/
 ├── cli.py                          # Click CLI 入口
 ├── config.py                       # Pydantic 配置模型
 ├── server.py                       # FastAPI 服务入口
+├── models/                         # 共享模型：alert / diagnosis / remediation / ontology / memory / events / common
 │
 ├── agent/
 │   ├── sre_agent.py                # SRE Agent — LangGraph StateGraph 核心
@@ -211,11 +228,9 @@ sre_agent/
 │   ├── discovery_agent.py          # 拓扑发现 Agent（确定性）
 │   ├── monitor_agent.py            # 持续监控 Agent（确定性）
 │   ├── conversational_agent.py     # 对话式 SRE 助手 — LangGraph
+│   ├── checkpoint.py               # LangGraph AsyncSqliteSaver + `sre-agent --resume`
 │   ├── thinking_trace.py           # 思考过程记录
-│   └── prompts/
-│       ├── sre_system.j2           # SRE Agent 系统提示词
-│       ├── diagnosis.j2            # 诊断上下文模板
-│       └── remediation.j2          # 修复计划模板
+│   └── prompts.py                  # 系统提示词（Demo 单文件；Prod 演进为 prompts/*.j2 模板）
 │
 ├── guardrails/                     # NeMo Guardrails 配置
 │   ├── config.yml                  # 模型配置 + 活跃 rails
@@ -228,39 +243,34 @@ sre_agent/
 │   └── prompts.yml                 # 安全检查提示词模板
 │
 ├── nat/                            # NeMo Agent Toolkit 配置
+│   ├── wrapper.py                  # NAT 包裹层（profiling/evaluation 入口）
 │   ├── workflow.yml                # NAT workflow 定义（profiling/eval）
 │   └── eval_dataset.jsonl          # 诊断准确率评估数据集
 │
-├── channels/                       # 共享 Channel 层
-│   ├── base.py                     # BaseChannel ABC
-│   ├── ssh.py                      # SSHChannel
-│   ├── redfish.py                  # RedfishChannel
-│   ├── switch.py                   # SwitchChannel
-│   ├── k8s.py                      # K8sChannel
-│   ├── cube_studio.py              # CubeStudioChannel
-│   ├── prometheus.py               # PrometheusChannel
-│   ├── log.py                      # LogChannel（新增）
-│   ├── alert.py                    # AlertChannel（新增）
-│   ├── ontology.py                 # OntologyChannel（新增）
-│   └── knowledge.py                # KnowledgeBaseChannel（新增）
-│
 ├── tools/
-│   ├── registry.py                 # 工具注册表
+│   ├── registry.py                 # 工具注册表（含 safety level 分级）
 │   ├── definitions.py              # 工具定义（JSON Schema）
-│   ├── metrics.py                  # 指标类工具
-│   ├── logs.py                     # 日志类工具
-│   ├── k8s_tools.py                # K8s 类工具
-│   ├── network.py                  # 网络类工具
-│   ├── bmc.py                      # BMC 类工具
-│   ├── platform.py                 # 平台类工具
-│   ├── ontology_tools.py           # 拓扑查询工具
-│   ├── knowledge_tools.py          # 知识库工具
-│   └── remediation_tools.py        # 修复类工具（write）
+│   ├── readonly/                   # 只读工具（safety_level: read_only）
+│   │   ├── k8s.py                  # kubectl get/describe/logs
+│   │   ├── prometheus.py           # PromQL queries
+│   │   ├── gpu.py                  # nvidia-smi, DCGM metrics
+│   │   ├── network.py              # RDMA, switch port stats
+│   │   ├── logs.py                 # 日志采集/解析
+│   │   ├── bmc.py                  # Redfish / IPMI 只读
+│   │   ├── platform.py             # CubeStudio 平台只读
+│   │   ├── ontology.py             # 拓扑图遍历
+│   │   └── memory.py               # 模式/事件查询
+│   └── write/                      # 写工具（safety_level: write_confirm+）
+│       ├── k8s.py                  # kubectl apply/delete/scale
+│       ├── remediation.py          # 修复执行
+│       └── network.py              # 交换机端口 enable/disable
 │
 ├── ontology/
 │   ├── models.py                   # 实体 + 关系 Pydantic 模型
 │   ├── graph.py                    # NetworkX 图操作
 │   ├── store.py                    # SQLite 持久化
+│   ├── entities.py                 # Entity type registration
+│   ├── query.py                    # 图查询辅助（neighbors, paths, impact）
 │   └── discovery/
 │       ├── bmc_scanner.py          # BMC Redfish 扫描
 │       ├── switch_scanner.py       # LLDP/CDP 发现
@@ -281,13 +291,16 @@ sre_agent/
 │   ├── store.py                    # ChromaDB 向量存储
 │   ├── ingest.py                   # 文档摄入 pipeline
 │   ├── chunker.py                  # 文档分块
-│   └── runbook.py                  # Runbook 结构化解析
+│   ├── runbook.py                  # Runbook 结构化解析
+│   └── retriever.py                # 语义检索 + reranking
 │
 ├── memory/
 │   ├── store.py                    # SQLite 记忆存储
+│   ├── store_pg.py                 # MemoryStorePG（Prod：asyncpg + Qdrant）
 │   ├── incident.py                 # 事件记录
 │   ├── pattern.py                  # 模式学习
-│   └── config_memory.py            # 配置记忆（基线值、阈值）
+│   ├── config_memory.py            # 配置记忆（基线值、阈值）
+│   └── factory.py                  # create_memory_store() 后端选择器
 │
 ├── skills/
 │   ├── runtime/
@@ -295,6 +308,7 @@ sre_agent/
 │   │   ├── executor.py                 # SkillExecutor — 安全脚本执行
 │   │   ├── tools.py                    # 4 个固定 LangChain @tool
 │   │   └── policy.py                   # allow/deny/ask 权限策略
+│   ├── creator.py                      # SkillCreator — 从高质量 trace 生成 SKILL.md
 │   ├── builtin/                        # 内置 Skills（Claude Code SKILL.md 格式）
 │   │   ├── vllm-diagnosis/
 │   │   │   ├── SKILL.md
@@ -312,15 +326,20 @@ sre_agent/
 │   │   │   ├── SKILL.md
 │   │   │   └── scripts/
 │   │   │       └── gpu_ecc_check.py
-│   │   └── network-diagnosis/
+│   │   ├── network-diagnosis/
 │   │       ├── SKILL.md
 │   │       └── scripts/
 │   │           └── port_scan.sh
+│   │   ├── storage-diagnosis/
+│   │   │   └── SKILL.md
+│   │   └── platform-health/
+│   │       └── SKILL.md
 │   └── custom/                         # 用户自定义 Skills（同格式，热加载）
 │
 ├── safety/
 │   ├── guard.py                    # SafetyGuard
-│   └── forbidden.py                # 禁止操作列表
+│   ├── forbidden.py                # 禁止操作列表
+│   └── blast_radius.py             # 爆炸半径评估（继承 SafetyViolationError）
 │
 ├── concurrency/                    # Review P0-3/P0-4 新增
 │   ├── resource_lock.py            # 资源级互斥锁（asyncio / Redis）
@@ -930,7 +949,7 @@ class SREAgent:
 
         # 使用 aiosqlite checkpoint 实现会话持久化
         checkpointer = AsyncSqliteSaver.from_conn_string(
-            "./data/langgraph_checkpoints.db")
+            "./data/checkpoints/sre_agent.db")
         return graph.compile(checkpointer=checkpointer)
 
     async def diagnose(self, alert: Alert,
@@ -3628,6 +3647,22 @@ sre_agent/skills/builtin/
     references/
       rdma-troubleshoot.md
 
+  gpu-health/
+    SKILL.md
+    scripts/
+      gpu_ecc_check.py
+
+  network-diagnosis/
+    SKILL.md
+    scripts/
+      port_scan.sh
+
+  storage-diagnosis/
+    SKILL.md
+
+  platform-health/
+    SKILL.md
+
 # 用户自定义 Skills（可热加载）
 sre_agent/skills/custom/
   my-custom-diag/
@@ -4794,7 +4829,7 @@ agent:
   max_tokens_per_diagnosis: 100000             # Review 增强：单次诊断 token 预算上限（含输入+输出）
                                                # 超出后强制终止 ReAct 循环并返回当前最优结论
   guardrails_config_dir: "./sre_agent/guardrails"  # NeMo Guardrails 配置目录
-  langgraph_checkpoint_db: "./data/langgraph_checkpoints.db"  # LangGraph checkpoint 持久化
+  langgraph_checkpoint_db: "./data/checkpoints/sre_agent.db"  # LangGraph checkpoint 持久化
 
 # ─── NeMo Agent Toolkit 配置（新增）───
 nat:
@@ -5292,7 +5327,33 @@ async def get_trace(session_id: str) -> ThinkingTrace:
     return session_store.get(session_id).trace
 ```
 
-### 13.3 WebSocket 接口
+### 13.3 WebSocket 事件类型枚举
+
+所有 WebSocket 推送事件遵循统一的 `WSEvent` 格式，`type` 字段使用以下枚举值：
+
+```python
+class EventType(str, Enum):
+    THINKING_STEP = "thinking_step"               # Agent 推理步骤
+    TOOL_CALL = "tool_call"                       # 工具调用请求
+    TOOL_RESULT = "tool_result"                   # 工具调用结果
+    DIAGNOSIS_RESULT = "diagnosis_result"         # 诊断结论
+    APPROVAL_REQUIRED = "approval_required"       # 需要人工审批
+    LOOP_START = "loop_start"                     # LoopOrchestrator 启动
+    LOOP_PROGRESS = "loop_progress"               # 循环验证进度
+    REMEDIATION_PROGRESS = "remediation_progress" # 修复执行进度
+    ALERT = "alert"                               # 新告警通知
+    ERROR = "error"                               # 错误事件
+    DONE = "done"                                 # 会话完成
+
+class WSEvent(BaseModel):
+    schema_version: str = "1.0"
+    type: EventType
+    session_id: str
+    timestamp: datetime
+    data: dict
+```
+
+### 13.4 WebSocket 接口
 
 > **Review P0-2 修复**：WebSocket 在 `on_connect` 阶段验证 JWT token（通过 query
 > parameter `?token=xxx`），鉴权失败立即关闭连接。
@@ -5388,6 +5449,9 @@ async def chat_ws(websocket: WebSocket):
 │ 📚   │  └─────────────────────────────────────────────────────┘ │
 │ 知识  │                                                          │
 │      │                                                          │
+│ 🧩   │                                                          │
+│ 技能  │                                                          │
+│      │                                                          │
 │ 🧠   │                                                          │
 │ 记忆  │                                                          │
 │      │                                                          │
@@ -5402,6 +5466,12 @@ async def chat_ws(websocket: WebSocket):
 - 点击实体：展开详情面板（属性、关联实体、历史事件）
 - 故障时高亮影响半径（红色边框 + 脉冲动画）
 - 右上角：活跃告警计数、最近事件摘要
+
+#### 告警视图
+- 告警列表：严重级别、来源、实体、开始时间、状态
+- 支持按 AIDC / 服务 / 节点 / 告警名筛选
+- 支持告警关联聚合：展示同一时间窗口内的相关告警簇
+- 点击告警可联动跳转到诊断视图并回放 ThinkingTrace
 
 #### 诊断视图
 - **左侧面板**：思考过程 Timeline
@@ -5433,6 +5503,12 @@ async def chat_ws(websocket: WebSocket):
 - 上传新文档
 - 搜索界面（语义搜索 + 结果预览）
 - Runbook 编辑器
+
+#### Skills 视图
+- 内置 / 自定义 Skills 列表
+- `list_skill` / `load_skill` / `run_skill` 可视化执行
+- 展示技能来源、权限策略、运行输出与引用资料
+- Demo 阶段作为独立硬性验收页面
 
 #### 记忆视图
 - **事件时间线**：按时间展示所有历史事件
@@ -6027,7 +6103,7 @@ async def sanitize_tool_output(tool_output: str) -> str:
 NAT 不替代 LangGraph 编排，而是 **包裹** LangGraph Agent 进行 profiling 和 evaluation：
 
 ```python
-# sre_agent/nat/nat_wrapper.py
+# sre_agent/nat/wrapper.py
 from nvidia_nat import AgentRunner, EvalRunner, ProfilerConfig
 
 class NATWrappedSREAgent:
@@ -6064,7 +6140,7 @@ class NATWrappedSREAgent:
 from nvidia_nat import EvalRunner, EvalConfig, EvalMetric
 
 eval_config = EvalConfig(
-    agent_fn=nat_wrapper._agent_fn,
+    agent_fn=wrapper._agent_fn,
     dataset_path="sre_agent/nat/eval_dataset.jsonl",
     metrics=[
         EvalMetric.TOOL_CALL_ACCURACY,   # 工具调用是否正确
@@ -6095,7 +6171,7 @@ async def run_evaluation():
 
 ```bash
 # Profiling：分析单个告警的诊断性能
-python -m sre_agent.nat.nat_wrapper profile \
+python -m sre_agent.nat.wrapper profile \
     --alert '{"alert_name": "VLLMLatencyP95High", "node": "gpu-1-1"}'
 
 # Evaluation：批量评估诊断准确率（用于 CI/CD）
@@ -6289,15 +6365,15 @@ class SLODegradationPolicy:
 
 | 组件 | 模块路径 | 共享方式 |
 |------|----------|----------|
-| SSHChannel | `channels/ssh.py` | 同一代码库 |
-| RedfishChannel | `channels/redfish.py` | 同一代码库 |
-| SwitchChannel | `channels/switch.py` | 同一代码库 |
-| K8sChannel | `channels/k8s.py` | 同一代码库 |
-| CubeStudioChannel | `channels/cube_studio.py` | 同一代码库 |
-| PrometheusChannel | `channels/prometheus.py` | 同一代码库 |
-| RollbackJournal (WAL) | `remediation/wal.py` | 同一代码库 |
-| SafetyGuard | `safety/guard.py` | 同一代码库 |
-| FORBIDDEN_OPERATIONS | `safety/forbidden.py` | 同一代码库 |
+| SSHChannel | `lib/channels/ssh.py` | 同一代码库 |
+| RedfishChannel | `lib/channels/redfish.py` | 同一代码库 |
+| SwitchChannel | `lib/channels/switch.py` | 同一代码库 |
+| K8sChannel | `lib/channels/kubernetes.py` | 同一代码库 |
+| CubeStudioChannel | `lib/channels/cube_studio.py` | 同一代码库 |
+| PrometheusChannel | `lib/channels/prometheus.py` | 同一代码库 |
+| RollbackJournal (WAL) | `fault_injector/safety/rollback.py` → `sre_agent/remediation/wal.py` | 复用回滚日志设计，SRE Agent 落地为本地实现 |
+| SafetyGuard | `fault_injector/safety/guard.py` → `sre_agent/safety/guard.py` | 继承既有安全拦截模式 |
+| FORBIDDEN_OPERATIONS | `fault_injector/safety/forbidden.py` → `sre_agent/safety/forbidden.py` | 继承既有危险操作黑名单 |
 | Pydantic Config 基类 | `config.py` | 同一代码库 |
 | DiagnosisResult + RankedRootCause | `agent/models.py` | 扩展自 fault-injector，新增多候选支持 |
 | PlanValidator | `remediation/validator.py` | SRE Agent 独有（Review 增强） |
