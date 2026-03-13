@@ -31,10 +31,10 @@ inference:
       endpoint: "http://10.11.4.11:31503"
       api_key: "sk-Qkh1q5wqcnb8u4EG4W4qkQ"
       model: "/models/Qwen/Qwen3.5-27B-FP8"
-  max_tokens: 128
-  concurrency: 4
-  duration_seconds: 90
-  prompt_pool_size: 20
+  max_tokens: 256
+  concurrency: 16
+  duration_seconds: 600
+  prompt_pool_size: 32
   stream: false
 
 pipeline:
