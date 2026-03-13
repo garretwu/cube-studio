@@ -194,7 +194,7 @@ scenarios:
       jitter_ms: 90
       distribution: "pareto"
       loss_pct: 0
-      duration: 30
+      duration: 180
       load_simulator:
         enabled: false
         config_path: "load_simulator/config/notebook-soak-only.yaml"
@@ -290,14 +290,14 @@ scenarios:
     enabled: true
     target_nodes:
       #- "worker-01"
-      - "worker-02"
+      #- "worker-02"
       - "worker-03"
     params:
       switch: "sw-200g"
       interface: "200GE1/0/3"
       min_threshold: 10
       max_threshold: 20
-      duration: 90
+      duration: 180
 
   rdma_load_imbalance:
     enabled: true
@@ -345,6 +345,7 @@ scenarios:
       interface: "200GE1/0/4"
       dscp: 0
       downgraded_tc: 0
+      duration: 300
 
 # =============================================================================
 # Example: Minimal Test Configuration
