@@ -1,0 +1,11 @@
+sync-feature-branch:
+  image: alpine/git:latest
+  script:
+    - git config --global user.email "ci-bot@gitlab.local"
+    - git config --global user.name "CI Sync Bot"
+    - git remote add github https://${GITHUB_TOKEN}@${GITHUB_URL} || true
+    - git fetch github ${SYNC_BRANCH}:${SYNC_BRANCH}
+    - git push origin ${SYNC_BRANCH} --force
+  rules:
+    # 仅当 pipeline 由 schedule 触发时才执行此 job
+    - if: $CI_PIPELINE_SOURCE == "schedule"
