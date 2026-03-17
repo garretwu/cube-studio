@@ -1,0 +1,11 @@
+global:
+  aidc_id: local-aidc
+ontology:
+  db_path: ./data/ontology.db
+  discovery:
+    switches:
+      - name: sw-demo
+        type: H3C-S9855
+        ports:
+          - name: HundredGigE1/0/1
+            connected_to: node-local-1
