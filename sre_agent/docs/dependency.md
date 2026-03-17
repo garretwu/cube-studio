@@ -209,3 +209,41 @@ flowchart LR
   2. API/WebSocket contract version bump (for example `WSEvent` schema_version semantics beyond `1.0`).
   3. Memory/Ontology persistence contract adds required structured fields not representable by current model types.
   4. Any contract change request touching protected paths (`sre_agent/models/**`, `sre_agent/tests/test_models.py`, `sre_agent/docs/model.md`) per repository ownership rules.
+
+## Channel Dependency Addendum (2026-03-17)
+
+### New Channel Modules and Tests
+- `lib/channels/log.py` -> `LogChannel` (Loki-backed log retrieval).
+- `lib/channels/alert.py` -> `AlertChannel` (Alertmanager lifecycle + Prometheus origin metrics).
+- `lib/channels/ontology.py` -> `OntologyChannel`.
+- `lib/channels/knowledge.py` -> `KnowledgeBaseChannel`.
+- `lib/tests/test_log.py` -> unit/integration/E2E-mocked tests for Loki contract.
+- `lib/tests/test_alert.py` -> unit/integration/E2E-mocked tests for lifecycle + origin metric contract.
+- `lib/tests/test_ontology.py` -> unit/integration/E2E-mocked ontology channel coverage.
+- `lib/tests/test_knowledge.py` -> unit/integration/E2E-mocked knowledge channel coverage.
+
+### Planned Consumer Mapping (from AIDC + multi-agent plan)
+| Consumer | Expected Channel Usage | Current Readiness |
+|---|---|---|
+| Agent B2 (read-only diagnosis tools) | `LogChannel.read_pod_logs/search_pod_logs/read_system_log/read_dmesg/query_logs`, `OntologyChannel.query/get_path/get_blast_radius` | API shape is import-ready and behavior-ready for mocked integration |
+| Agent C (remediation + incident flow) | `AlertChannel.get_active_alerts/get_alert_history/get_origin_metrics/silence_alert` | API shape is import-ready and behavior-ready for mocked lifecycle + metric flows |
+| Agent D (storage/ontology integration) | `OntologyChannel` + `KnowledgeBaseChannel` for context enrichment and retrieval | API shape is import-ready; backend-specific behavior depends on concrete ontology/store adapters |
+
+### Channel Separation and Backend Contracts
+- `LogChannel` is Loki-first and does not call `AlertChannel`.
+- `AlertChannel` lifecycle is Alertmanager-compatible and origin metrics are Prometheus-backed.
+- `AlertChannel` does not call `LogChannel`.
+- Shared coupling is dependency injection only (log backend, alert lifecycle backend, metrics backend).
+
+### Import-Ready vs Behavior-Ready
+| Channel | Import-Ready | Behavior-Ready (Mocked) | Remaining Risk |
+|---|---|---|---|
+| `LogChannel` | Yes | Yes | Real Loki label schema alignment (`namespace/pod/node/filename/source`) must match deployment labels |
+| `AlertChannel` | Yes | Yes | Production PromQL templates may require per-alert metric mapping beyond default `ALERTS{...}` |
+| `OntologyChannel` | Yes | Yes | Depends on concrete graph/query backend capabilities |
+| `KnowledgeBaseChannel` | Yes | Yes | Depends on concrete store relevance/scoring behavior |
+
+### Minimum Future Remediation Strategy
+1. Keep channel method signatures stable; adapt only injected backend adapters when providers change.
+2. Keep `AlertChannel.get_origin_metrics(...)` as the explicit Prometheus contract for downstream remediation tools.
+3. Avoid `lib/channels/__init__.py` export coupling in this phase to reduce cross-module churn.
