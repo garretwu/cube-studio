@@ -1,5 +1,7 @@
 global:
   aidc_id: local-aidc
+knowledge_base:
+  persist_dir: ./data/knowledge_db
 ontology:
   db_path: ./data/ontology.db
   discovery:

@@ -55,11 +55,27 @@ class MemoryConfig(BaseModel):
     pattern_min_confidence: float = 0.7
 
 
+class KnowledgeSourceConfig(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    path: str
+    category: str
+
+
+class KnowledgeConfig(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    persist_dir: str = "./data/knowledge_db"
+    embedding_model: str = "text-embedding-3-small"
+    sources: list[KnowledgeSourceConfig] = Field(default_factory=list)
+
+
 class SREAgentConfig(BaseModel):
     model_config = ConfigDict(populate_by_name=True, extra="allow")
 
     global_: GlobalConfig = Field(default_factory=GlobalConfig, alias="global")
     ontology: OntologyConfig = Field(default_factory=OntologyConfig)
+    knowledge_base: KnowledgeConfig = Field(default_factory=KnowledgeConfig)
     memory: MemoryConfig = Field(default_factory=MemoryConfig)
 
 

@@ -8,6 +8,8 @@ from typing import Any, Literal
 import click
 
 from sre_agent.config import SREAgentConfig, load_config
+from sre_agent.knowledge.ingest import KnowledgeIngestSummary, KnowledgeIngestor
+from sre_agent.knowledge.store import KnowledgeStore
 from sre_agent.memory.factory import create_memory_store
 from sre_agent.models.memory import IncidentRecord
 from sre_agent.ontology.discovery.switch_scanner import SwitchScanner
@@ -212,6 +214,79 @@ def _format_pattern_history(config: SREAgentConfig, patterns: list[dict[str, obj
     return "\n".join(lines)
 
 
+async def _ingest_knowledge_path(
+    config: SREAgentConfig,
+    path: Path,
+    category: str,
+    version: str,
+) -> KnowledgeIngestSummary:
+    store = KnowledgeStore(persist_dir=config.knowledge_base.persist_dir)
+    ingestor = KnowledgeIngestor(store)
+    return await ingestor.ingest_path(path=path, category=category, version=version)
+
+
+def _format_knowledge_ingest_summary(summary: KnowledgeIngestSummary) -> str:
+    lines = [
+        "Knowledge Ingest Complete",
+        f"Path: {summary.source_path}",
+        f"Category: {summary.category}",
+        f"Files Ingested: {summary.file_count}",
+        f"Chunks Written: {summary.chunk_count}",
+        f"Skipped Files: {summary.skipped_files}",
+    ]
+    return "\n".join(lines)
+
+
+async def _search_knowledge(
+    config: SREAgentConfig,
+    query: str,
+    category: str | None,
+    top_k: int,
+) -> list[dict[str, object]]:
+    store = KnowledgeStore(persist_dir=config.knowledge_base.persist_dir)
+    results = await store.search(query=query, category=category, top_k=top_k)
+    return [
+        {
+            "score": round(item.score, 3),
+            "source": item.source,
+            "category": item.category,
+            "content": item.content.replace("\n", " ").strip(),
+        }
+        for item in results
+    ]
+
+
+def _format_knowledge_search_results(
+    config: SREAgentConfig,
+    query: str,
+    category: str | None,
+    results: list[dict[str, object]],
+) -> str:
+    lines = [
+        "Knowledge Search Results",
+        f"Query: {query}",
+        f"DB Dir: {config.knowledge_base.persist_dir}",
+        f"Category: {category or 'all'}",
+        f"Count: {len(results)}",
+    ]
+    if not results:
+        lines.append("- none")
+        return "\n".join(lines)
+
+    for result in results:
+        lines.append(
+            " | ".join(
+                [
+                    f"score={result['score']}",
+                    str(result["category"]),
+                    str(result["source"]),
+                    str(result["content"]),
+                ]
+            )
+        )
+    return "\n".join(lines)
+
+
 @click.group()
 def main() -> None:
     """AIDC Auto-SRE CLI."""
@@ -266,6 +341,35 @@ def memory_patterns_command(config_path: Path) -> None:
     config = load_config(config_path)
     patterns = asyncio.run(_load_patterns(config))
     click.echo(_format_pattern_history(config, patterns))
+
+
+@main.group("knowledge")
+def knowledge_group() -> None:
+    """Manage and inspect the knowledge base."""
+
+
+@knowledge_group.command("ingest")
+@click.option("--config", "config_path", required=True, type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.option("--path", "knowledge_path", required=True, type=click.Path(exists=True, path_type=Path))
+@click.option("--category", required=True, type=str)
+@click.option("--version", default="v1", show_default=True, type=str)
+def knowledge_ingest_command(config_path: Path, knowledge_path: Path, category: str, version: str) -> None:
+    """Ingest text knowledge documents from a file or directory."""
+    config = load_config(config_path)
+    summary = asyncio.run(_ingest_knowledge_path(config, knowledge_path, category, version))
+    click.echo(_format_knowledge_ingest_summary(summary))
+
+
+@knowledge_group.command("search")
+@click.option("--config", "config_path", required=True, type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.option("--query", required=True, type=str)
+@click.option("--category", default=None, type=str)
+@click.option("--top-k", default=5, show_default=True, type=click.IntRange(1))
+def knowledge_search_command(config_path: Path, query: str, category: str | None, top_k: int) -> None:
+    """Search the knowledge base."""
+    config = load_config(config_path)
+    results = asyncio.run(_search_knowledge(config, query, category, top_k))
+    click.echo(_format_knowledge_search_results(config, query, category, results))
 
 
 if __name__ == "__main__":
