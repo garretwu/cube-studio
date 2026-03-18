@@ -40,3 +40,5 @@ compile.py
 .venv/
 /reports/
 /fault_injector/fault_reports/
+/lib/tests/real_test.local.json
+/lib/tests/real_test.local.*.json

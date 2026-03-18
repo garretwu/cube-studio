@@ -1,0 +1,52 @@
+{
+  "common": {
+    "SRE_REAL_TEST": 1,
+    "SRE_HTTP_TIMEOUT_SEC": 15,
+    "SRE_HTTP_RETRY_COUNT": 2,
+    "SRE_ALLOW_WRITE_OPS": 0
+  },
+  "log": {
+    "SRE_LOKI_URL": "http://loki.monitoring.svc:3100",
+    "SRE_TEST_NAMESPACE": "default",
+    "SRE_TEST_POD": "vllm-0",
+    "SRE_TEST_NODE": "gpu-node-1",
+    "SRE_TEST_POD_SELECTOR": "app=vllm",
+    "SRE_TEST_LOG_PATTERN": "ERROR",
+    "SRE_TEST_LOG_PATH": "/var/log/syslog",
+    "SRE_TEST_DMESG_FILTER": "error"
+  },
+  "alert": {
+    "SRE_ALERTMANAGER_URL": "http://alertmanager.monitoring.svc:9093",
+    "SRE_PROMETHEUS_URL": "http://prometheus.monitoring.svc:9090",
+    "SRE_TEST_ALERT_NAME": "NodeDown",
+    "SRE_TEST_ALERT_LOOKBACK": "6h"
+  },
+  "ontology": {
+    "SRE_ONTOLOGY_URL": "http://ontology.svc:8080",
+    "SRE_ONTOLOGY_QUERY_PATH": "/api/ontology/query",
+    "SRE_ONTOLOGY_BLAST_PATH": "/api/ontology/blast",
+    "SRE_ONTOLOGY_PATH_PATH": "/api/ontology/path",
+    "SRE_ONTOLOGY_REFRESH_PATH": "/api/ontology/refresh",
+    "SRE_TEST_ENTITY_TYPE": "node",
+    "SRE_TEST_FROM_ID": "node:gpu-1-1",
+    "SRE_TEST_TO_ID": "service:vllm"
+  },
+  "knowledge": {
+    "SRE_KB_URL": "http://10.11.4.3:31984",
+    "SRE_KB_API_PREFIX": "/v1",
+    "SRE_KB_TOKEN": "replace-with-dify-api-key",
+    "SRE_KB_DEFAULT_DATASET_ID": "replace-with-default-dataset-id",
+    "SRE_KB_RUNBOOK_DATASET_ID": "replace-with-runbook-dataset-id",
+    "SRE_TEST_KB_QUERY": "vllm p95 high",
+    "SRE_TEST_KB_SYMPTOM": "latency spike",
+    "SRE_TEST_KB_CATEGORY": "runbook"
+  },
+  "auth_optional": {
+    "SRE_LOKI_TOKEN": "",
+    "SRE_LOKI_TENANT_ID": "",
+    "SRE_ALERTMANAGER_TOKEN": "",
+    "SRE_PROMETHEUS_TOKEN": "",
+    "SRE_ONTOLOGY_TOKEN": "",
+    "SRE_KB_TOKEN": ""
+  }
+}
