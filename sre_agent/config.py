@@ -46,11 +46,21 @@ class OntologyConfig(BaseModel):
     discovery: OntologyDiscoveryConfig = Field(default_factory=OntologyDiscoveryConfig)
 
 
+class MemoryConfig(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    db_dir: str = "./data/memory"
+    vector_index_dir: str = "./data/memory_vectors"
+    pattern_min_occurrences: int = 3
+    pattern_min_confidence: float = 0.7
+
+
 class SREAgentConfig(BaseModel):
     model_config = ConfigDict(populate_by_name=True, extra="allow")
 
     global_: GlobalConfig = Field(default_factory=GlobalConfig, alias="global")
     ontology: OntologyConfig = Field(default_factory=OntologyConfig)
+    memory: MemoryConfig = Field(default_factory=MemoryConfig)
 
 
 def load_config(path: str | Path) -> SREAgentConfig:

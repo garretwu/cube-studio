@@ -141,6 +141,9 @@ class MemoryStore:
         ).fetchall()
         return [IncidentRecord.model_validate_json(row[0]) for row in rows]
 
+    async def list_recent(self, last: int = 10) -> list[IncidentRecord]:
+        return await self.list_incidents(last=last)
+
     async def search_similar(self, symptoms: dict[str, Any] | list[str] | str, top_k: int = 3) -> list[IncidentRecord]:
         if isinstance(symptoms, dict):
             query = " ".join(f"{key}={value}" for key, value in sorted(symptoms.items()))
@@ -188,9 +191,23 @@ class MemoryStore:
         rows = await (await self._db.execute("SELECT payload_json FROM patterns WHERE aidc_id = ?", (self.aidc_id,))).fetchall()
         return [LearnedPattern.model_validate_json(row[0]) for row in rows]
 
-    async def get_known_patterns(self) -> list[LearnedPattern]:
+    async def get_known_patterns(
+        self,
+        *,
+        min_occurrence: int = 3,
+        min_effective_confidence: float = 0.7,
+    ) -> list[LearnedPattern]:
         now = datetime.now(UTC)
-        return [pattern for pattern in await self.get_all_patterns() if pattern.should_suggest(now)]
+        patterns = [
+            pattern
+            for pattern in await self.get_all_patterns()
+            if pattern.should_suggest(
+                now,
+                min_occurrence=min_occurrence,
+                min_effective_confidence=min_effective_confidence,
+            )
+        ]
+        return sorted(patterns, key=lambda pattern: pattern.last_seen, reverse=True)
 
     async def _update_patterns(self, record: IncidentRecord) -> None:
         existing = await self.get_pattern_by_symptoms(record.symptoms)

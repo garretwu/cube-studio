@@ -8,6 +8,8 @@ from typing import Any, Literal
 import click
 
 from sre_agent.config import SREAgentConfig, load_config
+from sre_agent.memory.factory import create_memory_store
+from sre_agent.models.memory import IncidentRecord
 from sre_agent.ontology.discovery.switch_scanner import SwitchScanner
 from sre_agent.ontology.graph import OntologyGraph
 
@@ -115,6 +117,101 @@ def _format_discovery_summary(config: SREAgentConfig, summary: dict[str, object]
     return "\n".join(lines)
 
 
+async def _load_incidents(config: SREAgentConfig, last: int) -> list[IncidentRecord]:
+    store = create_memory_store(
+        config.global_.aidc_id,
+        db_dir=config.memory.db_dir,
+    )
+    await store.connect()
+    try:
+        return await store.list_recent(last=last)
+    finally:
+        await store.close()
+
+
+async def _load_patterns(config: SREAgentConfig) -> list[dict[str, object]]:
+    store = create_memory_store(
+        config.global_.aidc_id,
+        db_dir=config.memory.db_dir,
+    )
+    await store.connect()
+    try:
+        patterns = await store.get_known_patterns(
+            min_occurrence=config.memory.pattern_min_occurrences,
+            min_effective_confidence=config.memory.pattern_min_confidence,
+        )
+    finally:
+        await store.close()
+
+    return [
+        {
+            "pattern_id": pattern.pattern_id,
+            "last_seen": pattern.last_seen.isoformat(),
+            "occurrence_count": pattern.occurrence_count,
+            "effective_confidence": round(pattern.effective_confidence(), 3),
+            "root_cause": pattern.root_cause,
+            "symptom_signature": ",".join(pattern.symptom_signature),
+        }
+        for pattern in patterns
+    ]
+
+
+def _format_incident_history(config: SREAgentConfig, incidents: list[IncidentRecord], last: int) -> str:
+    lines = [
+        "Incident History",
+        f"AIDC: {config.global_.aidc_id}",
+        f"DB Dir: {config.memory.db_dir}",
+        f"Last: {last}",
+        f"Count: {len(incidents)}",
+    ]
+    if not incidents:
+        lines.append("- none")
+        return "\n".join(lines)
+
+    for incident in incidents:
+        lines.append(
+            " | ".join(
+                [
+                    incident.timestamp.isoformat(),
+                    incident.incident_id,
+                    incident.alert.alert_name,
+                    incident.outcome,
+                    incident.root_cause,
+                ]
+            )
+        )
+    return "\n".join(lines)
+
+
+def _format_pattern_history(config: SREAgentConfig, patterns: list[dict[str, object]]) -> str:
+    lines = [
+        "Learned Patterns",
+        f"AIDC: {config.global_.aidc_id}",
+        f"DB Dir: {config.memory.db_dir}",
+        f"Min Occurrences: {config.memory.pattern_min_occurrences}",
+        f"Min Confidence: {config.memory.pattern_min_confidence}",
+        f"Count: {len(patterns)}",
+    ]
+    if not patterns:
+        lines.append("- none")
+        return "\n".join(lines)
+
+    for pattern in patterns:
+        lines.append(
+            " | ".join(
+                [
+                    str(pattern["last_seen"]),
+                    str(pattern["pattern_id"]),
+                    f"occurrences={pattern['occurrence_count']}",
+                    f"confidence={pattern['effective_confidence']}",
+                    str(pattern["root_cause"]),
+                    str(pattern["symptom_signature"]),
+                ]
+            )
+        )
+    return "\n".join(lines)
+
+
 @click.group()
 def main() -> None:
     """AIDC Auto-SRE CLI."""
@@ -145,6 +242,30 @@ def discover_command(config_path: Path, discovery_mode: str, refresh_only: bool)
     config = load_config(config_path)
     summary = asyncio.run(_discover_topology(config, refresh_only, discovery_mode))
     click.echo(_format_discovery_summary(config, summary))
+
+
+@main.group("memory")
+def memory_group() -> None:
+    """Inspect persisted incident and pattern memory."""
+
+
+@memory_group.command("incidents")
+@click.option("--config", "config_path", required=True, type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.option("--last", type=click.IntRange(1), default=10, show_default=True, help="Show the most recent N incidents.")
+def memory_incidents_command(config_path: Path, last: int) -> None:
+    """Show recent incident history."""
+    config = load_config(config_path)
+    incidents = asyncio.run(_load_incidents(config, last))
+    click.echo(_format_incident_history(config, incidents, last))
+
+
+@memory_group.command("patterns")
+@click.option("--config", "config_path", required=True, type=click.Path(exists=True, dir_okay=False, path_type=Path))
+def memory_patterns_command(config_path: Path) -> None:
+    """Show learned patterns that are ready to suggest."""
+    config = load_config(config_path)
+    patterns = asyncio.run(_load_patterns(config))
+    click.echo(_format_pattern_history(config, patterns))
 
 
 if __name__ == "__main__":
