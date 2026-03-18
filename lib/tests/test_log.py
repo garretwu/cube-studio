@@ -215,6 +215,69 @@ class TestLogChannelE2E(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(await channel.disconnect())
 
 
+class TestLogChannelAdditiveApis(unittest.IsolatedAsyncioTestCase):
+    async def test_query_logs_range_only_uses_query_range_when_time_is_omitted(self) -> None:
+        loki = _FakeLokiBackend()
+        channel = LogChannel(loki=loki)
+
+        rows = await channel.query_logs_range_only('{namespace="default",pod="pod-a"}', limit=2)
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(len(loki.query_range_calls), 1)
+        self.assertEqual(len(loki.query_calls), 0)
+
+    async def test_query_logs_by_labels_builds_stream_selector(self) -> None:
+        loki = _FakeLokiBackend()
+        channel = LogChannel(loki=loki)
+
+        rows = await channel.query_logs_by_labels({"namespace": "default", "pod": "pod-a"}, limit=3)
+        self.assertEqual(len(rows), 3)
+        query = loki.query_range_calls[0]["query"]
+        self.assertIn('namespace="default"', query)
+        self.assertIn('pod="pod-a"', query)
+
+    async def test_read_logs_by_selector_supports_regex_and_tail(self) -> None:
+        loki = _FakeLokiBackend()
+        channel = LogChannel(loki=loki)
+
+        lines = await channel.read_logs_by_selector(
+            {"namespace": "default", "app": "vllm"},
+            regex="ERROR",
+            tail=1,
+        )
+        self.assertEqual(lines, ["ERROR GPU timeout"])
+        query = loki.query_range_calls[0]["query"]
+        self.assertIn('namespace="default"', query)
+        self.assertIn('app="vllm"', query)
+        self.assertIn('|~ "ERROR"', query)
+
+    async def test_search_logs_by_selector_returns_normalized_rows(self) -> None:
+        loki = _FakeLokiBackend()
+        channel = LogChannel(loki=loki)
+
+        rows = await channel.search_logs_by_selector(
+            {"namespace": "default", "app": "vllm"},
+            "ERROR",
+            limit=2,
+        )
+        self.assertEqual(len(rows), 2)
+        self.assertIn("labels", rows[0])
+        self.assertIn("timestamp", rows[0])
+        self.assertIn("line", rows[0])
+        self.assertEqual(rows[0]["labels"].get("pod"), "pod-a")
+
+    async def test_additive_apis_validate_selector_and_limits(self) -> None:
+        channel = LogChannel(loki=_FakeLokiBackend())
+
+        with self.assertRaises(SafetyViolationError):
+            await channel.query_logs_by_labels({"bad-key": "value"})
+        with self.assertRaises(ValueError):
+            await channel.read_logs_by_selector({}, tail=10)
+        with self.assertRaises(ValueError):
+            await channel.search_logs_by_selector({"namespace": "default"}, "ERROR", limit=0)
+        with self.assertRaises(Exception):
+            await channel.read_logs_by_selector({"namespace": "default"}, regex="(")
+
+
 if __name__ == "__main__":
     unittest.main()
 
@@ -272,6 +335,64 @@ class TestLogChannelReal:
 
             dmesg_lines = _run(channel.read_dmesg(node, filter_str=os.getenv("SRE_TEST_DMESG_FILTER", "error")))
             assert isinstance(dmesg_lines, list)
+        finally:
+            _run(channel.disconnect())
+            _run(loki.aclose())
+
+
+@pytest.mark.real
+class TestLogChannelRealAdditiveApis:
+    def test_real_logchannel_additive_range_only_flow(self) -> None:
+        require_real_tests()
+        env = require_env(
+            "SRE_LOKI_URL",
+            "SRE_TEST_NAMESPACE",
+            "SRE_TEST_POD",
+        )
+        timeout_sec = get_http_timeout_sec()
+        retry_count = get_http_retry_count()
+
+        namespace = env["SRE_TEST_NAMESPACE"]
+        pod = env["SRE_TEST_POD"]
+
+        loki = LokiHttpBackend(
+            base_url=env["SRE_LOKI_URL"],
+            timeout=timeout_sec,
+            retries=retry_count,
+            headers=build_auth_headers("LOKI"),
+        )
+        channel = LogChannel(loki=loki)
+
+        try:
+            assert _run(channel.connect()) is True
+
+            rows = _run(
+                channel.query_logs_range_only(
+                    f'{{namespace="{namespace}"}}',
+                    lookback="15m",
+                    limit=20,
+                )
+            )
+            assert isinstance(rows, list)
+
+            selector_lines = _run(
+                channel.read_logs_by_selector(
+                    {"namespace": namespace, "pod": pod},
+                    lookback="15m",
+                    tail=20,
+                )
+            )
+            assert isinstance(selector_lines, list)
+
+            selector_rows = _run(
+                channel.search_logs_by_selector(
+                    {"namespace": namespace, "pod": pod},
+                    "ERROR",
+                    lookback="15m",
+                    limit=20,
+                )
+            )
+            assert isinstance(selector_rows, list)
         finally:
             _run(channel.disconnect())
             _run(loki.aclose())
