@@ -34,6 +34,7 @@ def test_discover_then_topology_cli_round_trip(tmp_path: Path) -> None:
     discover = runner.invoke(main, ["discover", "--config", str(config_path)])
     assert discover.exit_code == 0
     assert "Discovery Complete" in discover.output
+    assert "Source Mode: static" in discover.output
     assert "Nodes: 2" in discover.output
     assert "Edges: 2" in discover.output
 
@@ -45,3 +46,24 @@ def test_discover_then_topology_cli_round_trip(tmp_path: Path) -> None:
     assert "Edges: 2" in topology.output
     assert "- switch: 1" in topology.output
     assert "- switch_port: 1" in topology.output
+
+
+def test_discover_live_mode_is_explicitly_not_wired(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        "\n".join(
+            [
+                "global:",
+                "  aidc_id: test-aidc",
+                "ontology:",
+                f"  db_path: {tmp_path / 'ontology.db'}",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(main, ["discover", "--mode", "live", "--config", str(config_path)])
+
+    assert result.exit_code != 0
+    assert "live discovery is not wired yet" in result.output

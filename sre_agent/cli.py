@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import click
 
@@ -63,7 +63,7 @@ def _switch_payloads(config: SREAgentConfig) -> list[dict[str, Any]]:
     return payloads
 
 
-async def _discover_topology(config: SREAgentConfig, refresh_only: bool) -> dict[str, object]:
+async def _discover_topology_static(config: SREAgentConfig, refresh_only: bool) -> dict[str, object]:
     graph = OntologyGraph(db_path=config.ontology.db_path)
     await graph.connect()
     try:
@@ -76,17 +76,38 @@ async def _discover_topology(config: SREAgentConfig, refresh_only: bool) -> dict
         await graph.add_edges(edges)
         summary = graph.summarize()
         summary["refresh_only"] = refresh_only
+        summary["discovery_mode"] = "static"
         return summary
     finally:
         await graph.close()
 
 
+async def _discover_topology_live(config: SREAgentConfig, refresh_only: bool) -> dict[str, object]:
+    _ = config, refresh_only
+    raise click.ClickException(
+        "live discovery is not wired yet; current discover only supports --mode static "
+        "from config-defined topology seeds"
+    )
+
+
+async def _discover_topology(
+    config: SREAgentConfig,
+    refresh_only: bool,
+    mode: Literal["static", "live"],
+) -> dict[str, object]:
+    if mode == "live":
+        return await _discover_topology_live(config, refresh_only)
+    return await _discover_topology_static(config, refresh_only)
+
+
 def _format_discovery_summary(config: SREAgentConfig, summary: dict[str, object]) -> str:
     mode = "refresh" if summary.get("refresh_only") else "full"
+    discovery_mode = summary.get("discovery_mode", "static")
     lines = [
         "Discovery Complete",
         f"AIDC: {config.global_.aidc_id}",
         f"Mode: {mode}",
+        f"Source Mode: {discovery_mode}",
         f"DB: {config.ontology.db_path}",
         f"Nodes: {summary['node_count']}",
         f"Edges: {summary['edge_count']}",
@@ -110,11 +131,19 @@ def topology_command(config_path: Path) -> None:
 
 @main.command("discover")
 @click.option("--config", "config_path", required=True, type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.option(
+    "--mode",
+    "discovery_mode",
+    type=click.Choice(["static", "live"]),
+    default="static",
+    show_default=True,
+    help="Use static config-defined topology seeds or live scanner discovery.",
+)
 @click.option("--refresh-only", is_flag=True, default=False, help="Replace existing topology data before discovery.")
-def discover_command(config_path: Path, refresh_only: bool) -> None:
+def discover_command(config_path: Path, discovery_mode: str, refresh_only: bool) -> None:
     """Discover topology from configured sources."""
     config = load_config(config_path)
-    summary = asyncio.run(_discover_topology(config, refresh_only))
+    summary = asyncio.run(_discover_topology(config, refresh_only, discovery_mode))
     click.echo(_format_discovery_summary(config, summary))
 
 
