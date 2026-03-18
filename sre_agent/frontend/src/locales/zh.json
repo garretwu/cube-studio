@@ -1,0 +1,17 @@
+{
+  "common": {
+    "commandCenter": "AIDC Auto-SRE 指挥台",
+    "subtitle": "把拓扑、告警、诊断、修复和知识库放进同一个协作界面。",
+    "admin": "管理员"
+  },
+  "nav": {
+    "topology": "拓扑",
+    "alerts": "告警",
+    "diagnosis": "诊断",
+    "remediation": "修复",
+    "chat": "对话",
+    "knowledge": "知识",
+    "memory": "记忆",
+    "skills": "技能"
+  }
+}
