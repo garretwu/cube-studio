@@ -21,6 +21,9 @@ class _FakeKnowledgeStore:
     def __init__(self) -> None:
         self.search_calls: list[dict[str, Any]] = []
         self.runbook_calls: list[str] = []
+        self.dataset_calls: list[dict[str, Any]] = []
+        self.file_calls: list[dict[str, Any]] = []
+        self.chunk_calls: list[dict[str, Any]] = []
 
     async def search(self, query: str, *, category: str | None = None, top_k: int = 5) -> list[dict[str, Any]]:
         self.search_calls.append({"query": query, "category": category, "top_k": top_k})
@@ -38,6 +41,68 @@ class _FakeKnowledgeStore:
                 "source": "runbook/gpu_contention.md",
             }
         ]
+
+    async def list_datasets(
+        self,
+        *,
+        keyword: str | None = None,
+        page: int = 1,
+        limit: int = 20,
+        tag_ids: list[str] | None = None,
+        include_all: bool = False,
+    ) -> list[dict[str, Any]]:
+        self.dataset_calls.append(
+            {
+                "kind": "list",
+                "keyword": keyword,
+                "page": page,
+                "limit": limit,
+                "tag_ids": tag_ids,
+                "include_all": include_all,
+            }
+        )
+        return [{"id": "dataset-a", "name": "hardware"}]
+
+    async def get_dataset(self, dataset_id: str) -> dict[str, Any]:
+        self.dataset_calls.append({"kind": "get", "dataset_id": dataset_id})
+        return {"id": dataset_id, "name": "hardware"}
+
+    async def list_documents(
+        self,
+        dataset_id: str,
+        *,
+        page: int = 1,
+        limit: int = 20,
+        keyword: str | None = None,
+    ) -> list[dict[str, Any]]:
+        self.file_calls.append(
+            {"kind": "list", "dataset_id": dataset_id, "page": page, "limit": limit, "keyword": keyword}
+        )
+        return [{"id": "doc-1", "name": "gpu.md"}]
+
+    async def get_document(self, dataset_id: str, document_id: str) -> dict[str, Any]:
+        self.file_calls.append({"kind": "get", "dataset_id": dataset_id, "document_id": document_id})
+        return {"id": document_id, "dataset_id": dataset_id, "name": "gpu.md"}
+
+    async def list_document_segments(
+        self,
+        dataset_id: str,
+        document_id: str,
+        *,
+        page: int = 1,
+        limit: int = 20,
+        keyword: str | None = None,
+    ) -> list[dict[str, Any]]:
+        self.chunk_calls.append(
+            {
+                "dataset_id": dataset_id,
+                "document_id": document_id,
+                "page": page,
+                "limit": limit,
+                "keyword": keyword,
+            }
+        )
+        return [{"id": "seg-1", "content": "segment"}]
 
 
 class _FakeKnowledgeStoreNoRunbook:
@@ -129,6 +194,19 @@ class TestKnowledgeChannelUnit(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(result.success)
         self.assertIn("unknown action", result.error)
 
+    async def test_unit_new_api_validation(self) -> None:
+        channel = KnowledgeBaseChannel(store=_FakeKnowledgeStore())
+        with self.assertRaises(ValueError):
+            await channel.get_dataset("")
+        with self.assertRaises(ValueError):
+            await channel.list_datasets(page=0)
+        with self.assertRaises(ValueError):
+            await channel.list_files("", page=1, limit=1)
+        with self.assertRaises(ValueError):
+            await channel.get_file("dataset-a", "")
+        with self.assertRaises(ValueError):
+            await channel.retrieve_chunks("dataset-a", "doc-1", page=0)
+
 
 class TestKnowledgeChannelIntegration(unittest.IsolatedAsyncioTestCase):
     async def test_integration_search_passthrough(self) -> None:
@@ -156,6 +234,28 @@ class TestKnowledgeChannelIntegration(unittest.IsolatedAsyncioTestCase):
         await channel.connect()
         with self.assertRaises(RuntimeError):
             await channel.search_runbook("gpu overheat")
+
+    async def test_integration_new_channel_wrappers_passthrough(self) -> None:
+        store = _FakeKnowledgeStore()
+        channel = KnowledgeBaseChannel(store=store)
+        await channel.connect()
+
+        datasets = await channel.list_datasets(keyword="hard", page=1, limit=5)
+        dataset = await channel.get_dataset("dataset-a")
+        files = await channel.list_files("dataset-a", page=1, limit=5, keyword="gpu")
+        file_row = await channel.get_file("dataset-a", "doc-1")
+        chunks = await channel.retrieve_chunks("dataset-a", "doc-1", page=1, limit=5, keyword="seg")
+
+        self.assertEqual(len(datasets), 1)
+        self.assertEqual(dataset["id"], "dataset-a")
+        self.assertEqual(len(files), 1)
+        self.assertEqual(file_row["id"], "doc-1")
+        self.assertEqual(len(chunks), 1)
+
+        self.assertEqual(store.dataset_calls[0]["kind"], "list")
+        self.assertEqual(store.dataset_calls[1]["kind"], "get")
+        self.assertEqual(store.file_calls[0]["kind"], "list")
+        self.assertEqual(store.file_calls[1]["kind"], "get")
 
 
 class TestKnowledgeChannelE2E(unittest.IsolatedAsyncioTestCase):
@@ -241,8 +341,10 @@ class TestDifyKnowledgeStoreAdapterUnit(unittest.IsolatedAsyncioTestCase):
         fake = _FakeDifyClient(
             [
                 _FakeDifyResponse(200, payload={"data": [{"id": "dataset-c", "name": "hardware-runbook"}]}),
+                _FakeDifyResponse(200, payload={"id": "dataset-c", "retrieval_model_dict": {}}),
                 _FakeDifyResponse(200, payload={"records": [{"segment": {"content": "hit-1"}}]}),
                 _FakeDifyResponse(200, payload={"data": []}),
+                _FakeDifyResponse(200, payload={"id": "default-ds", "retrieval_model_dict": {}}),
                 _FakeDifyResponse(200, payload={"records": [{"segment": {"content": "hit-2"}}]}),
             ]
         )
@@ -256,15 +358,19 @@ class TestDifyKnowledgeStoreAdapterUnit(unittest.IsolatedAsyncioTestCase):
 
         contains_rows = await adapter.search("q1", category="hard", top_k=1)
         self.assertEqual(contains_rows[0]["dataset_id"], "dataset-c")
-        self.assertEqual(fake.calls[1]["url"], "/v1/datasets/dataset-c/retrieve")
+        self.assertEqual(fake.calls[2]["url"], "/v1/datasets/dataset-c/retrieve")
 
         fallback_rows = await adapter.search("q2", category="missing", top_k=1)
         self.assertEqual(fallback_rows[0]["dataset_id"], "default-ds")
-        self.assertEqual(fake.calls[3]["url"], "/v1/datasets/default-ds/retrieve")
+        self.assertEqual(fake.calls[5]["url"], "/v1/datasets/default-ds/retrieve")
 
     async def test_unit_search_runbooks_uses_dedicated_dataset(self) -> None:
         fake = _FakeDifyClient(
             [
+                _FakeDifyResponse(
+                    200,
+                    payload={"id": "runbook-ds", "retrieval_model_dict": {"score_threshold_enabled": False}},
+                ),
                 _FakeDifyResponse(
                     200,
                     payload={"records": [{"segment": {"id": "seg-9", "content": "runbook text"}}]},
@@ -282,7 +388,7 @@ class TestDifyKnowledgeStoreAdapterUnit(unittest.IsolatedAsyncioTestCase):
         rows = await adapter.search_runbooks("latency spike")
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["dataset_id"], "runbook-ds")
-        self.assertEqual(fake.calls[0]["url"], "/v1/datasets/runbook-ds/retrieve")
+        self.assertEqual(fake.calls[1]["url"], "/v1/datasets/runbook-ds/retrieve")
 
     async def test_unit_error_mapping(self) -> None:
         fake = _FakeDifyClient([_FakeDifyResponse(401, payload={"message": "unauthorized"})])
@@ -307,7 +413,12 @@ class TestDifyKnowledgeStoreAdapterUnit(unittest.IsolatedAsyncioTestCase):
             await adapter.list_datasets()
 
     async def test_unit_empty_records_returns_empty_list(self) -> None:
-        fake = _FakeDifyClient([_FakeDifyResponse(200, payload={"records": []})])
+        fake = _FakeDifyClient(
+            [
+                _FakeDifyResponse(200, payload={"id": "default-ds", "retrieval_model_dict": {}}),
+                _FakeDifyResponse(200, payload={"records": []}),
+            ]
+        )
         adapter = DifyKnowledgeStoreAdapter(
             base_url="http://10.11.4.3:31984",
             api_key="token-1",
@@ -317,6 +428,84 @@ class TestDifyKnowledgeStoreAdapterUnit(unittest.IsolatedAsyncioTestCase):
         )
         rows = await adapter.search("gpu timeout", top_k=3)
         self.assertEqual(rows, [])
+
+    async def test_unit_dataset_document_segment_apis(self) -> None:
+        fake = _FakeDifyClient(
+            [
+                _FakeDifyResponse(200, payload={"id": "dataset-a", "name": "hardware"}),
+                _FakeDifyResponse(200, payload={"data": [{"id": "doc-1", "name": "gpu.md"}]}),
+                _FakeDifyResponse(200, payload={"id": "doc-1", "name": "gpu.md"}),
+                _FakeDifyResponse(200, payload={"data": [{"id": "seg-1", "content": "segment-1"}]}),
+            ]
+        )
+        adapter = DifyKnowledgeStoreAdapter(
+            base_url="http://10.11.4.3:31984",
+            api_key="token-1",
+            default_dataset_id="default-ds",
+            runbook_dataset_id="runbook-ds",
+            _client=fake,
+        )
+
+        dataset = await adapter.get_dataset("dataset-a")
+        documents = await adapter.list_documents("dataset-a", page=1, limit=5, keyword="gpu")
+        document = await adapter.get_document("dataset-a", "doc-1")
+        segments = await adapter.list_document_segments("dataset-a", "doc-1", page=1, limit=5, keyword="segment")
+
+        self.assertEqual(dataset["id"], "dataset-a")
+        self.assertEqual(len(documents), 1)
+        self.assertEqual(document["id"], "doc-1")
+        self.assertEqual(len(segments), 1)
+
+        self.assertEqual(fake.calls[1]["url"], "/v1/datasets/dataset-a/documents")
+        self.assertEqual(fake.calls[2]["url"], "/v1/datasets/dataset-a/documents/doc-1")
+        self.assertEqual(fake.calls[3]["url"], "/v1/datasets/dataset-a/documents/doc-1/segments")
+        self.assertEqual(fake.calls[1]["params"]["keyword"], "gpu")
+        self.assertEqual(fake.calls[3]["params"]["keyword"], "segment")
+
+    async def test_unit_retrieve_auto_fill_and_cache(self) -> None:
+        fake = _FakeDifyClient(
+            [
+                _FakeDifyResponse(
+                    200,
+                    payload={
+                        "id": "default-ds",
+                        "retrieval_model_dict": {
+                            "search_method": "hybrid_search",
+                            "score_threshold_enabled": False,
+                            "score_threshold": 0.5,
+                            "unknown_key": "ignored",
+                        },
+                    },
+                ),
+                _FakeDifyResponse(200, payload={"records": [{"segment": {"content": "hit-1"}}]}),
+                _FakeDifyResponse(200, payload={"records": [{"segment": {"content": "hit-2"}}]}),
+            ]
+        )
+        adapter = DifyKnowledgeStoreAdapter(
+            base_url="http://10.11.4.3:31984",
+            api_key="token-1",
+            default_dataset_id="default-ds",
+            runbook_dataset_id="runbook-ds",
+            _client=fake,
+        )
+
+        rows1 = await adapter.search("q1", top_k=3)
+        rows2 = await adapter.search("q2", top_k=2)
+        self.assertEqual(len(rows1), 1)
+        self.assertEqual(len(rows2), 1)
+
+        dataset_calls = [c for c in fake.calls if c["url"] == "/v1/datasets/default-ds"]
+        self.assertEqual(len(dataset_calls), 1)
+
+        retrieve_calls = [c for c in fake.calls if c["url"] == "/v1/datasets/default-ds/retrieve"]
+        self.assertEqual(len(retrieve_calls), 2)
+        first_model = retrieve_calls[0]["json"]["retrieval_model"]
+        second_model = retrieve_calls[1]["json"]["retrieval_model"]
+        self.assertEqual(first_model["search_method"], "hybrid_search")
+        self.assertEqual(first_model["score_threshold_enabled"], False)
+        self.assertEqual(first_model["top_k"], 3)
+        self.assertEqual(second_model["top_k"], 2)
+        self.assertNotIn("unknown_key", first_model)
 
 
 if __name__ == "__main__":
@@ -366,6 +555,51 @@ class TestKnowledgeChannelReal:
 
             runbooks = _run(channel.search_runbook(env["SRE_TEST_KB_SYMPTOM"]))
             assert len(runbooks) > 0, "knowledge runbook search returned no results in real test"
+        finally:
+            _run(channel.disconnect())
+            _run(adapter.aclose())
+
+
+@pytest.mark.real
+class TestKnowledgeChannelRealDataApis:
+    def test_real_knowledge_dataset_file_chunk_flow(self) -> None:
+        require_real_tests()
+        env = require_env(
+            "SRE_KB_URL",
+            "SRE_KB_TOKEN",
+            "SRE_KB_DEFAULT_DATASET_ID",
+            "SRE_TEST_KB_QUERY",
+        )
+        timeout_sec = get_http_timeout_sec()
+        retry_count = get_http_retry_count()
+
+        runbook_dataset_id = os.getenv("SRE_KB_RUNBOOK_DATASET_ID", env["SRE_KB_DEFAULT_DATASET_ID"])
+        adapter = DifyKnowledgeStoreAdapter(
+            base_url=env["SRE_KB_URL"],
+            api_key=env["SRE_KB_TOKEN"],
+            default_dataset_id=env["SRE_KB_DEFAULT_DATASET_ID"],
+            runbook_dataset_id=runbook_dataset_id,
+            timeout=timeout_sec,
+            retries=retry_count,
+            api_prefix=os.getenv("SRE_KB_API_PREFIX", "/v1"),
+        )
+        channel = KnowledgeBaseChannel(store=adapter)
+
+        try:
+            assert _run(channel.connect()) is True
+
+            # Verify search works with auto-filled retrieval model when no
+            # default retrieval model is explicitly configured.
+            chunks = _run(channel.search(env["SRE_TEST_KB_QUERY"], top_k=5))
+            assert isinstance(chunks, list)
+
+            files = _run(channel.list_files(env["SRE_KB_DEFAULT_DATASET_ID"], page=1, limit=5))
+            assert len(files) > 0, "list_files returned no documents in real test"
+            file_id = str(files[0].get("id") or "")
+            assert file_id, "first file does not include id"
+
+            segments = _run(channel.retrieve_chunks(env["SRE_KB_DEFAULT_DATASET_ID"], file_id, page=1, limit=5))
+            assert isinstance(segments, list)
         finally:
             _run(channel.disconnect())
             _run(adapter.aclose())
