@@ -70,8 +70,8 @@ class KnowledgeStore:
         source: str,
         category: str,
         version: str = "v1",
-        chunk_size: int = 500,
-        overlap: int = 50,
+        chunk_size: int = 512,
+        overlap: int = 64,
         metadata: dict[str, Any] | None = None,
     ) -> list[str]:
         base_metadata = {"source": source, "category": category, "version": version}
@@ -92,6 +92,7 @@ class KnowledgeStore:
                 "category": "runbook",
                 "version": version,
                 "symptom": runbook.symptom,
+                "root_cause": runbook.root_cause,
                 "title": runbook.title,
                 "tags": ",".join(runbook.tags),
             },

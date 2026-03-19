@@ -7,6 +7,11 @@ from sre_agent.models.ontology import EntityType, OntologyEdge, OntologyNode, Re
 from sre_agent.ontology.discovery.k8s_scanner import K8sScanner
 from sre_agent.ontology.graph import OntologyGraph
 
+try:
+    import networkx as nx  # type: ignore
+except ImportError:
+    from sre_agent._compat import networkx as nx
+
 
 class _FakeK8sChannel:
     async def list_pods(self, namespace: str, label_selector: str | None = None):
@@ -25,6 +30,7 @@ def test_ontology_graph_queries_and_persistence(tmp_path: Path) -> None:
         db_path = str(tmp_path / "ontology.db")
         graph = OntologyGraph(db_path=db_path)
         await graph.connect()
+        assert isinstance(graph.graph, nx.DiGraph)
         await graph.add_node(OntologyNode(id="node-a", entity_type=EntityType.NODE, name="node-a", status="online"))
         await graph.add_node(OntologyNode(id="svc-a", entity_type=EntityType.INFERENCE_SERVICE, name="svc-a"))
         await graph.add_edge(OntologyEdge(source_id="svc-a", target_id="node-a", relation=RelationType.HOSTED_ON))
@@ -42,6 +48,27 @@ def test_ontology_graph_queries_and_persistence(tmp_path: Path) -> None:
         await restored.connect()
         assert restored.get_entity("svc-a") is not None
         await restored.close()
+
+    asyncio.run(_run())
+
+
+def test_ontology_blast_radius_respects_documented_direction_rules() -> None:
+    async def _run() -> None:
+        graph = OntologyGraph(db_path=":memory:")
+        await graph.connect()
+        await graph.add_node(OntologyNode(id="node-a", entity_type=EntityType.NODE, name="node-a"))
+        await graph.add_node(OntologyNode(id="pod-a", entity_type=EntityType.K8S_POD, name="pod-a"))
+        await graph.add_node(OntologyNode(id="svc-a", entity_type=EntityType.INFERENCE_SERVICE, name="svc-a"))
+        await graph.add_node(OntologyNode(id="gpu-a", entity_type=EntityType.GPU, name="gpu-a"))
+        await graph.add_edge(OntologyEdge(source_id="pod-a", target_id="node-a", relation=RelationType.HOSTED_ON))
+        await graph.add_edge(OntologyEdge(source_id="svc-a", target_id="pod-a", relation=RelationType.SERVES))
+        await graph.add_edge(OntologyEdge(source_id="gpu-a", target_id="node-a", relation=RelationType.PART_OF))
+
+        blast = graph.get_blast_radius("node-a")
+        affected_ids = {node.id for node in blast["affected_entities"]}
+        assert affected_ids == {"pod-a", "svc-a"}
+        assert "gpu-a" not in affected_ids
+        await graph.close()
 
     asyncio.run(_run())
 
