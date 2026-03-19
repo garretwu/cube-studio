@@ -1,3 +1,9 @@
+"""Purpose: nvidia-smi, DCGM metrics.
+
+Primary tools: get_metrics, get_processes.
+Channels used: ssh.
+"""
+
 from __future__ import annotations
 
 from typing import Any

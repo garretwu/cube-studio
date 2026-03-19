@@ -1,3 +1,9 @@
+"""Purpose: Graph traversal, neighbor, path queries.
+
+Primary tools: query_entities, get_path, get_blast_radius.
+Channels used: ontology.
+"""
+
 from __future__ import annotations
 
 from typing import Any

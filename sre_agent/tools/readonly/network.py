@@ -1,3 +1,9 @@
+"""Purpose: RDMA stats, switch port counters.
+
+Primary tools: get_rdma_stats, get_switch_port_counters.
+Channels used: ssh, switch.
+"""
+
 from __future__ import annotations
 
 from typing import Any
@@ -12,7 +18,14 @@ def _require_str(params: dict[str, Any], key: str) -> str:
     return value
 
 
-def _extract_output(value: Any) -> Any:
+def _extract_output(value: Any, *, action: str) -> Any:
+    success = getattr(value, "success", None)
+    if success is not None and not bool(success):
+        error_text = str(getattr(value, "error", "") or "").strip()
+        if error_text:
+            raise ToolValidationError(error_text)
+        raise ToolValidationError(f"channel action failed: {action}")
+
     output = getattr(value, "output", None)
     error = getattr(value, "error", None)
     if output is None and error is None:
@@ -35,7 +48,7 @@ async def get_rdma_stats(params: dict[str, Any], context: ToolExecutionContext) 
     if not command:
         raise ToolValidationError("parameter 'command' must not be blank")
     result = await ssh.run_command(node, command, use_sudo=False)
-    return _extract_output(result)
+    return _extract_output(result, action="run_command")
 
 
 async def get_switch_port_counters(params: dict[str, Any], context: ToolExecutionContext) -> Any:
@@ -51,8 +64,11 @@ async def get_switch_port_counters(params: dict[str, Any], context: ToolExecutio
             "get_interface_status",
             {"switch": switch, "interface": interface},
         )
-        return _extract_output(result)
+        return _extract_output(result, action="get_interface_status")
     if hasattr(switch_channel, "get_interface_status"):
-        return switch_channel.get_interface_status(switch, interface)
+        value = switch_channel.get_interface_status(switch, interface)
+        if value is None:
+            raise ToolValidationError("switch channel returned no interface status")
+        return value
     raise ToolValidationError("switch channel does not support interface status read")
 

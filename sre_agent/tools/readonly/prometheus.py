@@ -1,3 +1,9 @@
+"""Purpose: PromQL instant/range queries.
+
+Primary tools: query_instant, query_range.
+Channels used: prometheus (fallback: metrics).
+"""
+
 from __future__ import annotations
 
 from typing import Any

@@ -1,3 +1,9 @@
+"""Purpose: Pattern/incident/config lookup.
+
+Primary tools: search_incidents, search_patterns, get_config_baseline.
+Channels used: memory.
+"""
+
 from __future__ import annotations
 
 from typing import Any

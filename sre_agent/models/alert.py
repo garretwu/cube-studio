@@ -113,8 +113,57 @@ class Alert(StrictFrozenModel):
         return value if isinstance(value, str) else None
 
 
+class AlertRule(StrictFrozenModel):
+    """Normalized alerting-rule model (Prometheus-compatible payloads)."""
+
+    name: str = Field(validation_alias=AliasChoices("name", "alert"))
+    query: str | None = Field(default=None, validation_alias=AliasChoices("query", "expr"))
+    duration: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("duration", "for"),
+    )
+    labels: dict[str, str] = Field(default_factory=dict)
+    annotations: dict[str, str] = Field(default_factory=dict)
+    state: str | None = None
+    health: str | None = None
+    group: str | None = None
+    source: str | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_mappings(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+        normalized = dict(data)
+        labels = normalized.get("labels")
+        if not isinstance(labels, dict):
+            labels = {}
+        annotations = normalized.get("annotations")
+        if not isinstance(annotations, dict):
+            annotations = {}
+        normalized["labels"] = {
+            str(k): str(v)
+            for k, v in labels.items()
+            if isinstance(k, str)
+        }
+        normalized["annotations"] = {
+            str(k): str(v)
+            for k, v in annotations.items()
+            if isinstance(k, str)
+        }
+        return normalized
+
+    @field_validator("name")
+    @classmethod
+    def _rule_name_not_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("name must not be blank")
+        return value
+
+
 __all__ = [
     "AlertSeverity",
     "AlertStatus",
     "Alert",
+    "AlertRule",
 ]

@@ -1,3 +1,10 @@
+"""Purpose: Execute remediation actions.
+
+Primary tools: execute_plan.
+Channels used: remediation.
+Safety: write operations are expected to run with ToolRegistry approval.
+"""
+
 from __future__ import annotations
 
 from typing import Any

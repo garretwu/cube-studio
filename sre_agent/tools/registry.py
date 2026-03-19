@@ -195,7 +195,7 @@ class ToolRegistry:
         for candidate in SafetyLevel:
             if candidate.value == text:
                 return candidate
-            raise ToolValidationError(f"unknown safety level: {level!r}")
+        raise ToolValidationError(f"unknown safety level: {level!r}")
 
 
 def build_default_registry() -> ToolRegistry:

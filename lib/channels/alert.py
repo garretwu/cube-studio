@@ -2,11 +2,12 @@
 from __future__ import annotations
 
 import inspect
+import os
 import re
 from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol
 
-from sre_agent.models.alert import Alert
+from sre_agent.models.alert import Alert, AlertRule, AlertSeverity, AlertStatus
 
 from .base import BaseChannel, ChannelResult
 
@@ -39,6 +40,8 @@ class AlertChannel(BaseChannel):
         self,
         *,
         alertmanager_url: str = "",
+        prometheus_url: str = "",
+        config: dict[str, Any] | None = None,
         client: AlertLifecycleBackend | None = None,
         metrics_backend: OriginMetricsBackend | None = None,
         timeout: int = 15,
@@ -47,22 +50,38 @@ class AlertChannel(BaseChannel):
         guard: Any | None = None,
     ) -> None:
         super().__init__(dry_run=dry_run, wal=wal, guard=guard)
-        self.alertmanager_url = alertmanager_url.rstrip("/")
+        self.alertmanager_url = self._resolve_alertmanager_url(alertmanager_url, config=config).rstrip("/")
+        self.prometheus_url = self._resolve_prometheus_url(prometheus_url, config=config).rstrip("/")
+        self._api_base_url = (self.alertmanager_url or self.prometheus_url).rstrip("/")
         self.timeout = timeout
         self.metrics_backend = metrics_backend
         self._connected = False
         self._owns_client = False
+        self._rules_client = None
+        self._owns_rules_client = False
 
         if client is not None:
             self._client = client
-            return
+        else:
+            self._client = None
+            if self._api_base_url:
+                if httpx is None:
+                    raise RuntimeError("httpx is required to create AlertChannel client")
+                self._client = httpx.AsyncClient(base_url=self._api_base_url, timeout=timeout)
+                self._owns_client = True
 
-        self._client = None
-        if self.alertmanager_url:
+        if self.prometheus_url:
             if httpx is None:
-                raise RuntimeError("httpx is required to create AlertChannel client")
-            self._client = httpx.AsyncClient(base_url=self.alertmanager_url, timeout=timeout)
-            self._owns_client = True
+                raise RuntimeError("httpx is required to create AlertChannel rules client")
+            if self._client is not None and self._api_base_url == self.prometheus_url:
+                self._rules_client = self._client
+                self._owns_rules_client = False
+            else:
+                self._rules_client = httpx.AsyncClient(base_url=self.prometheus_url, timeout=timeout)
+                self._owns_rules_client = True
+        else:
+            self._rules_client = self._client
+            self._owns_rules_client = False
 
     async def connect(self) -> bool:
         result = await self.execute("connect", {})
@@ -72,14 +91,8 @@ class AlertChannel(BaseChannel):
         result = await self.execute("disconnect", {})
         return result.success
 
-    async def health_check(self) -> dict[str, bool]:
-        result = await self.execute("health_check", {})
-        if not result.success or not isinstance(result.data, dict):
-            return {"connected": False}
-        return {str(k): bool(v) for k, v in result.data.items()}
-
-    async def get_active_alerts(self, filter_labels: dict[str, str] | None = None) -> list[Alert]:
-        result = await self.execute("get_active_alerts", {"filter_labels": filter_labels or {}})
+    async def get_alerts(self, filter_labels: dict[str, str] | None = None) -> list[Alert]:
+        result = await self.execute("get_alerts", {"filter_labels": filter_labels or {}})
         data = self._unwrap(result, default=[])
         if not isinstance(data, list):
             return []
@@ -88,8 +101,43 @@ class AlertChannel(BaseChannel):
             if isinstance(item, Alert):
                 out.append(item)
             else:
-                out.append(Alert.model_validate(item))
+                out.append(self._to_alert(item))
         return out
+
+    async def get_firing_alerts(self, filter_labels: dict[str, str] | None = None) -> list[Alert]:
+        result = await self.execute("get_firing_alerts", {"filter_labels": filter_labels or {}})
+        data = self._unwrap(result, default=[])
+        if not isinstance(data, list):
+            return []
+        out: list[Alert] = []
+        for item in data:
+            if isinstance(item, Alert):
+                out.append(item)
+            else:
+                out.append(self._to_alert(item))
+        return out
+
+    async def get_alert_rules(self) -> list[AlertRule]:
+        result = await self.execute("get_alert_rules", {})
+        data = self._unwrap(result, default=[])
+        if not isinstance(data, list):
+            return []
+        out: list[AlertRule] = []
+        for item in data:
+            if isinstance(item, AlertRule):
+                out.append(item)
+            elif isinstance(item, dict):
+                out.append(AlertRule.model_validate(item))
+        return out
+
+    async def health_check(self) -> dict[str, bool]:
+        result = await self.execute("health_check", {})
+        if not result.success or not isinstance(result.data, dict):
+            return {"connected": False}
+        return {str(k): bool(v) for k, v in result.data.items()}
+
+    async def get_active_alerts(self, filter_labels: dict[str, str] | None = None) -> list[Alert]:
+        return await self.get_alerts(filter_labels=filter_labels)
 
     async def get_alert_history(self, alert_name: str, lookback: str = "24h") -> list[Alert]:
         result = await self.execute(
@@ -159,6 +207,13 @@ class AlertChannel(BaseChannel):
         if action == "disconnect":
             if self._owns_client and self._client is not None and hasattr(self._client, "aclose"):
                 await self._maybe_await(self._client.aclose())
+            if (
+                self._owns_rules_client
+                and self._rules_client is not None
+                and self._rules_client is not self._client
+                and hasattr(self._rules_client, "aclose")
+            ):
+                await self._maybe_await(self._rules_client.aclose())
             self._connected = False
             return ChannelResult(success=True, data={"connected": False})
         if action == "health_check":
@@ -166,20 +221,25 @@ class AlertChannel(BaseChannel):
                 "connected": self._connected,
                 "client": self._client is not None,
                 "alertmanager": False,
+                "rules": self._rules_client is not None,
                 "metrics": self._has_metrics_api(),
             }
             if self._client is not None and self._connected:
-                try:
-                    response = await self._http_get("/-/healthy", params=None)
-                    self._ensure_success(response)
-                    status["alertmanager"] = True
-                except Exception:
-                    status["alertmanager"] = False
+                status["alertmanager"] = await self._check_alert_api_health()
             ok = all([status["connected"], status["client"], status["alertmanager"], status["metrics"]])
             return ChannelResult(success=ok, data=status)
         if action == "get_active_alerts":
-            alerts = await self._get_active_alerts_impl(filter_labels=params.get("filter_labels") or {})
+            alerts = await self._get_alerts_impl(filter_labels=params.get("filter_labels") or {})
             return ChannelResult(success=True, data=alerts)
+        if action == "get_alerts":
+            alerts = await self._get_alerts_impl(filter_labels=params.get("filter_labels") or {})
+            return ChannelResult(success=True, data=alerts)
+        if action == "get_firing_alerts":
+            alerts = await self._get_firing_alerts_impl(filter_labels=params.get("filter_labels") or {})
+            return ChannelResult(success=True, data=alerts)
+        if action == "get_alert_rules":
+            rules = await self._get_alert_rules_impl()
+            return ChannelResult(success=True, data=rules)
         if action == "get_alert_history":
             alerts = await self._get_alert_history_impl(
                 alert_name=str(params["alert_name"]),
@@ -204,23 +264,89 @@ class AlertChannel(BaseChannel):
             return ChannelResult(success=True, data=silence_id)
         return ChannelResult(success=False, error=f"unknown action: {action}")
 
-    async def _get_active_alerts_impl(self, *, filter_labels: dict[str, str]) -> list[Alert]:
+    async def _get_alerts_impl(self, *, filter_labels: dict[str, str]) -> list[Alert]:
         filters = self._build_filters(filter_labels)
-        params: dict[str, Any] = {}
-        if filters:
-            params["filter"] = filters
-        response = await self._http_get("/api/v2/alerts", params=params or None)
+        first_error: Exception | None = None
+        for endpoint in ("/api/v2/alerts", "/api/v1/alerts"):
+            try:
+                params: dict[str, Any] | None = None
+                if endpoint == "/api/v2/alerts" and filters:
+                    params = {"filter": filters}
+                response = await self._http_get(endpoint, params=params or None)
+                self._ensure_success(response)
+                payload = self._response_json(response)
+                rows = self._extract_alert_rows(payload)
+                alerts = [self._to_alert(item) for item in rows if isinstance(item, dict)]
+                if filter_labels:
+                    alerts = [item for item in alerts if self._match_alert_labels(item, filter_labels)]
+                return alerts
+            except Exception as exc:  # noqa: BLE001
+                if first_error is None:
+                    first_error = exc
+                continue
+        if first_error is not None:
+            raise first_error
+        return []
+
+    async def _check_alert_api_health(self) -> bool:
+        for endpoint, params in (
+            ("/-/healthy", None),
+            ("/api/v2/alerts", None),
+            ("/api/v1/alerts", None),
+        ):
+            try:
+                response = await self._http_get(endpoint, params=params)
+                self._ensure_success(response)
+                return True
+            except Exception:
+                continue
+        return False
+
+    async def _get_firing_alerts_impl(self, *, filter_labels: dict[str, str]) -> list[Alert]:
+        alerts = await self._get_alerts_impl(filter_labels=filter_labels)
+        return [item for item in alerts if item.status == AlertStatus.FIRING]
+
+    async def _get_alert_rules_impl(self) -> list[AlertRule]:
+        response = await self._rules_http_get("/api/v1/rules", params=None)
         self._ensure_success(response)
         payload = self._response_json(response)
-        if not isinstance(payload, list):
+        if not isinstance(payload, dict):
             return []
-        return [Alert.model_validate(item) for item in payload if isinstance(item, dict)]
+        data = payload.get("data")
+        if not isinstance(data, dict):
+            return []
+        groups = data.get("groups")
+        if not isinstance(groups, list):
+            return []
+
+        out: list[AlertRule] = []
+        for group in groups:
+            if not isinstance(group, dict):
+                continue
+            group_name = str(group.get("name", "")).strip() or None
+            rules = group.get("rules")
+            if not isinstance(rules, list):
+                continue
+            for rule in rules:
+                if not isinstance(rule, dict):
+                    continue
+                rule_type = str(rule.get("type", "")).strip().lower()
+                if rule_type and rule_type != "alerting":
+                    continue
+                if not rule.get("alert") and not rule.get("name"):
+                    continue
+                payload_rule = dict(rule)
+                payload_rule.setdefault("source", "prometheus-rules")
+                if group_name:
+                    payload_rule.setdefault("group", group_name)
+                out.append(AlertRule.model_validate(payload_rule))
+        return out
 
     async def _get_alert_history_impl(self, *, alert_name: str, lookback: str) -> list[Alert]:
         if not alert_name.strip():
             raise ValueError("alert_name must not be blank")
 
-        active_alerts = await self._get_active_alerts_impl(filter_labels={"alertname": alert_name})
+        active_alerts = await self._get_alerts_impl(filter_labels={"alertname": alert_name})
         points = await self._get_origin_metrics_impl(
             alert_name=alert_name,
             lookback=lookback,
@@ -471,6 +597,14 @@ class AlertChannel(BaseChannel):
             raise RuntimeError("alert client does not support GET")
         return await self._maybe_await(method(path, params=params))
 
+    async def _rules_http_get(self, path: str, params: dict[str, Any] | None) -> Any:
+        if self._rules_client is None:
+            raise RuntimeError("alert rules client is not configured")
+        method = getattr(self._rules_client, "get", None)
+        if method is None:
+            raise RuntimeError("alert rules client does not support GET")
+        return await self._maybe_await(method(path, params=params))
+
     async def _http_post(self, path: str, json_body: dict[str, Any]) -> Any:
         if self._client is None:
             raise RuntimeError("alert client is not configured")
@@ -591,6 +725,165 @@ class AlertChannel(BaseChannel):
         if result.data is None:
             return default
         return result.data
+
+    @staticmethod
+    def _read_from_config(config: dict[str, Any] | None, paths: tuple[tuple[str, ...], ...]) -> str:
+        if not isinstance(config, dict):
+            return ""
+        for path in paths:
+            current: Any = config
+            found = True
+            for key in path:
+                if not isinstance(current, dict):
+                    found = False
+                    break
+                current = current.get(key)
+                if current is None:
+                    found = False
+                    break
+            if not found:
+                continue
+            value = str(current or "").strip()
+            if value:
+                return value
+        return ""
+
+    @classmethod
+    def _resolve_alertmanager_url(cls, explicit: str, *, config: dict[str, Any] | None) -> str:
+        direct = str(explicit or "").strip()
+        if direct:
+            return direct
+        from_config = cls._read_from_config(
+            config,
+            (
+                ("alertmanager_url",),
+                ("alertmanager", "url"),
+                ("alertmanager", "base_url"),
+                ("alert", "alertmanager_url"),
+                ("alert", "url"),
+                ("monitor", "alertmanager_url"),
+            ),
+        )
+        if from_config:
+            return from_config
+        env_value = str(os.getenv("SRE_ALERTMANAGER_URL") or os.getenv("ALERTMANAGER_URL") or "").strip()
+        if env_value:
+            return env_value
+        return ""
+
+    @classmethod
+    def _resolve_prometheus_url(cls, explicit: str, *, config: dict[str, Any] | None) -> str:
+        direct = str(explicit or "").strip()
+        if direct:
+            return direct
+        from_config = cls._read_from_config(
+            config,
+            (
+                ("prometheus_url",),
+                ("prometheus", "url"),
+                ("prometheus", "base_url"),
+                ("alert", "prometheus_url"),
+                ("monitor", "prometheus_url"),
+            ),
+        )
+        if from_config:
+            return from_config
+        env_value = str(os.getenv("SRE_PROMETHEUS_URL") or os.getenv("PROMETHEUS_URL") or "").strip()
+        if env_value:
+            return env_value
+        return ""
+
+    @staticmethod
+    def _extract_alert_rows(payload: Any) -> list[dict[str, Any]]:
+        if isinstance(payload, list):
+            return [item for item in payload if isinstance(item, dict)]
+        if not isinstance(payload, dict):
+            return []
+        data = payload.get("data")
+        if isinstance(data, list):
+            return [item for item in data if isinstance(item, dict)]
+        if isinstance(data, dict):
+            alerts = data.get("alerts")
+            if isinstance(alerts, list):
+                return [item for item in alerts if isinstance(item, dict)]
+            nested = data.get("data")
+            if isinstance(nested, list):
+                return [item for item in nested if isinstance(item, dict)]
+        alerts = payload.get("alerts")
+        if isinstance(alerts, list):
+            return [item for item in alerts if isinstance(item, dict)]
+        return []
+
+    @classmethod
+    def _to_alert(cls, payload: Any) -> Alert:
+        if isinstance(payload, Alert):
+            return payload
+        if not isinstance(payload, dict):
+            raise ValueError("invalid alert payload")
+        normalized = dict(payload)
+        labels = normalized.get("labels") if isinstance(normalized.get("labels"), dict) else {}
+        annotations = normalized.get("annotations") if isinstance(normalized.get("annotations"), dict) else {}
+        normalized["labels"] = labels
+        normalized["annotations"] = annotations
+
+        if "startsAt" not in normalized and "starts_at" not in normalized:
+            active_at = normalized.get("activeAt") or normalized.get("active_at")
+            if active_at:
+                normalized["startsAt"] = active_at
+            else:
+                normalized["startsAt"] = datetime.now(UTC).isoformat()
+        if "endsAt" not in normalized and "ends_at" not in normalized:
+            normalized["endsAt"] = normalized.get("resolvedAt") or normalized.get("resolved_at")
+
+        if "status" not in normalized:
+            state = normalized.get("state")
+            if isinstance(state, dict):
+                normalized["status"] = state
+            elif isinstance(state, str):
+                normalized["status"] = state
+            else:
+                normalized["status"] = AlertStatus.FIRING.value
+        status_text = normalized.get("status")
+        if isinstance(status_text, str):
+            lowered = status_text.strip().lower()
+            if lowered == "pending":
+                normalized["status"] = AlertStatus.FIRING.value
+            elif lowered == "inactive":
+                normalized["status"] = AlertStatus.RESOLVED.value
+
+        if "alert_name" not in normalized and "alertname" not in normalized:
+            label_name = labels.get("alertname") if isinstance(labels, dict) else None
+            if isinstance(label_name, str) and label_name.strip():
+                normalized["alert_name"] = label_name.strip()
+
+        if "severity" not in normalized:
+            label_severity = labels.get("severity") if isinstance(labels, dict) else None
+            if isinstance(label_severity, str) and label_severity.strip():
+                normalized["severity"] = label_severity.strip()
+            else:
+                normalized["severity"] = "warning"
+        severity_text = normalized.get("severity")
+        if isinstance(severity_text, str):
+            lowered = severity_text.strip().lower()
+            if lowered not in {item.value for item in AlertSeverity}:
+                normalized["severity"] = AlertSeverity.WARNING.value
+
+        if "fingerprint" not in normalized:
+            label_name = str(labels.get("alertname") or normalized.get("alert_name") or "alert")
+            instance = str(labels.get("instance") or labels.get("pod") or labels.get("node") or "default")
+            normalized["fingerprint"] = f"{label_name}:{instance}"
+
+        for extra_key in ("state", "activeAt", "active_at", "resolvedAt", "resolved_at", "value"):
+            normalized.pop(extra_key, None)
+
+        return Alert.model_validate(normalized)
+
+    @staticmethod
+    def _match_alert_labels(alert: Alert, filter_labels: dict[str, str]) -> bool:
+        for key, expected in filter_labels.items():
+            if alert.labels.get(key) != expected:
+                return False
+        return True
 
 
 __all__ = ["AlertChannel"]
