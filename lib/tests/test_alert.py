@@ -70,6 +70,8 @@ class _FakeAlertClient:
             return _FakeResponse({"status": "ok"}, status_code=200)
         if path == "/api/v2/alerts":
             return _FakeResponse(self.alerts_payload, status_code=200)
+        if path == "/api/v1/alerts":
+            return _FakeResponse({"status": "success", "data": {"alerts": self.alerts_payload}}, status_code=200)
         return _FakeResponse({"error": "not found"}, status_code=404)
 
     async def post(self, path: str, json: dict[str, Any] | None = None) -> _FakeResponse:
@@ -248,11 +250,7 @@ def _run(coro: Any) -> Any:
 class TestAlertChannelReal:
     def test_real_alert_readonly_flow(self) -> None:
         require_real_tests()
-        env = require_env(
-            "SRE_ALERTMANAGER_URL",
-            "SRE_PROMETHEUS_URL",
-            "SRE_TEST_ALERT_NAME",
-        )
+        env = require_env("SRE_PROMETHEUS_URL", "SRE_TEST_ALERT_NAME")
         timeout_sec = get_http_timeout_sec()
         retry_count = get_http_retry_count()
 
@@ -262,9 +260,9 @@ class TestAlertChannelReal:
             pytest.skip(f"httpx is required for real alert tests: {exc}")
 
         alert_client = httpx.AsyncClient(
-            base_url=env["SRE_ALERTMANAGER_URL"].rstrip("/"),
+            base_url=env["SRE_PROMETHEUS_URL"].rstrip("/"),
             timeout=timeout_sec,
-            headers=build_auth_headers("ALERTMANAGER"),
+            headers=build_auth_headers("PROMETHEUS"),
         )
         metrics_backend = PrometheusHttpBackend(
             base_url=env["SRE_PROMETHEUS_URL"],

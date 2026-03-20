@@ -178,6 +178,146 @@ class LogChannel(BaseChannel):
         data = self._unwrap(result, default=[])
         return self._normalize_lines(data)
 
+    async def query_logs_range_only(
+        self,
+        query: str,
+        *,
+        start: datetime | None = None,
+        end: datetime | None = None,
+        lookback: str = "15m",
+        step: str = "30s",
+        limit: int = 200,
+    ) -> list[dict[str, Any]]:
+        if not query.strip():
+            raise ValueError("query must not be blank")
+        if len(query) > self.MAX_QUERY_LENGTH:
+            raise SafetyViolationError(f"query too long (max {self.MAX_QUERY_LENGTH} chars)")
+        if int(limit) <= 0:
+            raise ValueError("limit must be > 0")
+
+        resolved_start, resolved_end = self._compute_default_range(
+            start=start,
+            end=end,
+            lookback=lookback,
+            default=timedelta(minutes=15),
+        )
+        payload = await self._query_loki_range_only(
+            query=query,
+            start=resolved_start,
+            end=resolved_end,
+            step=step,
+            limit=int(limit),
+        )
+        entries = self._extract_entries(payload)[: int(limit)]
+        out: list[dict[str, Any]] = []
+        for entry in entries:
+            labels = entry.get("labels")
+            out.append(
+                {
+                    "timestamp": entry.get("timestamp"),
+                    "line": str(entry.get("line", "")),
+                    "labels": labels if isinstance(labels, dict) else {},
+                }
+            )
+        return out
+
+    async def query_logs_by_labels(
+        self,
+        labels: dict[str, str],
+        *,
+        start: datetime | None = None,
+        end: datetime | None = None,
+        lookback: str = "15m",
+        step: str = "30s",
+        limit: int = 200,
+    ) -> list[dict[str, Any]]:
+        selector = self._build_stream_selector(self._normalize_selector_input(labels))
+        return await self.query_logs_range_only(
+            selector,
+            start=start,
+            end=end,
+            lookback=lookback,
+            step=step,
+            limit=limit,
+        )
+
+    async def read_logs_by_selector(
+        self,
+        labels: dict[str, str],
+        *,
+        regex: str | None = None,
+        start: datetime | None = None,
+        end: datetime | None = None,
+        lookback: str = "15m",
+        tail: int = 200,
+    ) -> list[str]:
+        if int(tail) <= 0:
+            raise ValueError("tail must be > 0")
+
+        selector = self._build_stream_selector(self._normalize_selector_input(labels))
+        query = selector
+        if regex:
+            regex_text = self._sanitize_regex(regex, field="regex", max_len=256)
+            query = f'{selector} |~ "{regex_text}"'
+
+        resolved_start, resolved_end = self._compute_default_range(
+            start=start,
+            end=end,
+            lookback=lookback,
+            default=timedelta(minutes=15),
+        )
+        payload = await self._query_loki_range_only(
+            query=query,
+            start=resolved_start,
+            end=resolved_end,
+            step="30s",
+            limit=int(tail),
+        )
+        entries = self._extract_entries(payload)
+        return [str(entry.get("line", "")) for entry in entries[: int(tail)]]
+
+    async def search_logs_by_selector(
+        self,
+        labels: dict[str, str],
+        pattern: str,
+        *,
+        start: datetime | None = None,
+        end: datetime | None = None,
+        lookback: str = "15m",
+        limit: int = 500,
+    ) -> list[dict[str, Any]]:
+        if int(limit) <= 0:
+            raise ValueError("limit must be > 0")
+        regex_text = self._sanitize_regex(pattern, field="pattern", max_len=256)
+
+        selector = self._build_stream_selector(self._normalize_selector_input(labels))
+        query = f'{selector} |~ "{regex_text}"'
+        resolved_start, resolved_end = self._compute_default_range(
+            start=start,
+            end=end,
+            lookback=lookback,
+            default=timedelta(minutes=15),
+        )
+        payload = await self._query_loki_range_only(
+            query=query,
+            start=resolved_start,
+            end=resolved_end,
+            step="30s",
+            limit=int(limit),
+        )
+        entries = self._extract_entries(payload)[: int(limit)]
+        out: list[dict[str, Any]] = []
+        for entry in entries:
+            labels_payload = entry.get("labels")
+            out.append(
+                {
+                    "timestamp": entry.get("timestamp"),
+                    "line": str(entry.get("line", "")),
+                    "labels": labels_payload if isinstance(labels_payload, dict) else {},
+                }
+            )
+        return out
+
     async def _execute_impl(self, action: str, params: dict[str, Any]) -> ChannelResult:
         if action == "connect":
             self._connected = True
@@ -387,6 +527,32 @@ class LogChannel(BaseChannel):
 
         raise RuntimeError("loki dependency does not provide query/query_range")
 
+    async def _query_loki_range_only(
+        self,
+        *,
+        query: str,
+        start: datetime,
+        end: datetime,
+        step: str,
+        limit: int,
+    ) -> Any:
+        if self.loki is None:
+            raise RuntimeError("loki dependency is not configured")
+        if len(query) > self.MAX_QUERY_LENGTH:
+            raise SafetyViolationError(f"query too long (max {self.MAX_QUERY_LENGTH} chars)")
+
+        method = getattr(self.loki, "query_range", None)
+        if method is None:
+            raise RuntimeError("loki dependency does not provide query_range")
+        return await self._call_query_range(
+            method=method,
+            query=query,
+            start=start,
+            end=end,
+            step=step,
+            limit=limit,
+        )
+
     async def _call_query(self, *, method: Any, query: str, limit: int) -> Any:
         kwargs_options = [
             {"query": query, "limit": limit, "direction": "backward"},
@@ -507,6 +673,57 @@ class LogChannel(BaseChannel):
         if lookback is None:
             return end - default, end
         return end - self._parse_duration(lookback), end
+
+    def _compute_default_range(
+        self,
+        *,
+        start: datetime | None,
+        end: datetime | None,
+        lookback: str | None,
+        default: timedelta,
+    ) -> tuple[datetime, datetime]:
+        if start is not None and start.tzinfo is None:
+            raise ValueError("start must be timezone-aware")
+        if end is not None and end.tzinfo is None:
+            raise ValueError("end must be timezone-aware")
+
+        if start is not None and end is not None:
+            if start >= end:
+                raise ValueError("start must be earlier than end")
+            return start, end
+
+        if start is not None:
+            computed_end = datetime.now(UTC)
+            if start >= computed_end:
+                raise ValueError("start must be earlier than end")
+            return start, computed_end
+
+        if end is not None:
+            if lookback is None:
+                duration = default
+            else:
+                duration = self._parse_duration(lookback)
+            computed_start = end - duration
+            if computed_start >= end:
+                raise ValueError("start must be earlier than end")
+            return computed_start, end
+
+        return self._compute_time_range(lookback=lookback, default=default)
+
+    def _normalize_selector_input(self, labels: dict[str, str]) -> dict[str, str]:
+        if not isinstance(labels, dict):
+            raise ValueError("labels must be a dict[str, str]")
+        if not labels:
+            raise ValueError("labels must not be empty")
+
+        normalized: dict[str, str] = {}
+        for key, value in labels.items():
+            key_text = str(key).strip()
+            if not key_text:
+                raise ValueError("label key must not be blank")
+            value_text = self._validate_label_value(str(value), field=key_text)
+            normalized[key_text] = value_text
+        return normalized
 
     def _parse_duration(self, duration: str) -> timedelta:
         text = duration.strip().lower()
