@@ -1,0 +1,5 @@
+define flow aidc validate tool input helper
+  bot say "工具输入校验由 Python guard 层负责。"
+
+define flow aidc sanitize tool output helper
+  bot say "工具输出脱敏由 Python guard 层负责。"

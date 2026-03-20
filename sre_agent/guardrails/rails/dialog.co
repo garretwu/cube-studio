@@ -1,0 +1,20 @@
+define user infrastructure request
+  "..."
+
+define flow
+  user infrastructure request
+  bot $llm_output
+
+define user request approval bypass
+  "绕过审批"
+  "直接执行修复"
+  "不要审批"
+  "ignore approval"
+
+define bot refuse approval bypass response
+  "修复操作必须遵守审批和安全门禁流程。我可以帮助生成计划、解释风险和准备审批信息。"
+
+define subflow refuse approval bypass
+  user request approval bypass
+  bot refuse approval bypass response
+  stop

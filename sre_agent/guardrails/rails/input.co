@@ -1,0 +1,15 @@
+define bot refuse destructive action
+  "破坏性操作需要通过修复审批流程执行。我可以帮你诊断问题并生成修复计划，但无法直接执行写操作。请使用 GUI 的修复流程或 `sre-agent diagnose` 命令。"
+
+define bot refuse prompt injection
+  "我只能处理 AIDC 基础设施相关的运维请求。"
+
+define subflow block destructive actions
+  if "删除这个 pod" in $user_message or "kubectl delete" in $user_message or "scale down to zero" in $user_message or "重启所有节点" in $user_message or "drain 这个 node" in $user_message or "format disk" in $user_message or "rm -rf" in $user_message
+    bot refuse destructive action
+    stop
+
+define subflow block injection attempts
+  if "忽略上面的指令" in $user_message or "ignore previous instructions" in $user_message or "你现在是一个" in $user_message or "system: you are now" in $user_message
+    bot refuse prompt injection
+    stop

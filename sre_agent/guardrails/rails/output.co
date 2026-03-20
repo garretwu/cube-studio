@@ -1,0 +1,7 @@
+define flow sanitize sensitive output
+  $bot_message = execute sanitize_tool_output(tool_output=$bot_message)
+
+define flow self check output
+  $is_safe = execute self_check_output
+  if not $is_safe
+    bot say "（已过滤敏感信息）请通过安全渠道获取详细信息。"
