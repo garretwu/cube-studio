@@ -40,3 +40,5 @@ compile.py
 .venv/
 /reports/
 /fault_injector/fault_reports/
+/sre_agent/frontend/node_modules/
+/sre_agent/frontend/.bin/
