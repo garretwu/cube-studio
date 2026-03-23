@@ -91,6 +91,18 @@ class K8sChannel(BaseChannel):
                 params.get("replicas"),
             )
             return ChannelResult(success=True, data=result)
+        if action == "apply_manifest":
+            result = await self.apply_manifest(
+                params.get("manifest"),
+                params.get("namespace", "default"),
+            )
+            return ChannelResult(success=True, data=result)
+        if action == "cordon_node":
+            result = await self.cordon_node(params.get("node"))
+            return ChannelResult(success=True, data=result)
+        if action == "drain_node":
+            result = await self.drain_node(params.get("node"), bool(params.get("force", False)))
+            return ChannelResult(success=True, data=result)
         return ChannelResult(success=False, error=f"unknown action: {action}")
 
     async def list_pods(self, namespace: str, label_selector: str | None = None) -> list[dict[str, Any]]:
@@ -184,6 +196,52 @@ class K8sChannel(BaseChannel):
 
         return self.client.scale_deployment(namespace=namespace, name=name, replicas=replicas)
 
+    async def apply_manifest(self, manifest: dict[str, Any], namespace: str = "default") -> dict[str, Any]:
+        if not isinstance(manifest, dict) or not manifest:
+            raise ValueError("manifest must be a non-empty mapping")
+        if hasattr(self.client, "apply_manifest"):
+            return self.client.apply_manifest(manifest=manifest, namespace=namespace)
+
+        metadata = manifest.get("metadata", {})
+        kind = str(manifest.get("kind", "")).strip() or "Unknown"
+        name = ""
+        if isinstance(metadata, dict):
+            name = str(metadata.get("name", "")).strip()
+        return {
+            "applied": True,
+            "namespace": namespace,
+            "kind": kind,
+            "name": name,
+            "mode": "mock-noop",
+        }
+
+    async def cordon_node(self, node: str) -> dict[str, Any]:
+        node_name = str(node or "").strip()
+        if not node_name:
+            raise ValueError("node is required")
+        if hasattr(self.client, "cordon_node"):
+            return self.client.cordon_node(node=node_name)
+        return {
+            "node": node_name,
+            "cordoned": True,
+            "mode": "mock-noop",
+        }
+
+    async def drain_node(self, node: str, force: bool = False) -> dict[str, Any]:
+        node_name = str(node or "").strip()
+        if not node_name:
+            raise ValueError("node is required")
+        if hasattr(self.client, "drain_node"):
+            return self.client.drain_node(node=node_name, force=force)
+        return {
+            "node": node_name,
+            "force": force,
+            "drained": True,
+            "evicted_pods": 0,
+            "skipped_pods": 0,
+            "mode": "mock-noop",
+        }
+
     async def delete_crd(self, crd_name: str) -> dict[str, Any]:
         """Delete CRD (dangerous operation — blocked by FORBIDDEN_OPERATIONS)."""
         if self._is_forbidden("delete", {"verb": "delete", "resource": "CRD"}):
@@ -197,12 +255,20 @@ class K8sChannel(BaseChannel):
     # ── fault_injector execution path (real K8s API) ──
 
     async def _execute_with_real_client(self, action: str, params: dict[str, Any]) -> ChannelResult:
+        if action == "list_pods":
+            return await self._get_pods(params["namespace"], params.get("label_selector"))
         if action == "get_pods":
             return await self._get_pods(params["namespace"], params.get("label_selector"))
         if action == "delete_pod":
             return await self._delete_pod(params["pod_name"], params["namespace"])
         if action == "scale_deployment":
             return await self._scale_deployment(params["name"], params["namespace"], int(params["replicas"]))
+        if action == "apply_manifest":
+            return await self._apply_manifest(params["manifest"], params.get("namespace", "default"))
+        if action == "cordon_node":
+            return await self._cordon_node(params["node"])
+        if action == "drain_node":
+            return await self._drain_node(params["node"], bool(params.get("force", False)))
         return ChannelResult(success=False, error=f"Unknown action: {action}")
 
     async def _get_pods(self, namespace: str, label_selector: str | None = None) -> ChannelResult:
@@ -213,7 +279,56 @@ class K8sChannel(BaseChannel):
                 namespace,
                 label_selector=label_selector,
             )
-            return ChannelResult(success=True, output="\n".join(p.metadata.name for p in pods.items))
+            structured: list[dict[str, Any]] = []
+            names: list[str] = []
+            for pod in pods.items:
+                pod_name = str(getattr(getattr(pod, "metadata", None), "name", "") or "")
+                pod_ns = str(getattr(getattr(pod, "metadata", None), "namespace", "") or namespace)
+                phase = str(getattr(getattr(pod, "status", None), "phase", "") or "Unknown")
+                names.append(pod_name)
+
+                container_statuses_raw = getattr(getattr(pod, "status", None), "container_statuses", None) or []
+                container_statuses: list[dict[str, Any]] = []
+                for cs in container_statuses_raw:
+                    state = getattr(cs, "state", None)
+                    last_state = getattr(cs, "last_state", None)
+                    current_terminated = getattr(state, "terminated", None) if state is not None else None
+                    last_terminated = getattr(last_state, "terminated", None) if last_state is not None else None
+                    container_statuses.append(
+                        {
+                            "state": {
+                                "terminated": (
+                                    {"reason": str(getattr(current_terminated, "reason", "") or "")}
+                                    if current_terminated is not None
+                                    else {}
+                                )
+                            },
+                            "lastState": {
+                                "terminated": (
+                                    {"reason": str(getattr(last_terminated, "reason", "") or "")}
+                                    if last_terminated is not None
+                                    else {}
+                                )
+                            },
+                        }
+                    )
+
+                structured.append(
+                    {
+                        "name": pod_name,
+                        "namespace": pod_ns,
+                        "status": {
+                            "phase": phase,
+                            "containerStatuses": container_statuses,
+                        },
+                    }
+                )
+
+            return ChannelResult(
+                success=True,
+                data=structured,
+                output="\n".join(name for name in names if name),
+            )
         except Exception as exc:
             return ChannelResult(success=False, error=str(exc))
 
@@ -247,5 +362,165 @@ class K8sChannel(BaseChannel):
                 {"spec": {"replicas": replicas}},
             )
             return ChannelResult(success=True)
+        except Exception as exc:
+            return ChannelResult(success=False, error=str(exc))
+
+    async def _apply_manifest(self, manifest: dict[str, Any], namespace: str = "default") -> ChannelResult:
+        if not isinstance(manifest, dict) or not manifest:
+            return ChannelResult(success=False, error="manifest must be a non-empty mapping")
+
+        try:
+            self._ensure_client()
+            metadata = manifest.get("metadata", {})
+            name = ""
+            if isinstance(metadata, dict):
+                name = str(metadata.get("name", "")).strip()
+            kind = str(manifest.get("kind", "")).strip()
+            effective_namespace = namespace
+            if isinstance(metadata, dict):
+                declared_ns = str(metadata.get("namespace", "")).strip()
+                if declared_ns:
+                    effective_namespace = declared_ns
+
+            # Fast-path common config objects for idempotent apply in repeated real tests.
+            if kind == "ConfigMap" and name:
+                from kubernetes.client.exceptions import ApiException
+
+                try:
+                    await asyncio.to_thread(
+                        self._core_v1.create_namespaced_config_map,
+                        effective_namespace,
+                        manifest,
+                    )
+                    return ChannelResult(
+                        success=True,
+                        data={"applied": True, "kind": kind, "name": name, "namespace": effective_namespace, "operation": "create"},
+                    )
+                except ApiException as exc:
+                    if int(getattr(exc, "status", 0) or 0) != 409:
+                        raise
+                    await asyncio.to_thread(
+                        self._core_v1.patch_namespaced_config_map,
+                        name,
+                        effective_namespace,
+                        manifest,
+                    )
+                    return ChannelResult(
+                        success=True,
+                        data={"applied": True, "kind": kind, "name": name, "namespace": effective_namespace, "operation": "patch"},
+                    )
+
+            from kubernetes.utils import create_from_dict
+
+            created = await asyncio.to_thread(
+                create_from_dict,
+                self._core_v1.api_client,
+                manifest,
+                namespace=effective_namespace,
+                verbose=False,
+            )
+            resource_count = len(created) if isinstance(created, list) else 1
+            return ChannelResult(
+                success=True,
+                data={
+                    "applied": True,
+                    "kind": kind or "Unknown",
+                    "name": name,
+                    "namespace": effective_namespace,
+                    "resources": resource_count,
+                },
+            )
+        except Exception as exc:
+            return ChannelResult(success=False, error=str(exc))
+
+    async def _cordon_node(self, node: str) -> ChannelResult:
+        node_name = str(node or "").strip()
+        if not node_name:
+            return ChannelResult(success=False, error="node is required")
+        try:
+            self._ensure_client()
+            await asyncio.to_thread(
+                self._core_v1.patch_node,
+                node_name,
+                {"spec": {"unschedulable": True}},
+            )
+            return ChannelResult(success=True, data={"node": node_name, "cordoned": True})
+        except Exception as exc:
+            return ChannelResult(success=False, error=str(exc))
+
+    async def _drain_node(self, node: str, force: bool = False) -> ChannelResult:
+        node_name = str(node or "").strip()
+        if not node_name:
+            return ChannelResult(success=False, error="node is required")
+        try:
+            self._ensure_client()
+            await asyncio.to_thread(
+                self._core_v1.patch_node,
+                node_name,
+                {"spec": {"unschedulable": True}},
+            )
+
+            pods = await asyncio.to_thread(
+                self._core_v1.list_pod_for_all_namespaces,
+                field_selector=f"spec.nodeName={node_name}",
+            )
+            from kubernetes import client as k8s_client
+            from kubernetes.client.exceptions import ApiException
+
+            policy_api = k8s_client.PolicyV1Api(self._core_v1.api_client)
+            evicted = 0
+            skipped = 0
+            errors: list[str] = []
+
+            for pod in pods.items:
+                pod_name = str(getattr(getattr(pod, "metadata", None), "name", "") or "")
+                namespace = str(getattr(getattr(pod, "metadata", None), "namespace", "") or "")
+                annotations = getattr(getattr(pod, "metadata", None), "annotations", {}) or {}
+                owner_refs = getattr(getattr(pod, "metadata", None), "owner_references", None) or []
+
+                if not pod_name or not namespace:
+                    skipped += 1
+                    continue
+                if "kubernetes.io/config.mirror" in annotations:
+                    skipped += 1
+                    continue
+                if any(str(getattr(ref, "kind", "")).strip() == "DaemonSet" for ref in owner_refs):
+                    if not force:
+                        skipped += 1
+                        continue
+                if namespace == "kube-system" and not force:
+                    skipped += 1
+                    continue
+
+                eviction = k8s_client.V1Eviction(
+                    metadata=k8s_client.V1ObjectMeta(name=pod_name, namespace=namespace),
+                )
+                try:
+                    await asyncio.to_thread(
+                        policy_api.create_namespaced_pod_eviction,
+                        name=pod_name,
+                        namespace=namespace,
+                        body=eviction,
+                    )
+                    evicted += 1
+                except ApiException as exc:
+                    errors.append(f"{namespace}/{pod_name}: {exc.status} {exc.reason}")
+                except Exception as exc:  # noqa: BLE001
+                    errors.append(f"{namespace}/{pod_name}: {exc}")
+
+            if errors:
+                preview = "; ".join(errors[:3])
+                if len(errors) > 3:
+                    preview = f"{preview}; ... ({len(errors)} total errors)"
+                return ChannelResult(
+                    success=False,
+                    error=f"drain node encountered eviction errors: {preview}",
+                    data={"node": node_name, "evicted_pods": evicted, "skipped_pods": skipped},
+                )
+
+            return ChannelResult(
+                success=True,
+                data={"node": node_name, "drained": True, "evicted_pods": evicted, "skipped_pods": skipped},
+            )
         except Exception as exc:
             return ChannelResult(success=False, error=str(exc))

@@ -1,0 +1,17 @@
+{
+  "common": {
+    "commandCenter": "AIDC Auto-SRE Command Center",
+    "subtitle": "Bring topology, alerts, diagnosis, remediation, and knowledge into one collaborative surface.",
+    "admin": "Admin"
+  },
+  "nav": {
+    "topology": "Topology",
+    "alerts": "Alerts",
+    "diagnosis": "Diagnosis",
+    "remediation": "Remediation",
+    "chat": "Chat",
+    "knowledge": "Knowledge",
+    "memory": "Memory",
+    "skills": "Skills"
+  }
+}
