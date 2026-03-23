@@ -46,6 +46,8 @@ compile.py
 /sre_agent/docs/tool_real_test.local.*.json
 /sre_agent/tests/test_tools_channels_real.py
 /sre_agent/docs/channel_gaps.md
+/sre_agent/frontend/node_modules/
+/sre_agent/frontend/.bin/
 /sre_agent/docs/SREtesting.md
 /sre_agent/docs/plan0319.md
 /sre_agent/skills/DEPENDENCIES.md
