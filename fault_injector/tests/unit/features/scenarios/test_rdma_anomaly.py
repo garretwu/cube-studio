@@ -17,8 +17,7 @@ from fault_injector.scenarios.rdma_anomaly import (
 from fault_injector.safety.guard import SafetyViolationError
 
 
-MARKER_SCENARIOS = [
-    PFCDeadlockScenario,
+CLI_SCENARIOS = [
     ECNMisconfigurationScenario,
     RDMAQoSDowngradeScenario,
 ]
@@ -75,8 +74,6 @@ def _build_roce_ctx(mock_fault_context, ssh: _DummySSH, *, mtu: int = 1500, orig
 async def test_switch_scenarios_happy_cycle(scenario_cls, rdma_switch_context):
     scenario = scenario_cls()
     ctx = rdma_switch_context
-    if scenario_cls in MARKER_SCENARIOS:
-        ctx.switch.description = "baseline-desc"
 
     inject = await scenario.inject(ctx)
     assert inject.success is True
@@ -164,19 +161,29 @@ async def test_switch_scenarios_fail_when_interface_config_missing(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("scenario_cls", MARKER_SCENARIOS)
-async def test_marker_scenarios_fail_when_baseline_description_empty(scenario_cls, rdma_switch_context):
+@pytest.mark.parametrize("scenario_cls", CLI_SCENARIOS)
+async def test_cli_scenarios_allow_empty_baseline_description(scenario_cls, rdma_switch_context):
     scenario = scenario_cls()
     rdma_switch_context.switch.description = ""
+    rdma_switch_context.params = {"switch": "sw1", "interface": "GE1/0/4"}
 
     inject = await scenario.inject(rdma_switch_context)
-    assert inject.success is False
-    assert "Baseline description is empty" in (inject.error or "")
+    assert inject.success is True
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("scenario_cls", MARKER_SCENARIOS)
-async def test_marker_scenarios_fail_when_apply_fails(mock_fault_context, fake_switch_channel_factory, scenario_cls):
+async def test_pfc_deadlock_allows_empty_baseline_description(rdma_switch_context):
+    scenario = PFCDeadlockScenario()
+    rdma_switch_context.switch.description = ""
+    rdma_switch_context.params = {"switch": "sw1", "interface": "GE1/0/4"}
+
+    inject = await scenario.inject(rdma_switch_context)
+    assert inject.success is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("scenario_cls", CLI_SCENARIOS)
+async def test_cli_scenarios_fail_when_apply_fails(mock_fault_context, fake_switch_channel_factory, scenario_cls):
     scenario = scenario_cls()
     mock_fault_context.switch = fake_switch_channel_factory(apply_fail=True)
     mock_fault_context.params = {"switch": "sw1", "interface": "GE1/0/4"}
@@ -187,29 +194,60 @@ async def test_marker_scenarios_fail_when_apply_fails(mock_fault_context, fake_s
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("scenario_cls", MARKER_SCENARIOS)
-async def test_marker_scenarios_fail_post_change_verification_when_config_missing(
-    mock_fault_context, fake_switch_channel_factory, scenario_cls
+async def test_pfc_deadlock_inject_emits_no_drop_dot1p_all(rdma_switch_context):
+    scenario = PFCDeadlockScenario()
+    rdma_switch_context.switch.description = "baseline-desc"
+    rdma_switch_context.params = {"switch": "sw1", "interface": "GE1/0/4"}
+
+    inject = await scenario.inject(rdma_switch_context)
+    assert inject.success is True
+
+    state, dot1p = rdma_switch_context.switch.get_pfc_port_profile("sw1", "GE1/0/4")
+    assert state == 1
+    assert dot1p == [0, 1, 2, 3, 4, 5, 6, 7]
+
+
+@pytest.mark.asyncio
+async def test_pfc_deadlock_recover_emits_undo_no_drop(rdma_switch_context):
+    scenario = PFCDeadlockScenario()
+    rdma_switch_context.switch.description = "baseline-desc"
+    rdma_switch_context.params = {"switch": "sw1", "interface": "GE1/0/4"}
+
+    inject = await scenario.inject(rdma_switch_context)
+    assert inject.success is True
+
+    recover = await scenario.recover(rdma_switch_context)
+    assert recover.success is True
+
+    state, dot1p = rdma_switch_context.switch.get_pfc_port_profile("sw1", "GE1/0/4")
+    assert state == 1
+    assert dot1p == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("scenario_cls", CLI_SCENARIOS)
+async def test_cli_scenarios_fail_post_change_verification_when_show_fails(
+    mock_fault_context, fake_switch_channel_factory, scenario_cls, monkeypatch
 ):
     scenario = scenario_cls()
     switch = fake_switch_channel_factory()
-    switch.description = "baseline-desc"
     mock_fault_context.switch = switch
     mock_fault_context.params = {"switch": "sw1", "interface": "GE1/0/4"}
 
-    original_get = switch.get_interface_config
+    original_show = switch.run_cli_execution
+    state = {"count": 0}
 
-    def _first_then_missing(sw, iface):
-        if not hasattr(_first_then_missing, "called"):
-            _first_then_missing.called = True
-            return original_get(sw, iface)
-        return None
+    def _first_then_fail(sw, cmd):
+        state["count"] += 1
+        if state["count"] > 1:
+            return ChannelResult(success=False, error="show failed")
+        return original_show(sw, cmd)
 
-    switch.get_interface_config = _first_then_missing  # type: ignore[method-assign]
+    monkeypatch.setattr(switch, "run_cli_execution", _first_then_fail)
 
     inject = await scenario.inject(mock_fault_context)
     assert inject.success is False
-    assert "Post-change verification failed" in (inject.error or "")
+    assert "show failed" in (inject.error or "")
 
 
 @pytest.mark.asyncio
@@ -277,8 +315,6 @@ async def test_switch_scenarios_recover_baseline_verification_failure(
     scenario_cls, rdma_switch_context, monkeypatch
 ):
     scenario = scenario_cls()
-    if scenario_cls in MARKER_SCENARIOS:
-        rdma_switch_context.switch.description = "baseline-desc"
 
     inject = await scenario.inject(rdma_switch_context)
     assert inject.success is True

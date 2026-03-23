@@ -101,24 +101,48 @@ class ToolRegistry:
         self.get_tool(name)
         return name not in self._disabled
 
-    def list_tools(self, safety_levels: Iterable[SafetyLevel | str] | None = None) -> list[ToolDefinition]:
+    def list_tools(
+        self,
+        safety_levels: Iterable[SafetyLevel | str] | None = None,
+        tool_names: Iterable[str] | None = None,
+    ) -> list[ToolDefinition]:
+        selected_names = None if tool_names is None else {str(name).strip() for name in tool_names if str(name).strip()}
         if safety_levels is None:
-            return [self._tools[name] for name in sorted(self._tools)]
+            names = sorted(self._tools)
+            if selected_names is not None:
+                names = [name for name in names if name in selected_names]
+            return [self._tools[name] for name in names]
         allowed = {self._normalize_level(level) for level in safety_levels}
         out: list[ToolDefinition] = []
         for name in sorted(self._tools):
+            if selected_names is not None and name not in selected_names:
+                continue
             tool = self._tools[name]
             if tool.safety_level in allowed:
                 out.append(tool)
         return out
 
-    def get_tools_by_level(self, level: SafetyLevel | str) -> list[ToolDefinition]:
-        return self.list_tools([level])
+    def get_tools_by_level(
+        self,
+        level: SafetyLevel | str,
+        *,
+        tool_names: Iterable[str] | None = None,
+    ) -> list[ToolDefinition]:
+        return self.list_tools([level], tool_names=tool_names)
 
-    def get_tool_descriptions(self, safety_levels: Iterable[SafetyLevel | str] | None = None) -> str:
+    def get_tool_descriptions(
+        self,
+        safety_levels: Iterable[SafetyLevel | str] | None = None,
+        *,
+        tool_names: Iterable[str] | None = None,
+        include_schema: bool = False,
+    ) -> str:
         lines: list[str] = []
-        for tool in self.list_tools(safety_levels=safety_levels):
-            lines.append(f"- `{tool.name}` ({tool.safety_level.value}): {tool.description}")
+        for tool in self.list_tools(safety_levels=safety_levels, tool_names=tool_names):
+            line = f"- `{tool.name}` ({tool.safety_level.value}): {tool.description}"
+            if include_schema:
+                line += f" | schema={tool.params_schema}"
+            lines.append(line)
         return "\n".join(lines)
 
     async def execute(
@@ -152,7 +176,12 @@ class ToolRegistry:
         except Exception as exc:  # noqa: BLE001
             return ToolResult(tool=name, success=False, error=str(exc), metadata={"safety_level": tool.safety_level.value})
 
-    def get_langchain_tools(self, safety_level: SafetyLevel | str = SafetyLevel.READ_ONLY) -> list[Any]:
+    def get_langchain_tools(
+        self,
+        safety_level: SafetyLevel | str = SafetyLevel.READ_ONLY,
+        *,
+        tool_names: Iterable[str] | None = None,
+    ) -> list[Any]:
         """Export read-only tools as LangChain @tool callables."""
         try:
             from langchain_core.tools import tool as langchain_tool
@@ -161,7 +190,7 @@ class ToolRegistry:
 
         normalized = self._normalize_level(safety_level)
         exported: list[Any] = []
-        for tool_def in self.get_tools_by_level(normalized):
+        for tool_def in self.get_tools_by_level(normalized, tool_names=tool_names):
             tool_name = tool_def.name
 
             async def _wrapped(_tool_name: str = tool_name, **kwargs: Any) -> Any:
@@ -176,7 +205,7 @@ class ToolRegistry:
 
             _wrapped.__name__ = tool_name.replace(".", "_")
             _wrapped.__doc__ = tool_def.description
-            exported.append(langchain_tool(_wrapped))
+            exported.append(langchain_tool(tool_name, description=tool_def.description)(_wrapped))
         return exported
 
     def _enforce_policy(self, tool: ToolDefinition, context: ToolExecutionContext) -> None:

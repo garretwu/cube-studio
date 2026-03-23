@@ -12,6 +12,8 @@ import re
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from typing import Any, Optional
+from xml.sax.saxutils import escape
+from lxml import etree
 
 from ncclient import manager
 from ncclient.operations import RPCError
@@ -22,6 +24,8 @@ logger = logging.getLogger(__name__)
 
 NS_IFMGR_DATA = "http://www.h3c.com/netconf/data:1.0-Ifmgr"
 NS_IFMGR_CONFIG = "http://www.h3c.com/netconf/config:1.0-Ifmgr"
+NS_CONFIGURATION_CONFIG = "http://www.h3c.com/netconf/config:1.0-Configuration"
+NS_PFC_CONFIG = "http://www.h3c.com/netconf/config:1.0-PFC"
 
 ADMIN_STATUS_MAP = {"1": "up", "2": "down"}
 OPER_STATUS_MAP = {"1": "up", "2": "down"}
@@ -109,6 +113,12 @@ class H3CNetconfClient:
         except RPCError as exc:
             logger.error("NETCONF edit-config failed: %s", exc)
             return False
+
+    def dispatch(self, rpc_xml: str) -> str:
+        if self._manager is None:
+            raise RuntimeError("NETCONF is not connected")
+        node = etree.fromstring(rpc_xml.encode("utf-8"))
+        return str(self._manager.dispatch(node))
 
 
 class SwitchChannel(BaseChannel):
@@ -317,6 +327,166 @@ class SwitchChannel(BaseChannel):
         except Exception as exc:
             return ChannelResult(success=False, error=str(exc))
 
+    def apply_cli_commands(self, switch: str, commands: list[str]) -> ChannelResult:
+        """Apply CLI config commands via H3C private-rpc CLI/Configuration."""
+        normalized = [cmd.strip() for cmd in commands if str(cmd).strip()]
+        if not normalized:
+            return ChannelResult(success=False, error="No CLI commands provided")
+
+        if self.dry_run:
+            return ChannelResult(success=True, dry_run=True)
+
+        joined = "\n".join(normalized)
+        rpc_xml = (
+            '<CLI xmlns="http://www.h3c.com/netconf/private-rpc">'
+            f"<Configuration>{escape(joined)}</Configuration>"
+            "</CLI>"
+        )
+        try:
+            reply = self._get_client(switch).dispatch(rpc_xml)
+            output = self._extract_cli_payload(reply, payload_tag="Configuration")
+            if self._cli_output_has_error(output):
+                return ChannelResult(success=False, error=output.strip())
+            return ChannelResult(success=True, output=output)
+        except Exception as exc:
+            return ChannelResult(success=False, error=f"NETCONF CLI dispatch failed: {exc}")
+
+    def run_cli_execution(self, switch: str, command: str) -> ChannelResult:
+        """Run show/exec CLI command via H3C private-rpc CLI/Execution."""
+        text = str(command).strip()
+        if not text:
+            return ChannelResult(success=False, error="No CLI command provided")
+        if self.dry_run:
+            return ChannelResult(success=True, output="", dry_run=True)
+
+        rpc_xml = (
+            '<CLI xmlns="http://www.h3c.com/netconf/private-rpc">'
+            f"<Execution>{escape(text)}</Execution>"
+            "</CLI>"
+        )
+        try:
+            reply = self._get_client(switch).dispatch(rpc_xml)
+            output = self._extract_cli_payload(reply, payload_tag="Execution")
+            if self._cli_output_has_error(output):
+                return ChannelResult(success=False, error=output.strip())
+            return ChannelResult(success=True, output=output)
+        except Exception as exc:
+            return ChannelResult(success=False, error=f"NETCONF CLI dispatch failed: {exc}")
+
+    @staticmethod
+    def _extract_cli_payload(reply_xml: str, payload_tag: str) -> str:
+        try:
+            root = ET.fromstring(reply_xml)
+            for elem in root.iter():
+                if elem.tag.split("}")[-1] == payload_tag:
+                    return (elem.text or "")
+        except ET.ParseError:
+            return ""
+        return ""
+
+    @staticmethod
+    def _cli_output_has_error(output: str) -> bool:
+        text = output or ""
+        if " Too many parameters found " in text:
+            return True
+        for line in text.splitlines():
+            if line.strip().startswith("%"):
+                return True
+        return False
+
+    def get_pfc_port_profile(self, switch: str, interface: str | int) -> tuple[Optional[int], list[int]]:
+        if_index = self._resolve_if_index(switch, interface)
+        if if_index is None:
+            return None, []
+
+        if self.dry_run:
+            return 1, list(range(8))
+
+        filter_xml = f"""
+        <PFC xmlns="{NS_PFC_CONFIG}">
+          <PFCPorts>
+            <Port>
+              <IfIndex>{if_index}</IfIndex>
+            </Port>
+          </PFCPorts>
+        </PFC>"""
+        raw_result = self.get_raw_config(switch, filter_xml)
+        if not raw_result.success or not raw_result.output:
+            return None, []
+
+        try:
+            root = ET.fromstring(raw_result.output)
+            for elem in root.iter():
+                if self._strip(elem.tag) != "Port":
+                    continue
+                port_if_index = None
+                state: Optional[int] = None
+                dot1p: list[int] = []
+                for child in elem:
+                    tag = self._strip(child.tag)
+                    value = (child.text or "").strip()
+                    if tag == "IfIndex":
+                        port_if_index = int(value) if value.isdigit() else None
+                    elif tag == "State":
+                        state = int(value) if value.isdigit() else None
+                    elif tag == "PortNoDrops":
+                        for no_drop in child:
+                            if self._strip(no_drop.tag) != "PortNoDrop":
+                                continue
+                            for no_drop_child in no_drop:
+                                if self._strip(no_drop_child.tag) == "Dot1p":
+                                    dot_val = (no_drop_child.text or "").strip()
+                                    if dot_val.isdigit():
+                                        dot1p.append(int(dot_val))
+                if port_if_index == if_index:
+                    return state, sorted(set(dot1p))
+        except ET.ParseError:
+            return None, []
+
+        return None, []
+
+    def apply_pfc_no_drop_dot1p(
+        self,
+        switch: str,
+        interface: str | int,
+        dot1p_priorities: list[int],
+        *,
+        state: int = 1,
+        clear_existing: bool = False,
+    ) -> ChannelResult:
+        if_index = self._resolve_if_index(switch, interface)
+        if if_index is None:
+            return ChannelResult(success=False, error=f"Unable to resolve IfIndex: {interface}")
+
+        if any(p < 0 or p > 7 for p in dot1p_priorities):
+            return ChannelResult(success=False, error="dot1p priorities must be in range 0..7")
+
+        dots = sorted(set(int(p) for p in dot1p_priorities))
+        no_drop_xml = ""
+        if dots or clear_existing:
+            replace_attr = ""
+            if clear_existing:
+                replace_attr = ' xmlns:nc="urn:ietf:params:xml:ns:netconf:base:1.0" nc:operation="replace"'
+            no_drop_xml = (
+                f"<PortNoDrops{replace_attr}>"
+                + "".join(f"<PortNoDrop><Dot1p>{dot}</Dot1p></PortNoDrop>" for dot in dots)
+                + "</PortNoDrops>"
+            )
+
+        config_xml = f"""
+        <config>
+          <PFC xmlns="{NS_PFC_CONFIG}">
+            <PFCPorts>
+              <Port>
+                <IfIndex>{if_index}</IfIndex>
+                <State>{state}</State>
+                {no_drop_xml}
+              </Port>
+            </PFCPorts>
+          </PFC>
+        </config>"""
+        return self.apply_raw_config(switch, config_xml)
+
     def get_raw_data(self, switch: str, filter_xml: str) -> ChannelResult:
         if self.dry_run:
             return ChannelResult(success=True, output="", dry_run=True)
@@ -431,6 +601,8 @@ class SwitchChannel(BaseChannel):
             return ChannelResult(success=True, output=output)
         if action == "apply_raw_config":
             return self.apply_raw_config(params["switch"], params["config_xml"])
+        if action == "apply_cli_commands":
+            return self.apply_cli_commands(params["switch"], params["commands"])
         return ChannelResult(success=False, error=f"Unknown action: {action}")
 
     def _check_safety(self, action: str, params: dict[str, Any]) -> None:
