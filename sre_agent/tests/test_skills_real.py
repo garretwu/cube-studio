@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -80,20 +81,27 @@ class _DeterministicSkillSelector:
 
 
 class _OpenAISkillSelector:
-    def __init__(self, model: str) -> None:
+    def __init__(self, model: str, base_url: str | None = None) -> None:
         self._model = model
+        self._base_url = base_url
 
     def select_skill_id(self, query: str, skills: list[SkillDescriptor]) -> str:
         if importlib.util.find_spec("openai") is None:
             raise RuntimeError("python package 'openai' is required for real LLM selection")
 
-        api_key = os.getenv("OPENAI_API_KEY", "").strip()
+        api_key = (
+            os.getenv("SRE_OPENAI_API_KEY", "").strip()
+            or os.getenv("OPENAI_API_KEY", "").strip()
+        )
         if not api_key:
-            raise RuntimeError("OPENAI_API_KEY is required for real LLM selection")
+            raise RuntimeError("SRE_OPENAI_API_KEY or OPENAI_API_KEY is required for real LLM selection")
 
         from openai import OpenAI
 
-        client = OpenAI(api_key=api_key)
+        client_kwargs: dict[str, Any] = {"api_key": api_key}
+        if self._base_url:
+            client_kwargs["base_url"] = self._base_url
+        client = OpenAI(**client_kwargs)
         catalog = [
             {
                 "id": item.id,
@@ -125,17 +133,28 @@ class _OpenAISkillSelector:
         if not content:
             raise RuntimeError("real LLM selector returned empty response")
 
-        try:
-            payload = json.loads(content)
-        except json.JSONDecodeError as exc:
-            raise RuntimeError(f"real LLM selector did not return valid JSON: {content}") from exc
-
+        payload = self._parse_json_payload(content)
         skill_id = str(payload.get("skill_id", "")).strip()
         if not skill_id:
             raise RuntimeError(f"real LLM selector returned missing skill_id: {payload}")
         if skill_id not in allowed_ids:
             raise RuntimeError(f"real LLM selector returned unknown skill_id: {skill_id}")
         return skill_id
+
+    @staticmethod
+    def _parse_json_payload(content: str) -> dict[str, Any]:
+        stripped = content.strip()
+        stripped = re.sub(r"(?is)<think>.*?</think>", "", stripped).strip()
+        try:
+            return json.loads(stripped)
+        except json.JSONDecodeError as exc:
+            match = re.search(r"\{.*\}", stripped, flags=re.DOTALL)
+            if match:
+                try:
+                    return json.loads(match.group(0))
+                except json.JSONDecodeError:
+                    pass
+            raise RuntimeError(f"real LLM selector did not return valid JSON: {content}") from exc
 
 
 @dataclass
@@ -179,14 +198,15 @@ class _SkillConsumer:
 
 
 def _build_real_consumer(context: ToolExecutionContext) -> _SkillConsumer:
-    llm_model = os.getenv("SRE_LLM_MODEL", "").strip() or "gpt-4o-mini"
+    llm_model = os.getenv("SRE_LLM_MODEL", "").strip() or "MiniMax-M2.5"
+    llm_base_url = os.getenv("SRE_OPENAI_BASE_URL", "").strip() or None
     return _SkillConsumer(
         registry=SkillRegistry(),
         policy=SkillPolicy(),
         executor=SkillExecutor(),
         tools=build_default_registry(),
         context=context,
-        real_llm_selector=_OpenAISkillSelector(model=llm_model),
+        real_llm_selector=_OpenAISkillSelector(model=llm_model, base_url=llm_base_url),
     )
 
 
@@ -308,7 +328,14 @@ async def test_real_skill_consumer_with_openai_selector() -> None:
     if importlib.util.find_spec("kubernetes") is None:
         pytest.skip("python package 'kubernetes' is required")
 
-    env = require_env("SRE_PROMETHEUS_URL", "SRE_TEST_NAMESPACE", "SRE_TEST_NODE", "OPENAI_API_KEY")
+    api_key = (
+        os.getenv("SRE_OPENAI_API_KEY", "").strip()
+        or os.getenv("OPENAI_API_KEY", "").strip()
+    )
+    if not api_key:
+        pytest.skip("real LLM selector requires SRE_OPENAI_API_KEY or OPENAI_API_KEY")
+
+    env = require_env("SRE_PROMETHEUS_URL", "SRE_TEST_NAMESPACE", "SRE_TEST_NODE")
     kubeconfig = os.getenv("SRE_KUBECONFIG", "").strip() or "~/.kube/config"
     promql = os.getenv("SRE_TEST_PROMQL", "up").strip() or "up"
 

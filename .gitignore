@@ -51,3 +51,4 @@ compile.py
 /sre_agent/skills/DEPENDENCIES.md
 /pytest.ini
 /lib/tests/real_test.example.json
+/data/
