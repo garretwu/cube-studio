@@ -49,10 +49,18 @@ class _MockSwitchChannel:
         self.description = "baseline"
         self.pvid = 1
         self.link_type = "trunk"
+        self.pfc_state = 1
+        self.pfc_dot1p = []
+        self.wred_queue_lines = {}
+        self.dscp_dot1p_map = {26: 3}
 
     def get_interface_status(self, switch, interface):
         _ = (switch, interface)
-        return MagicMock(admin_status=self.admin_status)
+        return MagicMock(
+            admin_status=self.admin_status,
+            name="TwoHundredGigE1/0/4",
+            abbreviated_name="200GE1/0/4",
+        )
 
     def get_interface_config(self, switch, interface):
         _ = (switch, interface)
@@ -72,6 +80,98 @@ class _MockSwitchChannel:
             self.pvid = kwargs["pvid"]
         if "link_type" in kwargs and kwargs["link_type"] is not None:
             self.link_type = {1: "access", 2: "trunk", 3: "hybrid"}.get(kwargs["link_type"], "trunk")
+        return ChannelResult(success=True)
+
+    def apply_cli_commands(self, switch, commands):
+        _ = switch
+        joined = " ".join(commands)
+        if "priority-flow-control no-drop dot1p" in joined and "undo priority-flow-control no-drop dot1p" not in joined:
+            tail = joined.split("priority-flow-control no-drop dot1p", 1)[1].strip()
+            values = []
+            for part in tail.replace(",", " ").split():
+                if "-" in part:
+                    start, end = part.split("-", 1)
+                    if start.isdigit() and end.isdigit():
+                        values.extend(range(int(start), int(end) + 1))
+                elif part.isdigit():
+                    values.append(int(part))
+            self.pfc_dot1p = sorted(set(v for v in values if 0 <= v <= 7))
+        if "undo priority-flow-control no-drop dot1p" in joined:
+            self.pfc_dot1p = []
+        for cmd in commands:
+            text = str(cmd).strip()
+            if text.startswith("qos wred queue "):
+                parts = text.split()
+                if len(parts) >= 4 and parts[3].isdigit():
+                    qid = int(parts[3])
+                    self.wred_queue_lines.setdefault(qid, set()).add(text)
+            if text.startswith("undo qos wred queue "):
+                origin = text.replace("undo ", "", 1)
+                parts = origin.split()
+                if len(parts) >= 4 and parts[3].isdigit():
+                    qid = int(parts[3])
+                    if origin.startswith(f"qos wred queue {qid} drop-level ") and len(parts) >= 6:
+                        level = parts[5]
+                        keep = {
+                            line
+                            for line in self.wred_queue_lines.setdefault(qid, set())
+                            if not line.startswith(f"qos wred queue {qid} drop-level {level} ")
+                        }
+                        self.wred_queue_lines[qid] = keep
+                    else:
+                        self.wred_queue_lines.setdefault(qid, set()).discard(origin)
+            if text.startswith("import ") and " export " in text:
+                parts = text.split()
+                if len(parts) == 4 and parts[0] == "import" and parts[2] == "export":
+                    if parts[1].isdigit() and parts[3].isdigit():
+                        self.dscp_dot1p_map[int(parts[1])] = int(parts[3])
+        return ChannelResult(success=True)
+
+    def run_cli_execution(self, switch, command):
+        _ = (switch, command)
+        cmd = str(command).strip()
+        if cmd.startswith("display qos map-table dscp-dot1p"):
+            mapping = sorted(self.dscp_dot1p_map.items())
+            body = "\n".join(f"{dscp:>4}    :    {dot1p}" for dscp, dot1p in mapping)
+            output = (
+                "<switch>display qos map-table dscp-dot1p\n"
+                "MAP-TABLE NAME: dscp-dot1p   TYPE: pre-define\n\n"
+                "IMPORT  :  EXPORT\n\n"
+                f"{body}\n"
+            )
+            return ChannelResult(success=True, output=output)
+        if cmd.startswith("display current-configuration interface "):
+            q_lines = []
+            for _, lines in sorted(self.wred_queue_lines.items()):
+                q_lines.extend(sorted(lines))
+            q_text = "\n".join(q_lines)
+            output = (
+                "<switch>display current-configuration interface TwoHundredGigE1/0/4\n"
+                "#\n"
+                "interface TwoHundredGigE1/0/4\n"
+                f"{q_text}\n"
+                "#\n"
+                "return\n"
+            )
+            return ChannelResult(success=True, output=output)
+        dot = " ".join([f"{self.pfc_dot1p[0]}-{self.pfc_dot1p[-1]}"]) if self.pfc_dot1p == list(range(8)) else (
+            ",".join(str(v) for v in self.pfc_dot1p) if self.pfc_dot1p else ""
+        )
+        output = (
+            "Interface                        AdminMode  OperMode  Dot1pList   Prio  Recv       Send       Inpps      Outpps\n"
+            "---------------------------------------------------------------------------------------------------\n"
+            f"GE1/0/4                          Enabled    Enabled   {dot}         5     18         0          0          0\n"
+        )
+        return ChannelResult(success=True, output=output)
+
+    def get_pfc_port_profile(self, switch, interface):
+        _ = (switch, interface)
+        return self.pfc_state, list(self.pfc_dot1p)
+
+    def apply_pfc_no_drop_dot1p(self, switch, interface, dot1p_priorities, *, state=1, clear_existing=False):
+        _ = (switch, interface, clear_existing)
+        self.pfc_state = state
+        self.pfc_dot1p = sorted(set(int(p) for p in dot1p_priorities))
         return ChannelResult(success=True)
 
     def shutdown_port(self, switch, interface, fault_id=None):

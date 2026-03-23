@@ -70,7 +70,7 @@ inventory:
         timeout: 30
         use_sudo: true
       redfish:
-        bmc_host: "10.11.8.13"
+        bmc_host: "10.11.8.10"
         username: "admin"
         password: "Admin@9000"
         verify_tls: false
@@ -96,7 +96,7 @@ inventory:
         timeout: 30
         use_sudo: true
       redfish:
-        bmc_host: "10.11.8.13"
+        bmc_host: "10.11.8.11"
         username: "admin"
         password: "Admin@9000"
         verify_tls: false
@@ -122,7 +122,7 @@ inventory:
         timeout: 30
         use_sudo: true
       redfish:
-        bmc_host: "10.11.8.13"
+        bmc_host: "10.11.8.12"
         username: "admin"
         password: "Admin@9000"
         verify_tls: false
@@ -194,7 +194,7 @@ scenarios:
       jitter_ms: 90
       distribution: "pareto"
       loss_pct: 0
-      duration: 30
+      duration: 180
       load_simulator:
         enabled: false
         config_path: "load_simulator/config/notebook-soak-only.yaml"
@@ -261,8 +261,8 @@ scenarios:
   thermal_throttling:
     enabled: true
     target_nodes:
-      - "worker-01"
-      - "worker-02"
+      #- "worker-01"
+      #- "worker-02"
       - "worker-03"
     params:
       gpu_id: 0
@@ -278,13 +278,13 @@ scenarios:
     enabled: true
     target_nodes:
       #- "worker-01"
-      #- "worker-02"
+      - "worker-02"
       - "worker-03"
     params:
       switch: "sw-200g"
       interface: "200GE1/0/3"
       priority: 3
-      duration: 30
+      duration: 90
 
   ecn_misconfiguration:
     enabled: true
@@ -297,13 +297,13 @@ scenarios:
       interface: "200GE1/0/3"
       min_threshold: 10
       max_threshold: 20
-      duration: 30
+      duration: 180
 
   rdma_load_imbalance:
     enabled: true
     target_nodes:
       - "worker-01"
-      #- "worker-02"
+      - "worker-02"
       #- "worker-03"
     params:
       switch: "sw-200g"
@@ -314,7 +314,7 @@ scenarios:
     enabled: true
     target_nodes:
       #- "worker-01"
-      #- "worker-02"
+      - "worker-02"
       - "worker-03"
     params:
       switch: "sw-200g"
@@ -326,13 +326,13 @@ scenarios:
     enabled: true
     target_nodes:
       #- "worker-01"
-      #- "worker-02"
+      - "worker-02"
       - "worker-03"
     params:
       interface: "roce200"
       mtu: 1500
       original_mtu: 9000
-      duration: 30
+      duration: 300
 
   rdma_qos_downgrade:
     enabled: true
@@ -345,6 +345,7 @@ scenarios:
       interface: "200GE1/0/4"
       dscp: 0
       downgraded_tc: 0
+      duration: 300
 
 # =============================================================================
 # Example: Minimal Test Configuration
