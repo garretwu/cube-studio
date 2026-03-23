@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 
-def chunk_text(content: str, chunk_size: int = 500, overlap: int = 50) -> list[str]:
+def chunk_text(content: str, chunk_size: int = 512, overlap: int = 64) -> list[str]:
     if chunk_size <= 0:
         raise ValueError("chunk_size must be positive")
     if overlap < 0 or overlap >= chunk_size:

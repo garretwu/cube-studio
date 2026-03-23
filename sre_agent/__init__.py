@@ -3,6 +3,12 @@
 __all__ = [
     "agent",
     "models",
+    "auth",
+    "api",
+    "concurrency",
+    "remediation",
+    "safety",
+    "nat",
     "ontology",
     "knowledge",
     "memory",

@@ -1,0 +1,6 @@
+workflow:
+  name: aidc-auto-sre
+  mode: profiling
+  entrypoint: run_diagnosis
+  notes:
+    - "NAT wraps the LangGraph runner and does not replace orchestration."
