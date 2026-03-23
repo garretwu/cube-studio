@@ -1,0 +1,1 @@
+{"input": {"alert_name": "vllm_latency_high", "labels": {"instance": "vllm-0"}}, "expected_root_cause": "gpu contention"}

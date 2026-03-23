@@ -2,6 +2,12 @@
 
 __all__ = [
     "models",
+    "auth",
+    "api",
+    "concurrency",
+    "remediation",
+    "safety",
+    "nat",
     "ontology",
     "knowledge",
     "memory",
