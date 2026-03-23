@@ -43,3 +43,5 @@ compile.py
 /lib/tests/real_test.local.json
 /lib/tests/real_test.local.*.json
 /sre_agent/docs/channel_gaps.md
+/sre_agent/frontend/node_modules/
+/sre_agent/frontend/.bin/

@@ -29,7 +29,13 @@ class MemoryStorePG:
     async def search_similar(self, symptoms: dict[str, Any] | list[str] | str, top_k: int = 3) -> list[IncidentRecord]:
         raise NotImplementedError("MemoryStorePG is deferred to the production phase")
 
-    async def get_known_patterns(self) -> list[LearnedPattern]:
+    async def get_known_patterns(
+        self,
+        *,
+        min_occurrence: int = 3,
+        min_effective_confidence: float = 0.7,
+    ) -> list[LearnedPattern]:
+        _ = min_occurrence, min_effective_confidence
         raise NotImplementedError("MemoryStorePG is deferred to the production phase")
 
     async def get_config_baseline(self, aidc_id: str | None = None) -> ConfigBaseline | None:

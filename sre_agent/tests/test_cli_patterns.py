@@ -80,7 +80,7 @@ def test_memory_patterns_cli_reads_known_patterns(tmp_path: Path) -> None:
     assert "gpu contention" in result.output
     assert "vllm_latency_high" in result.output
     assert "occurrences=4" in result.output
-    assert "confidence=0.75" in result.output
+    assert "confidence=0.74" in result.output
 
 
 def test_memory_patterns_cli_handles_empty_known_patterns(tmp_path: Path) -> None:

@@ -70,6 +70,35 @@ class KnowledgeConfig(BaseModel):
     sources: list[KnowledgeSourceConfig] = Field(default_factory=list)
 
 
+class HAConfig(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    enabled: bool = False
+    heartbeat_interval: int = 5
+    heartbeat_timeout: int = 15
+    redis_url: str = "redis://redis:6379/1"
+    shared_storage: str | None = None
+
+
+class SLOConfig(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    enabled: bool = True
+    window_hours: int = 24
+    diagnosis_success_threshold: float = 0.85
+    false_fix_threshold: float = 0.05
+    llm_success_threshold: float = 0.99
+    auto_recovery_hours: int = 1
+
+
+class DataLifecycleConfig(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    hot_retention_days: int = 90
+    warm_retention_days: int = 365
+    cleanup_schedule: str = "0 3 * * *"
+
+
 class SREAgentConfig(BaseModel):
     model_config = ConfigDict(populate_by_name=True, extra="allow")
 
@@ -77,6 +106,9 @@ class SREAgentConfig(BaseModel):
     ontology: OntologyConfig = Field(default_factory=OntologyConfig)
     knowledge_base: KnowledgeConfig = Field(default_factory=KnowledgeConfig)
     memory: MemoryConfig = Field(default_factory=MemoryConfig)
+    ha: HAConfig = Field(default_factory=HAConfig)
+    slo: SLOConfig = Field(default_factory=SLOConfig)
+    data_lifecycle: DataLifecycleConfig = Field(default_factory=DataLifecycleConfig)
 
 
 def load_config(path: str | Path) -> SREAgentConfig:
