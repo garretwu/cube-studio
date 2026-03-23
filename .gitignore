@@ -40,3 +40,6 @@ compile.py
 .venv/
 /reports/
 /fault_injector/fault_reports/
+lib/channels/switch.py
+fault_injector/fault-injector-test.yaml
+.gitlab-ci.yml
