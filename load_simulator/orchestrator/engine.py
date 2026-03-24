@@ -101,18 +101,10 @@ class LoadOrchestrator:
             self._prometheus_channel = None
             self._prometheus_queries = {}
 
-        # Build a CubeStudio channel for PlatformMonitor (optional, best-effort)
+        # CubeStudio is optional. For inference-only runs we skip creating the
+        # platform channel entirely so vLLM benchmarking can run against a raw
+        # OpenAI-compatible endpoint without any CubeStudio dependency.
         self._cube_studio_channel = None
-        try:
-            global_cfg = getattr(config, "global_config", None)
-            if global_cfg is not None:
-                self._cube_studio_channel = self._build_cube_channel(
-                    base_url=global_cfg.cube_studio_url,
-                    timeout=5,
-                    retry_count=0,
-                )
-        except Exception:
-            pass
 
     async def run(self, only: list[str] | None = None) -> SessionResult:
         cfg = self._config
@@ -121,6 +113,8 @@ class LoadOrchestrator:
         selected = [s.lower() for s in selected if s.lower() in self._AGENT_FACTORIES]
         if not selected:
             return SessionResult(session_id=session_id, duration_seconds=0.0, summary="No agents selected.")
+
+        self._ensure_optional_runtime_channels(selected)
 
         mode = self._effective_mode(selected)
         plan = self._mode_plan(mode)
@@ -288,6 +282,26 @@ class LoadOrchestrator:
             system_metrics_series=all_snapshots,
             session_tracker=self._session_tracker.to_dict(),
         )
+
+    def _ensure_optional_runtime_channels(self, selected: list[str]) -> None:
+        if not self._needs_cube_studio(selected):
+            self._cube_studio_channel = None
+            return
+        if self._cube_studio_channel is not None:
+            return
+        try:
+            global_cfg = getattr(self._config, "global_config", None)
+            if global_cfg is not None:
+                self._cube_studio_channel = self._build_cube_channel(
+                    base_url=global_cfg.cube_studio_url,
+                    timeout=5,
+                    retry_count=0,
+                )
+        except Exception:
+            self._cube_studio_channel = None
+
+    def _needs_cube_studio(self, selected: list[str]) -> bool:
+        return any(name in {"pipeline", "finetune", "notebook"} for name in selected)
 
     def _effective_mode(self, selected: list[str]) -> str:
         cfg_mode = str(getattr(self._config, "mode", "single"))
@@ -720,7 +734,10 @@ class LoadOrchestrator:
         if "inference" in selected:
             for target in cfg.inference.resolved_targets():
                 checks[f"inference_endpoint:{target.name}"] = f"{target.endpoint.rstrip('/')}/v1/models"
-            checks["cube_studio_inference"] = f"{cfg.pipeline.cube_studio_url.rstrip('/')}/inferenceservice_modelview/api/"
+            if self._needs_cube_studio(selected):
+                checks["cube_studio_inference"] = (
+                    f"{cfg.pipeline.cube_studio_url.rstrip('/')}/inferenceservice_modelview/api/"
+                )
         if "notebook" in selected:
             checks["notebook_api"] = f"{cfg.notebook.jupyter_url.rstrip('/')}/api/kernels"
             checks["cube_studio_notebook"] = f"{cfg.pipeline.cube_studio_url.rstrip('/')}/notebook_modelview/api/list/"

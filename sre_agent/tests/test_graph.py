@@ -258,6 +258,104 @@ class TestGraphUnit(unittest.IsolatedAsyncioTestCase):
         plan = RemediationPlan.model_validate(result["remediation_plan"])
         self.assertEqual(plan.steps[0].tool, "k8s.cordon_node")
         self.assertEqual(result["tool_runs"], [])
+        self.assertEqual(
+            result["diagnosis_result"]["recommended_fix"]["plan_id"],
+            result["remediation_plan"]["plan_id"],
+        )
+
+    async def test_partial_remediation_plan_is_normalized_into_valid_schema(self) -> None:
+        llm = _FakeLLM(
+            [
+                AIMessage(
+                    content=json.dumps(
+                        {
+                            "thought": "The crash loop is clear enough to propose a conservative recovery action.",
+                            "diagnosis": {
+                                "root_cause": "CrashLoopBackOff in cpu-nginx pod",
+                                "root_cause_layer": "service",
+                                "root_cause_entities": ["cpu-nginx-cf8c8c75b-2zlgj"],
+                                "confidence": 0.88,
+                                "impact_summary": "The service is unstable because the pod is restarting repeatedly.",
+                                "affected_services": ["cpu-nginx"],
+                                "triage_priority": "P1",
+                                "diagnosis_certainty": "confirmed",
+                            },
+                            "remediation_plan": {
+                                "actions": [
+                                    {
+                                        "description": "Restart the failing pod in a controlled manner.",
+                                        "tool": "k8s.delete_pod",
+                                        "params": {
+                                            "namespace": "default",
+                                            "pod_name": "cpu-nginx-cf8c8c75b-2zlgj",
+                                        },
+                                    }
+                                ]
+                            },
+                        }
+                    )
+                )
+            ]
+        )
+
+        result = await run_diagnosis(
+            query="Diagnose only and propose a fix.",
+            context=_happy_context(),
+            variables={},
+            llm=llm,
+            allowed_tool_names=["prometheus.query_instant"],
+            checkpoint_dir=None,
+        )
+
+        self.assertEqual(result["status"], "diagnosed")
+        plan = RemediationPlan.model_validate(result["remediation_plan"])
+        self.assertEqual(plan.plan_id[:9], "proposal-")
+        self.assertEqual(plan.root_cause, "CrashLoopBackOff in cpu-nginx pod")
+        self.assertEqual(plan.priority, "P1")
+        self.assertEqual(plan.steps[0].step_id, 1)
+        self.assertEqual(plan.steps[0].verification.method, "wait")
+        self.assertEqual(plan.steps[0].verification.wait_seconds, 30)
+        self.assertEqual(
+            result["diagnosis_result"]["recommended_fix"]["plan_id"],
+            result["remediation_plan"]["plan_id"],
+        )
+
+    async def test_missing_remediation_plan_is_still_allowed(self) -> None:
+        llm = _FakeLLM(
+            [
+                AIMessage(
+                    content=json.dumps(
+                        {
+                            "thought": "The evidence is not strong enough to safely recommend a write action.",
+                            "diagnosis": {
+                                "root_cause": "Possible transient service instability",
+                                "root_cause_layer": "service",
+                                "root_cause_entities": ["pod-a"],
+                                "confidence": 0.74,
+                                "impact_summary": "Signals suggest an issue but not enough to propose a safe remediation.",
+                                "affected_services": ["service-a"],
+                                "triage_priority": "P2",
+                                "diagnosis_certainty": "ambiguous",
+                            },
+                            "remediation_plan": None,
+                        }
+                    )
+                )
+            ]
+        )
+
+        result = await run_diagnosis(
+            query="Diagnose only and propose a fix if safe.",
+            context=_happy_context(),
+            variables={},
+            llm=llm,
+            allowed_tool_names=["prometheus.query_instant"],
+            checkpoint_dir=None,
+        )
+
+        self.assertEqual(result["status"], "diagnosed")
+        self.assertIsNone(result["remediation_plan"])
+        self.assertIsNone(result["diagnosis_result"]["recommended_fix"])
 
     async def test_step_timeout_returns_timeout_state(self) -> None:
         result = await run_diagnosis(

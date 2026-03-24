@@ -30,11 +30,34 @@ Final JSON shape:
     "triage_priority": "P0|P1|P2|P3",
     "diagnosis_certainty": "confirmed|probable|ambiguous"
   },
-  "remediation_plan": null
+  "remediation_plan": {
+    "plan_id": "proposal-<short-id>",
+    "root_cause": "string",
+    "description": "proposal-only remediation plan; not executed",
+    "steps": [
+      {
+        "step_id": 1,
+        "description": "single conservative action proposal",
+        "tool": "write tool name from the schema reference",
+        "params": {},
+        "verification": {
+          "method": "wait",
+          "wait_seconds": 30
+        },
+        "timeout": 60
+      }
+    ],
+    "estimated_impact": "string",
+    "confidence": 0.0,
+    "priority": "P0|P1|P2",
+    "safety_level": "low|medium|high|critical"
+  }
 }
 
 If you include a remediation plan, it must exactly match the schema in the write-tool reference.
-If you cannot produce a complete remediation plan object, set "remediation_plan" to null.
+If the evidence is strong enough to support a diagnosis, prefer returning a proposal-only remediation plan.
+Use a single conservative step if needed; verification may use method=wait.
+Only set "remediation_plan" to null when the evidence is genuinely insufficient to suggest a safe proposal.
 The remediation plan is proposal-only and must not assume any write action has run.
 """
 

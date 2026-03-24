@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import asyncio
 import json
 import re
@@ -144,12 +145,13 @@ async def reason_node(
 
     parsed = _parse_final_output(_extract_text(response.content))
     diagnosis = DiagnosisResult.model_validate(_normalize_diagnosis_payload(parsed.diagnosis))
-    remediation_plan = None
-    if parsed.remediation_plan is not None:
-        try:
-            remediation_plan = RemediationPlan.model_validate(parsed.remediation_plan)
-        except Exception:  # noqa: BLE001
-            remediation_plan = None
+    remediation_plan = _normalize_remediation_plan_payload(
+        raw_plan=parsed.remediation_plan,
+        diagnosis=diagnosis,
+        session_id=str(state.get("session_id", "")),
+    )
+    if remediation_plan is not None:
+        diagnosis = diagnosis.model_copy(update={"recommended_fix": remediation_plan})
     updated_trace.append(
         {
             "type": "thought",
@@ -508,7 +510,14 @@ def _parse_final_output(content: str) -> FinalDiagnosisEnvelope:
         match = re.search(r"\{.*\}", stripped, flags=re.DOTALL)
         if not match:
             raise RuntimeError(f"final diagnosis payload is not valid JSON: {content}")
-        payload = json.loads(match.group(0))
+        body = match.group(0)
+        try:
+            payload = json.loads(body)
+        except json.JSONDecodeError:
+            try:
+                payload = ast.literal_eval(body)
+            except Exception as exc:  # noqa: BLE001
+                raise RuntimeError(f"final diagnosis payload is not valid JSON: {content}") from exc
     return FinalDiagnosisEnvelope.model_validate(payload)
 
 
@@ -545,3 +554,73 @@ def _normalize_diagnosis_payload(payload: dict[str, Any]) -> dict[str, Any]:
     if isinstance(confidence, (int, float)) and certainty == "confirmed" and float(confidence) < 0.85:
         normalized["diagnosis_certainty"] = "probable"
     return normalized
+
+
+def _normalize_remediation_plan_payload(
+    *,
+    raw_plan: dict[str, Any] | None,
+    diagnosis: DiagnosisResult,
+    session_id: str,
+) -> RemediationPlan | None:
+    if raw_plan is None:
+        return None
+    if not isinstance(raw_plan, dict):
+        return None
+
+    candidate = dict(raw_plan)
+    steps = candidate.get("steps")
+    if steps is None:
+        steps = candidate.get("actions")
+    normalized_steps: list[dict[str, Any]] = []
+    if isinstance(steps, list):
+        for index, step in enumerate(steps, start=1):
+            if not isinstance(step, dict):
+                continue
+            normalized_step = dict(step)
+            normalized_step.setdefault("step_id", index)
+            normalized_step.setdefault(
+                "description",
+                f"Proposed remediation step {index} for {diagnosis.root_cause}",
+            )
+            normalized_step.setdefault("params", {})
+            if normalized_step.get("verification") is None:
+                normalized_step["verification"] = {
+                    "method": "wait",
+                    "wait_seconds": 30,
+                }
+            normalized_step.setdefault("timeout", 60)
+            if normalized_step.get("rollback_tool") is None and normalized_step.get("rollback_params") is not None:
+                normalized_step.pop("rollback_params", None)
+            normalized_steps.append(normalized_step)
+
+    candidate["steps"] = normalized_steps
+    candidate.pop("actions", None)
+    candidate.setdefault(
+        "plan_id",
+        f"proposal-{(session_id or 'session')[:8]}",
+    )
+    candidate.setdefault("root_cause", diagnosis.root_cause)
+    candidate.setdefault(
+        "description",
+        "Proposal-only remediation plan generated from diagnosis evidence. No write action has been executed.",
+    )
+    candidate.setdefault("estimated_impact", diagnosis.impact_summary)
+    candidate.setdefault("confidence", _normalize_plan_confidence(diagnosis.confidence))
+    candidate.setdefault("priority", _normalize_plan_priority(diagnosis.triage_priority))
+    candidate.setdefault("safety_level", "high")
+
+    try:
+        return RemediationPlan.model_validate(candidate)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _normalize_plan_confidence(value: float) -> float:
+    return max(0.0, min(1.0, float(value)))
+
+
+def _normalize_plan_priority(value: str) -> str:
+    normalized = str(value).strip().upper()
+    if normalized in {"P0", "P1", "P2"}:
+        return normalized
+    return "P2"
