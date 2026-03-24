@@ -267,12 +267,15 @@ class AlertChannel(BaseChannel):
     async def _get_alerts_impl(self, *, filter_labels: dict[str, str]) -> list[Alert]:
         filters = self._build_filters(filter_labels)
         first_error: Exception | None = None
-        for endpoint in ("/api/v2/alerts", "/api/v1/alerts"):
+        for endpoint, use_rules_client in self._alert_read_endpoints():
             try:
                 params: dict[str, Any] | None = None
                 if endpoint == "/api/v2/alerts" and filters:
                     params = {"filter": filters}
-                response = await self._http_get(endpoint, params=params or None)
+                if use_rules_client:
+                    response = await self._rules_http_get(endpoint, params=params or None)
+                else:
+                    response = await self._http_get(endpoint, params=params or None)
                 self._ensure_success(response)
                 payload = self._response_json(response)
                 rows = self._extract_alert_rows(payload)
@@ -289,13 +292,22 @@ class AlertChannel(BaseChannel):
         return []
 
     async def _check_alert_api_health(self) -> bool:
-        for endpoint, params in (
-            ("/-/healthy", None),
-            ("/api/v2/alerts", None),
-            ("/api/v1/alerts", None),
-        ):
+        checks = []
+        if self.prometheus_url and self._rules_client is not None:
+            checks.append(("/api/v1/alerts", None, True))
+        checks.extend(
+            [
+                ("/-/healthy", None, False),
+                ("/api/v2/alerts", None, False),
+                ("/api/v1/alerts", None, False),
+            ]
+        )
+        for endpoint, params, use_rules_client in checks:
             try:
-                response = await self._http_get(endpoint, params=params)
+                if use_rules_client:
+                    response = await self._rules_http_get(endpoint, params=params)
+                else:
+                    response = await self._http_get(endpoint, params=params)
                 self._ensure_success(response)
                 return True
             except Exception:
@@ -588,6 +600,18 @@ class AlertChannel(BaseChannel):
         for key, value in sorted(filter_labels.items()):
             out.append(f'{key}="{value}"')
         return out
+
+    def _alert_read_endpoints(self) -> list[tuple[str, bool]]:
+        endpoints: list[tuple[str, bool]] = []
+        if self.prometheus_url and self._rules_client is not None:
+            endpoints.append(("/api/v1/alerts", True))
+        endpoints.extend(
+            [
+                ("/api/v2/alerts", False),
+                ("/api/v1/alerts", False),
+            ]
+        )
+        return endpoints
 
     async def _http_get(self, path: str, params: dict[str, Any] | None) -> Any:
         if self._client is None:
