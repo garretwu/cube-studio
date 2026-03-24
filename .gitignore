@@ -51,10 +51,9 @@ compile.py
 /sre_agent/docs/SREtesting.md
 /sre_agent/docs/plan0319.md
 /sre_agent/skills/DEPENDENCIES.md
+/sre_agent/scripts/first_demo_test.py
+/sre_agent/scripts/__init__.py
 /pytest.ini
 /lib/tests/real_test.example.json
 /data/
-/sre_agent//fault_injector/scenarios/vllm_latency.py
 
-/sre_agent/scripts/first_demo_test.py
-/sre_agent/scripts/__init__.py
