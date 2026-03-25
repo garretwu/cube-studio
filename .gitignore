@@ -56,4 +56,7 @@ compile.py
 /pytest.ini
 /lib/tests/real_test.example.json
 /data/
-
+conftest.py
+config.lab.test.yaml
+config.lab.yaml
+/sre_agent/temp

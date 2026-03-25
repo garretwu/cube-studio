@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any, AsyncIterator, Protocol
@@ -113,7 +114,9 @@ def create_app(
     jwt_settings = resolve_jwt_settings(cfg.auth)
 
     ontology_graph = ontology or OntologyGraph(cfg.ontology.db_path)
+    created_ontology = ontology is None
     memory_store = memory or create_memory_store(aidc_id=cfg.global_.aidc_id, db_dir=cfg.memory.db_dir)
+    created_memory = memory is None
     registry = tool_registry or build_default_registry()
     context = execution_context or ToolExecutionContext()
     approval_gate = ApprovalGate(
@@ -170,7 +173,21 @@ def create_app(
         chat_handler=chat_handler,
     )
 
-    app = FastAPI(title="AIDC Auto SRE Agent")
+    @asynccontextmanager
+    async def lifespan(_: FastAPI):
+        if created_ontology:
+            await ontology_graph.connect()
+        if created_memory and hasattr(memory_store, "connect"):
+            await memory_store.connect()
+        try:
+            yield
+        finally:
+            if created_memory and hasattr(memory_store, "close"):
+                await memory_store.close()
+            if created_ontology:
+                await ontology_graph.close()
+
+    app = FastAPI(title="AIDC Auto SRE Agent", lifespan=lifespan)
     app.state.config = cfg
     app.state.jwt_settings = jwt_settings
     app.state.services = services

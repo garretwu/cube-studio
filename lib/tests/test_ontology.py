@@ -175,15 +175,23 @@ class TestOntologyChannelReal:
             assert health.get("queryable") is True
 
             rows = _run(channel.query(env["SRE_TEST_ENTITY_TYPE"], {"source": "real-test"}))
-            assert len(rows) > 0, "ontology query returned no entities in real test"
+            assert isinstance(rows, list)
+            assert rows, "ontology query returned no entities in real test"
+            assert isinstance(rows[0], dict), "ontology query returned a non-mapping entity payload"
+            entity_id = str(rows[0].get("id") or env["SRE_TEST_FROM_ID"]).strip()
+            assert entity_id, "ontology query returned an entity without an id"
 
-            blast = _run(channel.get_blast_radius(rows[0].get("id") or env["SRE_TEST_FROM_ID"]))
+            blast = _run(channel.get_blast_radius(entity_id))
             assert isinstance(blast, dict)
-            assert len(blast) > 0
+            assert blast, f"ontology blast radius returned an empty payload for entity={entity_id}"
 
             path = _run(channel.get_path(env["SRE_TEST_FROM_ID"], env["SRE_TEST_TO_ID"]))
             assert isinstance(path, list)
-            assert len(path) > 0
+            assert path, (
+                "ontology path returned no nodes "
+                f"for from_id={env['SRE_TEST_FROM_ID']} to_id={env['SRE_TEST_TO_ID']}"
+            )
+            assert all(str(item).strip() for item in path), "ontology path returned blank node identifiers"
         finally:
             _run(channel.disconnect())
             _run(adapter.aclose())

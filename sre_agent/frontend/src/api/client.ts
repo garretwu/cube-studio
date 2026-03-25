@@ -12,7 +12,9 @@ import type {
   OntologyEdge,
   OntologyNode,
   RemediationOverview,
+  SREApiEnvelope,
   SkillDescriptor,
+  TopologySnapshot,
 } from "./types";
 
 const api = axios.create({
@@ -24,6 +26,10 @@ api.interceptors.request.use((config) => {
   const traceId = `sre-ui-${Date.now()}`;
   config.headers = config.headers ?? {};
   config.headers["x-trace-id"] = traceId;
+  const token = import.meta.env.VITE_API_TOKEN;
+  if (token) {
+    config.headers.Authorization = `Bearer ${token}`;
+  }
   return config;
 });
 
@@ -35,12 +41,18 @@ api.interceptors.response.use(
   },
 );
 
+function unwrapEnvelope<T>(payload: SREApiEnvelope<T>): T {
+  if (!payload.success || payload.data == null) {
+    const message = payload.error?.message ?? "API request returned no data";
+    throw new Error(message);
+  }
+  return payload.data;
+}
+
 export const apiClient = {
   getTopology: async () => {
-    const response = await api.get<{ nodes: OntologyNode[]; edges: OntologyEdge[]; active_alerts: number; recent_events: string[] }>(
-      "/api/ontology",
-    );
-    return response.data;
+    const response = await api.get<SREApiEnvelope<TopologySnapshot>>("/api/topology");
+    return unwrapEnvelope(response.data);
   },
   getAlerts: async () => {
     const response = await api.get<{ alerts: Alert[]; clusters: AlertCluster[] }>("/api/alerts");
