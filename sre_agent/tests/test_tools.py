@@ -360,6 +360,41 @@ class TestToolRegistryUnit(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(result.success)
         self.assertIn("port enable failed", result.error)
 
+    async def test_unit_kill_process_requires_explicit_approval(self) -> None:
+        registry = build_default_registry()
+        context = ToolExecutionContext(channels={"ssh": _FakeSSHChannel()})
+        result = await registry.execute(
+            "kill_process",
+            {"node": "worker-03", "pid_or_name": "gpu-burn"},
+            context,
+        )
+        self.assertFalse(result.success)
+        self.assertIn("requires explicit approval", result.error)
+
+    async def test_unit_kill_process_dispatches_to_ssh(self) -> None:
+        registry = build_default_registry()
+        ssh = _FakeSSHChannel()
+        context = ToolExecutionContext(channels={"ssh": ssh}, write_approved=True)
+
+        by_name = await registry.execute(
+            "kill_process",
+            {"node": "worker-03", "pid_or_name": "fi_gpu_burn_gpu_contention_demo"},
+            context,
+        )
+        self.assertTrue(by_name.success)
+        self.assertEqual(ssh.calls[0]["node"], "worker-03")
+        self.assertTrue(ssh.calls[0]["use_sudo"])
+        self.assertIn("pkill -TERM -f --", ssh.calls[0]["command"])
+        self.assertIn("fi_gpu_burn_gpu_contention_demo", ssh.calls[0]["command"])
+
+        by_pid = await registry.execute(
+            "kill_process",
+            {"node": "worker-03", "pid": 12345, "signal": "KILL"},
+            context,
+        )
+        self.assertTrue(by_pid.success)
+        self.assertIn("kill -KILL -- 12345", ssh.calls[1]["command"])
+
     async def test_unit_redfish_unsupported_actions_fail_fast(self) -> None:
         registry = build_default_registry()
         context = ToolExecutionContext(
@@ -436,6 +471,7 @@ class TestToolRegistryUnit(unittest.IsolatedAsyncioTestCase):
             await registry.execute("k8s.read_pod_logs", {"namespace": "default", "pod_name": "pod-a"}, context),
             await registry.execute("prometheus.query_instant", {"promql": "up"}, context),
             await registry.execute("gpu.get_metrics", {"node": "gpu-1-1"}, context),
+            await registry.execute("kill_process", {"node": "gpu-1-1", "pid": 999}, context),
             await registry.execute("network.get_switch_port_counters", {"switch": "sw-1", "interface": "GE1/0/1"}, context),
             await registry.execute("ontology.path", {"from_id": "a", "to_id": "b"}, context),
             await registry.execute("memory.search_patterns", {"query": "gpu timeout"}, context),
@@ -616,4 +652,3 @@ class TestToolRegistryE2E(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(steps[3].data["entity_id"], "svc-1")
         self.assertEqual(steps[4].data[0]["kind"], "incident")
         self.assertEqual(steps[5].data["replicas"], 3)
-

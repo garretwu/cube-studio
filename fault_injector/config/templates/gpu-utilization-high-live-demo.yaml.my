@@ -1,0 +1,63 @@
+# =============================================================================
+# Fault Injector Demo Configuration Template (.my)
+# =============================================================================
+
+global:
+  session_dir: "./fault-reports/sessions/"
+  log_level: "INFO"
+  safety:
+    require_confirmation: false
+    auto_recover_timeout: 600
+    dry_run: false
+    max_concurrent_faults: 3
+    excluded_nodes: []
+
+monitor:
+  enabled: true
+  prometheus_url: "http://10.11.4.3:31260"
+  baseline_duration: 60
+  post_recovery_duration: 60
+
+demo:
+  gpu_utilization_high_alert_remediation:
+    alert_name: "GPUUtilizationHigh"
+    alert_severity: "critical"
+    node: "worker-01"
+    kubeconfig: "~/.kube/config"
+    allowed_tools:
+      - "gpu.get_metrics"
+      - "gpu.get_processes"
+      - "prometheus.query_instant"
+      - "k8s.list_pods"
+    output: "data/demo/gpu-utilization-high-demo.txt"
+    output_format: "txt"
+    total_timeout: 180
+    step_timeout: 60
+    max_steps: 5
+
+inventory:
+  workers:
+    - name: "worker-01"
+      ssh:
+        host: "172.25.0.1"
+        port: 22
+        user: "wangyuchi"
+        key_file: "~/.ssh/id_rsa"
+        password: "admin@123"
+        timeout: 30
+        use_sudo: false
+      interface: "eth0"
+      roles:
+        - "compute"
+        - "rdma"
+
+scenarios:
+  gpu_contention:
+    enabled: true
+    target_nodes:
+      - "worker-01"
+    params:
+      duration: 60
+      memory: "90%"
+      gpu_ids: [0]
+      intensity: 100

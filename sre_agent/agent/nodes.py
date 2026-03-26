@@ -583,6 +583,7 @@ def _normalize_remediation_plan_payload(
                 f"Proposed remediation step {index} for {diagnosis.root_cause}",
             )
             normalized_step.setdefault("params", {})
+            _normalize_step_params_in_place(normalized_step)
             if normalized_step.get("verification") is None:
                 normalized_step["verification"] = {
                     "method": "wait",
@@ -624,3 +625,15 @@ def _normalize_plan_priority(value: str) -> str:
     if normalized in {"P0", "P1", "P2"}:
         return normalized
     return "P2"
+
+
+def _normalize_step_params_in_place(step: dict[str, Any]) -> None:
+    tool_name = str(step.get("tool") or "").strip()
+    params = step.get("params")
+    if not isinstance(params, dict):
+        return
+
+    if tool_name == "k8s.delete_pod":
+        pod_selector = params.pop("pod_selector", None)
+        if pod_selector is not None and "label_selector" not in params:
+            params["label_selector"] = pod_selector

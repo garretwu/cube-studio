@@ -320,6 +320,57 @@ class TestGraphUnit(unittest.IsolatedAsyncioTestCase):
             result["remediation_plan"]["plan_id"],
         )
 
+    async def test_delete_pod_pod_selector_is_normalized_to_label_selector(self) -> None:
+        llm = _FakeLLM(
+            [
+                AIMessage(
+                    content=json.dumps(
+                        {
+                            "thought": "The contention source is isolated enough to propose a single cleanup action.",
+                            "diagnosis": {
+                                "root_cause": "GPU contention from test pod",
+                                "root_cause_layer": "platform",
+                                "root_cause_entities": ["worker-03", "gpu:0"],
+                                "confidence": 0.9,
+                                "impact_summary": "A test pod is consuming GPU resources and degrading inference.",
+                                "affected_services": ["qwen3"],
+                                "triage_priority": "P1",
+                                "diagnosis_certainty": "confirmed",
+                            },
+                            "remediation_plan": {
+                                "actions": [
+                                    {
+                                        "description": "Remove the test pod that created GPU contention.",
+                                        "tool": "k8s.delete_pod",
+                                        "params": {
+                                            "namespace": "service",
+                                            "pod_selector": "app=fi-gpu-burn-gpu-contention",
+                                        },
+                                    }
+                                ]
+                            },
+                        }
+                    )
+                )
+            ]
+        )
+
+        result = await run_diagnosis(
+            query="Diagnose only and propose a fix.",
+            context=_happy_context(),
+            variables={},
+            llm=llm,
+            allowed_tool_names=["prometheus.query_instant"],
+            checkpoint_dir=None,
+        )
+
+        self.assertEqual(result["status"], "diagnosed")
+        plan = RemediationPlan.model_validate(result["remediation_plan"])
+        self.assertEqual(plan.steps[0].tool, "k8s.delete_pod")
+        self.assertEqual(plan.steps[0].params["namespace"], "service")
+        self.assertEqual(plan.steps[0].params["label_selector"], "app=fi-gpu-burn-gpu-contention")
+        self.assertNotIn("pod_selector", plan.steps[0].params)
+
     async def test_missing_remediation_plan_is_still_allowed(self) -> None:
         llm = _FakeLLM(
             [

@@ -59,6 +59,8 @@ If the evidence is strong enough to support a diagnosis, prefer returning a prop
 Use a single conservative step if needed; verification may use method=wait.
 Only set "remediation_plan" to null when the evidence is genuinely insufficient to suggest a safe proposal.
 The remediation plan is proposal-only and must not assume any write action has run.
+For `k8s.delete_pod`, valid params use `namespace` plus either `label_selector` or `pod_name`.
+Never invent `pod_selector` for `k8s.delete_pod`.
 """
 
 
