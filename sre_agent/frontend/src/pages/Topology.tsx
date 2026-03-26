@@ -1,5 +1,5 @@
 import { useEffect, useMemo } from "react";
-import { Card, Col, Row, Space, Spin, Tabs, Tag, Tree, Typography } from "antd";
+import { Alert, Card, Col, Empty, Row, Space, Spin, Tabs, Tag, Tree, Typography } from "antd";
 import type { DataNode } from "antd/es/tree";
 
 import EntityDetail from "../components/EntityDetail";
@@ -7,7 +7,7 @@ import TopologyGraph from "../components/TopologyGraph";
 import { useTopologyStore } from "../store/topologyStore";
 
 function TopologyPage() {
-  const { nodes, edges, activeAlerts, recentEvents, selectedNodeId, isLoading, fetchTopology, selectNode } = useTopologyStore();
+  const { nodes, edges, activeAlerts, recentEvents, selectedNodeId, isLoading, error, fetchTopology, selectNode } = useTopologyStore();
 
   useEffect(() => {
     void fetchTopology();
@@ -61,6 +61,15 @@ function TopologyPage() {
           <Card className="panel-card" title="Topology Explorer" extra={<Tag color="cyan">D3 + Tree</Tag>}>
             {isLoading ? (
               <Spin />
+            ) : error ? (
+              <Alert
+                type="error"
+                showIcon
+                message="Unable to load topology"
+                description={error}
+              />
+            ) : nodes.length === 0 ? (
+              <Empty description="No topology data is available in the current ontology graph." />
             ) : (
               <Tabs
                 defaultActiveKey="graph"
@@ -84,13 +93,17 @@ function TopologyPage() {
           <Space direction="vertical" size="large" style={{ width: "100%" }}>
             <EntityDetail node={selectedNode} />
             <Card className="panel-card" title="Recent Events">
-              <Space direction="vertical" style={{ width: "100%" }}>
-                {recentEvents.map((event) => (
-                  <Tag key={event} style={{ padding: "10px 12px" }}>
-                    {event}
-                  </Tag>
-                ))}
-              </Space>
+              {recentEvents.length === 0 ? (
+                <Typography.Text type="secondary">No recent topology events are available.</Typography.Text>
+              ) : (
+                <Space direction="vertical" style={{ width: "100%" }}>
+                  {recentEvents.map((event) => (
+                    <Tag key={event} style={{ padding: "10px 12px" }}>
+                      {event}
+                    </Tag>
+                  ))}
+                </Space>
+              )}
             </Card>
           </Space>
         </Col>

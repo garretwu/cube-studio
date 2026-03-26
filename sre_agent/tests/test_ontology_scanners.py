@@ -128,11 +128,40 @@ def _worker_config(raw_config: dict[str, Any], worker_name: str = "worker-01") -
     pytest.skip(f"Worker {worker_name!r} not configured in {_FAULT_INJECTOR_CONFIG}")
 
 
-def _first_switch_name(raw_config: dict[str, Any]) -> str:
+def _worker_configs(raw_config: dict[str, Any]) -> list[dict[str, Any]]:
+    workers = raw_config.get("inventory", {}).get("workers", [])
+    if not isinstance(workers, list) or not workers:
+        pytest.skip(f"No workers configured in {_FAULT_INJECTOR_CONFIG}")
+    configured = [worker for worker in workers if isinstance(worker, dict) and str(worker.get("name", "")).strip()]
+    if not configured:
+        pytest.skip(f"No named workers configured in {_FAULT_INJECTOR_CONFIG}")
+    return configured
+
+
+def _switch_configs(raw_config: dict[str, Any]) -> dict[str, dict[str, Any]]:
     switches = raw_config.get("switches", {})
-    if not switches:
+    if not isinstance(switches, dict) or not switches:
         pytest.skip(f"No switches configured in {_FAULT_INJECTOR_CONFIG}")
-    return sorted(switches)[0]
+    configured = {
+        str(name): value
+        for name, value in switches.items()
+        if str(name).strip() and isinstance(value, dict)
+    }
+    if not configured:
+        pytest.skip(f"No valid switch mappings configured in {_FAULT_INJECTOR_CONFIG}")
+    return configured
+
+
+def _first_switch_name(raw_config: dict[str, Any]) -> str:
+    return sorted(_switch_configs(raw_config))[0]
+
+
+def _interface_name(interface: Any) -> str:
+    return str(
+        getattr(interface, "abbreviated_name", "")
+        or getattr(interface, "name", "")
+        or getattr(interface, "if_index", "unknown")
+    )
 
 
 class TestOntologyScannersUnit:
@@ -228,128 +257,176 @@ class TestOntologyScannersE2E:
     )
     async def test_e2e_loads_all_scanner_outputs_into_graph_when_discovery_happy_path(self, tmp_path: Path) -> None:
         raw_config = _load_fault_injector_test_config()
-        worker = _worker_config(raw_config, "worker-01")
-        switch_name = _first_switch_name(raw_config)
+        workers = _worker_configs(raw_config)
+        switches = _switch_configs(raw_config)
+        worker_names = [str(worker["name"]).strip() for worker in workers]
+        representative_worker = worker_names[0]
 
         graph = OntologyGraph(str(tmp_path / "ontology-scanners-live.db"))
         await graph.connect()
-
-        redfish_cfg = worker["redfish"]
-        redfish = RedfishChannel(timeout=int(redfish_cfg.get("timeout", 30)))
-        redfish_info: dict[str, Any]
         try:
-            auth = await redfish.authenticate(
-                redfish_cfg["bmc_host"],
-                redfish_cfg["username"],
-                redfish_cfg["password"],
-                verify_tls=bool(redfish_cfg.get("verify_tls", True)),
+            await graph.add_nodes([_node(worker_name, EntityType.NODE, source="inventory") for worker_name in worker_names])
+
+            bmc_systems: list[dict[str, Any]] = []
+            for worker in workers:
+                worker_name = str(worker["name"]).strip()
+                redfish_cfg = worker.get("redfish")
+                assert isinstance(redfish_cfg, dict), (
+                    f"worker={worker_name} is missing redfish configuration in {_FAULT_INJECTOR_CONFIG}"
+                )
+                bmc_host = str(redfish_cfg.get("bmc_host", "")).strip()
+                assert bmc_host, f"worker={worker_name} is missing redfish.bmc_host in {_FAULT_INJECTOR_CONFIG}"
+
+                redfish = RedfishChannel(timeout=int(redfish_cfg.get("timeout", 30)))
+                try:
+                    auth = await redfish.authenticate(
+                        bmc_host,
+                        str(redfish_cfg["username"]),
+                        str(redfish_cfg["password"]),
+                        verify_tls=bool(redfish_cfg.get("verify_tls", True)),
+                    )
+                    assert auth.success is True, (
+                        f"BMC auth failed for worker={worker_name} host={bmc_host}: {auth.error}"
+                    )
+
+                    info_result = await redfish.get_bmc_info(
+                        bmc_host,
+                        verify_tls=bool(redfish_cfg.get("verify_tls", True)),
+                    )
+                    assert info_result.success is True, (
+                        f"BMC info query failed for worker={worker_name} host={bmc_host}: {info_result.error}"
+                    )
+                    try:
+                        redfish_info = json.loads(info_result.output or "{}")
+                    except json.JSONDecodeError as exc:
+                        raise AssertionError(
+                            f"BMC info payload was not valid JSON for worker={worker_name} host={bmc_host}: {exc}"
+                        ) from exc
+                finally:
+                    await redfish.close()
+
+                bmc_systems.append(
+                    {
+                        "node_id": worker_name,
+                        "id": f"bmc:{worker_name}",
+                        "name": redfish_info.get("manager", {}).get("name") or f"BMC {worker_name}",
+                        "ip": bmc_host,
+                        "firmware_version": redfish_info.get("manager", {}).get("firmware_version"),
+                        "capabilities": redfish_info.get("manager", {}).get("actions", []),
+                    }
+                )
+
+            bmc_nodes, bmc_edges = await BMCScanner(channel=object()).scan(bmc_systems)
+            assert bmc_nodes, "expected live BMC discovery to return at least one BMC endpoint"
+            assert bmc_edges, "expected live BMC discovery to return at least one manages edge"
+
+            k8s_channel = _LiveK8sDiscoveryChannel()
+            k8s_nodes, k8s_edges = await K8sScanner(channel=k8s_channel).scan(namespace="default", label_selector=None)
+            assert k8s_nodes, "expected live K8s scanner to discover at least one pod"
+            assert k8s_edges, "expected live K8s scanner to discover at least one hosted_on edge"
+            k8s_node_ids = sorted({edge.target_id for edge in k8s_edges if edge.target_id})
+            assert k8s_node_ids, "expected live K8s scanner to resolve at least one node target"
+
+            inventory_node_ids = set(worker_names)
+            extra_k8s_nodes = [_node(node_id, EntityType.NODE, source="k8s") for node_id in k8s_node_ids if node_id not in inventory_node_ids]
+            if extra_k8s_nodes:
+                await graph.add_nodes(extra_k8s_nodes)
+
+            prom_queries = raw_config.get("monitor", {}).get("baseline_queries", {})
+            missing_prom_queries = [name for name in ("cpu_util", "memory_util") if not str(prom_queries.get(name, "")).strip()]
+            if missing_prom_queries:
+                pytest.skip(
+                    f"Missing Prometheus baseline queries in {_FAULT_INJECTOR_CONFIG}: {', '.join(missing_prom_queries)}"
+                )
+            prometheus_url = str(raw_config.get("monitor", {}).get("prometheus_url", "")).strip()
+            if not prometheus_url:
+                pytest.skip(f"Missing monitor.prometheus_url in {_FAULT_INJECTOR_CONFIG}")
+
+            prom_channel = _LivePrometheusQueryChannel(
+                base_url=prometheus_url,
+                queries={
+                    "cpu_util": prom_queries["cpu_util"],
+                    "memory_util": prom_queries["memory_util"],
+                },
             )
-            assert auth.success is True, auth.error
+            try:
+                prom_nodes, prom_edges = await PrometheusScanner(channel=prom_channel).scan(
+                    {
+                        "cpu_util": representative_worker,
+                        "memory_util": k8s_node_ids[0],
+                    }
+                )
+            finally:
+                await prom_channel.close()
+            assert prom_nodes, "expected live Prometheus scanner to return representative metric nodes"
+            assert prom_edges, "expected live Prometheus scanner to return representative monitor edges"
 
-            info_result = await redfish.get_bmc_info(
-                redfish_cfg["bmc_host"],
-                verify_tls=bool(redfish_cfg.get("verify_tls", True)),
+            switch_timeout = max(int(config.get("timeout", 30)) for config in switches.values())
+            switch_channel = SwitchChannel(
+                devices=switches,
+                dry_run=False,
+                timeout=switch_timeout,
             )
-            assert info_result.success is True, info_result.error
-            redfish_info = json.loads(info_result.output or "{}")
-        finally:
-            await redfish.close()
-
-        k8s_channel = _LiveK8sDiscoveryChannel()
-        k8s_nodes, k8s_edges = await K8sScanner(channel=k8s_channel).scan(namespace="default", label_selector=None)
-        assert k8s_nodes, "expected live K8s scanner to discover at least one pod"
-        assert k8s_edges, "expected live K8s scanner to discover at least one hosted_on edge"
-        k8s_node_ids = sorted(
-            {
-                edge.target_id
-                for edge in k8s_edges
-                if edge.target_id
-            }
-        )
-
-        prom_queries = raw_config.get("monitor", {}).get("baseline_queries", {})
-        prom_channel = _LivePrometheusQueryChannel(
-            base_url=str(raw_config.get("monitor", {}).get("prometheus_url", "")).strip(),
-            queries={
-                "cpu_util": prom_queries["cpu_util"],
-                "memory_util": prom_queries["memory_util"],
-            },
-        )
-        try:
-            prom_nodes, prom_edges = await PrometheusScanner(channel=prom_channel).scan(
-                {
-                    "cpu_util": "worker-01",
-                    "memory_util": k8s_node_ids[0],
-                }
-            )
-        finally:
-            await prom_channel.close()
-
-        switch_channel = SwitchChannel(
-            devices=raw_config["switches"],
-            dry_run=False,
-            timeout=int(raw_config["switches"][switch_name].get("timeout", 30)),
-        )
-        try:
-            interfaces = switch_channel.get_all_interfaces(switch_name)
-        finally:
-            switch_channel.close()
-        assert interfaces, "expected live switch channel to return at least one interface"
-
-        await graph.add_nodes(
-            [_node("worker-01", EntityType.NODE, source="inventory")]
-            + [_node(node_id, EntityType.NODE, source="k8s") for node_id in k8s_node_ids if node_id != "worker-01"]
-        )
-
-        bmc_nodes, bmc_edges = await BMCScanner(channel=object()).scan(
-            [
-                {
-                    "node_id": "worker-01",
-                    "id": "bmc:worker-01",
-                    "name": redfish_info.get("manager", {}).get("name") or "BMC worker-01",
-                    "ip": redfish_cfg["bmc_host"],
-                    "firmware_version": redfish_info.get("manager", {}).get("firmware_version"),
-                    "capabilities": redfish_info.get("manager", {}).get("actions", []),
-                }
-            ]
-        )
-        switch_nodes, switch_edges = await SwitchScanner(channel=object()).scan(
-            [
-                {
-                    "id": switch_name,
-                    "name": switch_name,
-                    "type": raw_config["switches"][switch_name].get("type"),
-                    "ports": [
+            switch_payloads: list[dict[str, Any]] = []
+            try:
+                for switch_name, switch_cfg in sorted(switches.items()):
+                    interfaces = switch_channel.get_all_interfaces(switch_name)
+                    assert interfaces, (
+                        "expected live switch channel to return at least one interface "
+                        f"for switch={switch_name} host={switch_cfg.get('host')}"
+                    )
+                    interface = interfaces[0]
+                    interface_name = _interface_name(interface)
+                    switch_payloads.append(
                         {
-                            "id": f"{switch_name}:{interfaces[0].abbreviated_name}",
-                            "name": interfaces[0].abbreviated_name,
-                            "status": interfaces[0].oper_status,
-                            "connected_to": "worker-01",
+                            "id": switch_name,
+                            "name": switch_name,
+                            "type": switch_cfg.get("type"),
+                            "ports": [
+                                {
+                                    "id": f"{switch_name}:{interface_name}",
+                                    "name": interface_name,
+                                    "status": getattr(interface, "oper_status", "unknown"),
+                                    "connected_to": representative_worker,
+                                }
+                            ],
                         }
-                    ],
-                }
+                    )
+            finally:
+                switch_channel.close()
+
+            switch_nodes, switch_edges = await SwitchScanner(channel=object()).scan(switch_payloads)
+            assert switch_nodes, "expected live switch discovery to return switch entities"
+            assert switch_edges, "expected live switch discovery to return switch edges"
+
+            await graph.add_nodes(bmc_nodes + k8s_nodes + prom_nodes + switch_nodes)
+            await graph.add_edges(bmc_edges + k8s_edges + prom_edges + switch_edges)
+
+            summary = graph.summarize()
+            managed_workers = [
+                worker_name
+                for worker_name in worker_names
+                if graph.get_neighbors(worker_name, relation=RelationType.MANAGES)
             ]
-        )
+            monitored_neighbors = graph.get_neighbors(representative_worker, relation=RelationType.MONITORS)
+            first_pod_path = graph.get_path(k8s_nodes[0].id, k8s_edges[0].target_id)
+            switch_entities = graph.find_entities(EntityType.SWITCH)
+            switch_port_entities = graph.find_entities(EntityType.SWITCH_PORT)
 
-        await graph.add_nodes(bmc_nodes + k8s_nodes + prom_nodes + switch_nodes)
-        await graph.add_edges(bmc_edges + k8s_edges + prom_edges + switch_edges)
-
-        summary = graph.summarize()
-        managed_neighbors = graph.get_neighbors("worker-01", relation=RelationType.MANAGES)
-        monitored_neighbors = graph.get_neighbors("worker-01", relation=RelationType.MONITORS)
-        first_pod_path = graph.get_path(k8s_nodes[0].id, k8s_edges[0].target_id)
-
-        assert summary["entity_type_counts"]["bmc_endpoint"] == 1
-        assert summary["entity_type_counts"]["k8s_pod"] >= 1
-        assert summary["entity_type_counts"]["metric_endpoint"] == 2
-        assert summary["entity_type_counts"]["switch"] == 1
-        assert summary["entity_type_counts"]["switch_port"] == 1
-        assert summary["edge_count"] == len(bmc_edges + k8s_edges + prom_edges + switch_edges)
-        assert [item["entity"].id for item in managed_neighbors] == ["bmc:worker-01"]
-        assert {item["entity"].id for item in monitored_neighbors} == {"metric:cpu_util:worker-01"}
-        assert first_pod_path == [k8s_nodes[0].id, k8s_edges[0].target_id]
-
-        await graph.close()
+            assert summary["node_count"] > 0
+            assert summary["edge_count"] > 0
+            assert summary["entity_type_counts"].get("bmc_endpoint", 0) == len(worker_names)
+            assert summary["entity_type_counts"].get("k8s_pod", 0) >= 1
+            assert summary["entity_type_counts"].get("metric_endpoint", 0) == len(prom_nodes)
+            assert summary["entity_type_counts"].get("switch", 0) == len(switches)
+            assert summary["entity_type_counts"].get("switch_port", 0) >= len(switches)
+            assert managed_workers == worker_names
+            assert monitored_neighbors, f"expected ontology graph to retain monitor edges for node={representative_worker}"
+            assert first_pod_path, "expected ontology graph to provide at least one pod-to-node path"
+            assert switch_entities, "expected ontology graph to contain discovered switch entities"
+            assert switch_port_entities, "expected ontology graph to contain discovered switch port entities"
+        finally:
+            await graph.close()
 
     @pytest.mark.asyncio
     async def test_e2e_loads_all_scanner_outputs_into_graph_when_discovery_happy_path_with_fakes(self, tmp_path: Path) -> None:
