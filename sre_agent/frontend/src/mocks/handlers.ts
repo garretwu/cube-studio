@@ -23,8 +23,8 @@ export const handlers = [
       edges: topologyEdges,
       active_alerts: alerts.filter((alert) => alert.status === "firing").length,
       recent_events: [
-        "Canary validation in progress for vllm-latency",
-        "GPU thermal pressure detected on node-gpu-01",
+        "vLLM 推理服务正在进行金丝雀验证",
+        "node-gpu-01 检测到 GPU 热压升高",
       ],
     });
   }),

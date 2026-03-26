@@ -1,6 +1,7 @@
-import { Card, Space, Tag, Typography } from "antd";
-
+import { StatusChip, SurfaceCard } from "./ui";
 import type { SkillDescriptor } from "../api/types";
+import { formatSkillScope } from "../utils/display";
+import { formatPercent } from "../utils/format";
 
 type SkillCardProps = {
   skill: SkillDescriptor;
@@ -8,24 +9,26 @@ type SkillCardProps = {
 
 function SkillCard({ skill }: SkillCardProps) {
   return (
-    <Card className="panel-card">
-      <Space direction="vertical" size="middle" style={{ width: "100%" }}>
-        <Space wrap>
-          <Tag color={skill.scope === "builtin" ? "cyan" : "purple"}>{skill.scope}</Tag>
-          <Tag>{Math.round(skill.match_score * 100)}%</Tag>
-        </Space>
-        <Typography.Title level={4} style={{ margin: 0 }}>
-          {skill.name}
-        </Typography.Title>
-        <Typography.Text>{skill.summary}</Typography.Text>
-        <Typography.Text type="secondary">{skill.source}</Typography.Text>
-        <Space wrap>
+    <SurfaceCard
+      description={skill.summary}
+      title={skill.name}
+      variant={skill.scope === "builtin" ? "panel" : "soft"}
+    >
+      <div className="page-stack">
+        <div className="status-row">
+          <StatusChip tone={skill.scope === "builtin" ? "accent" : "info"}>{formatSkillScope(skill.scope)}</StatusChip>
+          <StatusChip tone="neutral">{formatPercent(skill.match_score)}</StatusChip>
+        </div>
+        <p className="data-list__copy">{skill.source}</p>
+        <div className="skill-card__footer">
           {skill.permissions.map((permission) => (
-            <Tag key={permission}>{permission}</Tag>
+            <StatusChip key={permission} tone="neutral">
+              {permission}
+            </StatusChip>
           ))}
-        </Space>
-      </Space>
-    </Card>
+        </div>
+      </div>
+    </SurfaceCard>
   );
 }
 

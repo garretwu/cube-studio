@@ -1,27 +1,35 @@
-import { Card, Space, Tag, Typography } from "antd";
-
+import { StatusChip } from "./ui";
 import type { ChatMessage as ChatMessageType } from "../api/types";
+import { formatRole } from "../utils/display";
+import { formatTimestamp } from "../utils/format";
 
 type ChatMessageProps = {
   message: ChatMessageType;
 };
 
+function toneByRole(role: ChatMessageType["role"]) {
+  switch (role) {
+    case "user":
+      return "neutral";
+    case "tool":
+      return "warning";
+    default:
+      return "accent";
+  }
+}
+
 function ChatMessage({ message }: ChatMessageProps) {
   return (
-    <div className={`chat-bubble ${message.role === "user" ? "user" : "agent"}`}>
-      <Space direction="vertical" size={6} style={{ width: "100%" }}>
-        <Space>
-          <Tag color={message.role === "user" ? "geekblue" : message.role === "tool" ? "gold" : "cyan"}>{message.role}</Tag>
-          <Typography.Text type={message.role === "user" ? undefined : "secondary"}>{message.created_at}</Typography.Text>
-        </Space>
-        <Typography.Paragraph style={{ marginBottom: 0, color: "inherit" }}>{message.content}</Typography.Paragraph>
-        {message.tool_name ? (
-          <Card size="small">
-            <Typography.Text type="secondary">{message.tool_name}</Typography.Text>
-          </Card>
-        ) : null}
-      </Space>
-    </div>
+    <article className={`chat-message ${message.role === "user" ? "chat-message--user" : ""}`}>
+      <div className="chat-message__meta">
+        <StatusChip tone={toneByRole(message.role)}>{formatRole(message.role)}</StatusChip>
+        <p className="chat-message__time">{formatTimestamp(message.created_at)}</p>
+      </div>
+      <p className="data-list__copy" style={{ color: "inherit", margin: 0 }}>
+        {message.content}
+      </p>
+      {message.tool_name ? <div className="chat-message__tool">{message.tool_name}</div> : null}
+    </article>
   );
 }
 
