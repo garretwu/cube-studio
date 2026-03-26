@@ -7,11 +7,11 @@ type GraphNode = d3.SimulationNodeDatum & OntologyNode;
 type GraphLink = d3.SimulationLinkDatum<GraphNode> & OntologyEdge;
 
 const palette: Record<string, string> = {
-  rack: "#0f766e",
-  node: "#0369a1",
-  gpu: "#be123c",
-  switch: "#15803d",
-  inference_service: "#7c3aed",
+  rack: "#6555ff",
+  node: "#503dff",
+  gpu: "#f04438",
+  switch: "#0ea5e9",
+  inference_service: "#8b5cf6",
 };
 
 type TopologyGraphProps = {
@@ -54,7 +54,7 @@ function TopologyGraph({ nodes, edges, selectedId, onSelect }: TopologyGraphProp
 
     const link = svg
       .append("g")
-      .attr("stroke", "rgba(15, 118, 110, 0.22)")
+      .attr("stroke", "rgba(80, 61, 255, 0.22)")
       .attr("stroke-width", 1.5)
       .selectAll("line")
       .data(preparedEdges)
@@ -100,7 +100,7 @@ function TopologyGraph({ nodes, edges, selectedId, onSelect }: TopologyGraphProp
       .data(preparedNodes)
       .join("text")
       .attr("font-size", 12)
-      .attr("fill", "#16333a")
+      .attr("fill", "#0d0d12")
       .attr("text-anchor", "middle")
       .text((d: GraphNode) => d.name ?? d.id);
 

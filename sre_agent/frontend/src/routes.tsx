@@ -1,17 +1,9 @@
 import React from "react";
-import {
-  ApartmentOutlined,
-  AlertOutlined,
-  ApiOutlined,
-  BookOutlined,
-  CommentOutlined,
-  DeploymentUnitOutlined,
-  ExperimentOutlined,
-  ToolOutlined,
-} from "@ant-design/icons";
 
+import type { AppIconName } from "./components/ui";
 import AlertsPage from "./pages/Alerts";
 import ChatPage from "./pages/Chat";
+import DesignTokensPage from "./pages/DesignTokens";
 import DiagnosisPage from "./pages/Diagnosis";
 import KnowledgePage from "./pages/Knowledge";
 import MemoryPage from "./pages/Memory";
@@ -22,8 +14,9 @@ import TopologyPage from "./pages/Topology";
 export type AppRoute = {
   key: string;
   path: string;
-  labelKey: string;
-  icon: React.ReactNode;
+  label: string;
+  section: "operations" | "assistant";
+  icon: AppIconName;
   element: React.ReactElement;
 };
 
@@ -31,57 +24,73 @@ export const appRoutes: AppRoute[] = [
   {
     key: "topology",
     path: "/topology",
-    labelKey: "nav.topology",
-    icon: <ApartmentOutlined />,
+    label: "拓扑",
+    section: "operations",
+    icon: "topology",
     element: <TopologyPage />,
   },
   {
     key: "alerts",
     path: "/alerts",
-    labelKey: "nav.alerts",
-    icon: <AlertOutlined />,
+    label: "告警",
+    section: "operations",
+    icon: "alerts",
     element: <AlertsPage />,
   },
   {
     key: "diagnosis",
     path: "/diagnosis",
-    labelKey: "nav.diagnosis",
-    icon: <ApiOutlined />,
+    label: "诊断",
+    section: "operations",
+    icon: "diagnosis",
     element: <DiagnosisPage />,
   },
   {
     key: "remediation",
     path: "/remediation",
-    labelKey: "nav.remediation",
-    icon: <DeploymentUnitOutlined />,
+    label: "修复",
+    section: "operations",
+    icon: "remediation",
     element: <RemediationPage />,
   },
   {
     key: "chat",
     path: "/chat",
-    labelKey: "nav.chat",
-    icon: <CommentOutlined />,
+    label: "对话",
+    section: "assistant",
+    icon: "chat",
     element: <ChatPage />,
   },
   {
     key: "knowledge",
     path: "/knowledge",
-    labelKey: "nav.knowledge",
-    icon: <BookOutlined />,
+    label: "知识",
+    section: "assistant",
+    icon: "knowledge",
     element: <KnowledgePage />,
   },
   {
     key: "memory",
     path: "/memory",
-    labelKey: "nav.memory",
-    icon: <ExperimentOutlined />,
+    label: "记忆",
+    section: "assistant",
+    icon: "memory",
     element: <MemoryPage />,
   },
   {
     key: "skills",
     path: "/skills",
-    labelKey: "nav.skills",
-    icon: <ToolOutlined />,
+    label: "技能",
+    section: "assistant",
+    icon: "skills",
     element: <SkillsPage />,
+  },
+  {
+    key: "designTokens",
+    path: "/design-tokens",
+    label: "设计令牌",
+    section: "assistant",
+    icon: "spark",
+    element: <DesignTokensPage />,
   },
 ];

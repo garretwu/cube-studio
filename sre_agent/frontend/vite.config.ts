@@ -36,5 +36,15 @@ export default defineConfig(({ mode }) => {
       setupFiles: "./src/test/setup.ts",
       css: true,
     },
+<<<<<<< HEAD
   };
+=======
+  },
+  test: {
+    environment: "jsdom",
+    setupFiles: "./src/test/setup.ts",
+    css: true,
+    globals: true,
+  },
+>>>>>>> dd3aadbc (feat(frontend): redesign auto-sre console ui)
 });

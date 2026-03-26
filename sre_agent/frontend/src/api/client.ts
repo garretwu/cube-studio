@@ -37,7 +37,7 @@ api.interceptors.request.use((config) => {
 api.interceptors.response.use(
   (response) => response,
   (error) => {
-    const message = error instanceof Error ? error.message : "Unknown request error";
+    const message = error instanceof Error ? error.message : "未知请求错误";
     return Promise.reject(new Error(message));
   },
 );

@@ -19,6 +19,7 @@ export const handlers = [
   http.get("/api/topology", async () => {
     await delay(120);
     return HttpResponse.json({
+<<<<<<< HEAD
       success: true,
       data: {
         nodes: topologyNodes,
@@ -32,6 +33,15 @@ export const handlers = [
       error: null,
       trace_id: "trace-mock-topology",
       timestamp: new Date().toISOString(),
+=======
+      nodes: topologyNodes,
+      edges: topologyEdges,
+      active_alerts: alerts.filter((alert) => alert.status === "firing").length,
+      recent_events: [
+        "vLLM 推理服务正在进行金丝雀验证",
+        "node-gpu-01 检测到 GPU 热压升高",
+      ],
+>>>>>>> dd3aadbc (feat(frontend): redesign auto-sre console ui)
     });
   }),
   http.get("/api/alerts", async () => {

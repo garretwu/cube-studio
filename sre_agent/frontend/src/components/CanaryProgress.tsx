@@ -1,4 +1,5 @@
-import { List, Progress, Tag } from "antd";
+import { StatusChip } from "./ui";
+import { formatWorkflowStatus } from "../utils/display";
 
 type CanaryBatch = {
   batch: string;
@@ -10,17 +11,36 @@ type CanaryProgressProps = {
   batches: CanaryBatch[];
 };
 
+function toneByStatus(status: string) {
+  switch (status) {
+    case "validating":
+      return "warning";
+    case "pending":
+      return "neutral";
+    default:
+      return "success";
+  }
+}
+
 function CanaryProgress({ batches }: CanaryProgressProps) {
   return (
-    <List
-      dataSource={batches}
-      renderItem={(item) => (
-        <List.Item>
-          <List.Item.Meta title={item.batch} description={<Progress percent={item.progress} strokeColor="#0f766e" />} />
-          <Tag color={item.status === "validating" ? "gold" : item.status === "pending" ? "default" : "green"}>{item.status}</Tag>
-        </List.Item>
-      )}
-    />
+    <div className="progress-list">
+      {batches.map((item) => (
+        <div key={item.batch} className="progress-list__item">
+          <div className="progress-list__row">
+            <strong>{item.batch}</strong>
+            <StatusChip tone={toneByStatus(item.status)}>{formatWorkflowStatus(item.status)}</StatusChip>
+          </div>
+          <div className="progress-track">
+            <div className="progress-track__fill" style={{ width: `${item.progress}%` }} />
+          </div>
+          <div className="progress-list__row">
+            <span className="data-list__copy">发布完成度</span>
+            <span>{item.progress}%</span>
+          </div>
+        </div>
+      ))}
+    </div>
   );
 }
 

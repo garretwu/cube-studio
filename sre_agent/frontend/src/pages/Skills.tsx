@@ -1,9 +1,9 @@
 import { useEffect, useState } from "react";
-import { Card, Col, Row, Typography } from "antd";
 
 import { apiClient } from "../api/client";
 import type { SkillDescriptor } from "../api/types";
 import SkillCard from "../components/SkillCard";
+import { SectionHeader } from "../components/ui";
 
 function SkillsPage() {
   const [skills, setSkills] = useState<SkillDescriptor[]>([]);
@@ -14,18 +14,19 @@ function SkillsPage() {
 
   return (
     <div className="page-grid">
-      <Card className="hero-card">
-        <Typography.Title level={2} style={{ margin: 0 }}>
-          Skill Registry
-        </Typography.Title>
-      </Card>
-      <Row gutter={[20, 20]}>
+      <div className="page-intro">
+        <SectionHeader
+          description="查看当前运行时可调用的内置与自定义能力模块。"
+          eyebrow="能力注册表"
+          title="技能注册表"
+        />
+      </div>
+
+      <div className="card-grid--two">
         {skills.map((skill) => (
-          <Col key={skill.id} xs={24} lg={12}>
-            <SkillCard skill={skill} />
-          </Col>
+          <SkillCard key={skill.id} skill={skill} />
         ))}
-      </Row>
+      </div>
     </div>
   );
 }
