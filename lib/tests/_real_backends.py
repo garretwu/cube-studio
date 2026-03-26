@@ -95,6 +95,20 @@ def _extract_list(payload: Any) -> list[Any]:
     return []
 
 
+def _unwrap_sre_envelope(payload: Any) -> Any:
+    if not isinstance(payload, dict):
+        return payload
+    if "success" not in payload or "data" not in payload:
+        return payload
+    if payload.get("success") is False:
+        error = payload.get("error")
+        if isinstance(error, dict):
+            message = str(error.get("message") or "SRE API request failed").strip()
+            raise RuntimeError(message or "SRE API request failed")
+        raise RuntimeError("SRE API request failed")
+    return payload.get("data")
+
+
 class LokiHttpBackend:
     """Loki HTTP adapter for real channel tests."""
 
@@ -218,7 +232,7 @@ class OntologyHttpAdapter:
 
     async def find_entities(self, entity_type: str, filters: dict[str, Any] | None = None) -> list[dict[str, Any]]:
         payload = {"entity_type": entity_type, "filters": filters or {}}
-        response = await self._client.request_json("POST", self.query_path, json_body=payload)
+        response = _unwrap_sre_envelope(await self._client.request_json("POST", self.query_path, json_body=payload))
         rows = _extract_list(response)
         return [row for row in rows if isinstance(row, dict)]
 
@@ -227,11 +241,8 @@ class OntologyHttpAdapter:
             path = self.blast_path.format(entity_id=entity_id)
             response = await self._client.request_json("GET", path)
         else:
-            response = await self._client.request_json(
-                "POST",
-                self.blast_path,
-                json_body={"entity_id": entity_id},
-            )
+            response = await self._client.request_json("POST", self.blast_path, json_body={"entity_id": entity_id})
+        response = _unwrap_sre_envelope(response)
         if isinstance(response, dict):
             return response
         if isinstance(response, list):
@@ -255,6 +266,7 @@ class OntologyHttpAdapter:
                     self.path_path,
                     json_body={"from_id": from_id, "to_id": to_id},
                 )
+        response = _unwrap_sre_envelope(response)
 
         if isinstance(response, list):
             return [str(item) for item in response]
@@ -273,6 +285,7 @@ class OntologyHttpAdapter:
             self.refresh_path,
             json_body={"entity_id": entity_id},
         )
+        response = _unwrap_sre_envelope(response)
         if isinstance(response, dict):
             return response
         return {"value": response}

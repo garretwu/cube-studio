@@ -48,6 +48,26 @@ export type OntologyEdge = {
   properties: Record<string, unknown>;
 };
 
+export type TopologySnapshot = {
+  nodes: OntologyNode[];
+  edges: OntologyEdge[];
+  active_alerts: number;
+  recent_events: string[];
+};
+
+export type SREApiEnvelope<T> = {
+  success: boolean;
+  data: T | null;
+  error?: {
+    code: string;
+    message: string;
+    details?: unknown;
+    trace_id?: string;
+  } | null;
+  trace_id: string;
+  timestamp: string;
+};
+
 export type ThinkingStep = {
   step: number;
   timestamp: string;

@@ -16,16 +16,22 @@ import {
 } from "./data";
 
 export const handlers = [
-  http.get("/api/ontology", async () => {
+  http.get("/api/topology", async () => {
     await delay(120);
     return HttpResponse.json({
-      nodes: topologyNodes,
-      edges: topologyEdges,
-      active_alerts: alerts.filter((alert) => alert.status === "firing").length,
-      recent_events: [
-        "Canary validation in progress for vllm-latency",
-        "GPU thermal pressure detected on node-gpu-01",
-      ],
+      success: true,
+      data: {
+        nodes: topologyNodes,
+        edges: topologyEdges,
+        active_alerts: alerts.filter((alert) => alert.status === "firing").length,
+        recent_events: [
+          "Canary validation in progress for vllm-latency",
+          "GPU thermal pressure detected on node-gpu-01",
+        ],
+      },
+      error: null,
+      trace_id: "trace-mock-topology",
+      timestamp: new Date().toISOString(),
     });
   }),
   http.get("/api/alerts", async () => {
