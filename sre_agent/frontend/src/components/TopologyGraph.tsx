@@ -26,8 +26,13 @@ function TopologyGraph({ nodes, edges, selectedId, onSelect }: TopologyGraphProp
 
   const preparedNodes = useMemo<GraphNode[]>(() => nodes.map((node) => ({ ...node })), [nodes]);
   const preparedEdges = useMemo<GraphLink[]>(
-    () => edges.map((edge) => ({ ...edge, source: edge.source_id, target: edge.target_id })),
-    [edges],
+    () => {
+      const nodeIds = new Set(nodes.map((node) => node.id));
+      return edges
+        .filter((edge) => nodeIds.has(edge.source_id) && nodeIds.has(edge.target_id))
+        .map((edge) => ({ ...edge, source: edge.source_id, target: edge.target_id }));
+    },
+    [edges, nodes],
   );
 
   useEffect(() => {

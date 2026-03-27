@@ -9,9 +9,10 @@ import type {
   IncidentRecord,
   KnowledgeDocument,
   LearnedPattern,
+  LoopResult,
   OntologyEdge,
   OntologyNode,
-  RemediationOverview,
+  RemediationResult,
   SREApiEnvelope,
   SkillDescriptor,
   TopologySnapshot,
@@ -41,7 +42,18 @@ api.interceptors.response.use(
   },
 );
 
-function unwrapEnvelope<T>(payload: SREApiEnvelope<T>): T {
+function isEnvelope<T>(payload: unknown): payload is SREApiEnvelope<T> {
+  if (!payload || typeof payload !== "object") {
+    return false;
+  }
+  const candidate = payload as Partial<SREApiEnvelope<T>>;
+  return typeof candidate.success === "boolean" && "data" in candidate;
+}
+
+function unwrapPayload<T>(payload: SREApiEnvelope<T> | T): T {
+  if (!isEnvelope<T>(payload)) {
+    return payload;
+  }
   if (!payload.success || payload.data == null) {
     const message = payload.error?.message ?? "API request returned no data";
     throw new Error(message);
@@ -49,57 +61,106 @@ function unwrapEnvelope<T>(payload: SREApiEnvelope<T>): T {
   return payload.data;
 }
 
+function getRememberedSessionId(): string {
+  if (typeof window === "undefined") {
+    return "";
+  }
+  return window.localStorage.getItem("sre_session_id") ?? "";
+}
+
+function rememberSessionId(sessionId: string): void {
+  if (typeof window === "undefined" || !sessionId) {
+    return;
+  }
+  window.localStorage.setItem("sre_session_id", sessionId);
+}
+
 export const apiClient = {
   getTopology: async () => {
     const response = await api.get<SREApiEnvelope<TopologySnapshot>>("/api/topology");
-    return unwrapEnvelope(response.data);
+    return unwrapPayload(response.data);
   },
   getAlerts: async () => {
-    const response = await api.get<{ alerts: Alert[]; clusters: AlertCluster[] }>("/api/alerts");
-    return response.data;
+    const response = await api.get<SREApiEnvelope<{ alerts: Alert[]; clusters: AlertCluster[] }> | { alerts: Alert[]; clusters: AlertCluster[] }>(
+      "/api/alerts",
+    );
+    return unwrapPayload(response.data);
   },
-  getDiagnosisSession: async () => {
-    const response = await api.get<DiagnosisSession>("/api/diagnosis/session/current");
-    return response.data;
+  handleAlert: async (alert: Alert) => {
+    const response = await api.post<SREApiEnvelope<LoopResult>>("/api/handle", alert);
+    const loop = unwrapPayload(response.data);
+    rememberSessionId(loop.session_id);
+    return loop;
   },
-  getRemediationOverview: async () => {
-    const response = await api.get<RemediationOverview>("/api/remediation/overview");
-    return response.data;
+  getDiagnosisSession: async (sessionId?: string) => {
+    const resolved = (sessionId ?? getRememberedSessionId()).trim();
+    if (!resolved) {
+      throw new Error("session_id is required");
+    }
+    const response = await api.get<SREApiEnvelope<DiagnosisSession>>(`/api/sessions/${resolved}`);
+    const session = unwrapPayload(response.data);
+    rememberSessionId(session.session_id);
+    return session;
   },
-  approveRemediation: async (sessionId: string, approved: boolean) => {
-    const response = await api.post<{ success: boolean; status: string }>(`/api/remediation/${sessionId}/approve`, {
+  getSessionLoop: async (sessionId?: string) => {
+    const resolved = (sessionId ?? getRememberedSessionId()).trim();
+    if (!resolved) {
+      throw new Error("session_id is required");
+    }
+    const response = await api.get<SREApiEnvelope<LoopResult>>(`/api/sessions/${resolved}/loop`);
+    const loop = unwrapPayload(response.data);
+    rememberSessionId(loop.session_id);
+    return loop;
+  },
+  approveRemediation: async (sessionId: string, approved: boolean, user = "ui-operator") => {
+    const response = await api.post<SREApiEnvelope<RemediationResult>>(`/api/remediate/${sessionId}/approve`, {
       approved,
+      user,
     });
-    return response.data;
+    return unwrapPayload(response.data);
   },
   postChatMessage: async (content: string) => {
-    const response = await api.post<{ reply: ChatMessage }>("/api/chat", { content });
-    return response.data.reply;
+    const response = await api.post<SREApiEnvelope<{ reply: string }> | { reply: string }>("/api/chat", { content });
+    const payload = unwrapPayload(response.data);
+    const text = payload.reply;
+    const reply: ChatMessage = {
+      id: `assistant-${Date.now()}`,
+      role: "assistant",
+      content: text,
+      created_at: new Date().toISOString(),
+    };
+    return reply;
   },
   searchKnowledge: async (query: string, category?: string) => {
-    const response = await api.get<{ results: KnowledgeDocument[] }>("/api/knowledge/search", {
+    const response = await api.get<SREApiEnvelope<KnowledgeDocument[]> | { results: KnowledgeDocument[] }>("/api/knowledge/search", {
       params: { query, category },
     });
+    if (isEnvelope<KnowledgeDocument[]>(response.data)) {
+      return unwrapPayload(response.data);
+    }
     return response.data.results;
   },
   getKnowledgeSources: async () => {
-    const response = await api.get<{ documents: KnowledgeDocument[] }>("/api/knowledge/documents");
+    const response = await api.get<SREApiEnvelope<KnowledgeDocument[]> | { documents: KnowledgeDocument[] }>("/api/knowledge/documents");
+    if (isEnvelope<KnowledgeDocument[]>(response.data)) {
+      return unwrapPayload(response.data);
+    }
     return response.data.documents;
   },
   getMemoryIncidents: async (last = 10) => {
-    const response = await api.get<IncidentRecord[]>("/api/memory/incidents", { params: { last } });
-    return response.data;
+    const response = await api.get<SREApiEnvelope<IncidentRecord[]> | IncidentRecord[]>("/api/memory/incidents", { params: { last } });
+    return unwrapPayload(response.data);
   },
   getMemoryPatterns: async () => {
-    const response = await api.get<LearnedPattern[]>("/api/memory/patterns");
-    return response.data;
+    const response = await api.get<SREApiEnvelope<LearnedPattern[]> | LearnedPattern[]>("/api/memory/patterns");
+    return unwrapPayload(response.data);
   },
   getMemoryBaseline: async () => {
-    const response = await api.get<ConfigBaseline>("/api/memory/baseline");
-    return response.data;
+    const response = await api.get<SREApiEnvelope<ConfigBaseline> | ConfigBaseline>("/api/memory/baseline");
+    return unwrapPayload(response.data);
   },
   getSkills: async () => {
-    const response = await api.get<SkillDescriptor[]>("/api/skills");
-    return response.data;
+    const response = await api.get<SREApiEnvelope<SkillDescriptor[]> | SkillDescriptor[]>("/api/skills");
+    return unwrapPayload(response.data);
   },
 };

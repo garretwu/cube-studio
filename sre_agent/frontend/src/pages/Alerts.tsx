@@ -3,6 +3,7 @@ import { Card, Col, Input, Row, Select, Space, Tag, Typography } from "antd";
 import { useNavigate } from "react-router-dom";
 
 import AlertTable from "../components/AlertTable";
+import { apiClient } from "../api/client";
 import { useAlertStore } from "../store/alertStore";
 
 function AlertsPage() {
@@ -54,7 +55,13 @@ function AlertsPage() {
       <Row gutter={[20, 20]}>
         <Col xs={24} xl={16}>
           <Card className="panel-card" title="Live Alert Stream">
-            <AlertTable alerts={filtered} onSelect={() => navigate("/diagnosis")} />
+            <AlertTable
+              alerts={filtered}
+              onSelect={async (alert) => {
+                const loop = await apiClient.handleAlert(alert);
+                navigate(`/diagnosis?session_id=${encodeURIComponent(loop.session_id)}`);
+              }}
+            />
           </Card>
         </Col>
         <Col xs={24} xl={8}>

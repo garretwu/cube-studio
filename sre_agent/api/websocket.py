@@ -29,7 +29,8 @@ def build_websocket_router() -> APIRouter:
         await ws_authenticate(websocket)
         await websocket.accept()
         publisher = websocket.app.state.services.trace_publisher
-        async for event in publisher.subscribe("alerts"):
+        last_id = websocket.query_params.get("last_event_id")
+        async for event in publisher.subscribe("alerts", after=last_id):
             try:
                 await asyncio.wait_for(websocket.send_json(event.model_dump(mode="json")), timeout=5.0)
             except TimeoutError:

@@ -115,6 +115,39 @@ export type DiagnosisSession = {
   outcome?: string | null;
 };
 
+export type RemediationResult = {
+  plan_id: string;
+  success: boolean;
+  steps_completed: number;
+  steps_total: number;
+  duration_seconds: number;
+  error?: string | null;
+};
+
+export type CandidateAttempt = {
+  candidate: {
+    root_cause: string;
+    confidence: number;
+  };
+  remediation_result: RemediationResult;
+  verification_passed: boolean;
+  rolled_back: boolean;
+  observations?: Record<string, unknown>;
+  duration_seconds: number;
+};
+
+export type LoopResult = {
+  session_id: string;
+  outcome: "resolved" | "partially_resolved" | "exhausted" | "escalated" | "re_diagnosed";
+  winning_candidate?: {
+    root_cause: string;
+    confidence: number;
+  } | null;
+  attempts: CandidateAttempt[];
+  total_duration_seconds: number;
+  re_diagnosis_context?: Record<string, unknown> | null;
+};
+
 export type VerificationConfig = {
   method: "promql" | "tool_call" | "wait";
   query?: string | null;

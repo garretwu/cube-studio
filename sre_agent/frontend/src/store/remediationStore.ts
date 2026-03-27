@@ -1,38 +1,45 @@
 import { create } from "zustand";
 
 import { apiClient } from "../api/client";
-import type { RemediationOverview } from "../api/types";
+import type { LoopResult } from "../api/types";
 
 type RemediationState = {
-  overview?: RemediationOverview;
+  loop?: LoopResult;
+  sessionId: string;
   isLoading: boolean;
   approvalDialogOpen: boolean;
-  fetchOverview: () => Promise<void>;
+  setSessionId: (sessionId: string) => void;
+  fetchLoop: (sessionId?: string) => Promise<void>;
   setApprovalDialogOpen: (value: boolean) => void;
   submitApproval: (approved: boolean) => Promise<void>;
 };
 
 export const useRemediationStore = create<RemediationState>((set, get) => ({
-  overview: undefined,
+  loop: undefined,
+  sessionId: "",
   isLoading: false,
   approvalDialogOpen: false,
-  fetchOverview: async () => {
+  setSessionId: (sessionId) => set({ sessionId }),
+  fetchLoop: async (sessionId) => {
+    const resolved = (sessionId ?? get().sessionId).trim();
+    if (!resolved) {
+      return;
+    }
     set({ isLoading: true });
-    const overview = await apiClient.getRemediationOverview();
-    set({ overview, isLoading: false });
+    const loop = await apiClient.getSessionLoop(resolved);
+    set({ loop, sessionId: resolved, isLoading: false });
   },
   setApprovalDialogOpen: (approvalDialogOpen) => set({ approvalDialogOpen }),
   submitApproval: async (approved: boolean) => {
-    const sessionId = get().overview?.session_id;
+    const sessionId = get().sessionId || get().loop?.session_id;
     if (!sessionId) {
       return;
     }
     await apiClient.approveRemediation(sessionId, approved);
-    set((state) => ({
+    const loop = await apiClient.getSessionLoop(sessionId);
+    set({
       approvalDialogOpen: false,
-      overview: state.overview
-        ? { ...state.overview, approval_required: false, progress: { ...state.overview.progress, status: approved ? "approved" : "rejected" } }
-        : state.overview,
-    }));
+      loop,
+    });
   },
 }));

@@ -7,9 +7,9 @@ import type {
   IncidentRecord,
   KnowledgeDocument,
   LearnedPattern,
+  LoopResult,
   OntologyEdge,
   OntologyNode,
-  RemediationOverview,
   SkillDescriptor,
 } from "../api/types";
 
@@ -155,56 +155,35 @@ export const diagnosisSession: DiagnosisSession = {
   },
 };
 
-export const remediationOverview: RemediationOverview = {
+export const remediationOverview: LoopResult = {
   session_id: diagnosisSession.session_id,
-  approval_required: true,
-  plan: {
-    plan_id: "plan-rollback-01",
+  outcome: "re_diagnosed",
+  winning_candidate: {
     root_cause: "GPU contention from a rogue benchmark process",
-    description: "Drain the saturated pod, kill gpu-burn on the affected node, then restore traffic with a canary batch.",
-    estimated_impact: "Low service impact, limited to one shard during drain.",
     confidence: 0.88,
-    priority: "P1",
-    safety_level: "high",
-    canary: {
-      enabled: true,
-      target_percentage: 0.1,
-      monitor_duration: 120,
-      success_criteria: [
-        { metric: "vllm_p95_ms", operator: "<", value: 300 },
-        { metric: "gpu_utilization", operator: "<", value: 0.75 },
-      ],
+  },
+  attempts: [
+    {
+      candidate: {
+        root_cause: "GPU contention from a rogue benchmark process",
+        confidence: 0.88,
+      },
+      remediation_result: {
+        plan_id: "plan-rollback-01",
+        success: false,
+        steps_completed: 0,
+        steps_total: 2,
+        duration_seconds: 15,
+        error: "approval required",
+      },
+      verification_passed: false,
+      rolled_back: false,
+      observations: {},
+      duration_seconds: 15,
     },
-    steps: [
-      {
-        step_id: 1,
-        description: "Drain one canary shard from the hot node.",
-        tool: "k8s_cordon_drain",
-        params: { node: "node-gpu-01", percentage: 0.1 },
-        rollback_tool: "k8s_uncordon",
-        verification: { method: "wait", wait_seconds: 30 },
-        timeout: 60,
-      },
-      {
-        step_id: 2,
-        description: "Kill rogue gpu-burn process on the node.",
-        tool: "shell_command",
-        params: { host: "node-gpu-01", command: "pkill gpu-burn" },
-        rollback_tool: null,
-        verification: { method: "tool_call", tool: "check_gpu_processes" },
-        timeout: 45,
-      },
-    ],
-  },
-  progress: {
-    status: "awaiting_approval",
-    completed_steps: 0,
-    total_steps: 2,
-    batch_status: [
-      { batch: "canary-10%", progress: 30, status: "validating" },
-      { batch: "expand-50%", progress: 0, status: "pending" },
-    ],
-  },
+  ],
+  total_duration_seconds: 142,
+  re_diagnosis_context: null,
 };
 
 export const initialChatMessages: ChatMessage[] = [

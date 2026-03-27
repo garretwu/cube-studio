@@ -3,11 +3,13 @@ from __future__ import annotations
 
 import asyncio
 from datetime import UTC, datetime
+import logging
 import os
 from pathlib import Path
 from typing import Any, Literal
 
 import click
+import uvicorn
 import yaml
 
 from lib.channels.prometheus import PrometheusChannel
@@ -24,8 +26,10 @@ from sre_agent.ontology.discovery.k8s_scanner import K8sScanner
 from sre_agent.ontology.discovery.prometheus_scanner import PrometheusScanner
 from sre_agent.ontology.discovery.switch_scanner import SwitchScanner
 from sre_agent.ontology.graph import OntologyGraph
+from sre_agent.server import create_app
 
 _LIVE_INVENTORY_PATH = Path("fault_injector/fault-injector-test.yaml")
+LOGGER = logging.getLogger(__name__)
 
 
 def _format_topology_summary(config: SREAgentConfig, summary: dict[str, object]) -> str:
@@ -729,6 +733,20 @@ def discover_command(config_path: Path, discovery_mode: str, refresh_only: bool)
     config = load_config(config_path)
     summary = asyncio.run(_discover_topology(config, config_path, refresh_only, discovery_mode))
     click.echo(_format_discovery_summary(config, summary))
+
+
+@main.command("serve")
+@click.option("--config", "config_path", required=True, type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.option("--host", default="127.0.0.1", show_default=True, type=str)
+@click.option("--port", default=8000, show_default=True, type=click.IntRange(1, 65535))
+@click.option("--log-level", default="info", show_default=True, type=click.Choice(["critical", "error", "warning", "info", "debug", "trace"]))
+def serve_command(config_path: Path, host: str, port: int, log_level: str) -> None:
+    """Start the FastAPI API + WS server with default dependency wiring."""
+    config = load_config(config_path)
+    app = create_app(config=config)
+    click.echo(f"Starting sre-agent serve on {host}:{port} with config={config_path}")
+    LOGGER.info("serve startup: aidc_id=%s host=%s port=%s", config.global_.aidc_id, host, port)
+    uvicorn.run(app, host=host, port=port, log_level=log_level)
 
 
 @main.group("memory")

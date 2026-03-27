@@ -71,6 +71,13 @@ class TopologySnapshotResponse(BaseModel):
     recent_events: list[str] = Field(default_factory=list)
 
 
+class AlertSnapshotResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    alerts: list[dict[str, Any]] = Field(default_factory=list)
+    clusters: list[dict[str, Any]] = Field(default_factory=list)
+
+
 class AuditLog(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -311,6 +318,17 @@ def build_api_router() -> APIRouter:
             active_alerts=0,
             recent_events=[],
         )
+        return SREResponse(success=True, data=payload, trace_id=_trace_id(request))
+
+    @router.get("/alerts")
+    async def get_alerts_snapshot(
+        request: Request,
+        user: CurrentUser = Depends(get_current_user),
+    ) -> SREResponse[AlertSnapshotResponse]:
+        _ = user
+        services = _services(request)
+        snapshot = services.alert_store.snapshot()
+        payload = AlertSnapshotResponse(alerts=snapshot.get("alerts", []), clusters=snapshot.get("clusters", []))
         return SREResponse(success=True, data=payload, trace_id=_trace_id(request))
 
     @router.get("/ontology")

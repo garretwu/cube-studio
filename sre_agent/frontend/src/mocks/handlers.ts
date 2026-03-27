@@ -38,18 +38,82 @@ export const handlers = [
     await delay(100);
     return HttpResponse.json({ alerts, clusters: alertClusters });
   }),
-  http.get("/api/diagnosis/session/current", async () => {
+  http.post("/api/handle", async () => {
     await delay(140);
-    return HttpResponse.json(diagnosisSession);
+    return HttpResponse.json({
+      success: true,
+      data: {
+        session_id: diagnosisSession.session_id,
+        outcome: "re_diagnosed",
+        winning_candidate: {
+          root_cause: diagnosisSession.diagnosis_result?.root_cause ?? "unknown",
+          confidence: diagnosisSession.diagnosis_result?.confidence ?? 0.5,
+        },
+        attempts: [
+          {
+            candidate: {
+              root_cause: diagnosisSession.diagnosis_result?.root_cause ?? "unknown",
+              confidence: diagnosisSession.diagnosis_result?.confidence ?? 0.5,
+            },
+            remediation_result: {
+              plan_id: "plan-rollback-01",
+              success: false,
+              steps_completed: 0,
+              steps_total: 2,
+              duration_seconds: 12,
+              error: "approval required",
+            },
+            verification_passed: false,
+            rolled_back: false,
+            observations: {},
+            duration_seconds: 12,
+          },
+        ],
+        total_duration_seconds: diagnosisSession.duration_seconds,
+        re_diagnosis_context: null,
+      },
+      error: null,
+      trace_id: "trace-mock-handle",
+      timestamp: new Date().toISOString(),
+    });
   }),
-  http.get("/api/remediation/overview", async () => {
+  http.get("/api/sessions/:sessionId", async () => {
+    await delay(140);
+    return HttpResponse.json({
+      success: true,
+      data: diagnosisSession,
+      error: null,
+      trace_id: "trace-mock-session",
+      timestamp: new Date().toISOString(),
+    });
+  }),
+  http.get("/api/sessions/:sessionId/loop", async () => {
     await delay(120);
-    return HttpResponse.json(remediationOverview);
+    return HttpResponse.json({
+      success: true,
+      data: remediationOverview,
+      error: null,
+      trace_id: "trace-mock-loop",
+      timestamp: new Date().toISOString(),
+    });
   }),
-  http.post("/api/remediation/:sessionId/approve", async ({ request }) => {
+  http.post("/api/remediate/:sessionId/approve", async ({ request }) => {
     await delay(90);
     const body = (await request.json()) as { approved: boolean };
-    return HttpResponse.json({ success: true, status: body.approved ? "approved" : "rejected" });
+    return HttpResponse.json({
+      success: true,
+      data: {
+        plan_id: "plan-rollback-01",
+        success: body.approved,
+        steps_completed: body.approved ? 2 : 0,
+        steps_total: 2,
+        duration_seconds: 31,
+        error: body.approved ? null : "rejected by operator",
+      },
+      error: null,
+      trace_id: "trace-mock-approve",
+      timestamp: new Date().toISOString(),
+    });
   }),
   http.post("/api/chat", async ({ request }) => {
     await delay(90);

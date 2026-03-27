@@ -60,3 +60,8 @@ conftest.py
 config.lab.test.yaml
 config.lab.yaml
 /sre_agent/temp
+/sre_agent/scripts/agent_demo.py
+/sre_agent/scripts/agent_demo_test.json
+/sre_agent/scripts/agent_demo_no_key_test.json
+/sre_agent/scripts/agent_demo_model_fallback_test.json
+/sre_agent/docs/evidence/

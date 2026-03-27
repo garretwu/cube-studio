@@ -5,18 +5,26 @@ import type { DiagnosisSession, Observation, ThinkingStep, WSEvent } from "../ap
 
 type DiagnosisState = {
   session?: DiagnosisSession;
+  sessionId: string;
   connectionState: "connecting" | "open" | "closed" | "error";
-  fetchSession: () => Promise<void>;
+  setSessionId: (sessionId: string) => void;
+  fetchSession: (sessionId?: string) => Promise<void>;
   setConnectionState: (value: DiagnosisState["connectionState"]) => void;
   applyEvent: (event: WSEvent) => void;
 };
 
 export const useDiagnosisStore = create<DiagnosisState>((set) => ({
   session: undefined,
+  sessionId: "",
   connectionState: "closed",
-  fetchSession: async () => {
-    const session = await apiClient.getDiagnosisSession();
-    set({ session });
+  setSessionId: (sessionId) => set({ sessionId }),
+  fetchSession: async (sessionId) => {
+    const resolved = (sessionId ?? "").trim();
+    if (!resolved) {
+      return;
+    }
+    const session = await apiClient.getDiagnosisSession(resolved);
+    set({ session, sessionId: resolved });
   },
   setConnectionState: (connectionState) => set({ connectionState }),
   applyEvent: (event) =>

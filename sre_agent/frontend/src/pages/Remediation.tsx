@@ -1,16 +1,22 @@
 import { useEffect } from "react";
 import { Button, Card, List, Space, Tag, Typography } from "antd";
+import { useSearchParams } from "react-router-dom";
 
 import ApprovalDialog from "../components/ApprovalDialog";
-import CanaryProgress from "../components/CanaryProgress";
 import { useRemediationStore } from "../store/remediationStore";
 
 function RemediationPage() {
-  const { overview, approvalDialogOpen, fetchOverview, setApprovalDialogOpen, submitApproval } = useRemediationStore();
+  const [searchParams] = useSearchParams();
+  const sessionId = searchParams.get("session_id") ?? "";
+  const { loop, approvalDialogOpen, fetchLoop, setApprovalDialogOpen, submitApproval, setSessionId } = useRemediationStore();
 
   useEffect(() => {
-    void fetchOverview();
-  }, [fetchOverview]);
+    if (!sessionId) {
+      return;
+    }
+    setSessionId(sessionId);
+    void fetchLoop(sessionId);
+  }, [fetchLoop, sessionId, setSessionId]);
 
   return (
     <div className="page-grid">
@@ -20,42 +26,42 @@ function RemediationPage() {
             Remediation Gate
           </Typography.Title>
           <Space wrap>
-            <Tag color="gold">{overview?.progress.status ?? "loading"}</Tag>
-            <Tag color="cyan">{overview?.plan.priority ?? "P?"}</Tag>
-            <Tag>{overview?.plan.canary?.target_percentage ? `${overview.plan.canary.target_percentage * 100}% canary` : "no canary"}</Tag>
+            <Tag color="gold">{loop?.outcome ?? "loading"}</Tag>
+            <Tag color="cyan">{`attempts ${loop?.attempts.length ?? 0}`}</Tag>
+            <Tag>{`duration ${loop?.total_duration_seconds ?? 0}s`}</Tag>
           </Space>
         </Space>
       </Card>
 
       <Card
         className="panel-card"
-        title="Plan Steps"
+        title="Loop Attempts"
         extra={
-          <Button type="primary" onClick={() => setApprovalDialogOpen(true)} disabled={!overview?.approval_required}>
+          <Button type="primary" onClick={() => setApprovalDialogOpen(true)} disabled={!loop?.session_id}>
             Open Approval Gate
           </Button>
         }
       >
         <List
-          dataSource={overview?.plan.steps ?? []}
-          renderItem={(step) => (
+          dataSource={loop?.attempts ?? []}
+          renderItem={(attempt, index) => (
             <List.Item>
               <List.Item.Meta
-                title={`${step.step_id}. ${step.description}`}
-                description={`${step.tool} • verify via ${step.verification.method}`}
+                title={`${index + 1}. ${attempt.candidate.root_cause}`}
+                description={`success=${attempt.remediation_result.success} steps=${attempt.remediation_result.steps_completed}/${attempt.remediation_result.steps_total} rolled_back=${attempt.rolled_back}`}
               />
             </List.Item>
           )}
         />
       </Card>
 
-      <Card className="panel-card" title="Canary Progress">
-        <CanaryProgress batches={overview?.progress.batch_status ?? []} />
+      <Card className="panel-card" title="Winning Candidate">
+        <Typography.Text>{loop?.winning_candidate?.root_cause ?? "none"}</Typography.Text>
       </Card>
 
       <ApprovalDialog
         open={approvalDialogOpen}
-        plan={overview?.plan}
+        plan={undefined}
         onApprove={() => void submitApproval(true)}
         onReject={() => void submitApproval(false)}
         onCancel={() => setApprovalDialogOpen(false)}

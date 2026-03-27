@@ -245,6 +245,18 @@ class TestAPIIntegration:
             }
         ]
 
+    def test_integration_get_alerts_snapshot_returns_recorded_alerts(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        client, token = _build_client(monkeypatch)
+        create_response = client.post("/api/handle", json=_alert_payload(), headers=_auth_headers(token))
+        assert create_response.status_code == 200
+
+        response = client.get("/api/alerts", headers=_auth_headers(token))
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["success"] is True
+        assert payload["data"]["alerts"][0]["fingerprint"] == "fp-api-1"
+        assert isinstance(payload["data"]["clusters"], list)
+
     def test_integration_post_ontology_query_returns_filtered_entities(self, monkeypatch: pytest.MonkeyPatch) -> None:
         client, token = _build_client(monkeypatch)
 
@@ -348,6 +360,19 @@ class TestAPIE2E:
             payload = websocket.receive_json()
 
         assert payload["type"] == "thinking_step"
+
+    def test_e2e_websocket_alerts_support_last_event_id_resume(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        client, token = _build_client(monkeypatch)
+        first = WSEvent(type=EventType.ALERT, session_id="alerts", data={"event_id": "1", "fingerprint": "a1"})
+        second = WSEvent(type=EventType.ALERT, session_id="alerts", data={"event_id": "2", "fingerprint": "a2"})
+        asyncio.run(client.app.state.services.trace_publisher.publish(first))
+        asyncio.run(client.app.state.services.trace_publisher.publish(second))
+
+        with client.websocket_connect(f"/ws/alerts?token={token}&last_event_id=1") as websocket:
+            payload = websocket.receive_json()
+
+        assert payload["type"] == "alert"
+        assert payload["data"]["fingerprint"] == "a2"
 
     def test_e2e_startup_loads_persisted_ontology_when_app_creates_internal_graph(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         monkeypatch.setenv("JWT_SECRET", "secret")

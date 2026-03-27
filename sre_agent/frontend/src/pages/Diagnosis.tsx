@@ -1,16 +1,23 @@
 import { useEffect } from "react";
 import { Card, List, Space, Tag, Typography } from "antd";
+import { useSearchParams } from "react-router-dom";
 
 import ThinkingTimeline from "../components/ThinkingTimeline";
 import { useWebSocket } from "../hooks/useWebSocket";
 import { useDiagnosisStore } from "../store/diagnosisStore";
 
 function DiagnosisPage() {
-  const { session, fetchSession, connectionState, applyEvent, setConnectionState } = useDiagnosisStore();
+  const [searchParams] = useSearchParams();
+  const sessionId = searchParams.get("session_id") ?? "";
+  const { session, fetchSession, connectionState, applyEvent, setConnectionState, setSessionId } = useDiagnosisStore();
 
   useEffect(() => {
-    void fetchSession();
-  }, [fetchSession]);
+    if (!sessionId) {
+      return;
+    }
+    setSessionId(sessionId);
+    void fetchSession(sessionId);
+  }, [fetchSession, sessionId, setSessionId]);
 
   const ws = useWebSocket(
     `${window.location.origin.replace(/^http/, "ws")}/ws/thinking-trace/${session?.session_id ?? "pending"}`,
