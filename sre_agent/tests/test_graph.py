@@ -151,6 +151,63 @@ class TestGraphUnit(unittest.IsolatedAsyncioTestCase):
             snapshot_files = list(Path(tmpdir).glob(f"{result['session_id']}-*.json"))
             self.assertTrue(snapshot_files)
 
+    async def test_realtime_trace_callback_emits_incremental_ws_events(self) -> None:
+        llm = _FakeLLM(
+            [
+                AIMessage(
+                    content="Collect Prometheus evidence first.",
+                    tool_calls=[
+                        {
+                            "name": "prometheus.query_instant",
+                            "args": {"promql": "up"},
+                            "id": "call-1",
+                            "type": "tool_call",
+                        }
+                    ],
+                ),
+                AIMessage(
+                    content=json.dumps(
+                        {
+                            "thought": "Prometheus metrics are stable.",
+                            "diagnosis": {
+                                "root_cause": "No active issue",
+                                "root_cause_layer": "platform",
+                                "root_cause_entities": ["cluster:default"],
+                                "confidence": 0.9,
+                                "impact_summary": "No active degradation observed.",
+                                "affected_services": ["platform"],
+                                "triage_priority": "P3",
+                                "diagnosis_certainty": "confirmed",
+                            },
+                            "remediation_plan": None,
+                        }
+                    )
+                ),
+            ]
+        )
+        streamed_events: list[dict[str, Any]] = []
+
+        async def _capture(event: dict[str, Any]) -> None:
+            streamed_events.append(event)
+
+        result = await run_diagnosis(
+            query="Investigate platform health without changing anything.",
+            context=_happy_context(),
+            variables={"promql": "up"},
+            llm=llm,
+            step_timeout_sec=5.0,
+            total_timeout_sec=10.0,
+            checkpoint_dir=None,
+            allowed_tool_names=["prometheus.query_instant"],
+            trace_callback=_capture,
+        )
+        self.assertEqual(result["status"], "diagnosed")
+        self.assertGreaterEqual(len(streamed_events), 4)
+        event_types = [event.get("type") for event in streamed_events[:4]]
+        self.assertEqual(event_types, ["tool_call", "tool_result", "thinking_step", "diagnosis_result"])
+        for event in streamed_events[:4]:
+            self.assertEqual(event.get("session_id"), result["session_id"])
+
     async def test_prompt_renders_write_tool_reference_without_binding_write_tools(self) -> None:
         registry = build_default_registry()
         prompt = build_system_prompt(registry, allowed_tool_names=["prometheus.query_instant"])

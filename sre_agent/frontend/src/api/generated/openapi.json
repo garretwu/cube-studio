@@ -1,0 +1,3117 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "AIDC Auto SRE Agent",
+    "version": "0.1.0"
+  },
+  "paths": {
+    "/api/diagnose": {
+      "post": {
+        "summary": "Diagnose",
+        "operationId": "diagnose_api_diagnose_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Alert"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SREResponse_DiagnosisSession_"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
+    "/api/handle": {
+      "post": {
+        "summary": "Handle Alert",
+        "operationId": "handle_alert_api_handle_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Alert"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SREResponse_LoopResult_"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
+    "/api/sessions/{session_id}": {
+      "get": {
+        "summary": "Get Session",
+        "operationId": "get_session_api_sessions__session_id__get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Session Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SREResponse_DiagnosisSession_"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/sessions/{session_id}/loop": {
+      "get": {
+        "summary": "Get Loop Result",
+        "operationId": "get_loop_result_api_sessions__session_id__loop_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Session Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SREResponse_LoopResult_"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/remediate/{session_id}/approve": {
+      "post": {
+        "summary": "Approve Remediation",
+        "operationId": "approve_remediation_api_remediate__session_id__approve_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Session Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ApprovalInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SREResponse_RemediationResult_"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/remediate/{session_id}/rollback": {
+      "post": {
+        "summary": "Rollback",
+        "operationId": "rollback_api_remediate__session_id__rollback_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Session Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SREResponse_RollbackResult_"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/topology": {
+      "get": {
+        "summary": "Get Topology Snapshot",
+        "operationId": "get_topology_snapshot_api_topology_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SREResponse_TopologySnapshotResponse_"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
+    "/api/alerts": {
+      "get": {
+        "summary": "Get Alerts Snapshot",
+        "operationId": "get_alerts_snapshot_api_alerts_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SREResponse_AlertSnapshotResponse_"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
+    "/api/ontology": {
+      "get": {
+        "summary": "Get Topology",
+        "operationId": "get_topology_api_ontology_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "entity_type",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Entity Type"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SREResponse_list_dict_str__Any___"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/ontology/query": {
+      "post": {
+        "summary": "Query Ontology",
+        "operationId": "query_ontology_api_ontology_query_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OntologyQueryRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SREResponse_list_dict_str__Any___"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
+    "/api/ontology/path": {
+      "get": {
+        "summary": "Get Ontology Path",
+        "operationId": "get_ontology_path_api_ontology_path_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "from_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "From Id"
+            }
+          },
+          {
+            "name": "to_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "To Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SREResponse_Union_list_str___NoneType__"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "summary": "Get Ontology Path Post",
+        "operationId": "get_ontology_path_post_api_ontology_path_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OntologyPathRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SREResponse_Union_list_str___NoneType__"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/ontology/{entity_id}/blast-radius": {
+      "get": {
+        "summary": "Get Blast Radius",
+        "operationId": "get_blast_radius_api_ontology__entity_id__blast_radius_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "entity_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Entity Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SREResponse_dict_str__Any__"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/ontology/blast": {
+      "post": {
+        "summary": "Post Blast Radius",
+        "operationId": "post_blast_radius_api_ontology_blast_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OntologyBlastRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SREResponse_dict_str__Any__"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
+    "/api/ontology/refresh": {
+      "post": {
+        "summary": "Refresh Ontology Entity",
+        "operationId": "refresh_ontology_entity_api_ontology_refresh_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OntologyRefreshRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SREResponse_dict_str__Any__"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
+    "/api/memory/incidents": {
+      "get": {
+        "summary": "List Incidents",
+        "operationId": "list_incidents_api_memory_incidents_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "last",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 10,
+              "title": "Last"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SREResponse_list_IncidentRecord__"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/memory/patterns": {
+      "get": {
+        "summary": "List Patterns",
+        "operationId": "list_patterns_api_memory_patterns_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SREResponse_list_LearnedPattern__"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
+    "/api/memory/baseline": {
+      "get": {
+        "summary": "Get Memory Baseline",
+        "operationId": "get_memory_baseline_api_memory_baseline_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SREResponse_dict_str__Any__"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
+    "/api/chat": {
+      "post": {
+        "summary": "Chat",
+        "operationId": "chat_api_chat_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChatMessage"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SREResponse_ChatResponse_"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
+    "/api/knowledge/search": {
+      "get": {
+        "summary": "Knowledge Search",
+        "operationId": "knowledge_search_api_knowledge_search_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "query",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Query"
+            }
+          },
+          {
+            "name": "category",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Category"
+            }
+          },
+          {
+            "name": "top_k",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 5,
+              "title": "Top K"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SREResponse_list_dict_str__Any___"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/knowledge/documents": {
+      "get": {
+        "summary": "Knowledge Documents",
+        "operationId": "knowledge_documents_api_knowledge_documents_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SREResponse_list_dict_str__Any___"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
+    "/api/skills": {
+      "get": {
+        "summary": "List Skills",
+        "operationId": "list_skills_api_skills_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SREResponse_list_dict_str__Any___"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "Alert": {
+        "properties": {
+          "alert_name": {
+            "type": "string",
+            "title": "Alert Name"
+          },
+          "severity": {
+            "$ref": "#/components/schemas/AlertSeverity"
+          },
+          "labels": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object",
+            "title": "Labels"
+          },
+          "annotations": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object",
+            "title": "Annotations"
+          },
+          "starts_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Starts At"
+          },
+          "ends_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ends At"
+          },
+          "fingerprint": {
+            "type": "string",
+            "title": "Fingerprint"
+          },
+          "status": {
+            "$ref": "#/components/schemas/AlertStatus",
+            "default": "firing"
+          },
+          "source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "alert_name",
+          "severity",
+          "starts_at",
+          "fingerprint"
+        ],
+        "title": "Alert",
+        "description": "Unified alert payload model with Alertmanager compatibility aliases."
+      },
+      "AlertSeverity": {
+        "type": "string",
+        "enum": [
+          "critical",
+          "warning",
+          "info"
+        ],
+        "title": "AlertSeverity",
+        "description": "Canonical alert severity levels."
+      },
+      "AlertSnapshotResponse": {
+        "properties": {
+          "alerts": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Alerts"
+          },
+          "clusters": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Clusters"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "AlertSnapshotResponse"
+      },
+      "AlertStatus": {
+        "type": "string",
+        "enum": [
+          "firing",
+          "resolved",
+          "silenced"
+        ],
+        "title": "AlertStatus",
+        "description": "Canonical alert state values."
+      },
+      "ApprovalInput": {
+        "properties": {
+          "approved": {
+            "type": "boolean",
+            "title": "Approved"
+          },
+          "user": {
+            "type": "string",
+            "minLength": 1,
+            "title": "User",
+            "default": "unknown"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "approved"
+        ],
+        "title": "ApprovalInput"
+      },
+      "CanaryCondition": {
+        "properties": {
+          "metric": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Metric"
+          },
+          "field": {
+            "type": "string",
+            "title": "Field",
+            "default": "value"
+          },
+          "operator": {
+            "type": "string",
+            "enum": [
+              "<",
+              "<=",
+              ">",
+              ">=",
+              "==",
+              "!="
+            ],
+            "title": "Operator"
+          },
+          "value": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "integer"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "title": "Value"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "metric",
+          "operator",
+          "value"
+        ],
+        "title": "CanaryCondition",
+        "description": "Structured canary check condition."
+      },
+      "CanaryConfig": {
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "title": "Enabled",
+            "default": true
+          },
+          "target_percentage": {
+            "type": "number",
+            "maximum": 1.0,
+            "exclusiveMinimum": 0.0,
+            "title": "Target Percentage",
+            "default": 0.1
+          },
+          "monitor_duration": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Monitor Duration",
+            "default": 120
+          },
+          "success_criteria": {
+            "items": {
+              "$ref": "#/components/schemas/CanaryCondition"
+            },
+            "type": "array",
+            "title": "Success Criteria"
+          },
+          "criteria_mode": {
+            "type": "string",
+            "enum": [
+              "all",
+              "any"
+            ],
+            "title": "Criteria Mode",
+            "default": "all"
+          },
+          "max_batches": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Max Batches",
+            "default": 3
+          },
+          "auto_rollback_on_regression": {
+            "type": "boolean",
+            "title": "Auto Rollback On Regression",
+            "default": true
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "CanaryConfig",
+        "description": "Canary rollout verification configuration."
+      },
+      "CandidateAttempt": {
+        "properties": {
+          "candidate": {
+            "$ref": "#/components/schemas/RankedRootCause"
+          },
+          "remediation_result": {
+            "$ref": "#/components/schemas/RemediationResult"
+          },
+          "verification_passed": {
+            "type": "boolean",
+            "title": "Verification Passed"
+          },
+          "rolled_back": {
+            "type": "boolean",
+            "title": "Rolled Back"
+          },
+          "observations": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Observations"
+          },
+          "duration_seconds": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Duration Seconds"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "candidate",
+          "remediation_result",
+          "verification_passed",
+          "rolled_back",
+          "duration_seconds"
+        ],
+        "title": "CandidateAttempt",
+        "description": "Single candidate root-cause remediation attempt in loop orchestration."
+      },
+      "ChatMessage": {
+        "properties": {
+          "content": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Content"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "content"
+        ],
+        "title": "ChatMessage"
+      },
+      "ChatResponse": {
+        "properties": {
+          "reply": {
+            "type": "string",
+            "title": "Reply"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "reply"
+        ],
+        "title": "ChatResponse"
+      },
+      "DiagnosisResult": {
+        "properties": {
+          "root_cause": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Root Cause"
+          },
+          "root_cause_layer": {
+            "type": "string",
+            "enum": [
+              "hardware",
+              "network",
+              "os",
+              "platform",
+              "service"
+            ],
+            "title": "Root Cause Layer"
+          },
+          "root_cause_entities": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Root Cause Entities"
+          },
+          "confidence": {
+            "type": "number",
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Confidence"
+          },
+          "hypotheses": {
+            "items": {
+              "$ref": "#/components/schemas/Hypothesis"
+            },
+            "type": "array",
+            "title": "Hypotheses"
+          },
+          "propagation_chain": {
+            "items": {
+              "$ref": "#/components/schemas/PropagationStep"
+            },
+            "type": "array",
+            "title": "Propagation Chain"
+          },
+          "impact_summary": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Impact Summary"
+          },
+          "affected_services": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Affected Services"
+          },
+          "recommended_fix": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RemediationPlan"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "triage_priority": {
+            "type": "string",
+            "enum": [
+              "P0",
+              "P1",
+              "P2",
+              "P3"
+            ],
+            "title": "Triage Priority"
+          },
+          "ranked_candidates": {
+            "items": {
+              "$ref": "#/components/schemas/RankedRootCause"
+            },
+            "type": "array",
+            "title": "Ranked Candidates"
+          },
+          "diagnosis_certainty": {
+            "type": "string",
+            "enum": [
+              "confirmed",
+              "probable",
+              "ambiguous"
+            ],
+            "title": "Diagnosis Certainty"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "root_cause",
+          "root_cause_layer",
+          "confidence",
+          "impact_summary",
+          "triage_priority",
+          "diagnosis_certainty"
+        ],
+        "title": "DiagnosisResult",
+        "description": "Diagnosis result supporting both single and ranked-candidate modes."
+      },
+      "DiagnosisSession": {
+        "properties": {
+          "session_id": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Session Id"
+          },
+          "alert": {
+            "$ref": "#/components/schemas/Alert"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "diagnosing",
+              "diagnosed",
+              "approval_required",
+              "remediating",
+              "rejected",
+              "re_diagnosed",
+              "resolved",
+              "failed",
+              "escalated",
+              "timeout"
+            ],
+            "title": "Status"
+          },
+          "diagnosis_result": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DiagnosisResult"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "trace": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ThinkingTrace"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "re_diagnosis_round": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Re Diagnosis Round",
+            "default": 0
+          },
+          "duration_seconds": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Duration Seconds",
+            "default": 0
+          },
+          "outcome": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Outcome"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "session_id",
+          "alert",
+          "status"
+        ],
+        "title": "DiagnosisSession",
+        "description": "Lifecycle model for diagnosis/remediation execution."
+      },
+      "ErrorCode": {
+        "type": "string",
+        "enum": [
+          "DIAG_TIMEOUT",
+          "DIAG_LLM_ERR",
+          "DIAG_NO_RESULT",
+          "REM_PLAN_INVALID",
+          "REM_APPROVAL_DENIED",
+          "REM_APPROVAL_TIMEOUT",
+          "REM_EXEC_FAILED",
+          "REM_ROLLBACK_FAILED",
+          "REM_BLOCKED",
+          "RES_LOCKED",
+          "ALERT_DUPLICATE",
+          "CONCURRENT_LIMIT",
+          "AUTH_REQUIRED",
+          "AUTH_FORBIDDEN",
+          "INTERNAL_ERROR",
+          "VALIDATION_ERROR"
+        ],
+        "title": "ErrorCode",
+        "description": "Unified error codes shared across SRE subsystems."
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "type": "array",
+            "title": "Detail"
+          }
+        },
+        "type": "object",
+        "title": "HTTPValidationError"
+      },
+      "Hypothesis": {
+        "properties": {
+          "description": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Description"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "testing",
+              "confirmed",
+              "eliminated"
+            ],
+            "title": "Status"
+          },
+          "evidence_for": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Evidence For"
+          },
+          "evidence_against": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Evidence Against"
+          },
+          "confidence": {
+            "type": "number",
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Confidence"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "description",
+          "status",
+          "confidence"
+        ],
+        "title": "Hypothesis",
+        "description": "Diagnosis hypothesis with validation outcome."
+      },
+      "IncidentRecord": {
+        "properties": {
+          "incident_id": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Incident Id"
+          },
+          "aidc_id": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Aidc Id"
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Timestamp"
+          },
+          "alert": {
+            "$ref": "#/components/schemas/Alert"
+          },
+          "symptoms": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Symptoms"
+          },
+          "diagnosis_trace": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Diagnosis Trace"
+          },
+          "root_cause": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Root Cause"
+          },
+          "root_cause_layer": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Root Cause Layer"
+          },
+          "root_cause_entities": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Root Cause Entities"
+          },
+          "hypotheses_tested": {
+            "items": {
+              "$ref": "#/components/schemas/Hypothesis"
+            },
+            "type": "array",
+            "title": "Hypotheses Tested"
+          },
+          "remediation_applied": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RemediationPlan"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "outcome": {
+            "type": "string",
+            "enum": [
+              "resolved",
+              "partially_resolved",
+              "failed",
+              "escalated"
+            ],
+            "title": "Outcome"
+          },
+          "resolution_time_seconds": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Resolution Time Seconds"
+          },
+          "engineer_feedback": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Engineer Feedback"
+          },
+          "tags": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Tags"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "incident_id",
+          "aidc_id",
+          "alert",
+          "root_cause",
+          "root_cause_layer",
+          "outcome",
+          "resolution_time_seconds"
+        ],
+        "title": "IncidentRecord",
+        "description": "Complete incident record persisted to memory store."
+      },
+      "LearnedPattern": {
+        "properties": {
+          "pattern_id": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Pattern Id"
+          },
+          "aidc_id": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Aidc Id"
+          },
+          "symptom_signature": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Symptom Signature"
+          },
+          "root_cause": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Root Cause"
+          },
+          "effective_fix": {
+            "type": "string",
+            "title": "Effective Fix",
+            "default": ""
+          },
+          "occurrence_count": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Occurrence Count"
+          },
+          "confidence": {
+            "type": "number",
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Confidence"
+          },
+          "first_seen": {
+            "type": "string",
+            "format": "date-time",
+            "title": "First Seen"
+          },
+          "last_seen": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Last Seen"
+          },
+          "example_incidents": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Example Incidents"
+          },
+          "half_life_days": {
+            "type": "number",
+            "exclusiveMinimum": 0.0,
+            "title": "Half Life Days",
+            "default": 90.0
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "active",
+              "inactive"
+            ],
+            "title": "Status",
+            "default": "active"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "pattern_id",
+          "aidc_id",
+          "root_cause",
+          "occurrence_count",
+          "confidence",
+          "first_seen",
+          "last_seen"
+        ],
+        "title": "LearnedPattern",
+        "description": "Pattern extracted from prior incidents."
+      },
+      "LoopResult": {
+        "properties": {
+          "session_id": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Session Id"
+          },
+          "outcome": {
+            "type": "string",
+            "enum": [
+              "resolved",
+              "partially_resolved",
+              "exhausted",
+              "escalated",
+              "re_diagnosed"
+            ],
+            "title": "Outcome"
+          },
+          "winning_candidate": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RankedRootCause"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "attempts": {
+            "items": {
+              "$ref": "#/components/schemas/CandidateAttempt"
+            },
+            "type": "array",
+            "title": "Attempts"
+          },
+          "total_duration_seconds": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Total Duration Seconds",
+            "default": 0
+          },
+          "re_diagnosis_context": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Re Diagnosis Context"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "session_id",
+          "outcome"
+        ],
+        "title": "LoopResult",
+        "description": "LoopOrchestrator summary result."
+      },
+      "Observation": {
+        "properties": {
+          "tool": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Tool"
+          },
+          "params": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Params"
+          },
+          "result": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Result"
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Timestamp"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "tool"
+        ],
+        "title": "Observation",
+        "description": "Tool observation in the diagnosis trace."
+      },
+      "OntologyBlastRequest": {
+        "properties": {
+          "entity_id": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Entity Id"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "entity_id"
+        ],
+        "title": "OntologyBlastRequest"
+      },
+      "OntologyPathRequest": {
+        "properties": {
+          "from_id": {
+            "type": "string",
+            "minLength": 1,
+            "title": "From Id"
+          },
+          "to_id": {
+            "type": "string",
+            "minLength": 1,
+            "title": "To Id"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "from_id",
+          "to_id"
+        ],
+        "title": "OntologyPathRequest"
+      },
+      "OntologyQueryRequest": {
+        "properties": {
+          "entity_type": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Entity Type"
+          },
+          "filters": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Filters"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "entity_type"
+        ],
+        "title": "OntologyQueryRequest"
+      },
+      "OntologyRefreshRequest": {
+        "properties": {
+          "entity_id": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Entity Id"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "entity_id"
+        ],
+        "title": "OntologyRefreshRequest"
+      },
+      "PropagationStep": {
+        "properties": {
+          "entity_id": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Entity Id"
+          },
+          "entity_type": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Entity Type"
+          },
+          "metric": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Metric"
+          },
+          "value_before": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "title": "Value Before"
+          },
+          "value_after": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "title": "Value After"
+          },
+          "description": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Description"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "entity_id",
+          "entity_type",
+          "metric",
+          "value_before",
+          "value_after",
+          "description"
+        ],
+        "title": "PropagationStep",
+        "description": "One hop in fault propagation analysis."
+      },
+      "RankedRootCause": {
+        "properties": {
+          "rank": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Rank"
+          },
+          "root_cause": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Root Cause"
+          },
+          "root_cause_layer": {
+            "type": "string",
+            "enum": [
+              "hardware",
+              "network",
+              "os",
+              "platform",
+              "service"
+            ],
+            "title": "Root Cause Layer"
+          },
+          "root_cause_entities": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Root Cause Entities"
+          },
+          "confidence": {
+            "type": "number",
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Confidence"
+          },
+          "evidence_summary": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Evidence Summary"
+          },
+          "recommended_fix": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RemediationPlan"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "distinguishing_verification": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Distinguishing Verification"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "rank",
+          "root_cause",
+          "root_cause_layer",
+          "confidence",
+          "evidence_summary"
+        ],
+        "title": "RankedRootCause",
+        "description": "Ranked candidate root cause."
+      },
+      "RemediationAction": {
+        "properties": {
+          "step_id": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Step Id"
+          },
+          "description": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Description"
+          },
+          "tool": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Tool"
+          },
+          "params": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Params"
+          },
+          "rollback_tool": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rollback Tool"
+          },
+          "rollback_params": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rollback Params"
+          },
+          "verification": {
+            "$ref": "#/components/schemas/VerificationConfig"
+          },
+          "timeout": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Timeout",
+            "default": 60
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "step_id",
+          "description",
+          "tool",
+          "verification"
+        ],
+        "title": "RemediationAction",
+        "description": "Single executable remediation action step."
+      },
+      "RemediationPlan": {
+        "properties": {
+          "plan_id": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Plan Id"
+          },
+          "root_cause": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Root Cause"
+          },
+          "description": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Description"
+          },
+          "steps": {
+            "items": {
+              "$ref": "#/components/schemas/RemediationAction"
+            },
+            "type": "array",
+            "title": "Steps"
+          },
+          "canary": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CanaryConfig"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "estimated_impact": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Estimated Impact"
+          },
+          "confidence": {
+            "type": "number",
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Confidence"
+          },
+          "priority": {
+            "type": "string",
+            "enum": [
+              "P0",
+              "P1",
+              "P2"
+            ],
+            "title": "Priority"
+          },
+          "safety_level": {
+            "$ref": "#/components/schemas/SafetyLevel",
+            "default": "high"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "plan_id",
+          "root_cause",
+          "description",
+          "estimated_impact",
+          "confidence",
+          "priority"
+        ],
+        "title": "RemediationPlan",
+        "description": "Structured remediation plan returned by the diagnosis subsystem."
+      },
+      "RemediationResult": {
+        "properties": {
+          "plan_id": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Plan Id"
+          },
+          "success": {
+            "type": "boolean",
+            "title": "Success"
+          },
+          "steps_completed": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Steps Completed"
+          },
+          "steps_total": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Steps Total"
+          },
+          "failed_step": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RemediationAction"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "rolled_back": {
+            "type": "boolean",
+            "title": "Rolled Back",
+            "default": false
+          },
+          "verification_results": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Verification Results"
+          },
+          "duration_seconds": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Duration Seconds",
+            "default": 0
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "plan_id",
+          "success",
+          "steps_completed",
+          "steps_total"
+        ],
+        "title": "RemediationResult",
+        "description": "Execution result of a remediation plan."
+      },
+      "RollbackResult": {
+        "properties": {
+          "session_id": {
+            "type": "string",
+            "title": "Session Id"
+          },
+          "success": {
+            "type": "boolean",
+            "title": "Success"
+          },
+          "recovered_actions": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Recovered Actions"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Timestamp"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "session_id",
+          "success"
+        ],
+        "title": "RollbackResult"
+      },
+      "SREError": {
+        "properties": {
+          "code": {
+            "$ref": "#/components/schemas/ErrorCode"
+          },
+          "message": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Message"
+          },
+          "details": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Details"
+          },
+          "trace_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Trace Id"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "code",
+          "message"
+        ],
+        "title": "SREError",
+        "description": "Unified structured error payload."
+      },
+      "SREResponse_AlertSnapshotResponse_": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success"
+          },
+          "data": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AlertSnapshotResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "error": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SREError"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "trace_id": {
+            "type": "string",
+            "title": "Trace Id"
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Timestamp"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "success"
+        ],
+        "title": "SREResponse[AlertSnapshotResponse]"
+      },
+      "SREResponse_ChatResponse_": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success"
+          },
+          "data": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChatResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "error": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SREError"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "trace_id": {
+            "type": "string",
+            "title": "Trace Id"
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Timestamp"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "success"
+        ],
+        "title": "SREResponse[ChatResponse]"
+      },
+      "SREResponse_DiagnosisSession_": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success"
+          },
+          "data": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DiagnosisSession"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "error": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SREError"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "trace_id": {
+            "type": "string",
+            "title": "Trace Id"
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Timestamp"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "success"
+        ],
+        "title": "SREResponse[DiagnosisSession]"
+      },
+      "SREResponse_LoopResult_": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success"
+          },
+          "data": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/LoopResult"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "error": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SREError"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "trace_id": {
+            "type": "string",
+            "title": "Trace Id"
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Timestamp"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "success"
+        ],
+        "title": "SREResponse[LoopResult]"
+      },
+      "SREResponse_RemediationResult_": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success"
+          },
+          "data": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RemediationResult"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "error": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SREError"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "trace_id": {
+            "type": "string",
+            "title": "Trace Id"
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Timestamp"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "success"
+        ],
+        "title": "SREResponse[RemediationResult]"
+      },
+      "SREResponse_RollbackResult_": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success"
+          },
+          "data": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RollbackResult"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "error": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SREError"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "trace_id": {
+            "type": "string",
+            "title": "Trace Id"
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Timestamp"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "success"
+        ],
+        "title": "SREResponse[RollbackResult]"
+      },
+      "SREResponse_TopologySnapshotResponse_": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success"
+          },
+          "data": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TopologySnapshotResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "error": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SREError"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "trace_id": {
+            "type": "string",
+            "title": "Trace Id"
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Timestamp"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "success"
+        ],
+        "title": "SREResponse[TopologySnapshotResponse]"
+      },
+      "SREResponse_Union_list_str___NoneType__": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success"
+          },
+          "data": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Data"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SREError"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "trace_id": {
+            "type": "string",
+            "title": "Trace Id"
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Timestamp"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "success"
+        ],
+        "title": "SREResponse[Union[list[str], NoneType]]"
+      },
+      "SREResponse_dict_str__Any__": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success"
+          },
+          "data": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Data"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SREError"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "trace_id": {
+            "type": "string",
+            "title": "Trace Id"
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Timestamp"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "success"
+        ],
+        "title": "SREResponse[dict[str, Any]]"
+      },
+      "SREResponse_list_IncidentRecord__": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success"
+          },
+          "data": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/IncidentRecord"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Data"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SREError"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "trace_id": {
+            "type": "string",
+            "title": "Trace Id"
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Timestamp"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "success"
+        ],
+        "title": "SREResponse[list[IncidentRecord]]"
+      },
+      "SREResponse_list_LearnedPattern__": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success"
+          },
+          "data": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/LearnedPattern"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Data"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SREError"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "trace_id": {
+            "type": "string",
+            "title": "Trace Id"
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Timestamp"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "success"
+        ],
+        "title": "SREResponse[list[LearnedPattern]]"
+      },
+      "SREResponse_list_dict_str__Any___": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success"
+          },
+          "data": {
+            "anyOf": [
+              {
+                "items": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Data"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SREError"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "trace_id": {
+            "type": "string",
+            "title": "Trace Id"
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Timestamp"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "success"
+        ],
+        "title": "SREResponse[list[dict[str, Any]]]"
+      },
+      "SafetyLevel": {
+        "type": "string",
+        "enum": [
+          "readonly",
+          "low",
+          "medium",
+          "high",
+          "critical"
+        ],
+        "title": "SafetyLevel",
+        "description": "Canonical safety levels for tool/action execution control."
+      },
+      "ThinkingStep": {
+        "properties": {
+          "step": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Step"
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Timestamp"
+          },
+          "thought": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Thought"
+          },
+          "action_type": {
+            "type": "string",
+            "enum": [
+              "tool_call",
+              "conclude",
+              "remediate"
+            ],
+            "title": "Action Type"
+          },
+          "tool_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tool Name"
+          },
+          "tool_params": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tool Params"
+          },
+          "confidence": {
+            "anyOf": [
+              {
+                "type": "number",
+                "maximum": 1.0,
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Confidence"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "step",
+          "thought",
+          "action_type"
+        ],
+        "title": "ThinkingStep",
+        "description": "Single thought/action step in the diagnosis trace."
+      },
+      "ThinkingTrace": {
+        "properties": {
+          "steps": {
+            "items": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/ThinkingStep"
+                },
+                {
+                  "$ref": "#/components/schemas/Observation"
+                }
+              ]
+            },
+            "type": "array",
+            "title": "Steps"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "ThinkingTrace",
+        "description": "Ordered chain of Thought/Observation items."
+      },
+      "TopologySnapshotResponse": {
+        "properties": {
+          "nodes": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Nodes"
+          },
+          "edges": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Edges"
+          },
+          "active_alerts": {
+            "type": "integer",
+            "title": "Active Alerts",
+            "default": 0
+          },
+          "recent_events": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Recent Events"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "nodes",
+          "edges"
+        ],
+        "title": "TopologySnapshotResponse"
+      },
+      "ValidationError": {
+        "properties": {
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "type": "array",
+            "title": "Location"
+          },
+          "msg": {
+            "type": "string",
+            "title": "Message"
+          },
+          "type": {
+            "type": "string",
+            "title": "Error Type"
+          }
+        },
+        "type": "object",
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError"
+      },
+      "VerificationCondition": {
+        "properties": {
+          "field": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Field"
+          },
+          "operator": {
+            "type": "string",
+            "enum": [
+              "<",
+              "<=",
+              ">",
+              ">=",
+              "==",
+              "!="
+            ],
+            "title": "Operator"
+          },
+          "value": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "integer"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "title": "Value"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "field",
+          "operator",
+          "value"
+        ],
+        "title": "VerificationCondition",
+        "description": "Structured condition DSL used by remediation verification."
+      },
+      "VerificationConfig": {
+        "properties": {
+          "method": {
+            "type": "string",
+            "enum": [
+              "promql",
+              "tool_call",
+              "wait"
+            ],
+            "title": "Method"
+          },
+          "query": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Query"
+          },
+          "tool": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tool"
+          },
+          "tool_params": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tool Params"
+          },
+          "condition": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/VerificationCondition"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "wait_seconds": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Wait Seconds",
+            "default": 30
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "method"
+        ],
+        "title": "VerificationConfig",
+        "description": "Verification config for a remediation action."
+      }
+    },
+    "securitySchemes": {
+      "HTTPBearer": {
+        "type": "http",
+        "scheme": "bearer"
+      }
+    }
+  }
+}

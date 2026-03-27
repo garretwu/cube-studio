@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import os
-from typing import Any
+from datetime import UTC, datetime
+from typing import Any, Awaitable, Callable
 from uuid import uuid4
 
 from langchain_openai import ChatOpenAI
@@ -23,6 +24,7 @@ from sre_agent.agent.nodes import (
     should_execute_selected_skill,
 )
 from sre_agent.agent.state import SREAgentState
+from sre_agent.models.events import EventType
 from sre_agent.skills import SkillExecutor, SkillPolicy, SkillRegistry
 from sre_agent.tools import ToolExecutionContext, ToolRegistry, build_default_registry
 
@@ -51,6 +53,100 @@ def build_default_llm_from_env() -> ChatOpenAI:
     return ChatOpenAI(**kwargs)
 
 
+TraceEventCallback = Callable[[dict[str, Any]], Awaitable[None]]
+
+
+def _to_iso_utc(value: Any) -> str:
+    if isinstance(value, str) and value.strip():
+        return value
+    if isinstance(value, datetime):
+        return value.astimezone(UTC).isoformat()
+    return datetime.now(UTC).isoformat()
+
+
+def _to_dict(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return dict(value)
+    return {}
+
+
+def _normalize_trace_item_event(*, session_id: str, item: dict[str, Any]) -> dict[str, Any] | None:
+    item_type = str(item.get("type", "")).strip().lower()
+    if item_type == "thought":
+        action = str(item.get("action", "tool_call")).strip().lower()
+        event_type = EventType.THINKING_STEP.value
+        if action == "tool_call":
+            event_type = EventType.TOOL_CALL.value
+        payload = {
+            "step": int(item.get("step", 1)),
+            "timestamp": _to_iso_utc(item.get("timestamp")),
+            "thought": str(item.get("content", "")).strip() or "diagnosis step",
+            "action_type": action if action in {"tool_call", "conclude", "remediate"} else "tool_call",
+            "tool_name": item.get("tool_name"),
+            "tool_params": _to_dict(item.get("tool_params")),
+            "confidence": item.get("confidence"),
+        }
+        return {
+            "type": event_type,
+            "session_id": session_id,
+            "data": payload,
+        }
+    if item_type == "observation":
+        payload = {
+            "tool": str(item.get("tool", "")).strip() or "unknown",
+            "params": _to_dict(item.get("params")),
+            "result": _to_dict(item.get("result")),
+            "timestamp": _to_iso_utc(item.get("timestamp")),
+        }
+        return {
+            "type": EventType.TOOL_RESULT.value,
+            "session_id": session_id,
+            "data": payload,
+        }
+    return None
+
+
+async def _safe_emit(trace_callback: TraceEventCallback | None, event: dict[str, Any] | None) -> None:
+    if trace_callback is None or event is None:
+        return
+    try:
+        await trace_callback(event)
+    except Exception:  # noqa: BLE001
+        # Streaming should not fail the diagnosis execution path.
+        return
+
+
+async def _emit_incremental_trace_events(
+    *,
+    trace_callback: TraceEventCallback | None,
+    previous_state: SREAgentState,
+    next_state: SREAgentState,
+) -> None:
+    if trace_callback is None:
+        return
+    session_id = str(next_state.get("session_id") or previous_state.get("session_id") or "").strip()
+    if not session_id:
+        return
+    previous_trace = list(previous_state.get("trace_items", []))
+    next_trace = list(next_state.get("trace_items", []))
+    start_index = len(previous_trace)
+    if start_index < 0 or start_index > len(next_trace):
+        start_index = 0
+    for item in next_trace[start_index:]:
+        normalized = _normalize_trace_item_event(session_id=session_id, item=_to_dict(item))
+        await _safe_emit(trace_callback, normalized)
+
+    if previous_state.get("diagnosis_result") is None and next_state.get("diagnosis_result") is not None:
+        await _safe_emit(
+            trace_callback,
+            {
+                "type": EventType.DIAGNOSIS_RESULT.value,
+                "session_id": session_id,
+                "data": _to_dict(next_state.get("diagnosis_result")),
+            },
+        )
+
+
 def create_sre_graph(
     *,
     llm: Any | None = None,
@@ -60,6 +156,7 @@ def create_sre_graph(
     skill_executor: SkillExecutor | None = None,
     tool_registry: ToolRegistry | None = None,
     tool_context: ToolExecutionContext | None = None,
+    trace_callback: TraceEventCallback | None = None,
 ) -> Any:
     runtime_llm = llm or build_default_llm_from_env()
     runtime_guardrails = guardrails or PassthroughGuardrails()
@@ -71,7 +168,13 @@ def create_sre_graph(
 
     async def _reason(state: SREAgentState) -> SREAgentState:
         try:
-            return await reason_node(state, llm=wrapped_llm, registry=tools)
+            next_state = await reason_node(state, llm=wrapped_llm, registry=tools)
+            await _emit_incremental_trace_events(
+                trace_callback=trace_callback,
+                previous_state=state,
+                next_state=next_state,
+            )
+            return next_state
         except asyncio.TimeoutError:
             return {
                 **state,
@@ -89,7 +192,13 @@ def create_sre_graph(
 
     async def _act(state: SREAgentState) -> SREAgentState:
         try:
-            return await act_node(state, registry=tools, context=tool_context)
+            next_state = await act_node(state, registry=tools, context=tool_context)
+            await _emit_incremental_trace_events(
+                trace_callback=trace_callback,
+                previous_state=state,
+                next_state=next_state,
+            )
+            return next_state
         except asyncio.TimeoutError:
             return {
                 **state,
@@ -178,6 +287,7 @@ async def run_diagnosis(
     max_steps: int = 6,
     checkpoint_dir: str | None = "./data/checkpoints/sre_agent",
     allowed_tool_names: list[str] | None = None,
+    trace_callback: TraceEventCallback | None = None,
 ) -> SREAgentState:
     active_session_id = session_id or uuid4().hex
     graph = create_sre_graph(
@@ -185,6 +295,7 @@ async def run_diagnosis(
         guardrails=guardrails,
         tool_registry=tool_registry,
         tool_context=context,
+        trace_callback=trace_callback,
     )
     initial_state = initialize_state(
         query=query,

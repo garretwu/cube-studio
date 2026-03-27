@@ -1,4 +1,5 @@
 import type { WSEvent } from "./types";
+import { WS_EVENT_TYPES } from "./generated/backend-contract";
 
 type ManagedWSOptions = {
   maxBufferedMessages?: number;
@@ -16,6 +17,7 @@ export class ManagedWebSocket {
   private closedManually = false;
   private inboundQueue: WSEvent[] = [];
   private flushTimer: number | null = null;
+  private lastEventId: string | null = null;
 
   constructor(url: string, options: ManagedWSOptions = {}) {
     this.url = url;
@@ -34,7 +36,7 @@ export class ManagedWebSocket {
     }
     this.closedManually = false;
     this.options.onStateChange("connecting");
-    this.socket = new WebSocket(this.url);
+    this.socket = new WebSocket(this.buildConnectUrl());
 
     this.socket.onopen = () => {
       this.reconnectAttempts = 0;
@@ -44,8 +46,16 @@ export class ManagedWebSocket {
     this.socket.onmessage = (message) => {
       try {
         const event = JSON.parse(message.data as string) as WSEvent;
+        if (!WS_EVENT_TYPES.includes(event.type)) {
+          console.warn("[ws] unknown event type from backend:", event.type);
+          return;
+        }
         if (this.inboundQueue.length >= this.options.maxBufferedMessages) {
           this.inboundQueue.shift();
+        }
+        const rawEventId = event.data?.event_id;
+        if (typeof rawEventId === "string" || typeof rawEventId === "number") {
+          this.lastEventId = String(rawEventId);
         }
         this.inboundQueue.push(event);
         this.scheduleFlush();
@@ -94,5 +104,19 @@ export class ManagedWebSocket {
     const timeout = Math.min(10000, this.options.reconnectBaseMs * 2 ** this.reconnectAttempts);
     this.reconnectAttempts += 1;
     window.setTimeout(() => this.connect(), timeout);
+  }
+
+  private buildConnectUrl(): string {
+    if (!this.lastEventId) {
+      return this.url;
+    }
+    try {
+      const parsed = new URL(this.url);
+      parsed.searchParams.set("last_event_id", this.lastEventId);
+      return parsed.toString();
+    } catch {
+      const separator = this.url.includes("?") ? "&" : "?";
+      return `${this.url}${separator}last_event_id=${encodeURIComponent(this.lastEventId)}`;
+    }
   }
 }

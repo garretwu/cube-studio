@@ -7,7 +7,7 @@ import logging
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Any, AsyncIterator, Protocol
+from typing import Any, AsyncIterator, Awaitable, Callable, Protocol
 
 from fastapi import FastAPI
 
@@ -30,11 +30,20 @@ LOGGER = logging.getLogger(__name__)
 
 
 class DiagnosisRunnerProtocol(Protocol):
-    async def adiagnose(self, alert: Alert) -> DiagnosisSession: ...
+    async def adiagnose(
+        self,
+        alert: Alert,
+        trace_callback: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
+    ) -> DiagnosisSession: ...
 
 
 class ReDiagnoseRunnerProtocol(Protocol):
-    async def re_diagnose(self, session: DiagnosisSession, context: dict[str, Any]) -> DiagnosisSession: ...
+    async def re_diagnose(
+        self,
+        session: DiagnosisSession,
+        context: dict[str, Any],
+        trace_callback: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
+    ) -> DiagnosisSession: ...
 
 
 class ChatHandlerProtocol(Protocol):
@@ -64,10 +73,11 @@ class InMemoryLoopStore:
 
 
 class InMemoryTracePublisher:
-    def __init__(self) -> None:
+    def __init__(self, *, max_events_per_session: int = 1000) -> None:
         self._events: dict[str, list[WSEvent]] = {}
         self._condition = asyncio.Condition()
         self._session_seq: dict[str, int] = {}
+        self._max_events_per_session = max(1, int(max_events_per_session))
 
     async def publish(self, event: dict[str, Any] | WSEvent) -> None:
         ws_event = event if isinstance(event, WSEvent) else WSEvent.model_validate(event)
@@ -78,7 +88,11 @@ class InMemoryTracePublisher:
             data["event_id"] = str(next_seq)
             ws_event = ws_event.model_copy(update={"data": data})
         async with self._condition:
-            self._events.setdefault(ws_event.session_id, []).append(ws_event)
+            events = self._events.setdefault(ws_event.session_id, [])
+            events.append(ws_event)
+            if len(events) > self._max_events_per_session:
+                overflow = len(events) - self._max_events_per_session
+                del events[:overflow]
             self._condition.notify_all()
 
     async def subscribe(self, session_id: str, after: str | None = None) -> AsyncIterator[WSEvent]:
@@ -90,7 +104,8 @@ class InMemoryTracePublisher:
                     index = pos + 1
                     break
             else:
-                index = len(events)
+                # Resume id may be evicted by retention/backpressure; replay available history.
+                index = 0
         while True:
             events = self._events.get(session_id, [])
             while index < len(events):
@@ -263,7 +278,12 @@ class AlertPollingService:
 
 
 class MissingDiagnosisRunner:
-    async def adiagnose(self, alert: Alert) -> DiagnosisSession:
+    async def adiagnose(
+        self,
+        alert: Alert,
+        trace_callback: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
+    ) -> DiagnosisSession:
+        _ = (alert, trace_callback)
         raise RuntimeError("diagnosis runner is not configured")
 
 
@@ -279,7 +299,11 @@ class DefaultDiagnosisRunner:
         self._tool_registry = tool_registry
         self._config = config
 
-    async def adiagnose(self, alert: Alert) -> DiagnosisSession:
+    async def adiagnose(
+        self,
+        alert: Alert,
+        trace_callback: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
+    ) -> DiagnosisSession:
         query = _build_default_query(alert)
         result = await run_diagnosis(
             query=query,
@@ -293,6 +317,7 @@ class DefaultDiagnosisRunner:
             },
             tool_registry=self._tool_registry,
             checkpoint_dir=None,
+            trace_callback=trace_callback,
         )
         return _diagnosis_session_from_state(alert=alert, state=result)
 
@@ -309,7 +334,12 @@ class DefaultReDiagnoseRunner:
         self._tool_registry = tool_registry
         self._config = config
 
-    async def re_diagnose(self, session: DiagnosisSession, context: dict[str, Any]) -> DiagnosisSession:
+    async def re_diagnose(
+        self,
+        session: DiagnosisSession,
+        context: dict[str, Any],
+        trace_callback: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
+    ) -> DiagnosisSession:
         alert = session.alert
         query = (
             f"{_build_default_query(alert)}\n\n"
@@ -331,6 +361,7 @@ class DefaultReDiagnoseRunner:
             tool_registry=self._tool_registry,
             session_id=session.session_id,
             checkpoint_dir=None,
+            trace_callback=trace_callback,
         )
         updated = _diagnosis_session_from_state(alert=alert, state=result)
         return updated.model_copy(update={"re_diagnosis_round": session.re_diagnosis_round + 1})
@@ -407,6 +438,14 @@ def _log_dependency_summary(
     used_default_re_diagnose_runner: bool,
 ) -> None:
     channels = sorted(context.channels.keys())
+    alert_mode = "degraded"
+    if "alert" in channels:
+        alert_mode = "real(injected_channel)"
+    elif (cfg.global_.alertmanager_url or "").strip():
+        alert_mode = "real(alertmanager_url)"
+    memory_mode = "real" if services.memory is not None else "degraded"
+    knowledge_mode = "real" if services.knowledge is not None else "degraded"
+    ws_retention = _resolve_ws_max_events_per_session(cfg)
     LOGGER.warning(
         "startup dependencies: aidc_id=%s auth_audience=%s diagnosis_runner=%s re_diagnose_runner=%s channels=%s memory_db=%s knowledge_db=%s",
         cfg.global_.aidc_id,
@@ -416,6 +455,13 @@ def _log_dependency_summary(
         channels if channels else ["none"],
         cfg.memory.db_dir,
         cfg.knowledge_base.persist_dir,
+    )
+    LOGGER.warning(
+        "runtime modes: alert=%s memory=%s knowledge=%s ws_max_events_per_session=%s",
+        alert_mode,
+        memory_mode,
+        knowledge_mode,
+        ws_retention,
     )
     LOGGER.debug("service wiring: diagnosis_runner=%s memory=%s knowledge=%s", bool(services.diagnosis_runner), bool(services.memory), bool(services.knowledge))
 
@@ -445,6 +491,20 @@ def _resolve_alert_poll_interval_seconds(cfg: SREAgentConfig) -> float:
             candidate = extras.get("alert_poll_interval_seconds")
     try:
         value = float(candidate)
+    except (TypeError, ValueError):
+        return default_value
+    return value if value > 0 else default_value
+
+
+def _resolve_ws_max_events_per_session(cfg: SREAgentConfig) -> int:
+    default_value = 1000
+    candidate = getattr(cfg.global_, "ws_max_events_per_session", None)
+    if candidate is None:
+        extras = getattr(cfg.global_, "model_extra", None)
+        if isinstance(extras, dict):
+            candidate = extras.get("ws_max_events_per_session")
+    try:
+        value = int(candidate)
     except (TypeError, ValueError):
         return default_value
     return value if value > 0 else default_value
@@ -543,7 +603,9 @@ def create_app(
     )
     session_store = InMemorySessionStore()
     loop_store = InMemoryLoopStore()
-    publisher = InMemoryTracePublisher()
+    publisher = InMemoryTracePublisher(
+        max_events_per_session=_resolve_ws_max_events_per_session(cfg),
+    )
     alert_store = InMemoryAlertStore()
     loop = LoopOrchestrator(
         engine,

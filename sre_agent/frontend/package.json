@@ -7,7 +7,9 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
-    "test": "vitest run"
+    "test": "vitest run",
+    "contract:sync": "python ../scripts/sync_frontend_contract.py",
+    "contract:check": "npm run contract:sync && git diff --exit-code -- src/api/generated/openapi.json src/api/generated/backend-contract.ts"
   },
   "dependencies": {
     "@fontsource/inter": "^5.2.8",

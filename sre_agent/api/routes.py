@@ -17,11 +17,12 @@ from sre_agent.auth.rbac import require_role
 from sre_agent.models.alert import Alert
 from sre_agent.models.common import ErrorCode, SREError, SREResponse
 from sre_agent.models.diagnosis import DiagnosisSession
-from sre_agent.models.events import WSEvent
-from sre_agent.models.memory import IncidentRecord, LearnedPattern
-from sre_agent.models.remediation import LoopResult, RemediationResult
+from sre_agent.models.events import EventType, WSEvent
+from sre_agent.models.memory import ConfigBaseline, IncidentRecord, LearnedPattern
+from sre_agent.models.remediation import LoopResult, RemediationPlan, RemediationResult
 from sre_agent.remediation.approval import ApprovalInput
 from sre_agent.remediation.engine import RollbackResult
+from sre_agent.skills import SkillRegistry
 
 
 class ChatMessage(BaseModel):
@@ -224,6 +225,103 @@ def build_api_router() -> APIRouter:
             return value
         return {"value": value}
 
+    async def _maybe_await(value: Any) -> Any:
+        if asyncio.iscoroutine(value):
+            return await value
+        return value
+
+    def _extract_recommended_fix(session: DiagnosisSession) -> RemediationPlan | None:
+        if session.diagnosis_result is None:
+            return None
+        if session.diagnosis_result.recommended_fix is not None:
+            return session.diagnosis_result.recommended_fix
+        for candidate in session.diagnosis_result.ranked_candidates:
+            if candidate.recommended_fix is not None:
+                return candidate.recommended_fix
+        return None
+
+    def _update_session_status(
+        services: Any,
+        *,
+        session: DiagnosisSession,
+        status: str,
+        outcome: str | None = None,
+    ) -> DiagnosisSession:
+        updates: dict[str, Any] = {"status": status}
+        if outcome is not None:
+            updates["outcome"] = outcome
+        updated = session.model_copy(update=updates)
+        services.session_store.put(updated)
+        return updated
+
+    async def _publish_remediation_progress(
+        services: Any,
+        *,
+        session_id: str,
+        stage: str,
+        details: dict[str, Any] | None = None,
+    ) -> None:
+        payload: dict[str, Any] = {"stage": stage}
+        if details:
+            payload.update(details)
+        await services.trace_publisher.publish(
+            {
+                "type": EventType.REMEDIATION_PROGRESS.value,
+                "session_id": session_id,
+                "data": payload,
+            }
+        )
+
+    def _normalize_knowledge_document(item: Any, *, index: int) -> dict[str, Any]:
+        source = ""
+        category = "general"
+        score: float | None = None
+        title = ""
+        excerpt = ""
+        tags: list[str] = []
+        metadata: dict[str, Any] = {}
+
+        if hasattr(item, "model_dump"):
+            payload = item.model_dump(mode="json")
+        elif isinstance(item, dict):
+            payload = item
+        else:
+            payload = {"content": str(item)}
+
+        if isinstance(payload.get("metadata"), dict):
+            metadata = payload["metadata"]
+
+        source = str(payload.get("source") or metadata.get("source") or "")
+        category = str(payload.get("category") or metadata.get("category") or "general")
+        title = str(payload.get("title") or metadata.get("title") or source or f"Document {index + 1}")
+        excerpt = str(payload.get("excerpt") or payload.get("content") or metadata.get("excerpt") or "")
+
+        raw_tags = payload.get("tags", metadata.get("tags", []))
+        if isinstance(raw_tags, list):
+            tags = [str(tag) for tag in raw_tags if str(tag).strip()]
+        elif isinstance(raw_tags, str):
+            tags = [segment.strip() for segment in raw_tags.split(",") if segment.strip()]
+
+        raw_score = payload.get("score")
+        if raw_score is not None:
+            try:
+                score = float(raw_score)
+            except (TypeError, ValueError):
+                score = None
+
+        doc_id = str(payload.get("id") or metadata.get("id") or f"{category}-{index + 1}")
+        result = {
+            "id": doc_id,
+            "title": title,
+            "source": source,
+            "category": category,
+            "excerpt": excerpt,
+            "tags": tags,
+        }
+        if score is not None:
+            result["score"] = score
+        return result
+
     @router.post("/diagnose")
     async def diagnose(
         alert: Alert,
@@ -234,6 +332,10 @@ def build_api_router() -> APIRouter:
         if services.diagnosis_runner is None:
             raise HTTPException(status_code=500, detail="diagnosis runner is not configured")
         session = await services.diagnosis_runner.adiagnose(alert)
+        plan = _extract_recommended_fix(session)
+        if plan is not None:
+            services.remediation_engine.register_plan(session.session_id, plan)
+            session = session.model_copy(update={"status": "approval_required"})
         services.session_store.put(session)
         return SREResponse(success=True, data=session, trace_id=_trace_id(request))
 
@@ -290,9 +392,106 @@ def build_api_router() -> APIRouter:
         user: CurrentUser = Depends(require_role("operator", "admin")),
     ) -> SREResponse[RemediationResult]:
         services = _services(request)
-        services.audit_logger.record(user, "approve", session_id=session_id, trace_id=_trace_id(request))
-        result = await services.remediation_engine.approve_and_execute(session_id, approval)
-        return SREResponse(success=result.success, data=result if result.success else None, error=None if result.success else SREError(code=ErrorCode.REMEDIATION_APPROVAL_DENIED, message=result.error or "approval denied"), trace_id=_trace_id(request))
+        trace_id = _trace_id(request)
+        services.audit_logger.record(user, "approve", session_id=session_id, trace_id=trace_id)
+        session = services.session_store.get(session_id)
+        if session is None:
+            return SREResponse(
+                success=False,
+                error=SREError(code=ErrorCode.VALIDATION_ERROR, message="session not found"),
+                trace_id=trace_id,
+            )
+        if session.status != "approval_required":
+            return SREResponse(
+                success=False,
+                error=SREError(
+                    code=ErrorCode.VALIDATION_ERROR,
+                    message=f"session {session_id} is not waiting for approval (status={session.status})",
+                ),
+                trace_id=trace_id,
+            )
+        if not approval.approved:
+            _update_session_status(services, session=session, status="rejected", outcome="rejected")
+            await _publish_remediation_progress(
+                services,
+                session_id=session_id,
+                stage="approval_rejected",
+                details={"user": approval.user, "reason": approval.reason or ""},
+            )
+            return SREResponse(
+                success=False,
+                error=SREError(
+                    code=ErrorCode.REMEDIATION_APPROVAL_DENIED,
+                    message=approval.reason or "approval denied",
+                ),
+                trace_id=trace_id,
+            )
+
+        _update_session_status(services, session=session, status="remediating")
+        await _publish_remediation_progress(
+            services,
+            session_id=session_id,
+            stage="execution_started",
+            details={"user": approval.user},
+        )
+        try:
+            result = await services.remediation_engine.approve_and_execute(session_id, approval)
+        except KeyError:
+            _update_session_status(services, session=session, status="failed", outcome="failed")
+            await _publish_remediation_progress(
+                services,
+                session_id=session_id,
+                stage="execution_failed",
+                details={"error": "remediation plan not found"},
+            )
+            return SREResponse(
+                success=False,
+                error=SREError(
+                    code=ErrorCode.REMEDIATION_PLAN_INVALID,
+                    message=f"remediation plan not found for session {session_id}",
+                ),
+                trace_id=trace_id,
+            )
+        except Exception as exc:  # noqa: BLE001
+            _update_session_status(services, session=session, status="failed", outcome="failed")
+            await _publish_remediation_progress(
+                services,
+                session_id=session_id,
+                stage="execution_failed",
+                details={"error": str(exc)},
+            )
+            return SREResponse(
+                success=False,
+                error=SREError(code=ErrorCode.REMEDIATION_EXECUTION_FAILED, message=str(exc)),
+                trace_id=trace_id,
+            )
+
+        if result.success:
+            _update_session_status(services, session=session, status="resolved", outcome="resolved")
+            await _publish_remediation_progress(
+                services,
+                session_id=session_id,
+                stage="execution_succeeded",
+                details={"plan_id": result.plan_id, "steps_completed": result.steps_completed},
+            )
+            return SREResponse(success=True, data=result, trace_id=trace_id)
+
+        _update_session_status(services, session=session, status="failed", outcome="failed")
+        await _publish_remediation_progress(
+            services,
+            session_id=session_id,
+            stage="execution_failed",
+            details={
+                "plan_id": result.plan_id,
+                "error": result.error or "execution failed",
+                "rolled_back": result.rolled_back,
+            },
+        )
+        return SREResponse(
+            success=False,
+            error=SREError(code=ErrorCode.REMEDIATION_EXECUTION_FAILED, message=result.error or "execution failed"),
+            trace_id=trace_id,
+        )
 
     @router.post("/remediate/{session_id}/rollback")
     async def rollback(
@@ -301,9 +500,57 @@ def build_api_router() -> APIRouter:
         user: CurrentUser = Depends(require_role("operator", "admin")),
     ) -> SREResponse[RollbackResult]:
         services = _services(request)
-        services.audit_logger.record(user, "rollback", session_id=session_id, trace_id=_trace_id(request))
-        result = await services.remediation_engine.rollback(session_id)
-        return SREResponse(success=result.success, data=result if result.success else None, error=None if result.success else SREError(code=ErrorCode.REMEDIATION_ROLLBACK_FAILED, message=result.error or "rollback failed"), trace_id=_trace_id(request))
+        trace_id = _trace_id(request)
+        services.audit_logger.record(user, "rollback", session_id=session_id, trace_id=trace_id)
+        session = services.session_store.get(session_id)
+        if session is None:
+            return SREResponse(
+                success=False,
+                error=SREError(code=ErrorCode.VALIDATION_ERROR, message="session not found"),
+                trace_id=trace_id,
+            )
+        await _publish_remediation_progress(
+            services,
+            session_id=session_id,
+            stage="rollback_started",
+            details={"user": user.username},
+        )
+        try:
+            result = await services.remediation_engine.rollback(session_id)
+        except Exception as exc:  # noqa: BLE001
+            await _publish_remediation_progress(
+                services,
+                session_id=session_id,
+                stage="rollback_failed",
+                details={"error": str(exc)},
+            )
+            return SREResponse(
+                success=False,
+                error=SREError(code=ErrorCode.REMEDIATION_ROLLBACK_FAILED, message=str(exc)),
+                trace_id=trace_id,
+            )
+        if result.success:
+            _update_session_status(services, session=session, status="failed", outcome="rolled_back")
+            await _publish_remediation_progress(
+                services,
+                session_id=session_id,
+                stage="rollback_succeeded",
+                details={"recovered_actions": len(result.recovered_actions)},
+            )
+            return SREResponse(success=True, data=result, trace_id=trace_id)
+
+        _update_session_status(services, session=session, status="failed", outcome="rollback_failed")
+        await _publish_remediation_progress(
+            services,
+            session_id=session_id,
+            stage="rollback_failed",
+            details={"error": result.error or "rollback failed"},
+        )
+        return SREResponse(
+            success=False,
+            error=SREError(code=ErrorCode.REMEDIATION_ROLLBACK_FAILED, message=result.error or "rollback failed"),
+            trace_id=trace_id,
+        )
 
     @router.get("/topology")
     async def get_topology_snapshot(
@@ -434,6 +681,27 @@ def build_api_router() -> APIRouter:
         patterns = await _services(request).memory.get_known_patterns()
         return SREResponse(success=True, data=patterns, trace_id=_trace_id(request))
 
+    @router.get("/memory/baseline")
+    async def get_memory_baseline(
+        request: Request,
+        user: CurrentUser = Depends(get_current_user),
+    ) -> SREResponse[dict[str, Any]]:
+        _ = user
+        services = _services(request)
+        memory = services.memory
+        baseline = None
+        if hasattr(memory, "get_config_baseline"):
+            baseline = await _maybe_await(memory.get_config_baseline(getattr(request.app.state.config.global_, "aidc_id", None)))
+        elif hasattr(memory, "get_baseline"):
+            baseline = await _maybe_await(memory.get_baseline(getattr(request.app.state.config.global_, "aidc_id", None)))
+
+        if baseline is None:
+            baseline = ConfigBaseline(aidc_id=request.app.state.config.global_.aidc_id)
+        payload = baseline.model_dump(mode="json") if hasattr(baseline, "model_dump") else baseline
+        if not isinstance(payload, dict):
+            payload = {"value": payload}
+        return SREResponse(success=True, data=payload, trace_id=_trace_id(request))
+
     @router.post("/chat")
     async def chat(
         message: ChatMessage,
@@ -460,6 +728,49 @@ def build_api_router() -> APIRouter:
         _ = user
         results = await _services(request).knowledge.search(query=query, category=category, top_k=top_k)
         payload = [item.model_dump(mode="json") if hasattr(item, "model_dump") else item for item in results]
+        return SREResponse(success=True, data=payload, trace_id=_trace_id(request))
+
+    @router.get("/knowledge/documents")
+    async def knowledge_documents(
+        request: Request,
+        user: CurrentUser = Depends(get_current_user),
+    ) -> SREResponse[list[dict[str, Any]]]:
+        _ = user
+        knowledge = _services(request).knowledge
+        if knowledge is None:
+            return SREResponse(success=True, data=[], trace_id=_trace_id(request))
+
+        documents: list[Any] = []
+        if hasattr(knowledge, "list_documents"):
+            documents = await _maybe_await(knowledge.list_documents())
+        elif hasattr(knowledge, "search"):
+            documents = await _maybe_await(knowledge.search(query="", top_k=50))
+
+        if not isinstance(documents, list):
+            documents = []
+        payload = [_normalize_knowledge_document(item, index=idx) for idx, item in enumerate(documents)]
+        return SREResponse(success=True, data=payload, trace_id=_trace_id(request))
+
+    @router.get("/skills")
+    async def list_skills(
+        request: Request,
+        user: CurrentUser = Depends(get_current_user),
+    ) -> SREResponse[list[dict[str, Any]]]:
+        _ = user
+        registry = SkillRegistry()
+        skills = registry.discover()
+        payload = [
+            {
+                "id": item.id,
+                "name": item.name,
+                "scope": item.scope,
+                "summary": item.summary,
+                "source": item.source,
+                "permissions": item.permissions,
+                "match_score": item.match_score,
+            }
+            for item in skills
+        ]
         return SREResponse(success=True, data=payload, trace_id=_trace_id(request))
 
     return router

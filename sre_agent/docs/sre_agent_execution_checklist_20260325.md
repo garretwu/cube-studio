@@ -30,7 +30,7 @@
 
 | 任务 | 负责人 | 依赖 | 验收命令 | 状态 |
 |---|---|---|---|---|
-| 启动后端（真实模式） | Backend | serve 命令、JWT、channels | `python -m sre_agent serve --config config.yaml` | TODO |
+| 启动后端（真实模式） | Backend | serve 命令、JWT、channels | `python -m sre_agent serve --config config.lab.yaml` | TODO |
 | 启动前端（关闭 MSW） | Frontend | Vite proxy、API token | `VITE_USE_MSW=false npm --prefix sre_agent/frontend run dev` | TODO |
 | 验证 `/api/alerts` 实时告警可见 | QA | Alertmanager 可达 | 浏览器 + curl | TODO |
 | 验证 `handle -> sessions -> loop` 全链路 | QA | P0 完成 | API 调用 + 页面联动 | TODO |
@@ -100,9 +100,31 @@
 | `/ws/alerts` 广播与 `last_event_id` | DONE | `/ws/alerts` 支持 `last_event_id` 续传，新增 e2e 测试覆盖 | `pytest sre_agent/tests/test_api.py -q` | `sre_agent/api/websocket.py` |
 | thinking-trace 事件序列完整性增强 | DONE | `IncidentHandler` 新增 `alert/tool_call/tool_result/diagnosis_result/approval_required/done/error` 事件发布 | `pytest sre_agent/tests/test_api.py -q` | `sre_agent/remediation/incident_handler.py` |
 | WS 实时续传基础能力 | DONE | `trace_publisher` 升级为增量事件流（自动 event_id + 持续订阅） | `pytest sre_agent/tests/test_api.py -q` | `sre_agent/server.py` |
-| 真实 Alertmanager 后台拉取服务 | IN_PROGRESS | 本轮完成 API/WS 契约与事件链路；后台轮询拉取仍待接入真实 AlertChannel | N/A | `sre_agent/docs/sre_agent_gap_and_implementation_plan_20260325.md` |
+| 真实 Alertmanager 后台拉取服务 | DONE* | `AlertPollingService` 已接入 `create_app` 生命周期并支持真实 `AlertChannel`；剩余问题为默认配置未绑定真实源 | `pytest sre_agent/tests/test_api.py -q` | `sre_agent/server.py` |
 
 ### Wave 3 测试结论
-- 后端：`pytest sre_agent/tests/test_api.py -q` 通过（15 passed）。
-- 前端：`npm --prefix sre_agent/frontend run test` 通过（4 passed）。
+- 后端：`pytest sre_agent/tests/test_api.py -q` 通过（25 passed）。
+- 前端：`npm --prefix sre_agent/frontend run test -- --run` 通过（5 files, 11 passed）。
 - Agent 回归：`python sre_agent/scripts/Agent_demo.py --config-json sre_agent/scripts/agent_demo_test.json` 通过，基线已更新。
+
+### Wave 3 运行时约束（新增）
+- 真实告警联调必须使用包含 `global.alertmanager_url` 的配置启动后端：
+  - `config.lab.yaml` 或 `config.lab.test.yaml`
+  - 示例：`python -m sre_agent serve --config config.lab.yaml --host 127.0.0.1 --port 8000`
+
+## Wave 4 实施更新（2026-03-27）
+| 任务 | 状态 | 实施结果 | 验证命令 | 证据 |
+|---|---|---|---|---|
+| 审批会话状态机严格校验 | DONE | `/api/remediate/{id}/approve` 仅允许 `approval_required` 会话；重复审批/终态审批返回 `VALIDATION_ERROR` | `pytest sre_agent/tests/test_api.py -q` | `sre_agent/api/routes.py` |
+| 审批异常映射收敛 | DONE | plan 缺失返回 `REM_PLAN_INVALID`，执行异常返回 `REM_EXEC_FAILED`，避免 500 裸异常 | `pytest sre_agent/tests/test_api.py -q` | `sre_agent/api/routes.py` |
+| 修复阶段事件补齐 | DONE | 增加 `remediation_progress` 阶段事件：执行开始/成功/失败、回滚开始/成功/失败 | `pytest sre_agent/tests/test_api.py -q` | `sre_agent/api/routes.py` |
+| rollback API E2E 覆盖 | DONE | 新增 `/api/remediate/{id}/rollback` 成功与未知会话错误路径测试 | `pytest sre_agent/tests/test_api.py -q` | `sre_agent/tests/test_api.py` |
+
+### Wave 4 测试结论
+- `pytest sre_agent/tests/test_server_default_runner.py -q`：2 passed
+- `pytest sre_agent/tests/test_cli_serve.py -q`：1 passed
+- `pytest sre_agent/tests/test_loop_orchestrator.py -q`：6 passed
+- `pytest sre_agent/tests/test_api.py -q`：25 passed
+- `pytest sre_agent/tests/test_remediation.py -q`：7 passed
+- `npm --prefix sre_agent/frontend run test -- --run`：5 files, 11 passed
+- `npm --prefix sre_agent/frontend run build`：通过

@@ -310,12 +310,77 @@
    - `approval_required`
    - `done/error`
 
-### 未完成项（仍属 Wave 3）
-1. 真实 Alertmanager 后台轮询拉取服务（`AlertChannel` 定时抓取并写入 alert store）尚未接入。
+### 状态结论（更新）
+1. Wave 3 代码能力已完成：`AlertPollingService` 已接入 `create_app` 生命周期，并支持 `AlertChannel` 后台轮询写入 `alert_store` 与 `/ws/alerts` 广播。
+2. 当前剩余问题转为运行时配置约束：默认 `config.yaml` 不含 `global.alertmanager_url`，若直接按默认配置启动，前端实时告警可能显示 `no data`。
+3. 真实联调必须使用：
+   - `python -m sre_agent serve --config config.lab.yaml ...`
+   - 或 `python -m sre_agent serve --config config.lab.test.yaml ...`
 
 ### 回归结果
-1. `pytest sre_agent/tests/test_api.py -q`：通过（15 passed）。
-2. `npm --prefix sre_agent/frontend run test`：通过（4 passed）。
+1. `pytest sre_agent/tests/test_api.py -q`：通过（25 passed）。
+2. `npm --prefix sre_agent/frontend run test -- --run`：通过（5 files, 11 passed）。
 3. Agent 回归：
    - `python sre_agent/scripts/Agent_demo.py --config-json sre_agent/scripts/agent_demo_test.json`
    - 通过，基线已更新为 `sre_agent/scripts/agent_demo_test_result.json`。
+
+## 14. Wave 4 执行记录（2026-03-27）
+### 已完成项
+1. 审批状态机约束（session + 当前状态）：
+   - `POST /api/remediate/{session_id}/approve` 仅允许 `status=approval_required` 的会话执行。
+   - 重复审批或终态审批返回 `VALIDATION_ERROR`，不再走未定义行为。
+2. 审批/修复异常映射收敛：
+   - 未注册修复计划：返回 `REM_PLAN_INVALID`（避免 KeyError 导致 500）。
+   - 执行异常：返回 `REM_EXEC_FAILED`。
+3. 修复阶段事件补齐（WS）：
+   - 统一发布 `remediation_progress`，覆盖 `execution_started/execution_succeeded/execution_failed/rollback_started/rollback_succeeded/rollback_failed`。
+4. 回滚路由补齐状态校验与事件回传：
+   - `POST /api/remediate/{session_id}/rollback` 对未知会话返回 `VALIDATION_ERROR`。
+   - 回滚结果与事件可追踪。
+
+### 新增 Gap（Wave 4 后续）
+1. 真实环境 E2E 证据仍需补全（截图、请求日志、WS 事件样本归档）。
+2. Wave 5 量化门槛（P95、可追溯率）尚未执行正式验收。
+
+### 回归结果
+1. `pytest sre_agent/tests/test_server_default_runner.py -q`：通过（2 passed）。
+2. `pytest sre_agent/tests/test_cli_serve.py -q`：通过（1 passed）。
+3. `pytest sre_agent/tests/test_loop_orchestrator.py -q`：通过（6 passed）。
+4. `pytest sre_agent/tests/test_api.py -q`：通过（25 passed）。
+5. `pytest sre_agent/tests/test_remediation.py -q`：通过（7 passed）。
+6. `npm --prefix sre_agent/frontend run test -- --run`：通过（5 files, 11 passed）。
+7. `npm --prefix sre_agent/frontend run build`：通过。
+
+## 15. Wave 5 执行记录（2026-03-27）
+### 已完成项
+1. 启动依赖状态可观测增强：
+   - 启动日志新增 `runtime modes` 摘要，明确 `alert/memory/knowledge` 的真实或降级模式。
+   - 启动日志新增 `ws_max_events_per_session` 运行参数回显。
+2. WS 重连与背压策略补齐：
+   - 后端 `InMemoryTracePublisher` 增加每会话事件保留上限，防止无界增长。
+   - 续传 ID 被淘汰时，改为“从可用历史起点重放”，避免断流。
+   - 前端 `ManagedWebSocket` 新增 `last_event_id` 自动续传重连能力。
+3. 前端缺失能力页降级策略：
+   - `Knowledge/Memory/Skills` 页面新增接口失败降级文案与空态回退。
+4. 证据归档自动化：
+   - 新增 `sre_agent/scripts/archive_wave_evidence.py`，可自动创建标准 evidence 目录并采集命令日志。
+   - 已生成样例归档：
+     - `sre_agent/docs/evidence/20260327-wave5-local`
+     - `sre_agent/docs/evidence/20260327-wave5-local-smoke`
+
+### 测试结果
+1. `pytest sre_agent/tests/test_server_default_runner.py -q`：2 passed
+2. `pytest sre_agent/tests/test_cli_serve.py -q`：1 passed
+3. `pytest sre_agent/tests/test_loop_orchestrator.py -q`：6 passed
+4. `pytest sre_agent/tests/test_auth.py -q`：6 passed
+5. `pytest sre_agent/tests/test_api.py -q`：26 passed
+6. `pytest sre_agent/tests/test_remediation.py -q`：7 passed
+7. `npm --prefix sre_agent/frontend run test -- --run`：6 files, 13 passed
+8. `npm --prefix sre_agent/frontend run build`：通过
+
+### Wave 5 后剩余 Gap
+1. 默认 `config.yaml` 仍未绑定 `global.alertmanager_url`，默认启动链路下实时告警仍可能 `no data`。
+2. Lab 真实环境下“并发审批/跨会话审批”演练证据尚未归档。
+3. `remediation_progress` 阶段事件虽已发布，前端时间线的阶段语义展示仍未完成专项验收。
+4. 回滚链路已有 API 级 E2E，但真实集群回滚演练证据仍缺。
+5. Wave 5 量化门槛（P95、重连成功率、事件缺失率）尚未完成正式统计验收。

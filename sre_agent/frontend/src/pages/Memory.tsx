@@ -11,15 +11,27 @@ function MemoryPage() {
   const [incidents, setIncidents] = useState<IncidentRecord[]>([]);
   const [patterns, setPatterns] = useState<LearnedPattern[]>([]);
   const [baseline, setBaseline] = useState<ConfigBaseline | null>(null);
+  const [error, setError] = useState("");
 
   useEffect(() => {
-    void Promise.all([apiClient.getMemoryIncidents(), apiClient.getMemoryPatterns(), apiClient.getMemoryBaseline()]).then(
-      ([loadedIncidents, loadedPatterns, loadedBaseline]) => {
+    void (async () => {
+      setError("");
+      try {
+        const [loadedIncidents, loadedPatterns, loadedBaseline] = await Promise.all([
+          apiClient.getMemoryIncidents(),
+          apiClient.getMemoryPatterns(),
+          apiClient.getMemoryBaseline(),
+        ]);
         setIncidents(loadedIncidents);
         setPatterns(loadedPatterns);
         setBaseline(loadedBaseline);
-      },
-    );
+      } catch (err) {
+        setError(`记忆接口暂不可用，已降级展示。${err instanceof Error ? ` (${err.message})` : ""}`);
+        setIncidents([]);
+        setPatterns([]);
+        setBaseline(null);
+      }
+    })();
   }, []);
 
   return (
@@ -33,6 +45,11 @@ function MemoryPage() {
       </div>
 
       <SurfaceCard description="已沉淀的历史事件记忆与先验经验。" title="已沉淀上下文">
+        {error ? (
+          <div className="mini-card">
+            <p className="mini-card__copy">{error}</p>
+          </div>
+        ) : null}
         <Tabs
           className="app-tabs"
           items={[

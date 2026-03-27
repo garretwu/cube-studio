@@ -180,7 +180,9 @@ class DiagnosisSession(StrictFrozenModel):
     status: Literal[
         "diagnosing",
         "diagnosed",
+        "approval_required",
         "remediating",
+        "rejected",
         "re_diagnosed",
         "resolved",
         "failed",

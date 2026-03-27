@@ -9,19 +9,14 @@ import { appTheme } from "./theme/antdTheme";
 import { ensureThemeVariables } from "./theme/tokens";
 
 async function enableMocks() {
-<<<<<<< HEAD
-  if (import.meta.env.DEV && import.meta.env.VITE_USE_MSW === "true") {
+  if (!import.meta.env.DEV || import.meta.env.VITE_USE_MSW !== "true") {
+    return;
+  }
+  try {
     const { worker } = await import("./mocks/browser");
     await worker.start({ onUnhandledRequest: "bypass" });
-=======
-  if (import.meta.env.DEV && import.meta.env.VITE_USE_MSW !== "false") {
-    try {
-      const { worker } = await import("./mocks/browser");
-      await worker.start({ onUnhandledRequest: "bypass" });
-    } catch (error) {
-      console.warn("MSW 启动失败，已跳过浏览器 Mock。", error);
-    }
->>>>>>> dd3aadbc (feat(frontend): redesign auto-sre console ui)
+  } catch (error) {
+    console.warn("Failed to start MSW, continue with real backend.", error);
   }
 }
 

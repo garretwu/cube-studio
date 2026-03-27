@@ -1,17 +1,8 @@
+import type { WSEventType } from "./generated/backend-contract";
+
 export type Severity = "critical" | "warning" | "info";
 export type AlertStatus = "firing" | "resolved" | "silenced";
-export type EventType =
-  | "thinking_step"
-  | "tool_call"
-  | "tool_result"
-  | "diagnosis_result"
-  | "approval_required"
-  | "loop_start"
-  | "loop_progress"
-  | "remediation_progress"
-  | "alert"
-  | "error"
-  | "done";
+export type EventType = WSEventType;
 
 export type Alert = {
   alert_name: string;
