@@ -11,6 +11,7 @@ from typing import Any, AsyncIterator, Protocol
 
 from fastapi import FastAPI
 
+from lib.channels.alert import AlertChannel
 from sre_agent.agent import run_diagnosis
 from sre_agent.api import build_api_router, build_websocket_router, install_middlewares
 from sre_agent.api.routes import AuditLogger
@@ -20,7 +21,7 @@ from sre_agent.concurrency import AlertCorrelator, AlertDeduplicator, ResourceLo
 from sre_agent.memory.factory import create_memory_store
 from sre_agent.models.alert import Alert, AlertSeverity
 from sre_agent.models.diagnosis import DiagnosisSession
-from sre_agent.models.events import WSEvent
+from sre_agent.models.events import EventType, WSEvent
 from sre_agent.ontology.graph import OntologyGraph
 from sre_agent.remediation import ApprovalGate, IncidentHandler, LoopConfig, LoopOrchestrator, PlanValidator, RemediationEngine, RollbackJournal
 from sre_agent.tools import ToolExecutionContext, build_default_registry
@@ -110,6 +111,18 @@ class InMemoryAlertStore:
         if len(self._alerts) > self._max_items:
             self._alerts = self._alerts[: self._max_items]
 
+    def replace(self, alerts: list[Alert]) -> None:
+        seen: set[str] = set()
+        ordered: list[Alert] = []
+        for alert in sorted(alerts, key=lambda item: item.starts_at, reverse=True):
+            if alert.fingerprint in seen:
+                continue
+            seen.add(alert.fingerprint)
+            ordered.append(alert)
+            if len(ordered) >= self._max_items:
+                break
+        self._alerts = ordered
+
     def snapshot(self) -> dict[str, Any]:
         severity_rank = {
             AlertSeverity.CRITICAL.value: 3,
@@ -141,6 +154,112 @@ class InMemoryAlertStore:
                 }
             )
         return {"alerts": alerts_payload, "clusters": clusters}
+
+
+class AlertChannelProtocol(Protocol):
+    async def connect(self) -> bool: ...
+    async def disconnect(self) -> bool: ...
+    async def get_firing_alerts(self, filter_labels: dict[str, str] | None = None) -> list[Alert]: ...
+
+
+class AlertPollingService:
+    def __init__(
+        self,
+        *,
+        channel: AlertChannelProtocol,
+        alert_store: InMemoryAlertStore,
+        trace_publisher: InMemoryTracePublisher,
+        poll_interval_seconds: float = 5.0,
+    ) -> None:
+        self._channel = channel
+        self._alert_store = alert_store
+        self._trace_publisher = trace_publisher
+        self._poll_interval_seconds = max(0.2, float(poll_interval_seconds))
+        self._stop_event = asyncio.Event()
+        self._task: asyncio.Task[None] | None = None
+        self._last_versions: dict[str, str] = {}
+
+    async def start(self) -> None:
+        if self._task is not None and not self._task.done():
+            return
+        self._stop_event.clear()
+        self._task = asyncio.create_task(self._run(), name="sre-alert-poller")
+
+    async def stop(self) -> None:
+        self._stop_event.set()
+        if self._task is None:
+            return
+        self._task.cancel()
+        try:
+            await self._task
+        except asyncio.CancelledError:
+            pass
+        self._task = None
+
+    async def _run(self) -> None:
+        try:
+            try:
+                await self._channel.connect()
+            except Exception as exc:  # noqa: BLE001
+                LOGGER.warning("alert poller failed to connect to alert source: %s", exc)
+            while not self._stop_event.is_set():
+                try:
+                    alerts = await self._channel.get_firing_alerts()
+                    self._alert_store.replace(alerts)
+                    await self._publish_changes(alerts)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:  # noqa: BLE001
+                    LOGGER.warning("alert poller cycle failed: %s", exc)
+                try:
+                    await asyncio.wait_for(self._stop_event.wait(), timeout=self._poll_interval_seconds)
+                except TimeoutError:
+                    continue
+        finally:
+            try:
+                await self._channel.disconnect()
+            except Exception as exc:  # noqa: BLE001
+                LOGGER.warning("alert poller disconnect failed: %s", exc)
+
+    async def _publish_changes(self, alerts: list[Alert]) -> None:
+        current_versions = {alert.fingerprint: self._version(alert) for alert in alerts}
+        alerts_by_fingerprint = {alert.fingerprint: alert for alert in alerts}
+
+        for fingerprint, version in current_versions.items():
+            if self._last_versions.get(fingerprint) == version:
+                continue
+            alert = alerts_by_fingerprint[fingerprint]
+            await self._trace_publisher.publish(
+                {
+                    "type": EventType.ALERT.value,
+                    "session_id": "alerts",
+                    "data": {
+                        "action": "upsert",
+                        "fingerprint": alert.fingerprint,
+                        "status": alert.status.value,
+                        "alert": alert.model_dump(mode="json"),
+                    },
+                }
+            )
+
+        removed = set(self._last_versions) - set(current_versions)
+        for fingerprint in removed:
+            await self._trace_publisher.publish(
+                {
+                    "type": EventType.ALERT.value,
+                    "session_id": "alerts",
+                    "data": {
+                        "action": "remove",
+                        "fingerprint": fingerprint,
+                        "status": "resolved",
+                    },
+                }
+            )
+        self._last_versions = current_versions
+
+    @staticmethod
+    def _version(alert: Alert) -> str:
+        return alert.model_dump_json()
 
 
 class MissingDiagnosisRunner:
@@ -317,6 +436,49 @@ class AgentCServices:
     chat_handler: ChatHandlerProtocol | None = None
 
 
+def _resolve_alert_poll_interval_seconds(cfg: SREAgentConfig) -> float:
+    default_value = 5.0
+    candidate = getattr(cfg.global_, "alert_poll_interval_seconds", None)
+    if candidate is None:
+        extras = getattr(cfg.global_, "model_extra", None)
+        if isinstance(extras, dict):
+            candidate = extras.get("alert_poll_interval_seconds")
+    try:
+        value = float(candidate)
+    except (TypeError, ValueError):
+        return default_value
+    return value if value > 0 else default_value
+
+
+def _build_alert_polling_service(
+    *,
+    cfg: SREAgentConfig,
+    execution_context: ToolExecutionContext,
+    alert_store: InMemoryAlertStore,
+    trace_publisher: InMemoryTracePublisher,
+) -> AlertPollingService | None:
+    channel = execution_context.channels.get("alert")
+    if channel is None:
+        alertmanager_url = (cfg.global_.alertmanager_url or "").strip()
+        if not alertmanager_url:
+            LOGGER.info("alert poller disabled: no alert channel injected and global.alertmanager_url is empty")
+            return None
+        channel = AlertChannel(
+            alertmanager_url=alertmanager_url,
+            prometheus_url=(cfg.global_.prometheus_url or "").strip(),
+        )
+    if not all(hasattr(channel, method) for method in ("connect", "disconnect", "get_firing_alerts")):
+        LOGGER.warning("alert poller disabled: alert channel does not implement required methods")
+        return None
+    interval = _resolve_alert_poll_interval_seconds(cfg)
+    return AlertPollingService(
+        channel=channel,
+        alert_store=alert_store,
+        trace_publisher=trace_publisher,
+        poll_interval_seconds=interval,
+    )
+
+
 def create_app(
     *,
     config: SREAgentConfig | None = None,
@@ -422,6 +584,12 @@ def create_app(
         audit_logger=AuditLogger(),
         chat_handler=chat_handler,
     )
+    alert_polling_service = _build_alert_polling_service(
+        cfg=cfg,
+        execution_context=context,
+        alert_store=alert_store,
+        trace_publisher=publisher,
+    )
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
@@ -429,9 +597,13 @@ def create_app(
             await ontology_graph.connect()
         if created_memory and hasattr(memory_store, "connect"):
             await memory_store.connect()
+        if alert_polling_service is not None:
+            await alert_polling_service.start()
         try:
             yield
         finally:
+            if alert_polling_service is not None:
+                await alert_polling_service.stop()
             if created_memory and hasattr(memory_store, "close"):
                 await memory_store.close()
             if created_ontology:

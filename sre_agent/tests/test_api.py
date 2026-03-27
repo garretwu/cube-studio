@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -71,6 +72,24 @@ class _FakeMemory:
 
     async def get_known_patterns(self):  # noqa: ANN201
         return []
+
+
+class _FakeAlertChannel:
+    def __init__(self, alerts: list[Alert]) -> None:
+        self._alerts = alerts
+        self.connected = False
+
+    async def connect(self) -> bool:
+        self.connected = True
+        return True
+
+    async def disconnect(self) -> bool:
+        self.connected = False
+        return True
+
+    async def get_firing_alerts(self, filter_labels: dict[str, str] | None = None) -> list[Alert]:
+        _ = filter_labels
+        return list(self._alerts)
 
 
 class _FakeOntologyNoRefresh:
@@ -373,6 +392,45 @@ class TestAPIE2E:
 
         assert payload["type"] == "alert"
         assert payload["data"]["fingerprint"] == "a2"
+
+    def test_e2e_alert_poller_syncs_alertmanager_alerts_to_snapshot_and_ws(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        monkeypatch.setenv("JWT_SECRET", "secret")
+        settings = resolve_jwt_settings()
+        token = encode_token(CurrentUser(user_id="u1", username="alice", role="operator"), settings)
+        registry, context = _registry()
+        fake_alert = Alert.model_validate(_alert_payload())
+        fake_channel = _FakeAlertChannel([fake_alert])
+        context.channels["alert"] = fake_channel
+        config = SREAgentConfig.model_validate(
+            {
+                "global": {"aidc_id": "test-aidc", "alert_poll_interval_seconds": 0.2},
+                "ontology": {"db_path": str(tmp_path / "ontology.db")},
+                "memory": {"db_dir": str(tmp_path / "memory")},
+            }
+        )
+        with TestClient(
+            create_app(
+                config=config,
+                diagnosis_runner=_FakeDiagnosisRunner(),
+                ontology=OntologyGraph(),
+                memory=_FakeMemory(),
+                knowledge=_FakeKnowledge(),
+                tool_registry=registry,
+                execution_context=context,
+            )
+        ) as client:
+            snapshot = None
+            for _ in range(20):
+                response = client.get("/api/alerts", headers=_auth_headers(token))
+                if response.status_code == 200 and response.json().get("data", {}).get("alerts"):
+                    snapshot = response.json()
+                    break
+                time.sleep(0.1)
+            assert snapshot is not None
+            assert snapshot["success"] is True
+            assert snapshot["data"]["alerts"][0]["fingerprint"] == "fp-api-1"
+            assert fake_channel.connected is True
+        assert fake_channel.connected is False
 
     def test_e2e_startup_loads_persisted_ontology_when_app_creates_internal_graph(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         monkeypatch.setenv("JWT_SECRET", "secret")

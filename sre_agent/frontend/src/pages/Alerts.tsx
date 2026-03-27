@@ -1,9 +1,11 @@
-import { useEffect, useMemo } from "react";
+import { useCallback, useEffect, useMemo } from "react";
 import { Card, Col, Input, Row, Select, Space, Tag, Typography } from "antd";
 import { useNavigate } from "react-router-dom";
 
 import AlertTable from "../components/AlertTable";
 import { apiClient } from "../api/client";
+import type { WSEvent } from "../api/types";
+import { useWebSocket } from "../hooks/useWebSocket";
 import { useAlertStore } from "../store/alertStore";
 
 function AlertsPage() {
@@ -13,6 +15,21 @@ function AlertsPage() {
   useEffect(() => {
     void fetchAlerts();
   }, [fetchAlerts]);
+
+  const wsToken = import.meta.env.VITE_API_TOKEN ?? "";
+  const wsEnabled = import.meta.env.VITE_WS_ENABLED === "true";
+  const alertsWsUrl = `${window.location.origin.replace(/^http/, "ws")}/ws/alerts?token=${encodeURIComponent(wsToken)}`;
+  const handleAlertsEvent = useCallback(
+    (event: WSEvent) => {
+      if (event.type === "alert") {
+        void fetchAlerts();
+      }
+    },
+    [fetchAlerts],
+  );
+  const ws = useWebSocket(alertsWsUrl, handleAlertsEvent, {
+    enabled: wsEnabled && Boolean(wsToken),
+  });
 
   const filtered = useMemo(
     () => alerts.filter((alert) => severityFilter === "all" || alert.severity === severityFilter),
@@ -46,6 +63,9 @@ function AlertsPage() {
             <Col xs={24} md={8}>
               <Tag color="red" style={{ padding: "10px 12px" }}>
                 {filtered.length} active candidates
+              </Tag>
+              <Tag color={ws.state === "open" ? "green" : "blue"} style={{ marginInlineStart: 8, padding: "10px 12px" }}>
+                WS {ws.state}
               </Tag>
             </Col>
           </Row>

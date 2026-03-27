@@ -12,12 +12,16 @@ type AlertState = {
   setSeverityFilter: (value: Severity | "all") => void;
 };
 
-export const useAlertStore = create<AlertState>((set) => ({
+export const useAlertStore = create<AlertState>((set, get) => ({
   alerts: [],
   clusters: [],
   severityFilter: "all",
   isLoading: false,
   fetchAlerts: async () => {
+    const current = get();
+    if (current.isLoading) {
+      return;
+    }
     set({ isLoading: true });
     const response = await apiClient.getAlerts();
     set({ alerts: response.alerts, clusters: response.clusters, isLoading: false });

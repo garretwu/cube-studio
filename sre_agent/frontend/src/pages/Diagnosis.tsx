@@ -19,11 +19,13 @@ function DiagnosisPage() {
     void fetchSession(sessionId);
   }, [fetchSession, sessionId, setSessionId]);
 
+  const wsToken = import.meta.env.VITE_API_TOKEN ?? "";
+  const wsUrl = `${window.location.origin.replace(/^http/, "ws")}/ws/thinking-trace/${session?.session_id ?? "pending"}?token=${encodeURIComponent(wsToken)}`;
   const ws = useWebSocket(
-    `${window.location.origin.replace(/^http/, "ws")}/ws/thinking-trace/${session?.session_id ?? "pending"}`,
+    wsUrl,
     applyEvent,
     {
-      enabled: import.meta.env.VITE_WS_ENABLED === "true" && Boolean(session?.session_id),
+      enabled: import.meta.env.VITE_WS_ENABLED === "true" && Boolean(session?.session_id) && Boolean(wsToken),
     },
   );
 
