@@ -165,4 +165,29 @@ describe("apiClient.getTopology", () => {
     expect(sessions).toHaveLength(1);
     expect(sessions[0]?.session_id).toBe("sess-2");
   });
+
+  it("loads chat history from /api/chat/history", async () => {
+    server.use(
+      http.get("/api/chat/history", async () =>
+        HttpResponse.json({
+          success: true,
+          data: [
+            {
+              id: "chat-1",
+              role: "assistant",
+              content: "hello",
+              created_at: "2026-03-26T00:00:00Z",
+            },
+          ],
+          error: null,
+          trace_id: "trace-chat-history",
+          timestamp: "2026-03-26T00:00:00Z",
+        }),
+      ),
+    );
+
+    const history = await apiClient.getChatHistory();
+    expect(history).toHaveLength(1);
+    expect(history[0]?.id).toBe("chat-1");
+  });
 });

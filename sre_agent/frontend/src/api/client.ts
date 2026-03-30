@@ -38,7 +38,18 @@ api.interceptors.request.use((config) => {
 api.interceptors.response.use(
   (response) => response,
   (error) => {
-    const message = error instanceof Error ? error.message : "未知请求错误";
+    let message = error instanceof Error ? error.message : "Unknown request error";
+    if (axios.isAxiosError(error)) {
+      const code = error.code ?? "";
+      if (code === "ERR_NETWORK") {
+        message =
+          "Network/CORS error: backend unreachable or blocked by browser policy. Check backend status, VITE_API_BASE_URL, and CORS.";
+      } else if (error.response?.status === 401) {
+        message = "Unauthorized: invalid or expired bearer token.";
+      } else if (error.response?.status) {
+        message = `Request failed with status ${error.response.status}.`;
+      }
+    }
     return Promise.reject(new Error(message));
   },
 );
@@ -162,6 +173,10 @@ export const apiClient = {
     };
     return reply;
   },
+  getChatHistory: async () => {
+    const response = await api.get<SREApiEnvelope<ChatMessage[]> | ChatMessage[]>("/api/chat/history");
+    return unwrapPayload(response.data);
+  },
   searchKnowledge: async (query: string, category?: string) => {
     const response = await api.get<SREApiEnvelope<KnowledgeDocument[]> | { results: KnowledgeDocument[] }>("/api/knowledge/search", {
       params: { query, category },
@@ -195,3 +210,4 @@ export const apiClient = {
     return unwrapPayload(response.data);
   },
 };
+

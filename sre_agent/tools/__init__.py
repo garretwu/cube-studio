@@ -1,5 +1,6 @@
 """Tool registry and handlers for SRE agent integration."""
 
+from sre_agent.tools.definitions import list_tool_definitions, list_tool_names
 from sre_agent.tools.registry import (
     SafetyLevel,
     ToolDefinition,
@@ -26,4 +27,6 @@ __all__ = [
     "ToolApprovalRequiredError",
     "ToolValidationError",
     "build_default_registry",
+    "list_tool_definitions",
+    "list_tool_names",
 ]

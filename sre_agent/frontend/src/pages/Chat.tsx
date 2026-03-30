@@ -1,15 +1,16 @@
-import { useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 
 import ChatMessage from "../components/ChatMessage";
 import { AppButton, AppInput, SectionHeader, StatusChip, SurfaceCard } from "../components/ui";
-import { initialChatMessages } from "../mocks/data";
 import { useChatStore } from "../store/chatStore";
 
 function ChatPage() {
   const [draft, setDraft] = useState("");
-  const { messages, isSending, sendMessage } = useChatStore();
+  const { messages, isSending, loadHistory, sendMessage } = useChatStore();
 
-  const merged = useMemo(() => [...initialChatMessages, ...messages], [messages]);
+  useEffect(() => {
+    void loadHistory();
+  }, [loadHistory]);
 
   return (
     <div className="page-grid">
@@ -23,7 +24,7 @@ function ChatPage() {
 
       <SurfaceCard description="已绑定拓扑、诊断、记忆与知识上下文的对话记录。" title="对话记录">
         <div className="chat-thread">
-          {merged.map((message) => (
+          {messages.map((message) => (
             <ChatMessage key={message.id} message={message} />
           ))}
         </div>

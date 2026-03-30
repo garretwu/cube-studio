@@ -13,7 +13,7 @@ from typing import Any, AsyncIterator, Awaitable, Callable, Protocol
 from fastapi import FastAPI
 
 from lib.channels.alert import AlertChannel
-from sre_agent.agent import run_diagnosis
+from sre_agent.agent import ConversationalAgent, run_diagnosis
 from sre_agent.api import build_api_router, build_websocket_router, install_middlewares
 from sre_agent.api.routes import AuditLogger
 from sre_agent.auth.jwt import CurrentUser, JWTSettings, resolve_jwt_settings
@@ -427,7 +427,7 @@ def _build_default_query(alert: Alert) -> str:
 
 
 def _diagnosis_session_from_state(*, alert: Alert, state: dict[str, Any]) -> DiagnosisSession:
-    from sre_agent.models.diagnosis import DiagnosisResult, DiagnosisSession, RankedRootCause
+    from sre_agent.models.diagnosis import DiagnosisResult, DiagnosisSession, RankedRootCause, ThinkingTrace
     from sre_agent.models.remediation import RemediationPlan
 
     session_id = str(state.get("session_id") or alert.fingerprint or f"default-{datetime.now(UTC).timestamp()}").strip()
@@ -471,12 +471,22 @@ def _diagnosis_session_from_state(*, alert: Alert, state: dict[str, Any]) -> Dia
             ],
             recommended_fix=remediation_plan,
         )
+    trace = None
+    raw_trace_items = state.get("trace_items")
+    if isinstance(raw_trace_items, list):
+        try:
+            converted = ThinkingTrace.from_langraph_state(raw_trace_items)
+            if converted.steps:
+                trace = converted
+        except Exception:  # noqa: BLE001
+            trace = None
 
     return DiagnosisSession(
         session_id=session_id,
         alert=alert,
         status=mapped_status,  # type: ignore[arg-type]
         diagnosis_result=diagnosis_result,
+        trace=trace,
     )
 
 
@@ -683,6 +693,17 @@ def create_app(
         trace_publisher=publisher,
         alert_store=alert_store,
     )
+    runtime_chat_handler = chat_handler
+    if runtime_chat_handler is None:
+        try:
+            runtime_chat_handler = ConversationalAgent(
+                tool_registry=registry,
+                tool_context=context,
+            )
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.warning("chat runtime is not available: %s", exc)
+            runtime_chat_handler = None
+
     services = AgentCServices(
         diagnosis_runner=final_diagnosis_runner,
         remediation_engine=engine,
@@ -695,7 +716,7 @@ def create_app(
         trace_publisher=publisher,
         alert_store=alert_store,
         audit_logger=AuditLogger(),
-        chat_handler=chat_handler,
+        chat_handler=runtime_chat_handler,
     )
     alert_polling_service = _build_alert_polling_service(
         cfg=cfg,

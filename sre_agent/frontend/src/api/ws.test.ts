@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { ManagedWebSocket } from "./ws";
+import { buildBackendWsUrl, ManagedWebSocket } from "./ws";
 
 type MessageHandler = ((event: { data: string }) => void) | null;
 type VoidHandler = (() => void) | null;
@@ -117,5 +117,25 @@ describe("ManagedWebSocket", () => {
     vi.advanceTimersByTime(100);
     expect(receivedIds).toEqual(["2", "3"]);
     ws.close();
+  });
+});
+
+describe("buildBackendWsUrl", () => {
+  it("uses backend host/port from API base URL", () => {
+    const url = buildBackendWsUrl(
+      "/ws/alerts",
+      { token: "t", last_event_id: 3 },
+      "http://127.0.0.1:18090/api",
+    );
+    expect(url).toBe("ws://127.0.0.1:18090/ws/alerts?token=t&last_event_id=3");
+  });
+
+  it("falls back to browser origin when API base URL is empty", () => {
+    const url = new URL(buildBackendWsUrl("/ws/alerts", { token: "t" }, ""));
+    const expectedProtocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+    expect(url.protocol).toBe(expectedProtocol);
+    expect(url.host).toBe(window.location.host);
+    expect(url.pathname).toBe("/ws/alerts");
+    expect(url.searchParams.get("token")).toBe("t");
   });
 });

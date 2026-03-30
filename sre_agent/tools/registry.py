@@ -229,7 +229,7 @@ class ToolRegistry:
 
 def build_default_registry() -> ToolRegistry:
     """Build the default Agent-B tool layout."""
-    from sre_agent.tools.readonly import gpu, k8s, memory, network, ontology, prometheus
+    from sre_agent.tools.readonly import bmc, gpu, k8s, knowledge, logs, memory, network, ontology, platform, prometheus
     from sre_agent.tools.write import k8s as write_k8s
     from sre_agent.tools.write import network as write_network
     from sre_agent.tools.write import remediation as write_remediation
@@ -416,6 +416,114 @@ def build_default_registry() -> ToolRegistry:
             tags=("memory", "readonly"),
         ),
         memory.get_config_baseline,
+    )
+
+    # readonly/logs.py
+    registry.register(
+        ToolDefinition(
+            name="logs.query",
+            description="Query log backend with Loki-style query.",
+            safety_level=SafetyLevel.READ_ONLY,
+            params_schema={"type": "object", "required": ["query"]},
+            tags=("logs", "readonly"),
+        ),
+        logs.query,
+    )
+    registry.register(
+        ToolDefinition(
+            name="logs.read_pod",
+            description="Read pod logs from log backend.",
+            safety_level=SafetyLevel.READ_ONLY,
+            params_schema={"type": "object", "required": ["pod", "namespace"]},
+            tags=("logs", "readonly"),
+        ),
+        logs.read_pod,
+    )
+    registry.register(
+        ToolDefinition(
+            name="logs.read_system",
+            description="Read system log file from node log stream.",
+            safety_level=SafetyLevel.READ_ONLY,
+            params_schema={"type": "object", "required": ["node"]},
+            tags=("logs", "readonly"),
+        ),
+        logs.read_system,
+    )
+
+    # readonly/bmc.py
+    registry.register(
+        ToolDefinition(
+            name="bmc.get_info",
+            description="Read BMC summary information via Redfish.",
+            safety_level=SafetyLevel.READ_ONLY,
+            params_schema={"type": "object", "required": ["bmc_host"]},
+            tags=("bmc", "readonly"),
+        ),
+        bmc.get_info,
+    )
+    registry.register(
+        ToolDefinition(
+            name="bmc.get_thermal",
+            description="Read BMC thermal telemetry via Redfish.",
+            safety_level=SafetyLevel.READ_ONLY,
+            params_schema={"type": "object", "required": ["bmc_host"]},
+            tags=("bmc", "readonly"),
+        ),
+        bmc.get_thermal,
+    )
+    registry.register(
+        ToolDefinition(
+            name="bmc.get_power",
+            description="Read BMC power telemetry via Redfish.",
+            safety_level=SafetyLevel.READ_ONLY,
+            params_schema={"type": "object", "required": ["bmc_host"]},
+            tags=("bmc", "readonly"),
+        ),
+        bmc.get_power,
+    )
+
+    # readonly/platform.py
+    registry.register(
+        ToolDefinition(
+            name="platform.list_inference_services",
+            description="List Cube Studio inference services.",
+            safety_level=SafetyLevel.READ_ONLY,
+            params_schema={"type": "object"},
+            tags=("platform", "readonly"),
+        ),
+        platform.list_inference_services,
+    )
+    registry.register(
+        ToolDefinition(
+            name="platform.get_service_status",
+            description="Get Cube Studio inference service status by service name.",
+            safety_level=SafetyLevel.READ_ONLY,
+            params_schema={"type": "object", "required": ["service_name"]},
+            tags=("platform", "readonly"),
+        ),
+        platform.get_service_status,
+    )
+
+    # readonly/knowledge.py
+    registry.register(
+        ToolDefinition(
+            name="knowledge.search",
+            description="Search knowledge base documents.",
+            safety_level=SafetyLevel.READ_ONLY,
+            params_schema={"type": "object", "required": ["query"]},
+            tags=("knowledge", "readonly"),
+        ),
+        knowledge.search,
+    )
+    registry.register(
+        ToolDefinition(
+            name="knowledge.search_runbook",
+            description="Search runbook snippets by symptom.",
+            safety_level=SafetyLevel.READ_ONLY,
+            params_schema={"type": "object", "required": ["symptom"]},
+            tags=("knowledge", "readonly"),
+        ),
+        knowledge.search_runbook,
     )
 
     # write/k8s.py

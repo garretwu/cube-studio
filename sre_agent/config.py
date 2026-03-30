@@ -15,6 +15,17 @@ class GlobalConfig(BaseModel):
     prometheus_url: str | None = None
     alertmanager_url: str | None = None
     log_level: str = "INFO"
+    cors_allowed_origins: list[str] = Field(
+        default_factory=lambda: [
+            "http://127.0.0.1:5173",
+            "http://localhost:5173",
+            "http://127.0.0.1:8080",
+            "http://localhost:8080",
+        ]
+    )
+    cors_allow_methods: list[str] = Field(default_factory=lambda: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"])
+    cors_allow_headers: list[str] = Field(default_factory=lambda: ["Authorization", "Content-Type", "x-trace-id"])
+    cors_expose_headers: list[str] = Field(default_factory=lambda: ["x-trace-id"])
 
 
 class AuthConfig(BaseModel):

@@ -209,6 +209,46 @@ class _FakeKnowledge:
         ]
 
 
+class _FakeChatHandler:
+    def __init__(self) -> None:
+        self._history: dict[str, list[dict[str, Any]]] = {}
+
+    async def __call__(self, message: str) -> str:
+        return await self.chat(message, user_id="anonymous")
+
+    async def chat(self, message: str, *, user_id: str = "anonymous") -> str:
+        key = user_id or "anonymous"
+        items = self._history.setdefault(key, [])
+        now = datetime.now(UTC).isoformat()
+        items.append(
+            {
+                "id": f"user-{len(items) + 1}",
+                "role": "user",
+                "content": message,
+                "created_at": now,
+            }
+        )
+        reply = f"echo:{message}"
+        items.append(
+            {
+                "id": f"assistant-{len(items) + 1}",
+                "role": "assistant",
+                "content": reply,
+                "created_at": now,
+            }
+        )
+        return reply
+
+    async def chat_stream(self, message: str, *, user_id: str = "anonymous"):  # noqa: ANN201
+        reply = await self.chat(message, user_id=user_id)
+        midpoint = max(1, len(reply) // 2)
+        yield reply[:midpoint]
+        yield reply[midpoint:]
+
+    async def get_history(self, *, user_id: str = "anonymous") -> list[dict[str, Any]]:
+        return list(self._history.get(user_id or "anonymous", []))
+
+
 class _FakeMemory:
     async def list_recent(self, last: int = 10):  # noqa: ANN201
         return []
@@ -324,7 +364,7 @@ def _build_client(monkeypatch: pytest.MonkeyPatch) -> tuple[TestClient, str]:
         knowledge=_FakeKnowledge(),
         tool_registry=registry,
         execution_context=context,
-        chat_handler=lambda message: asyncio.sleep(0, result=f"echo:{message}"),
+        chat_handler=_FakeChatHandler(),
     )
     return TestClient(app), token
 
@@ -346,6 +386,24 @@ class TestAPIUnit:
         response = client.get("/api/topology")
 
         assert response.status_code == 401
+
+    def test_unit_cors_preflight_returns_allow_headers_for_topology_route(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        client, _ = _build_client(monkeypatch)
+
+        response = client.options(
+            "/api/topology",
+            headers={
+                "Origin": "http://127.0.0.1:5173",
+                "Access-Control-Request-Method": "GET",
+                "Access-Control-Request-Headers": "authorization,x-trace-id",
+            },
+        )
+
+        assert response.status_code == 200
+        assert response.headers.get("access-control-allow-origin") == "http://127.0.0.1:5173"
+        allow_headers = response.headers.get("access-control-allow-headers", "")
+        assert "authorization" in allow_headers.lower()
+        assert "x-trace-id" in allow_headers.lower()
 
 
 class TestAPIIntegration:
@@ -398,6 +456,61 @@ class TestAPIIntegration:
         assert payload["data"][0]["session_id"] == "fp-api-2"
         assert payload["data"][0]["alert_name"] == "vllm_latency_high"
         assert payload["data"][0]["fingerprint"] == "fp-api-2"
+
+    def test_integration_chat_history_returns_user_scoped_messages(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        client, token = _build_client(monkeypatch)
+        first = client.post("/api/chat", json={"content": "hello"}, headers=_auth_headers(token))
+        assert first.status_code == 200
+        assert first.json()["success"] is True
+
+        response = client.get("/api/chat/history", headers=_auth_headers(token))
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["success"] is True
+        assert len(payload["data"]) >= 2
+        assert payload["data"][0]["role"] == "user"
+        assert payload["data"][1]["role"] == "assistant"
+        assert payload["data"][1]["content"] == "echo:hello"
+
+    def test_integration_get_session_trace_returns_serialized_steps(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        monkeypatch.setenv("JWT_SECRET", "secret")
+        settings = resolve_jwt_settings()
+        token = encode_token(CurrentUser(user_id="u1", username="alice", role="operator"), settings)
+        registry, context = _registry()
+        config = SREAgentConfig.model_validate(
+            {
+                "global": {"aidc_id": "test-aidc"},
+                "ontology": {"db_path": str(tmp_path / "ontology.db")},
+                "memory": {"db_dir": str(tmp_path / "memory")},
+                "loop_orchestrator": {"enable_re_diagnosis": False},
+            }
+        )
+        with TestClient(
+            create_app(
+                config=config,
+                diagnosis_runner=_FakeStreamingDiagnosisRunner(),
+                ontology=OntologyGraph(),
+                memory=_FakeMemory(),
+                knowledge=_FakeKnowledge(),
+                tool_registry=registry,
+                execution_context=context,
+                chat_handler=_FakeChatHandler(),
+            )
+        ) as client:
+            handle_response = client.post("/api/handle", json=_alert_payload(), headers=_auth_headers(token))
+            assert handle_response.status_code == 200
+            assert handle_response.json()["success"] is True
+            trace_response = client.get("/api/sessions/fp-api-1/trace", headers=_auth_headers(token))
+
+        assert trace_response.status_code == 200
+        payload = trace_response.json()
+        assert payload["success"] is True
+        assert isinstance(payload["data"], list)
+        assert any("thought" in step for step in payload["data"])
 
     def test_integration_get_ontology_route_returns_entities_when_graph_injected(self, monkeypatch: pytest.MonkeyPatch) -> None:
         client, token = _build_client(monkeypatch)
@@ -499,6 +612,15 @@ class TestAPIIntegration:
         assert isinstance(payload["data"], list)
         assert len(payload["data"]) >= 1
         assert {"id", "name", "scope", "summary", "source", "permissions", "match_score"} <= set(payload["data"][0].keys())
+
+    def test_integration_get_skills_with_origin_returns_cors_header(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        client, token = _build_client(monkeypatch)
+        headers = _auth_headers(token) | {"Origin": "http://127.0.0.1:5173"}
+
+        response = client.get("/api/skills", headers=headers)
+
+        assert response.status_code == 200
+        assert response.headers.get("access-control-allow-origin") == "http://127.0.0.1:5173"
 
     def test_integration_post_ontology_query_returns_filtered_entities(self, monkeypatch: pytest.MonkeyPatch) -> None:
         client, token = _build_client(monkeypatch)
@@ -745,6 +867,18 @@ class TestAPIE2E:
             payload = websocket.receive_json()
 
         assert payload["type"] == "thinking_step"
+
+    def test_e2e_websocket_chat_streams_chunk_and_done(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        client, token = _build_client(monkeypatch)
+        with client.websocket_connect(f"/ws/chat?token={token}") as websocket:
+            websocket.send_json({"content": "status"})
+            first = websocket.receive_json()
+            second = websocket.receive_json()
+            third = websocket.receive_json()
+
+        assert first["type"] == "chunk"
+        assert "echo:status" in f"{first['data']['content']}{second['data']['content']}"
+        assert third["type"] == "done"
 
     def test_e2e_handle_streams_live_trace_events_before_replay(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         monkeypatch.setenv("JWT_SECRET", "secret")

@@ -34,6 +34,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--backend-host", default="127.0.0.1", help="Backend bind host.")
     parser.add_argument("--backend-port", type=int, default=8000, help="Backend bind port.")
     parser.add_argument("--frontend-port", type=int, default=8080, help="Frontend dev server port.")
+    parser.add_argument(
+        "--api-mode",
+        choices=["proxy", "direct"],
+        default="proxy",
+        help="proxy: frontend uses /api + Vite proxy; direct: frontend uses VITE_API_BASE_URL.",
+    )
     parser.add_argument("--role", choices=["viewer", "operator", "admin"], default="operator", help="JWT role for frontend requests.")
     parser.add_argument("--username", default="local-ui", help="JWT username.")
     parser.add_argument("--token-expire-seconds", type=int, default=8 * 3600, help="Frontend token expire seconds.")
@@ -64,6 +70,7 @@ def build_runtime_env(
     backend_host: str,
     backend_port: int,
     frontend_port: int,
+    api_mode: str,
     role: str,
     username: str,
     token_expire_seconds: int,
@@ -88,6 +95,10 @@ def build_runtime_env(
     env["VITE_API_PROXY_TARGET"] = backend_url
     env["VITE_USE_MSW"] = "false"
     env["VITE_WS_ENABLED"] = "true"
+    if api_mode == "proxy":
+        env.pop("VITE_API_BASE_URL", None)
+    else:
+        env["VITE_API_BASE_URL"] = backend_url
     env.setdefault("PYTHONUNBUFFERED", "1")
 
     info = {
@@ -100,7 +111,9 @@ def build_runtime_env(
         "frontend_bearer_token": token,
         "backend_url": backend_url,
         "frontend_url": frontend_url,
+        "api_mode": api_mode,
         "proxy_target": backend_url,
+        "api_base_url": env.get("VITE_API_BASE_URL", ""),
     }
     return env, info
 
@@ -214,6 +227,7 @@ def main() -> int:
         backend_host=args.backend_host,
         backend_port=backend_port,
         frontend_port=frontend_port,
+        api_mode=args.api_mode,
         role=args.role,
         username=args.username,
         token_expire_seconds=args.token_expire_seconds,
@@ -232,6 +246,12 @@ def main() -> int:
 
     print(f"[ok] backend pid={backend.pid} url={info['backend_url']}", flush=True)
     print(f"[ok] frontend pid={frontend.pid} url={info['frontend_url']}", flush=True)
+    print(
+        f"[ok] api mode={info['api_mode']} "
+        f"VITE_API_PROXY_TARGET={info['proxy_target']} "
+        f"VITE_API_BASE_URL={info['api_base_url'] or '<unset>'}",
+        flush=True,
+    )
     print(f"[ok] runtime info saved: {args.runtime_info}", flush=True)
     print("[hint] press Ctrl+C to stop both processes", flush=True)
 

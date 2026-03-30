@@ -6,6 +6,7 @@ export const CONTRACT_SCHEMA_VERSION = "0.1.0" as const;
 export const HTTP_PATHS = [
   "/api/alerts",
   "/api/chat",
+  "/api/chat/history",
   "/api/diagnose",
   "/api/handle",
   "/api/knowledge/documents",
@@ -24,6 +25,7 @@ export const HTTP_PATHS = [
   "/api/sessions",
   "/api/sessions/{session_id}",
   "/api/sessions/{session_id}/loop",
+  "/api/sessions/{session_id}/trace",
   "/api/skills",
   "/api/topology",
 ] as const;
@@ -31,6 +33,7 @@ export type HttpPath = (typeof HTTP_PATHS)[number];
 
 export const WS_PATHS = [
   "/ws/alerts",
+  "/ws/chat",
   "/ws/thinking-trace/{session_id}",
 ] as const;
 export type WsPath = (typeof WS_PATHS)[number];

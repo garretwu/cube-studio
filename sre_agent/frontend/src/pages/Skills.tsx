@@ -15,7 +15,8 @@ function SkillsPage() {
       try {
         setSkills(await apiClient.getSkills());
       } catch (err) {
-        setError(`技能接口暂不可用，已降级展示。${err instanceof Error ? ` (${err.message})` : ""}`);
+        const message = err instanceof Error ? err.message : "unknown request failure";
+        setError(`技能接口暂不可用。${message}`);
         setSkills([]);
       }
     })();
@@ -32,9 +33,17 @@ function SkillsPage() {
       </div>
 
       {error ? (
-        <SurfaceCard title="降级提示" description="当前未读取到技能列表。">
+        <SurfaceCard title="请求失败" description="未能从后端加载技能列表。">
           <div className="mini-card">
             <p className="mini-card__copy">{error}</p>
+          </div>
+        </SurfaceCard>
+      ) : null}
+
+      {!error && skills.length === 0 ? (
+        <SurfaceCard title="暂无技能" description="后端返回成功，但当前技能目录为空。">
+          <div className="mini-card">
+            <p className="mini-card__copy">当前运行时未注册任何技能。</p>
           </div>
         </SurfaceCard>
       ) : null}

@@ -24,6 +24,22 @@ def test_create_app_assembles_default_diagnosis_runner_and_serves_diagnose(monke
             "session_id": "default-session-1",
             "status": "diagnosed",
             "summary": "synthetic diagnosis",
+            "trace_items": [
+                {
+                    "type": "thought",
+                    "step": 1,
+                    "content": "collect metrics",
+                    "action": "tool_call",
+                    "tool_name": "gpu.get_metrics",
+                    "tool_params": {"node": "worker-03"},
+                },
+                {
+                    "type": "observation",
+                    "tool": "gpu.get_metrics",
+                    "params": {"node": "worker-03"},
+                    "result": {"success": True, "data": {"utilization": 90}},
+                },
+            ],
         }
 
     monkeypatch.setattr("sre_agent.server.run_diagnosis", _fake_run_diagnosis)
@@ -58,6 +74,8 @@ def test_create_app_assembles_default_diagnosis_runner_and_serves_diagnose(monke
     assert payload["success"] is True
     assert payload["data"]["session_id"] == "default-session-1"
     assert payload["data"]["diagnosis_result"]["root_cause"] == "synthetic diagnosis"
+    assert payload["data"]["trace"] is not None
+    assert len(payload["data"]["trace"]["steps"]) == 2
 
 
 def test_create_app_default_runner_supports_handle_without_missing_runner_error(monkeypatch, tmp_path) -> None:

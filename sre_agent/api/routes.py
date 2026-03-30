@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import inspect
 import os
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, ConfigDict, Field
@@ -35,6 +36,17 @@ class ChatResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     reply: str
+
+
+class ChatHistoryMessage(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    role: Literal["user", "assistant", "tool"]
+    content: str
+    created_at: datetime
+    tool_name: str | None = None
+    metadata: dict[str, Any] | None = None
 
 
 class OntologyQueryRequest(BaseModel):
@@ -243,6 +255,83 @@ def build_api_router() -> APIRouter:
             return await value
         return value
 
+    def _call_with_optional_user_id(callable_obj: Any, *args: Any, user_id: str) -> Any:
+        try:
+            signature = inspect.signature(callable_obj)
+        except (TypeError, ValueError):
+            return callable_obj(*args)
+        if "user_id" in signature.parameters:
+            return callable_obj(*args, user_id=user_id)
+        for parameter in signature.parameters.values():
+            if parameter.kind == inspect.Parameter.VAR_KEYWORD:
+                return callable_obj(*args, user_id=user_id)
+        return callable_obj(*args)
+
+    async def _invoke_chat_handler(chat_handler: Any, *, content: str, user_id: str) -> str:
+        chat_method = getattr(chat_handler, "chat", None)
+        if callable(chat_method):
+            value = _call_with_optional_user_id(chat_method, content, user_id=user_id)
+        else:
+            value = _call_with_optional_user_id(chat_handler, content, user_id=user_id)
+        response = await _maybe_await(value)
+        return response if isinstance(response, str) else str(response)
+
+    def _normalize_chat_history_item(item: Any, *, index: int) -> ChatHistoryMessage | None:
+        if hasattr(item, "model_dump"):
+            payload = item.model_dump(mode="json")
+        elif isinstance(item, dict):
+            payload = item
+        else:
+            payload = {"content": str(item)}
+
+        role = str(payload.get("role", "assistant")).strip().lower() or "assistant"
+        if role not in {"user", "assistant", "tool"}:
+            role = "assistant"
+        message_id = str(payload.get("id") or f"chat-history-{index + 1}")
+        content = str(payload.get("content", "")).strip()
+        if not content:
+            return None
+
+        created_raw = payload.get("created_at")
+        created_at = None
+        if isinstance(created_raw, datetime):
+            created_at = created_raw
+        elif isinstance(created_raw, str):
+            try:
+                created_at = datetime.fromisoformat(created_raw.replace("Z", "+00:00"))
+            except ValueError:
+                created_at = None
+        if created_at is None:
+            created_at = datetime.now(UTC)
+        if created_at.tzinfo is None:
+            created_at = created_at.replace(tzinfo=UTC)
+
+        tool_name = payload.get("tool_name")
+        metadata = payload.get("metadata")
+        return ChatHistoryMessage(
+            id=message_id,
+            role=role,  # type: ignore[arg-type]
+            content=content,
+            created_at=created_at,
+            tool_name=str(tool_name) if tool_name is not None else None,
+            metadata=metadata if isinstance(metadata, dict) else None,
+        )
+
+    async def _invoke_chat_history(chat_handler: Any, *, user_id: str) -> list[ChatHistoryMessage]:
+        history_method = getattr(chat_handler, "get_history", None)
+        if not callable(history_method):
+            return []
+        value = _call_with_optional_user_id(history_method, user_id=user_id)
+        history_items = await _maybe_await(value)
+        if not isinstance(history_items, list):
+            return []
+        normalized: list[ChatHistoryMessage] = []
+        for idx, item in enumerate(history_items):
+            converted = _normalize_chat_history_item(item, index=idx)
+            if converted is not None:
+                normalized.append(converted)
+        return normalized
+
     def _extract_recommended_fix(session: DiagnosisSession) -> RemediationPlan | None:
         if session.diagnosis_result is None:
             return None
@@ -410,6 +499,26 @@ def build_api_router() -> APIRouter:
                 trace_id=_trace_id(request),
             )
         return SREResponse(success=True, data=session, trace_id=_trace_id(request))
+
+    @router.get("/sessions/{session_id}/trace")
+    async def get_session_trace(
+        session_id: str,
+        request: Request,
+        user: CurrentUser = Depends(get_current_user),
+    ) -> SREResponse[list[dict[str, Any]]]:
+        _ = user
+        services = _services(request)
+        session = services.session_store.get(session_id)
+        if session is None:
+            return SREResponse(
+                success=False,
+                error=SREError(code=ErrorCode.VALIDATION_ERROR, message="session not found"),
+                trace_id=_trace_id(request),
+            )
+        if session.trace is None:
+            return SREResponse(success=True, data=[], trace_id=_trace_id(request))
+        payload = [item.model_dump(mode="json") for item in session.trace.steps]
+        return SREResponse(success=True, data=payload, trace_id=_trace_id(request))
 
     @router.get("/sessions/{session_id}/loop")
     async def get_loop_result(
@@ -776,9 +885,26 @@ def build_api_router() -> APIRouter:
         if services.chat_handler is None:
             reply = "chat handler is not configured"
         else:
-            response = await services.chat_handler(message.content)
-            reply = response if isinstance(response, str) else str(response)
+            reply = await _invoke_chat_handler(
+                services.chat_handler,
+                content=message.content,
+                user_id=user.user_id,
+            )
         return SREResponse(success=True, data=ChatResponse(reply=reply), trace_id=_trace_id(request))
+
+    @router.get("/chat/history")
+    async def chat_history(
+        request: Request,
+        user: CurrentUser = Depends(get_current_user),
+    ) -> SREResponse[list[ChatHistoryMessage]]:
+        services = _services(request)
+        if services.chat_handler is None:
+            return SREResponse(success=True, data=[], trace_id=_trace_id(request))
+        history = await _invoke_chat_history(
+            services.chat_handler,
+            user_id=user.user_id,
+        )
+        return SREResponse(success=True, data=history, trace_id=_trace_id(request))
 
     @router.get("/knowledge/search")
     async def knowledge_search(

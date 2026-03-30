@@ -1,13 +1,62 @@
 import type { WSEvent } from "./types";
 import { WS_EVENT_TYPES } from "./generated/backend-contract";
 
+type WSQueryValue = string | number | boolean | null | undefined;
+
 type ManagedWSOptions = {
   maxBufferedMessages?: number;
   maxBatchSize?: number;
   reconnectBaseMs?: number;
+  maxReconnectAttempts?: number;
   onEvent?: (event: WSEvent) => void;
   onStateChange?: (state: "connecting" | "open" | "closed" | "error") => void;
 };
+
+function resolveHttpApiBase(apiBaseUrl?: string): string {
+  const configured = (apiBaseUrl ?? import.meta.env.VITE_API_BASE_URL ?? "").trim();
+  if (configured) {
+    return configured;
+  }
+  if (typeof window !== "undefined" && window.location?.origin) {
+    return window.location.origin;
+  }
+  return "http://localhost";
+}
+
+function toWsOrigin(httpBase: string): string {
+  const fallbackOrigin =
+    typeof window !== "undefined" ? window.location.origin : "http://localhost";
+  try {
+    const parsed = new URL(httpBase, fallbackOrigin);
+    const wsProtocol = parsed.protocol === "https:" ? "wss:" : "ws:";
+    return `${wsProtocol}//${parsed.host}`;
+  } catch {
+    const parsedFallback = new URL(fallbackOrigin);
+    const wsProtocol = parsedFallback.protocol === "https:" ? "wss:" : "ws:";
+    return `${wsProtocol}//${parsedFallback.host}`;
+  }
+}
+
+export function buildBackendWsUrl(
+  path: string,
+  query: Record<string, WSQueryValue> = {},
+  apiBaseUrl?: string,
+): string {
+  const normalizedPath = path.startsWith("/") ? path : `/${path}`;
+  const base = `${toWsOrigin(resolveHttpApiBase(apiBaseUrl))}/`;
+  const target = new URL(normalizedPath, base);
+  Object.entries(query).forEach(([key, value]) => {
+    if (value === undefined || value === null) {
+      return;
+    }
+    const text = String(value).trim();
+    if (!text) {
+      return;
+    }
+    target.searchParams.set(key, text);
+  });
+  return target.toString();
+}
 
 export class ManagedWebSocket {
   private readonly url: string;
@@ -25,6 +74,7 @@ export class ManagedWebSocket {
       maxBufferedMessages: options.maxBufferedMessages ?? 200,
       maxBatchSize: options.maxBatchSize ?? 10,
       reconnectBaseMs: options.reconnectBaseMs ?? 800,
+      maxReconnectAttempts: options.maxReconnectAttempts ?? 6,
       onEvent: options.onEvent ?? (() => undefined),
       onStateChange: options.onStateChange ?? (() => undefined),
     };
@@ -101,6 +151,10 @@ export class ManagedWebSocket {
   }
 
   private scheduleReconnect() {
+    if (this.reconnectAttempts >= this.options.maxReconnectAttempts) {
+      this.options.onStateChange("closed");
+      return;
+    }
     const timeout = Math.min(10000, this.options.reconnectBaseMs * 2 ** this.reconnectAttempts);
     this.reconnectAttempts += 1;
     window.setTimeout(() => this.connect(), timeout);
