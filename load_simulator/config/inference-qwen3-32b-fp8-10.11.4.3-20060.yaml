@@ -1,7 +1,3 @@
-# load-simulator config — single-target vLLM inference benchmark
-# Target: http://10.11.4.3:20060
-# Model: Qwen3-32B-FP8
-
 session_id: ""
 agents:
   - inference
@@ -17,26 +13,26 @@ global_config:
 
 channels:
   inference:
-    timeout: 120
+    timeout: 60
     retry_count: 1
     retry_backoff: 0.5
 
 inference:
   enabled: true
-  endpoint: "http://10.11.4.3:20060"
-  api_key: ""
-  model: "Qwen3-32B-FP8"
-  max_tokens: 256
+  targets:
+    - name: "qwen3-32b"
+      endpoint: "http://10.11.4.2:20100"
+      #api_key: "sk-Qkh1q5wqcnb8u4EG4W4qkQ"
+      model: "Qwen3-32B-FP8"
+
+  max_tokens: 1024
+  # concurrency: 256
   concurrency: 4
-  duration_seconds: 60
-  prompt_pool_size: 32
+  duration_seconds: 36000
+  prompt_pool_size: 128
   stream: false
 
 pipeline:
   enabled: false
-
-finetune:
-  enabled: false
-
 notebook:
   enabled: false

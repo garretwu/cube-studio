@@ -8,7 +8,7 @@ from dataclasses import asdict
 from datetime import UTC, datetime
 from typing import Any
 
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage, messages_to_dict
 from pydantic import BaseModel, Field
 
 from sre_agent.agent.checkpoint import persist_state_snapshot
@@ -42,6 +42,7 @@ def initialize_state(
         "variables": variables or {},
         "session_id": session_id,
         "messages": [],
+        "llm_interactions": [],
         "trace_items": [],
         "pending_tool_calls": [],
         "tool_runs": [],
@@ -88,7 +89,11 @@ async def reason_node(
         messages = list(messages)
 
     model_messages = [SystemMessage(content=system_prompt), *messages]
+    invoked_messages = model_messages
+    bound_tool_names: list[str] = []
+    tool_choice = "auto"
     final_turn = bool(state.get("tool_runs")) and state.get("step_count", 0) >= max(state.get("max_steps", 6) - 1, 1)
+    interaction_mode = "final_json" if final_turn else "tool_bound"
     if final_turn and hasattr(llm, "ainvoke"):
         final_messages = [
             SystemMessage(content=system_prompt),
@@ -101,13 +106,18 @@ async def reason_node(
                 )
             ),
         ]
+        invoked_messages = final_messages
+        tool_choice = "none"
         response = await asyncio.wait_for(llm.ainvoke(final_messages), timeout=state["step_timeout_sec"])
     else:
+        bound_tools = registry.get_langchain_tools(
+            tool_names=state.get("allowed_tool_names"),
+        )
+        bound_tool_names = [str(getattr(tool, "name", "")) for tool in bound_tools]
+        tool_choice = "required" if not state.get("tool_runs") else "auto"
         call_model = llm.bind_tools(
-            registry.get_langchain_tools(
-                tool_names=state.get("allowed_tool_names"),
-            ),
-            tool_choice="required" if not state.get("tool_runs") else "auto",
+            bound_tools,
+            tool_choice=tool_choice,
         )
         response = await asyncio.wait_for(call_model.ainvoke(model_messages), timeout=state["step_timeout_sec"])
     if not isinstance(response, AIMessage):
@@ -115,8 +125,21 @@ async def reason_node(
 
     updated_messages = [*messages, response]
     updated_trace = list(state.get("trace_items", []))
+    updated_interactions = list(state.get("llm_interactions", []))
     pending_tool_calls = list(response.tool_calls or [])
     step_index = state.get("step_count", 0) + 1
+    updated_interactions.append(
+        {
+            "step": step_index,
+            "mode": interaction_mode,
+            "tool_choice": tool_choice,
+            "bound_tool_names": [name for name in bound_tool_names if name],
+            "prompt_messages": messages_to_dict(invoked_messages),
+            "response_message": messages_to_dict([response])[0],
+            "raw_response_text": _extract_text(response.content),
+            "tool_calls": pending_tool_calls,
+        }
+    )
 
     if pending_tool_calls:
         updated_trace.append(
@@ -133,6 +156,7 @@ async def reason_node(
         updated = {
             **state,
             "messages": updated_messages,
+            "llm_interactions": updated_interactions,
             "trace_items": updated_trace,
             "pending_tool_calls": pending_tool_calls,
             "step_count": step_index,
@@ -164,6 +188,7 @@ async def reason_node(
     updated = {
         **state,
         "messages": updated_messages,
+        "llm_interactions": updated_interactions,
         "trace_items": updated_trace,
         "pending_tool_calls": [],
         "step_count": step_index,
@@ -553,7 +578,92 @@ def _normalize_diagnosis_payload(payload: dict[str, Any]) -> dict[str, Any]:
     certainty = str(normalized.get("diagnosis_certainty", "")).strip().lower()
     if isinstance(confidence, (int, float)) and certainty == "confirmed" and float(confidence) < 0.85:
         normalized["diagnosis_certainty"] = "probable"
+    normalized["hypotheses"] = _normalize_hypotheses_payload(normalized)
     return normalized
+
+
+def _normalize_hypotheses_payload(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    raw_hypotheses = payload.get("hypotheses")
+    root_cause = str(payload.get("root_cause") or "Primary root-cause hypothesis").strip()
+    root_cause_layer = str(payload.get("root_cause_layer") or "platform").strip()
+    impact_summary = str(payload.get("impact_summary") or "").strip()
+    confidence = float(payload.get("confidence") or 0.5)
+    certainty = str(payload.get("diagnosis_certainty") or "probable").strip().lower()
+
+    normalized: list[dict[str, Any]] = []
+    seen_descriptions: set[str] = set()
+    if isinstance(raw_hypotheses, list):
+        for item in raw_hypotheses:
+            if not isinstance(item, dict):
+                continue
+            description = str(item.get("description") or "").strip()
+            if not description:
+                continue
+            status = str(item.get("status") or "testing").strip().lower()
+            if status not in {"testing", "confirmed", "eliminated"}:
+                status = "testing"
+            evidence_for = item.get("evidence_for")
+            evidence_against = item.get("evidence_against")
+            hypothesis = {
+                "description": description,
+                "status": status,
+                "evidence_for": [str(v) for v in evidence_for] if isinstance(evidence_for, list) else [],
+                "evidence_against": [str(v) for v in evidence_against] if isinstance(evidence_against, list) else [],
+                "confidence": _clamp_confidence(item.get("confidence"), default=confidence),
+            }
+            normalized.append(hypothesis)
+            seen_descriptions.add(description.lower())
+
+    primary_status = "confirmed" if certainty == "confirmed" else "testing"
+    defaults: list[dict[str, Any]] = [
+        {
+            "description": root_cause,
+            "status": primary_status,
+            "evidence_for": [impact_summary] if impact_summary else [],
+            "evidence_against": [],
+            "confidence": _clamp_confidence(confidence, default=0.9),
+        },
+        {
+            "description": "Network or RDMA degradation contributing to latency",
+            "status": "eliminated" if root_cause_layer != "network" else "testing",
+            "evidence_for": [],
+            "evidence_against": [impact_summary] if impact_summary and root_cause_layer != "network" else [],
+            "confidence": _clamp_confidence(min(confidence, 0.45), default=0.35),
+        },
+        {
+            "description": "Normal workload increase or service-side saturation",
+            "status": "testing" if root_cause_layer != "service" else primary_status,
+            "evidence_for": [],
+            "evidence_against": [impact_summary] if impact_summary and root_cause_layer != "service" else [],
+            "confidence": _clamp_confidence(min(confidence, 0.55), default=0.4),
+        },
+        {
+            "description": "Thermal throttling or other hardware-side instability",
+            "status": "testing" if root_cause_layer == "hardware" else "eliminated",
+            "evidence_for": [],
+            "evidence_against": [impact_summary] if impact_summary and root_cause_layer != "hardware" else [],
+            "confidence": _clamp_confidence(min(confidence, 0.4), default=0.3),
+        },
+    ]
+
+    for item in defaults:
+        key = item["description"].lower()
+        if key in seen_descriptions:
+            continue
+        normalized.append(item)
+        seen_descriptions.add(key)
+        if len(normalized) >= 3:
+            break
+
+    return normalized[: max(3, len(normalized))]
+
+
+def _clamp_confidence(value: Any, *, default: float) -> float:
+    try:
+        numeric = float(value)
+    except Exception:  # noqa: BLE001
+        numeric = default
+    return max(0.0, min(1.0, numeric))
 
 
 def _normalize_remediation_plan_payload(

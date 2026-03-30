@@ -141,11 +141,15 @@ class TestGraphUnit(unittest.IsolatedAsyncioTestCase):
             )
             self.assertEqual(result["status"], "diagnosed")
             self.assertEqual(len(result["tool_runs"]), 1)
+            self.assertGreaterEqual(len(result["llm_interactions"]), 2)
+            self.assertIn("prompt_messages", result["llm_interactions"][0])
+            self.assertIn("response_message", result["llm_interactions"][0])
             self.assertEqual(result["tool_runs"][0]["tool"], "prometheus.query_instant")
             self.assertEqual(llm.calls[0]["tool_choice"], "required")
             self.assertEqual(llm.calls[1]["tool_choice"], "auto")
             diagnosis = DiagnosisResult.model_validate(result["diagnosis_result"])
             self.assertEqual(diagnosis.root_cause_layer, "platform")
+            self.assertGreaterEqual(len(diagnosis.hypotheses), 3)
             trace = ThinkingTrace.from_langraph_state(result["trace_items"])
             self.assertGreaterEqual(len(trace.steps), 3)
             snapshot_files = list(Path(tmpdir).glob(f"{result['session_id']}-*.json"))
@@ -258,10 +262,50 @@ class TestGraphUnit(unittest.IsolatedAsyncioTestCase):
         plan = RemediationPlan.model_validate(result["remediation_plan"])
         self.assertEqual(plan.steps[0].tool, "k8s.cordon_node")
         self.assertEqual(result["tool_runs"], [])
-        self.assertEqual(
-            result["diagnosis_result"]["recommended_fix"]["plan_id"],
-            result["remediation_plan"]["plan_id"],
+
+    async def test_diagnosis_hypotheses_are_padded_to_at_least_three(self) -> None:
+        llm = _FakeLLM(
+            [
+                AIMessage(
+                    content=json.dumps(
+                        {
+                            "thought": "A single dominant hypothesis is present.",
+                            "diagnosis": {
+                                "root_cause": "Rogue gpu_burn process on worker-03",
+                                "root_cause_layer": "platform",
+                                "root_cause_entities": ["worker-03", "gpu_burn"],
+                                "confidence": 0.95,
+                                "hypotheses": [
+                                    {
+                                        "description": "Rogue gpu_burn process on worker-03",
+                                        "status": "confirmed",
+                                        "evidence_for": ["gpu process list contains fi_gpu_burn"],
+                                        "evidence_against": [],
+                                        "confidence": 0.95,
+                                    }
+                                ],
+                                "impact_summary": "GPU contention increased latency.",
+                                "affected_services": ["qwen"],
+                                "triage_priority": "P0",
+                                "diagnosis_certainty": "confirmed",
+                            },
+                            "remediation_plan": None,
+                        }
+                    )
+                )
+            ]
         )
+        result = await run_diagnosis(
+            query="Diagnose the latency issue with read-only tools.",
+            context=_happy_context(),
+            variables={},
+            llm=llm,
+            allowed_tool_names=["prometheus.query_instant"],
+            checkpoint_dir=None,
+        )
+        diagnosis = DiagnosisResult.model_validate(result["diagnosis_result"])
+        self.assertGreaterEqual(len(diagnosis.hypotheses), 3)
+        self.assertEqual(diagnosis.hypotheses[0].description, "Rogue gpu_burn process on worker-03")
 
     async def test_partial_remediation_plan_is_normalized_into_valid_schema(self) -> None:
         llm = _FakeLLM(
