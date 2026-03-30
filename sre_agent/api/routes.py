@@ -79,6 +79,19 @@ class AlertSnapshotResponse(BaseModel):
     clusters: list[dict[str, Any]] = Field(default_factory=list)
 
 
+class SessionSummary(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    session_id: str
+    status: str
+    alert_name: str
+    severity: str
+    fingerprint: str
+    outcome: str | None = None
+    duration_seconds: int = 0
+    updated_at: datetime
+
+
 class AuditLog(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -247,6 +260,11 @@ def build_api_router() -> APIRouter:
         status: str,
         outcome: str | None = None,
     ) -> DiagnosisSession:
+        update_status = getattr(services.session_store, "update_status", None)
+        if callable(update_status):
+            updated = update_status(session.session_id, status=status, outcome=outcome)
+            if updated is not None:
+                return updated
         updates: dict[str, Any] = {"status": status}
         if outcome is not None:
             updates["outcome"] = outcome
@@ -350,6 +368,32 @@ def build_api_router() -> APIRouter:
         response = await services.incident_handler.handle(alert)
         return response.model_copy(update={"trace_id": _trace_id(request)})
 
+    @router.get("/sessions")
+    async def list_sessions(
+        request: Request,
+        limit: int = 50,
+        user: CurrentUser = Depends(get_current_user),
+    ) -> SREResponse[list[SessionSummary]]:
+        _ = user
+        services = _services(request)
+        records = []
+        if hasattr(services.session_store, "list_recent"):
+            records = services.session_store.list_recent(limit=limit)
+        payload = [
+            SessionSummary(
+                session_id=session.session_id,
+                status=session.status,
+                alert_name=session.alert.alert_name,
+                severity=session.alert.severity.value,
+                fingerprint=session.alert.fingerprint,
+                outcome=session.outcome,
+                duration_seconds=session.duration_seconds,
+                updated_at=updated_at,
+            )
+            for session, updated_at in records
+        ]
+        return SREResponse(success=True, data=payload, trace_id=_trace_id(request))
+
     @router.get("/sessions/{session_id}")
     async def get_session(
         session_id: str,
@@ -394,24 +438,44 @@ def build_api_router() -> APIRouter:
         services = _services(request)
         trace_id = _trace_id(request)
         services.audit_logger.record(user, "approve", session_id=session_id, trace_id=trace_id)
-        session = services.session_store.get(session_id)
-        if session is None:
-            return SREResponse(
-                success=False,
-                error=SREError(code=ErrorCode.VALIDATION_ERROR, message="session not found"),
-                trace_id=trace_id,
+        transition_status = getattr(services.session_store, "transition_status", None)
+        if callable(transition_status):
+            target_status = "remediating" if approval.approved else "rejected"
+            target_outcome = None if approval.approved else "rejected"
+            session = transition_status(
+                session_id,
+                expected_statuses={"approval_required"},
+                status=target_status,
+                outcome=target_outcome,
             )
-        if session.status != "approval_required":
+        else:
+            session = services.session_store.get(session_id)
+            if session is not None and session.status == "approval_required":
+                session = _update_session_status(
+                    services,
+                    session=session,
+                    status="remediating" if approval.approved else "rejected",
+                    outcome=None if approval.approved else "rejected",
+                )
+            else:
+                session = None
+        if session is None:
+            current = services.session_store.get(session_id)
+            if current is None:
+                return SREResponse(
+                    success=False,
+                    error=SREError(code=ErrorCode.VALIDATION_ERROR, message="session not found"),
+                    trace_id=trace_id,
+                )
             return SREResponse(
                 success=False,
                 error=SREError(
                     code=ErrorCode.VALIDATION_ERROR,
-                    message=f"session {session_id} is not waiting for approval (status={session.status})",
+                    message=f"session {session_id} is not waiting for approval (status={current.status})",
                 ),
                 trace_id=trace_id,
             )
         if not approval.approved:
-            _update_session_status(services, session=session, status="rejected", outcome="rejected")
             await _publish_remediation_progress(
                 services,
                 session_id=session_id,
@@ -427,7 +491,6 @@ def build_api_router() -> APIRouter:
                 trace_id=trace_id,
             )
 
-        _update_session_status(services, session=session, status="remediating")
         await _publish_remediation_progress(
             services,
             session_id=session_id,

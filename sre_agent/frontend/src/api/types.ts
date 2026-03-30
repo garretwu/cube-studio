@@ -64,6 +64,7 @@ export type ThinkingStep = {
   timestamp: string;
   thought: string;
   action_type: "tool_call" | "conclude" | "remediate";
+  stage?: string | null;
   tool_name?: string | null;
   tool_params?: Record<string, unknown> | null;
   confidence?: number | null;
@@ -104,6 +105,17 @@ export type DiagnosisSession = {
   trace?: { steps: Array<ThinkingStep | Observation> } | null;
   duration_seconds: number;
   outcome?: string | null;
+};
+
+export type SessionSummary = {
+  session_id: string;
+  status: string;
+  alert_name: string;
+  severity: Severity;
+  fingerprint: string;
+  outcome?: string | null;
+  duration_seconds: number;
+  updated_at: string;
 };
 
 export type RemediationResult = {

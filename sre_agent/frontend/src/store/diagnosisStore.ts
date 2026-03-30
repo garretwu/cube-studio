@@ -68,6 +68,7 @@ function buildThinkingStep(
     timestamp: typeof payload.timestamp === "string" ? payload.timestamp : event.timestamp,
     thought: thoughtValue,
     action_type: actionType,
+    stage: typeof payload.stage === "string" ? payload.stage : null,
     tool_name: toolName,
     tool_params: Object.keys(toolParams).length > 0 ? toolParams : null,
     confidence: toNumber(payload.confidence) ?? null,
@@ -95,6 +96,28 @@ function extractEventId(event: WSEvent): string | null {
   return null;
 }
 
+const remediationStageCopy: Record<string, string> = {
+  approval_rejected: "审批被拒绝",
+  execution_failed: "修复执行失败",
+  execution_started: "修复执行中",
+  execution_succeeded: "修复执行完成",
+  rollback_failed: "回滚失败",
+  rollback_started: "回滚进行中",
+  rollback_succeeded: "回滚完成",
+};
+
+function buildRemediationProgressThought(payload: Record<string, unknown>): string {
+  const stage = typeof payload.stage === "string" ? payload.stage : "remediation_progress";
+  const stageText = remediationStageCopy[stage] ?? stage;
+  if (typeof payload.error === "string" && payload.error.trim()) {
+    return `${stageText}: ${payload.error}`;
+  }
+  if (typeof payload.reason === "string" && payload.reason.trim()) {
+    return `${stageText}: ${payload.reason}`;
+  }
+  return stageText;
+}
+
 export const useDiagnosisStore = create<DiagnosisState>((set) => ({
   session: undefined,
   sessionId: "",
@@ -106,6 +129,7 @@ export const useDiagnosisStore = create<DiagnosisState>((set) => ({
     if (!resolved) {
       return;
     }
+    set({ session: undefined, sessionId: resolved, seenEventIds: {} });
     const session = await apiClient.getDiagnosisSession(resolved);
     set({ session, sessionId: resolved, seenEventIds: {} });
   },
@@ -152,6 +176,27 @@ export const useDiagnosisStore = create<DiagnosisState>((set) => ({
             ...state.session,
             diagnosis_result: event.data as DiagnosisSession["diagnosis_result"],
             status: "diagnosed",
+          },
+        };
+      }
+      if (event.type === "remediation_progress") {
+        const payload = toRecord(event.data);
+        const thoughtCount = trace.reduce((count, item) => ("step" in item ? count + 1 : count), 0);
+        const nextStep: ThinkingStep = {
+          step: thoughtCount + 1,
+          timestamp: typeof payload.timestamp === "string" ? payload.timestamp : event.timestamp,
+          thought: buildRemediationProgressThought(payload),
+          action_type: "remediate",
+          stage: typeof payload.stage === "string" ? payload.stage : null,
+          tool_name: "remediation",
+          tool_params: Object.keys(payload).length > 0 ? payload : null,
+          confidence: null,
+        };
+        return {
+          seenEventIds: nextSeen,
+          session: {
+            ...state.session,
+            trace: { steps: [...trace, nextStep] },
           },
         };
       }

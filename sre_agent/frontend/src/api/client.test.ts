@@ -105,4 +105,64 @@ describe("apiClient.getTopology", () => {
     expect(result.success).toBe(true);
     expect(result.steps_completed).toBe(2);
   });
+
+  it("returns session_id for duplicate handle response from error.details", async () => {
+    server.use(
+      http.post("/api/handle", async () =>
+        HttpResponse.json({
+          success: true,
+          data: null,
+          error: {
+            code: "ALERT_DUPLICATE",
+            message: "duplicate alert, see session sess-dup-1",
+            details: { session_id: "sess-dup-1" },
+          },
+          trace_id: "trace-handle-dup",
+          timestamp: "2026-03-26T00:00:00Z",
+        }),
+      ),
+    );
+
+    const sessionId = await apiClient.handleAlert({
+      alert_name: "GPUUtilizationHigh",
+      severity: "warning",
+      labels: {},
+      annotations: {},
+      starts_at: "2026-03-26T00:00:00Z",
+      fingerprint: "fp-dup-1",
+      status: "firing",
+      source: "alertmanager",
+    });
+
+    expect(sessionId).toBe("sess-dup-1");
+  });
+
+  it("loads session summaries from /api/sessions", async () => {
+    server.use(
+      http.get("/api/sessions", async () =>
+        HttpResponse.json({
+          success: true,
+          data: [
+            {
+              session_id: "sess-2",
+              status: "diagnosed",
+              alert_name: "GPUUtilizationHigh",
+              severity: "warning",
+              fingerprint: "fp-2",
+              outcome: null,
+              duration_seconds: 12,
+              updated_at: "2026-03-26T00:00:00Z",
+            },
+          ],
+          error: null,
+          trace_id: "trace-sessions",
+          timestamp: "2026-03-26T00:00:00Z",
+        }),
+      ),
+    );
+
+    const sessions = await apiClient.getSessions();
+    expect(sessions).toHaveLength(1);
+    expect(sessions[0]?.session_id).toBe("sess-2");
+  });
 });

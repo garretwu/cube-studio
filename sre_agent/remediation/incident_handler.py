@@ -86,6 +86,7 @@ class IncidentHandler:
                 error=SREError(
                     code=ErrorCode.ALERT_DUPLICATE,
                     message=f"duplicate alert, see session {existing_sid}",
+                    details={"session_id": existing_sid},
                 ),
             )
 

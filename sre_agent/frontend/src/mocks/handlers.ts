@@ -57,6 +57,27 @@ export const handlers = [
       timestamp: new Date().toISOString(),
     });
   }),
+  http.get("/api/sessions", async () => {
+    await delay(80);
+    return HttpResponse.json({
+      success: true,
+      data: [
+        {
+          session_id: diagnosisSession.session_id,
+          status: diagnosisSession.status,
+          alert_name: diagnosisSession.alert.alert_name,
+          severity: diagnosisSession.alert.severity,
+          fingerprint: diagnosisSession.alert.fingerprint,
+          outcome: diagnosisSession.outcome,
+          duration_seconds: diagnosisSession.duration_seconds,
+          updated_at: "2026-03-18T12:02:00Z",
+        },
+      ],
+      error: null,
+      trace_id: "trace-mock-sessions",
+      timestamp: new Date().toISOString(),
+    });
+  }),
   http.get("/api/sessions/:sessionId", async () => {
     await delay(140);
     return HttpResponse.json({

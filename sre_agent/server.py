@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -53,12 +54,62 @@ class ChatHandlerProtocol(Protocol):
 class InMemorySessionStore:
     def __init__(self) -> None:
         self._sessions: dict[str, DiagnosisSession] = {}
+        self._updated_at: dict[str, datetime] = {}
+        self._lock = threading.Lock()
 
     def put(self, session: DiagnosisSession) -> None:
-        self._sessions[session.session_id] = session
+        with self._lock:
+            self._sessions[session.session_id] = session
+            self._updated_at[session.session_id] = datetime.now(UTC)
 
     def get(self, session_id: str) -> DiagnosisSession | None:
-        return self._sessions.get(session_id)
+        with self._lock:
+            return self._sessions.get(session_id)
+
+    def update_status(self, session_id: str, *, status: str, outcome: str | None = None) -> DiagnosisSession | None:
+        with self._lock:
+            session = self._sessions.get(session_id)
+            if session is None:
+                return None
+            updates: dict[str, Any] = {"status": status}
+            if outcome is not None:
+                updates["outcome"] = outcome
+            updated = session.model_copy(update=updates)
+            self._sessions[session_id] = updated
+            self._updated_at[session_id] = datetime.now(UTC)
+            return updated
+
+    def transition_status(
+        self,
+        session_id: str,
+        *,
+        expected_statuses: set[str],
+        status: str,
+        outcome: str | None = None,
+    ) -> DiagnosisSession | None:
+        with self._lock:
+            session = self._sessions.get(session_id)
+            if session is None or session.status not in expected_statuses:
+                return None
+            updates: dict[str, Any] = {"status": status}
+            if outcome is not None:
+                updates["outcome"] = outcome
+            updated = session.model_copy(update=updates)
+            self._sessions[session_id] = updated
+            self._updated_at[session_id] = datetime.now(UTC)
+            return updated
+
+    def list_recent(self, *, limit: int = 50) -> list[tuple[DiagnosisSession, datetime]]:
+        with self._lock:
+            safe_limit = max(1, int(limit))
+            ordered = sorted(self._updated_at.items(), key=lambda item: item[1], reverse=True)
+            payload: list[tuple[DiagnosisSession, datetime]] = []
+            for session_id, updated_at in ordered[:safe_limit]:
+                session = self._sessions.get(session_id)
+                if session is None:
+                    continue
+                payload.append((session, updated_at))
+            return payload
 
 
 class InMemoryLoopStore:

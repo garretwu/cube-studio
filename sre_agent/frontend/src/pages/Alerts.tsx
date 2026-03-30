@@ -93,8 +93,8 @@ function AlertsPage() {
           <AlertTable
             alerts={filtered}
             onSelect={async (alert) => {
-              const loop = await apiClient.handleAlert(alert);
-              navigate(`/diagnosis?session_id=${encodeURIComponent(loop.session_id)}`);
+              const sessionId = await apiClient.handleAlert(alert);
+              navigate(`/diagnosis?session_id=${encodeURIComponent(sessionId)}`);
             }}
           />
         </SurfaceCard>

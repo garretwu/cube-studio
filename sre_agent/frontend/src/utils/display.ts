@@ -32,6 +32,9 @@ const workflowStatusLabels: Record<string, string> = {
   degraded: "降级",
   eliminated: "已排除",
   error: "异常",
+  execution_failed: "执行失败",
+  execution_started: "执行中",
+  execution_succeeded: "执行完成",
   failed: "失败",
   firing: "触发中",
   healthy: "正常",
@@ -47,9 +50,13 @@ const workflowStatusLabels: Record<string, string> = {
   proposed_fix_ready: "修复方案已就绪",
   re_diagnosed: "已复核",
   rejected: "已驳回",
+  rollback_failed: "回滚失败",
+  rollback_started: "回滚中",
+  rollback_succeeded: "回滚完成",
   resolved: "已解决",
   testing: "验证中",
   validating: "验证中",
+  approval_rejected: "审批驳回",
 };
 
 const entityTypeLabels: Record<string, string> = {

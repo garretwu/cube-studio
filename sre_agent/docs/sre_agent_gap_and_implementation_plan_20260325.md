@@ -479,3 +479,18 @@
 ### 结论（Wave 5 后）
 - Wave 5 工程实现与回归测试已完成，当前仍存在 5 个未闭环 gap（P0=2，P1=3）。
 - 是否还有 gap：有；优先应先关闭 G1、G2，再推进 G3-G5 的验收与证据固化。
+
+## Wave 6 修复执行更新（2026-03-27）
+
+### 代码修复落地
+- G1：默认 `config.yaml` 已补齐 `global.alertmanager_url` 与 `global.prometheus_url`，默认启动链路可直连真实告警源。
+- G2：审批路径改为原子状态迁移（`approval_required -> remediating/rejected`），并将 `ApprovalGate` 收敛为 session 级决策队列，避免并发/跨会话审批错配。
+- G3：前端已消费 `remediation_progress` 事件，并补齐阶段语义映射（执行中/回滚中/完成/失败/驳回）在诊断时间线展示。
+- G4：新增 `sre_agent/scripts/wave5_real_drill.py`，用于真实环境审批+回滚演练并归档 API/WS/metrics 证据。
+- G5：新增 `sre_agent/scripts/wave5_acceptance_report.py`，基于归档证据生成量化门槛验收报告（P95、重连成功率、事件缺失率）。
+
+### 工程化增强
+- `sre_agent/scripts/archive_wave_evidence.py` 已支持根据证据目录自动勾选 checklist（包含 metrics 占位文件识别）。
+
+### 剩余动作（执行侧）
+- 在 Lab 环境运行 `wave5_real_drill.py` 生成真实证据后，执行 `wave5_acceptance_report.py` 产出正式验收报告并回填结论。

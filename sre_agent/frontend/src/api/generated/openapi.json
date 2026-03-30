@@ -91,6 +91,51 @@
         ]
       }
     },
+    "/api/sessions": {
+      "get": {
+        "summary": "List Sessions",
+        "operationId": "list_sessions_api_sessions_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 50,
+              "title": "Limit"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SREResponse_list_SessionSummary__"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/sessions/{session_id}": {
       "get": {
         "summary": "Get Session",
@@ -2765,6 +2810,53 @@
         ],
         "title": "SREResponse[list[LearnedPattern]]"
       },
+      "SREResponse_list_SessionSummary__": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success"
+          },
+          "data": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/SessionSummary"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Data"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SREError"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "trace_id": {
+            "type": "string",
+            "title": "Trace Id"
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Timestamp"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "success"
+        ],
+        "title": "SREResponse[list[SessionSummary]]"
+      },
       "SREResponse_list_dict_str__Any___": {
         "properties": {
           "success": {
@@ -2824,6 +2916,62 @@
         ],
         "title": "SafetyLevel",
         "description": "Canonical safety levels for tool/action execution control."
+      },
+      "SessionSummary": {
+        "properties": {
+          "session_id": {
+            "type": "string",
+            "title": "Session Id"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "alert_name": {
+            "type": "string",
+            "title": "Alert Name"
+          },
+          "severity": {
+            "type": "string",
+            "title": "Severity"
+          },
+          "fingerprint": {
+            "type": "string",
+            "title": "Fingerprint"
+          },
+          "outcome": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Outcome"
+          },
+          "duration_seconds": {
+            "type": "integer",
+            "title": "Duration Seconds",
+            "default": 0
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Updated At"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "session_id",
+          "status",
+          "alert_name",
+          "severity",
+          "fingerprint",
+          "updated_at"
+        ],
+        "title": "SessionSummary"
       },
       "ThinkingStep": {
         "properties": {

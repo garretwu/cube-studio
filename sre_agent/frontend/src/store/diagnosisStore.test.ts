@@ -92,12 +92,24 @@ describe("diagnosisStore.applyEvent", () => {
         diagnosis_certainty: "confirmed",
       },
     });
+    store.applyEvent({
+      schema_version: "1.0",
+      type: "remediation_progress",
+      session_id: baseSession.session_id,
+      timestamp: "2026-03-27T00:00:05Z",
+      data: {
+        event_id: "5",
+        stage: "execution_started",
+        user: "alice",
+      },
+    });
 
     const next = useDiagnosisStore.getState().session;
-    expect(next?.trace?.steps).toHaveLength(3);
+    expect(next?.trace?.steps).toHaveLength(4);
     expect(next?.trace?.steps[0]).toMatchObject({ action_type: "tool_call", tool_name: "gpu.get_metrics" });
     expect(next?.trace?.steps[1]).toMatchObject({ tool: "gpu.get_metrics" });
     expect(next?.trace?.steps[2]).toMatchObject({ action_type: "conclude" });
+    expect(next?.trace?.steps[3]).toMatchObject({ action_type: "remediate", stage: "execution_started" });
     expect(next?.diagnosis_result?.root_cause).toBe("gpu contention");
   });
 

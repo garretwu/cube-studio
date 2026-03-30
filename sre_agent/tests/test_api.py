@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -364,6 +365,40 @@ class TestAPIIntegration:
         assert response.json()["success"] is True
         assert response.json()["data"]["outcome"] in {"resolved", "escalated", "re_diagnosed", "partially_resolved"}
 
+    def test_integration_handle_duplicate_returns_existing_session_id_in_error_details(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        client, token = _build_client(monkeypatch)
+        first = client.post("/api/handle", json=_alert_payload(), headers=_auth_headers(token))
+        assert first.status_code == 200
+        duplicate = client.post("/api/handle", json=_alert_payload(), headers=_auth_headers(token))
+
+        assert duplicate.status_code == 200
+        payload = duplicate.json()
+        assert payload["success"] is True
+        assert payload["error"]["code"] == ErrorCode.ALERT_DUPLICATE.value
+        assert payload["error"]["details"]["session_id"] == "fp-api-1"
+
+    def test_integration_get_sessions_returns_recent_first_and_honors_limit(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        client, token = _build_client(monkeypatch)
+        first_payload = _alert_payload()
+        second_payload = _alert_payload() | {"fingerprint": "fp-api-2"}
+
+        first = client.post("/api/diagnose", json=first_payload, headers=_auth_headers(token))
+        assert first.status_code == 200
+        time.sleep(0.01)
+        second = client.post("/api/diagnose", json=second_payload, headers=_auth_headers(token))
+        assert second.status_code == 200
+
+        response = client.get("/api/sessions", params={"limit": 1}, headers=_auth_headers(token))
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["success"] is True
+        assert len(payload["data"]) == 1
+        assert payload["data"][0]["session_id"] == "fp-api-2"
+        assert payload["data"][0]["alert_name"] == "vllm_latency_high"
+        assert payload["data"][0]["fingerprint"] == "fp-api-2"
+
     def test_integration_get_ontology_route_returns_entities_when_graph_injected(self, monkeypatch: pytest.MonkeyPatch) -> None:
         client, token = _build_client(monkeypatch)
 
@@ -579,6 +614,32 @@ class TestAPIE2E:
         payload = second.json()
         assert payload["success"] is False
         assert payload["error"]["code"] == ErrorCode.VALIDATION_ERROR.value
+
+    def test_e2e_approve_route_allows_single_success_when_concurrent_requests_arrive(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        client, token = _build_client(monkeypatch)
+        diagnose = client.post("/api/diagnose", json=_alert_payload(), headers=_auth_headers(token)).json()
+        session_id = diagnose["data"]["session_id"]
+
+        def _approve() -> dict[str, Any]:
+            response = client.post(
+                f"/api/remediate/{session_id}/approve",
+                json={"approved": True, "user": "alice"},
+                headers=_auth_headers(token),
+            )
+            assert response.status_code == 200
+            return response.json()
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            payloads = list(executor.map(lambda _: _approve(), range(2)))
+
+        success_count = sum(1 for payload in payloads if payload["success"] is True)
+        failure_payloads = [payload for payload in payloads if payload["success"] is False]
+        assert success_count == 1
+        assert len(failure_payloads) == 1
+        assert failure_payloads[0]["error"]["code"] == ErrorCode.VALIDATION_ERROR.value
 
     def test_e2e_approve_route_returns_plan_invalid_when_plan_missing(self, monkeypatch: pytest.MonkeyPatch) -> None:
         client, token = _build_client(monkeypatch)

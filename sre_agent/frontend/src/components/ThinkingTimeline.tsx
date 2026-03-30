@@ -1,6 +1,6 @@
 import { StatusChip } from "./ui";
 import type { Observation, ThinkingStep } from "../api/types";
-import { formatActionType } from "../utils/display";
+import { formatActionType, formatWorkflowStatus } from "../utils/display";
 import { formatPercent, formatTimestamp } from "../utils/format";
 
 type TimelineItem = ThinkingStep | Observation;
@@ -22,6 +22,7 @@ function ThinkingTimeline({ steps }: ThinkingTimelineProps) {
             <div className="status-row">
               <StatusChip tone="accent">步骤 {item.step}</StatusChip>
               <StatusChip tone="info">{formatActionType(item.action_type)}</StatusChip>
+              {item.stage ? <StatusChip tone="warning">{formatWorkflowStatus(item.stage)}</StatusChip> : null}
               {item.confidence ? <StatusChip tone="neutral">{formatPercent(item.confidence)}</StatusChip> : null}
             </div>
             <p className="timeline-card__copy">{item.thought}</p>

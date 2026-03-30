@@ -72,8 +72,22 @@ def _run_capture(root: Path, category: str, name: str, command: str, timeout_sec
     )
 
 
+def _has_category_evidence(root: Path, category: str) -> bool:
+    category_dir = root / category
+    files = [item for item in category_dir.glob("**/*") if item.is_file()]
+    if category != "metrics":
+        return bool(files)
+    return any("placeholder" not in item.name.lower() for item in files)
+
+
 def _write_summary(root: Path, run_id: str, scenario: str, env_name: str, captures: list[CaptureResult]) -> None:
     summary_path = root / "summary.md"
+    checklist = {
+        "ui": _has_category_evidence(root, "ui"),
+        "ws": _has_category_evidence(root, "ws"),
+        "api": _has_category_evidence(root, "api"),
+        "metrics": _has_category_evidence(root, "metrics"),
+    }
     lines = [
         f"# Wave Evidence Summary ({run_id})",
         "",
@@ -95,10 +109,10 @@ def _write_summary(root: Path, run_id: str, scenario: str, env_name: str, captur
             "",
             "## Checklist",
             "",
-            "- [ ] UI 关键步骤截图归档到 `ui/`",
-            "- [ ] WS 事件样本归档到 `ws/`",
-            "- [ ] API 请求响应样本归档到 `api/`",
-            "- [ ] 指标曲线或导出数据归档到 `metrics/`",
+            f"- [{'x' if checklist['ui'] else ' '}] UI 关键步骤截图归档到 `ui/`",
+            f"- [{'x' if checklist['ws'] else ' '}] WS 事件样本归档到 `ws/`",
+            f"- [{'x' if checklist['api'] else ' '}] API 请求响应样本归档到 `api/`",
+            f"- [{'x' if checklist['metrics'] else ' '}] 指标曲线或导出数据归档到 `metrics/`",
         ]
     )
     summary_path.write_text("\n".join(lines) + "\n", encoding="utf-8")

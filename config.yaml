@@ -1,5 +1,7 @@
 global:
   aidc_id: local-aidc
+  prometheus_url: "http://10.11.4.3:31260"
+  alertmanager_url: "http://10.11.4.3:31013/"
 knowledge_base:
   persist_dir: ./data/knowledge_db
 ontology:

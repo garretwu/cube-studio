@@ -1,6 +1,9 @@
-import { useEffect } from "react";
+import { Select } from "antd";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 
+import { apiClient } from "../api/client";
+import type { SessionSummary } from "../api/types";
 import ThinkingTimeline from "../components/ThinkingTimeline";
 import { SectionHeader, StatusChip, SurfaceCard } from "../components/ui";
 import { useWebSocket } from "../hooks/useWebSocket";
@@ -9,17 +12,52 @@ import { formatLayer, formatWorkflowStatus } from "../utils/display";
 import { formatPercent } from "../utils/format";
 
 function DiagnosisPage() {
-  const [searchParams] = useSearchParams();
-  const sessionId = searchParams.get("session_id") ?? "";
-  const { session, fetchSession, connectionState, applyEvent, setConnectionState, setSessionId } = useDiagnosisStore();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const sessionId = (searchParams.get("session_id") ?? "").trim();
+  const [sessions, setSessions] = useState<SessionSummary[]>([]);
+  const [sessionsLoading, setSessionsLoading] = useState(false);
+  const [sessionsLoaded, setSessionsLoaded] = useState(false);
+  const bootstrappedRef = useRef(false);
+  const {
+    session,
+    fetchSession,
+    connectionState,
+    applyEvent,
+    setConnectionState,
+    setSessionId,
+  } = useDiagnosisStore();
+
+  const loadSessions = useCallback(async (requested: string) => {
+    setSessionsLoading(true);
+    try {
+      const records = await apiClient.getSessions(50);
+      setSessions(records);
+      const fallback = records[0]?.session_id ?? "";
+      const selected = records.some((item) => item.session_id === requested) ? requested : fallback;
+      if (selected && selected !== requested) {
+        setSearchParams({ session_id: selected }, { replace: true });
+      }
+    } finally {
+      setSessionsLoading(false);
+      setSessionsLoaded(true);
+    }
+  }, [setSearchParams]);
 
   useEffect(() => {
-    if (!sessionId) {
+    if (bootstrappedRef.current) {
+      return;
+    }
+    bootstrappedRef.current = true;
+    void loadSessions(sessionId);
+  }, [loadSessions, sessionId]);
+
+  useEffect(() => {
+    if (!sessionsLoaded || !sessionId) {
       return;
     }
     setSessionId(sessionId);
     void fetchSession(sessionId);
-  }, [fetchSession, sessionId, setSessionId]);
+  }, [fetchSession, sessionId, sessionsLoaded, setSessionId]);
 
   const wsToken = import.meta.env.VITE_API_TOKEN ?? "";
   const bootstrapLastEventId = Math.max(0, session?.trace?.steps?.length ?? 0);
@@ -32,19 +70,41 @@ function DiagnosisPage() {
     setConnectionState(ws.state);
   }, [setConnectionState, ws.state]);
 
+  const sessionOptions = useMemo(
+    () =>
+      sessions.map((item) => ({
+        value: item.session_id,
+        label: `${item.session_id} | ${item.alert_name} | ${item.status}`,
+      })),
+    [sessions],
+  );
+
   return (
     <div className="page-grid">
       <div className="page-intro">
         <SectionHeader
           eyebrow="推理回放"
           title="诊断过程回放"
-          description="回放智能体的诊断推理轨迹，检查候选假设与证据，再决定是否进入修复流程。"
+          description="回放智能体诊断链路，支持在诊断页切换会话查看不同 session 的过程与结论。"
         />
         <SurfaceCard bodyClassName="page-stack" variant="hero">
-          <div className="status-row">
-            <StatusChip tone={connectionState === "open" ? "success" : "info"}>WS {formatWorkflowStatus(connectionState)}</StatusChip>
+          <div className="input-row">
+            <Select
+              className="app-select"
+              value={sessionId || undefined}
+              options={sessionOptions}
+              loading={sessionsLoading}
+              placeholder="选择诊断会话"
+              onChange={(value) => {
+                setSearchParams({ session_id: value });
+              }}
+            />
+            <StatusChip tone={connectionState === "open" ? "success" : "info"}>
+              WS {formatWorkflowStatus(connectionState)}
+            </StatusChip>
             <StatusChip tone="neutral">{formatWorkflowStatus(session?.status, "加载中")}</StatusChip>
             <StatusChip tone="warning">{session?.diagnosis_result?.triage_priority ?? "P?"}</StatusChip>
+            <StatusChip tone="neutral">会话 {sessions.length}</StatusChip>
           </div>
         </SurfaceCard>
       </div>
@@ -83,7 +143,9 @@ function DiagnosisPage() {
             <div className="page-stack">
               <div className="status-row">
                 <StatusChip tone="accent">{formatPercent(session?.diagnosis_result?.confidence ?? 0)}</StatusChip>
-                <StatusChip tone="neutral">{formatLayer(session?.diagnosis_result?.root_cause_layer) ?? "未知层级"}</StatusChip>
+                <StatusChip tone="neutral">
+                  {formatLayer(session?.diagnosis_result?.root_cause_layer) ?? "未知层级"}
+                </StatusChip>
               </div>
               <div className="mini-card">
                 <p className="mini-card__title">{session?.diagnosis_result?.root_cause ?? "等待诊断结论"}</p>

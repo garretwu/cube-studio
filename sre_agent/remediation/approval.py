@@ -55,6 +55,7 @@ class ApprovalGate:
         self.timeout_seconds = timeout_seconds
         self.default_policy = default_policy
         self.approval_queue: "asyncio.Queue[dict[str, str | bool | None]]" = asyncio.Queue()
+        self._session_queues: dict[str, asyncio.Queue[dict[str, str | bool | None]]] = {}
 
     async def request_approval(self, plan: RemediationPlan, session_id: str | None = None) -> ApprovalResult:
         tools_used = {step.tool for step in plan.steps}
@@ -73,14 +74,21 @@ class ApprovalGate:
         if not needs_human or self.default_policy == "auto_approve":
             return ApprovalResult(approved=True, method="auto")
 
+        queue = self.approval_queue
+        if session_id is not None:
+            queue = self._session_queues.setdefault(session_id, asyncio.Queue())
         try:
-            response = await asyncio.wait_for(self.approval_queue.get(), timeout=self.timeout_seconds)
+            response = await asyncio.wait_for(queue.get(), timeout=self.timeout_seconds)
         except TimeoutError:
             return ApprovalResult(approved=False, method="human", reason="approval timeout")
 
         response_session = response.get("session_id")
         if session_id and response_session not in {None, session_id}:
             return ApprovalResult(approved=False, method="human", reason="approval session mismatch")
+        if session_id is not None:
+            candidate = self._session_queues.get(session_id)
+            if candidate is queue and candidate.empty():
+                self._session_queues.pop(session_id, None)
         return ApprovalResult(
             approved=bool(response.get("approved", False)),
             method="human",
@@ -89,11 +97,11 @@ class ApprovalGate:
         )
 
     async def submit_decision(self, session_id: str, approval: ApprovalInput) -> None:
-        await self.approval_queue.put(
-            {
-                "session_id": session_id,
-                "approved": approval.approved,
-                "user": approval.user,
-                "reason": approval.reason,
-            }
-        )
+        payload = {
+            "session_id": session_id,
+            "approved": approval.approved,
+            "user": approval.user,
+            "reason": approval.reason,
+        }
+        session_queue = self._session_queues.setdefault(session_id, asyncio.Queue())
+        await session_queue.put(payload)

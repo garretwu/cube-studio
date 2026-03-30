@@ -14,6 +14,7 @@ import type {
   OntologyNode,
   RemediationResult,
   SREApiEnvelope,
+  SessionSummary,
   SkillDescriptor,
   TopologySnapshot,
 } from "./types";
@@ -75,6 +76,19 @@ function rememberSessionId(sessionId: string): void {
   window.localStorage.setItem("sre_session_id", sessionId);
 }
 
+function extractDuplicateSessionId(payload: SREApiEnvelope<LoopResult>): string {
+  const details = payload.error?.details;
+  if (details && typeof details === "object") {
+    const sessionId = (details as Record<string, unknown>).session_id;
+    if (typeof sessionId === "string" && sessionId.trim()) {
+      return sessionId.trim();
+    }
+  }
+  const message = payload.error?.message ?? "";
+  const matched = message.match(/session\s+([a-zA-Z0-9:_-]+)/);
+  return matched?.[1] ?? "";
+}
+
 export const apiClient = {
   getTopology: async () => {
     const response = await api.get<SREApiEnvelope<TopologySnapshot>>("/api/topology");
@@ -88,9 +102,26 @@ export const apiClient = {
   },
   handleAlert: async (alert: Alert) => {
     const response = await api.post<SREApiEnvelope<LoopResult>>("/api/handle", alert);
-    const loop = unwrapPayload(response.data);
-    rememberSessionId(loop.session_id);
-    return loop;
+    const payload = response.data;
+    if (!isEnvelope<LoopResult>(payload)) {
+      throw new Error("invalid /api/handle response");
+    }
+    if (payload.data?.session_id) {
+      rememberSessionId(payload.data.session_id);
+      return payload.data.session_id;
+    }
+    if (payload.error?.code === "ALERT_DUPLICATE") {
+      const sessionId = extractDuplicateSessionId(payload);
+      if (sessionId) {
+        rememberSessionId(sessionId);
+        return sessionId;
+      }
+    }
+    throw new Error(payload.error?.message ?? "handle alert returned no session_id");
+  },
+  getSessions: async (limit = 50) => {
+    const response = await api.get<SREApiEnvelope<SessionSummary[]>>("/api/sessions", { params: { limit } });
+    return unwrapPayload(response.data);
   },
   getDiagnosisSession: async (sessionId?: string) => {
     const resolved = (sessionId ?? getRememberedSessionId()).trim();
