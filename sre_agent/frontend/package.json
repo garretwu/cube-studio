@@ -5,14 +5,17 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "mock-backend": "python mock_backend.py",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
     "test": "vitest run"
   },
   "dependencies": {
+    "@ant-design/x": "^2.4.0",
     "@fontsource/inter": "^5.2.8",
     "@fontsource/inter-tight": "^5.2.7",
-    "antd": "^5.23.4",
+    "@xyflow/react": "^12.10.1",
+    "antd": "^6.3.4",
     "axios": "^1.8.4",
     "d3": "^7.9.0",
     "react": "^18.3.1",

@@ -1,7 +1,8 @@
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 
 import SidebarNav, { type SidebarNavSection } from "./SidebarNav";
 import Topbar from "./Topbar";
+import { cn } from "./cn";
 
 type AppShellProps = {
   children: ReactNode;
@@ -32,15 +33,24 @@ function AppShell({
   brandSubtitle,
   onBrandClick,
 }: AppShellProps) {
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+
   return (
-    <div className="shell-root">
+    <div className={cn("shell-root", sidebarCollapsed && "shell-root--sidebar-collapsed")}>
       <div aria-hidden="true" className="shell-ambient">
         <img alt="" className="shell-ambient__orbit shell-ambient__orbit--primary" src="/brand-orbit.svg" />
         <img alt="" className="shell-ambient__orbit shell-ambient__orbit--secondary" src="/brand-orbit.svg" />
       </div>
 
-      <aside className="shell-sidebar">
-        <SidebarNav brandSubtitle={brandSubtitle} onBrandClick={onBrandClick} sections={sections} />
+      <aside className={cn("shell-sidebar", sidebarCollapsed && "shell-sidebar--collapsed")}>
+        <SidebarNav
+          brandSubtitle={brandSubtitle}
+          collapsed={sidebarCollapsed}
+          onBrandClick={onBrandClick}
+          onItemSelect={() => setSidebarCollapsed(false)}
+          onToggleCollapsed={() => setSidebarCollapsed((current) => !current)}
+          sections={sections}
+        />
       </aside>
 
       <div className="shell-main">

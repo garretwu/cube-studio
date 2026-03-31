@@ -3,15 +3,14 @@ import { delay, http, HttpResponse } from "msw";
 import {
   alertClusters,
   alerts,
-  baseline,
+  diagnosisHistorySessions,
   diagnosisSession,
-  incidents,
   initialChatMessages,
   knowledgeDocuments,
-  learnedPatterns,
   remediationOverview,
   skills,
   topologyEdges,
+  topologyExplorerMock,
   topologyNodes,
 } from "./data";
 
@@ -28,6 +27,10 @@ export const handlers = [
       ],
     });
   }),
+  http.get("/api/topology-explorer", async () => {
+    await delay(140);
+    return HttpResponse.json(topologyExplorerMock);
+  }),
   http.get("/api/alerts", async () => {
     await delay(100);
     return HttpResponse.json({ alerts, clusters: alertClusters });
@@ -35,6 +38,10 @@ export const handlers = [
   http.get("/api/diagnosis/session/current", async () => {
     await delay(140);
     return HttpResponse.json(diagnosisSession);
+  }),
+  http.get("/api/diagnosis/sessions", async () => {
+    await delay(110);
+    return HttpResponse.json(diagnosisHistorySessions);
   }),
   http.get("/api/remediation/overview", async () => {
     await delay(120);
@@ -47,13 +54,13 @@ export const handlers = [
   }),
   http.post("/api/chat", async ({ request }) => {
     await delay(90);
-    const body = (await request.json()) as { content: string };
+    const body = (await request.json()) as { content: string; session_id?: string };
     return HttpResponse.json({
       reply: {
         id: `assistant-${Date.now()}`,
         role: "assistant",
         created_at: new Date().toISOString(),
-        content: `收到指令：“${body.content}”。我建议先检查 GPU 进程列表，再关联最近 15 分钟的拓扑影响半径。`,
+        content: `会话 ${body.session_id ?? diagnosisSession.session_id} 已收到问题：“${body.content}”。建议先检查 GPU 进程列表，再结合最近 15 分钟的影响链路继续排查。`,
       },
     });
   }),
@@ -72,18 +79,6 @@ export const handlers = [
   http.get("/api/knowledge/documents", async () => {
     await delay(80);
     return HttpResponse.json({ documents: knowledgeDocuments });
-  }),
-  http.get("/api/memory/incidents", async () => {
-    await delay(60);
-    return HttpResponse.json(incidents);
-  }),
-  http.get("/api/memory/patterns", async () => {
-    await delay(60);
-    return HttpResponse.json(learnedPatterns);
-  }),
-  http.get("/api/memory/baseline", async () => {
-    await delay(50);
-    return HttpResponse.json(baseline);
   }),
   http.get("/api/skills", async () => {
     await delay(70);

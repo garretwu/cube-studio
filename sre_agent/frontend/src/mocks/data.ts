@@ -4,6 +4,7 @@ import type {
   ChatMessage,
   ConfigBaseline,
   DiagnosisSession,
+  DiagnosisSessionSummary,
   IncidentRecord,
   KnowledgeDocument,
   LearnedPattern,
@@ -12,6 +13,8 @@ import type {
   RemediationOverview,
   SkillDescriptor,
 } from "../api/types";
+
+export { topologyExplorerMock } from "./topologyExplorerData";
 
 export const topologyNodes: OntologyNode[] = [
   {
@@ -53,6 +56,75 @@ export const topologyNodes: OntologyNode[] = [
     properties: { namespace: "infer" },
     status: "impacted",
     updated_at: "2026-03-18T12:02:00Z",
+  },
+];
+
+export const skills: SkillDescriptor[] = [
+  {
+    id: "builtin-topology-navigator",
+    name: "拓扑导航器",
+    scope: "builtin",
+    summary: "聚合实体关系、影响范围和上下游依赖，帮助诊断链路上的拓扑异常。",
+    source: "builtin://topology",
+    permissions: ["read:ontology", "read:events"],
+    match_score: 0.96,
+    status: "available",
+    updated_at: "2026-03-26T09:32:18Z",
+  },
+  {
+    id: "builtin-alert-correlator",
+    name: "告警关联器",
+    scope: "builtin",
+    summary: "将同一时间窗内的基础设施与服务告警聚类，生成可直接进入诊断流程的事件上下文。",
+    source: "builtin://alert-correlator",
+    permissions: ["read:alerts", "read:events"],
+    match_score: 0.94,
+    status: "available",
+    updated_at: "2026-03-25T16:48:55Z",
+  },
+  {
+    id: "builtin-remediation-guard",
+    name: "修复执行护栏",
+    scope: "builtin",
+    summary: "在自动修复前检查审批、回滚策略和灰度条件，降低高风险操作的误执行概率。",
+    source: "builtin://remediation-guard",
+    permissions: ["read:policies", "execute:workflow"],
+    match_score: 0.91,
+    status: "available",
+    updated_at: "2026-03-24T21:06:12Z",
+  },
+  {
+    id: "custom-runbook-rdma",
+    name: "RDMA 手册匹配器",
+    scope: "custom",
+    summary: "将网络类告警映射到 RDMA、RoCE 与 ECN 处置手册，生成更聚焦的排障建议。",
+    source: "skills://rdma-runbook",
+    permissions: ["read:knowledge", "read:metrics"],
+    match_score: 0.88,
+    status: "available",
+    updated_at: "2026-03-22T11:40:08Z",
+  },
+  {
+    id: "custom-k8s-release-window",
+    name: "发布窗口审查",
+    scope: "custom",
+    summary: "结合业务高峰、值班排班和变更策略，对修复动作是否应立即执行给出窗口建议。",
+    source: "skills://release-window-review",
+    permissions: ["read:schedule", "read:change-calendar"],
+    match_score: 0.83,
+    status: "unavailable",
+    updated_at: "2026-03-20T08:15:31Z",
+  },
+  {
+    id: "custom-service-impact-brief",
+    name: "服务影响摘要",
+    scope: "custom",
+    summary: "把受影响服务、SLO 变化和用户面信息压缩成可直接同步给值班同学的简报卡片。",
+    source: "skills://service-impact-brief",
+    permissions: ["read:metrics", "read:service-catalog"],
+    match_score: 0.86,
+    status: "available",
+    updated_at: "2026-03-18T19:24:47Z",
   },
 ];
 
@@ -99,8 +171,41 @@ export const diagnosisSession: DiagnosisSession = {
   session_id: "sess-latency-001",
   alert: alerts[0],
   status: "re_diagnosed",
+  re_diagnosis_round: 1,
   duration_seconds: 142,
   outcome: "proposed_fix_ready",
+  bootstrap: {
+    session_name: "????????",
+    started_at: "2026-03-18T12:00:12Z",
+    related_alerts: {
+      count: 2,
+      items: [
+        {
+          id: alerts[0].fingerprint,
+          alert_name: alerts[0].alert_name,
+          severity: alerts[0].severity,
+          source_entity: alerts[0].annotations.entity ?? alerts[0].labels.service ?? null,
+          starts_at: alerts[0].starts_at,
+          summary: alerts[0].annotations.summary ?? null,
+        },
+        {
+          id: alerts[1].fingerprint,
+          alert_name: alerts[1].alert_name,
+          severity: alerts[1].severity,
+          source_entity: alerts[1].annotations.entity ?? alerts[1].labels.node ?? null,
+          starts_at: alerts[1].starts_at,
+          summary: alerts[1].annotations.summary ?? null,
+        },
+      ],
+    },
+    impact: {
+      object_count: 2,
+      service_count: 2,
+      affected_entities: ["gpu-01", "node-gpu-01"],
+      affected_services: ["vllm-latency", "chat-serving"],
+      blast_radius_summary: "???????????????????????????????",
+    },
+  },
   diagnosis_result: {
     root_cause: "异常基准测试进程导致 GPU 资源争用",
     root_cause_layer: "hardware",
@@ -154,6 +259,89 @@ export const diagnosisSession: DiagnosisSession = {
     ],
   },
 };
+
+export const diagnosisHistorySessions: DiagnosisSessionSummary[] = [
+  {
+    session_id: diagnosisSession.session_id,
+    title: "3月18日推理变慢",
+    summary: "vLLM 推理链路出现持续高延迟，已完成一轮复诊并生成待审批修复方案。",
+    started_at: diagnosisSession.alert.starts_at,
+    updated_at: "2026-03-18T12:05:00Z",
+    status: diagnosisSession.status,
+    severity: diagnosisSession.alert.severity,
+    alert_name: diagnosisSession.alert.alert_name,
+    duration_seconds: diagnosisSession.duration_seconds,
+    outcome: diagnosisSession.outcome,
+    triage_priority: diagnosisSession.diagnosis_result?.triage_priority,
+    root_cause: diagnosisSession.diagnosis_result?.root_cause,
+    affected_services: diagnosisSession.diagnosis_result?.affected_services ?? [],
+    re_diagnosis_round: diagnosisSession.re_diagnosis_round,
+  },
+  {
+    session_id: "sess-gpu-temp-002",
+    title: "GPU温度过高风险",
+    summary: "单卡温度连续逼近安全阈值，已完成快速根因定位并建议限流观察。",
+    started_at: "2026-03-17T08:24:00Z",
+    updated_at: "2026-03-17T08:46:00Z",
+    status: "resolved",
+    severity: "warning",
+    alert_name: "GPU 温度偏高",
+    duration_seconds: 96,
+    outcome: "resolved",
+    triage_priority: "P2",
+    root_cause: "机柜局部散热效率下降导致单卡温升异常。",
+    affected_services: ["embedding-serving"],
+    re_diagnosis_round: 0,
+  },
+  {
+    session_id: "sess-rdma-loss-003",
+    title: "RoCE 丢包突增",
+    summary: "RDMA 网络丢包在训练高峰窗口骤升，完成一次回溯后转人工网络班继续收敛。",
+    started_at: "2026-03-16T21:08:00Z",
+    updated_at: "2026-03-16T21:33:00Z",
+    status: "closed",
+    severity: "critical",
+    alert_name: "RoCE packet loss high",
+    duration_seconds: 155,
+    outcome: "escalated",
+    triage_priority: "P1",
+    root_cause: "核心交换链路突发拥塞，需网络侧联合排查 ECN 与队列水位。",
+    affected_services: ["trainer-gateway", "rdma-sidecar"],
+    re_diagnosis_round: 1,
+  },
+  {
+    session_id: "sess-model-restart-004",
+    title: "模型副本重启波动",
+    summary: "推理服务副本在版本切换后出现短时重启抖动，已确认回滚后恢复。",
+    started_at: "2026-03-15T14:12:00Z",
+    updated_at: "2026-03-15T14:29:00Z",
+    status: "resolved",
+    severity: "info",
+    alert_name: "Pod restart burst",
+    duration_seconds: 74,
+    outcome: "resolved",
+    triage_priority: "P3",
+    root_cause: "配置热加载与存量连接回收节奏不匹配。",
+    affected_services: ["chat-serving"],
+    re_diagnosis_round: 0,
+  },
+  {
+    session_id: "sess-night-peak-005",
+    title: "夜间推理波峰异常",
+    summary: "夜间流量波峰期间单分片负载倾斜明显，当前结论已归档用于下次快速匹配。",
+    started_at: "2026-03-14T23:41:00Z",
+    updated_at: "2026-03-15T00:06:00Z",
+    status: "diagnosed",
+    severity: "warning",
+    alert_name: "Inference shard skew",
+    duration_seconds: 118,
+    outcome: "proposed_fix_ready",
+    triage_priority: "P2",
+    root_cause: "流量分片权重未随夜间热点模型同步刷新。",
+    affected_services: ["night-batch-router", "vllm-latency"],
+    re_diagnosis_round: 0,
+  },
+];
 
 export const remediationOverview: RemediationOverview = {
   session_id: diagnosisSession.session_id,
@@ -288,7 +476,7 @@ export const baseline: ConfigBaseline = {
   updated_at: "2026-03-18T10:30:00Z",
 };
 
-export const skills: SkillDescriptor[] = [
+const legacySkills: SkillDescriptor[] = [
   {
     id: "builtin-topology",
     name: "拓扑导航器",

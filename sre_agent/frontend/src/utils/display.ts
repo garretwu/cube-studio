@@ -1,4 +1,4 @@
-import type { AlertStatus, ChatMessage, IncidentRecord, Severity, VerificationConfig } from "../api/types";
+import type { AlertStatus, ChatMessage, Severity, VerificationConfig } from "../api/types";
 
 function formatByMap(value: string | null | undefined, map: Record<string, string>, fallback = "未知") {
   if (!value) {
@@ -11,7 +11,7 @@ function formatByMap(value: string | null | undefined, map: Record<string, strin
 const severityLabels: Record<Severity | "all", string> = {
   all: "全部级别",
   critical: "严重",
-  warning: "警告",
+  warning: "告警",
   info: "提示",
 };
 
@@ -30,8 +30,11 @@ const workflowStatusLabels: Record<string, string> = {
   connecting: "连接中",
   custom: "自定义",
   degraded: "降级",
+  diagnosed: "已完成诊断",
+  diagnosing: "诊断中",
   eliminated: "已排除",
   error: "异常",
+  escalated: "已升级",
   failed: "失败",
   firing: "触发中",
   healthy: "正常",
@@ -45,11 +48,13 @@ const workflowStatusLabels: Record<string, string> = {
   pending: "待执行",
   probable: "较大概率",
   proposed_fix_ready: "修复方案已就绪",
-  re_diagnosed: "已复核",
+  re_diagnosed: "复诊完成",
   rejected: "已驳回",
+  remediating: "修复中",
   resolved: "已解决",
   testing: "验证中",
-  validating: "验证中",
+  timeout: "超时",
+  validating: "校验中",
 };
 
 const entityTypeLabels: Record<string, string> = {
@@ -73,9 +78,9 @@ const verificationMethodLabels: Record<VerificationConfig["method"], string> = {
 };
 
 const roleLabels: Record<ChatMessage["role"], string> = {
-  assistant: "助手",
+  assistant: "诊断助手",
   tool: "工具",
-  user: "用户",
+  user: "值班同学",
 };
 
 const categoryLabels: Record<string, string> = {
@@ -98,7 +103,9 @@ const layerLabels: Record<string, string> = {
   application: "应用",
   hardware: "硬件",
   network: "网络",
+  os: "操作系统",
   platform: "平台",
+  service: "服务",
 };
 
 export function formatSeverity(value?: Severity | "all" | null) {
@@ -159,8 +166,4 @@ export function formatPropertyLabel(value: string) {
 
 export function formatLayer(value?: string | null) {
   return formatByMap(value, layerLabels);
-}
-
-export function formatIncidentOutcome(value?: IncidentRecord["outcome"] | null) {
-  return formatWorkflowStatus(value);
 }

@@ -1,4 +1,5 @@
 import { render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 
 import { ensureThemeVariables } from "../theme/tokens";
 import DesignTokensPage from "./DesignTokens";
@@ -39,6 +40,7 @@ describe("DesignTokensPage", () => {
   });
 
   it("refreshes token values when runtime CSS variables change", async () => {
+    const user = userEvent.setup();
     document.documentElement.style.setProperty("--semantic-text-primary", "#0d0d12");
 
     render(<DesignTokensPage />);
@@ -46,6 +48,7 @@ describe("DesignTokensPage", () => {
     expect(await screen.findAllByText("#0d0d12")).not.toHaveLength(0);
 
     document.documentElement.style.setProperty("--semantic-text-primary", "#111827");
+    await user.click(screen.getByRole("button", { name: "Refresh" }));
 
     await waitFor(
       () => {

@@ -1,0 +1,68 @@
+[2m09:46:05[22m [31m[1m[vite][22m[39m [31mInternal server error: D:\cube-studio\sre_agent\frontend\src\components\ui\SidebarNav.tsx: Unexpected token (9:31)
+
+[0m [90m  7 |[31m   icon[33m?[31m[33m:[31m [33mAppIconName[31m[33m;[31m
+ [90m  8 |[31m   active[33m?[31m[33m:[31m boolean[33m;[31m
+[31m[1m>[22m[31m[90m  9 |[31m   kind[33m?[31m[33m:[31m [32m"default"[31m [33m|[31m [32m"history"[31m[33m;[31m[32m`r`[31mn  status[33m?[31m[33m:[31m [32m"diagnosing"[31m [33m|[31m [32m"completed"[31m[33m;[31m[32m`r`[31mn  disabled[33m?[31m[33m:[31m boolean[33m;[31m
+ [90m    |[31m                                [31m[1m^[22m[31m
+ [90m 10 |[31m   onClick[33m:[31m () [33m=>[31m [36mvoid[31m[33m;[31m
+ [90m 11 |[31m }[33m;[31m
+ [90m 12 |[31m[0m[39m
+  Plugin: [35mvite:react-babel[39m
+  File: [36mD:/cube-studio/sre_agent/frontend/src/components/ui/SidebarNav.tsx[39m:9:31
+[33m  7  |    icon?: AppIconName;
+  8  |    active?: boolean;
+  9  |    kind?: "default" | "history";`r`n  status?: "diagnosing" | "completed";`r`n  disabled?: boolean;
+     |                                 ^
+  10 |    onClick: () => void;
+  11 |  };[39m
+      at constructor (D:\cube-studio\sre_agent\frontend\node_modules\@babel\parser\lib\index.js:365:19)
+      at TypeScriptParserMixin.raise (D:\cube-studio\sre_agent\frontend\node_modules\@babel\parser\lib\index.js:6599:19)
+      at TypeScriptParserMixin.unexpected (D:\cube-studio\sre_agent\frontend\node_modules\@babel\parser\lib\index.js:6619:16)
+      at TypeScriptParserMixin.parsePropertyName (D:\cube-studio\sre_agent\frontend\node_modules\@babel\parser\lib\index.js:12024:18)
+      at TypeScriptParserMixin.tsParseTypeMember (D:\cube-studio\sre_agent\frontend\node_modules\@babel\parser\lib\index.js:8213:11)
+      at TypeScriptParserMixin.tsParseList (D:\cube-studio\sre_agent\frontend\node_modules\@babel\parser\lib\index.js:7878:19)
+      at TypeScriptParserMixin.tsParseObjectTypeMembers (D:\cube-studio\sre_agent\frontend\node_modules\@babel\parser\lib\index.js:8230:26)
+      at TypeScriptParserMixin.tsParseTypeLiteral (D:\cube-studio\sre_agent\frontend\node_modules\@babel\parser\lib\index.js:8225:25)
+      at TypeScriptParserMixin.tsParseNonArrayType (D:\cube-studio\sre_agent\frontend\node_modules\@babel\parser\lib\index.js:8440:106)
+      at TypeScriptParserMixin.tsParseArrayTypeOrHigher (D:\cube-studio\sre_agent\frontend\node_modules\@babel\parser\lib\index.js:8470:21)
+      at D:\cube-studio\sre_agent\frontend\node_modules\@babel\parser\lib\index.js:8526:158
+      at TypeScriptParserMixin.tsInAllowConditionalTypesContext (D:\cube-studio\sre_agent\frontend\node_modules\@babel\parser\lib\index.js:8815:14)
+      at TypeScriptParserMixin.tsParseTypeOperatorOrHigher (D:\cube-studio\sre_agent\frontend\node_modules\@babel\parser\lib\index.js:8526:114)
+      at TypeScriptParserMixin.tsParseUnionOrIntersectionType (D:\cube-studio\sre_agent\frontend\node_modules\@babel\parser\lib\index.js:8533:18)
+      at TypeScriptParserMixin.tsParseIntersectionTypeOrHigher (D:\cube-studio\sre_agent\frontend\node_modules\@babel\parser\lib\index.js:8542:17)
+      at TypeScriptParserMixin.tsParseUnionOrIntersectionType (D:\cube-studio\sre_agent\frontend\node_modules\@babel\parser\lib\index.js:8533:18)
+      at TypeScriptParserMixin.tsParseUnionTypeOrHigher (D:\cube-studio\sre_agent\frontend\node_modules\@babel\parser\lib\index.js:8545:17)
+      at TypeScriptParserMixin.tsParseNonConditionalType (D:\cube-studio\sre_agent\frontend\node_modules\@babel\parser\lib\index.js:8712:17)
+      at TypeScriptParserMixin.tsParseType (D:\cube-studio\sre_agent\frontend\node_modules\@babel\parser\lib\index.js:8687:23)
+      at D:\cube-studio\sre_agent\frontend\node_modules\@babel\parser\lib\index.js:8775:19
+      at TypeScriptParserMixin.tsInType (D:\cube-studio\sre_agent\frontend\node_modules\@babel\parser\lib\index.js:8797:14)
+      at TypeScriptParserMixin.tsParseTypeAliasDeclaration (D:\cube-studio\sre_agent\frontend\node_modules\@babel\parser\lib\index.js:8767:32)
+      at TypeScriptParserMixin.tsParseDeclaration (D:\cube-studio\sre_agent\frontend\node_modules\@babel\parser\lib\index.js:9053:23)
+      at TypeScriptParserMixin.tsTryParseExportDeclaration (D:\cube-studio\sre_agent\frontend\node_modules\@babel\parser\lib\index.js:9026:17)
+      at TypeScriptParserMixin.parseExportDeclaration (D:\cube-studio\sre_agent\frontend\node_modules\@babel\parser\lib\index.js:9629:46)
+      at TypeScriptParserMixin.maybeParseExportDeclaration (D:\cube-studio\sre_agent\frontend\node_modules\@babel\parser\lib\index.js:13893:31)
+      at TypeScriptParserMixin.parseExport (D:\cube-studio\sre_agent\frontend\node_modules\@babel\parser\lib\index.js:13812:29)
+      at TypeScriptParserMixin.parseExport (D:\cube-studio\sre_agent\frontend\node_modules\@babel\parser\lib\index.js:9385:20)
+      at TypeScriptParserMixin.parseStatementContent (D:\cube-studio\sre_agent\frontend\node_modules\@babel\parser\lib\index.js:12878:27)
+      at TypeScriptParserMixin.parseStatementContent (D:\cube-studio\sre_agent\frontend\node_modules\@babel\parser\lib\index.js:9508:18)
+      at TypeScriptParserMixin.parseStatementLike (D:\cube-studio\sre_agent\frontend\node_modules\@babel\parser\lib\index.js:12767:17)
+      at TypeScriptParserMixin.parseModuleItem (D:\cube-studio\sre_agent\frontend\node_modules\@babel\parser\lib\index.js:12744:17)
+      at TypeScriptParserMixin.parseBlockOrModuleBlockBody (D:\cube-studio\sre_agent\frontend\node_modules\@babel\parser\lib\index.js:13316:36)
+      at TypeScriptParserMixin.parseBlockBody (D:\cube-studio\sre_agent\frontend\node_modules\@babel\parser\lib\index.js:13309:10)
+      at TypeScriptParserMixin.parseProgram (D:\cube-studio\sre_agent\frontend\node_modules\@babel\parser\lib\index.js:12622:10)
+      at TypeScriptParserMixin.parseTopLevel (D:\cube-studio\sre_agent\frontend\node_modules\@babel\parser\lib\index.js:12612:25)
+      at TypeScriptParserMixin.parse (D:\cube-studio\sre_agent\frontend\node_modules\@babel\parser\lib\index.js:14488:25)
+      at TypeScriptParserMixin.parse (D:\cube-studio\sre_agent\frontend\node_modules\@babel\parser\lib\index.js:10126:18)
+      at parse (D:\cube-studio\sre_agent\frontend\node_modules\@babel\parser\lib\index.js:14522:38)
+      at parser (D:\cube-studio\sre_agent\frontend\node_modules\@babel\core\lib\parser\index.js:41:34)
+      at parser.next (<anonymous>)
+      at normalizeFile (D:\cube-studio\sre_agent\frontend\node_modules\@babel\core\lib\transformation\normalize-file.js:64:37)
+      at normalizeFile.next (<anonymous>)
+      at run (D:\cube-studio\sre_agent\frontend\node_modules\@babel\core\lib\transformation\index.js:22:50)
+      at run.next (<anonymous>)
+      at transform (D:\cube-studio\sre_agent\frontend\node_modules\@babel\core\lib\transform.js:22:33)
+      at transform.next (<anonymous>)
+      at step (D:\cube-studio\sre_agent\frontend\node_modules\gensync\index.js:261:32)
+      at D:\cube-studio\sre_agent\frontend\node_modules\gensync\index.js:273:13
+      at async.call.result.err.err (D:\cube-studio\sre_agent\frontend\node_modules\gensync\index.js:223:11)
+^C^C

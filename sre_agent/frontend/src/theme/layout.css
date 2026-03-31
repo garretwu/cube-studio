@@ -1,10 +1,16 @@
 .shell-root {
+  --shell-sidebar-collapsed-width: 88px;
   display: grid;
   grid-template-columns: var(--sidebar-width) minmax(0, 1fr);
   min-height: 100vh;
   position: relative;
   isolation: isolate;
   overflow: clip;
+  transition: grid-template-columns var(--transition-base);
+}
+
+.shell-root--sidebar-collapsed {
+  grid-template-columns: var(--shell-sidebar-collapsed-width) minmax(0, 1fr);
 }
 
 .shell-ambient {
@@ -75,6 +81,16 @@
   top: 0;
   height: 100vh;
   z-index: 1;
+  overflow-x: hidden;
+  transition:
+    padding var(--transition-base),
+    gap var(--transition-base);
+}
+
+.shell-sidebar--collapsed {
+  padding-left: var(--space-3);
+  padding-right: var(--space-3);
+  gap: var(--space-5);
 }
 
 .shell-main {
@@ -160,7 +176,7 @@
 
 .page-intro {
   display: grid;
-  gap: var(--space-4);
+  gap: var(--space-3);
 }
 
 .page-two-col {
@@ -240,6 +256,10 @@
 
 @media (max-width: 960px) {
   .shell-root {
+    grid-template-columns: 1fr;
+  }
+
+  .shell-root--sidebar-collapsed {
     grid-template-columns: 1fr;
   }
 

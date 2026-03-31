@@ -55,7 +55,7 @@ VITE_WS_ENABLED === "true" && Boolean(session?.session_id)
 | Diagnosis | `GET` | `/api/diagnosis/session/current` | `diagnosisStore` / Diagnosis 页面 | 是 |
 | Remediation | `GET` | `/api/remediation/overview` | `remediationStore` / Remediation 页面 | 是 |
 | Remediation | `POST` | `/api/remediation/:sessionId/approve` | `remediationStore.submitApproval` | 是 |
-| Chat | `POST` | `/api/chat` | `chatStore.sendMessage` | 是 |
+| Diagnosis | `POST` | `/api/chat` | `diagnosisStore.sendMessage` / Diagnosis 页面内对话 | 是 |
 | Knowledge | `GET` | `/api/knowledge/search` | Knowledge 页面搜索动作 | 是 |
 | Knowledge | `GET` | `/api/knowledge/documents` | Knowledge 页面初始化加载 | 是 |
 | Memory | `GET` | `/api/memory/incidents` | Memory 页面 | 是 |
@@ -421,11 +421,11 @@ type RemediationOverview = {
 - 设置 `approval_required = false`
 - 设置 `progress.status = "approved"` 或 `"rejected"`
 
-### 4.5 Chat 模块
+### 4.5 历史说明：对话能力已并入 Diagnosis 模块
 
 #### 4.5.1 功能范围
 
-Chat 页面使用该模块完成以下展示：
+该能力已并入 Diagnosis 页面，当前用于承载诊断内协同对话：
 
 - 初始助手消息
 - 用户输入
@@ -435,8 +435,8 @@ Chat 页面使用该模块完成以下展示：
 
 | 层级 | 文件 |
 | --- | --- |
-| 页面 | `src/pages/Chat.tsx` |
-| 状态 | `src/store/chatStore.ts` |
+| 页面 | `src/pages/Diagnosis.tsx` |
+| 状态 | `src/store/diagnosisStore.ts` |
 
 #### 4.5.3 发送消息接口
 
@@ -476,7 +476,7 @@ type ChatMessage = {
 GET /api/chat/history
 ```
 
-这个接口存在于 `src/mocks/handlers.ts` 中，但当前 Chat 页面没有实际调用。
+这个接口存在于 `src/mocks/handlers.ts` 中，但当前 Diagnosis 页面没有实际调用。
 
 #### 4.5.6 Mock 数据来源
 
@@ -492,7 +492,7 @@ GET /api/chat/history
 
 #### 4.5.8 重要实现说明
 
-当前 Chat 页面会直接从 `src/mocks/data.ts` 中读取 `initialChatMessages`，而不是通过 `/api/chat/history` 拉取历史消息。这意味着：
+当前 Diagnosis 页面会直接从 `src/mocks/data.ts` 中读取 `initialChatMessages`，而不是通过 `/api/chat/history` 拉取历史消息。这意味着：
 
 - 即使不请求历史接口，页面也依赖本地 mock 种子消息
 - 如果进入真实后端联调模式，后续可能需要补一套真正的 history 拉取流程
@@ -711,7 +711,7 @@ type SkillDescriptor = {
 | Alerts | `alerts`, `alertClusters` |
 | Diagnosis | `diagnosisSession` |
 | Remediation | `remediationOverview` |
-| Chat | `initialChatMessages` |
+| Diagnosis 内对话 | `initialChatMessages` |
 | Knowledge | `knowledgeDocuments` |
 | Memory | `incidents`, `learnedPatterns`, `baseline` |
 | Skills | `skills` |
@@ -742,13 +742,13 @@ Diagnosis 页面已经有通用 WebSocket 客户端和事件模型，但：
 
 - `GET /api/memory/incidents` 当前会忽略 `last`
 - chat history 接口虽然存在，但 UI 没有真正使用
-- chat 页面会直接注入本地初始消息，而不是完全通过 HTTP 获取
+- Diagnosis 页面内对话会直接注入本地初始消息，而不是完全通过 HTTP 获取
 
 ### 6.4 推荐的后端对齐优先级
 
 1. 优先实现第 3 节列出的 HTTP 路由。
 2. 返回字段名严格与 `src/api/types.ts` 中的 TypeScript 契约保持一致。
-3. 明确 chat history 后续是走 API 还是继续保留前端种子消息。
+3. 明确 Diagnosis 内对话后续是否仍需引入 chat history API。
 4. 明确 diagnosis streaming 是否会作为近期真实能力落地。
 
 ## 7. 文档维护时的参考源
@@ -761,4 +761,3 @@ Diagnosis 页面已经有通用 WebSocket 客户端和事件模型，但：
 - `src/mocks/data.ts`
 - `src/pages/*.tsx`
 - `src/store/*.ts`
-

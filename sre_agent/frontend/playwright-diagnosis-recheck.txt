@@ -1,0 +1,103 @@
+BODY_TEXT:
+QinClaw
+
+AIDC 智能运维指挥台
+
+主导航
+
+拓扑
+告警
+告警（修改）
+诊断
+修复
+知识
+技能
+
+历史频道
+
+帮助中心
+AIDC-001
+SZ
+
+Miaomiao Zhou
+
+站点值班 / 智能运维
+
+管理员
+
+DIAGNOSIS
+
+Diagnosis Chat
+
+Reasoning steps, tool executions, and the final reply all stay inside the same chat flow. Realtime WebSocket events now drive the assistant bubble instead of only revealing the final result at the end.
+
+Current Session diag-session-20260330
+WebSocket connected
+DEV mock enabled
+Realtime stream enabled
+
+SESSION
+
+GPU hotspot diagnosis session
+
+diag-session-20260330
+
+????
+running
+
+????
+
+????
+
+????????
+
+????
+
+????
+
+????????
+
+????
+
+2026/03/30 14:30:20
+
+??????
+
+????
+
+N/A
+
+???????
+
+AI
+当前诊断会话已经接入实时思考流。你可以直接询问根因，也可以继续追问排查建议。
+03/30 14:31
+AI
+The current diagnosis reasoning has already been merged into the conversation
+Step 1 / Tool call
+已有历史证据表明 node-gpu-01 存在 GPU hotspot，与推理队列上升时间窗高度重叠。
+03/30 14:35 / Tool call / metrics.gpu_window
+Observation / metrics.gpu_window
+Tool output has been merged into the current reasoning context.
+03/30 14:35
+The current diagnosis reasoning has already been merged into the conversation, so you can continue asking follow-up questions in the same chat thread.
+03/30 14:35
+analysis
+Mock Scenes
+Send
+
+Press Enter to send. Realtime WebSocket events now push the assistant bubble forward, and thinking / tool-call / streaming still trigger the local demos.
+LOGS:
+console:debug:[vite] connecting...
+console:debug:[vite] connected.
+console:info:%cDownload the React DevTools for a better development experience: https://reactjs.org/link/react-devtools font-weight:bold
+console:warning:⚠️ React Router Future Flag Warning: React Router will begin wrapping state updates in `React.startTransition` in v7. You can use the `v7_startTransition` future flag to opt-in early. For more information, see https://reactrouter.com/v6/upgrading/future#v7_starttransition.
+console:warning:⚠️ React Router Future Flag Warning: Relative route resolution within Splat routes is changing in v7. You can use the `v7_relativeSplatPath` future flag to opt-in early. For more information, see https://reactrouter.com/v6/upgrading/future#v7_relativesplatpath.
+console:startGroupCollapsed:%c[MSW] Mocking enabled. color:orangered;font-weight:bold;
+console:log:%cDocumentation: %chttps://mswjs.io/docs font-weight:bold font-weight:normal
+console:log:Found an issue? https://github.com/mswjs/msw/issues
+console:log:Worker script URL: http://127.0.0.1:8080/mockServiceWorker.js
+console:log:Worker scope: http://127.0.0.1:8080/
+console:log:Client ID: %s (%s) 6c131f3a-97ee-4e9c-a8bf-8785fa6e6db9 top-level
+console:endGroup:console.groupEnd
+ERRORS:
