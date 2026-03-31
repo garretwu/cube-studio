@@ -1,136 +1,94 @@
-import { beforeEach, describe, expect, it } from "vitest";
+﻿import { beforeEach, describe, expect, it } from "vitest";
+import { http, HttpResponse } from "msw";
 
-import type { DiagnosisSession } from "../api/types";
+import type { WSEvent } from "../api/types";
+import { diagnosisSession, initialChatMessages } from "../mocks/data";
+import { server } from "../test/server";
 import { useDiagnosisStore } from "./diagnosisStore";
 
-const baseSession: DiagnosisSession = {
-  session_id: "session-1",
-  alert: {
-    alert_name: "GPUUtilizationHigh",
-    severity: "warning",
-    labels: { node: "node-a" },
-    annotations: {},
-    starts_at: "2026-03-27T00:00:00Z",
-    ends_at: null,
-    fingerprint: "fp-session-1",
-    status: "firing",
-    source: "test",
-  },
-  status: "diagnosing",
-  diagnosis_result: null,
-  trace: { steps: [] },
-  duration_seconds: 0,
-  outcome: null,
-};
-
-describe("diagnosisStore.applyEvent", () => {
+describe("useDiagnosisStore", () => {
   beforeEach(() => {
     useDiagnosisStore.setState({
-      session: structuredClone(baseSession),
-      sessionId: baseSession.session_id,
-      seenEventIds: {},
-      connectionState: "open",
+      session: undefined,
+      activeSessionId: undefined,
+      messages: [...initialChatMessages],
+      isLoadingSession: false,
+      isSendingMessage: false,
+      connectionState: "closed",
+      error: undefined,
     });
   });
 
-  it("appends live tool_call/tool_result/thinking_step events and updates diagnosis_result", () => {
-    const store = useDiagnosisStore.getState();
-    store.applyEvent({
-      schema_version: "1.0",
-      type: "tool_call",
-      session_id: baseSession.session_id,
-      timestamp: "2026-03-27T00:00:01Z",
-      data: {
-        event_id: "1",
-        step: 1,
-        thought: "collect gpu metrics",
-        action_type: "tool_call",
-        tool_name: "gpu.get_metrics",
-        tool_params: { node: "node-a" },
-      },
-    });
-    store.applyEvent({
-      schema_version: "1.0",
-      type: "tool_result",
-      session_id: baseSession.session_id,
-      timestamp: "2026-03-27T00:00:02Z",
-      data: {
-        event_id: "2",
-        tool: "gpu.get_metrics",
-        params: { node: "node-a" },
-        result: { success: true, data: { utilization: 97 } },
-      },
-    });
-    store.applyEvent({
-      schema_version: "1.0",
+  it("hydrates the active session and resets the conversation when the session changes", async () => {
+    await useDiagnosisStore.getState().bootstrapSession();
+
+    await useDiagnosisStore.getState().sendMessage("追问上一轮诊断");
+
+    expect(useDiagnosisStore.getState().messages).toHaveLength(initialChatMessages.length + 2);
+    expect(useDiagnosisStore.getState().activeSessionId).toBe(diagnosisSession.session_id);
+
+    server.use(
+      http.get("/api/diagnosis/session/current", async () =>
+        HttpResponse.json({
+          ...diagnosisSession,
+          session_id: "sess-latency-002",
+        }),
+      ),
+    );
+
+    await useDiagnosisStore.getState().bootstrapSession();
+
+    expect(useDiagnosisStore.getState().session?.session_id).toBe("sess-latency-002");
+    expect(useDiagnosisStore.getState().activeSessionId).toBe("sess-latency-002");
+    expect(useDiagnosisStore.getState().messages).toEqual(initialChatMessages);
+  });
+
+  it("applies websocket events into trace data without appending synthetic chat messages", async () => {
+    await useDiagnosisStore.getState().bootstrapSession();
+
+    const baselineMessageCount = useDiagnosisStore.getState().messages.length;
+    const baselineTraceCount = useDiagnosisStore.getState().session?.trace?.steps.length ?? 0;
+
+    const thinkingEvent: WSEvent = {
+      schema_version: "1",
       type: "thinking_step",
-      session_id: baseSession.session_id,
-      timestamp: "2026-03-27T00:00:03Z",
+      session_id: diagnosisSession.session_id,
+      timestamp: "2026-03-18T12:06:10Z",
       data: {
-        event_id: "3",
-        step: 2,
-        thought: "gpu contention is likely",
-        action_type: "conclude",
-        confidence: 0.9,
-      },
-    });
-    store.applyEvent({
-      schema_version: "1.0",
-      type: "diagnosis_result",
-      session_id: baseSession.session_id,
-      timestamp: "2026-03-27T00:00:04Z",
-      data: {
-        event_id: "4",
-        root_cause: "gpu contention",
-        root_cause_layer: "service",
-        root_cause_entities: ["node-a"],
-        confidence: 0.9,
-        hypotheses: [],
-        impact_summary: "latency spike",
-        affected_services: ["vllm"],
-        triage_priority: "P1",
-        diagnosis_certainty: "confirmed",
-      },
-    });
-    store.applyEvent({
-      schema_version: "1.0",
-      type: "remediation_progress",
-      session_id: baseSession.session_id,
-      timestamp: "2026-03-27T00:00:05Z",
-      data: {
-        event_id: "5",
-        stage: "execution_started",
-        user: "alice",
-      },
-    });
-
-    const next = useDiagnosisStore.getState().session;
-    expect(next?.trace?.steps).toHaveLength(4);
-    expect(next?.trace?.steps[0]).toMatchObject({ action_type: "tool_call", tool_name: "gpu.get_metrics" });
-    expect(next?.trace?.steps[1]).toMatchObject({ tool: "gpu.get_metrics" });
-    expect(next?.trace?.steps[2]).toMatchObject({ action_type: "conclude" });
-    expect(next?.trace?.steps[3]).toMatchObject({ action_type: "remediate", stage: "execution_started" });
-    expect(next?.diagnosis_result?.root_cause).toBe("gpu contention");
-  });
-
-  it("deduplicates websocket events with the same event_id", () => {
-    const store = useDiagnosisStore.getState();
-    const duplicateEvent = {
-      schema_version: "1.0",
-      type: "thinking_step" as const,
-      session_id: baseSession.session_id,
-      timestamp: "2026-03-27T00:00:05Z",
-      data: {
-        event_id: "dup-1",
-        step: 1,
-        thought: "duplicate",
-        action_type: "conclude",
+        step: 3,
+        thought: "正在核对热点 GPU 与排队深度的关系",
+        action_type: "tool_call",
+        tool_name: "metrics.query",
       },
     };
-    store.applyEvent(duplicateEvent);
-    store.applyEvent(duplicateEvent);
 
-    const next = useDiagnosisStore.getState().session;
-    expect(next?.trace?.steps).toHaveLength(1);
+    const resultEvent: WSEvent = {
+      schema_version: "1",
+      type: "tool_result",
+      session_id: diagnosisSession.session_id,
+      timestamp: "2026-03-18T12:06:15Z",
+      data: {
+        tool_name: "metrics.query",
+        result: {
+          value: 0.94,
+          trend: "up",
+        },
+      },
+    };
+
+    useDiagnosisStore.getState().applyEvent(thinkingEvent);
+    useDiagnosisStore.getState().applyEvent(resultEvent);
+
+    const state = useDiagnosisStore.getState();
+
+    expect(state.messages).toHaveLength(baselineMessageCount);
+    expect(state.session?.trace?.steps).toHaveLength(baselineTraceCount + 2);
+    expect(state.session?.trace?.steps?.at(-2)).toMatchObject({
+      thought: "正在核对热点 GPU 与排队深度的关系",
+      tool_name: "metrics.query",
+    });
+    expect(state.session?.trace?.steps?.at(-1)).toMatchObject({
+      tool: "metrics.query",
+    });
   });
 });

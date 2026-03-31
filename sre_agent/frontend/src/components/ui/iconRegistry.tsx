@@ -64,6 +64,12 @@ const CANONICAL_ICON_NAMES = [
   "shoppingBag",
   "inbox",
   "layers",
+  "clusterMesh",
+  "serverRack",
+  "serverNode",
+  "gpuChip",
+  "networkSwitch",
+  "servicePulse",
   "infoCircle",
   "star",
   "university",
@@ -755,6 +761,107 @@ const iconRegistry: Record<CanonicalAppIconName, IconSpec> = {
           <path d="m12 4.5 7 3.8-7 3.7-7-3.7Z" />
           <path d="m5 12 7 3.7 7-3.7" />
           <path d="m5 15.5 7 4 7-4" />
+        </>,
+        strokeWidth,
+      ),
+  },
+  clusterMesh: {
+    plate: "square",
+    keywords: ["cluster", "mesh", "topology"],
+    outline: ({ strokeWidth }) =>
+      outlineGroup(
+        <>
+          <circle cx="8" cy="8" r="2.1" />
+          <circle cx="16" cy="8" r="2.1" />
+          <circle cx="12" cy="16" r="2.1" />
+          <path d="M9.8 9.2 10.9 13.5" />
+          <path d="M14.2 9.2 13.1 13.5" />
+          <path d="M10.3 8h3.4" />
+        </>,
+        strokeWidth,
+      ),
+  },
+  serverRack: {
+    plate: "square",
+    keywords: ["rack", "cabinet", "server-rack"],
+    outline: ({ strokeWidth }) =>
+      outlineGroup(
+        <>
+          <rect x="7" y="4.5" width="10" height="15" rx="2.4" />
+          <path d="M9.5 8h5" />
+          <path d="M9.5 12h5" />
+          <path d="M9.5 16h5" />
+          <path d="M15.8 8h.01" />
+          <path d="M15.8 12h.01" />
+          <path d="M15.8 16h.01" />
+        </>,
+        strokeWidth,
+      ),
+  },
+  serverNode: {
+    plate: "square",
+    keywords: ["node", "server", "compute"],
+    outline: ({ strokeWidth }) =>
+      outlineGroup(
+        <>
+          <rect x="4.8" y="7" width="14.4" height="10" rx="2.8" />
+          <path d="M7.5 10h6.5" />
+          <path d="M7.5 13h6.5" />
+          <circle cx="16.3" cy="10" r=".7" fill="currentColor" stroke="none" />
+          <circle cx="16.3" cy="13" r=".7" fill="currentColor" stroke="none" />
+        </>,
+        strokeWidth,
+      ),
+  },
+  gpuChip: {
+    plate: "square",
+    keywords: ["gpu", "chip", "accelerator"],
+    outline: ({ strokeWidth }) =>
+      outlineGroup(
+        <>
+          <rect x="7.5" y="7.5" width="9" height="9" rx="2.2" />
+          <path d="M10 10h4" />
+          <path d="M10 13h4" />
+          <path d="M9 5.5v2" />
+          <path d="M12 5.5v2" />
+          <path d="M15 5.5v2" />
+          <path d="M9 16.5v2" />
+          <path d="M12 16.5v2" />
+          <path d="M15 16.5v2" />
+          <path d="M5.5 9h2" />
+          <path d="M5.5 12h2" />
+          <path d="M5.5 15h2" />
+          <path d="M16.5 9h2" />
+          <path d="M16.5 12h2" />
+          <path d="M16.5 15h2" />
+        </>,
+        strokeWidth,
+      ),
+  },
+  networkSwitch: {
+    plate: "square",
+    keywords: ["switch", "network", "fabric"],
+    outline: ({ strokeWidth }) =>
+      outlineGroup(
+        <>
+          <rect x="4.8" y="8" width="14.4" height="8" rx="2.6" />
+          <path d="M7.5 11h.01" />
+          <path d="M10.5 11h.01" />
+          <path d="M13.5 11h.01" />
+          <path d="M16.5 11h.01" />
+          <path d="M9 14h6" />
+        </>,
+        strokeWidth,
+      ),
+  },
+  servicePulse: {
+    plate: "square",
+    keywords: ["service", "application", "pulse"],
+    outline: ({ strokeWidth }) =>
+      outlineGroup(
+        <>
+          <rect x="5.5" y="6" width="13" height="12" rx="3.2" />
+          <path d="M7.8 12h2.1l1.3-2.1 2.1 4.2 1.5-2.1H16.2" />
         </>,
         strokeWidth,
       ),

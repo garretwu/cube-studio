@@ -11,11 +11,6 @@ const palette: Record<string, string> = {
   node: "#503dff",
   gpu: "#f04438",
   switch: "#0ea5e9",
-  switch_port: "#38bdf8",
-  bmc_endpoint: "#14b8a6",
-  k8s_cluster: "#22c55e",
-  k8s_pod: "#84cc16",
-  metric_endpoint: "#f59e0b",
   inference_service: "#8b5cf6",
 };
 
@@ -31,13 +26,8 @@ function TopologyGraph({ nodes, edges, selectedId, onSelect }: TopologyGraphProp
 
   const preparedNodes = useMemo<GraphNode[]>(() => nodes.map((node) => ({ ...node })), [nodes]);
   const preparedEdges = useMemo<GraphLink[]>(
-    () => {
-      const nodeIds = new Set(nodes.map((node) => node.id));
-      return edges
-        .filter((edge) => nodeIds.has(edge.source_id) && nodeIds.has(edge.target_id))
-        .map((edge) => ({ ...edge, source: edge.source_id, target: edge.target_id }));
-    },
-    [edges, nodes],
+    () => edges.map((edge) => ({ ...edge, source: edge.source_id, target: edge.target_id })),
+    [edges],
   );
 
   useEffect(() => {

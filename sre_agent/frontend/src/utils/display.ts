@@ -1,16 +1,17 @@
-import type { AlertStatus, ChatMessage, IncidentRecord, Severity, VerificationConfig } from "../api/types";
+import type { AlertStatus, ChatMessage, Severity, VerificationConfig } from "../api/types";
 
 function formatByMap(value: string | null | undefined, map: Record<string, string>, fallback = "未知") {
   if (!value) {
     return fallback;
   }
+
   return map[value] ?? value;
 }
 
 const severityLabels: Record<Severity | "all", string> = {
   all: "全部级别",
   critical: "严重",
-  warning: "警告",
+  warning: "告警",
   info: "提示",
 };
 
@@ -29,11 +30,11 @@ const workflowStatusLabels: Record<string, string> = {
   connecting: "连接中",
   custom: "自定义",
   degraded: "降级",
+  diagnosed: "已完成诊断",
+  diagnosing: "诊断中",
   eliminated: "已排除",
   error: "异常",
-  execution_failed: "执行失败",
-  execution_started: "执行中",
-  execution_succeeded: "执行成功",
+  escalated: "已升级",
   failed: "失败",
   firing: "触发中",
   healthy: "正常",
@@ -47,34 +48,21 @@ const workflowStatusLabels: Record<string, string> = {
   pending: "待执行",
   probable: "较大概率",
   proposed_fix_ready: "修复方案已就绪",
-  re_diagnosed: "已复检",
+  re_diagnosed: "复诊完成",
   rejected: "已驳回",
-  rollback_failed: "回滚失败",
-  rollback_started: "回滚中",
-  rollback_succeeded: "回滚成功",
+  remediating: "修复中",
   resolved: "已解决",
   testing: "验证中",
+  timeout: "超时",
   validating: "校验中",
-  approval_rejected: "审批驳回",
-  syncing: "同步中",
-  ready: "已就绪",
-  idle: "空闲",
 };
 
 const entityTypeLabels: Record<string, string> = {
-  rack: "机柜",
-  node: "节点",
   gpu: "GPU",
-  nic: "NIC",
-  switch: "交换机",
-  switch_port: "交换机端口",
-  bmc_endpoint: "BMC",
-  k8s_cluster: "K8s 集群",
-  k8s_pod: "Pod",
   inference_service: "推理服务",
-  training_pipeline: "训练任务",
-  metric_endpoint: "Prometheus 指标",
-  unknown: "未知实体",
+  node: "节点",
+  rack: "机柜",
+  switch: "交换机",
 };
 
 const actionTypeLabels: Record<string, string> = {
@@ -90,17 +78,14 @@ const verificationMethodLabels: Record<VerificationConfig["method"], string> = {
 };
 
 const roleLabels: Record<ChatMessage["role"], string> = {
-  assistant: "助手",
+  assistant: "诊断助手",
   tool: "工具",
-  user: "用户",
+  user: "值班同学",
 };
 
 const categoryLabels: Record<string, string> = {
   hardware: "硬件",
-  network: "网络",
   runbook: "运行手册",
-  service: "服务",
-  general: "通用",
 };
 
 const propertyLabels: Record<string, string> = {
@@ -112,16 +97,13 @@ const propertyLabels: Record<string, string> = {
   utilization: "利用率",
   vendor: "厂商",
   zone: "区域",
-  host: "主机",
-  ip: "IP 地址",
-  port: "端口",
-  source: "来源",
 };
 
 const layerLabels: Record<string, string> = {
   application: "应用",
   hardware: "硬件",
   network: "网络",
+  os: "操作系统",
   platform: "平台",
   service: "服务",
 };
@@ -130,6 +112,7 @@ export function formatSeverity(value?: Severity | "all" | null) {
   if (!value) {
     return "未知";
   }
+
   return severityLabels[value] ?? value;
 }
 
@@ -137,6 +120,7 @@ export function formatAlertStatus(value?: AlertStatus | null) {
   if (!value) {
     return "未知";
   }
+
   return alertStatusLabels[value] ?? value;
 }
 
@@ -156,6 +140,7 @@ export function formatVerificationMethod(value?: VerificationConfig["method"] | 
   if (!value) {
     return "未知";
   }
+
   return verificationMethodLabels[value] ?? value;
 }
 
@@ -163,6 +148,7 @@ export function formatRole(value?: ChatMessage["role"] | null) {
   if (!value) {
     return "未知";
   }
+
   return roleLabels[value] ?? value;
 }
 
@@ -181,8 +167,3 @@ export function formatPropertyLabel(value: string) {
 export function formatLayer(value?: string | null) {
   return formatByMap(value, layerLabels);
 }
-
-export function formatIncidentOutcome(value?: IncidentRecord["outcome"] | null) {
-  return formatWorkflowStatus(value);
-}
-

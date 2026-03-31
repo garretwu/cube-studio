@@ -1,229 +1,228 @@
 import { create } from "zustand";
 
 import { apiClient } from "../api/client";
-import type { DiagnosisSession, Observation, ThinkingStep, WSEvent } from "../api/types";
+import { initialChatMessages } from "../mocks/data";
+import type { ChatMessage, DiagnosisSession, Observation, ThinkingStep, WSEvent } from "../api/types";
+
+type ConnectionState = "connecting" | "open" | "closed" | "error";
 
 type DiagnosisState = {
   session?: DiagnosisSession;
-  sessionId: string;
-  connectionState: "connecting" | "open" | "closed" | "error";
-  seenEventIds: Record<string, boolean>;
-  setSessionId: (sessionId: string) => void;
-  fetchSession: (sessionId?: string) => Promise<void>;
-  setConnectionState: (value: DiagnosisState["connectionState"]) => void;
+  activeSessionId?: string;
+  messages: ChatMessage[];
+  isLoadingSession: boolean;
+  isSendingMessage: boolean;
+  connectionState: ConnectionState;
+  error?: string;
+  bootstrapSession: (sessionId?: string) => Promise<void>;
+  sendMessage: (content: string) => Promise<ChatMessage | undefined>;
+  setConnectionState: (value: ConnectionState) => void;
   applyEvent: (event: WSEvent) => void;
 };
 
-function toRecord(value: unknown): Record<string, unknown> {
-  if (value && typeof value === "object") {
-    return value as Record<string, unknown>;
-  }
-  return {};
+const seedMessages = () => [...initialChatMessages];
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function toNumber(value: unknown): number | undefined {
-  if (typeof value === "number" && Number.isFinite(value)) {
-    return value;
+function toThinkingStep(event: WSEvent, fallbackStep: number): ThinkingStep | null {
+  if (event.type !== "thinking_step") {
+    return null;
   }
-  if (typeof value === "string") {
-    const parsed = Number(value);
-    if (Number.isFinite(parsed)) {
-      return parsed;
-    }
-  }
-  return undefined;
-}
 
-function buildThinkingStep(
-  event: WSEvent,
-  payload: Record<string, unknown>,
-  fallbackStep: number,
-): ThinkingStep {
-  const stepValue = toNumber(payload.step) ?? fallbackStep;
-  const actionType =
-    event.type === "tool_call"
-      ? "tool_call"
-      : payload.action_type === "remediate"
-        ? "remediate"
-        : payload.action_type === "conclude"
-          ? "conclude"
-          : "tool_call";
-  const toolName =
-    typeof payload.tool_name === "string"
-      ? payload.tool_name
-      : typeof payload.tool === "string"
-        ? payload.tool
-        : null;
-  const toolParams = toRecord(payload.tool_params ?? payload.params);
-  const thoughtValue =
-    typeof payload.thought === "string" && payload.thought.trim()
-      ? payload.thought
-      : typeof payload.content === "string" && payload.content.trim()
-        ? payload.content
-        : toolName
-          ? `调用工具 ${toolName}`
-          : "诊断推理步骤";
+  const data = isRecord(event.data) ? event.data : {};
+  const actionType = data.action_type;
+
   return {
-    step: stepValue,
-    timestamp: typeof payload.timestamp === "string" ? payload.timestamp : event.timestamp,
-    thought: thoughtValue,
-    action_type: actionType,
-    stage: typeof payload.stage === "string" ? payload.stage : null,
-    tool_name: toolName,
-    tool_params: Object.keys(toolParams).length > 0 ? toolParams : null,
-    confidence: toNumber(payload.confidence) ?? null,
+    step: typeof data.step === "number" ? data.step : fallbackStep,
+    timestamp: event.timestamp,
+    thought:
+      typeof data.thought === "string" && data.thought.trim()
+        ? data.thought
+        : "The diagnosis engine is expanding the current reasoning context.",
+    action_type:
+      actionType === "tool_call" || actionType === "remediate" || actionType === "conclude" ? actionType : "conclude",
+    tool_name: typeof data.tool_name === "string" ? data.tool_name : null,
+    tool_params: isRecord(data.tool_params) ? data.tool_params : null,
+    confidence: typeof data.confidence === "number" ? data.confidence : null,
   };
 }
 
-function buildObservation(event: WSEvent, payload: Record<string, unknown>): Observation {
+function toObservation(event: WSEvent): Observation | null {
+  if (event.type !== "tool_result") {
+    return null;
+  }
+
+  const data = isRecord(event.data) ? event.data : {};
+  const result = isRecord(data.result) ? data.result : data;
+
   return {
-    tool: typeof payload.tool === "string" ? payload.tool : "unknown",
-    params: toRecord(payload.params),
-    result: toRecord(payload.result),
-    timestamp: typeof payload.timestamp === "string" ? payload.timestamp : event.timestamp,
+    tool:
+      typeof data.tool_name === "string"
+        ? data.tool_name
+        : typeof data.tool === "string"
+          ? data.tool
+          : "tool_result",
+    params: isRecord(data.params) ? data.params : {},
+    result,
+    timestamp: event.timestamp,
   };
 }
 
-function extractEventId(event: WSEvent): string | null {
-  const payload = toRecord(event.data);
-  const candidate = payload.event_id;
-  if (typeof candidate === "string" && candidate.trim()) {
-    return candidate;
+function appendTraceEntries(
+  session: DiagnosisSession | undefined,
+  entries: Array<ThinkingStep | Observation>,
+): DiagnosisSession | undefined {
+  if (!session || !entries.length) {
+    return session;
   }
-  if (typeof candidate === "number" && Number.isFinite(candidate)) {
-    return String(candidate);
-  }
-  return null;
+
+  const trace = session.trace?.steps ?? [];
+  return {
+    ...session,
+    trace: {
+      steps: [...trace, ...entries],
+    },
+  };
 }
 
-const remediationStageCopy: Record<string, string> = {
-  approval_rejected: "审批被拒绝",
-  execution_failed: "修复执行失败",
-  execution_started: "修复执行中",
-  execution_succeeded: "修复执行完成",
-  rollback_failed: "回滚失败",
-  rollback_started: "回滚进行中",
-  rollback_succeeded: "回滚完成",
-};
+function getEventError(event: WSEvent) {
+  if (event.type !== "error") {
+    return undefined;
+  }
 
-function buildRemediationProgressThought(payload: Record<string, unknown>): string {
-  const stage = typeof payload.stage === "string" ? payload.stage : "remediation_progress";
-  const stageText = remediationStageCopy[stage] ?? stage;
-  if (typeof payload.error === "string" && payload.error.trim()) {
-    return `${stageText}: ${payload.error}`;
+  const data = isRecord(event.data) ? event.data : {};
+  if (typeof data.message === "string" && data.message.trim()) {
+    return data.message;
   }
-  if (typeof payload.reason === "string" && payload.reason.trim()) {
-    return `${stageText}: ${payload.reason}`;
+  if (typeof data.error === "string" && data.error.trim()) {
+    return data.error;
   }
-  return stageText;
+  return "The diagnosis engine returned an error event.";
 }
 
-export const useDiagnosisStore = create<DiagnosisState>((set) => ({
+export const useDiagnosisStore = create<DiagnosisState>((set, get) => ({
   session: undefined,
-  sessionId: "",
+  activeSessionId: undefined,
+  messages: seedMessages(),
+  isLoadingSession: false,
+  isSendingMessage: false,
   connectionState: "closed",
-  seenEventIds: {},
-  setSessionId: (sessionId) => set({ sessionId }),
-  fetchSession: async (sessionId) => {
-    const resolved = (sessionId ?? "").trim();
-    if (!resolved) {
-      return;
+  error: undefined,
+  bootstrapSession: async (sessionId) => {
+    const explicitSessionId = sessionId?.trim();
+
+    set({
+      activeSessionId: explicitSessionId ?? get().activeSessionId,
+      error: undefined,
+      isLoadingSession: true,
+      isSendingMessage: false,
+    });
+
+    try {
+      let session: DiagnosisSession | undefined;
+      let resolvedSessionId = explicitSessionId;
+
+      if (!resolvedSessionId) {
+        session = await apiClient.getDiagnosisSession();
+        resolvedSessionId = session.session_id;
+      } else {
+        try {
+          const currentSession = await apiClient.getDiagnosisSession(resolvedSessionId);
+          if (currentSession.session_id === resolvedSessionId) {
+            session = currentSession;
+          }
+        } catch {
+          session = undefined;
+        }
+      }
+
+      const messages = resolvedSessionId ? await apiClient.getChatHistory(resolvedSessionId) : seedMessages();
+
+      set({
+        session,
+        activeSessionId: resolvedSessionId,
+        messages: messages.length ? messages : seedMessages(),
+        isLoadingSession: false,
+        isSendingMessage: false,
+        error: undefined,
+      });
+    } catch (error) {
+      set({
+        error: error instanceof Error ? error.message : "加载会话失败",
+        isLoadingSession: false,
+        session: undefined,
+        messages: explicitSessionId ? [] : seedMessages(),
+      });
     }
-    set({ session: undefined, sessionId: resolved, seenEventIds: {} });
-    const session = await apiClient.getDiagnosisSession(resolved);
-    set({ session, sessionId: resolved, seenEventIds: {} });
+  },
+  sendMessage: async (content: string) => {
+    const message = content.trim();
+    const sessionId = get().activeSessionId;
+
+    if (!message || !sessionId) {
+      return undefined;
+    }
+
+    const userMessage: ChatMessage = {
+      id: `user-${Date.now()}`,
+      role: "user",
+      content: message,
+      created_at: new Date().toISOString(),
+      metadata: {
+        session_id: sessionId,
+      },
+    };
+
+    set((state) => ({
+      messages: [...state.messages, userMessage],
+      isSendingMessage: true,
+      error: undefined,
+    }));
+
+    try {
+      const reply = await apiClient.postChatMessage(sessionId, message);
+      set((state) => ({
+        messages: [...state.messages, reply],
+        isSendingMessage: false,
+      }));
+      return reply;
+    } catch (error) {
+      set({
+        error: error instanceof Error ? error.message : "消息发送失败",
+        isSendingMessage: false,
+      });
+      throw error;
+    }
   },
   setConnectionState: (connectionState) => set({ connectionState }),
   applyEvent: (event) =>
     set((state) => {
-      if (!state.session) {
+      const activeSessionId = state.activeSessionId ?? state.session?.session_id;
+      if (activeSessionId && event.session_id !== activeSessionId) {
         return state;
       }
-      if (event.session_id && event.session_id !== state.session.session_id) {
-        return state;
-      }
-      const eventId = extractEventId(event);
-      if (eventId && state.seenEventIds[eventId]) {
-        return state;
-      }
-      const nextSeen = eventId ? { ...state.seenEventIds, [eventId]: true } : state.seenEventIds;
-      const trace = state.session.trace?.steps ?? [];
-      if (event.type === "tool_call" || event.type === "thinking_step") {
-        const thoughtCount = trace.reduce((count, item) => ("step" in item ? count + 1 : count), 0);
-        const nextStep = buildThinkingStep(event, toRecord(event.data), thoughtCount + 1);
-        return {
-          seenEventIds: nextSeen,
-          session: {
-            ...state.session,
-            trace: { steps: [...trace, nextStep] },
-          },
+
+      const currentTrace = state.session?.trace?.steps ?? [];
+      const nextEntries = [
+        toThinkingStep(event, currentTrace.length + 1),
+        toObservation(event),
+      ].filter((entry): entry is ThinkingStep | Observation => Boolean(entry));
+
+      let nextSession = appendTraceEntries(state.session, nextEntries);
+
+      if (event.type === "diagnosis_result" && nextSession) {
+        nextSession = {
+          ...nextSession,
+          diagnosis_result: event.data as DiagnosisSession["diagnosis_result"],
         };
       }
-      if (event.type === "tool_result") {
-        const observation = buildObservation(event, toRecord(event.data));
-        return {
-          seenEventIds: nextSeen,
-          session: {
-            ...state.session,
-            trace: { steps: [...trace, observation] },
-          },
-        };
-      }
-      if (event.type === "diagnosis_result") {
-        return {
-          seenEventIds: nextSeen,
-          session: {
-            ...state.session,
-            diagnosis_result: event.data as DiagnosisSession["diagnosis_result"],
-            status: "diagnosed",
-          },
-        };
-      }
-      if (event.type === "remediation_progress") {
-        const payload = toRecord(event.data);
-        const thoughtCount = trace.reduce((count, item) => ("step" in item ? count + 1 : count), 0);
-        const nextStep: ThinkingStep = {
-          step: thoughtCount + 1,
-          timestamp: typeof payload.timestamp === "string" ? payload.timestamp : event.timestamp,
-          thought: buildRemediationProgressThought(payload),
-          action_type: "remediate",
-          stage: typeof payload.stage === "string" ? payload.stage : null,
-          tool_name: "remediation",
-          tool_params: Object.keys(payload).length > 0 ? payload : null,
-          confidence: null,
-        };
-        return {
-          seenEventIds: nextSeen,
-          session: {
-            ...state.session,
-            trace: { steps: [...trace, nextStep] },
-          },
-        };
-      }
-      if (event.type === "done") {
-        const payload = toRecord(event.data);
-        const outcome = typeof payload.outcome === "string" ? payload.outcome : null;
-        return {
-          seenEventIds: nextSeen,
-          session: {
-            ...state.session,
-            outcome,
-            status: "resolved",
-          },
-        };
-      }
-      if (event.type === "error") {
-        return {
-          seenEventIds: nextSeen,
-          session: {
-            ...state.session,
-            status: "failed",
-          },
-        };
-      }
-      if (eventId) {
-        return { seenEventIds: nextSeen };
-      }
-      return state;
+
+      return {
+        session: nextSession,
+        messages: state.messages,
+        error: getEventError(event) ?? state.error,
+      };
     }),
 }));

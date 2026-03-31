@@ -8,34 +8,10 @@ import { formatKnowledgeCategory } from "../utils/display";
 function KnowledgePage() {
   const [documents, setDocuments] = useState<KnowledgeDocument[]>([]);
   const [query, setQuery] = useState("RoCEv2 ECN 配置");
-  const [isLoading, setIsLoading] = useState(false);
-  const [error, setError] = useState("");
 
   useEffect(() => {
-    void (async () => {
-      setIsLoading(true);
-      setError("");
-      try {
-        setDocuments(await apiClient.getKnowledgeSources());
-      } catch (err) {
-        setError(`知识文档接口暂不可用，已降级展示。${err instanceof Error ? ` (${err.message})` : ""}`);
-      } finally {
-        setIsLoading(false);
-      }
-    })();
+    void apiClient.getKnowledgeSources().then(setDocuments);
   }, []);
-
-  const runSearch = async () => {
-    setIsLoading(true);
-    setError("");
-    try {
-      setDocuments(await apiClient.searchKnowledge(query));
-    } catch (err) {
-      setError(`知识检索失败，已保留当前结果。${err instanceof Error ? ` (${err.message})` : ""}`);
-    } finally {
-      setIsLoading(false);
-    }
-  };
 
   return (
     <div className="page-grid">
@@ -53,7 +29,7 @@ function KnowledgePage() {
               prefix={<AppIcon name="search" size={16} />}
               value={query}
             />
-            <AppButton disabled={isLoading} onClick={() => void runSearch()} variant="primary">
+            <AppButton onClick={() => void apiClient.searchKnowledge(query).then(setDocuments)} variant="primary">
               搜索
             </AppButton>
             <AppButton iconLeft="upload" variant="secondary">
@@ -65,16 +41,6 @@ function KnowledgePage() {
 
       <SurfaceCard description="当前知识库返回的相关文档与手册。" title="文档结果">
         <div className="mini-card-list">
-          {error ? (
-            <div className="mini-card">
-              <p className="mini-card__copy">{error}</p>
-            </div>
-          ) : null}
-          {!error && !isLoading && documents.length === 0 ? (
-            <div className="mini-card">
-              <p className="mini-card__copy">当前无可用知识文档，已进入降级视图。</p>
-            </div>
-          ) : null}
           {documents.map((item) => (
             <div key={item.id} className="mini-card">
               <div className="status-row">

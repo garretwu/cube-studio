@@ -1,4 +1,4 @@
-import type { WSEventType } from "./generated/backend-contract";
+﻿import type { WSEventType } from "./generated/backend-contract";
 
 export type Severity = "critical" | "warning" | "info";
 export type AlertStatus = "firing" | "resolved" | "silenced";
@@ -59,6 +59,70 @@ export type TopologyStatus = {
   scanner_counts: Record<string, { nodes: number; edges: number }>;
 };
 
+export type TopologyObjectType = "rack" | "node" | "gpu" | "switch" | "service" | "cluster";
+export type TopologyObjectStatus = "healthy" | "abnormal" | "impacted" | "maintenance";
+export type TopologyLayer = "physical" | "network" | "compute" | "service";
+export type TopologyImpactLevel = "low" | "medium" | "high";
+
+export type TopologySite = {
+  id: string;
+  name: string;
+  region: string;
+  zone: string;
+  domain: string;
+  summary: string;
+};
+
+export type TopologyObject = {
+  id: string;
+  name: string;
+  type: TopologyObjectType;
+  status: TopologyObjectStatus;
+  layer: TopologyLayer;
+  domain: string;
+  region: string;
+  zone: string;
+  cluster?: string;
+  rack?: string;
+  slot?: string;
+  summary: string;
+  tags: string[];
+  updatedAt: string;
+  metrics?: Record<string, string | number | null>;
+  attributes: Record<string, unknown>;
+};
+
+export type TopologyRelation = {
+  id: string;
+  source: string;
+  target: string;
+  relationType: "contains" | "runs_on" | "connects_to" | "depends_on" | "uplink_to" | "aggregated";
+  status: TopologyObjectStatus;
+  isCritical: boolean;
+  impactLevel: TopologyImpactLevel;
+  label?: string;
+  isAggregated?: boolean;
+};
+
+export type TopologyPath = {
+  id: string;
+  entryNodeId: string;
+  rootCauseNodeId: string;
+  affectedNodeIds: string[];
+  edgeIds: string[];
+  impactLevel: TopologyImpactLevel;
+  status: "active" | "inactive";
+  summary: string;
+};
+
+export type TopologyExplorerResponse = {
+  site: TopologySite;
+  nodes: TopologyObject[];
+  edges: TopologyRelation[];
+  paths: TopologyPath[];
+  lastUpdated: string;
+};
+
 export type SREApiEnvelope<T> = {
   success: boolean;
   data: T | null;
@@ -110,12 +174,41 @@ export type DiagnosisResult = {
   diagnosis_certainty: "confirmed" | "probable" | "ambiguous";
 };
 
+export type DiagnosisBootstrapAlertItem = {
+  id?: string;
+  alert_name: string;
+  severity: Severity;
+  source_entity?: string | null;
+  starts_at?: string | null;
+  summary?: string | null;
+};
+
+export type DiagnosisBootstrapImpact = {
+  object_count: number;
+  service_count: number;
+  affected_entities?: string[];
+  affected_services?: string[];
+  blast_radius_summary?: string | null;
+};
+
+export type DiagnosisSessionBootstrap = {
+  session_name?: string | null;
+  started_at?: string | null;
+  related_alerts?: {
+    count: number;
+    items: DiagnosisBootstrapAlertItem[];
+  } | null;
+  impact?: DiagnosisBootstrapImpact | null;
+};
+
 export type DiagnosisSession = {
   session_id: string;
   alert: Alert;
   status: string;
   diagnosis_result?: DiagnosisResult | null;
   trace?: { steps: Array<ThinkingStep | Observation> } | null;
+  bootstrap?: DiagnosisSessionBootstrap | null;
+  re_diagnosis_round?: number;
   duration_seconds: number;
   outcome?: string | null;
 };
@@ -129,6 +222,23 @@ export type SessionSummary = {
   outcome?: string | null;
   duration_seconds: number;
   updated_at: string;
+};
+
+export type DiagnosisSessionSummary = {
+  session_id: string;
+  title: string;
+  summary: string;
+  started_at: string;
+  updated_at: string;
+  status: string;
+  severity: Severity;
+  alert_name: string;
+  duration_seconds: number;
+  outcome?: string | null;
+  triage_priority?: DiagnosisResult["triage_priority"] | null;
+  root_cause?: string | null;
+  affected_services: string[];
+  re_diagnosis_round?: number;
 };
 
 export type RemediationResult = {
@@ -278,6 +388,8 @@ export type SkillDescriptor = {
   source: string;
   permissions: string[];
   match_score: number;
+  status?: "available" | "unavailable";
+  updated_at?: string;
 };
 
 export type ToolChannelStatus = {

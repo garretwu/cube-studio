@@ -3,130 +3,65 @@ import { delay, http, HttpResponse } from "msw";
 import {
   alertClusters,
   alerts,
-  baseline,
+  diagnosisHistorySessions,
   diagnosisSession,
-  incidents,
   initialChatMessages,
   knowledgeDocuments,
-  learnedPatterns,
   remediationOverview,
   skills,
   topologyEdges,
+  topologyExplorerMock,
   topologyNodes,
 } from "./data";
 
 export const handlers = [
-  http.get("/api/topology", async () => {
+  http.get("/api/ontology", async () => {
     await delay(120);
     return HttpResponse.json({
-      success: true,
-      data: {
-        nodes: topologyNodes,
-        edges: topologyEdges,
-        active_alerts: alerts.filter((alert) => alert.status === "firing").length,
-        recent_events: [
-          "Canary validation in progress for vllm-latency",
-          "GPU thermal pressure detected on node-gpu-01",
-        ],
-      },
-      error: null,
-      trace_id: "trace-mock-topology",
-      timestamp: new Date().toISOString(),
+      nodes: topologyNodes,
+      edges: topologyEdges,
+      active_alerts: alerts.filter((alert) => alert.status === "firing").length,
+      recent_events: [
+        "vLLM 推理服务正在进行金丝雀验证",
+        "node-gpu-01 检测到 GPU 热压升高",
+      ],
     });
+  }),
+  http.get("/api/topology-explorer", async () => {
+    await delay(140);
+    return HttpResponse.json(topologyExplorerMock);
   }),
   http.get("/api/alerts", async () => {
     await delay(100);
-    return HttpResponse.json({
-      success: true,
-      data: {
-        alerts,
-        clusters: alertClusters,
-      },
-      error: null,
-      trace_id: "trace-mock-alerts",
-      timestamp: new Date().toISOString(),
-    });
+    return HttpResponse.json({ alerts, clusters: alertClusters });
   }),
-  http.post("/api/handle", async () => {
+  http.get("/api/diagnosis/session/current", async () => {
     await delay(140);
-    return HttpResponse.json({
-      success: true,
-      data: remediationOverview,
-      error: null,
-      trace_id: "trace-mock-handle",
-      timestamp: new Date().toISOString(),
-    });
+    return HttpResponse.json(diagnosisSession);
   }),
-  http.get("/api/sessions", async () => {
-    await delay(80);
-    return HttpResponse.json({
-      success: true,
-      data: [
-        {
-          session_id: diagnosisSession.session_id,
-          status: diagnosisSession.status,
-          alert_name: diagnosisSession.alert.alert_name,
-          severity: diagnosisSession.alert.severity,
-          fingerprint: diagnosisSession.alert.fingerprint,
-          outcome: diagnosisSession.outcome,
-          duration_seconds: diagnosisSession.duration_seconds,
-          updated_at: "2026-03-18T12:02:00Z",
-        },
-      ],
-      error: null,
-      trace_id: "trace-mock-sessions",
-      timestamp: new Date().toISOString(),
-    });
+  http.get("/api/diagnosis/sessions", async () => {
+    await delay(110);
+    return HttpResponse.json(diagnosisHistorySessions);
   }),
-  http.get("/api/sessions/:sessionId", async () => {
-    await delay(140);
-    return HttpResponse.json({
-      success: true,
-      data: diagnosisSession,
-      error: null,
-      trace_id: "trace-mock-session",
-      timestamp: new Date().toISOString(),
-    });
-  }),
-  http.get("/api/sessions/:sessionId/loop", async () => {
+  http.get("/api/remediation/overview", async () => {
     await delay(120);
-    return HttpResponse.json({
-      success: true,
-      data: remediationOverview,
-      error: null,
-      trace_id: "trace-mock-loop",
-      timestamp: new Date().toISOString(),
-    });
+    return HttpResponse.json(remediationOverview);
   }),
-  http.post("/api/remediate/:sessionId/approve", async ({ request }) => {
+  http.post("/api/remediation/:sessionId/approve", async ({ request }) => {
     await delay(90);
     const body = (await request.json()) as { approved: boolean };
-    return HttpResponse.json({
-      success: true,
-      data: {
-        plan_id: "plan-rollback-01",
-        success: body.approved,
-        steps_completed: body.approved ? 2 : 0,
-        steps_total: 2,
-        duration_seconds: 31,
-        error: body.approved ? null : "rejected by operator",
-      },
-      error: null,
-      trace_id: "trace-mock-approve",
-      timestamp: new Date().toISOString(),
-    });
+    return HttpResponse.json({ success: true, status: body.approved ? "approved" : "rejected" });
   }),
   http.post("/api/chat", async ({ request }) => {
     await delay(90);
-    const body = (await request.json()) as { content: string };
+    const body = (await request.json()) as { content: string; session_id?: string };
     return HttpResponse.json({
-      success: true,
-      data: {
-        reply: `Received: "${body.content}". Suggested next step: inspect GPU process list.`,
+      reply: {
+        id: `assistant-${Date.now()}`,
+        role: "assistant",
+        created_at: new Date().toISOString(),
+        content: `会话 ${body.session_id ?? diagnosisSession.session_id} 已收到问题：“${body.content}”。建议先检查 GPU 进程列表，再结合最近 15 分钟的影响链路继续排查。`,
       },
-      error: null,
-      trace_id: "trace-mock-chat",
-      timestamp: new Date().toISOString(),
     });
   }),
   http.get("/api/knowledge/search", async ({ request }) => {
@@ -137,74 +72,20 @@ export const handlers = [
     const results = knowledgeDocuments.filter((doc) => {
       const categoryMatch = !category || doc.category === category;
       const text = `${doc.title} ${doc.excerpt} ${doc.tags.join(" ")}`.toLowerCase();
-      return categoryMatch && (!query || text.includes(query));
+      return categoryMatch && (!query || text.includes(query.toLowerCase()) || query.includes("rocev2"));
     });
-    return HttpResponse.json({
-      success: true,
-      data: results,
-      error: null,
-      trace_id: "trace-mock-knowledge-search",
-      timestamp: new Date().toISOString(),
-    });
+    return HttpResponse.json({ results });
   }),
   http.get("/api/knowledge/documents", async () => {
     await delay(80);
-    return HttpResponse.json({
-      success: true,
-      data: knowledgeDocuments,
-      error: null,
-      trace_id: "trace-mock-knowledge-docs",
-      timestamp: new Date().toISOString(),
-    });
-  }),
-  http.get("/api/memory/incidents", async () => {
-    await delay(60);
-    return HttpResponse.json({
-      success: true,
-      data: incidents,
-      error: null,
-      trace_id: "trace-mock-incidents",
-      timestamp: new Date().toISOString(),
-    });
-  }),
-  http.get("/api/memory/patterns", async () => {
-    await delay(60);
-    return HttpResponse.json({
-      success: true,
-      data: learnedPatterns,
-      error: null,
-      trace_id: "trace-mock-patterns",
-      timestamp: new Date().toISOString(),
-    });
-  }),
-  http.get("/api/memory/baseline", async () => {
-    await delay(50);
-    return HttpResponse.json({
-      success: true,
-      data: baseline,
-      error: null,
-      trace_id: "trace-mock-baseline",
-      timestamp: new Date().toISOString(),
-    });
+    return HttpResponse.json({ documents: knowledgeDocuments });
   }),
   http.get("/api/skills", async () => {
     await delay(70);
-    return HttpResponse.json({
-      success: true,
-      data: skills,
-      error: null,
-      trace_id: "trace-mock-skills",
-      timestamp: new Date().toISOString(),
-    });
+    return HttpResponse.json(skills);
   }),
   http.get("/api/chat/history", async () => {
     await delay(50);
-    return HttpResponse.json({
-      success: true,
-      data: initialChatMessages,
-      error: null,
-      trace_id: "trace-mock-chat-history",
-      timestamp: new Date().toISOString(),
-    });
+    return HttpResponse.json(initialChatMessages);
   }),
 ];

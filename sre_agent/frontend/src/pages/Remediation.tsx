@@ -1,92 +1,75 @@
-import { useEffect, useMemo } from "react";
-import { useSearchParams } from "react-router-dom";
+import { useEffect } from "react";
 
 import ApprovalDialog from "../components/ApprovalDialog";
 import CanaryProgress from "../components/CanaryProgress";
 import { AppButton, SectionHeader, StatusChip, SurfaceCard } from "../components/ui";
 import { useRemediationStore } from "../store/remediationStore";
-import { formatWorkflowStatus } from "../utils/display";
+import { formatVerificationMethod, formatWorkflowStatus } from "../utils/display";
 import { formatPercent } from "../utils/format";
 
 function RemediationPage() {
-  const [searchParams] = useSearchParams();
-  const sessionId = searchParams.get("session_id") ?? "";
-  const { loop, approvalDialogOpen, fetchLoop, setApprovalDialogOpen, submitApproval, setSessionId } = useRemediationStore();
+  const { overview, approvalDialogOpen, fetchOverview, setApprovalDialogOpen, submitApproval } = useRemediationStore();
 
   useEffect(() => {
-    if (!sessionId) {
-      return;
-    }
-    setSessionId(sessionId);
-    void fetchLoop(sessionId);
-  }, [fetchLoop, sessionId, setSessionId]);
-
-  const canaryBatches = useMemo(
-    () =>
-      (loop?.attempts ?? []).map((attempt, idx) => ({
-        batch: `attempt-${idx + 1}`,
-        progress: attempt.remediation_result.success ? 100 : 0,
-        status: attempt.remediation_result.success ? "completed" : "failed",
-      })),
-    [loop?.attempts],
-  );
+    void fetchOverview();
+  }, [fetchOverview]);
 
   return (
     <div className="page-grid">
       <div className="page-intro">
         <SectionHeader
+          description="审阅建议修复路径、确认金丝雀策略与安全边界，只在置信度足够时再进入审批与执行。"
           eyebrow="执行控制"
           title="修复执行闸口"
-          description="审阅建议修复路径、确认金丝雀策略与安全边界，只在置信度足够时再进入审批与执行。"
         />
         <SurfaceCard bodyClassName="page-stack" variant="hero">
           <div className="status-row">
-            <StatusChip tone="warning">{formatWorkflowStatus(loop?.outcome, "加载中")}</StatusChip>
-            <StatusChip tone="neutral">尝试 {loop?.attempts.length ?? 0}</StatusChip>
-            <StatusChip tone="accent">耗时 {loop?.total_duration_seconds ?? 0}s</StatusChip>
-            {loop?.winning_candidate ? <StatusChip tone="info">{formatPercent(loop.winning_candidate.confidence)}</StatusChip> : null}
+            <StatusChip tone="warning">{formatWorkflowStatus(overview?.progress.status, "加载中")}</StatusChip>
+            <StatusChip tone="accent">{overview?.plan.priority ?? "P?"}</StatusChip>
+            <StatusChip tone="neutral">
+              {overview?.plan.canary?.target_percentage
+                ? `${overview.plan.canary.target_percentage * 100}% 金丝雀`
+                : "无金丝雀"}
+            </StatusChip>
+            {overview?.plan.confidence ? <StatusChip tone="info">{formatPercent(overview.plan.confidence)}</StatusChip> : null}
           </div>
         </SurfaceCard>
       </div>
 
       <SurfaceCard
-        title="候选尝试"
-        description="由 /api/sessions/{id}/loop 返回的循环尝试结果。"
         actions={
-          <AppButton variant="primary" disabled={!loop?.session_id} onClick={() => setApprovalDialogOpen(true)}>
+          <AppButton disabled={!overview?.approval_required} onClick={() => setApprovalDialogOpen(true)} variant="primary">
             打开审批闸口
           </AppButton>
         }
+        description="面向当前事件生成的执行动作、校验步骤与回滚抓手。"
+        title="执行步骤"
       >
         <div className="mini-card-list">
-          {(loop?.attempts ?? []).map((attempt, idx) => (
-            <div key={`${attempt.candidate.root_cause}-${idx}`} className="mini-card">
+          {(overview?.plan.steps ?? []).map((step) => (
+            <div key={step.step_id} className="mini-card">
               <div className="status-row">
-                <StatusChip tone="accent">#{idx + 1}</StatusChip>
-                <StatusChip tone={attempt.remediation_result.success ? "success" : "danger"}>
-                  {attempt.remediation_result.success ? "成功" : "失败"}
-                </StatusChip>
-                <StatusChip tone="neutral">{attempt.rolled_back ? "已回滚" : "未回滚"}</StatusChip>
+                <StatusChip tone="accent">步骤 {step.step_id}</StatusChip>
+                <StatusChip tone="neutral">{step.tool}</StatusChip>
+                <StatusChip tone="info">{formatVerificationMethod(step.verification.method)}</StatusChip>
               </div>
-              <p className="mini-card__title">{attempt.candidate.root_cause}</p>
-              <p className="mini-card__copy">
-                步骤 {attempt.remediation_result.steps_completed}/{attempt.remediation_result.steps_total}
-              </p>
+              <p className="mini-card__title">{step.description}</p>
+              <p className="mini-card__copy">校验方式：{formatVerificationMethod(step.verification.method)}</p>
             </div>
           ))}
         </div>
       </SurfaceCard>
 
-      <SurfaceCard title="金丝雀进度" description="基于尝试结果汇总的分批放量进度。">
-        <CanaryProgress batches={canaryBatches} />
+      <SurfaceCard description="当前修复方案的分批放量与验证进度。" title="金丝雀进度">
+        <CanaryProgress batches={overview?.progress.batch_status ?? []} />
       </SurfaceCard>
 
       <ApprovalDialog
-        open={approvalDialogOpen}
-        plan={undefined}
         onApprove={() => void submitApproval(true)}
-        onReject={() => void submitApproval(false)}
         onCancel={() => setApprovalDialogOpen(false)}
+        onReject={() => void submitApproval(false)}
+        open={approvalDialogOpen}
+        plan={overview?.plan}
       />
     </div>
   );
