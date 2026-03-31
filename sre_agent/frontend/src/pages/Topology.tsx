@@ -1,19 +1,57 @@
-import { useEffect, useMemo } from "react";
-import { Spin, Tabs, Tree } from "antd";
+import { useCallback, useEffect, useMemo } from "react";
+import { Button, Spin, Tabs, Tree } from "antd";
 import type { DataNode } from "antd/es/tree";
 
+import type { WSEvent } from "../api/types";
+import { buildBackendWsUrl } from "../api/ws";
 import EntityDetail from "../components/EntityDetail";
 import TopologyGraph from "../components/TopologyGraph";
 import { AppIcon, SectionHeader, StatusChip, SurfaceCard } from "../components/ui";
+import { useWebSocket } from "../hooks/useWebSocket";
 import { useTopologyStore } from "../store/topologyStore";
 import { formatEntityType } from "../utils/display";
+import { formatTimestamp } from "../utils/format";
 
 function TopologyPage() {
-  const { nodes, edges, activeAlerts, recentEvents, selectedNodeId, isLoading, error, fetchTopology, selectNode } = useTopologyStore();
+  const {
+    nodes,
+    edges,
+    activeAlerts,
+    recentEvents,
+    selectedNodeId,
+    isLoading,
+    isDiscovering,
+    error,
+    requestState,
+    syncState,
+    wsState,
+    lastSyncedAt,
+    fetchTopology,
+    triggerDiscover,
+    applyTopologyEvent,
+    setWsState,
+    selectNode,
+  } = useTopologyStore();
 
   useEffect(() => {
     void fetchTopology();
   }, [fetchTopology]);
+
+  const wsUrl = useMemo(() => buildBackendWsUrl("/ws/topology"), []);
+  const enableTopologyWs = import.meta.env.MODE !== "test";
+  const onTopologyEvent = useCallback(
+    (event: WSEvent) => {
+      applyTopologyEvent(event);
+    },
+    [applyTopologyEvent],
+  );
+  const { state: currentWsState } = useWebSocket(wsUrl, onTopologyEvent, {
+    enabled: enableTopologyWs,
+    maxBufferedMessages: 300,
+  });
+  useEffect(() => {
+    setWsState(currentWsState);
+  }, [currentWsState, setWsState]);
 
   const selectedNode = nodes.find((node) => node.id === selectedNodeId);
   const metricCards = [
@@ -21,21 +59,21 @@ function TopologyPage() {
       key: "entities",
       label: "实体数",
       value: nodes.length,
-      hint: "当前已纳入拓扑的物理与逻辑实体数量。",
+      hint: "当前已纳入拓扑图谱的实体数量",
       icon: "layers" as const,
     },
     {
       key: "relations",
-      label: "关联数",
+      label: "关系数",
       value: edges.length,
-      hint: "覆盖机柜、节点、交换机与服务之间的依赖关系。",
+      hint: "实体之间的依赖与连接关系",
       icon: "algorithm" as const,
     },
     {
       key: "alerts",
       label: "活动告警",
       value: activeAlerts,
-      hint: "已挂接到当前拓扑视图的活动告警数量。",
+      hint: "与当前拓扑关联的 firing 告警",
       icon: "notification" as const,
     },
   ];
@@ -54,13 +92,16 @@ function TopologyPage() {
     }));
   }, [nodes]);
 
+  const syncTone = syncState === "error" ? "danger" : syncState === "degraded" ? "warning" : "accent";
+  const wsTone = wsState === "open" ? "success" : wsState === "connecting" ? "warning" : wsState === "error" ? "danger" : "neutral";
+
   return (
     <div className="page-grid topology-page">
       <div className="page-intro">
         <SectionHeader
           eyebrow="运行拓扑"
           title="AIDC 拓扑总览"
-          description="在一张关系图里串联物理资源、网络链路、平台节点与服务依赖，让影响评估和路径定位在此处更直接。"
+          description="以快照 + 实时事件流展示基础设施拓扑，用于后续故障半径评估与诊断关联。"
         />
       </div>
 
@@ -81,18 +122,29 @@ function TopologyPage() {
 
       <div className="page-two-col topology-page__content">
         <SurfaceCard
-          actions={<StatusChip tone="accent">图谱 + 树视图</StatusChip>}
+          actions={
+            <div style={{ display: "flex", gap: 8 }}>
+              <StatusChip tone={syncTone}>Sync: {syncState}</StatusChip>
+              <StatusChip tone={wsTone}>WS: {wsState}</StatusChip>
+              <Button size="small" loading={isDiscovering} onClick={() => void triggerDiscover()}>
+                手工刷新
+              </Button>
+            </div>
+          }
           title="拓扑浏览器"
-          description="在关系图和分组树之间切换，快速查看依赖路径与影响范围。"
+          description={lastSyncedAt ? `最近同步：${formatTimestamp(lastSyncedAt)}` : "尚未完成同步"}
         >
           {isLoading ? (
             <div className="state-block">
               <Spin />
             </div>
-          ) : error ? (
-            <div className="state-block">{error}</div>
+          ) : error && requestState === "request_failed" ? (
+            <div className="state-block">
+              <div>请求失败（网络/跨域/后端不可达）</div>
+              <div style={{ marginTop: 8 }}>{error}</div>
+            </div>
           ) : nodes.length === 0 ? (
-            <div className="state-block">当前拓扑图中暂无数据。</div>
+            <div className="state-block">请求成功，但当前暂无拓扑数据。</div>
           ) : (
             <Tabs
               className="app-tabs"
@@ -122,7 +174,7 @@ function TopologyPage() {
 
         <div className="page-stack">
           <EntityDetail node={selectedNode} />
-          <SurfaceCard title="最近事件" description="影响当前拓扑态势的重要变化与状态流转。">
+          <SurfaceCard title="最近事件" description="拓扑同步和增量变更事件">
             <div className="mini-card-list">
               {recentEvents.length === 0 ? (
                 <div className="mini-card">

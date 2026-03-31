@@ -9,7 +9,9 @@
     "preview": "vite preview",
     "test": "vitest run",
     "contract:sync": "python ../scripts/sync_frontend_contract.py",
-    "contract:check": "npm run contract:sync && git diff --exit-code -- src/api/generated/openapi.json src/api/generated/backend-contract.ts"
+    "contract:doc:sync": "python ../scripts/sync_contract_doc.py",
+    "contract:doc:check": "python ../scripts/sync_contract_doc.py --check",
+    "contract:check": "python ../scripts/sync_frontend_contract.py --check && python ../scripts/sync_contract_doc.py --check"
   },
   "dependencies": {
     "@fontsource/inter": "^5.2.8",

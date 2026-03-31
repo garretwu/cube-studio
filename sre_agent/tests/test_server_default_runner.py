@@ -18,8 +18,10 @@ def test_create_app_assembles_default_diagnosis_runner_and_serves_diagnose(monke
     monkeypatch.setenv("SRE_OPENAI_API_KEY", "test-key")
     monkeypatch.setenv("SRE_LLM_MODEL", "MiniMax-M2.7")
 
+    captured: dict[str, object] = {}
+
     async def _fake_run_diagnosis(**kwargs):  # noqa: ANN003
-        _ = kwargs
+        captured.update(kwargs)
         return {
             "session_id": "default-session-1",
             "status": "diagnosed",
@@ -76,6 +78,14 @@ def test_create_app_assembles_default_diagnosis_runner_and_serves_diagnose(monke
     assert payload["data"]["diagnosis_result"]["root_cause"] == "synthetic diagnosis"
     assert payload["data"]["trace"] is not None
     assert len(payload["data"]["trace"]["steps"]) == 2
+    assert "topology_blast_radius" in (captured.get("variables") or {})
+    assert payload["data"]["alert"]["annotations"].get("topology_blast_radius_summary")
+    channels = client.app.state.services.remediation_engine.execution_context.channels
+    assert "ontology" in channels
+    assert "k8s" in channels
+    assert "prometheus" in channels
+    assert "ssh" in channels
+    assert "remediation" in channels
 
 
 def test_create_app_default_runner_supports_handle_without_missing_runner_error(monkeypatch, tmp_path) -> None:
@@ -122,3 +132,25 @@ def test_create_app_default_runner_supports_handle_without_missing_runner_error(
     payload = response.json()
     assert payload["success"] is True
     assert payload["data"]["outcome"] in {"resolved", "escalated", "re_diagnosed", "partially_resolved"}
+
+
+def test_create_app_strict_mode_rejects_when_core_channels_not_ready(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("JWT_SECRET", "secret")
+    monkeypatch.delenv("SRE_PROMETHEUS_URL", raising=False)
+    monkeypatch.delenv("SRE_SSH_INVENTORY_PATH", raising=False)
+
+    config = SREAgentConfig.model_validate(
+        {
+            "global": {"aidc_id": "test-aidc"},
+            "ontology": {"db_path": str(tmp_path / "ontology.db")},
+            "memory": {"db_dir": str(tmp_path / "memory")},
+            "tool_runtime": {"mode": "strict", "core_required_channels": ["ssh", "prometheus"]},
+        }
+    )
+
+    try:
+        create_app(config=config)
+    except RuntimeError as exc:
+        assert "strict mode startup blocked" in str(exc)
+    else:
+        raise AssertionError("expected strict mode startup failure")

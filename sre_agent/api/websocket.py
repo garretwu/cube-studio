@@ -62,6 +62,20 @@ def build_websocket_router() -> APIRouter:
             except Exception:  # noqa: BLE001
                 break
 
+    @router.websocket("/ws/topology")
+    async def topology_ws(websocket: WebSocket) -> None:
+        await ws_authenticate(websocket)
+        await websocket.accept()
+        publisher = websocket.app.state.services.trace_publisher
+        last_id = websocket.query_params.get("last_event_id")
+        async for event in publisher.subscribe("topology", after=last_id):
+            try:
+                await asyncio.wait_for(websocket.send_json(event.model_dump(mode="json")), timeout=5.0)
+            except (TimeoutError, WebSocketDisconnect):
+                break
+            except Exception:  # noqa: BLE001
+                break
+
     @router.websocket("/ws/chat")
     async def chat_ws(websocket: WebSocket) -> None:
         user = await ws_authenticate(websocket)

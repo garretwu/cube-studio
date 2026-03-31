@@ -16,6 +16,8 @@ import type {
   SREApiEnvelope,
   SessionSummary,
   SkillDescriptor,
+  ToolChannelsStatusResponse,
+  TopologyStatus,
   TopologySnapshot,
 } from "./types";
 
@@ -103,6 +105,14 @@ function extractDuplicateSessionId(payload: SREApiEnvelope<LoopResult>): string 
 export const apiClient = {
   getTopology: async () => {
     const response = await api.get<SREApiEnvelope<TopologySnapshot>>("/api/topology");
+    return unwrapPayload(response.data);
+  },
+  getTopologyStatus: async () => {
+    const response = await api.get<SREApiEnvelope<TopologyStatus>>("/api/topology/status");
+    return unwrapPayload(response.data);
+  },
+  triggerTopologyDiscover: async () => {
+    const response = await api.post<SREApiEnvelope<TopologyStatus>>("/api/topology/discover");
     return unwrapPayload(response.data);
   },
   getAlerts: async () => {
@@ -207,6 +217,12 @@ export const apiClient = {
   },
   getSkills: async () => {
     const response = await api.get<SREApiEnvelope<SkillDescriptor[]> | SkillDescriptor[]>("/api/skills");
+    return unwrapPayload(response.data);
+  },
+  getToolChannelsStatus: async () => {
+    const response = await api.get<SREApiEnvelope<ToolChannelsStatusResponse> | ToolChannelsStatusResponse>(
+      "/api/tools/channels/status",
+    );
     return unwrapPayload(response.data);
   },
 };

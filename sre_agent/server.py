@@ -4,12 +4,17 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import threading
+from collections import deque
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Any, AsyncIterator, Awaitable, Callable, Protocol
+from pathlib import Path
+from typing import Any, AsyncIterator, Awaitable, Callable, Literal, Protocol
+from uuid import uuid4
 
+import yaml
 from fastapi import FastAPI
 
 from lib.channels.alert import AlertChannel
@@ -19,12 +24,15 @@ from sre_agent.api.routes import AuditLogger
 from sre_agent.auth.jwt import CurrentUser, JWTSettings, resolve_jwt_settings
 from sre_agent.config import SREAgentConfig
 from sre_agent.concurrency import AlertCorrelator, AlertDeduplicator, ResourceLock
+from sre_agent.knowledge.store import KnowledgeStore
 from sre_agent.memory.factory import create_memory_store
 from sre_agent.models.alert import Alert, AlertSeverity
 from sre_agent.models.diagnosis import DiagnosisSession
 from sre_agent.models.events import EventType, WSEvent
 from sre_agent.ontology.graph import OntologyGraph
 from sre_agent.remediation import ApprovalGate, IncidentHandler, LoopConfig, LoopOrchestrator, PlanValidator, RemediationEngine, RollbackJournal
+from sre_agent.runtime import bootstrap_tool_channels, register_remediation_channel
+from sre_agent.topology.discovery import discover_live_snapshot, discover_static_snapshot
 from sre_agent.tools import ToolExecutionContext, build_default_registry
 
 LOGGER = logging.getLogger(__name__)
@@ -328,6 +336,253 @@ class AlertPollingService:
         return alert.model_dump_json()
 
 
+@dataclass(frozen=True)
+class TopologySyncStatus:
+    snapshot_id: str | None
+    sync_state: Literal["idle", "syncing", "ready", "degraded", "error"]
+    mode: str
+    last_synced_at: datetime | None
+    last_started_at: datetime | None
+    last_error: str | None
+    scanner_counts: dict[str, dict[str, int]]
+
+    def as_json(self) -> dict[str, Any]:
+        return {
+            "snapshot_id": self.snapshot_id,
+            "sync_state": self.sync_state,
+            "mode": self.mode,
+            "last_synced_at": self.last_synced_at.isoformat() if self.last_synced_at else None,
+            "last_started_at": self.last_started_at.isoformat() if self.last_started_at else None,
+            "last_error": self.last_error,
+            "scanner_counts": self.scanner_counts,
+        }
+
+
+class TopologyDiscoveryService:
+    def __init__(
+        self,
+        *,
+        config: SREAgentConfig,
+        ontology: OntologyGraph,
+        trace_publisher: InMemoryTracePublisher,
+    ) -> None:
+        self._config = config
+        self._ontology = ontology
+        self._trace_publisher = trace_publisher
+        self._lock = asyncio.Lock()
+        self._stop_event = asyncio.Event()
+        self._task: asyncio.Task[None] | None = None
+        self._recent_events: deque[str] = deque(maxlen=100)
+        self._snapshot_id: str | None = None
+        self._last_synced_at: datetime | None = None
+        self._last_started_at: datetime | None = None
+        self._last_error: str | None = None
+        self._scanner_counts: dict[str, dict[str, int]] = {}
+        self._sync_state: Literal["idle", "syncing", "ready", "degraded", "error"] = "idle"
+        mode = str(self._config.ontology.discovery.mode or "static").strip().lower()
+        self._mode = mode if mode in {"static", "live"} else "static"
+
+    async def start(self) -> None:
+        if not bool(self._config.ontology.discovery.auto_discovery):
+            LOGGER.info("topology discovery service disabled by config")
+            return
+        await self.trigger_discovery(reason="startup")
+        interval = max(0, int(self._config.ontology.discovery.refresh_interval_seconds))
+        if interval <= 0:
+            return
+        if self._task is not None and not self._task.done():
+            return
+        self._stop_event.clear()
+        self._task = asyncio.create_task(self._run_loop(interval), name="sre-topology-discovery")
+
+    async def stop(self) -> None:
+        self._stop_event.set()
+        if self._task is None:
+            return
+        self._task.cancel()
+        try:
+            await self._task
+        except asyncio.CancelledError:
+            pass
+        self._task = None
+
+    def status(self) -> TopologySyncStatus:
+        return TopologySyncStatus(
+            snapshot_id=self._snapshot_id,
+            sync_state=self._sync_state,
+            mode=self._mode,
+            last_synced_at=self._last_synced_at,
+            last_started_at=self._last_started_at,
+            last_error=self._last_error,
+            scanner_counts=dict(self._scanner_counts),
+        )
+
+    def recent_events(self, limit: int = 20) -> list[str]:
+        safe_limit = max(1, int(limit))
+        return list(self._recent_events)[-safe_limit:]
+
+    async def trigger_discovery(self, *, reason: str) -> TopologySyncStatus:
+        async with self._lock:
+            self._last_started_at = datetime.now(UTC)
+            self._sync_state = "syncing"
+            await self._publish_event(
+                action="sync_started",
+                payload={
+                    "reason": reason,
+                    "mode": self._mode,
+                    "started_at": self._last_started_at.isoformat(),
+                },
+            )
+            self._record_event(f"[{self._last_started_at.isoformat()}] topology sync started ({reason})")
+
+            try:
+                previous_nodes = {node.id: node for node in self._ontology.list_entities()}
+                previous_edges = {
+                    (edge.source_id, edge.target_id, edge.relation.value): edge for edge in self._ontology.list_edges()
+                }
+                nodes, edges, scanner_counts, effective_mode, fallback_reason = await self._discover_once()
+                preserve_existing = not nodes and not edges and bool(previous_nodes)
+                if preserve_existing:
+                    reason = "discovery returned empty snapshot; retained existing topology"
+                    fallback_reason = f"{fallback_reason}; {reason}" if fallback_reason else reason
+                    next_nodes = previous_nodes
+                    next_edges = previous_edges
+                else:
+                    await self._replace_graph(nodes=nodes, edges=edges)
+                    next_nodes = {node.id: node for node in self._ontology.list_entities()}
+                    next_edges = {
+                        (edge.source_id, edge.target_id, edge.relation.value): edge for edge in self._ontology.list_edges()
+                    }
+                    await self._publish_diff(
+                        previous_nodes=previous_nodes,
+                        previous_edges=previous_edges,
+                        next_nodes=next_nodes,
+                        next_edges=next_edges,
+                    )
+
+                self._snapshot_id = uuid4().hex
+                self._last_synced_at = datetime.now(UTC)
+                self._scanner_counts = scanner_counts
+                self._last_error = fallback_reason
+                if fallback_reason:
+                    self._sync_state = "degraded"
+                else:
+                    self._sync_state = "ready"
+                payload = {
+                    "reason": reason,
+                    "mode": effective_mode,
+                    "snapshot_id": self._snapshot_id,
+                    "last_synced_at": self._last_synced_at.isoformat(),
+                    "sync_state": self._sync_state,
+                    "scanner_counts": scanner_counts,
+                }
+                if fallback_reason:
+                    payload["fallback_reason"] = fallback_reason
+                await self._publish_event(action="sync_succeeded", payload=payload)
+                self._record_event(
+                    f"[{self._last_synced_at.isoformat()}] topology sync succeeded "
+                    f"(mode={effective_mode}, nodes={len(next_nodes)}, edges={len(next_edges)})"
+                )
+            except Exception as exc:  # noqa: BLE001
+                self._sync_state = "error"
+                self._last_error = str(exc)
+                self._record_event(f"[{datetime.now(UTC).isoformat()}] topology sync failed: {exc}")
+                await self._publish_event(
+                    action="sync_failed",
+                    payload={
+                        "reason": reason,
+                        "mode": self._mode,
+                        "error": str(exc),
+                    },
+                )
+                LOGGER.warning("topology discovery failed: %s", exc)
+            return self.status()
+
+    async def _run_loop(self, interval_seconds: int) -> None:
+        while not self._stop_event.is_set():
+            try:
+                await asyncio.wait_for(self._stop_event.wait(), timeout=interval_seconds)
+                continue
+            except TimeoutError:
+                pass
+            try:
+                await self.trigger_discovery(reason="periodic")
+            except Exception as exc:  # noqa: BLE001
+                LOGGER.warning("topology periodic sync failed: %s", exc)
+
+    async def _discover_once(
+        self,
+    ) -> tuple[list[Any], list[Any], dict[str, dict[str, int]], str, str | None]:
+        fallback_reason: str | None = None
+        if self._mode == "live":
+            try:
+                nodes, edges, scanner_counts = await discover_live_snapshot(
+                    self._config,
+                    inventory_path=Path(self._config.ontology.discovery.live_inventory_path),
+                )
+                return nodes, edges, scanner_counts, "live", None
+            except Exception as exc:  # noqa: BLE001
+                if not bool(self._config.ontology.discovery.live_fallback_to_static):
+                    raise
+                fallback_reason = f"live discovery failed and fell back to static: {exc}"
+                LOGGER.warning(fallback_reason)
+        nodes, edges, scanner_counts = await discover_static_snapshot(self._config)
+        return nodes, edges, scanner_counts, "static", fallback_reason
+
+    async def _replace_graph(self, *, nodes: list[Any], edges: list[Any]) -> None:
+        for node in self._ontology.list_entities():
+            await self._ontology.remove_node(node.id)
+        await self._ontology.add_nodes(nodes)
+        await self._ontology.add_edges(edges)
+
+    async def _publish_diff(
+        self,
+        *,
+        previous_nodes: dict[str, Any],
+        previous_edges: dict[tuple[str, str, str], Any],
+        next_nodes: dict[str, Any],
+        next_edges: dict[tuple[str, str, str], Any],
+    ) -> None:
+        for node_id in sorted(set(previous_nodes) - set(next_nodes)):
+            await self._publish_event(action="node_remove", payload={"id": node_id})
+        for node_id in sorted(next_nodes):
+            if node_id in previous_nodes and previous_nodes[node_id] == next_nodes[node_id]:
+                continue
+            await self._publish_event(
+                action="node_upsert",
+                payload={"node": next_nodes[node_id].model_dump(mode="json")},
+            )
+
+        for edge_key in sorted(set(previous_edges) - set(next_edges)):
+            await self._publish_event(
+                action="edge_remove",
+                payload={
+                    "source_id": edge_key[0],
+                    "target_id": edge_key[1],
+                    "relation": edge_key[2],
+                },
+            )
+        for edge_key in sorted(next_edges):
+            if edge_key in previous_edges and previous_edges[edge_key] == next_edges[edge_key]:
+                continue
+            await self._publish_event(
+                action="edge_upsert",
+                payload={"edge": next_edges[edge_key].model_dump(mode="json")},
+            )
+
+    async def _publish_event(self, *, action: str, payload: dict[str, Any]) -> None:
+        await self._trace_publisher.publish(
+            {
+                "type": EventType.TOPOLOGY.value,
+                "session_id": "topology",
+                "data": {"action": action, **payload},
+            }
+        )
+
+    def _record_event(self, message: str) -> None:
+        self._recent_events.append(message)
+
+
 class MissingDiagnosisRunner:
     async def adiagnose(
         self,
@@ -338,6 +593,94 @@ class MissingDiagnosisRunner:
         raise RuntimeError("diagnosis runner is not configured")
 
 
+def _extract_alert_entities(alert: Alert) -> list[str]:
+    ordered_keys = (
+        "node",
+        "instance",
+        "service",
+        "pod",
+        "switch",
+        "host",
+        "job",
+        "kubernetes_node",
+    )
+    values: list[str] = []
+    for key in ordered_keys:
+        raw = alert.labels.get(key)
+        if not raw:
+            continue
+        text = str(raw).strip()
+        if text and text not in values:
+            values.append(text)
+    return values
+
+
+def _compact_blast_entity(entity: Any) -> dict[str, Any]:
+    if hasattr(entity, "model_dump"):
+        payload = entity.model_dump(mode="json")
+    elif isinstance(entity, dict):
+        payload = dict(entity)
+    else:
+        payload = {"id": str(entity), "entity_type": "unknown", "properties": {}}
+    properties = payload.get("properties")
+    if not isinstance(properties, dict):
+        properties = {}
+    key_attributes = {}
+    for key in ("namespace", "node", "service", "pod", "host", "ip", "job", "role", "port"):
+        value = properties.get(key)
+        if value is not None and str(value).strip():
+            key_attributes[key] = value
+    return {
+        "id": str(payload.get("id", "")),
+        "type": str(payload.get("entity_type", "unknown")),
+        "name": payload.get("name"),
+        "status": payload.get("status"),
+        "key_attributes": key_attributes,
+        "properties": properties,
+    }
+
+
+def _build_alert_blast_radius_context(ontology: OntologyGraph, alert: Alert) -> dict[str, Any]:
+    resolved_entities: list[str] = []
+    blast_entities: list[dict[str, Any]] = []
+    total_affected = 0
+    for candidate in _extract_alert_entities(alert):
+        target_id = candidate
+        if ontology.get_entity(target_id) is None:
+            by_name = ontology.find_entities(filters={"name": target_id})
+            if by_name:
+                target_id = by_name[0].id
+            else:
+                continue
+        if target_id in resolved_entities:
+            continue
+        resolved_entities.append(target_id)
+        blast = ontology.get_blast_radius(target_id)
+        affected = blast.get("affected_entities", [])
+        if isinstance(affected, list):
+            blast_entities.extend([_compact_blast_entity(item) for item in affected])
+            total_affected += len(affected)
+
+    deduped: dict[str, dict[str, Any]] = {}
+    for entity in blast_entities:
+        entity_id = str(entity.get("id", "")).strip()
+        if entity_id:
+            deduped[entity_id] = entity
+    entity_list = list(deduped.values())
+    entity_preview = ", ".join(item["id"] for item in entity_list[:6]) if entity_list else "none"
+    summary = (
+        f"topology blast radius: roots={resolved_entities or ['none']}, "
+        f"affected_count={len(entity_list)}, affected_preview={entity_preview}"
+    )
+    return {
+        "roots": resolved_entities,
+        "affected_count": len(entity_list),
+        "affected_entities": entity_list,
+        "summary": summary,
+        "raw_affected_count": total_affected,
+    }
+
+
 class DefaultDiagnosisRunner:
     def __init__(
         self,
@@ -345,32 +688,39 @@ class DefaultDiagnosisRunner:
         execution_context: ToolExecutionContext,
         tool_registry: Any,
         config: SREAgentConfig,
+        ontology: OntologyGraph,
     ) -> None:
         self._execution_context = execution_context
         self._tool_registry = tool_registry
         self._config = config
+        self._ontology = ontology
 
     async def adiagnose(
         self,
         alert: Alert,
         trace_callback: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
     ) -> DiagnosisSession:
-        query = _build_default_query(alert)
+        topology_context = _build_alert_blast_radius_context(self._ontology, alert)
+        annotations = dict(alert.annotations)
+        annotations["topology_blast_radius_summary"] = str(topology_context["summary"])
+        enriched_alert = alert.model_copy(update={"annotations": annotations})
+        query = f"{_build_default_query(enriched_alert)}\n{topology_context['summary']}"
         result = await run_diagnosis(
             query=query,
             context=self._execution_context,
             variables={
-                "alert_name": alert.alert_name,
-                "severity": alert.severity.value,
-                "labels": alert.labels,
-                "annotations": alert.annotations,
+                "alert_name": enriched_alert.alert_name,
+                "severity": enriched_alert.severity.value,
+                "labels": enriched_alert.labels,
+                "annotations": enriched_alert.annotations,
                 "aidc_id": self._config.global_.aidc_id,
+                "topology_blast_radius": topology_context,
             },
             tool_registry=self._tool_registry,
             checkpoint_dir=None,
             trace_callback=trace_callback,
         )
-        return _diagnosis_session_from_state(alert=alert, state=result)
+        return _diagnosis_session_from_state(alert=enriched_alert, state=result)
 
 
 class DefaultReDiagnoseRunner:
@@ -380,10 +730,12 @@ class DefaultReDiagnoseRunner:
         execution_context: ToolExecutionContext,
         tool_registry: Any,
         config: SREAgentConfig,
+        ontology: OntologyGraph,
     ) -> None:
         self._execution_context = execution_context
         self._tool_registry = tool_registry
         self._config = config
+        self._ontology = ontology
 
     async def re_diagnose(
         self,
@@ -392,11 +744,13 @@ class DefaultReDiagnoseRunner:
         trace_callback: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
     ) -> DiagnosisSession:
         alert = session.alert
+        topology_context = _build_alert_blast_radius_context(self._ontology, alert)
         query = (
             f"{_build_default_query(alert)}\n\n"
             f"Previous diagnosis session failed remediation attempts. "
             f"Failed candidates: {context.get('failed_candidates', [])}. "
-            f"Re-diagnose and provide updated ranked candidates."
+            f"Re-diagnose and provide updated ranked candidates.\n"
+            f"{topology_context['summary']}"
         )
         result = await run_diagnosis(
             query=query,
@@ -408,6 +762,7 @@ class DefaultReDiagnoseRunner:
                 "annotations": alert.annotations,
                 "aidc_id": self._config.global_.aidc_id,
                 "re_diagnosis_context": context,
+                "topology_blast_radius": topology_context,
             },
             tool_registry=self._tool_registry,
             session_id=session.session_id,
@@ -499,6 +854,10 @@ def _log_dependency_summary(
     used_default_re_diagnose_runner: bool,
 ) -> None:
     channels = sorted(context.channels.keys())
+    channel_states = {
+        name: payload.get("health", "unknown")
+        for name, payload in sorted((services.tool_channel_status or {}).items())
+    }
     alert_mode = "degraded"
     if "alert" in channels:
         alert_mode = "real(injected_channel)"
@@ -518,12 +877,14 @@ def _log_dependency_summary(
         cfg.knowledge_base.persist_dir,
     )
     LOGGER.warning(
-        "runtime modes: alert=%s memory=%s knowledge=%s ws_max_events_per_session=%s",
+        "runtime modes: alert=%s memory=%s knowledge=%s ws_max_events_per_session=%s tool_runtime=%s",
         alert_mode,
         memory_mode,
         knowledge_mode,
         ws_retention,
+        services.tool_runtime_mode,
     )
+    LOGGER.warning("tool channel states: %s", channel_states if channel_states else {"none": "unknown"})
     LOGGER.debug("service wiring: diagnosis_runner=%s memory=%s knowledge=%s", bool(services.diagnosis_runner), bool(services.memory), bool(services.knowledge))
 
 
@@ -540,7 +901,10 @@ class AgentCServices:
     trace_publisher: InMemoryTracePublisher
     alert_store: InMemoryAlertStore
     audit_logger: AuditLogger
+    topology_discovery: TopologyDiscoveryService | None = None
     chat_handler: ChatHandlerProtocol | None = None
+    tool_channel_status: dict[str, dict[str, Any]] = field(default_factory=dict)
+    tool_runtime_mode: str = "degraded"
 
 
 def _resolve_alert_poll_interval_seconds(cfg: SREAgentConfig) -> float:
@@ -569,6 +933,11 @@ def _resolve_ws_max_events_per_session(cfg: SREAgentConfig) -> int:
     except (TypeError, ValueError):
         return default_value
     return value if value > 0 else default_value
+
+
+def _resolve_tool_runtime_mode(cfg: SREAgentConfig) -> str:
+    mode = str(getattr(cfg.tool_runtime, "mode", "degraded")).strip().lower()
+    return "strict" if mode == "strict" else "degraded"
 
 
 def _build_alert_polling_service(
@@ -600,6 +969,178 @@ def _build_alert_polling_service(
     )
 
 
+def _normalize_secret_value(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    if text.upper() in {"REPLACE_ME", "CHANGEME", "TODO"}:
+        return ""
+    return text
+
+
+def _read_inventory_payload(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {}
+    try:
+        payload = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    except Exception:  # noqa: BLE001
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _load_redfish_preauth_targets(cfg: SREAgentConfig) -> list[dict[str, Any]]:
+    mode = str(cfg.ontology.discovery.mode or "static").strip().lower()
+    if mode != "live":
+        return []
+    inventory_path = Path(str(cfg.ontology.discovery.live_inventory_path or "").strip())
+    payload = _read_inventory_payload(inventory_path)
+    workers = payload.get("inventory", {}).get("workers", [])
+    if not isinstance(workers, list):
+        return []
+
+    env_username = _normalize_secret_value(os.getenv("SRE_REDFISH_USERNAME", ""))
+    env_password = _normalize_secret_value(os.getenv("SRE_REDFISH_PASSWORD", ""))
+    env_verify_tls_raw = str(os.getenv("SRE_REDFISH_VERIFY_TLS", "")).strip().lower()
+    env_verify_tls: bool | None
+    if env_verify_tls_raw in {"1", "true", "yes"}:
+        env_verify_tls = True
+    elif env_verify_tls_raw in {"0", "false", "no"}:
+        env_verify_tls = False
+    else:
+        env_verify_tls = None
+
+    targets: list[dict[str, Any]] = []
+    for worker in workers:
+        if not isinstance(worker, dict):
+            continue
+        redfish = worker.get("redfish")
+        if not isinstance(redfish, dict):
+            continue
+        bmc_host = str(redfish.get("bmc_host", "")).strip()
+        if not bmc_host:
+            continue
+        username = _normalize_secret_value(redfish.get("username")) or env_username
+        password = _normalize_secret_value(redfish.get("password")) or env_password
+        if not username or not password:
+            continue
+        verify_tls_raw = redfish.get("verify_tls")
+        if verify_tls_raw is None and env_verify_tls is not None:
+            verify_tls = env_verify_tls
+        else:
+            verify_tls = bool(True if verify_tls_raw is None else verify_tls_raw)
+        targets.append(
+            {
+                "worker": str(worker.get("name", "")).strip() or bmc_host,
+                "bmc_host": bmc_host,
+                "username": username,
+                "password": password,
+                "verify_tls": verify_tls,
+            }
+        )
+    return targets
+
+
+def _set_channel_status(
+    *,
+    services: AgentCServices,
+    context: ToolExecutionContext,
+    channel_name: str,
+    health: str,
+    last_error: str | None,
+    mode: str | None = None,
+) -> None:
+    previous = services.tool_channel_status.get(channel_name, {})
+    payload: dict[str, Any] = dict(previous)
+    payload["name"] = channel_name
+    payload["health"] = health
+    payload["last_error"] = last_error
+    payload["last_checked_at"] = datetime.now(UTC).isoformat()
+    if mode:
+        payload["mode"] = mode
+    services.tool_channel_status[channel_name] = payload
+    context.metadata.setdefault("channel_status", {})[channel_name] = payload
+    context.metadata.setdefault("channel_health", {})[channel_name] = health
+
+
+async def _preload_redfish_sessions(
+    *,
+    cfg: SREAgentConfig,
+    context: ToolExecutionContext,
+    services: AgentCServices,
+) -> None:
+    redfish_channel = context.channels.get("redfish")
+    if redfish_channel is None or not hasattr(redfish_channel, "authenticate"):
+        return
+    mode = str(cfg.ontology.discovery.mode or "static").strip().lower()
+    if mode != "live":
+        return
+
+    targets = _load_redfish_preauth_targets(cfg)
+    if not targets:
+        _set_channel_status(
+            services=services,
+            context=context,
+            channel_name="redfish",
+            health="degraded",
+            last_error="no redfish credentials discovered from live inventory or SRE_REDFISH_* environment variables",
+            mode="channel",
+        )
+        return
+
+    ok_count = 0
+    errors: list[str] = []
+    for item in targets:
+        bmc_host = str(item["bmc_host"])
+        username = str(item["username"])
+        password = str(item["password"])
+        verify_tls = bool(item["verify_tls"])
+        if hasattr(redfish_channel, "set_web_credentials"):
+            try:
+                redfish_channel.set_web_credentials(bmc_host, username, password)
+            except Exception:  # noqa: BLE001
+                # best effort only; Redfish API token auth is still attempted below
+                pass
+        try:
+            result = await redfish_channel.authenticate(
+                bmc_host,
+                username,
+                password,
+                verify_tls=verify_tls,
+            )
+            if bool(getattr(result, "success", False)):
+                ok_count += 1
+                continue
+            message = str(getattr(result, "error", "") or "authentication failed")
+            errors.append(f"{bmc_host}: {message}")
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"{bmc_host}: {exc}")
+
+    total = len(targets)
+    if ok_count == total:
+        _set_channel_status(
+            services=services,
+            context=context,
+            channel_name="redfish",
+            health="ready",
+            last_error=None,
+            mode="channel+preauth",
+        )
+        LOGGER.info("redfish pre-auth succeeded for %s/%s hosts", ok_count, total)
+        return
+
+    preview = "; ".join(errors[:3])
+    suffix = f" (and {len(errors) - 3} more)" if len(errors) > 3 else ""
+    _set_channel_status(
+        services=services,
+        context=context,
+        channel_name="redfish",
+        health="degraded",
+        last_error=f"redfish pre-auth succeeded {ok_count}/{total}: {preview}{suffix}",
+        mode="channel+preauth",
+    )
+    LOGGER.warning("redfish pre-auth degraded: succeeded %s/%s hosts", ok_count, total)
+
+
 def create_app(
     *,
     config: SREAgentConfig | None = None,
@@ -620,8 +1161,34 @@ def create_app(
     created_ontology = ontology is None
     memory_store = memory or create_memory_store(aidc_id=cfg.global_.aidc_id, db_dir=cfg.memory.db_dir)
     created_memory = memory is None
+    knowledge_store = knowledge or KnowledgeStore(persist_dir=cfg.knowledge_base.persist_dir)
     registry = tool_registry or build_default_registry()
     context = execution_context or ToolExecutionContext()
+    if "alert" not in context.channels:
+        alertmanager_url = str(cfg.global_.alertmanager_url or "").strip()
+        if alertmanager_url:
+            try:
+                context.channels["alert"] = AlertChannel(
+                    alertmanager_url=alertmanager_url,
+                    prometheus_url=str(cfg.global_.prometheus_url or "").strip(),
+                )
+            except Exception as exc:  # noqa: BLE001
+                LOGGER.warning("failed to inject alert channel from config: %s", exc)
+    bootstrap_result = bootstrap_tool_channels(
+        cfg=cfg,
+        context=context,
+        ontology=ontology_graph,
+        memory_store=memory_store,
+        knowledge_store=knowledge_store,
+    )
+    if _resolve_tool_runtime_mode(cfg) == "strict":
+        unmet_core = [
+            name
+            for name in getattr(cfg.tool_runtime, "core_required_channels", ["ssh", "k8s", "prometheus"])
+            if getattr(bootstrap_result.statuses.get(str(name)), "health", None) != "ready"
+        ]
+        if unmet_core:
+            raise RuntimeError(f"tool runtime strict mode startup blocked: unavailable core channels={sorted(set(unmet_core))}")
     default_diagnosis_runner: DiagnosisRunnerProtocol | None = None
     default_re_diagnose_runner: ReDiagnoseRunnerProtocol | None = None
     if diagnosis_runner is None or re_diagnose_runner is None:
@@ -631,12 +1198,14 @@ def create_app(
                     execution_context=context,
                     tool_registry=registry,
                     config=cfg,
+                    ontology=ontology_graph,
                 )
             if re_diagnose_runner is None:
                 default_re_diagnose_runner = DefaultReDiagnoseRunner(
                     execution_context=context,
                     tool_registry=registry,
                     config=cfg,
+                    ontology=ontology_graph,
                 )
         except Exception as exc:  # noqa: BLE001
             raise RuntimeError(f"failed to assemble default diagnosis runtime: {exc}") from exc
@@ -661,6 +1230,11 @@ def create_app(
         prometheus=prometheus,
         validator=validator,
         execution_context=context,
+    )
+    register_remediation_channel(
+        context=context,
+        statuses=bootstrap_result.statuses,
+        remediation_engine=engine,
     )
     session_store = InMemorySessionStore()
     loop_store = InMemoryLoopStore()
@@ -704,19 +1278,27 @@ def create_app(
             LOGGER.warning("chat runtime is not available: %s", exc)
             runtime_chat_handler = None
 
+    topology_discovery_service = TopologyDiscoveryService(
+        config=cfg,
+        ontology=ontology_graph,
+        trace_publisher=publisher,
+    )
     services = AgentCServices(
         diagnosis_runner=final_diagnosis_runner,
         remediation_engine=engine,
         incident_handler=handler,
         ontology=ontology_graph,
         memory=memory_store,
-        knowledge=knowledge,
+        knowledge=knowledge_store,
         session_store=session_store,
         loop_store=loop_store,
         trace_publisher=publisher,
         alert_store=alert_store,
         audit_logger=AuditLogger(),
+        topology_discovery=topology_discovery_service,
         chat_handler=runtime_chat_handler,
+        tool_channel_status={name: status.as_json() for name, status in bootstrap_result.statuses.items()},
+        tool_runtime_mode=bootstrap_result.runtime_mode,
     )
     alert_polling_service = _build_alert_polling_service(
         cfg=cfg,
@@ -731,11 +1313,20 @@ def create_app(
             await ontology_graph.connect()
         if created_memory and hasattr(memory_store, "connect"):
             await memory_store.connect()
+        await _preload_redfish_sessions(
+            cfg=cfg,
+            context=context,
+            services=services,
+        )
         if alert_polling_service is not None:
             await alert_polling_service.start()
+        if topology_discovery_service is not None and created_ontology:
+            await topology_discovery_service.start()
         try:
             yield
         finally:
+            if topology_discovery_service is not None:
+                await topology_discovery_service.stop()
             if alert_polling_service is not None:
                 await alert_polling_service.stop()
             if created_memory and hasattr(memory_store, "close"):

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import inspect
+import re
 from dataclasses import dataclass, field
 from collections.abc import Iterable
 from enum import Enum
@@ -73,6 +74,25 @@ class ToolRegistry:
         self._tools: dict[str, ToolDefinition] = {}
         self._handlers: dict[str, ToolHandler] = {}
         self._disabled: set[str] = set()
+
+    @staticmethod
+    def _classify_error(message: str) -> tuple[str | None, str | None]:
+        text = message.strip()
+        if not text:
+            return None, None
+
+        tagged = re.search(r"\[(CHANNEL_[A-Z_]+)\]\s*channel '([^']+)'", text)
+        if tagged:
+            return tagged.group(1), tagged.group(2)
+
+        missing = re.search(r"required channel is missing:\s*([a-zA-Z0-9_/-]+)", text)
+        if missing:
+            return "CHANNEL_MISSING", missing.group(1)
+
+        lowered = text.casefold()
+        if "dependency is not configured" in lowered or "is not configured" in lowered:
+            return "CHANNEL_UNHEALTHY", None
+        return None, None
 
     def register(self, tool: ToolDefinition, handler: ToolHandler) -> None:
         name = tool.name.strip()
@@ -174,7 +194,17 @@ class ToolRegistry:
                 metadata={"safety_level": tool.safety_level.value},
             )
         except Exception as exc:  # noqa: BLE001
-            return ToolResult(tool=name, success=False, error=str(exc), metadata={"safety_level": tool.safety_level.value})
+            metadata = {"safety_level": tool.safety_level.value}
+            error_text = str(exc)
+            error_code, channel_name = self._classify_error(error_text)
+            if error_code is not None:
+                metadata["error_code"] = error_code
+            if channel_name:
+                metadata["channel"] = channel_name
+                health = ctx.metadata.get("channel_health", {}).get(channel_name)
+                if isinstance(health, str) and health:
+                    metadata["channel_state"] = health
+            return ToolResult(tool=name, success=False, error=error_text, metadata=metadata)
 
     def get_langchain_tools(
         self,

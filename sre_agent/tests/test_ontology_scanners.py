@@ -215,10 +215,10 @@ class TestOntologyScannersIntegration:
             }
         )
 
-        assert len(k8s_nodes) == 1
-        assert k8s_nodes[0].entity_type == EntityType.K8S_POD
-        assert len(k8s_edges) == 1
-        assert k8s_edges[0].relation == RelationType.HOSTED_ON
+        assert {node.entity_type for node in k8s_nodes} == {EntityType.K8S_POD, EntityType.K8S_CLUSTER}
+        assert any(node.id == "k8s:lab-cluster" for node in k8s_nodes)
+        assert len(k8s_edges) == 3
+        assert {edge.relation for edge in k8s_edges} == {RelationType.HOSTED_ON, RelationType.PART_OF}
 
         assert len(prom_nodes) == 2
         assert all(node.entity_type == EntityType.METRIC_ENDPOINT for node in prom_nodes)
@@ -324,7 +324,13 @@ class TestOntologyScannersE2E:
             k8s_nodes, k8s_edges = await K8sScanner(channel=k8s_channel).scan(namespace="default", label_selector=None)
             assert k8s_nodes, "expected live K8s scanner to discover at least one pod"
             assert k8s_edges, "expected live K8s scanner to discover at least one hosted_on edge"
-            k8s_node_ids = sorted({edge.target_id for edge in k8s_edges if edge.target_id})
+            k8s_node_ids = sorted(
+                {
+                    edge.target_id
+                    for edge in k8s_edges
+                    if edge.target_id and edge.relation == RelationType.HOSTED_ON
+                }
+            )
             assert k8s_node_ids, "expected live K8s scanner to resolve at least one node target"
 
             inventory_node_ids = set(worker_names)
@@ -409,7 +415,12 @@ class TestOntologyScannersE2E:
                 if graph.get_neighbors(worker_name, relation=RelationType.MANAGES)
             ]
             monitored_neighbors = graph.get_neighbors(representative_worker, relation=RelationType.MONITORS)
-            first_pod_path = graph.get_path(k8s_nodes[0].id, k8s_edges[0].target_id)
+            first_hosted_edge = next((edge for edge in k8s_edges if edge.relation == RelationType.HOSTED_ON), None)
+            first_pod_path = (
+                graph.get_path(first_hosted_edge.source_id, first_hosted_edge.target_id)
+                if first_hosted_edge is not None
+                else None
+            )
             switch_entities = graph.find_entities(EntityType.SWITCH)
             switch_port_entities = graph.find_entities(EntityType.SWITCH_PORT)
 
@@ -474,11 +485,12 @@ class TestOntologyScannersE2E:
         monitored_neighbors = graph.get_neighbors("node-a", relation=RelationType.MONITORS)
         pod_path = graph.get_path("pod:infer:vllm-0", "node-a")
 
-        assert summary["node_count"] == 8
-        assert summary["edge_count"] == 6
+        assert summary["node_count"] == 9
+        assert summary["edge_count"] == 8
         assert summary["entity_type_counts"] == {
             "bmc_endpoint": 1,
             "inference_service": 1,
+            "k8s_cluster": 1,
             "k8s_pod": 1,
             "metric_endpoint": 2,
             "node": 1,

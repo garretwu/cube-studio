@@ -1,0 +1,9 @@
+{
+    "config":  "sre_agent/conf/config.yaml",
+    "fault_config":  "fault_injector/fault-injector-test.yaml",
+    "demo_key":  "gpu_utilization_high",
+    "output_format":  "json",
+    "api_key":  "dummy-key",
+    "model":  "",
+    "base_url":  ""
+}

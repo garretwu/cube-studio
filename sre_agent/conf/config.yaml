@@ -1,0 +1,153 @@
+global:
+  aidc_id: lab-aidc
+  prometheus_url: "http://10.11.4.3:31260"
+  alertmanager_url: "http://10.11.4.3:31013/"
+  loki_url: "http://10.11.4.2:30628"
+
+knowledge_base:
+  persist_dir: ./data/knowledge_db_lab
+
+memory:
+  db_dir: ./data/memory_lab
+  vector_index_dir: ./data/memory_vectors_lab
+
+ontology:
+  db_path: ./data/ontology.lab.db
+  discovery:
+    mode: live
+    auto_discovery: true
+    refresh_interval_seconds: 120
+    live_inventory_path: sre_agent/conf/live_inventory.lab.yaml
+    live_fallback_to_static: true
+    k8s_cluster_name: aidc-lab
+    k8s_namespaces:
+      - default
+      - sre
+      - inference
+    prometheus_targets:
+      cpu_util: worker-01
+      memory_util: worker-04
+      gpu_util: worker-01
+      gpu_memory_used_mb: worker-02
+      gpu_power_watts: worker-03
+    switches:
+      - id: sw-200g
+        name: sw-200g
+        type: H3C S9855-24B8D
+        status: online
+        source: real-test
+        mgmt_host: "10.11.8.52"
+        inventory_source: "sre_agent/conf/live_inventory.lab.yaml"
+        ports:
+          - id: sw-200g:200GE1/0/1
+            name: 200GE1/0/1
+            connected_to: worker-01
+            status: up
+            speed_gbps: 200
+            source: static-fallback
+            mapping_source: inventory_heuristic
+          - id: sw-200g:200GE1/0/2
+            name: 200GE1/0/2
+            connected_to: worker-02
+            status: up
+            speed_gbps: 200
+            source: static-fallback
+            mapping_source: inventory_heuristic
+          - id: sw-200g:200GE1/0/3
+            name: 200GE1/0/3
+            connected_to: worker-03
+            status: up
+            speed_gbps: 200
+            source: static-fallback
+            mapping_source: inventory_heuristic
+          - id: sw-200g:200GE1/0/4
+            name: 200GE1/0/4
+            connected_to: worker-04
+            status: up
+            speed_gbps: 200
+            source: static-fallback
+            mapping_source: inventory_heuristic
+          - id: sw-200g:200GE1/0/5
+            name: 200GE1/0/5
+            connected_to: worker-05
+            status: up
+            speed_gbps: 200
+            source: static-fallback
+            mapping_source: inventory_heuristic
+          - id: sw-200g:200GE1/0/6
+            name: 200GE1/0/6
+            connected_to: worker-06
+            status: up
+            speed_gbps: 200
+            source: static-fallback
+            mapping_source: inventory_heuristic
+
+lab_seed:
+  nodes:
+    - id: worker-01
+      name: worker-01
+      role: gpu
+      source: static-fallback
+      status: online
+      bmc_ip: 10.11.8.10
+      switch: sw-200g
+      port: 200GE1/0/1
+      gpu_ids:
+        - gpu:worker-01:0
+        - gpu:worker-01:1
+        - gpu:worker-01:2
+        - gpu:worker-01:3
+    - id: worker-02
+      name: worker-02
+      role: gpu
+      source: static-fallback
+      status: online
+      bmc_ip: 10.11.8.11
+      switch: sw-200g
+      port: 200GE1/0/2
+      gpu_ids:
+        - gpu:worker-02:0
+        - gpu:worker-02:1
+        - gpu:worker-02:2
+        - gpu:worker-02:3
+    - id: worker-03
+      name: worker-03
+      role: gpu
+      source: static-fallback
+      status: online
+      bmc_ip: 10.11.8.12
+      switch: sw-200g
+      port: 200GE1/0/3
+      gpu_ids:
+        - gpu:worker-03:0
+        - gpu:worker-03:1
+        - gpu:worker-03:2
+        - gpu:worker-03:3
+    - id: worker-04
+      name: worker-04
+      role: cpu
+      source: static-fallback
+      status: online
+      bmc_ip: 10.11.8.13
+      switch: sw-200g
+      port: 200GE1/0/4
+      gpu_ids: []
+    - id: worker-05
+      name: worker-05
+      role: cpu
+      source: static-fallback
+      status: online
+      bmc_ip: 10.11.8.14
+      switch: sw-200g
+      port: 200GE1/0/5
+      gpu_ids: []
+    - id: worker-06
+      name: worker-06
+      role: cpu
+      source: static-fallback
+      status: online
+      bmc_ip: 10.11.8.15
+      switch: sw-200g
+      port: 200GE1/0/6
+      gpu_ids: []
+

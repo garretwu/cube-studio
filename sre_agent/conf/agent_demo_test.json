@@ -1,0 +1,29 @@
+{
+    "config":  "sre_agent/conf/config.yaml",
+    "fault_config":  "fault_injector/fault-injector-test.yaml",
+    "demo_key":  "gpu_utilization_high",
+    "output":  "sre_agent/temp/agent_demo_result.json",
+    "output_format":  "json",
+    "api_key":  "sk-api-Hu1gh0_eBFXBJegtEXYJy0gcPk98IZ3DkYVYN-Wd6PhunHYLwxwWgEwcYmzpng-VetzbHohSTkodHY4NNzgKoDLi0hHvpmS4xCM1TRY8tUG_-azTLv2y5gk",
+    "model":  "MiniMax-M2.7",
+    "base_url":  "https://api.minimax.chat/v1",
+    "loki_url":  "http://10.11.4.2:30628/",
+    "kubeconfig":  "sre_agent/temp/kubeconfig",
+    "namespace":  "service",
+    "target_node_name":  "wj-lab-cpt-03",
+    "target_node_ip":  "10.11.4.12",
+    "log_tail":  200,
+    "log_since":  "6h",
+    "pod_name":  "qwen3-32b-fp8-202602261-7f46f958db-dsblw",
+    "node":  "worker-03",
+    "alert_name":  "GPUUtilizationHigh",
+    "lookback":  "6h",
+    "allowed_tools":  [
+                          "gpu.get_metrics",
+                          "gpu.get_processes",
+                          "prometheus.query_instant",
+                          "k8s.list_pods",
+                          "k8s.describe_pod",
+                          "k8s.read_pod_logs"
+                      ]
+}

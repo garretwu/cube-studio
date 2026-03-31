@@ -44,6 +44,19 @@ export type TopologySnapshot = {
   edges: OntologyEdge[];
   active_alerts: number;
   recent_events: string[];
+  snapshot_id?: string | null;
+  last_synced_at?: string | null;
+  sync_state?: "idle" | "syncing" | "ready" | "degraded" | "error";
+};
+
+export type TopologyStatus = {
+  snapshot_id?: string | null;
+  sync_state: "idle" | "syncing" | "ready" | "degraded" | "error";
+  mode: string;
+  last_synced_at?: string | null;
+  last_started_at?: string | null;
+  last_error?: string | null;
+  scanner_counts: Record<string, { nodes: number; edges: number }>;
 };
 
 export type SREApiEnvelope<T> = {
@@ -265,6 +278,21 @@ export type SkillDescriptor = {
   source: string;
   permissions: string[];
   match_score: number;
+};
+
+export type ToolChannelStatus = {
+  name: string;
+  health: "ready" | "degraded" | "unavailable" | "disabled";
+  required_by_tools: string[];
+  enabled: boolean;
+  mode: string;
+  last_error?: string | null;
+  last_checked_at?: string | null;
+};
+
+export type ToolChannelsStatusResponse = {
+  runtime_mode: "strict" | "degraded";
+  channels: ToolChannelStatus[];
 };
 
 export type WSEvent = {

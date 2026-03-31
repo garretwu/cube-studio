@@ -421,8 +421,19 @@ async def _scan_live_sources(raw_config: dict[str, Any]) -> tuple[list[OntologyN
 
     kubeconfig = os.getenv("SRE_KUBECONFIG", "").strip() or "~/.kube/config"
     k8s_live_channel = _create_k8s_live_channel(kubeconfig)
-    k8s_nodes, k8s_edges = await K8sScanner(channel=k8s_live_channel).scan(namespace="default", label_selector=None)
-    discovered_k8s_node_ids = sorted({edge.target_id for edge in k8s_edges if edge.target_id})
+    cluster_name = os.getenv("SRE_K8S_CLUSTER_NAME", "").strip() or "lab-cluster"
+    k8s_nodes, k8s_edges = await K8sScanner(channel=k8s_live_channel).scan(
+        namespace="default",
+        label_selector=None,
+        cluster_name=cluster_name,
+    )
+    discovered_k8s_node_ids = sorted(
+        {
+            edge.target_id
+            for edge in k8s_edges
+            if edge.target_id and edge.relation == RelationType.HOSTED_ON
+        }
+    )
     k8s_extra_nodes = [
         OntologyNode(
             id=node_id,

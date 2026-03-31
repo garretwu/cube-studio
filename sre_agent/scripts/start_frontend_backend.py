@@ -26,11 +26,13 @@ import jwt
 import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_CONFIG_PATH = "sre_agent/conf/config.yaml"
+DEFAULT_KUBECONFIG_PATH = str((REPO_ROOT / "sre_agent" / "conf" / "kube.conf").resolve())
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Start SRE backend and frontend with auto JWT/token setup.")
-    parser.add_argument("--config", default="config.yaml", help="Backend config file path.")
+    parser.add_argument("--config", default=DEFAULT_CONFIG_PATH, help="Backend config file path.")
     parser.add_argument("--backend-host", default="127.0.0.1", help="Backend bind host.")
     parser.add_argument("--backend-port", type=int, default=8000, help="Backend bind port.")
     parser.add_argument("--frontend-port", type=int, default=8080, help="Frontend dev server port.")
@@ -75,7 +77,8 @@ def build_runtime_env(
     username: str,
     token_expire_seconds: int,
 ) -> tuple[dict[str, str], dict[str, str]]:
-    auth = _load_auth_settings(config_path)
+    resolved_config_path = _resolve_config_path(config_path)
+    auth = _load_auth_settings(str(resolved_config_path))
     jwt_secret = secrets.token_urlsafe(48)
     token = _encode_token(
         secret=jwt_secret,
@@ -95,6 +98,7 @@ def build_runtime_env(
     env["VITE_API_PROXY_TARGET"] = backend_url
     env["VITE_USE_MSW"] = "false"
     env["VITE_WS_ENABLED"] = "true"
+    env["SRE_KUBECONFIG"] = DEFAULT_KUBECONFIG_PATH
     if api_mode == "proxy":
         env.pop("VITE_API_BASE_URL", None)
     else:
@@ -114,12 +118,21 @@ def build_runtime_env(
         "api_mode": api_mode,
         "proxy_target": backend_url,
         "api_base_url": env.get("VITE_API_BASE_URL", ""),
+        "sre_kubeconfig": env["SRE_KUBECONFIG"],
+        "config_path": str(resolved_config_path),
     }
     return env, info
 
 
-def _load_auth_settings(config_path: str) -> dict[str, str]:
+def _resolve_config_path(config_path: str) -> Path:
     path = Path(config_path).expanduser()
+    if path.is_absolute():
+        return path
+    return (REPO_ROOT / path).resolve()
+
+
+def _load_auth_settings(config_path: str) -> dict[str, str]:
+    path = _resolve_config_path(config_path)
     if not path.exists():
         raise SystemExit(f"missing config file: {path}")
     raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
@@ -233,7 +246,8 @@ def main() -> int:
         token_expire_seconds=args.token_expire_seconds,
     )
 
-    backend = spawn_backend(args.config, args.backend_host, backend_port, env)
+    config_path = str(_resolve_config_path(args.config))
+    backend = spawn_backend(config_path, args.backend_host, backend_port, env)
     try:
         frontend = spawn_frontend(frontend_port, env)
     except Exception:  # noqa: BLE001
@@ -252,6 +266,7 @@ def main() -> int:
         f"VITE_API_BASE_URL={info['api_base_url'] or '<unset>'}",
         flush=True,
     )
+    print(f"[ok] config={info['config_path']} SRE_KUBECONFIG={info['sre_kubeconfig']}", flush=True)
     print(f"[ok] runtime info saved: {args.runtime_info}", flush=True)
     print("[hint] press Ctrl+C to stop both processes", flush=True)
 

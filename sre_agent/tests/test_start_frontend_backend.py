@@ -2,7 +2,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from sre_agent.scripts.start_frontend_backend import build_runtime_env
+from sre_agent.scripts.start_frontend_backend import (
+    DEFAULT_CONFIG_PATH,
+    DEFAULT_KUBECONFIG_PATH,
+    build_parser,
+    build_runtime_env,
+)
 
 
 def _write_config(tmp_path: Path) -> Path:
@@ -39,6 +44,7 @@ def test_build_runtime_env_proxy_mode_clears_api_base_url(monkeypatch, tmp_path:
     )
 
     assert env["VITE_API_PROXY_TARGET"] == "http://127.0.0.1:18090"
+    assert env["SRE_KUBECONFIG"] == DEFAULT_KUBECONFIG_PATH
     assert "VITE_API_BASE_URL" not in env
     assert info["api_mode"] == "proxy"
     assert info["api_base_url"] == ""
@@ -59,6 +65,13 @@ def test_build_runtime_env_direct_mode_sets_api_base_url(tmp_path: Path) -> None
     )
 
     assert env["VITE_API_PROXY_TARGET"] == "http://127.0.0.1:18090"
+    assert env["SRE_KUBECONFIG"] == DEFAULT_KUBECONFIG_PATH
     assert env["VITE_API_BASE_URL"] == "http://127.0.0.1:18090"
     assert info["api_mode"] == "direct"
     assert info["api_base_url"] == "http://127.0.0.1:18090"
+
+
+def test_parser_default_config_path() -> None:
+    parser = build_parser()
+    args = parser.parse_args([])
+    assert args.config == DEFAULT_CONFIG_PATH

@@ -387,6 +387,13 @@ class TestAPIUnit:
 
         assert response.status_code == 401
 
+    def test_unit_returns_401_when_bearer_missing_on_tool_channel_status_route(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        client, _ = _build_client(monkeypatch)
+
+        response = client.get("/api/tools/channels/status")
+
+        assert response.status_code == 401
+
     def test_unit_cors_preflight_returns_allow_headers_for_topology_route(self, monkeypatch: pytest.MonkeyPatch) -> None:
         client, _ = _build_client(monkeypatch)
 
@@ -422,6 +429,22 @@ class TestAPIIntegration:
         assert response.status_code == 200
         assert response.json()["success"] is True
         assert response.json()["data"]["outcome"] in {"resolved", "escalated", "re_diagnosed", "partially_resolved"}
+
+    def test_integration_tool_channel_status_route_returns_runtime_channel_matrix(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        client, token = _build_client(monkeypatch)
+
+        response = client.get("/api/tools/channels/status", headers=_auth_headers(token))
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["success"] is True
+        assert payload["data"]["runtime_mode"] in {"degraded", "strict"}
+        channels = payload["data"]["channels"]
+        assert isinstance(channels, list)
+        names = {item["name"] for item in channels}
+        assert "ontology" in names
+        assert "k8s" in names
+        assert "ssh" in names
 
     def test_integration_handle_duplicate_returns_existing_session_id_in_error_details(
         self, monkeypatch: pytest.MonkeyPatch
@@ -554,6 +577,7 @@ class TestAPIIntegration:
         assert payload["success"] is True
         assert payload["data"]["active_alerts"] == 0
         assert payload["data"]["recent_events"] == []
+        assert payload["data"]["sync_state"] == "idle"
         assert {item["id"] for item in payload["data"]["nodes"]} == {"node-a", "service:vllm"}
         assert payload["data"]["edges"] == [
             {
@@ -563,6 +587,26 @@ class TestAPIIntegration:
                 "properties": {},
             }
         ]
+
+    def test_integration_get_topology_status_returns_status_payload(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        client, token = _build_client(monkeypatch)
+
+        response = client.get("/api/topology/status", headers=_auth_headers(token))
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["success"] is True
+        assert payload["data"]["sync_state"] in {"idle", "syncing", "ready", "degraded", "error"}
+        assert "scanner_counts" in payload["data"]
+
+    def test_integration_post_topology_discover_runs_manual_sync(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        client, token = _build_client(monkeypatch)
+        response = client.post("/api/topology/discover", headers=_auth_headers(token))
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["success"] is True
+        assert payload["data"]["sync_state"] in {"ready", "degraded"}
 
     def test_integration_get_alerts_snapshot_returns_recorded_alerts(self, monkeypatch: pytest.MonkeyPatch) -> None:
         client, token = _build_client(monkeypatch)
@@ -669,6 +713,7 @@ class TestAPIIntegration:
         assert post_response.status_code == 200
         assert get_response.json()["data"]["root_entity_id"] == "node-a"
         assert get_response.json()["data"] == post_response.json()["data"]
+        assert "entities" in get_response.json()["data"]
 
     def test_integration_refresh_fallback_returns_non_error_payload_when_not_supported(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("JWT_SECRET", "secret")
@@ -933,6 +978,19 @@ class TestAPIE2E:
 
         assert payload["type"] == "alert"
         assert payload["data"]["fingerprint"] == "a2"
+
+    def test_e2e_websocket_topology_supports_last_event_id_resume(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        client, token = _build_client(monkeypatch)
+        first = WSEvent(type=EventType.TOPOLOGY, session_id="topology", data={"event_id": "1", "action": "sync_started"})
+        second = WSEvent(type=EventType.TOPOLOGY, session_id="topology", data={"event_id": "2", "action": "sync_succeeded"})
+        asyncio.run(client.app.state.services.trace_publisher.publish(first))
+        asyncio.run(client.app.state.services.trace_publisher.publish(second))
+
+        with client.websocket_connect(f"/ws/topology?token={token}&last_event_id=1") as websocket:
+            payload = websocket.receive_json()
+
+        assert payload["type"] == "topology"
+        assert payload["data"]["action"] == "sync_succeeded"
 
     def test_e2e_websocket_resume_replays_available_history_when_last_event_id_evicted(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path

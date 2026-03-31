@@ -11,6 +11,11 @@ const palette: Record<string, string> = {
   node: "#503dff",
   gpu: "#f04438",
   switch: "#0ea5e9",
+  switch_port: "#38bdf8",
+  bmc_endpoint: "#14b8a6",
+  k8s_cluster: "#22c55e",
+  k8s_pod: "#84cc16",
+  metric_endpoint: "#f59e0b",
   inference_service: "#8b5cf6",
 };
 

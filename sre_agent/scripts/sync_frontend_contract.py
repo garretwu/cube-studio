@@ -26,6 +26,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Generate frontend contract artifacts from backend schema.")
     parser.add_argument("--openapi-output", default=str(DEFAULT_OPENAPI_PATH), help="Path to generated OpenAPI JSON.")
     parser.add_argument("--ts-output", default=str(DEFAULT_TS_PATH), help="Path to generated TypeScript contract file.")
+    parser.add_argument("--check", action="store_true", help="Check mode: fail if generated content differs from files.")
     return parser
 
 
@@ -103,6 +104,10 @@ def write_json(path: Path, payload: dict) -> None:
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
+def serialize_json(payload: dict) -> str:
+    return json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
+
+
 def main() -> int:
     args = build_parser().parse_args()
     openapi_path = Path(args.openapi_output).expanduser()
@@ -111,6 +116,19 @@ def main() -> int:
     schema = build_openapi_schema()
     ws_paths = collect_ws_paths()
     contract_ts = generate_contract_ts(schema=schema, ws_paths=ws_paths)
+    openapi_text = serialize_json(schema)
+
+    if args.check:
+        existing_openapi = openapi_path.read_text(encoding="utf-8") if openapi_path.exists() else ""
+        existing_ts = ts_path.read_text(encoding="utf-8") if ts_path.exists() else ""
+        expected_ts = contract_ts.rstrip() + "\n"
+        if existing_openapi != openapi_text or existing_ts != expected_ts:
+            print("[mismatch] frontend contract artifacts are out of date")
+            print(f"  - openapi: {openapi_path}")
+            print(f"  - typescript: {ts_path}")
+            return 1
+        print(f"[ok] frontend contract artifacts are up to date: {openapi_path}, {ts_path}")
+        return 0
 
     write_json(openapi_path, schema)
     write_text(ts_path, contract_ts)

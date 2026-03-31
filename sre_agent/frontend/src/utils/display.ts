@@ -4,7 +4,6 @@ function formatByMap(value: string | null | undefined, map: Record<string, strin
   if (!value) {
     return fallback;
   }
-
   return map[value] ?? value;
 }
 
@@ -34,7 +33,7 @@ const workflowStatusLabels: Record<string, string> = {
   error: "异常",
   execution_failed: "执行失败",
   execution_started: "执行中",
-  execution_succeeded: "执行完成",
+  execution_succeeded: "执行成功",
   failed: "失败",
   firing: "触发中",
   healthy: "正常",
@@ -48,23 +47,34 @@ const workflowStatusLabels: Record<string, string> = {
   pending: "待执行",
   probable: "较大概率",
   proposed_fix_ready: "修复方案已就绪",
-  re_diagnosed: "已复核",
+  re_diagnosed: "已复检",
   rejected: "已驳回",
   rollback_failed: "回滚失败",
   rollback_started: "回滚中",
-  rollback_succeeded: "回滚完成",
+  rollback_succeeded: "回滚成功",
   resolved: "已解决",
   testing: "验证中",
-  validating: "验证中",
+  validating: "校验中",
   approval_rejected: "审批驳回",
+  syncing: "同步中",
+  ready: "已就绪",
+  idle: "空闲",
 };
 
 const entityTypeLabels: Record<string, string> = {
-  gpu: "GPU",
-  inference_service: "推理服务",
-  node: "节点",
   rack: "机柜",
+  node: "节点",
+  gpu: "GPU",
+  nic: "NIC",
   switch: "交换机",
+  switch_port: "交换机端口",
+  bmc_endpoint: "BMC",
+  k8s_cluster: "K8s 集群",
+  k8s_pod: "Pod",
+  inference_service: "推理服务",
+  training_pipeline: "训练任务",
+  metric_endpoint: "Prometheus 指标",
+  unknown: "未知实体",
 };
 
 const actionTypeLabels: Record<string, string> = {
@@ -87,7 +97,10 @@ const roleLabels: Record<ChatMessage["role"], string> = {
 
 const categoryLabels: Record<string, string> = {
   hardware: "硬件",
+  network: "网络",
   runbook: "运行手册",
+  service: "服务",
+  general: "通用",
 };
 
 const propertyLabels: Record<string, string> = {
@@ -99,6 +112,10 @@ const propertyLabels: Record<string, string> = {
   utilization: "利用率",
   vendor: "厂商",
   zone: "区域",
+  host: "主机",
+  ip: "IP 地址",
+  port: "端口",
+  source: "来源",
 };
 
 const layerLabels: Record<string, string> = {
@@ -106,13 +123,13 @@ const layerLabels: Record<string, string> = {
   hardware: "硬件",
   network: "网络",
   platform: "平台",
+  service: "服务",
 };
 
 export function formatSeverity(value?: Severity | "all" | null) {
   if (!value) {
     return "未知";
   }
-
   return severityLabels[value] ?? value;
 }
 
@@ -120,7 +137,6 @@ export function formatAlertStatus(value?: AlertStatus | null) {
   if (!value) {
     return "未知";
   }
-
   return alertStatusLabels[value] ?? value;
 }
 
@@ -140,7 +156,6 @@ export function formatVerificationMethod(value?: VerificationConfig["method"] | 
   if (!value) {
     return "未知";
   }
-
   return verificationMethodLabels[value] ?? value;
 }
 
@@ -148,7 +163,6 @@ export function formatRole(value?: ChatMessage["role"] | null) {
   if (!value) {
     return "未知";
   }
-
   return roleLabels[value] ?? value;
 }
 
@@ -171,3 +185,4 @@ export function formatLayer(value?: string | null) {
 export function formatIncidentOutcome(value?: IncidentRecord["outcome"] | null) {
   return formatWorkflowStatus(value);
 }
+

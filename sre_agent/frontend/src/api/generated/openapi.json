@@ -389,6 +389,52 @@
         ]
       }
     },
+    "/api/topology/status": {
+      "get": {
+        "summary": "Get Topology Status",
+        "operationId": "get_topology_status_api_topology_status_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SREResponse_TopologyStatusResponse_"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
+    "/api/topology/discover": {
+      "post": {
+        "summary": "Trigger Topology Discover",
+        "operationId": "trigger_topology_discover_api_topology_discover_post",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SREResponse_TopologyStatusResponse_"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
     "/api/alerts": {
       "get": {
         "summary": "Get Alerts Snapshot",
@@ -991,6 +1037,29 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/SREResponse_list_dict_str__Any___"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
+    "/api/tools/channels/status": {
+      "get": {
+        "summary": "Get Tool Channels Status",
+        "operationId": "get_tool_channels_status_api_tools_channels_status_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SREResponse_ToolChannelsStatusResponse_"
                 }
               }
             }
@@ -2706,6 +2775,49 @@
         ],
         "title": "SREResponse[RollbackResult]"
       },
+      "SREResponse_ToolChannelsStatusResponse_": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success"
+          },
+          "data": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ToolChannelsStatusResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "error": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SREError"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "trace_id": {
+            "type": "string",
+            "title": "Trace Id"
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Timestamp"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "success"
+        ],
+        "title": "SREResponse[ToolChannelsStatusResponse]"
+      },
       "SREResponse_TopologySnapshotResponse_": {
         "properties": {
           "success": {
@@ -2748,6 +2860,49 @@
           "success"
         ],
         "title": "SREResponse[TopologySnapshotResponse]"
+      },
+      "SREResponse_TopologyStatusResponse_": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success"
+          },
+          "data": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TopologyStatusResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "error": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SREError"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "trace_id": {
+            "type": "string",
+            "title": "Trace Id"
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Timestamp"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "success"
+        ],
+        "title": "SREResponse[TopologyStatusResponse]"
       },
       "SREResponse_Union_list_str___NoneType__": {
         "properties": {
@@ -3240,6 +3395,94 @@
         "title": "ThinkingTrace",
         "description": "Ordered chain of Thought/Observation items."
       },
+      "ToolChannelStatusItem": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "health": {
+            "type": "string",
+            "enum": [
+              "ready",
+              "degraded",
+              "unavailable",
+              "disabled"
+            ],
+            "title": "Health",
+            "default": "unavailable"
+          },
+          "required_by_tools": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Required By Tools"
+          },
+          "enabled": {
+            "type": "boolean",
+            "title": "Enabled",
+            "default": true
+          },
+          "mode": {
+            "type": "string",
+            "title": "Mode",
+            "default": "unknown"
+          },
+          "last_error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Error"
+          },
+          "last_checked_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Checked At"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "title": "ToolChannelStatusItem"
+      },
+      "ToolChannelsStatusResponse": {
+        "properties": {
+          "runtime_mode": {
+            "type": "string",
+            "enum": [
+              "strict",
+              "degraded"
+            ],
+            "title": "Runtime Mode",
+            "default": "degraded"
+          },
+          "channels": {
+            "items": {
+              "$ref": "#/components/schemas/ToolChannelStatusItem"
+            },
+            "type": "array",
+            "title": "Channels"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "ToolChannelsStatusResponse"
+      },
       "TopologySnapshotResponse": {
         "properties": {
           "nodes": {
@@ -3269,6 +3512,41 @@
             },
             "type": "array",
             "title": "Recent Events"
+          },
+          "snapshot_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Snapshot Id"
+          },
+          "last_synced_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Synced At"
+          },
+          "sync_state": {
+            "type": "string",
+            "enum": [
+              "idle",
+              "syncing",
+              "ready",
+              "degraded",
+              "error"
+            ],
+            "title": "Sync State",
+            "default": "idle"
           }
         },
         "additionalProperties": false,
@@ -3278,6 +3556,86 @@
           "edges"
         ],
         "title": "TopologySnapshotResponse"
+      },
+      "TopologyStatusResponse": {
+        "properties": {
+          "snapshot_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Snapshot Id"
+          },
+          "sync_state": {
+            "type": "string",
+            "enum": [
+              "idle",
+              "syncing",
+              "ready",
+              "degraded",
+              "error"
+            ],
+            "title": "Sync State",
+            "default": "idle"
+          },
+          "mode": {
+            "type": "string",
+            "title": "Mode",
+            "default": "static"
+          },
+          "last_synced_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Synced At"
+          },
+          "last_started_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Started At"
+          },
+          "last_error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Error"
+          },
+          "scanner_counts": {
+            "additionalProperties": {
+              "additionalProperties": {
+                "type": "integer"
+              },
+              "type": "object"
+            },
+            "type": "object",
+            "title": "Scanner Counts"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "TopologyStatusResponse"
       },
       "ValidationError": {
         "properties": {

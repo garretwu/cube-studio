@@ -82,6 +82,21 @@ class TopologySnapshotResponse(BaseModel):
     edges: list[dict[str, Any]]
     active_alerts: int = 0
     recent_events: list[str] = Field(default_factory=list)
+    snapshot_id: str | None = None
+    last_synced_at: datetime | None = None
+    sync_state: Literal["idle", "syncing", "ready", "degraded", "error"] = "idle"
+
+
+class TopologyStatusResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    snapshot_id: str | None = None
+    sync_state: Literal["idle", "syncing", "ready", "degraded", "error"] = "idle"
+    mode: str = "static"
+    last_synced_at: datetime | None = None
+    last_started_at: datetime | None = None
+    last_error: str | None = None
+    scanner_counts: dict[str, dict[str, int]] = Field(default_factory=dict)
 
 
 class AlertSnapshotResponse(BaseModel):
@@ -89,6 +104,25 @@ class AlertSnapshotResponse(BaseModel):
 
     alerts: list[dict[str, Any]] = Field(default_factory=list)
     clusters: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class ToolChannelStatusItem(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+    health: Literal["ready", "degraded", "unavailable", "disabled"] = "unavailable"
+    required_by_tools: list[str] = Field(default_factory=list)
+    enabled: bool = True
+    mode: str = "unknown"
+    last_error: str | None = None
+    last_checked_at: datetime | None = None
+
+
+class ToolChannelsStatusResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    runtime_mode: Literal["strict", "degraded"] = "degraded"
+    channels: list[ToolChannelStatusItem] = Field(default_factory=list)
 
 
 class SessionSummary(BaseModel):
@@ -200,17 +234,46 @@ def build_api_router() -> APIRouter:
                 normalized.append({"value": edge})
         return normalized
 
+    def _compact_affected_entity(entity: Any) -> dict[str, Any]:
+        if hasattr(entity, "model_dump"):
+            payload = entity.model_dump(mode="json")
+        elif isinstance(entity, dict):
+            payload = dict(entity)
+        else:
+            payload = {"id": str(entity), "entity_type": "unknown", "properties": {}}
+        properties = payload.get("properties")
+        if not isinstance(properties, dict):
+            properties = {}
+        key_attributes: dict[str, Any] = {}
+        for key in ("namespace", "node", "service", "pod", "host", "ip", "job", "role", "port"):
+            value = properties.get(key)
+            if value is not None and str(value).strip():
+                key_attributes[key] = value
+        return {
+            "id": str(payload.get("id", "")),
+            "type": str(payload.get("entity_type", "unknown")),
+            "name": payload.get("name"),
+            "status": payload.get("status"),
+            "key_attributes": key_attributes,
+            "properties": properties,
+        }
+
     def _normalize_blast_radius_payload(radius: dict[str, Any]) -> dict[str, Any]:
         affected_entities = radius.get("affected_entities", [])
         normalized_affected: list[dict[str, Any]] = []
+        compact_entities: list[dict[str, Any]] = []
         for entity in affected_entities:
             model_dump = getattr(entity, "model_dump", None)
             if callable(model_dump):
-                normalized_affected.append(model_dump(mode="json"))
+                payload = model_dump(mode="json")
+                normalized_affected.append(payload)
             elif isinstance(entity, dict):
-                normalized_affected.append(entity)
+                payload = entity
+                normalized_affected.append(payload)
             else:
-                normalized_affected.append({"value": entity})
+                payload = {"value": entity}
+                normalized_affected.append(payload)
+            compact_entities.append(_compact_affected_entity(payload))
 
         root_entity_id = radius.get("root_entity_id", radius.get("root"))
         affected_count = radius.get("affected_count")
@@ -227,10 +290,49 @@ def build_api_router() -> APIRouter:
             "root_entity_id": root_entity_id,
             "affected_count": affected_count,
             "affected_entities": normalized_affected,
+            "entities": compact_entities,
         }
         if "affected" in radius:
             payload["affected"] = radius["affected"]
         return payload
+
+    def _tool_channel_status_payload(services: Any) -> ToolChannelsStatusResponse:
+        def _parse_iso(value: str) -> datetime | None:
+            text = value.strip()
+            if not text:
+                return None
+            if text.endswith("Z"):
+                text = text[:-1] + "+00:00"
+            try:
+                return datetime.fromisoformat(text)
+            except ValueError:
+                return None
+
+        raw = getattr(services, "tool_channel_status", {}) or {}
+        rows: list[ToolChannelStatusItem] = []
+        if isinstance(raw, dict):
+            for name, payload in sorted(raw.items(), key=lambda item: str(item[0])):
+                data = payload if isinstance(payload, dict) else {}
+                health = str(data.get("health", "unavailable")).strip().lower()
+                if health not in {"ready", "degraded", "unavailable", "disabled"}:
+                    health = "unavailable"
+                rows.append(
+                    ToolChannelStatusItem(
+                        name=str(data.get("name", name)),
+                        health=health,  # type: ignore[arg-type]
+                        required_by_tools=[str(item) for item in data.get("required_by_tools", []) if str(item).strip()],
+                        enabled=bool(data.get("enabled", True)),
+                        mode=str(data.get("mode", "unknown")),
+                        last_error=str(data["last_error"]) if data.get("last_error") else None,
+                        last_checked_at=_parse_iso(str(data.get("last_checked_at", "")))
+                        if isinstance(data.get("last_checked_at"), str)
+                        else None,
+                    )
+                )
+        runtime_mode = str(getattr(services, "tool_runtime_mode", "degraded")).strip().lower()
+        if runtime_mode != "strict":
+            runtime_mode = "degraded"
+        return ToolChannelsStatusResponse(runtime_mode=runtime_mode, channels=rows)
 
     async def _refresh_ontology_entity(ontology: Any, entity_id: str) -> dict[str, Any]:
         refresh_entity = getattr(ontology, "refresh_entity", None)
@@ -429,6 +531,60 @@ def build_api_router() -> APIRouter:
             result["score"] = score
         return result
 
+    def _topology_status_payload(services: Any) -> TopologyStatusResponse:
+        discovery = getattr(services, "topology_discovery", None)
+        if discovery is None:
+            return TopologyStatusResponse()
+        status = discovery.status()
+        return TopologyStatusResponse.model_validate(status.as_json())
+
+    def _active_alert_count(services: Any) -> int:
+        snapshot = services.alert_store.snapshot()
+        alerts = snapshot.get("alerts", [])
+        if not isinstance(alerts, list):
+            return 0
+        count = 0
+        for alert in alerts:
+            if isinstance(alert, dict):
+                status = str(alert.get("status", "")).strip().lower()
+                if status == "firing":
+                    count += 1
+        return count
+
+    def _enrich_alert_with_topology_summary(services: Any, alert: Alert) -> Alert:
+        try:
+            ontology = services.ontology
+            labels = alert.labels
+            candidates = [
+                str(labels.get(key, "")).strip()
+                for key in ("node", "instance", "service", "pod", "switch", "host", "job")
+            ]
+            candidates = [item for item in candidates if item]
+            resolved_roots: list[str] = []
+            affected_total = 0
+            for candidate in candidates:
+                root_id = candidate
+                if ontology.get_entity(root_id) is None:
+                    by_name = ontology.find_entities(filters={"name": root_id})
+                    if not by_name:
+                        continue
+                    root_id = by_name[0].id
+                if root_id in resolved_roots:
+                    continue
+                resolved_roots.append(root_id)
+                radius = ontology.get_blast_radius(root_id)
+                affected = radius.get("affected_entities", [])
+                if isinstance(affected, list):
+                    affected_total += len(affected)
+            if not resolved_roots:
+                return alert
+            summary = f"roots={resolved_roots}, affected={affected_total}"
+            annotations = dict(alert.annotations)
+            annotations["topology_blast_radius_summary"] = summary
+            return alert.model_copy(update={"annotations": annotations})
+        except Exception:
+            return alert
+
     @router.post("/diagnose")
     async def diagnose(
         alert: Alert,
@@ -438,7 +594,8 @@ def build_api_router() -> APIRouter:
         services = _services(request)
         if services.diagnosis_runner is None:
             raise HTTPException(status_code=500, detail="diagnosis runner is not configured")
-        session = await services.diagnosis_runner.adiagnose(alert)
+        prepared_alert = _enrich_alert_with_topology_summary(services, alert)
+        session = await services.diagnosis_runner.adiagnose(prepared_alert)
         plan = _extract_recommended_fix(session)
         if plan is not None:
             services.remediation_engine.register_plan(session.session_id, plan)
@@ -454,7 +611,8 @@ def build_api_router() -> APIRouter:
     ) -> SREResponse[LoopResult]:
         _ = user
         services = _services(request)
-        response = await services.incident_handler.handle(alert)
+        prepared_alert = _enrich_alert_with_topology_summary(services, alert)
+        response = await services.incident_handler.handle(prepared_alert)
         return response.model_copy(update={"trace_id": _trace_id(request)})
 
     @router.get("/sessions")
@@ -731,12 +889,46 @@ def build_api_router() -> APIRouter:
     ) -> SREResponse[TopologySnapshotResponse]:
         _ = user
         services = _services(request)
+        status_payload = _topology_status_payload(services)
+        discovery = getattr(services, "topology_discovery", None)
+        recent_events = discovery.recent_events(limit=20) if discovery is not None else []
         payload = TopologySnapshotResponse(
             nodes=_normalize_ontology_entities(services.ontology.list_entities()),
             edges=_normalize_ontology_edges(services.ontology.list_edges()),
-            active_alerts=0,
-            recent_events=[],
+            active_alerts=_active_alert_count(services),
+            recent_events=recent_events,
+            snapshot_id=status_payload.snapshot_id,
+            last_synced_at=status_payload.last_synced_at,
+            sync_state=status_payload.sync_state,
         )
+        return SREResponse(success=True, data=payload, trace_id=_trace_id(request))
+
+    @router.get("/topology/status")
+    async def get_topology_status(
+        request: Request,
+        user: CurrentUser = Depends(get_current_user),
+    ) -> SREResponse[TopologyStatusResponse]:
+        _ = user
+        services = _services(request)
+        payload = _topology_status_payload(services)
+        return SREResponse(success=True, data=payload, trace_id=_trace_id(request))
+
+    @router.post("/topology/discover")
+    async def trigger_topology_discover(
+        request: Request,
+        user: CurrentUser = Depends(require_role("operator", "admin")),
+    ) -> SREResponse[TopologyStatusResponse]:
+        _ = user
+        services = _services(request)
+        discovery = getattr(services, "topology_discovery", None)
+        if discovery is None:
+            return SREResponse(
+                success=False,
+                error=SREError(code=ErrorCode.INTERNAL_ERROR, message="topology discovery service is unavailable"),
+                trace_id=_trace_id(request),
+            )
+        status = await discovery.trigger_discovery(reason="manual")
+        payload = TopologyStatusResponse.model_validate(status.as_json())
         return SREResponse(success=True, data=payload, trace_id=_trace_id(request))
 
     @router.get("/alerts")
@@ -960,6 +1152,16 @@ def build_api_router() -> APIRouter:
             }
             for item in skills
         ]
+        return SREResponse(success=True, data=payload, trace_id=_trace_id(request))
+
+    @router.get("/tools/channels/status")
+    async def get_tool_channels_status(
+        request: Request,
+        user: CurrentUser = Depends(get_current_user),
+    ) -> SREResponse[ToolChannelsStatusResponse]:
+        _ = user
+        services = _services(request)
+        payload = _tool_channel_status_payload(services)
         return SREResponse(success=True, data=payload, trace_id=_trace_id(request))
 
     return router

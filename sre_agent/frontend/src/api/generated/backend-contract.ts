@@ -27,7 +27,10 @@ export const HTTP_PATHS = [
   "/api/sessions/{session_id}/loop",
   "/api/sessions/{session_id}/trace",
   "/api/skills",
+  "/api/tools/channels/status",
   "/api/topology",
+  "/api/topology/discover",
+  "/api/topology/status",
 ] as const;
 export type HttpPath = (typeof HTTP_PATHS)[number];
 
@@ -35,6 +38,7 @@ export const WS_PATHS = [
   "/ws/alerts",
   "/ws/chat",
   "/ws/thinking-trace/{session_id}",
+  "/ws/topology",
 ] as const;
 export type WsPath = (typeof WS_PATHS)[number];
 
@@ -48,6 +52,7 @@ export const WS_EVENT_TYPES = [
   "loop_progress",
   "remediation_progress",
   "alert",
+  "topology",
   "error",
   "done",
 ] as const;

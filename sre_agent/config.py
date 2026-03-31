@@ -14,6 +14,7 @@ class GlobalConfig(BaseModel):
     cube_studio_url: str | None = None
     prometheus_url: str | None = None
     alertmanager_url: str | None = None
+    loki_url: str | None = None
     log_level: str = "INFO"
     cors_allowed_origins: list[str] = Field(
         default_factory=lambda: [
@@ -67,6 +68,14 @@ class SwitchDiscoveryConfig(BaseModel):
 class OntologyDiscoveryConfig(BaseModel):
     model_config = ConfigDict(extra="allow")
 
+    mode: str = "static"
+    auto_discovery: bool = True
+    refresh_interval_seconds: int = 120
+    live_inventory_path: str = "fault_injector/fault-injector-test.yaml"
+    live_fallback_to_static: bool = True
+    k8s_cluster_name: str = "lab-cluster"
+    k8s_namespaces: list[str] = Field(default_factory=lambda: ["default"])
+    prometheus_targets: dict[str, str] = Field(default_factory=dict)
     switches: list[SwitchDiscoveryConfig] = Field(default_factory=list)
 
 
@@ -172,6 +181,21 @@ class NATConfig(BaseModel):
     evaluation: NATEvaluationConfig = Field(default_factory=NATEvaluationConfig)
 
 
+class ToolChannelConfig(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    enabled: bool = True
+    required: bool = False
+
+
+class ToolRuntimeConfig(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    mode: str = "degraded"
+    core_required_channels: list[str] = Field(default_factory=lambda: ["ssh", "k8s", "prometheus"])
+    channels: dict[str, ToolChannelConfig] = Field(default_factory=dict)
+
+
 class SREAgentConfig(BaseModel):
     model_config = ConfigDict(populate_by_name=True, extra="allow")
 
@@ -187,6 +211,7 @@ class SREAgentConfig(BaseModel):
     slo: SLOConfig = Field(default_factory=SLOConfig)
     data_lifecycle: DataLifecycleConfig = Field(default_factory=DataLifecycleConfig)
     nat: NATConfig = Field(default_factory=NATConfig)
+    tool_runtime: ToolRuntimeConfig = Field(default_factory=ToolRuntimeConfig)
 
 
 def load_config(path: str | Path) -> SREAgentConfig:
