@@ -616,6 +616,17 @@ def build_default_registry() -> ToolRegistry:
     # write/remediation.py
     registry.register(
         ToolDefinition(
+            name="kill_process",
+            description="Terminate a rogue process on a node via SSH using pid or process name.",
+            safety_level=SafetyLevel.HIGH,
+            params_schema={"type": "object", "required": ["node"]},
+            tags=("remediation", "write", "ssh"),
+            needs_approval=True,
+        ),
+        write_remediation.kill_process,
+    )
+    registry.register(
+        ToolDefinition(
             name="remediation.execute_plan",
             description="Execute validated remediation plan through remediation engine.",
             safety_level=SafetyLevel.CRITICAL,

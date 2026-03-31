@@ -1,0 +1,69 @@
+# =============================================================================
+# vLLM Inter-Token Latency P95 Live Demo Configuration Template
+# =============================================================================
+
+global:
+  session_dir: "./fault_injector/fault_reports/sessions/"
+  log_level: "INFO"
+  safety:
+    require_confirmation: false
+    auto_recover_timeout: 600
+    dry_run: true
+    max_concurrent_faults: 3
+    excluded_nodes: []
+
+monitor:
+  enabled: false
+  prometheus_url: "http://10.11.4.3:31260"
+  baseline_duration: 60
+  post_recovery_duration: 60
+
+demo:
+  vllm_inter_token_latency_p95_alert_remediation:
+    alert_name: "VLLMInterTokenLatencyP95High"
+    alert_severity: "critical"
+    node: "worker-01"
+    namespace: "service"
+    service: "vllm-deepseek"
+    kubeconfig: "~/.kube/config"
+    latency_promql: 'histogram_quantile(0.95, sum by(le) (rate(vllm:inter_token_latency_seconds_bucket{namespace="service",service="vllm-deepseek"}[1m])))'
+    latency_threshold_ms: 50
+    load_simulator_config: "load_simulator/config/inference-soak.yaml"
+    load_warmup_seconds: 30
+    alert_wait_seconds: 360
+    allowed_tools:
+      - "prometheus.query_instant"
+      - "gpu.get_metrics"
+      - "gpu.get_processes"
+      - "k8s.list_pods"
+      - "network.get_rdma_stats"
+    total_timeout: 180
+    step_timeout: 60
+    max_steps: 6
+
+inventory:
+  workers:
+    - name: "worker-01"
+      ssh:
+        host: "192.168.1.101"
+        port: 22
+        user: "root"
+        key_file: "~/.ssh/id_rsa"
+        password: null
+        timeout: 30
+        use_sudo: true
+      interface: "eth0"
+      roles:
+        - "compute"
+        - "rdma"
+
+scenarios:
+  gpu_contention:
+    enabled: true
+    target_nodes:
+      - "worker-01"
+    params:
+      duration: 600
+      memory: "90%"
+      gpu_ids: [0]
+      intensity: 90

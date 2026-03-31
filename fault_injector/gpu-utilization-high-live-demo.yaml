@@ -1,0 +1,81 @@
+# =============================================================================
+# Fault Injector Demo Configuration
+# =============================================================================
+# Dedicated config for live Auto-SRE demos. This keeps demo-specific alert
+# context separate from the general-purpose fault_injector test config.
+
+global:
+  session_dir: "./fault_injector/fault_reports/sessions/"
+  log_level: "DEBUG"
+  safety:
+    require_confirmation: false
+    auto_recover_timeout: 600
+    dry_run: false
+    max_concurrent_faults: 3
+    excluded_nodes: []
+
+monitor:
+  enabled: false
+  prometheus_url: "http://10.11.4.3:31260"
+  baseline_duration: 60
+  post_recovery_duration: 60
+  baseline_queries:
+    cpu_util: "avg(1 - rate(node_cpu_seconds_total{mode='idle'}[5m]))"
+    memory_util: "avg(1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes))"
+    gpu_util: "avg(DCGM_FI_DEV_GPU_UTIL)"
+    gpu_memory_used_mb: "avg(DCGM_FI_DEV_FB_USED)"
+    gpu_power_watts: "avg(DCGM_FI_DEV_POWER_USAGE)"
+
+demo:
+  gpu_utilization_high_alert_remediation:
+    alert_name: "GPUUtilizationHigh"
+    alert_severity: "critical"
+    node: "worker-03"
+    kubeconfig: "~/.kube/config"
+    allowed_tools:
+      - "gpu.get_metrics"
+      - "gpu.get_processes"
+      - "prometheus.query_instant"
+      - "k8s.list_pods"
+    total_timeout: 180
+    step_timeout: 60
+    max_steps: 5
+
+inventory:
+  workers:
+    - name: "worker-03"
+      ssh:
+        host: "10.11.4.12"
+        port: 22
+        user: "yuyonghao"
+        password: "Yuyonghao@123"
+        timeout: 30
+        use_sudo: true
+      redfish:
+        bmc_host: "10.11.8.12"
+        username: "admin"
+        password: "Admin@9000"
+        verify_tls: false
+        timeout: 30
+      ipmi:
+        host: "10.11.8.13"
+        username: "admin"
+        password: "Admin@9000"
+        interface: "lanplus"
+        port: 623
+        timeout: 30
+      interface: "roce200"
+      roles:
+        - "compute"
+        - "rdma"
+
+scenarios:
+  gpu_contention:
+    enabled: true
+    target_nodes:
+      - "worker-03"
+    params:
+      duration: 60
+      memory: "90%"
+      gpu_ids: [0]
+      intensity: 100

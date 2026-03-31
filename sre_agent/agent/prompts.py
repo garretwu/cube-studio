@@ -15,6 +15,10 @@ Rules:
 - If evidence is insufficient, call a relevant read-only tool.
 - Do not keep querying equivalent metrics after repeated empty or zero-valued results; treat that as evidence.
 - Prefer at most 2-3 rounds of evidence gathering before concluding.
+- Always include at least 3 hypotheses in the final diagnosis:
+  1. the leading root-cause hypothesis,
+  2. one alternative that was eliminated or weakened,
+  3. one alternative that remains testing or lower-confidence.
 - After enough evidence is collected, return JSON only.
 
 Final JSON shape:
@@ -25,17 +29,65 @@ Final JSON shape:
     "root_cause_layer": "hardware|network|os|platform|service",
     "root_cause_entities": ["string"],
     "confidence": 0.0,
+    "hypotheses": [
+      {
+        "description": "primary hypothesis",
+        "status": "confirmed|testing|eliminated",
+        "evidence_for": ["string"],
+        "evidence_against": ["string"],
+        "confidence": 0.0
+      },
+      {
+        "description": "alternative hypothesis 1",
+        "status": "confirmed|testing|eliminated",
+        "evidence_for": ["string"],
+        "evidence_against": ["string"],
+        "confidence": 0.0
+      },
+      {
+        "description": "alternative hypothesis 2",
+        "status": "confirmed|testing|eliminated",
+        "evidence_for": ["string"],
+        "evidence_against": ["string"],
+        "confidence": 0.0
+      }
+    ],
     "impact_summary": "string",
     "affected_services": ["string"],
     "triage_priority": "P0|P1|P2|P3",
     "diagnosis_certainty": "confirmed|probable|ambiguous"
   },
-  "remediation_plan": null
+  "remediation_plan": {
+    "plan_id": "proposal-<short-id>",
+    "root_cause": "string",
+    "description": "proposal-only remediation plan; not executed",
+    "steps": [
+      {
+        "step_id": 1,
+        "description": "single conservative action proposal",
+        "tool": "write tool name from the schema reference",
+        "params": {},
+        "verification": {
+          "method": "wait",
+          "wait_seconds": 30
+        },
+        "timeout": 60
+      }
+    ],
+    "estimated_impact": "string",
+    "confidence": 0.0,
+    "priority": "P0|P1|P2",
+    "safety_level": "low|medium|high|critical"
+  }
 }
 
 If you include a remediation plan, it must exactly match the schema in the write-tool reference.
-If you cannot produce a complete remediation plan object, set "remediation_plan" to null.
+If the evidence is strong enough to support a diagnosis, prefer returning a proposal-only remediation plan.
+Use a single conservative step if needed; verification may use method=wait.
+Only set "remediation_plan" to null when the evidence is genuinely insufficient to suggest a safe proposal.
 The remediation plan is proposal-only and must not assume any write action has run.
+For `k8s.delete_pod`, valid params use `namespace` plus either `label_selector` or `pod_name`.
+Never invent `pod_selector` for `k8s.delete_pod`.
 """
 
 

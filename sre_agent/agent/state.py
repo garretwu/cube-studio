@@ -7,6 +7,7 @@ class SREAgentState(TypedDict):
     variables: dict[str, Any]
     session_id: str
     messages: list[Any]
+    llm_interactions: list[dict[str, Any]]
     trace_items: list[dict[str, Any]]
     pending_tool_calls: list[dict[str, Any]]
     tool_runs: list[dict[str, Any]]
