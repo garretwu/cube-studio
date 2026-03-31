@@ -26,13 +26,17 @@ from lib.channels.prometheus import PrometheusChannel
 from lib.channels.ssh import SSHChannel
 from lib.tests._real_backends import PrometheusHttpBackend
 from sre_agent.agent import run_diagnosis
+from sre_agent.agent.prompts import build_alert_diagnosis_prompt
 from sre_agent.config import load_config as load_agent_config
 from sre_agent.models.alert import Alert
-from sre_agent.tools import ToolExecutionContext
+from sre_agent.models.remediation import RemediationPlan, VerificationCondition, VerificationConfig
+from sre_agent.remediation import ApprovalGate, PlanValidationError, RemediationEngine, RollbackJournal
+from sre_agent.tools import ToolExecutionContext, build_default_registry
 
 DEFAULT_AGENT_CONFIG = Path("config.yaml")
 DEFAULT_DEMO_CONFIG = Path("fault_injector/vllm-latency-p95-live-demo.yaml")
 DEFAULT_DEMO_KEY = "vllm_inter_token_latency_p95_alert_remediation"
+DEFAULT_WAL_PATH = Path("data/wal/vllm-latency-p95-live-demo.jsonl")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -52,6 +56,21 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--output-format", choices=["json", "txt"], default="", help="Optional output format override.")
     parser.add_argument("--model", default="", help="Override SRE_LLM_MODEL for this run.")
     parser.add_argument("--base-url", default="", help="Override SRE_OPENAI_BASE_URL for this run.")
+    parser.add_argument(
+        "--execute-remediation",
+        action="store_true",
+        help="Execute the generated remediation plan through RemediationEngine if one is produced.",
+    )
+    parser.add_argument(
+        "--approval-user",
+        default="demo-admin",
+        help="Approver identity recorded when remediation execution is enabled.",
+    )
+    parser.add_argument(
+        "--wal-path",
+        default=str(DEFAULT_WAL_PATH),
+        help="WAL path used when executing remediation.",
+    )
     return parser
 
 
@@ -278,28 +297,60 @@ def build_query(
     latency_threshold_ms: int,
     history_count: int,
 ) -> str:
-    alert_payload = json.dumps(normalize_alert_payload(alert), ensure_ascii=False, indent=2)
-    return (
-        "You are running the VLLMInterTokenLatencyP95High demo.\n"
-        "An inter-token latency alert was received and you should perform a read-only ReAct diagnosis.\n"
-        "Focus on deciding whether the p95 inter-token latency regression is caused by GPU contention, network/RDMA issues, or normal load.\n"
-        "Use the available read-only tools to gather concrete evidence.\n"
-        "Preferred evidence order:\n"
-        f"1. Query p95 inter-token latency with prometheus.query_instant using this exact PromQL: {latency_promql}\n"
-        f"2. Inspect GPU metrics on node {node} with gpu.get_metrics.\n"
-        f"3. Inspect GPU processes on node {node} with gpu.get_processes.\n"
-        f"4. Inspect pods in namespace {namespace} with k8s.list_pods.\n"
-        f"5. If useful, inspect RDMA stats on node {node} with network.get_rdma_stats.\n"
-        f"If inter-token latency is above {latency_threshold_ms}ms and you identify a rogue contention process, produce a proposal-only remediation plan.\n"
-        "Prefer kill_process for a rogue gpu_burn-style process. Do not claim any write action was executed.\n\n"
-        f"Configured node hint: {node}\n"
-        f"Configured namespace hint: {namespace}\n"
-        f"Configured service hint: {service}\n"
-        f"Configured inter-token latency threshold ms: {latency_threshold_ms}\n"
-        f"Historical alert samples found in lookback window: {history_count}\n"
-        f"Reference scenario: {json.dumps(demo, ensure_ascii=False)}\n\n"
-        f"Live alert payload:\n{alert_payload}"
+    expected_process_prefixes = _expected_gpu_process_prefixes(service, demo)
+    available_tools = demo.get("allowed_tools") or []
+    investigation_steps: list[str] = []
+    if "prometheus.query_instant" in available_tools:
+        investigation_steps.append(
+            f"Validate the triggering latency signal with prometheus.query_instant using: {latency_promql}"
+        )
+    if "gpu.get_metrics" in available_tools:
+        investigation_steps.append(f"Inspect GPU utilization and memory on node {node} with gpu.get_metrics")
+    if "gpu.get_processes" in available_tools:
+        investigation_steps.append(f"Inspect GPU-bound processes on node {node} with gpu.get_processes")
+    if "k8s.list_pods" in available_tools:
+        investigation_steps.append(f"Inspect workloads in namespace {namespace} with k8s.list_pods")
+    if "network.get_rdma_stats" in available_tools:
+        investigation_steps.append(f"Inspect RDMA and link health on node {node} with network.get_rdma_stats")
+
+    return build_alert_diagnosis_prompt(
+        alert_payload=normalize_alert_payload(alert),
+        available_tool_names=available_tools,
+        diagnosis_goal=(
+            "Identify the most likely root cause of the alert, evaluate plausible alternatives, "
+            "and explain which hypotheses are confirmed, eliminated, or still uncertain based on evidence."
+        ),
+        investigation_steps=investigation_steps,
+        context_hints={
+            "node": node,
+            "namespace": namespace,
+            "service": service,
+            "inter-token latency threshold ms": latency_threshold_ms,
+            "expected GPU worker process prefixes": expected_process_prefixes,
+        },
+        remediation_guidance=(
+            "If the evidence supports a single conservative corrective action, propose it as proposal-only remediation. "
+            "Prefer the smallest blast-radius action supported by the write-tool schema and the collected evidence. "
+            "Do not claim any write action was executed."
+        ),
+        history_count=history_count,
     )
+
+
+def _expected_gpu_process_prefixes(service: str, demo: dict[str, Any]) -> list[str]:
+    configured = demo.get("expected_gpu_process_prefixes")
+    prefixes: list[str] = []
+    if isinstance(configured, list):
+        prefixes.extend(str(item).strip() for item in configured if str(item).strip())
+    service_text = str(service or "").strip()
+    service_tokens = [service_text]
+    if service_text:
+        service_tokens.extend(part for part in service_text.split("-") if part)
+    for candidate in ["VLLM::Worker", "vllm", *service_tokens]:
+        text = str(candidate).strip()
+        if text and text not in prefixes:
+            prefixes.append(text)
+    return prefixes
 
 
 def render_text_output(payload: dict[str, Any]) -> str:
@@ -328,6 +379,9 @@ def render_text_output(payload: dict[str, Any]) -> str:
         "",
         "Remediation Plan:",
         json.dumps(payload.get("remediation_plan"), ensure_ascii=False, indent=2),
+        "",
+        "Remediation Execution:",
+        json.dumps(payload.get("remediation_execution"), ensure_ascii=False, indent=2),
         "",
         "LLM Interactions:",
     ]
@@ -383,6 +437,89 @@ async def close_context(context: ToolExecutionContext) -> None:
                 await value
 
 
+async def execute_remediation_plan(
+    *,
+    plan_payload: dict[str, Any] | None,
+    context: ToolExecutionContext,
+    wal_path: str,
+    approval_user: str,
+    prometheus_url: str,
+    latency_promql: str,
+    latency_threshold_ms: int,
+    remediation_wait_seconds: int,
+) -> dict[str, Any]:
+    if not isinstance(plan_payload, dict):
+        return {"executed": False, "reason": "no remediation plan generated"}
+
+    plan = _with_promql_verification(
+        RemediationPlan.model_validate(plan_payload),
+        latency_promql=latency_promql,
+        latency_threshold_ms=latency_threshold_ms,
+        remediation_wait_seconds=remediation_wait_seconds,
+    )
+    wal_target = Path(wal_path).expanduser()
+    wal_target.parent.mkdir(parents=True, exist_ok=True)
+
+    registry = build_default_registry()
+    engine = RemediationEngine(
+        tool_registry=registry,
+        approval_gate=ApprovalGate(default_policy="auto_approve"),
+        wal=RollbackJournal(wal_target),
+        prometheus=context.channels.get("prometheus"),
+        execution_context=context,
+    )
+    session_id = f"remediation-{datetime.now(UTC).strftime('%Y%m%d%H%M%S')}"
+    try:
+        result = await engine.execute(plan, session_id=session_id)
+    except PlanValidationError as exc:
+        return {
+            "executed": False,
+            "session_id": session_id,
+            "approval_user": approval_user,
+            "wal_path": str(wal_target),
+            "error": "plan validation failed",
+            "details": exc.errors,
+            "plan": plan.model_dump(mode="json"),
+        }
+
+    post_latency_ms = await query_latency_value_ms(prometheus_url=prometheus_url, latency_promql=latency_promql)
+    return {
+        "executed": True,
+        "session_id": session_id,
+        "approval_user": approval_user,
+        "wal_path": str(wal_target),
+        "plan": plan.model_dump(mode="json"),
+        "result": result.model_dump(mode="json"),
+        "post_remediation_latency_ms": post_latency_ms,
+    }
+
+
+def _with_promql_verification(
+    plan: RemediationPlan,
+    *,
+    latency_promql: str,
+    latency_threshold_ms: int,
+    remediation_wait_seconds: int,
+) -> RemediationPlan:
+    threshold_seconds = float(latency_threshold_ms) / 1000.0
+    plan_data = plan.model_dump(mode="json")
+    for step in plan_data.get("steps", []):
+        tool_name = str(step.get("tool") or "").strip()
+        if tool_name != "kill_process":
+            continue
+        step["verification"] = VerificationConfig(
+            method="promql",
+            query=latency_promql,
+            condition=VerificationCondition(
+                field="value",
+                operator="<",
+                value=threshold_seconds,
+            ),
+            wait_seconds=remediation_wait_seconds,
+        ).model_dump(mode="json")
+    return RemediationPlan.model_validate(plan_data)
+
+
 async def main_async(args: argparse.Namespace) -> int:
     apply_model_env(args)
     agent_cfg = load_agent_config(args.config)
@@ -399,6 +536,7 @@ async def main_async(args: argparse.Namespace) -> int:
     kubeconfig = str(demo.get("kubeconfig") or "~/.kube/config").strip()
     latency_promql = str(demo.get("latency_promql") or "").strip()
     latency_threshold_ms = int(demo.get("latency_threshold_ms") or 50)
+    remediation_wait_seconds = int(demo.get("remediation_wait_seconds") or 60)
     if not node:
         raise SystemExit("demo.node is required")
     if node not in inventory:
@@ -501,6 +639,21 @@ async def main_async(args: argparse.Namespace) -> int:
             total_timeout_sec=float(demo.get("total_timeout") or 180.0),
             max_steps=int(demo.get("max_steps") or 6),
         )
+
+        remediation_execution = (
+            await execute_remediation_plan(
+                plan_payload=result.get("remediation_plan"),
+                context=context,
+                wal_path=str(args.wal_path),
+                approval_user=str(args.approval_user),
+                prometheus_url=prometheus_url,
+                latency_promql=latency_promql,
+                latency_threshold_ms=latency_threshold_ms,
+                remediation_wait_seconds=remediation_wait_seconds,
+            )
+            if args.execute_remediation
+            else {"executed": False, "reason": "execution disabled"}
+        )
     finally:
         await close_context(context)
 
@@ -525,6 +678,7 @@ async def main_async(args: argparse.Namespace) -> int:
         "tool_runs": result.get("tool_runs"),
         "diagnosis_result": result.get("diagnosis_result"),
         "remediation_plan": result.get("remediation_plan"),
+        "remediation_execution": remediation_execution,
         "session_id": result.get("session_id"),
     }
 
