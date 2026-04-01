@@ -914,6 +914,29 @@
       "get": {
         "summary": "Chat History",
         "operationId": "chat_history_api_chat_history_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Session Id"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "Successful Response",
@@ -921,6 +944,34 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/SREResponse_list_ChatHistoryMessage__"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/runtime/llm/status": {
+      "get": {
+        "summary": "Get Llm Runtime Status",
+        "operationId": "get_llm_runtime_status_api_runtime_llm_status_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SREResponse_LLMRuntimeStatusResponse_"
                 }
               }
             }
@@ -1425,6 +1476,17 @@
             "type": "string",
             "minLength": 1,
             "title": "Content"
+          },
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Session Id"
           }
         },
         "additionalProperties": false,
@@ -1834,6 +1896,65 @@
         ],
         "title": "IncidentRecord",
         "description": "Complete incident record persisted to memory store."
+      },
+      "LLMRuntimeStatusResponse": {
+        "properties": {
+          "required": {
+            "type": "boolean",
+            "title": "Required",
+            "default": true
+          },
+          "ready": {
+            "type": "boolean",
+            "title": "Ready",
+            "default": false
+          },
+          "api_key_configured": {
+            "type": "boolean",
+            "title": "Api Key Configured",
+            "default": false
+          },
+          "api_key_source": {
+            "type": "string",
+            "title": "Api Key Source",
+            "default": "none"
+          },
+          "api_key_length": {
+            "type": "integer",
+            "title": "Api Key Length",
+            "default": 0
+          },
+          "model": {
+            "type": "string",
+            "title": "Model",
+            "default": "gpt-4o-mini"
+          },
+          "base_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Base Url"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "LLMRuntimeStatusResponse"
       },
       "LearnedPattern": {
         "properties": {
@@ -2645,6 +2766,49 @@
           "success"
         ],
         "title": "SREResponse[DiagnosisSession]"
+      },
+      "SREResponse_LLMRuntimeStatusResponse_": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success"
+          },
+          "data": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/LLMRuntimeStatusResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "error": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SREError"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "trace_id": {
+            "type": "string",
+            "title": "Trace Id"
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Timestamp"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "success"
+        ],
+        "title": "SREResponse[LLMRuntimeStatusResponse]"
       },
       "SREResponse_LoopResult_": {
         "properties": {

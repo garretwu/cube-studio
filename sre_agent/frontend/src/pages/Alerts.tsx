@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { Select } from "antd";
-import { useNavigate } from "react-router-dom";
+import { useSearchParams } from "react-router-dom";
 
 import AlertTable from "../components/AlertTable";
 import { AppIcon, AppInput, SectionHeader, StatusChip, SurfaceCard } from "../components/ui";
@@ -8,9 +8,14 @@ import { useAlertStore } from "../store/alertStore";
 import { formatSeverity } from "../utils/display";
 
 function AlertsPage() {
-  const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const urlQuery = searchParams.get("q") ?? "";
   const [query, setQuery] = useState("");
   const { alerts, clusters, severityFilter, fetchAlerts, setSeverityFilter } = useAlertStore();
+
+  useEffect(() => {
+    setQuery(urlQuery);
+  }, [urlQuery]);
 
   useEffect(() => {
     void fetchAlerts();
@@ -27,6 +32,7 @@ function AlertsPage() {
           alert.labels.instance,
           alert.labels.node,
           alert.labels.service,
+          alert.fingerprint,
         ]
           .filter(Boolean)
           .join(" ")
@@ -72,7 +78,7 @@ function AlertsPage() {
 
       <div className="page-two-col">
         <SurfaceCard description="已准备好进入关联分析和诊断流转的实时告警。" title="实时告警流">
-          <AlertTable alerts={filtered} onSelect={() => navigate("/diagnosis")} />
+          <AlertTable alerts={filtered} />
         </SurfaceCard>
 
         <SurfaceCard description="已归并为潜在事件叙事的告警分组摘要。" title="关联分组">

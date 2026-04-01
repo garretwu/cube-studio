@@ -173,6 +173,7 @@ function buildPrimaryJudgment(cluster: AlertCluster | undefined, alerts: Alert[]
 }
 
 function buildRouteDecision(alerts: Alert[], activeSession?: DiagnosisSession) {
+  const focusFingerprint = encodeURIComponent(pickPrimaryFingerprint(alerts));
   if (activeSession && alerts.some((alert) => alert.fingerprint === activeSession.alert.fingerprint)) {
     return {
       label: "并入已有 Session" as const,
@@ -189,7 +190,7 @@ function buildRouteDecision(alerts: Alert[], activeSession?: DiagnosisSession) {
       label: "观察中" as const,
       tone: "neutral" as const,
       ctaLabel: "回看原始告警",
-      path: "/alerts",
+      path: `/alerts?q=${focusFingerprint}`,
       note: "当前不新建诊断会话",
     };
   }
@@ -208,7 +209,7 @@ function buildRouteDecision(alerts: Alert[], activeSession?: DiagnosisSession) {
     label: "观察中" as const,
     tone: "warning" as const,
     ctaLabel: "继续观察",
-    path: "/alerts",
+    path: `/alerts?q=${focusFingerprint}`,
     note: "先保留在观察队列",
   };
 }

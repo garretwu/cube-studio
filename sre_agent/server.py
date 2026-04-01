@@ -905,6 +905,7 @@ class AgentCServices:
     chat_handler: ChatHandlerProtocol | None = None
     tool_channel_status: dict[str, dict[str, Any]] = field(default_factory=dict)
     tool_runtime_mode: str = "degraded"
+    llm_runtime_status: dict[str, Any] = field(default_factory=dict)
 
 
 def _resolve_alert_poll_interval_seconds(cfg: SREAgentConfig) -> float:
@@ -938,6 +939,40 @@ def _resolve_ws_max_events_per_session(cfg: SREAgentConfig) -> int:
 def _resolve_tool_runtime_mode(cfg: SREAgentConfig) -> str:
     mode = str(getattr(cfg.tool_runtime, "mode", "degraded")).strip().lower()
     return "strict" if mode == "strict" else "degraded"
+
+
+def _collect_llm_runtime_status() -> dict[str, Any]:
+    key_name = ""
+    api_key = (os.getenv("SRE_OPENAI_API_KEY") or "").strip()
+    if api_key:
+        key_name = "SRE_OPENAI_API_KEY"
+    else:
+        api_key = (os.getenv("OPENAI_API_KEY") or "").strip()
+        if api_key:
+            key_name = "OPENAI_API_KEY"
+    model = (os.getenv("SRE_LLM_MODEL") or "gpt-4o-mini").strip()
+    base_url = (os.getenv("SRE_OPENAI_BASE_URL") or "").strip()
+    status = {
+        "ready": bool(api_key),
+        "required": True,
+        "api_key_configured": bool(api_key),
+        "api_key_source": key_name or "none",
+        "api_key_length": len(api_key),
+        "model": model,
+        "base_url": base_url or None,
+        "reason": None if api_key else "SRE_OPENAI_API_KEY or OPENAI_API_KEY is required",
+    }
+    return status
+
+
+def _should_require_llm_runtime(
+    *,
+    diagnosis_runner: DiagnosisRunnerProtocol | None,
+    re_diagnose_runner: ReDiagnoseRunnerProtocol | None,
+    chat_handler: ChatHandlerProtocol | None,
+) -> bool:
+    # Any default runtime component needs environment-backed LLM initialization.
+    return diagnosis_runner is None or re_diagnose_runner is None or chat_handler is None
 
 
 def _build_alert_polling_service(
@@ -1153,9 +1188,28 @@ def create_app(
     tool_registry=None,
     execution_context: ToolExecutionContext | None = None,
     chat_handler: ChatHandlerProtocol | None = None,
+    require_llm_ready: bool = True,
 ) -> FastAPI:
     cfg = config or SREAgentConfig()
     jwt_settings = resolve_jwt_settings(cfg.auth)
+    llm_runtime_status = _collect_llm_runtime_status()
+    llm_required = _should_require_llm_runtime(
+        diagnosis_runner=diagnosis_runner,
+        re_diagnose_runner=re_diagnose_runner,
+        chat_handler=chat_handler,
+    )
+    llm_runtime_status["required"] = llm_required
+    if require_llm_ready and llm_required and not llm_runtime_status["ready"]:
+        raise RuntimeError(str(llm_runtime_status["reason"]))
+    LOGGER.warning(
+        "llm runtime status: required=%s ready=%s source=%s key_length=%s model=%s base_url=%s",
+        llm_runtime_status["required"],
+        llm_runtime_status["ready"],
+        llm_runtime_status["api_key_source"],
+        llm_runtime_status["api_key_length"],
+        llm_runtime_status["model"],
+        llm_runtime_status["base_url"] or "<default>",
+    )
 
     ontology_graph = ontology or OntologyGraph(cfg.ontology.db_path)
     created_ontology = ontology is None
@@ -1299,6 +1353,7 @@ def create_app(
         chat_handler=runtime_chat_handler,
         tool_channel_status={name: status.as_json() for name, status in bootstrap_result.statuses.items()},
         tool_runtime_mode=bootstrap_result.runtime_mode,
+        llm_runtime_status=llm_runtime_status,
     )
     alert_polling_service = _build_alert_polling_service(
         cfg=cfg,

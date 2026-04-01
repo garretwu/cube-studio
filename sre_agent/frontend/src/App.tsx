@@ -27,7 +27,7 @@ function AppRoutes() {
     <Routes>
       <Route path="/" element={<Navigate to="/topology" replace />} />
       <Route path="/history" element={<HistoryPage />} />
-      <Route path="/history/:sessionId" element={<HistoryPage />} />
+      <Route path="/history/:sessionId" element={<DiagnosisPage />} />
       <Route path="/diagnosis" element={<DiagnosisPage />} />
       <Route path="/diagnosis/:sessionId" element={<DiagnosisPage />} />
       <Route path="/skills/:skillId" element={<SkillDetailPage />} />
@@ -45,19 +45,34 @@ function App() {
   const navigate = useNavigate();
   const location = useLocation();
   const [historySessions, setHistorySessions] = useState<DiagnosisSessionSummary[]>([]);
+  const [historyLoading, setHistoryLoading] = useState(true);
+  const [historyLoadError, setHistoryLoadError] = useState<string>("");
 
   useEffect(() => {
     let cancelled = false;
-    void apiClient.getDiagnosisHistorySessions().then((loadedSessions) => {
-      if (!cancelled) {
-        setHistorySessions(loadedSessions);
-      }
-    });
+    setHistoryLoading(true);
+    setHistoryLoadError("");
+    void apiClient
+      .getDiagnosisHistorySessions()
+      .then((loadedSessions) => {
+        if (!cancelled) {
+          setHistorySessions(loadedSessions);
+          setHistoryLoading(false);
+          setHistoryLoadError("");
+        }
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          setHistorySessions([]);
+          setHistoryLoading(false);
+          setHistoryLoadError(error instanceof Error ? error.message : "历史会话加载失败");
+        }
+      });
 
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [location.pathname]);
 
   const selected = resolveActiveRouteKey(location.pathname);
   const historySessionId = location.pathname.startsWith("/history/") ? location.pathname.split("/")[2] : undefined;
@@ -85,7 +100,11 @@ function App() {
         status: resolveHistoryChannelStatus(session),
         onClick: () => navigate(`/history/${session.session_id}`),
       })),
-      emptyLabel: "正在同步历史 session...",
+      emptyLabel: historyLoading
+        ? "正在同步历史 session..."
+        : historyLoadError
+          ? "历史 session 加载失败"
+          : "暂无历史 session",
     },
   ];
 

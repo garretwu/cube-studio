@@ -1,7 +1,9 @@
 """Minimal config loader for CLI flows."""
 from __future__ import annotations
 
+import os
 from pathlib import Path
+from typing import MutableMapping
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field
@@ -36,6 +38,14 @@ class AuthConfig(BaseModel):
     jwt_algorithm: str = "HS256"
     audience: str = "sre-agent"
     token_expire_seconds: int = 3600
+
+
+class LLMConfig(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    api_key: str | None = None
+    base_url: str | None = None
+    model: str | None = None
 
 
 class AgentRuntimeConfig(BaseModel):
@@ -201,6 +211,7 @@ class SREAgentConfig(BaseModel):
 
     global_: GlobalConfig = Field(default_factory=GlobalConfig, alias="global")
     auth: AuthConfig = Field(default_factory=AuthConfig)
+    llm: LLMConfig = Field(default_factory=LLMConfig)
     agent: AgentRuntimeConfig = Field(default_factory=AgentRuntimeConfig)
     ontology: OntologyConfig = Field(default_factory=OntologyConfig)
     knowledge_base: KnowledgeConfig = Field(default_factory=KnowledgeConfig)
@@ -212,6 +223,32 @@ class SREAgentConfig(BaseModel):
     data_lifecycle: DataLifecycleConfig = Field(default_factory=DataLifecycleConfig)
     nat: NATConfig = Field(default_factory=NATConfig)
     tool_runtime: ToolRuntimeConfig = Field(default_factory=ToolRuntimeConfig)
+
+
+def apply_llm_env_from_config(
+    config: SREAgentConfig,
+    env: MutableMapping[str, str] | None = None,
+    *,
+    only_if_missing: bool = True,
+) -> dict[str, str]:
+    target_env = env if env is not None else os.environ
+    llm = config.llm
+    candidates: dict[str, str] = {}
+    if isinstance(llm.api_key, str) and llm.api_key.strip():
+        candidates["SRE_OPENAI_API_KEY"] = llm.api_key.strip()
+    if isinstance(llm.base_url, str) and llm.base_url.strip():
+        candidates["SRE_OPENAI_BASE_URL"] = llm.base_url.strip()
+    if isinstance(llm.model, str) and llm.model.strip():
+        candidates["SRE_LLM_MODEL"] = llm.model.strip()
+
+    applied: dict[str, str] = {}
+    for key, value in candidates.items():
+        existing = str(target_env.get(key, "")).strip()
+        if only_if_missing and existing:
+            continue
+        target_env[key] = value
+        applied[key] = value
+    return applied
 
 
 def load_config(path: str | Path) -> SREAgentConfig:

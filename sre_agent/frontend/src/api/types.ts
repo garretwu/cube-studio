@@ -333,6 +333,20 @@ export type ChatMessage = {
   created_at: string;
   tool_name?: string;
   metadata?: Record<string, unknown>;
+  display?: ChatDisplayPayload;
+};
+
+export type ChatReplyMeta = {
+  context_applied?: boolean;
+  session_id?: string | null;
+  trace_steps_used?: number;
+  context_tokens_estimate?: number;
+};
+
+export type ChatDisplayPayload = {
+  answer: string;
+  thinking_raw?: string | null;
+  has_thinking?: boolean;
 };
 
 export type KnowledgeDocument = {
@@ -405,6 +419,17 @@ export type ToolChannelStatus = {
 export type ToolChannelsStatusResponse = {
   runtime_mode: "strict" | "degraded";
   channels: ToolChannelStatus[];
+};
+
+export type LLMRuntimeStatus = {
+  required: boolean;
+  ready: boolean;
+  api_key_configured: boolean;
+  api_key_source: string;
+  api_key_length: number;
+  model: string;
+  base_url?: string | null;
+  reason?: string | null;
 };
 
 export type WSEvent = {

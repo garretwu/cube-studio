@@ -216,16 +216,18 @@ class _FakeChatHandler:
     async def __call__(self, message: str) -> str:
         return await self.chat(message, user_id="anonymous")
 
-    async def chat(self, message: str, *, user_id: str = "anonymous") -> str:
+    async def chat(self, message: str, *, user_id: str = "anonymous", session_id: str | None = None) -> str:
         key = user_id or "anonymous"
         items = self._history.setdefault(key, [])
         now = datetime.now(UTC).isoformat()
+        metadata = {"session_id": session_id} if session_id else None
         items.append(
             {
                 "id": f"user-{len(items) + 1}",
                 "role": "user",
                 "content": message,
                 "created_at": now,
+                "metadata": metadata,
             }
         )
         reply = f"echo:{message}"
@@ -235,18 +237,22 @@ class _FakeChatHandler:
                 "role": "assistant",
                 "content": reply,
                 "created_at": now,
+                "metadata": metadata,
             }
         )
         return reply
 
-    async def chat_stream(self, message: str, *, user_id: str = "anonymous"):  # noqa: ANN201
-        reply = await self.chat(message, user_id=user_id)
+    async def chat_stream(self, message: str, *, user_id: str = "anonymous", session_id: str | None = None):  # noqa: ANN201
+        reply = await self.chat(message, user_id=user_id, session_id=session_id)
         midpoint = max(1, len(reply) // 2)
         yield reply[:midpoint]
         yield reply[midpoint:]
 
-    async def get_history(self, *, user_id: str = "anonymous") -> list[dict[str, Any]]:
-        return list(self._history.get(user_id or "anonymous", []))
+    async def get_history(self, *, user_id: str = "anonymous", session_id: str | None = None) -> list[dict[str, Any]]:
+        history = list(self._history.get(user_id or "anonymous", []))
+        if not session_id:
+            return history
+        return [item for item in history if item.get("metadata", {}).get("session_id") == session_id]
 
 
 class _FakeMemory:
@@ -337,6 +343,12 @@ def _alert_payload() -> dict[str, Any]:
         "fingerprint": "fp-api-1",
         "status": "firing",
     }
+
+
+@pytest.fixture(autouse=True)
+def _ensure_llm_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("SRE_OPENAI_API_KEY", "test-key")
+    monkeypatch.setenv("SRE_LLM_MODEL", "MiniMax-M2.7")
 
 
 def _build_client(monkeypatch: pytest.MonkeyPatch) -> tuple[TestClient, str]:
@@ -494,6 +506,89 @@ class TestAPIIntegration:
         assert payload["data"][0]["role"] == "user"
         assert payload["data"][1]["role"] == "assistant"
         assert payload["data"][1]["content"] == "echo:hello"
+
+    def test_integration_chat_history_supports_session_scope(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        client, token = _build_client(monkeypatch)
+        alert_a = _alert_payload()
+        alert_a["fingerprint"] = "sess-a"
+        alert_b = _alert_payload()
+        alert_b["fingerprint"] = "sess-b"
+        diagnose_a = client.post("/api/diagnose", json=alert_a, headers=_auth_headers(token))
+        diagnose_b = client.post("/api/diagnose", json=alert_b, headers=_auth_headers(token))
+        assert diagnose_a.status_code == 200
+        assert diagnose_b.status_code == 200
+
+        first = client.post(
+            "/api/chat",
+            json={"content": "hello", "session_id": "sess-a"},
+            headers=_auth_headers(token),
+        )
+        second = client.post(
+            "/api/chat",
+            json={"content": "world", "session_id": "sess-b"},
+            headers=_auth_headers(token),
+        )
+        assert first.status_code == 200
+        assert second.status_code == 200
+
+        response = client.get(
+            "/api/chat/history",
+            params={"session_id": "sess-b"},
+            headers=_auth_headers(token),
+        )
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["success"] is True
+        assert len(payload["data"]) == 2
+        assert payload["data"][0]["content"] == "world"
+        assert payload["data"][0]["metadata"]["session_id"] == "sess-b"
+        assert payload["data"][1]["display"]["answer"] == "echo:world"
+
+    def test_integration_chat_response_meta_reports_session_context(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        client, token = _build_client(monkeypatch)
+        diagnose = client.post("/api/diagnose", json=_alert_payload(), headers=_auth_headers(token))
+        assert diagnose.status_code == 200
+        session_id = diagnose.json()["data"]["session_id"]
+
+        response = client.post(
+            "/api/chat",
+            json={"content": "why this root cause?", "session_id": session_id},
+            headers=_auth_headers(token),
+        )
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["success"] is True
+        assert payload["data"]["reply"] == "echo:why this root cause?"
+        assert payload["data"]["meta"]["context_applied"] is True
+        assert payload["data"]["meta"]["session_id"] == session_id
+        assert payload["data"]["meta"]["trace_steps_used"] >= 0
+        assert payload["data"]["display"]["answer"] == "echo:why this root cause?"
+        assert payload["data"]["display"]["has_thinking"] is False
+
+    def test_integration_chat_returns_404_when_session_not_found(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        client, token = _build_client(monkeypatch)
+
+        response = client.post(
+            "/api/chat",
+            json={"content": "hello", "session_id": "missing-session"},
+            headers=_auth_headers(token),
+        )
+
+        assert response.status_code == 404
+        assert "diagnosis session not found" in response.json().get("detail", "")
+
+    def test_integration_runtime_llm_status_returns_masked_health_payload(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        client, token = _build_client(monkeypatch)
+
+        response = client.get("/api/runtime/llm/status", headers=_auth_headers(token))
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["success"] is True
+        assert payload["data"]["api_key_configured"] is True
+        assert payload["data"]["api_key_length"] > 0
+        assert payload["data"]["api_key_source"] in {"SRE_OPENAI_API_KEY", "OPENAI_API_KEY"}
 
     def test_integration_get_session_trace_returns_serialized_steps(
         self,

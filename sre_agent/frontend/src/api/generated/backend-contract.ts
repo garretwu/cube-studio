@@ -22,6 +22,7 @@ export const HTTP_PATHS = [
   "/api/ontology/{entity_id}/blast-radius",
   "/api/remediate/{session_id}/approve",
   "/api/remediate/{session_id}/rollback",
+  "/api/runtime/llm/status",
   "/api/sessions",
   "/api/sessions/{session_id}",
   "/api/sessions/{session_id}/loop",

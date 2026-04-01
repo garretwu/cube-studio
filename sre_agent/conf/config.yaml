@@ -4,6 +4,11 @@ global:
   alertmanager_url: "http://10.11.4.3:31013/"
   loki_url: "http://10.11.4.2:30628"
 
+llm:
+  api_key: "sk-api-Ml_dsXwgRtYGuBgoQJEfWZ3K1RConiku0CH7OOhRAFHQNk3J3ybKQtUyxwnB_euGb-l1sIDZMB0kNIcYVjzWhNKbQ8Lq8p8gXekaHKviVXw1CFP8pudEY8U"
+  base_url: "https://api.minimax.chat/v1"
+  model: "MiniMax-M2.7"
+
 knowledge_base:
   persist_dir: ./data/knowledge_db_lab
 

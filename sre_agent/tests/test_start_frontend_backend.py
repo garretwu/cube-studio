@@ -21,6 +21,10 @@ def _write_config(tmp_path: Path) -> Path:
                 "  jwt_secret_env: JWT_SECRET",
                 "  jwt_algorithm: HS256",
                 "  audience: sre-agent",
+                "llm:",
+                "  api_key: test-key-from-config",
+                "  base_url: https://api.minimax.chat/v1",
+                "  model: MiniMax-M2.7",
             ]
         ),
         encoding="utf-8",

@@ -39,8 +39,10 @@ describe("DiagnosisPage", () => {
     useDiagnosisStore.setState({
       session: undefined,
       activeSessionId: undefined,
-      messages: [...initialChatMessages],
+      messages: [],
       isLoadingSession: false,
+      bootstrapStatus: "idle",
+      traceStatus: "unknown",
       isSendingMessage: false,
       connectionState: "closed",
       error: undefined,
@@ -60,9 +62,9 @@ describe("DiagnosisPage", () => {
 
     expect(screen.getByRole("heading", { name: "诊断对话" })).toBeInTheDocument();
     expect(screen.getByText(/会话 sess-latency-001/)).toBeInTheDocument();
-    expect(screen.getByText(/当前诊断推理链路已经合并进会话/)).toBeInTheDocument();
+    expect(screen.getByText(/保留诊断交互与 WebSocket 事件消费/)).toBeInTheDocument();
     expect(screen.getByPlaceholderText(/继续追问当前诊断/)).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Mock步骤" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "模拟演示" })).toBeInTheDocument();
   });
 
   it("runs step1 then unlocks step2 in script panel", async () => {
@@ -74,42 +76,39 @@ describe("DiagnosisPage", () => {
       expect(screen.getByText(initialChatMessages[0].content)).toBeInTheDocument();
     });
 
-    await user.click(screen.getByRole("button", { name: "Mock步骤" }));
+    await user.click(screen.getByRole("button", { name: "模拟演示" }));
+    await user.click(await screen.findByText(/1、确认影响范围/));
 
-    expect(screen.getByText("Step 1 · 确认影响范围")).toBeInTheDocument();
-    expect(screen.getByText("Step 2 · 规划观测动作")).toBeInTheDocument();
+    await waitFor(
+      () => {
+        expect(screen.getByText(/受影响节点：node-gpu-01/)).toBeInTheDocument();
+      },
+      { timeout: 4000 },
+    );
 
-    const step2Locked = screen.getByRole("button", { name: "等待解锁" });
-    expect(step2Locked).toBeDisabled();
+    await user.click(screen.getByRole("button", { name: "模拟演示" }));
+    await user.click(await screen.findByText(/2、规划观测动作/));
 
-    await user.click(screen.getByRole("button", { name: "执行此步" }));
-
-    await waitFor(() => {
-      expect(screen.getByText(/\[Step 1 完成\]/)).toBeInTheDocument();
-    });
-
-    const step2RunButton = screen.getByRole("button", { name: "执行此步" });
-    expect(step2RunButton).toBeEnabled();
-
-    await user.click(step2RunButton);
-
-    await waitFor(() => {
-      expect(screen.getByText(/\[Step 2 完成\]/)).toBeInTheDocument();
-    });
+    await waitFor(
+      () => {
+        expect(screen.getByText(/规划完成：观测动作与工具调用顺序已明确/)).toBeInTheDocument();
+      },
+      { timeout: 6000 },
+    );
   });
 
-  it("shows realtime thinking_step content in analysis bubble", async () => {
+  it("applies realtime thinking_step events into diagnosis trace state", async () => {
     vi.stubEnv("VITE_WS_ENABLED", "true");
     websocketState = "open";
 
     renderDiagnosisPage("/diagnosis/sess-latency-001");
 
     await waitFor(() => {
-      expect(emitWebsocketEvent).toBeTypeOf("function");
+      expect(useDiagnosisStore.getState().session?.session_id).toBe("sess-latency-001");
     });
 
     act(() => {
-      emitWebsocketEvent?.({
+      useDiagnosisStore.getState().applyEvent({
         schema_version: "1",
         type: "thinking_step",
         session_id: "sess-latency-001",
@@ -124,7 +123,12 @@ describe("DiagnosisPage", () => {
     });
 
     await waitFor(() => {
-      expect(screen.getByText("Comparing GPU utilization with queue latency")).toBeInTheDocument();
+      expect(useDiagnosisStore.getState().session?.trace?.steps ?? []).toContainEqual(
+        expect.objectContaining({
+          thought: "Comparing GPU utilization with queue latency",
+          tool_name: "metrics.query",
+        }),
+      );
     });
   });
 });

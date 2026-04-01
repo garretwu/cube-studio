@@ -99,10 +99,23 @@ type ApprovalPlanPayload = {
   steps: ApprovalPlanStep[];
   rollbackSummary: string;
 };
+
+type ChatAnswerPayload = {
+  kind: "chat_answer";
+  answer: string;
+  thinkingRaw?: string;
+};
+
 type DisplayMessage = {
   id: string;
   role: "assistant" | "user" | "tool";
-  content: string | ToolEventPayload | ThinkingPlanPayload | RootCauseCandidatesPayload | ApprovalPlanPayload;
+  content:
+    | string
+    | ToolEventPayload
+    | ThinkingPlanPayload
+    | RootCauseCandidatesPayload
+    | ApprovalPlanPayload
+    | ChatAnswerPayload;
   createdAt: string;
   toolName?: string;
 };
@@ -189,6 +202,24 @@ function isRootCauseCandidatesPayload(value: unknown): value is RootCauseCandida
 
 function isApprovalPlanPayload(value: unknown): value is ApprovalPlanPayload {
   return typeof value === "object" && value !== null && (value as ApprovalPlanPayload).kind === "approval_plan";
+}
+
+function isChatAnswerPayload(value: unknown): value is ChatAnswerPayload {
+  return typeof value === "object" && value !== null && (value as ChatAnswerPayload).kind === "chat_answer";
+}
+
+function renderChatAnswerCard(payload: ChatAnswerPayload) {
+  return (
+    <div className="diagnosis-bubble__content">
+      <div>{payload.answer}</div>
+      {payload.thinkingRaw ? (
+        <details className="diagnosis-chat-thinking-raw">
+          <summary>原始推理（调试）</summary>
+          <pre>{payload.thinkingRaw}</pre>
+        </details>
+      ) : null}
+    </div>
+  );
 }
 function getRootCauseLayerLabel(layer: RankedCandidateItem["rootCauseLayer"]) {
   switch (layer) {
@@ -504,10 +535,15 @@ function DiagnosisPage() {
   const demoStepTimerRef = useRef<number | undefined>(undefined);
 
   const {
+    session,
     activeSessionId,
     messages,
     isLoadingSession,
+    bootstrapStatus,
+    traceStatus,
     isSendingMessage,
+    chatContextApplied,
+    chatContextMeta,
     connectionState,
     error,
     bootstrapSession,
@@ -831,17 +867,59 @@ function DiagnosisPage() {
     setDemoActiveStep((prev) => Math.min(prev + 1, DEMO_STEP_LABELS.length));
   }, [isExecutingDemoStep]);
   const timelineMessages = useMemo<DisplayMessage[]>(
-    () => [
-      ...messages.map((message) => ({
+    () => {
+      const traceMessages: DisplayMessage[] = (session?.trace?.steps ?? []).map((entry, index) => {
+        const fallbackTs = new Date().toISOString();
+        if ("thought" in entry) {
+          const step = entry.step ?? index + 1;
+          const thought = entry.thought?.trim() || `Step ${step} reasoning`;
+          const toolName = entry.tool_name ?? undefined;
+          const params = entry.tool_params && Object.keys(entry.tool_params).length ? `\n参数: ${JSON.stringify(entry.tool_params)}` : "";
+          return {
+            id: `trace-thinking-${step}-${entry.timestamp}`,
+            role: "assistant",
+            content: `[思考 ${step}] ${thought}${toolName ? `\n工具: ${toolName}` : ""}${params}`,
+            createdAt: entry.timestamp || fallbackTs,
+            toolName,
+          };
+        }
+
+        const toolName = entry.tool || "tool_result";
+        const resultSummary = typeof entry.result === "object" && entry.result !== null ? Object.keys(entry.result).slice(0, 3).join(", ") : "";
+        return {
+          id: `trace-tool-${index + 1}-${entry.timestamp}`,
+          role: "tool",
+          content: {
+            kind: "tool_event",
+            toolName,
+            status: "success",
+            stepLabel: `Step ${index + 1}`,
+            toolParams: entry.params,
+            summaryLines: [resultSummary ? `返回字段: ${resultSummary}` : "工具执行完成。"],
+          },
+          createdAt: entry.timestamp || fallbackTs,
+          toolName,
+        };
+      });
+
+      const chatMessages: DisplayMessage[] = messages.map((message) => ({
         id: message.id,
         role: message.role,
-        content: message.content,
+        content:
+          message.role === "assistant" && message.display?.answer
+            ? {
+                kind: "chat_answer",
+                answer: message.display.answer,
+                thinkingRaw: message.display.thinking_raw ?? undefined,
+              }
+            : message.content,
         createdAt: message.created_at,
         toolName: message.tool_name,
-      })),
-      ...demoMessages,
-    ],
-    [messages, demoMessages],
+      }));
+
+      return [...traceMessages, ...chatMessages, ...demoMessages];
+    },
+    [session?.trace?.steps, messages, demoMessages],
   );
 
   const bubbleItems = useMemo<BubbleItemType[]>(
@@ -877,6 +955,9 @@ function DiagnosisPage() {
           if (isApprovalPlanPayload(content)) {
             return renderApprovalPlanCard(content);
           }
+          if (isChatAnswerPayload(content)) {
+            return renderChatAnswerCard(content);
+          }
           if (isValidElement(content)) {
             return content;
           }
@@ -900,6 +981,9 @@ function DiagnosisPage() {
           }
           if (isApprovalPlanPayload(content)) {
             return renderApprovalPlanCard(content);
+          }
+          if (isChatAnswerPayload(content)) {
+            return renderChatAnswerCard(content);
           }
           if (isValidElement(content)) {
             return content;
@@ -938,6 +1022,7 @@ function DiagnosisPage() {
   );
 
   const senderDisabled = isLoadingSession || !activeSessionId;
+  const traceStepsUsed = Number(chatContextMeta?.["trace_steps_used"] ?? 0);
 
   const handleDemoStepClick = useCallback<NonNullable<MenuProps["onClick"]>>(
     ({ key }) => {
@@ -1026,6 +1111,11 @@ function DiagnosisPage() {
           <div className="status-row">
             <StatusChip tone={connectionState === "open" ? "success" : "info"}>WebSocket {connectionState}</StatusChip>
             {activeSessionId ? <StatusChip tone="neutral">会话 {activeSessionId}</StatusChip> : null}
+            {activeSessionId ? (
+              <StatusChip tone={chatContextApplied ? "success" : "info"}>
+                上下文 {chatContextApplied ? "已加载" : "待加载"}
+              </StatusChip>
+            ) : null}
           </div>
         </div>
 
@@ -1038,14 +1128,28 @@ function DiagnosisPage() {
               </div>
             ) : null}
 
-            {error ? (
+            {bootstrapStatus === "error" && error ? (
               <div className="diagnosis-chat-state-card diagnosis-chat-state-card--error">
-                <p className="diagnosis-chat-state-card__title">诊断服务异常</p>
+                <p className="diagnosis-chat-state-card__title">诊断请求失败</p>
                 <p className="diagnosis-chat-state-card__copy">{error}</p>
               </div>
             ) : null}
 
-            {!isLoadingSession && !bubbleItems.length ? (
+            {bootstrapStatus === "empty" ? (
+              <div className="diagnosis-chat-state-card">
+                <p className="diagnosis-chat-state-card__title">暂无诊断会话</p>
+                <p className="diagnosis-chat-state-card__copy">请前往告警页面选择一条告警并发起诊断。</p>
+              </div>
+            ) : null}
+
+            {bootstrapStatus === "ready" && traceStatus === "empty" ? (
+              <div className="diagnosis-chat-state-card">
+                <p className="diagnosis-chat-state-card__title">会话已创建，等待推理轨迹</p>
+                <p className="diagnosis-chat-state-card__copy">当前会话尚未产出 Thinking Trace，可稍后刷新或从告警页重新触发诊断。</p>
+              </div>
+            ) : null}
+
+            {bootstrapStatus === "ready" && !isLoadingSession && !bubbleItems.length ? (
               <div className="diagnosis-chat-state-card">
                 <p className="diagnosis-chat-state-card__title">暂无消息</p>
                 <p className="diagnosis-chat-state-card__copy">当前会话还没有可展示的对话内容。</p>
@@ -1061,7 +1165,12 @@ function DiagnosisPage() {
                 disabled={senderDisabled}
                 footer={
                   <div className="diagnosis-sender-footer">
-                    <p className="diagnosis-chat-composer__hint">按 Enter 发送追问。实时事件会继续通过 WebSocket 被消费。</p>
+                    <p className="diagnosis-chat-composer__hint">
+                      按 Enter 发送追问。实时事件会继续通过 WebSocket 被消费。
+                      {chatContextApplied
+                        ? ` 当前会话上下文已注入（trace片段 ${String(traceStepsUsed)} 条）。`
+                        : " 尚未注入会话上下文，请确认会话有效后重试。"}
+                    </p>
                   </div>
                 }
                 loading={isSendingMessage}

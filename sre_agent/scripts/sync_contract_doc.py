@@ -36,7 +36,7 @@ def ensure_auth_env() -> None:
 
 def collect_contract_data() -> tuple[dict[str, Any], list[str], list[str]]:
     ensure_auth_env()
-    app = create_app()
+    app = create_app(require_llm_ready=False)
     schema = app.openapi()
     ws_paths = sorted(route.path for route in app.routes if isinstance(route, WebSocketRoute))
     ws_events = [member.value for member in EventType]
@@ -248,4 +248,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

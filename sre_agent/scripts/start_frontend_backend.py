@@ -23,9 +23,15 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import jwt
-import yaml
 
+# Ensure package imports work when launched as:
+#   python sre_agent/scripts/start_frontend_backend.py
 REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from sre_agent.config import apply_llm_env_from_config, load_config
+
 DEFAULT_CONFIG_PATH = "sre_agent/conf/config.yaml"
 DEFAULT_KUBECONFIG_PATH = str((REPO_ROOT / "sre_agent" / "conf" / "kube.conf").resolve())
 
@@ -78,7 +84,8 @@ def build_runtime_env(
     token_expire_seconds: int,
 ) -> tuple[dict[str, str], dict[str, str]]:
     resolved_config_path = _resolve_config_path(config_path)
-    auth = _load_auth_settings(str(resolved_config_path))
+    config = load_config(resolved_config_path)
+    auth = _load_auth_settings(config)
     jwt_secret = secrets.token_urlsafe(48)
     token = _encode_token(
         secret=jwt_secret,
@@ -93,6 +100,12 @@ def build_runtime_env(
     frontend_url = f"http://127.0.0.1:{frontend_port}"
 
     env = dict(os.environ)
+    apply_llm_env_from_config(config, env, only_if_missing=True)
+    llm_api_key = str(env.get("SRE_OPENAI_API_KEY") or env.get("OPENAI_API_KEY") or "").strip()
+    if not llm_api_key:
+        raise SystemExit(
+            "missing required LLM API key: set SRE_OPENAI_API_KEY (or OPENAI_API_KEY) before starting backend"
+        )
     env[auth["jwt_secret_env"]] = jwt_secret
     env["VITE_API_TOKEN"] = token
     env["VITE_API_PROXY_TARGET"] = backend_url
@@ -120,6 +133,10 @@ def build_runtime_env(
         "api_base_url": env.get("VITE_API_BASE_URL", ""),
         "sre_kubeconfig": env["SRE_KUBECONFIG"],
         "config_path": str(resolved_config_path),
+        "llm_api_key_configured": "true",
+        "llm_api_key_length": str(len(llm_api_key)),
+        "llm_model": str(env.get("SRE_LLM_MODEL", "")).strip(),
+        "llm_base_url": str(env.get("SRE_OPENAI_BASE_URL", "")).strip(),
     }
     return env, info
 
@@ -131,18 +148,18 @@ def _resolve_config_path(config_path: str) -> Path:
     return (REPO_ROOT / path).resolve()
 
 
-def _load_auth_settings(config_path: str) -> dict[str, str]:
-    path = _resolve_config_path(config_path)
-    if not path.exists():
-        raise SystemExit(f"missing config file: {path}")
-    raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-    auth = raw.get("auth") if isinstance(raw, dict) else {}
-    if not isinstance(auth, dict):
-        auth = {}
+def _load_auth_settings(config) -> dict[str, str]:
+    auth = getattr(config, "auth", None)
+    if auth is None:
+        return {
+            "jwt_secret_env": "JWT_SECRET",
+            "jwt_algorithm": "HS256",
+            "audience": "sre-agent",
+        }
     return {
-        "jwt_secret_env": str(auth.get("jwt_secret_env") or "JWT_SECRET").strip(),
-        "jwt_algorithm": str(auth.get("jwt_algorithm") or "HS256").strip(),
-        "audience": str(auth.get("audience") or "sre-agent").strip(),
+        "jwt_secret_env": str(getattr(auth, "jwt_secret_env", "") or "JWT_SECRET").strip(),
+        "jwt_algorithm": str(getattr(auth, "jwt_algorithm", "") or "HS256").strip(),
+        "audience": str(getattr(auth, "audience", "") or "sre-agent").strip(),
     }
 
 
@@ -264,6 +281,13 @@ def main() -> int:
         f"[ok] api mode={info['api_mode']} "
         f"VITE_API_PROXY_TARGET={info['proxy_target']} "
         f"VITE_API_BASE_URL={info['api_base_url'] or '<unset>'}",
+        flush=True,
+    )
+    print(
+        f"[ok] llm key configured={info['llm_api_key_configured']} "
+        f"key_length={info['llm_api_key_length']} "
+        f"model={info['llm_model'] or '<default>'} "
+        f"base_url={info['llm_base_url'] or '<default>'}",
         flush=True,
     )
     print(f"[ok] config={info['config_path']} SRE_KUBECONFIG={info['sre_kubeconfig']}", flush=True)

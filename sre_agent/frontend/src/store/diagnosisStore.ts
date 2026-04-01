@@ -1,16 +1,21 @@
-import { create } from "zustand";
+﻿import { create } from "zustand";
 
 import { apiClient } from "../api/client";
-import { initialChatMessages } from "../mocks/data";
 import type { ChatMessage, DiagnosisSession, Observation, ThinkingStep, WSEvent } from "../api/types";
 
 type ConnectionState = "connecting" | "open" | "closed" | "error";
+type BootstrapStatus = "idle" | "loading" | "ready" | "empty" | "error";
+type TraceStatus = "unknown" | "empty" | "ready";
 
 type DiagnosisState = {
   session?: DiagnosisSession;
   activeSessionId?: string;
   messages: ChatMessage[];
+  chatContextApplied: boolean;
+  chatContextMeta?: Record<string, unknown>;
   isLoadingSession: boolean;
+  bootstrapStatus: BootstrapStatus;
+  traceStatus: TraceStatus;
   isSendingMessage: boolean;
   connectionState: ConnectionState;
   error?: string;
@@ -19,8 +24,6 @@ type DiagnosisState = {
   setConnectionState: (value: ConnectionState) => void;
   applyEvent: (event: WSEvent) => void;
 };
-
-const seedMessages = () => [...initialChatMessages];
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -105,8 +108,12 @@ function getEventError(event: WSEvent) {
 export const useDiagnosisStore = create<DiagnosisState>((set, get) => ({
   session: undefined,
   activeSessionId: undefined,
-  messages: seedMessages(),
+  messages: [],
+  chatContextApplied: false,
+  chatContextMeta: undefined,
   isLoadingSession: false,
+  bootstrapStatus: "idle",
+  traceStatus: "unknown",
   isSendingMessage: false,
   connectionState: "closed",
   error: undefined,
@@ -117,43 +124,83 @@ export const useDiagnosisStore = create<DiagnosisState>((set, get) => ({
       activeSessionId: explicitSessionId ?? get().activeSessionId,
       error: undefined,
       isLoadingSession: true,
+      bootstrapStatus: "loading",
+      traceStatus: "unknown",
       isSendingMessage: false,
+      messages: [],
+      chatContextApplied: false,
+      chatContextMeta: undefined,
     });
 
     try {
-      let session: DiagnosisSession | undefined;
+      let session: DiagnosisSession | null = null;
       let resolvedSessionId = explicitSessionId;
 
       if (!resolvedSessionId) {
         session = await apiClient.getDiagnosisSession();
-        resolvedSessionId = session.session_id;
+        resolvedSessionId = session?.session_id;
       } else {
-        try {
-          const currentSession = await apiClient.getDiagnosisSession(resolvedSessionId);
-          if (currentSession.session_id === resolvedSessionId) {
-            session = currentSession;
+        for (let attempt = 0; attempt < 10; attempt += 1) {
+          try {
+            const currentSession = await apiClient.getDiagnosisSession(resolvedSessionId);
+            if (currentSession && currentSession.session_id === resolvedSessionId) {
+              session = currentSession;
+              break;
+            }
+          } catch (error) {
+            if (attempt === 9) {
+              throw error;
+            }
           }
-        } catch {
-          session = undefined;
+          await new Promise((resolve) => {
+            globalThis.setTimeout(resolve, 1200);
+          });
         }
       }
 
-      const messages = resolvedSessionId ? await apiClient.getChatHistory(resolvedSessionId) : seedMessages();
+      if (!session || !resolvedSessionId) {
+        set({
+          session: undefined,
+          activeSessionId: undefined,
+          messages: [],
+          chatContextApplied: false,
+          chatContextMeta: undefined,
+          isLoadingSession: false,
+          bootstrapStatus: "empty",
+          traceStatus: "unknown",
+          isSendingMessage: false,
+          error: undefined,
+        });
+        return;
+      }
+
+      const messages = await apiClient.getChatHistory(resolvedSessionId);
+      const traceSteps = session.trace?.steps ?? [];
+      const traceStatus: TraceStatus = traceSteps.length ? "ready" : "empty";
 
       set({
         session,
         activeSessionId: resolvedSessionId,
-        messages: messages.length ? messages : seedMessages(),
+        messages,
         isLoadingSession: false,
+        bootstrapStatus: "ready",
+        traceStatus,
         isSendingMessage: false,
+        chatContextApplied: false,
+        chatContextMeta: undefined,
         error: undefined,
       });
     } catch (error) {
       set({
         error: error instanceof Error ? error.message : "加载会话失败",
         isLoadingSession: false,
+        bootstrapStatus: "error",
+        traceStatus: "unknown",
         session: undefined,
-        messages: explicitSessionId ? [] : seedMessages(),
+        activeSessionId: explicitSessionId,
+        messages: [],
+        chatContextApplied: false,
+        chatContextMeta: undefined,
       });
     }
   },
@@ -183,9 +230,13 @@ export const useDiagnosisStore = create<DiagnosisState>((set, get) => ({
 
     try {
       const reply = await apiClient.postChatMessage(sessionId, message);
+      const chatMeta = (reply.metadata?.["chat_meta"] ?? null) as Record<string, unknown> | null;
+      const contextApplied = chatMeta?.context_applied === true;
       set((state) => ({
         messages: [...state.messages, reply],
         isSendingMessage: false,
+        chatContextApplied: contextApplied,
+        chatContextMeta: chatMeta ?? undefined,
       }));
       return reply;
     } catch (error) {
@@ -223,6 +274,10 @@ export const useDiagnosisStore = create<DiagnosisState>((set, get) => ({
         session: nextSession,
         messages: state.messages,
         error: getEventError(event) ?? state.error,
+        traceStatus:
+          nextEntries.length > 0 || event.type === "diagnosis_result"
+            ? "ready"
+            : state.traceStatus,
       };
     }),
 }));

@@ -11,8 +11,10 @@ describe("useDiagnosisStore", () => {
     useDiagnosisStore.setState({
       session: undefined,
       activeSessionId: undefined,
-      messages: [...initialChatMessages],
+      messages: [],
       isLoadingSession: false,
+      bootstrapStatus: "idle",
+      traceStatus: "unknown",
       isSendingMessage: false,
       connectionState: "closed",
       error: undefined,
@@ -28,19 +30,30 @@ describe("useDiagnosisStore", () => {
     expect(useDiagnosisStore.getState().activeSessionId).toBe(diagnosisSession.session_id);
 
     server.use(
-      http.get("/api/diagnosis/session/current", async () =>
+      http.get("/api/sessions/:sessionId", async ({ params }) =>
         HttpResponse.json({
           ...diagnosisSession,
-          session_id: "sess-latency-002",
+          session_id: String(params.sessionId ?? "sess-latency-002"),
         }),
       ),
     );
 
-    await useDiagnosisStore.getState().bootstrapSession();
+    await useDiagnosisStore.getState().bootstrapSession("sess-latency-002");
 
     expect(useDiagnosisStore.getState().session?.session_id).toBe("sess-latency-002");
     expect(useDiagnosisStore.getState().activeSessionId).toBe("sess-latency-002");
     expect(useDiagnosisStore.getState().messages).toEqual(initialChatMessages);
+  });
+
+  it("switches to empty state when backend has no sessions", async () => {
+    server.use(http.get("/api/sessions", async () => HttpResponse.json([])));
+
+    await useDiagnosisStore.getState().bootstrapSession();
+
+    const state = useDiagnosisStore.getState();
+    expect(state.bootstrapStatus).toBe("empty");
+    expect(state.activeSessionId).toBeUndefined();
+    expect(state.messages).toEqual([]);
   });
 
   it("applies websocket events into trace data without appending synthetic chat messages", async () => {
@@ -83,6 +96,7 @@ describe("useDiagnosisStore", () => {
 
     expect(state.messages).toHaveLength(baselineMessageCount);
     expect(state.session?.trace?.steps).toHaveLength(baselineTraceCount + 2);
+    expect(state.traceStatus).toBe("ready");
     expect(state.session?.trace?.steps?.at(-2)).toMatchObject({
       thought: "正在核对热点 GPU 与排队深度的关系",
       tool_name: "metrics.query",

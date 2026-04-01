@@ -74,8 +74,15 @@ describe("apiClient.getTopology", () => {
     );
 
     const session = await apiClient.getDiagnosisSession("sess-1");
-    expect(session.session_id).toBe("sess-1");
-    expect(session.status).toBe("running");
+    expect(session?.session_id).toBe("sess-1");
+    expect(session?.status).toBe("running");
+  });
+
+  it("returns null when no diagnosis sessions are available", async () => {
+    server.use(http.get("/api/sessions", async () => HttpResponse.json([])));
+
+    const session = await apiClient.getDiagnosisSession();
+    expect(session).toBeNull();
   });
 
   it("uses remediate approve route", async () => {

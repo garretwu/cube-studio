@@ -15,7 +15,7 @@ import yaml
 from lib.channels.prometheus import PrometheusChannel
 from lib.channels.redfish import RedfishChannel
 from lib.channels.switch import SwitchChannel
-from sre_agent.config import SREAgentConfig, load_config
+from sre_agent.config import SREAgentConfig, apply_llm_env_from_config, load_config
 from sre_agent.knowledge.ingest import KnowledgeIngestSummary, KnowledgeIngestor
 from sre_agent.knowledge.store import KnowledgeStore
 from sre_agent.memory.factory import create_memory_store
@@ -754,6 +754,12 @@ def discover_command(config_path: Path, discovery_mode: str, refresh_only: bool)
 def serve_command(config_path: Path, host: str, port: int, log_level: str) -> None:
     """Start the FastAPI API + WS server with default dependency wiring."""
     config = load_config(config_path)
+    applied_env = apply_llm_env_from_config(config, os.environ, only_if_missing=True)
+    if applied_env:
+        LOGGER.info(
+            "loaded llm settings from config into environment: keys=%s",
+            sorted(applied_env.keys()),
+        )
     app = create_app(config=config)
     click.echo(f"Starting sre-agent serve on {host}:{port} with config={config_path}")
     LOGGER.info("serve startup: aidc_id=%s host=%s port=%s", config.global_.aidc_id, host, port)

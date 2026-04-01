@@ -36,13 +36,13 @@ def ensure_auth_env() -> None:
 
 def build_openapi_schema() -> dict:
     ensure_auth_env()
-    app = create_app()
+    app = create_app(require_llm_ready=False)
     return app.openapi()
 
 
 def collect_ws_paths() -> list[str]:
     ensure_auth_env()
-    app = create_app()
+    app = create_app(require_llm_ready=False)
     paths = sorted(
         route.path
         for route in app.routes

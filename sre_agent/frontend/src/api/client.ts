@@ -4,6 +4,8 @@ import type {
   Alert,
   AlertCluster,
   ChatMessage,
+  ChatDisplayPayload,
+  ChatReplyMeta,
   ConfigBaseline,
   DiagnosisSession,
   DiagnosisSessionSummary,
@@ -19,6 +21,7 @@ import type {
   SessionSummary,
   SkillDescriptor,
   ToolChannelsStatusResponse,
+  LLMRuntimeStatus,
   TopologyExplorerResponse,
   TopologyLayer,
   TopologyObjectStatus,
@@ -30,6 +33,9 @@ const api = axios.create({
   baseURL: import.meta.env.VITE_API_BASE_URL ?? "",
   timeout: 10000,
 });
+const DIAGNOSE_REQUEST_TIMEOUT_MS = 120000;
+const DIAGNOSE_SESSION_POLL_MS = 2000;
+const DIAGNOSE_SESSION_POLL_ATTEMPTS = 30;
 
 let hasWarnedAboutDevFallback = false;
 
@@ -98,6 +104,13 @@ function rememberSessionId(sessionId: string): void {
     return;
   }
   window.localStorage.setItem("sre_session_id", sessionId);
+}
+
+function clearRememberedSessionId(): void {
+  if (typeof window === "undefined") {
+    return;
+  }
+  window.localStorage.removeItem("sre_session_id");
 }
 
 function extractDuplicateSessionId(payload: SREApiEnvelope<LoopResult>): string {
@@ -361,51 +374,88 @@ export const apiClient = {
     throw new Error(payload.error?.message ?? "handle alert returned no session_id");
   },
 
+  diagnoseAlert: async (alert: Alert) => {
+    try {
+      const response = await api.post<SREApiEnvelope<DiagnosisSession> | DiagnosisSession>("/api/diagnose", alert, {
+        timeout: DIAGNOSE_REQUEST_TIMEOUT_MS,
+      });
+      const session = unwrapPayload(response.data);
+      rememberSessionId(session.session_id);
+      return session;
+    } catch (error) {
+      const isTimeout =
+        axios.isAxiosError(error) &&
+        (error.code === "ECONNABORTED" ||
+          String(error.message || "")
+            .toLowerCase()
+            .includes("timeout"));
+      if (!isTimeout) {
+        throw error;
+      }
+
+      for (let attempt = 0; attempt < DIAGNOSE_SESSION_POLL_ATTEMPTS; attempt += 1) {
+        try {
+          const summariesResponse = await api.get<SREApiEnvelope<SessionSummary[]> | SessionSummary[]>("/api/sessions", {
+            params: { limit: 50 },
+          });
+          const summaries = unwrapPayload(summariesResponse.data);
+          const matched = summaries.find((item) => item.fingerprint === alert.fingerprint);
+          if (matched) {
+            const detailResponse = await api.get<SREApiEnvelope<DiagnosisSession> | DiagnosisSession>(`/api/sessions/${matched.session_id}`);
+            const session = unwrapPayload(detailResponse.data);
+            rememberSessionId(session.session_id);
+            return session;
+          }
+        } catch {
+          // best effort polling
+        }
+        await new Promise((resolve) => {
+          globalThis.setTimeout(resolve, DIAGNOSE_SESSION_POLL_MS);
+        });
+      }
+
+      throw new Error("诊断请求已提交，但会话尚未返回；请稍后在诊断/历史频道刷新查看。");
+    }
+  },
+
   getSessions: async (limit = 50) => {
     const response = await api.get<SREApiEnvelope<SessionSummary[]> | SessionSummary[]>("/api/sessions", { params: { limit } });
     return unwrapPayload(response.data);
   },
 
-  getDiagnosisSession: async (sessionId?: string) =>
-    withDevFallback(
-      async () => {
-        const resolved = (sessionId ?? getRememberedSessionId()).trim();
-        if (resolved) {
-          const response = await api.get<SREApiEnvelope<DiagnosisSession> | DiagnosisSession>(`/api/sessions/${resolved}`);
-          const session = unwrapPayload(response.data);
-          rememberSessionId(session.session_id);
-          return session;
-        }
-
-        const sessions = await apiClient.getSessions(1);
-        if (!sessions.length) {
-          throw new Error("no diagnosis session available");
-        }
-        const latest = sessions[0];
-        const response = await api.get<SREApiEnvelope<DiagnosisSession> | DiagnosisSession>(`/api/sessions/${latest.session_id}`);
+  getDiagnosisSession: async (sessionId?: string) => {
+    const explicit = (sessionId ?? "").trim();
+    const remembered = getRememberedSessionId().trim();
+    const resolved = explicit || remembered;
+    if (resolved) {
+      try {
+        const response = await api.get<SREApiEnvelope<DiagnosisSession> | DiagnosisSession>(`/api/sessions/${resolved}`);
         const session = unwrapPayload(response.data);
         rememberSessionId(session.session_id);
         return session;
-      },
-      async () => {
-        const { getDiagnosisSessionFallback } = await import("./devFallback");
-        return getDiagnosisSessionFallback();
-      },
-      "getDiagnosisSession",
-    ),
+      } catch (error) {
+        if (explicit) {
+          throw error;
+        }
+        clearRememberedSessionId();
+      }
+    }
 
-  getDiagnosisHistorySessions: async () =>
-    withDevFallback(
-      async () => {
-        const sessions = await apiClient.getSessions(50);
-        return sessions.map(mapSummaryToDiagnosisSummary);
-      },
-      async () => {
-        const { getDiagnosisHistorySessionsFallback } = await import("./devFallback");
-        return getDiagnosisHistorySessionsFallback();
-      },
-      "getDiagnosisHistorySessions",
-    ),
+    const sessions = await apiClient.getSessions(1);
+    if (!sessions.length) {
+      return null;
+    }
+    const latest = sessions[0];
+    const response = await api.get<SREApiEnvelope<DiagnosisSession> | DiagnosisSession>(`/api/sessions/${latest.session_id}`);
+    const session = unwrapPayload(response.data);
+    rememberSessionId(session.session_id);
+    return session;
+  },
+
+  getDiagnosisHistorySessions: async () => {
+    const sessions = await apiClient.getSessions(50);
+    return sessions.map(mapSummaryToDiagnosisSummary);
+  },
 
   getSessionLoop: async (sessionId?: string) => {
     const resolved = (sessionId ?? getRememberedSessionId()).trim();
@@ -449,54 +499,62 @@ export const apiClient = {
     } as RemediationOverview;
   },
 
-  postChatMessage: async (sessionOrContent: string, maybeContent?: string) =>
-    withDevFallback(
-      async () => {
-        const content = (maybeContent ?? sessionOrContent).trim();
-        if (!content) {
-          throw new Error("content is required");
-        }
-        const response = await api.post<SREApiEnvelope<{ reply: string } | { reply: ChatMessage }> | { reply: string } | { reply: ChatMessage }>(
-          "/api/chat",
-          { content },
-        );
-        const payload = unwrapPayload(response.data);
-        const replyValue = payload.reply;
-        if (typeof replyValue === "string") {
-          return {
-            id: `assistant-${Date.now()}`,
-            role: "assistant" as const,
-            content: replyValue,
-            created_at: new Date().toISOString(),
-            metadata: maybeContent ? { session_id: sessionOrContent } : undefined,
-          };
-        }
-        return replyValue;
-      },
-      async () => {
-        const { postChatMessageFallback } = await import("./devFallback");
-        if (maybeContent) {
-          return postChatMessageFallback(sessionOrContent, maybeContent);
-        }
-        return postChatMessageFallback("", sessionOrContent);
-      },
-      "postChatMessage",
-    ),
+  postChatMessage: async (sessionOrContent: string, maybeContent?: string) => {
+    const content = (maybeContent ?? sessionOrContent).trim();
+    if (!content) {
+      throw new Error("content is required");
+    }
+    const response = await api.post<
+      | SREApiEnvelope<
+          | { reply: string; meta?: ChatReplyMeta | null; display?: ChatDisplayPayload | null }
+          | { reply: ChatMessage; meta?: ChatReplyMeta | null; display?: ChatDisplayPayload | null }
+        >
+      | { reply: string; meta?: ChatReplyMeta | null; display?: ChatDisplayPayload | null }
+      | { reply: ChatMessage; meta?: ChatReplyMeta | null; display?: ChatDisplayPayload | null }
+    >(
+      "/api/chat",
+      { content, session_id: maybeContent ? sessionOrContent : undefined },
+    );
+    const payload = unwrapPayload(response.data);
+    const responseMeta = payload.meta ?? undefined;
+    const responseDisplay = payload.display ?? undefined;
+    const replyValue = payload.reply;
+    if (typeof replyValue === "string") {
+      const metadata: Record<string, unknown> = {};
+      if (maybeContent) {
+        metadata.session_id = sessionOrContent;
+      }
+      if (responseMeta) {
+        metadata.chat_meta = responseMeta;
+      }
+      return {
+        id: `assistant-${Date.now()}`,
+        role: "assistant" as const,
+        content: replyValue,
+        created_at: new Date().toISOString(),
+        metadata: Object.keys(metadata).length > 0 ? metadata : undefined,
+        display: responseDisplay,
+      };
+    }
+    if (responseMeta || responseDisplay) {
+      return {
+        ...replyValue,
+        display: responseDisplay ?? replyValue.display,
+        metadata: {
+          ...(replyValue.metadata ?? {}),
+          ...(responseMeta ? { chat_meta: responseMeta } : {}),
+        },
+      };
+    }
+    return replyValue;
+  },
 
-  getChatHistory: async (sessionId?: string) =>
-    withDevFallback(
-      async () => {
-        const response = await api.get<SREApiEnvelope<ChatMessage[]> | ChatMessage[]>("/api/chat/history", {
-          params: sessionId ? { session_id: sessionId } : undefined,
-        });
-        return unwrapPayload(response.data);
-      },
-      async () => {
-        const { getChatHistoryFallback } = await import("./devFallback");
-        return getChatHistoryFallback(sessionId);
-      },
-      "getChatHistory",
-    ),
+  getChatHistory: async (sessionId?: string) => {
+    const response = await api.get<SREApiEnvelope<ChatMessage[]> | ChatMessage[]>("/api/chat/history", {
+      params: sessionId ? { session_id: sessionId } : undefined,
+    });
+    return unwrapPayload(response.data);
+  },
 
   searchKnowledge: async (query: string, category?: string) =>
     withDevFallback(
@@ -562,6 +620,11 @@ export const apiClient = {
 
   getToolChannelsStatus: async () => {
     const response = await api.get<SREApiEnvelope<ToolChannelsStatusResponse> | ToolChannelsStatusResponse>("/api/tools/channels/status");
+    return unwrapPayload(response.data);
+  },
+
+  getLLMRuntimeStatus: async () => {
+    const response = await api.get<SREApiEnvelope<LLMRuntimeStatus> | LLMRuntimeStatus>("/api/runtime/llm/status");
     return unwrapPayload(response.data);
   },
 };

@@ -1,70 +1,31 @@
-# 当前代码完成进度（对照 AIDC-auto-SRE.md）
+﻿# 当前代码完成进度（对照 AIDC-auto-SRE.md）
 
-- 更新日期：2026-03-30
+- 更新日期：2026-04-01
 - 对照基准：`AIDC-auto-SRE.md`
-- 判定方法：仅按当前仓库代码与接口实现，不按设计目标推断。
 
-## 1. 总览
+## 核心能力状态
 
 | 模块 | 进度判定 | 说明 |
 | --- | --- | --- |
-| FastAPI + JWT + REST/WS 主链路 | 已实现 | REST 与 `/ws/alerts` `/ws/chat` `/ws/thinking-trace/{session_id}` `/ws/topology` 已落地。 |
-| 诊断 Agent（LangGraph） | 已实现（可运行） | `sre_agent/agent/graph.py` + `nodes.py` 已形成 reason/act/observe/decide/finalize 循环。 |
-| 对话 Agent（chat） | 已实现（可运行） | `sre_agent/agent/conversational.py` + `/api/chat` `/api/chat/history` + `/ws/chat`。 |
-| 拓扑/Ontology 自动发现 | 已实现（可运行） | `TopologyDiscoveryService` + static/live discovery + `/api/topology*` + `/ws/topology`。 |
-| 告警驱动与会话链路 | 已实现（可运行） | `AlertPollingService`、`/api/alerts`、`/api/handle`、sessions/loop/remediate 全链路。 |
+| FastAPI + JWT + REST/WS 主链路 | 已实现（可运行） | `/api/*` + `/ws/alerts` `/ws/thinking-trace/{session_id}` `/ws/topology` 可联调。 |
+| 诊断 Agent（LangGraph） | 已实现（可运行） | `sre_agent/agent/graph.py` 已形成 reason/act/observe/decide/finalize 闭环。 |
+| 对话 Agent（chat） | 已实现（会话上下文增强） | `sre_agent/agent/conversational.py` + `/api/chat` `/api/chat/history` + `/ws/chat`；追问已注入 session 上下文（diagnosis result + blast/impact 摘要 + 最近 trace），不再仅依赖聊天历史。 |
+| 拓扑/Ontology 自动发现 | 已实现（可运行） | `TopologyDiscoveryService` + `/api/topology` `/api/topology/status` `/api/topology/discover` + `/ws/topology`。 |
+| 告警驱动与会话链路 | 已实现（可运行） | `/api/alerts`、`/api/handle`、`/api/sessions*` 已打通。 |
 | 修复引擎（审批/灰度/WAL） | 已实现（可运行） | `RemediationEngine`、`ApprovalGate`、`CanaryExecutor`、`RollbackJournal` 已接入主链路。 |
-| ThinkingTrace 能力 | 已实现（但实现位置与设计文档不一致） | 通过 `models/diagnosis.py` 和 trace publisher 实现；未见独立 `agent/thinking_trace.py` 文件。 |
-| Guardrails（NeMo） | 部分实现（未接入主运行链路） | `guardrails/runtime.py` 与配置存在，但默认运行仍是 `PassthroughGuardrails`。 |
-| NAT（nvidia-nat） | 部分实现（薄封装） | `nat/wrapper.py` 已有包装类型，但未在 server/runner 主流程接入 profiling/eval。 |
-| HA（leader election/replication） | 仅框架 | `ha/heartbeat.py`、`ha/replication.py` 为生产阶段 stub。 |
-| Memory PG/Qdrant 产品化后端 | 仅框架 | `memory/store_pg.py` 明确 NotImplemented。 |
-| Skill 自动生成（SkillCreator） | 仅框架 | `skills/creator.py` 为 placeholder。 |
+| ThinkingTrace | 已实现 | trace 已在模型层与 WS 事件链路中使用，并在诊断页展示。 |
 
-## 2. 已落地主能力（代码证据）
+## 本轮新增（2026-04-01）
 
-- 诊断与修复主链路：
-- `sre_agent/server.py`
-- `sre_agent/api/routes.py`
-- `sre_agent/remediation/engine.py`
-- `sre_agent/remediation/loop_orchestrator.py`
+1. `/api/chat` 增加 session 上下文注入，默认拼装：诊断结论、影响范围摘要、最近 12 条 trace。
+2. `/api/chat` 响应新增可选 `meta`：`context_applied`、`session_id`、`trace_steps_used`、`context_tokens_estimate`。
+3. `session_id` 无效时，`/api/chat` 返回明确 404（避免“静默空回复”）。
+4. 诊断页 `diagnosis-chat-workspace` 增加“上下文已加载/待加载”状态提示。
+5. 诊断追问改为“强会话锚定”上下文策略：仅使用当前 session 最近窗口历史（默认 6 条）+ 诊断事实块，降低串台概率。
+6. `/api/chat` 与 `/api/chat/history` 新增可选 `display` 字段（`answer`/`thinking_raw`），前端默认展示答案并可展开原始 `<think>`。
 
-- 拓扑与 ontology：
-- `sre_agent/topology/discovery.py`
-- `sre_agent/ontology/discovery/k8s_scanner.py`
-- `sre_agent/api/routes.py`（`/api/topology`、`/api/topology/status`、`/api/topology/discover`）
-- `sre_agent/api/websocket.py`（`/ws/topology`）
+## 已知限制 / 后续项
 
-- 前端拓扑与联调链路：
-- `sre_agent/frontend/src/store/topologyStore.ts`
-- `sre_agent/frontend/src/pages/Topology.tsx`
-- `sre_agent/frontend/src/api/client.ts`
-- `sre_agent/frontend/src/api/ws.ts`
-
-## 3. 主要 Gap（未完成或仅框架）
-
-1. Guardrails 尚未成为默认执行路径。
-- 当前默认是 `PassthroughGuardrails`。
-- 代码位置：`sre_agent/agent/graph.py`。
-
-2. Checkpoint 持久化与 resume 仍未达到设计目标。
-- 当前 checkpointer 使用 `MemorySaver`，且默认 runner 调用时 `checkpoint_dir=None`。
-- 代码位置：`sre_agent/agent/checkpoint.py`、`sre_agent/server.py`。
-
-3. NAT 仅有 wrapper，未接入服务启动或诊断执行流程。
-- 代码位置：`sre_agent/nat/wrapper.py`。
-
-4. HA 相关能力为生产阶段 stub。
-- 代码位置：`sre_agent/ha/heartbeat.py`、`sre_agent/ha/replication.py`。
-
-5. 产品化记忆后端（PostgreSQL/Qdrant）未实现。
-- 代码位置：`sre_agent/memory/store_pg.py`。
-
-6. Skill 自动生成能力未实现。
-- 代码位置：`sre_agent/skills/creator.py`。
-
-## 4. 结论
-
-- 对照 `AIDC-auto-SRE.md`，当前项目已具备可联调的核心闭环（告警 -> 诊断 -> 修复 -> 拓扑/WS 展示）。
-- 主要缺口集中在“产品化增强层”：Guardrails 默认接入、NAT 生产化、HA、PG/Qdrant、Skill 自动生成。
-- 因此当前阶段可判定为：**核心功能可用，产品化能力未完成**。
+1. 当前诊断追问采用 REST 同步回复，`/ws/chat` 流式追问尚未接入诊断页主链路。
+2. Guardrails 仍非默认执行路径（当前默认 `PassthroughGuardrails`）。
+3. NAT/HA/PG-Qdrant/Skill 自动生成仍以框架或部分实现为主，待产品化增强。

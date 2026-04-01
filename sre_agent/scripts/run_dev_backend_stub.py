@@ -138,6 +138,7 @@ def build_app() -> Any:
         config=config,
         diagnosis_runner=DemoDiagnosisRunner(),
         chat_handler=DemoChatHandler(),
+        require_llm_ready=False,
     )
 
 
@@ -152,4 +153,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

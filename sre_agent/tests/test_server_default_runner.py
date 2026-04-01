@@ -136,6 +136,8 @@ def test_create_app_default_runner_supports_handle_without_missing_runner_error(
 
 def test_create_app_strict_mode_rejects_when_core_channels_not_ready(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("JWT_SECRET", "secret")
+    monkeypatch.setenv("SRE_OPENAI_API_KEY", "test-key")
+    monkeypatch.setenv("SRE_LLM_MODEL", "MiniMax-M2.7")
     monkeypatch.delenv("SRE_PROMETHEUS_URL", raising=False)
     monkeypatch.delenv("SRE_SSH_INVENTORY_PATH", raising=False)
 
@@ -154,3 +156,25 @@ def test_create_app_strict_mode_rejects_when_core_channels_not_ready(monkeypatch
         assert "strict mode startup blocked" in str(exc)
     else:
         raise AssertionError("expected strict mode startup failure")
+
+
+def test_create_app_fails_fast_when_llm_key_missing(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("JWT_SECRET", "secret")
+    monkeypatch.delenv("SRE_OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("SRE_LLM_MODEL", raising=False)
+
+    config = SREAgentConfig.model_validate(
+        {
+            "global": {"aidc_id": "test-aidc"},
+            "ontology": {"db_path": str(tmp_path / "ontology.db")},
+            "memory": {"db_dir": str(tmp_path / "memory")},
+        }
+    )
+
+    try:
+        create_app(config=config)
+    except RuntimeError as exc:
+        assert "SRE_OPENAI_API_KEY or OPENAI_API_KEY is required" in str(exc)
+    else:
+        raise AssertionError("expected startup failure when llm key is missing")

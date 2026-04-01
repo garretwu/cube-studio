@@ -49,6 +49,8 @@ function AlertsModifiedPage() {
   const [query, setQuery] = useState("");
   const [severityFilter, setSeverityFilter] = useState<Severity | "all">("all");
   const [activeSession, setActiveSession] = useState<DiagnosisSession | undefined>();
+  const [diagnosingResultId, setDiagnosingResultId] = useState<string | null>(null);
+  const [diagnosisError, setDiagnosisError] = useState<string | null>(null);
   const [expandedFingerprint, setExpandedFingerprint] = useState<string | null>(null);
 
   useEffect(() => {
@@ -59,7 +61,7 @@ function AlertsModifiedPage() {
       .getDiagnosisSession()
       .then((session) => {
         if (!cancelled) {
-          setActiveSession(session);
+          setActiveSession(session ?? undefined);
         }
       })
       .catch(() => {
@@ -121,6 +123,44 @@ function AlertsModifiedPage() {
   const fingerprintCount = flow.length;
   const foldedEventCount = results.reduce((total, result) => total + result.duplicateFoldedCount, 0);
 
+  const startDiagnosisFromResult = async (resultId: string, fingerprint: string) => {
+    const candidates = filteredAlerts.filter((item) => item.fingerprint === fingerprint);
+    if (!candidates.length) {
+      setDiagnosisError("未找到可用于诊断的告警事件，请先刷新告警数据。");
+      return;
+    }
+    const sorted = [...candidates].sort((left, right) => {
+      const severityRank = { critical: 3, warning: 2, info: 1 } as const;
+      const statusRank = (status: AlertStatus) => (status === "firing" ? 2 : status === "resolved" ? 1 : 0);
+      const statusGap = statusRank(right.status) - statusRank(left.status);
+      if (statusGap !== 0) {
+        return statusGap;
+      }
+      const severityGap = severityRank[right.severity] - severityRank[left.severity];
+      if (severityGap !== 0) {
+        return severityGap;
+      }
+      return new Date(right.starts_at).getTime() - new Date(left.starts_at).getTime();
+    });
+    const selected = sorted[0];
+    if (!selected) {
+      setDiagnosisError("未找到可用于诊断的告警事件，请先刷新告警数据。");
+      return;
+    }
+    setDiagnosisError(null);
+    setDiagnosingResultId(resultId);
+    try {
+      const session = await apiClient.diagnoseAlert(selected);
+      setActiveSession(session);
+      navigate(`/diagnosis/${session.session_id}`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "发起诊断失败";
+      setDiagnosisError(message);
+    } finally {
+      setDiagnosingResultId(null);
+    }
+  };
+
   return (
     <div className="page-grid alerts-convergence-page">
       <SectionHeader
@@ -166,6 +206,11 @@ function AlertsModifiedPage() {
           <StatusChip tone="danger">{`${createCount} 个将创建 Session`}</StatusChip>
           <StatusChip tone="warning">{`${observeCount} 个观察中`}</StatusChip>
         </div>
+        {diagnosisError ? (
+          <div className="state-block">
+            <p className="data-list__copy">{diagnosisError}</p>
+          </div>
+        ) : null}
       </SurfaceCard>
 
       <div className="alerts-convergence-layout">
@@ -278,11 +323,18 @@ function AlertsModifiedPage() {
                       </div>
                       <AppButton
                         iconRight="arrowRight"
-                        onClick={() => navigate(result.route.path)}
+                        onClick={() => {
+                          if (result.route.label === "将创建 Session") {
+                            void startDiagnosisFromResult(result.id, result.primaryFingerprint);
+                            return;
+                          }
+                          navigate(result.route.path);
+                        }}
                         size="sm"
                         variant="primary"
+                        disabled={diagnosingResultId !== null}
                       >
-                        {result.route.ctaLabel}
+                        {diagnosingResultId === result.id ? "诊断发起中..." : result.route.ctaLabel}
                       </AppButton>
                     </div>
 

@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 import inspect
 import os
+import re
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
@@ -23,6 +24,7 @@ from sre_agent.models.memory import ConfigBaseline, IncidentRecord, LearnedPatte
 from sre_agent.models.remediation import LoopResult, RemediationPlan, RemediationResult
 from sre_agent.remediation.approval import ApprovalInput
 from sre_agent.remediation.engine import RollbackResult
+from sre_agent.concurrency.resource_lock import ResourceLockedError
 from sre_agent.skills import SkillRegistry
 
 
@@ -30,12 +32,15 @@ class ChatMessage(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     content: str = Field(min_length=1)
+    session_id: str | None = None
 
 
 class ChatResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     reply: str
+    meta: dict[str, Any] | None = None
+    display: dict[str, Any] | None = None
 
 
 class ChatHistoryMessage(BaseModel):
@@ -47,6 +52,7 @@ class ChatHistoryMessage(BaseModel):
     created_at: datetime
     tool_name: str | None = None
     metadata: dict[str, Any] | None = None
+    display: dict[str, Any] | None = None
 
 
 class OntologyQueryRequest(BaseModel):
@@ -123,6 +129,19 @@ class ToolChannelsStatusResponse(BaseModel):
 
     runtime_mode: Literal["strict", "degraded"] = "degraded"
     channels: list[ToolChannelStatusItem] = Field(default_factory=list)
+
+
+class LLMRuntimeStatusResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    required: bool = True
+    ready: bool = False
+    api_key_configured: bool = False
+    api_key_source: str = "none"
+    api_key_length: int = 0
+    model: str = "gpt-4o-mini"
+    base_url: str | None = None
+    reason: str | None = None
 
 
 class SessionSummary(BaseModel):
@@ -334,6 +353,21 @@ def build_api_router() -> APIRouter:
             runtime_mode = "degraded"
         return ToolChannelsStatusResponse(runtime_mode=runtime_mode, channels=rows)
 
+    def _llm_runtime_status_payload(services: Any) -> LLMRuntimeStatusResponse:
+        payload = getattr(services, "llm_runtime_status", {}) or {}
+        if not isinstance(payload, dict):
+            payload = {}
+        return LLMRuntimeStatusResponse(
+            required=bool(payload.get("required", True)),
+            ready=bool(payload.get("ready", False)),
+            api_key_configured=bool(payload.get("api_key_configured", False)),
+            api_key_source=str(payload.get("api_key_source", "none")),
+            api_key_length=int(payload.get("api_key_length", 0) or 0),
+            model=str(payload.get("model", "gpt-4o-mini")),
+            base_url=str(payload["base_url"]) if payload.get("base_url") else None,
+            reason=str(payload["reason"]) if payload.get("reason") else None,
+        )
+
     async def _refresh_ontology_entity(ontology: Any, entity_id: str) -> dict[str, Any]:
         refresh_entity = getattr(ontology, "refresh_entity", None)
         if not callable(refresh_entity):
@@ -357,26 +391,72 @@ def build_api_router() -> APIRouter:
             return await value
         return value
 
-    def _call_with_optional_user_id(callable_obj: Any, *args: Any, user_id: str) -> Any:
+    def _call_with_optional_kwargs(callable_obj: Any, *args: Any, optional_kwargs: dict[str, Any] | None = None) -> Any:
+        kwargs = {
+            key: value
+            for key, value in (optional_kwargs or {}).items()
+            if value is not None
+        }
         try:
             signature = inspect.signature(callable_obj)
         except (TypeError, ValueError):
-            return callable_obj(*args)
-        if "user_id" in signature.parameters:
-            return callable_obj(*args, user_id=user_id)
+            return callable_obj(*args, **kwargs)
+        accepted: dict[str, Any] = {}
+        for key, value in kwargs.items():
+            if key in signature.parameters:
+                accepted[key] = value
+        if accepted:
+            return callable_obj(*args, **accepted)
         for parameter in signature.parameters.values():
             if parameter.kind == inspect.Parameter.VAR_KEYWORD:
-                return callable_obj(*args, user_id=user_id)
+                return callable_obj(*args, **kwargs)
         return callable_obj(*args)
 
-    async def _invoke_chat_handler(chat_handler: Any, *, content: str, user_id: str) -> str:
+    async def _invoke_chat_handler(
+        chat_handler: Any,
+        *,
+        content: str,
+        user_id: str,
+        session_id: str | None = None,
+        session_context: dict[str, Any] | None = None,
+    ) -> str:
         chat_method = getattr(chat_handler, "chat", None)
         if callable(chat_method):
-            value = _call_with_optional_user_id(chat_method, content, user_id=user_id)
+            value = _call_with_optional_kwargs(
+                chat_method,
+                content,
+                optional_kwargs={
+                    "user_id": user_id,
+                    "session_id": session_id,
+                    "session_context": session_context,
+                },
+            )
         else:
-            value = _call_with_optional_user_id(chat_handler, content, user_id=user_id)
+            value = _call_with_optional_kwargs(
+                chat_handler,
+                content,
+                optional_kwargs={
+                    "user_id": user_id,
+                    "session_id": session_id,
+                    "session_context": session_context,
+                },
+            )
         response = await _maybe_await(value)
         return response if isinstance(response, str) else str(response)
+
+    def _extract_chat_display(content: str) -> dict[str, Any]:
+        text = str(content or "")
+        think_pattern = re.compile(r"<think>(.*?)</think>", flags=re.IGNORECASE | re.DOTALL)
+        matches = list(think_pattern.finditer(text))
+        thinking_raw = "\n\n".join(match.group(0).strip() for match in matches if match.group(0).strip()) or None
+        answer = think_pattern.sub("", text).strip()
+        if not answer:
+            answer = text.strip()
+        return {
+            "answer": answer,
+            "thinking_raw": thinking_raw,
+            "has_thinking": bool(thinking_raw),
+        }
 
     def _normalize_chat_history_item(item: Any, *, index: int) -> ChatHistoryMessage | None:
         if hasattr(item, "model_dump"):
@@ -410,6 +490,9 @@ def build_api_router() -> APIRouter:
 
         tool_name = payload.get("tool_name")
         metadata = payload.get("metadata")
+        display = payload.get("display")
+        if not isinstance(display, dict) and role == "assistant":
+            display = _extract_chat_display(content)
         return ChatHistoryMessage(
             id=message_id,
             role=role,  # type: ignore[arg-type]
@@ -417,13 +500,22 @@ def build_api_router() -> APIRouter:
             created_at=created_at,
             tool_name=str(tool_name) if tool_name is not None else None,
             metadata=metadata if isinstance(metadata, dict) else None,
+            display=display if isinstance(display, dict) else None,
         )
 
-    async def _invoke_chat_history(chat_handler: Any, *, user_id: str) -> list[ChatHistoryMessage]:
+    async def _invoke_chat_history(
+        chat_handler: Any,
+        *,
+        user_id: str,
+        session_id: str | None = None,
+    ) -> list[ChatHistoryMessage]:
         history_method = getattr(chat_handler, "get_history", None)
         if not callable(history_method):
             return []
-        value = _call_with_optional_user_id(history_method, user_id=user_id)
+        value = _call_with_optional_kwargs(
+            history_method,
+            optional_kwargs={"user_id": user_id, "session_id": session_id},
+        )
         history_items = await _maybe_await(value)
         if not isinstance(history_items, list):
             return []
@@ -433,6 +525,124 @@ def build_api_router() -> APIRouter:
             if converted is not None:
                 normalized.append(converted)
         return normalized
+
+    def _estimate_token_count(text: str) -> int:
+        compact = " ".join(str(text or "").split())
+        if not compact:
+            return 0
+        return max(1, len(compact) // 4)
+
+    def _extract_trace_items(session_payload: dict[str, Any], *, limit: int) -> tuple[list[str], int]:
+        trace = session_payload.get("trace")
+        if not isinstance(trace, dict):
+            return [], 0
+        raw_steps = trace.get("steps")
+        if not isinstance(raw_steps, list) or not raw_steps:
+            return [], 0
+        selected = raw_steps[-limit:]
+        lines: list[str] = []
+        for item in selected:
+            if not isinstance(item, dict):
+                continue
+            thought = str(item.get("thought", "")).strip()
+            action_type = str(item.get("action_type", "")).strip()
+            tool_name = str(item.get("tool_name", "")).strip()
+            if thought:
+                prefix = f"{action_type} {tool_name}".strip()
+                if prefix:
+                    lines.append(f"- {prefix}: {thought}")
+                else:
+                    lines.append(f"- {thought}")
+                continue
+            tool = str(item.get("tool", "")).strip()
+            result = item.get("result")
+            if tool:
+                lines.append(f"- observation {tool}: {str(result)[:220]}")
+        return lines, len(selected)
+
+    def _build_chat_session_context(
+        services: Any,
+        *,
+        session_id: str | None,
+        trace_limit: int = 12,
+    ) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+        scoped_session_id = (session_id or "").strip()
+        empty_meta = {
+            "context_applied": False,
+            "session_id": scoped_session_id or None,
+            "trace_steps_used": 0,
+            "context_tokens_estimate": 0,
+        }
+        if not scoped_session_id:
+            return None, empty_meta
+
+        get_session = getattr(services.session_store, "get", None)
+        session = get_session(scoped_session_id) if callable(get_session) else None
+        if session is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"diagnosis session not found: {scoped_session_id}",
+            )
+
+        if hasattr(session, "model_dump"):
+            payload = session.model_dump(mode="json")
+        elif isinstance(session, dict):
+            payload = dict(session)
+        else:
+            payload = {"session_id": scoped_session_id, "value": str(session)}
+
+        diagnosis = payload.get("diagnosis_result")
+        if not isinstance(diagnosis, dict):
+            diagnosis = payload.get("diagnosis")
+        diagnosis = diagnosis if isinstance(diagnosis, dict) else {}
+        root_cause = str(diagnosis.get("root_cause", "")).strip()
+        root_layer = str(diagnosis.get("root_cause_layer", "")).strip()
+        confidence = diagnosis.get("confidence")
+        impact_summary = str(diagnosis.get("impact_summary", "")).strip()
+        affected_services = diagnosis.get("affected_services")
+        if not isinstance(affected_services, list):
+            affected_services = []
+
+        alert_payload = payload.get("alert")
+        if not isinstance(alert_payload, dict):
+            alert_payload = {}
+        topology_summary = str(
+            (alert_payload.get("annotations") or {}).get("topology_blast_radius_summary", "")
+        ).strip()
+
+        trace_lines, trace_used = _extract_trace_items(payload, limit=max(1, int(trace_limit)))
+        lines = [
+            f"Diagnosis Session: {scoped_session_id}",
+            f"Status: {payload.get('status', 'unknown')}",
+        ]
+        if root_cause:
+            lines.append(f"Root cause: {root_cause}")
+        if root_layer:
+            lines.append(f"Root cause layer: {root_layer}")
+        if confidence is not None:
+            lines.append(f"Confidence: {confidence}")
+        if impact_summary:
+            lines.append(f"Impact summary: {impact_summary}")
+        if topology_summary:
+            lines.append(f"Blast radius: {topology_summary}")
+        if affected_services:
+            services_text = ", ".join(str(item) for item in affected_services[:8] if str(item).strip())
+            if services_text:
+                lines.append(f"Affected services: {services_text}")
+        if trace_lines:
+            lines.append("Recent trace:")
+            lines.extend(trace_lines)
+
+        context_text = "\n".join(line for line in lines if line).strip()
+        meta = {
+            "context_applied": bool(context_text),
+            "session_id": scoped_session_id,
+            "trace_steps_used": trace_used,
+            "context_tokens_estimate": _estimate_token_count(context_text),
+        }
+        if not context_text:
+            return None, meta
+        return {"session_id": scoped_session_id, "context_text": context_text}, meta
 
     def _extract_recommended_fix(session: DiagnosisSession) -> RemediationPlan | None:
         if session.diagnosis_result is None:
@@ -612,8 +822,15 @@ def build_api_router() -> APIRouter:
         _ = user
         services = _services(request)
         prepared_alert = _enrich_alert_with_topology_summary(services, alert)
-        response = await services.incident_handler.handle(prepared_alert)
-        return response.model_copy(update={"trace_id": _trace_id(request)})
+        try:
+            response = await services.incident_handler.handle(prepared_alert)
+            return response.model_copy(update={"trace_id": _trace_id(request)})
+        except ResourceLockedError as exc:
+            return SREResponse(
+                success=False,
+                error=SREError(code=ErrorCode.RESOURCE_LOCKED, message=str(exc)),
+                trace_id=_trace_id(request),
+            )
 
     @router.get("/sessions")
     async def list_sessions(
@@ -1074,6 +1291,10 @@ def build_api_router() -> APIRouter:
     ) -> SREResponse[ChatResponse]:
         _ = user
         services = _services(request)
+        session_context, chat_meta = _build_chat_session_context(
+            services,
+            session_id=message.session_id,
+        )
         if services.chat_handler is None:
             reply = "chat handler is not configured"
         else:
@@ -1081,12 +1302,20 @@ def build_api_router() -> APIRouter:
                 services.chat_handler,
                 content=message.content,
                 user_id=user.user_id,
+                session_id=message.session_id,
+                session_context=session_context,
             )
-        return SREResponse(success=True, data=ChatResponse(reply=reply), trace_id=_trace_id(request))
+        display = _extract_chat_display(reply)
+        return SREResponse(
+            success=True,
+            data=ChatResponse(reply=reply, meta=chat_meta, display=display),
+            trace_id=_trace_id(request),
+        )
 
     @router.get("/chat/history")
     async def chat_history(
         request: Request,
+        session_id: str | None = None,
         user: CurrentUser = Depends(get_current_user),
     ) -> SREResponse[list[ChatHistoryMessage]]:
         services = _services(request)
@@ -1095,8 +1324,25 @@ def build_api_router() -> APIRouter:
         history = await _invoke_chat_history(
             services.chat_handler,
             user_id=user.user_id,
+            session_id=session_id,
         )
+        if session_id:
+            scoped = [item for item in history if (item.metadata or {}).get("session_id") == session_id]
+            if scoped:
+                history = scoped
+            elif any((item.metadata or {}).get("session_id") is not None for item in history):
+                history = []
         return SREResponse(success=True, data=history, trace_id=_trace_id(request))
+
+    @router.get("/runtime/llm/status")
+    async def get_llm_runtime_status(
+        request: Request,
+        user: CurrentUser = Depends(get_current_user),
+    ) -> SREResponse[LLMRuntimeStatusResponse]:
+        _ = user
+        services = _services(request)
+        payload = _llm_runtime_status_payload(services)
+        return SREResponse(success=True, data=payload, trace_id=_trace_id(request))
 
     @router.get("/knowledge/search")
     async def knowledge_search(

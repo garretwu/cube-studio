@@ -10,6 +10,12 @@ from sre_agent.server import _load_redfish_preauth_targets, create_app
 from sre_agent.tools.registry import ToolExecutionContext
 
 
+@pytest.fixture(autouse=True)
+def _ensure_llm_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("SRE_OPENAI_API_KEY", "test-key")
+    monkeypatch.setenv("SRE_LLM_MODEL", "MiniMax-M2.7")
+
+
 class _FakeAlertChannel:
     def __init__(self, *args, **kwargs) -> None:  # noqa: ANN002, ANN003
         _ = (args, kwargs)
