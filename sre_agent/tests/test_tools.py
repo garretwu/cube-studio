@@ -653,6 +653,19 @@ class TestToolRegistryIntegration(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(range_result.success)
         self.assertEqual(range_result.data, [(1.0, 2.0), (2.0, 3.0)])
 
+        range_iso_result = await registry.execute(
+            "prometheus.query_range",
+            {
+                "promql": "up",
+                "start": "2026-04-01T02:00:00Z",
+                "end": "2026-04-01T02:10:00Z",
+                "step": "30s",
+            },
+            context,
+        )
+        self.assertTrue(range_iso_result.success)
+        self.assertEqual(range_iso_result.data, [(1.0, 2.0), (2.0, 3.0)])
+
         path_result = await registry.execute(
             "ontology.path",
             {"from_id": "node-a", "to_id": "node-b"},

@@ -47,10 +47,16 @@ inventory:
         password: "Yuyonghao@123"
         timeout: 30
         use_sudo: true
-      interface: "roce200"
-      roles:
-        - "compute"
-        - "rdma"
+
+switches:
+  sw-200g:
+    host: "10.11.8.52"
+    port: 830
+    username: "apitest"
+    password: "ApiTest@2026"
+    timeout: 30
+    type: "H3C S9855-24B8D"
+    description: "200G Data Network Switch"
 
 scenarios:
   gpu_contention:

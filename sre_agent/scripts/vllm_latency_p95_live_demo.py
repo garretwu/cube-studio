@@ -35,6 +35,13 @@ from sre_agent.models.alert import Alert
 from sre_agent.models.remediation import RemediationPlan, VerificationCondition, VerificationConfig
 from sre_agent.ontology.graph import OntologyGraph
 from sre_agent.remediation import ApprovalGate, PlanValidationError, RemediationEngine, RollbackJournal
+from sre_agent.topology import (
+    augment_runtime_ontology,
+    build_topology_context,
+    infer_node_name_from_inventory_ip,
+    resolve_node_ip_from_pod,
+    resolve_pod_name_from_service,
+)
 from sre_agent.tools import SafetyLevel, ToolExecutionContext, ToolRegistry, build_default_registry
 
 DEFAULT_AGENT_CONFIG = Path("config.yaml")
@@ -149,7 +156,15 @@ def _build_node_config(node_name: str, raw_node: dict[str, Any]) -> Any:
     )
     if not ssh_config.host:
         raise SystemExit(f"inventory node {node_name!r} is missing ssh.host")
-    return SimpleNamespace(name=node_name, ssh=ssh_config)
+    roles = raw_node.get("roles")
+    if not isinstance(roles, list):
+        roles = []
+    return SimpleNamespace(
+        name=node_name,
+        ssh=ssh_config,
+        interface=raw_node.get("interface"),
+        roles=[str(item) for item in roles if str(item).strip()],
+    )
 
 
 def flatten_inventory(raw_cfg: dict[str, Any]) -> dict[str, Any]:
@@ -289,54 +304,6 @@ async def query_latency_value_ms(*, prometheus_url: str, latency_promql: str) ->
     return float(finite_values[-1]) * 1000.0
 
 
-async def resolve_pod_name_from_service(
-    *,
-    kubeconfig: str,
-    namespace: str,
-    service: str,
-) -> str:
-    namespace = str(namespace or "").strip()
-    service = str(service or "").strip()
-    if not namespace or not service:
-        return ""
-    channel = K8sChannel(client=None, kubeconfig=kubeconfig)
-    try:
-        pod_names = await channel.resolve_pod_names_for_service(namespace, service)
-    except Exception:
-        return ""
-    if not pod_names:
-        return ""
-    return str(sorted(pod_names)[0]).strip()
-
-
-async def resolve_node_ip_from_pod(
-    *,
-    kubeconfig: str,
-    namespace: str,
-    pod_name: str,
-) -> str:
-    namespace = str(namespace or "").strip()
-    pod_name = str(pod_name or "").strip()
-    if not namespace or not pod_name:
-        return ""
-    channel = K8sChannel(client=None, kubeconfig=kubeconfig)
-    try:
-        return str(await channel.resolve_node_ip_for_pod(namespace, pod_name) or "").strip()
-    except Exception:
-        return ""
-
-
-def infer_node_name_from_inventory_ip(inventory: dict[str, Any], node_ip: str) -> str:
-    target_ip = str(node_ip or "").strip()
-    if not target_ip:
-        return ""
-    for node_name, node_cfg in inventory.items():
-        host = str(getattr(getattr(node_cfg, "ssh", None), "host", "") or "").strip()
-        if host == target_ip:
-            return str(node_name)
-    return ""
-
-
 def build_query(
     *,
     alert: Alert,
@@ -347,6 +314,7 @@ def build_query(
     latency_threshold_ms: int,
     history_count: int,
     available_tools: list[str],
+    topology_context: dict[str, Any] | None = None,
 ) -> str:
     expected_process_prefixes = _expected_gpu_process_prefixes(service)
     investigation_steps: list[str] = []
@@ -377,6 +345,9 @@ def build_query(
             "service": service,
             "inter-token latency threshold ms": latency_threshold_ms,
             "expected GPU worker process prefixes": expected_process_prefixes,
+        },
+        extra_context={
+            "topology_context": topology_context,
         },
         remediation_guidance=(
             "If the evidence supports a single conservative corrective action, propose it as proposal-only remediation. "
@@ -434,6 +405,9 @@ def render_text_output(payload: dict[str, Any]) -> str:
         "",
         "Selected Alert:",
         json.dumps(payload.get("alert"), ensure_ascii=False, indent=2),
+        "",
+        "Topology Context:",
+        json.dumps(payload.get("topology_context"), ensure_ascii=False, indent=2),
         "",
         "Summary:",
         str(payload.get("summary") or ""),
@@ -632,16 +606,17 @@ async def main_async(args: argparse.Namespace) -> int:
     namespace = str(labels.get("exported_namespace") or labels.get("namespace") or namespace_hint or "default").strip()
     service = str(labels.get("exported_container") or labels.get("service") or service_hint).strip()
     pod_name = str(labels.get("exported_pod") or labels.get("pod") or "").strip()
+    k8s_channel = K8sChannel(client=None, kubeconfig=kubeconfig)
     if not pod_name:
         pod_name = await resolve_pod_name_from_service(
-            kubeconfig=kubeconfig,
+            k8s_channel=k8s_channel,
             namespace=namespace,
             service=service,
         )
     node_ip = ""
     if pod_name:
         node_ip = await resolve_node_ip_from_pod(
-            kubeconfig=kubeconfig,
+            k8s_channel=k8s_channel,
             namespace=namespace,
             pod_name=pod_name,
         )
@@ -653,7 +628,7 @@ async def main_async(args: argparse.Namespace) -> int:
 
     channels: dict[str, Any] = {
         "ssh": SSHChannel(inventory=inventory, dry_run=False),
-        "k8s": K8sChannel(client=None, kubeconfig=kubeconfig),
+        "k8s": k8s_channel,
         "prometheus": PrometheusChannel(base_url=prometheus_url),
     }
     if switch_devices:
@@ -692,8 +667,29 @@ async def main_async(args: argparse.Namespace) -> int:
             "context_warnings": context_warnings,
         },
     )
+    runtime_ontology = await augment_runtime_ontology(
+        context=context,
+        alert=selected_alert,
+        namespace=namespace,
+        service=service,
+        pod_name=pod_name,
+        node=node,
+        node_ip=node_ip,
+        latency_value_ms=latency_value_ms,
+    )
     registry = build_default_registry()
     allowed_tools = _resolve_allowed_readonly_tools(registry, context)
+    topology_context = await build_topology_context(
+        context=context,
+        inventory=inventory,
+        switch_devices=switch_devices,
+        namespace=namespace,
+        service=service,
+        pod_name=pod_name,
+        node=node,
+        node_ip=node_ip,
+        runtime_ontology=runtime_ontology,
+    )
     query = build_query(
         alert=selected_alert,
         node=node,
@@ -703,6 +699,7 @@ async def main_async(args: argparse.Namespace) -> int:
         latency_threshold_ms=latency_threshold_ms,
         history_count=len(history_alerts),
         available_tools=allowed_tools,
+        topology_context=topology_context,
     )
     try:
         result = await run_diagnosis(
@@ -716,6 +713,7 @@ async def main_async(args: argparse.Namespace) -> int:
                 "node_ip": node_ip,
                 "service": service,
                 "pod_name": pod_name,
+                "topology_context": topology_context,
                 "promql": latency_promql,
                 "latency_threshold_ms": latency_threshold_ms,
                 "alert": normalize_alert_payload(selected_alert),
@@ -757,6 +755,7 @@ async def main_async(args: argparse.Namespace) -> int:
         "namespace": namespace,
         "service": service,
         "pod_name": pod_name,
+        "topology_context": topology_context,
         "prometheus_url": prometheus_url,
         "latency_promql": latency_promql,
         "latency_threshold_ms": latency_threshold_ms,

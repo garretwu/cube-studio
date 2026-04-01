@@ -48,20 +48,16 @@ inventory:
         password: "admin@123"
         timeout: 30
         use_sudo: false
-      interface: "eth0"
-      roles:
-        - "compute"
-        - "rdma"
 
 switches:
   sw-200g:
-    host: "172.25.0.200"
+    host: "10.11.8.52"
     port: 830
-    username: "replace-with-switch-user"
-    password: "replace-with-switch-password"
+    username: "apitest"
+    password: "ApiTest@2026"
     timeout: 30
     type: "H3C S9855-24B8D"
-    description: "Demo RDMA switch"
+    description: "200G Data Network Switch"
 
 scenarios:
   gpu_contention:
