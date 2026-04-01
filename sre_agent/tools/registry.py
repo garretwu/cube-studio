@@ -259,6 +259,26 @@ def build_default_registry() -> ToolRegistry:
     )
     registry.register(
         ToolDefinition(
+            name="k8s.resolve_service_pods",
+            description="Resolve pod names behind a Kubernetes Service.",
+            safety_level=SafetyLevel.READ_ONLY,
+            params_schema={"type": "object", "required": ["namespace", "service_name"]},
+            tags=("k8s", "readonly"),
+        ),
+        k8s.resolve_service_pods,
+    )
+    registry.register(
+        ToolDefinition(
+            name="k8s.resolve_pod_node_ip",
+            description="Resolve the hosting node IP for a Pod.",
+            safety_level=SafetyLevel.READ_ONLY,
+            params_schema={"type": "object", "required": ["namespace", "pod_name"]},
+            tags=("k8s", "readonly"),
+        ),
+        k8s.resolve_pod_node_ip,
+    )
+    registry.register(
+        ToolDefinition(
             name="k8s.read_pod_logs",
             description="kubectl logs equivalent via log channel.",
             safety_level=SafetyLevel.READ_ONLY,

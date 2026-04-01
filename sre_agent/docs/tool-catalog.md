@@ -22,6 +22,8 @@
 | `gpu.get_processes` | `read_only` | 否 | `ssh` | 查看 GPU 上的计算进程 |
 | `k8s.list_pods` | `read_only` | 否 | `k8s` | 列出 namespace 下的 Pod |
 | `k8s.describe_pod` | `read_only` | 否 | `k8s` | 查看 Pod 状态摘要 |
+| `k8s.resolve_service_pods` | `read_only` | 否 | `k8s` | 根据 namespace + service 解析后端 Pod 名称 |
+| `k8s.resolve_pod_node_ip` | `read_only` | 否 | `k8s` | 根据 namespace + pod_name 解析承载节点 IP |
 | `k8s.read_pod_logs` | `read_only` | 否 | `log` | 读取 Pod 日志 |
 | `k8s.top_pending` | `read_only` | 否 | `k8s` | 统计 Pending Pod 数量 |
 | `k8s.top_oomkilled` | `read_only` | 否 | `k8s` | 统计 OOMKilled Pod 数量 |

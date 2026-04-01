@@ -1,7 +1,7 @@
-"""Purpose: kubectl get/describe/logs/top.
+"""Purpose: kubectl get/describe/logs/top and resolve workload context.
 
 Primary tools: list_pods, describe_pod, read_pod_logs, count_pending_pods,
-count_oomkilled_pods.
+count_oomkilled_pods, resolve_service_pods, resolve_pod_node_ip.
 Channels used: k8s, log.
 """
 
@@ -198,6 +198,70 @@ async def describe_pod(params: dict[str, Any], context: ToolExecutionContext) ->
             status = _pod_phase_or_none(pod) or "Unknown"
             return {"namespace": namespace, "pod_name": pod_name, "status": status}
     raise ToolValidationError(f"pod {pod_name!r} not found in namespace {namespace!r}")
+
+
+async def resolve_service_pods(params: dict[str, Any], context: ToolExecutionContext) -> Any:
+    channel = _require_channel(context, "k8s")
+    namespace = _require_str(params, "namespace")
+    service_name = _require_str(params, "service_name")
+
+    if hasattr(channel, "resolve_pod_names_for_service"):
+        try:
+            pod_names = await channel.resolve_pod_names_for_service(namespace, service_name)
+            return [str(name).strip() for name in pod_names if str(name).strip()]
+        except Exception as exc:  # noqa: BLE001
+            direct_error = exc
+    else:
+        direct_error = None
+
+    if hasattr(channel, "execute"):
+        try:
+            value = await channel.execute(
+                "resolve_service_pods",
+                {"namespace": namespace, "service_name": service_name},
+            )
+            unwrapped = _unwrap_execute_result(value, action="resolve_service_pods")
+            if isinstance(unwrapped, list):
+                return [str(name).strip() for name in unwrapped if str(name).strip()]
+            if isinstance(unwrapped, str):
+                return [line.strip() for line in unwrapped.splitlines() if line.strip()]
+        except ToolValidationError as exc:
+            raise ToolValidationError(str(exc)) from exc
+
+    if direct_error is not None:
+        raise ToolValidationError(str(direct_error))
+    raise ToolValidationError("k8s channel does not support resolve_service_pods")
+
+
+async def resolve_pod_node_ip(params: dict[str, Any], context: ToolExecutionContext) -> Any:
+    channel = _require_channel(context, "k8s")
+    namespace = _require_str(params, "namespace")
+    pod_name = _require_str(params, "pod_name")
+
+    if hasattr(channel, "resolve_node_ip_for_pod"):
+        try:
+            return await channel.resolve_node_ip_for_pod(namespace, pod_name)
+        except Exception as exc:  # noqa: BLE001
+            direct_error = exc
+    else:
+        direct_error = None
+
+    if hasattr(channel, "execute"):
+        try:
+            value = await channel.execute(
+                "resolve_pod_node_ip",
+                {"namespace": namespace, "pod_name": pod_name},
+            )
+            unwrapped = _unwrap_execute_result(value, action="resolve_pod_node_ip")
+            if isinstance(unwrapped, dict):
+                return str(unwrapped.get("node_ip") or unwrapped.get("output") or "").strip()
+            return str(unwrapped or "").strip()
+        except ToolValidationError as exc:
+            raise ToolValidationError(str(exc)) from exc
+
+    if direct_error is not None:
+        raise ToolValidationError(str(direct_error))
+    raise ToolValidationError("k8s channel does not support resolve_pod_node_ip")
 
 
 async def read_pod_logs(params: dict[str, Any], context: ToolExecutionContext) -> Any:

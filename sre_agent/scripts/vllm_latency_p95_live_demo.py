@@ -47,6 +47,8 @@ READ_ONLY_TOOL_CHANNELS: dict[str, set[str]] = {
     "gpu.get_processes": {"ssh"},
     "k8s.describe_pod": {"k8s"},
     "k8s.list_pods": {"k8s"},
+    "k8s.resolve_pod_node_ip": {"k8s"},
+    "k8s.resolve_service_pods": {"k8s"},
     "k8s.read_pod_logs": {"log"},
     "k8s.top_oomkilled": {"k8s"},
     "k8s.top_pending": {"k8s"},
@@ -285,6 +287,54 @@ async def query_latency_value_ms(*, prometheus_url: str, latency_promql: str) ->
     if not finite_values:
         return None
     return float(finite_values[-1]) * 1000.0
+
+
+async def resolve_pod_name_from_service(
+    *,
+    kubeconfig: str,
+    namespace: str,
+    service: str,
+) -> str:
+    namespace = str(namespace or "").strip()
+    service = str(service or "").strip()
+    if not namespace or not service:
+        return ""
+    channel = K8sChannel(client=None, kubeconfig=kubeconfig)
+    try:
+        pod_names = await channel.resolve_pod_names_for_service(namespace, service)
+    except Exception:
+        return ""
+    if not pod_names:
+        return ""
+    return str(sorted(pod_names)[0]).strip()
+
+
+async def resolve_node_ip_from_pod(
+    *,
+    kubeconfig: str,
+    namespace: str,
+    pod_name: str,
+) -> str:
+    namespace = str(namespace or "").strip()
+    pod_name = str(pod_name or "").strip()
+    if not namespace or not pod_name:
+        return ""
+    channel = K8sChannel(client=None, kubeconfig=kubeconfig)
+    try:
+        return str(await channel.resolve_node_ip_for_pod(namespace, pod_name) or "").strip()
+    except Exception:
+        return ""
+
+
+def infer_node_name_from_inventory_ip(inventory: dict[str, Any], node_ip: str) -> str:
+    target_ip = str(node_ip or "").strip()
+    if not target_ip:
+        return ""
+    for node_name, node_cfg in inventory.items():
+        host = str(getattr(getattr(node_cfg, "ssh", None), "host", "") or "").strip()
+        if host == target_ip:
+            return str(node_name)
+    return ""
 
 
 def build_query(
@@ -550,7 +600,7 @@ async def main_async(args: argparse.Namespace) -> int:
     inventory = flatten_inventory(raw_demo_cfg)
     switch_devices = load_switch_devices(raw_demo_cfg)
 
-    node = str(demo.get("node") or "").strip()
+    node_hint = str(demo.get("node") or "").strip()
     namespace_hint = str(demo.get("namespace") or "").strip()
     service_hint = str(demo.get("service") or "").strip()
     alert_name = str(demo.get("alert_name") or "VLLMInterTokenLatencyP95High").strip()
@@ -559,10 +609,6 @@ async def main_async(args: argparse.Namespace) -> int:
     latency_promql = str(demo.get("latency_promql") or "").strip()
     latency_threshold_ms = int(demo.get("latency_threshold_ms") or 50)
     remediation_wait_seconds = int(demo.get("remediation_wait_seconds") or 60)
-    if not node:
-        raise SystemExit("demo.node is required")
-    if node not in inventory:
-        raise SystemExit(f"demo.node {node!r} not found in demo inventory")
     if not latency_promql:
         raise SystemExit("demo.latency_promql is required")
 
@@ -577,7 +623,7 @@ async def main_async(args: argparse.Namespace) -> int:
         prometheus_url=prometheus_url,
         alert_name=alert_name,
         lookback=lookback,
-        node=node,
+        node=node_hint,
         service=service_hint,
         namespace=namespace_hint,
     )
@@ -586,6 +632,24 @@ async def main_async(args: argparse.Namespace) -> int:
     namespace = str(labels.get("exported_namespace") or labels.get("namespace") or namespace_hint or "default").strip()
     service = str(labels.get("exported_container") or labels.get("service") or service_hint).strip()
     pod_name = str(labels.get("exported_pod") or labels.get("pod") or "").strip()
+    if not pod_name:
+        pod_name = await resolve_pod_name_from_service(
+            kubeconfig=kubeconfig,
+            namespace=namespace,
+            service=service,
+        )
+    node_ip = ""
+    if pod_name:
+        node_ip = await resolve_node_ip_from_pod(
+            kubeconfig=kubeconfig,
+            namespace=namespace,
+            pod_name=pod_name,
+        )
+    node = infer_node_name_from_inventory_ip(inventory, node_ip) or node_hint
+    if not node:
+        raise SystemExit("unable to determine target node from alert -> service -> pod -> node IP")
+    if node not in inventory:
+        raise SystemExit(f"resolved node {node!r} not found in demo inventory")
 
     channels: dict[str, Any] = {
         "ssh": SSHChannel(inventory=inventory, dry_run=False),
@@ -649,6 +713,7 @@ async def main_async(args: argparse.Namespace) -> int:
                 "alert_name": alert_name,
                 "namespace": namespace,
                 "node": node,
+                "node_ip": node_ip,
                 "service": service,
                 "pod_name": pod_name,
                 "promql": latency_promql,
@@ -688,6 +753,7 @@ async def main_async(args: argparse.Namespace) -> int:
         "current_alert_count": len(current_alerts),
         "history_alert_count": len(history_alerts),
         "node": node,
+        "node_ip": node_ip,
         "namespace": namespace,
         "service": service,
         "pod_name": pod_name,

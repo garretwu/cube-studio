@@ -26,7 +26,6 @@ demo:
       api_key: "replace-with-provider-key"
       base_url: "https://coding.dashscope.aliyuncs.com/v1"
       model: "MiniMax-M2.5"
-    node: "worker-01"
     kubeconfig: "~/.kube/config"
     latency_promql: 'histogram_quantile(0.95, sum by(le) (rate(vllm:inter_token_latency_seconds_bucket{namespace="service",service="vllm-deepseek"}[1m])))'
     latency_threshold_ms: 50
