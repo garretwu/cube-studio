@@ -1,0 +1,111 @@
+inventory:
+  workers:
+    - name: worker-01
+      role: gpu
+      ssh:
+        host: 10.11.4.10
+        port: 22
+        user: yuyonghao
+        password: REPLACE_ME
+        timeout: 30
+        use_sudo: true
+      redfish:
+        bmc_host: 10.11.8.10
+        username: admin
+        password: REPLACE_ME
+        verify_tls: false
+        timeout: 30
+    - name: worker-02
+      role: gpu
+      ssh:
+        host: 10.11.4.11
+        port: 22
+        user: yuyonghao
+        password: REPLACE_ME
+        timeout: 30
+        use_sudo: true
+      redfish:
+        bmc_host: 10.11.8.11
+        username: admin
+        password: REPLACE_ME
+        verify_tls: false
+        timeout: 30
+    - name: worker-03
+      role: gpu
+      ssh:
+        host: 10.11.4.12
+        port: 22
+        user: yuyonghao
+        password: REPLACE_ME
+        timeout: 30
+        use_sudo: true
+      redfish:
+        bmc_host: 10.11.8.12
+        username: admin
+        password: REPLACE_ME
+        verify_tls: false
+        timeout: 30
+    - name: worker-04
+      role: cpu
+      ssh:
+        host: 10.11.4.13
+        port: 22
+        user: yuyonghao
+        password: REPLACE_ME
+        timeout: 30
+        use_sudo: true
+      redfish:
+        bmc_host: 10.11.8.13
+        username: admin
+        password: REPLACE_ME
+        verify_tls: false
+        timeout: 30
+    - name: worker-05
+      role: cpu
+      ssh:
+        host: 10.11.4.14
+        port: 22
+        user: yuyonghao
+        password: REPLACE_ME
+        timeout: 30
+        use_sudo: true
+      redfish:
+        bmc_host: 10.11.8.14
+        username: admin
+        password: REPLACE_ME
+        verify_tls: false
+        timeout: 30
+    - name: worker-06
+      role: cpu
+      ssh:
+        host: 10.11.4.15
+        port: 22
+        user: yuyonghao
+        password: REPLACE_ME
+        timeout: 30
+        use_sudo: true
+      redfish:
+        bmc_host: 10.11.8.15
+        username: admin
+        password: REPLACE_ME
+        verify_tls: false
+        timeout: 30
+
+switches:
+  sw-200g:
+    host: 10.11.8.52
+    port: 830
+    username: apitest
+    password: REPLACE_ME
+    timeout: 30
+    type: H3C S9855-24B8D
+    description: 200G Data Network Switch
+
+monitor:
+  prometheus_url: http://10.11.4.3:31260
+  baseline_queries:
+    cpu_util: avg(1 - rate(node_cpu_seconds_total{mode="idle"}[5m]))
+    memory_util: avg(1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes))
+    gpu_util: avg(DCGM_FI_DEV_GPU_UTIL)
+    gpu_memory_used_mb: avg(DCGM_FI_DEV_FB_USED)
+    gpu_power_watts: avg(DCGM_FI_DEV_POWER_USAGE)

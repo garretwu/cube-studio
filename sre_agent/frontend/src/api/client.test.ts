@@ -45,4 +45,156 @@ describe("apiClient.getTopology", () => {
     expect(response.edges[0]?.relation).toBe("depends_on");
     expect(response.active_alerts).toBe(0);
   });
+
+  it("uses backend session contract and unwraps envelope", async () => {
+    server.use(
+      http.get("/api/sessions/sess-1", async () =>
+        HttpResponse.json({
+          success: true,
+          data: {
+            session_id: "sess-1",
+            alert: {
+              alert_name: "GPUUtilizationHigh",
+              severity: "warning",
+              labels: {},
+              annotations: {},
+              starts_at: "2026-03-26T00:00:00Z",
+              fingerprint: "fp-1",
+              status: "firing",
+              source: "alertmanager",
+            },
+            status: "running",
+            duration_seconds: 1,
+          },
+          error: null,
+          trace_id: "trace-session",
+          timestamp: "2026-03-26T00:00:00Z",
+        }),
+      ),
+    );
+
+    const session = await apiClient.getDiagnosisSession("sess-1");
+    expect(session?.session_id).toBe("sess-1");
+    expect(session?.status).toBe("running");
+  });
+
+  it("returns null when no diagnosis sessions are available", async () => {
+    server.use(http.get("/api/sessions", async () => HttpResponse.json([])));
+
+    const session = await apiClient.getDiagnosisSession();
+    expect(session).toBeNull();
+  });
+
+  it("uses remediate approve route", async () => {
+    let called = "";
+    server.use(
+      http.post("/api/remediate/:sessionId/approve", async ({ params }) => {
+        called = String(params.sessionId);
+        return HttpResponse.json({
+          success: true,
+          data: {
+            plan_id: "plan-1",
+            success: true,
+            steps_completed: 2,
+            steps_total: 2,
+            duration_seconds: 10,
+            error: null,
+          },
+          error: null,
+          trace_id: "trace-approve",
+          timestamp: "2026-03-26T00:00:00Z",
+        });
+      }),
+    );
+
+    const result = await apiClient.approveRemediation("sess-approve", true, "tester");
+    expect(called).toBe("sess-approve");
+    expect(result.success).toBe(true);
+    expect(result.steps_completed).toBe(2);
+  });
+
+  it("returns session_id for duplicate handle response from error.details", async () => {
+    server.use(
+      http.post("/api/handle", async () =>
+        HttpResponse.json({
+          success: true,
+          data: null,
+          error: {
+            code: "ALERT_DUPLICATE",
+            message: "duplicate alert, see session sess-dup-1",
+            details: { session_id: "sess-dup-1" },
+          },
+          trace_id: "trace-handle-dup",
+          timestamp: "2026-03-26T00:00:00Z",
+        }),
+      ),
+    );
+
+    const sessionId = await apiClient.handleAlert({
+      alert_name: "GPUUtilizationHigh",
+      severity: "warning",
+      labels: {},
+      annotations: {},
+      starts_at: "2026-03-26T00:00:00Z",
+      fingerprint: "fp-dup-1",
+      status: "firing",
+      source: "alertmanager",
+    });
+
+    expect(sessionId).toBe("sess-dup-1");
+  });
+
+  it("loads session summaries from /api/sessions", async () => {
+    server.use(
+      http.get("/api/sessions", async () =>
+        HttpResponse.json({
+          success: true,
+          data: [
+            {
+              session_id: "sess-2",
+              status: "diagnosed",
+              alert_name: "GPUUtilizationHigh",
+              severity: "warning",
+              fingerprint: "fp-2",
+              outcome: null,
+              duration_seconds: 12,
+              updated_at: "2026-03-26T00:00:00Z",
+            },
+          ],
+          error: null,
+          trace_id: "trace-sessions",
+          timestamp: "2026-03-26T00:00:00Z",
+        }),
+      ),
+    );
+
+    const sessions = await apiClient.getSessions();
+    expect(sessions).toHaveLength(1);
+    expect(sessions[0]?.session_id).toBe("sess-2");
+  });
+
+  it("loads chat history from /api/chat/history", async () => {
+    server.use(
+      http.get("/api/chat/history", async () =>
+        HttpResponse.json({
+          success: true,
+          data: [
+            {
+              id: "chat-1",
+              role: "assistant",
+              content: "hello",
+              created_at: "2026-03-26T00:00:00Z",
+            },
+          ],
+          error: null,
+          trace_id: "trace-chat-history",
+          timestamp: "2026-03-26T00:00:00Z",
+        }),
+      ),
+    );
+
+    const history = await apiClient.getChatHistory();
+    expect(history).toHaveLength(1);
+    expect(history[0]?.id).toBe("chat-1");
+  });
 });

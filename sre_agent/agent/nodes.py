@@ -115,11 +115,33 @@ async def reason_node(
         )
         bound_tool_names = [str(getattr(tool, "name", "")) for tool in bound_tools]
         tool_choice = "required" if not state.get("tool_runs") else "auto"
-        call_model = llm.bind_tools(
-            bound_tools,
-            tool_choice=tool_choice,
-        )
-        response = await asyncio.wait_for(call_model.ainvoke(model_messages), timeout=state["step_timeout_sec"])
+        try:
+            call_model = llm.bind_tools(
+                bound_tools,
+                tool_choice=tool_choice,
+            )
+            response = await asyncio.wait_for(call_model.ainvoke(model_messages), timeout=state["step_timeout_sec"])
+        except Exception as exc:  # noqa: BLE001
+            if not hasattr(llm, "ainvoke") or not _is_tool_binding_incompatible_error(exc):
+                raise
+            # Provider compatibility fallback: continue diagnosis without tool-binding,
+            # otherwise the whole session fails before any trace is generated.
+            interaction_mode = "tool_binding_fallback"
+            tool_choice = "none"
+            fallback_messages = [
+                SystemMessage(content=system_prompt),
+                HumanMessage(content=f"Original query: {state['query']}"),
+                HumanMessage(content=f"Collected evidence:\n{_summarize_tool_runs(state.get('tool_runs', []))}"),
+                HumanMessage(
+                    content=(
+                        "Tool-binding is unavailable for the current LLM provider. "
+                        "Return final JSON diagnosis directly with explicit uncertainty where needed. "
+                        "Do not call tools."
+                    )
+                ),
+            ]
+            invoked_messages = fallback_messages
+            response = await asyncio.wait_for(llm.ainvoke(fallback_messages), timeout=state["step_timeout_sec"])
     if not isinstance(response, AIMessage):
         raise RuntimeError(f"expected AIMessage from LLM, got {type(response).__name__}")
 
@@ -167,7 +189,14 @@ async def reason_node(
         persist_state_snapshot(updated.get("checkpoint_dir"), updated["session_id"], "reason", updated)
         return updated
 
-    parsed = _parse_final_output(_extract_text(response.content))
+    raw_response_text = _extract_text(response.content)
+    try:
+        parsed = _parse_final_output(raw_response_text)
+    except Exception:  # noqa: BLE001
+        parsed = _build_fallback_final_output(
+            query=str(state.get("query", "")).strip(),
+            content=raw_response_text,
+        )
     diagnosis = DiagnosisResult.model_validate(_normalize_diagnosis_payload(parsed.diagnosis))
     remediation_plan = _normalize_remediation_plan_payload(
         raw_plan=parsed.remediation_plan,
@@ -200,6 +229,68 @@ async def reason_node(
     }
     persist_state_snapshot(updated.get("checkpoint_dir"), updated["session_id"], "reason", updated)
     return updated
+
+
+def _is_tool_binding_incompatible_error(exc: Exception) -> bool:
+    message = str(exc).lower()
+    signals = (
+        "null value for 'choices'",
+        "response with null value for 'choices'",
+        "tool_calls",
+        "tool binding",
+        "function call",
+    )
+    return any(signal in message for signal in signals)
+
+
+def _build_fallback_final_output(*, query: str, content: str) -> FinalDiagnosisEnvelope:
+    summary = (content or "").strip()
+    if not summary:
+        summary = "LLM returned an empty response while generating diagnosis."
+    if len(summary) > 300:
+        summary = summary[:297] + "..."
+    root_cause = summary.splitlines()[0].strip() if summary else "Insufficient evidence from LLM response"
+    if len(root_cause) > 140:
+        root_cause = root_cause[:137] + "..."
+    return FinalDiagnosisEnvelope.model_validate(
+        {
+            "thought": "Converted non-JSON model output to a structured low-confidence diagnosis.",
+            "diagnosis": {
+                "root_cause": root_cause or "Insufficient evidence from LLM response",
+                "root_cause_layer": "platform",
+                "root_cause_entities": [],
+                "confidence": 0.35,
+                "impact_summary": summary,
+                "affected_services": [],
+                "triage_priority": "P2",
+                "diagnosis_certainty": "ambiguous",
+                "hypotheses": [
+                    {
+                        "description": root_cause or "Primary hypothesis from unstructured model output",
+                        "status": "testing",
+                        "evidence_for": [summary] if summary else [],
+                        "evidence_against": [],
+                        "confidence": 0.35,
+                    },
+                    {
+                        "description": "Metric collection/tool evidence was unavailable or incompatible",
+                        "status": "testing",
+                        "evidence_for": ["tool binding fallback path activated"],
+                        "evidence_against": [],
+                        "confidence": 0.3,
+                    },
+                    {
+                        "description": "Alert may be transient or context incomplete",
+                        "status": "testing",
+                        "evidence_for": [f"query={query}"] if query else [],
+                        "evidence_against": [],
+                        "confidence": 0.25,
+                    },
+                ],
+            },
+            "remediation_plan": None,
+        }
+    )
 
 
 async def act_node(

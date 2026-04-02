@@ -1,7 +1,9 @@
 """Minimal config loader for CLI flows."""
 from __future__ import annotations
 
+import os
 from pathlib import Path
+from typing import MutableMapping
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field
@@ -14,7 +16,19 @@ class GlobalConfig(BaseModel):
     cube_studio_url: str | None = None
     prometheus_url: str | None = None
     alertmanager_url: str | None = None
+    loki_url: str | None = None
     log_level: str = "INFO"
+    cors_allowed_origins: list[str] = Field(
+        default_factory=lambda: [
+            "http://127.0.0.1:5173",
+            "http://localhost:5173",
+            "http://127.0.0.1:8080",
+            "http://localhost:8080",
+        ]
+    )
+    cors_allow_methods: list[str] = Field(default_factory=lambda: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"])
+    cors_allow_headers: list[str] = Field(default_factory=lambda: ["Authorization", "Content-Type", "x-trace-id"])
+    cors_expose_headers: list[str] = Field(default_factory=lambda: ["x-trace-id"])
 
 
 class AuthConfig(BaseModel):
@@ -24,6 +38,14 @@ class AuthConfig(BaseModel):
     jwt_algorithm: str = "HS256"
     audience: str = "sre-agent"
     token_expire_seconds: int = 3600
+
+
+class LLMConfig(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    api_key: str | None = None
+    base_url: str | None = None
+    model: str | None = None
 
 
 class AgentRuntimeConfig(BaseModel):
@@ -56,6 +78,14 @@ class SwitchDiscoveryConfig(BaseModel):
 class OntologyDiscoveryConfig(BaseModel):
     model_config = ConfigDict(extra="allow")
 
+    mode: str = "static"
+    auto_discovery: bool = True
+    refresh_interval_seconds: int = 120
+    live_inventory_path: str = "fault_injector/fault-injector-test.yaml"
+    live_fallback_to_static: bool = True
+    k8s_cluster_name: str = "lab-cluster"
+    k8s_namespaces: list[str] = Field(default_factory=lambda: ["default"])
+    prometheus_targets: dict[str, str] = Field(default_factory=dict)
     switches: list[SwitchDiscoveryConfig] = Field(default_factory=list)
 
 
@@ -161,11 +191,27 @@ class NATConfig(BaseModel):
     evaluation: NATEvaluationConfig = Field(default_factory=NATEvaluationConfig)
 
 
+class ToolChannelConfig(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    enabled: bool = True
+    required: bool = False
+
+
+class ToolRuntimeConfig(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    mode: str = "degraded"
+    core_required_channels: list[str] = Field(default_factory=lambda: ["ssh", "k8s", "prometheus"])
+    channels: dict[str, ToolChannelConfig] = Field(default_factory=dict)
+
+
 class SREAgentConfig(BaseModel):
     model_config = ConfigDict(populate_by_name=True, extra="allow")
 
     global_: GlobalConfig = Field(default_factory=GlobalConfig, alias="global")
     auth: AuthConfig = Field(default_factory=AuthConfig)
+    llm: LLMConfig = Field(default_factory=LLMConfig)
     agent: AgentRuntimeConfig = Field(default_factory=AgentRuntimeConfig)
     ontology: OntologyConfig = Field(default_factory=OntologyConfig)
     knowledge_base: KnowledgeConfig = Field(default_factory=KnowledgeConfig)
@@ -176,6 +222,33 @@ class SREAgentConfig(BaseModel):
     slo: SLOConfig = Field(default_factory=SLOConfig)
     data_lifecycle: DataLifecycleConfig = Field(default_factory=DataLifecycleConfig)
     nat: NATConfig = Field(default_factory=NATConfig)
+    tool_runtime: ToolRuntimeConfig = Field(default_factory=ToolRuntimeConfig)
+
+
+def apply_llm_env_from_config(
+    config: SREAgentConfig,
+    env: MutableMapping[str, str] | None = None,
+    *,
+    only_if_missing: bool = True,
+) -> dict[str, str]:
+    target_env = env if env is not None else os.environ
+    llm = config.llm
+    candidates: dict[str, str] = {}
+    if isinstance(llm.api_key, str) and llm.api_key.strip():
+        candidates["SRE_OPENAI_API_KEY"] = llm.api_key.strip()
+    if isinstance(llm.base_url, str) and llm.base_url.strip():
+        candidates["SRE_OPENAI_BASE_URL"] = llm.base_url.strip()
+    if isinstance(llm.model, str) and llm.model.strip():
+        candidates["SRE_LLM_MODEL"] = llm.model.strip()
+
+    applied: dict[str, str] = {}
+    for key, value in candidates.items():
+        existing = str(target_env.get(key, "")).strip()
+        if only_if_missing and existing:
+            continue
+        target_env[key] = value
+        applied[key] = value
+    return applied
 
 
 def load_config(path: str | Path) -> SREAgentConfig:

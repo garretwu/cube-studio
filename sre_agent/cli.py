@@ -3,17 +3,19 @@ from __future__ import annotations
 
 import asyncio
 from datetime import UTC, datetime
+import logging
 import os
 from pathlib import Path
 from typing import Any, Literal
 
 import click
+import uvicorn
 import yaml
 
 from lib.channels.prometheus import PrometheusChannel
 from lib.channels.redfish import RedfishChannel
 from lib.channels.switch import SwitchChannel
-from sre_agent.config import SREAgentConfig, load_config
+from sre_agent.config import SREAgentConfig, apply_llm_env_from_config, load_config
 from sre_agent.knowledge.ingest import KnowledgeIngestSummary, KnowledgeIngestor
 from sre_agent.knowledge.store import KnowledgeStore
 from sre_agent.memory.factory import create_memory_store
@@ -24,8 +26,10 @@ from sre_agent.ontology.discovery.k8s_scanner import K8sScanner
 from sre_agent.ontology.discovery.prometheus_scanner import PrometheusScanner
 from sre_agent.ontology.discovery.switch_scanner import SwitchScanner
 from sre_agent.ontology.graph import OntologyGraph
+from sre_agent.server import create_app
 
 _LIVE_INVENTORY_PATH = Path("fault_injector/fault-injector-test.yaml")
+LOGGER = logging.getLogger(__name__)
 
 
 def _format_topology_summary(config: SREAgentConfig, summary: dict[str, object]) -> str:
@@ -417,8 +421,19 @@ async def _scan_live_sources(raw_config: dict[str, Any]) -> tuple[list[OntologyN
 
     kubeconfig = os.getenv("SRE_KUBECONFIG", "").strip() or "~/.kube/config"
     k8s_live_channel = _create_k8s_live_channel(kubeconfig)
-    k8s_nodes, k8s_edges = await K8sScanner(channel=k8s_live_channel).scan(namespace="default", label_selector=None)
-    discovered_k8s_node_ids = sorted({edge.target_id for edge in k8s_edges if edge.target_id})
+    cluster_name = os.getenv("SRE_K8S_CLUSTER_NAME", "").strip() or "lab-cluster"
+    k8s_nodes, k8s_edges = await K8sScanner(channel=k8s_live_channel).scan(
+        namespace="default",
+        label_selector=None,
+        cluster_name=cluster_name,
+    )
+    discovered_k8s_node_ids = sorted(
+        {
+            edge.target_id
+            for edge in k8s_edges
+            if edge.target_id and edge.relation == RelationType.HOSTED_ON
+        }
+    )
     k8s_extra_nodes = [
         OntologyNode(
             id=node_id,
@@ -729,6 +744,26 @@ def discover_command(config_path: Path, discovery_mode: str, refresh_only: bool)
     config = load_config(config_path)
     summary = asyncio.run(_discover_topology(config, config_path, refresh_only, discovery_mode))
     click.echo(_format_discovery_summary(config, summary))
+
+
+@main.command("serve")
+@click.option("--config", "config_path", required=True, type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.option("--host", default="127.0.0.1", show_default=True, type=str)
+@click.option("--port", default=8000, show_default=True, type=click.IntRange(1, 65535))
+@click.option("--log-level", default="info", show_default=True, type=click.Choice(["critical", "error", "warning", "info", "debug", "trace"]))
+def serve_command(config_path: Path, host: str, port: int, log_level: str) -> None:
+    """Start the FastAPI API + WS server with default dependency wiring."""
+    config = load_config(config_path)
+    applied_env = apply_llm_env_from_config(config, os.environ, only_if_missing=True)
+    if applied_env:
+        LOGGER.info(
+            "loaded llm settings from config into environment: keys=%s",
+            sorted(applied_env.keys()),
+        )
+    app = create_app(config=config)
+    click.echo(f"Starting sre-agent serve on {host}:{port} with config={config_path}")
+    LOGGER.info("serve startup: aidc_id=%s host=%s port=%s", config.global_.aidc_id, host, port)
+    uvicorn.run(app, host=host, port=port, log_level=log_level)
 
 
 @main.group("memory")

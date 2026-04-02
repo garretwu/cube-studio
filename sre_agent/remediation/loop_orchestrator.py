@@ -55,6 +55,19 @@ class LoopOrchestrator:
         started = datetime.now(UTC)
         candidates = diagnosis.ranked_candidates[: self.config.max_candidates] or []
 
+        if self.trace_publisher is not None:
+            await self.trace_publisher.publish(
+                {
+                    "type": "loop_start",
+                    "session_id": session.session_id,
+                    "data": {
+                        "candidate_count": len(candidates),
+                        "max_candidates": self.config.max_candidates,
+                        "re_diagnosis_round": session.re_diagnosis_round,
+                    },
+                }
+            )
+
         for index, candidate in enumerate(candidates):
             if attempts:
                 await asyncio.sleep(0)

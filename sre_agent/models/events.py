@@ -23,6 +23,7 @@ class EventType(str, Enum):
     LOOP_PROGRESS = "loop_progress"
     REMEDIATION_PROGRESS = "remediation_progress"
     ALERT = "alert"
+    TOPOLOGY = "topology"
     ERROR = "error"
     DONE = "done"
 

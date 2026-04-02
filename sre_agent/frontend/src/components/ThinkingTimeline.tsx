@@ -1,6 +1,7 @@
-import { Card, Space, Tag, Typography } from "antd";
-
+import { StatusChip } from "./ui";
 import type { Observation, ThinkingStep } from "../api/types";
+import { formatActionType } from "../utils/display";
+import { formatPercent, formatTimestamp } from "../utils/format";
 
 type TimelineItem = ThinkingStep | Observation;
 
@@ -14,37 +15,34 @@ function isThought(item: TimelineItem): item is ThinkingStep {
 
 function ThinkingTimeline({ steps }: ThinkingTimelineProps) {
   return (
-    <Space direction="vertical" size="middle" style={{ width: "100%" }}>
+    <div className="timeline-list">
       {steps.map((item, index) =>
         isThought(item) ? (
-          <Card key={`${item.timestamp}-${index}`} className="timeline-item">
-            <Space direction="vertical" size={6}>
-              <Space>
-                <Tag color="cyan">Step {item.step}</Tag>
-                <Tag color="blue">{item.action_type}</Tag>
-                {item.confidence ? <Tag>{Math.round(item.confidence * 100)}%</Tag> : null}
-              </Space>
-              <Typography.Text strong>{item.thought}</Typography.Text>
-              {item.tool_name ? (
-                <Typography.Text type="secondary">
-                  {item.tool_name} {item.tool_params ? JSON.stringify(item.tool_params) : ""}
-                </Typography.Text>
-              ) : null}
-            </Space>
-          </Card>
+          <article key={`${item.timestamp}-${index}`} className="timeline-card">
+            <div className="status-row">
+              <StatusChip tone="accent">步骤 {item.step}</StatusChip>
+              <StatusChip tone="info">{formatActionType(item.action_type)}</StatusChip>
+              {item.confidence ? <StatusChip tone="neutral">{formatPercent(item.confidence)}</StatusChip> : null}
+            </div>
+            <p className="timeline-card__copy">{item.thought}</p>
+            <p className="timeline-card__meta">
+              {formatTimestamp(item.timestamp)}
+              {item.tool_name ? ` | ${item.tool_name}` : ""}
+              {item.tool_params ? ` | ${JSON.stringify(item.tool_params)}` : ""}
+            </p>
+          </article>
         ) : (
-          <Card key={`${item.timestamp}-${index}`} className="timeline-item">
-            <Space direction="vertical" size={6}>
-              <Space>
-                <Tag color="green">Observation</Tag>
-                <Tag>{item.tool}</Tag>
-              </Space>
-              <Typography.Text type="secondary">{JSON.stringify(item.result, null, 2)}</Typography.Text>
-            </Space>
-          </Card>
+          <article key={`${item.timestamp}-${index}`} className="timeline-card">
+            <div className="status-row">
+              <StatusChip tone="success">观测结果</StatusChip>
+              <StatusChip tone="neutral">{item.tool}</StatusChip>
+            </div>
+            <pre className="properties-block">{JSON.stringify(item.result, null, 2)}</pre>
+            <p className="timeline-card__meta">{formatTimestamp(item.timestamp)}</p>
+          </article>
         ),
       )}
-    </Space>
+    </div>
   );
 }
 

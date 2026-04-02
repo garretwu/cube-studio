@@ -1,0 +1,309 @@
+{
+  "provider_base_url": "https://api.minimax.chat/v1",
+  "model": "MiniMax-M2.7",
+  "alert": {
+    "alert_name": "GPUUtilizationHigh",
+    "status": "firing",
+    "severity": "warning",
+    "summary": "GPU utilization is high",
+    "description": "GPU 2 on 10.0.10.239:9400 utilization is above 80% for 10 minutes. Host=wj-lab-cpt-03, pod=vllm-qwen3-32b-fp8-202602261-7df4474bbd-25cmh, namespace=ai-models, value=96%",
+    "labels": {
+      "DCGM_FI_DRIVER_VERSION": "590.48.01",
+      "Hostname": "wj-lab-cpt-03",
+      "UUID": "GPU-2144554f-74f0-9f4a-d43a-8232ffe51fec",
+      "alertname": "GPUUtilizationHigh",
+      "container": "exporter",
+      "device": "nvidia2",
+      "endpoint": "metrics",
+      "exported_container": "vllm-qwen3-32b-fp8-202602261",
+      "exported_namespace": "ai-models",
+      "exported_pod": "vllm-qwen3-32b-fp8-202602261-7df4474bbd-25cmh",
+      "gpu": "2",
+      "instance": "10.0.10.239:9400",
+      "job": "dcgm-exporter",
+      "modelName": "NVIDIA GeForce RTX 5090",
+      "namespace": "nvidia-dcgm",
+      "pci_bus_id": "00000000:81:00.0",
+      "pod": "dcgm-exporter-2ljz4",
+      "service": "dcgm-exporter",
+      "severity": "warning",
+      "team": "cube-studio"
+    },
+    "annotations": {
+      "description": "GPU 2 on 10.0.10.239:9400 utilization is above 80% for 10 minutes. Host=wj-lab-cpt-03, pod=vllm-qwen3-32b-fp8-202602261-7df4474bbd-25cmh, namespace=ai-models, value=96%",
+      "summary": "GPU utilization is high"
+    },
+    "starts_at": "2026-03-24T08:18:04.505153+00:00",
+    "ends_at": null,
+    "fingerprint": "GPUUtilizationHigh:10.0.10.239:9400",
+    "source": null
+  },
+  "alert_source": "live",
+  "current_alert_count": 3,
+  "history_alert_count": 2,
+  "target_gpu": "0",
+  "target_node_name": "wj-lab-cpt-03",
+  "target_node_ip": "10.11.4.12",
+  "node": "worker-03",
+  "namespace": "service",
+  "service": "vllm-qwen3-32b-fp8-202602261",
+  "pod_candidates": [
+    "demo-agent-794d9d4496-tzztz",
+    "hf-multinode-predictor-599599bbc8-5d2gc",
+    "hf-multinode-predictor-worker-d48dcf679-qww9j",
+    "qwen3-32b-fp8-202602261-7f46f958db-dsblw",
+    "qwen3-32b-fp8-202602261-c4596d89c-tb4ff",
+    "qwen3-32b-fp8-325-202602261-76c565745b-92g2b",
+    "qwen3-32b-fp8-325-202602261-897fb9bd8-q2wgg"
+  ],
+  "selected_pod": "qwen3-32b-fp8-202602261-7f46f958db-dsblw",
+  "pod_log_excerpt": [
+    "\u001b[0;36m(APIServer pid=1)\u001b[0;0m INFO:     10.0.0.66:61085 - \"GET / HTTP/1.1\" 404 Not Found",
+    "\u001b[0;36m(APIServer pid=1)\u001b[0;0m INFO:     10.0.0.66:54162 - \"GET / HTTP/1.1\" 404 Not Found",
+    "\u001b[0;36m(APIServer pid=1)\u001b[0;0m INFO:     10.0.0.66:64312 - \"GET /favicon.ico HTTP/1.1\" 404 Not Found",
+    "\u001b[0;36m(APIServer pid=1)\u001b[0;0m INFO:     10.0.0.66:64312 - \"GET / HTTP/1.1\" 404 Not Found"
+  ],
+  "evidence_checks": {
+    "alert_matches_target_node": true,
+    "selected_pod_available": true,
+    "pod_log_collected": true
+  },
+  "prometheus_url": "http://10.11.4.3:31260",
+  "loki_url": "http://10.11.4.2:30628/",
+  "status": "diagnosed",
+  "summary": "GPU 2 utilization at 97% with only ~2260MB free memory. The GPU is processing active LLM inference requests from VLLM workers. No service degradation observed; this is expected behavior under inference load.",
+  "tool_runs": [
+    {
+      "step": 1,
+      "tool": "prometheus.query_instant",
+      "params": {
+        "promql": "DCGM_FI_DEV_GPU_UTIL{gpu=\"2\", instance=\"10.0.10.239:9400\"}",
+        "node": "worker-03",
+        "namespace": "service"
+      },
+      "success": true,
+      "data": 97.0,
+      "error": ""
+    },
+    {
+      "step": 2,
+      "tool": "k8s.list_pods",
+      "params": {
+        "namespace": "service",
+        "node": "worker-03"
+      },
+      "success": true,
+      "data": [
+        {
+          "name": "demo-agent-794d9d4496-tzztz",
+          "namespace": "service",
+          "status": {
+            "phase": "Running",
+            "containerStatuses": [
+              {
+                "state": {
+                  "terminated": {}
+                },
+                "lastState": {
+                  "terminated": {}
+                }
+              }
+            ]
+          }
+        },
+        {
+          "name": "hf-multinode-predictor-599599bbc8-5d2gc",
+          "namespace": "service",
+          "status": {
+            "phase": "Running",
+            "containerStatuses": [
+              {
+                "state": {
+                  "terminated": {}
+                },
+                "lastState": {
+                  "terminated": {}
+                }
+              }
+            ]
+          }
+        },
+        {
+          "name": "hf-multinode-predictor-worker-d48dcf679-qww9j",
+          "namespace": "service",
+          "status": {
+            "phase": "Running",
+            "containerStatuses": [
+              {
+                "state": {
+                  "terminated": {}
+                },
+                "lastState": {
+                  "terminated": {}
+                }
+              }
+            ]
+          }
+        },
+        {
+          "name": "qwen3-32b-fp8-202602261-7f46f958db-dsblw",
+          "namespace": "service",
+          "status": {
+            "phase": "Running",
+            "containerStatuses": [
+              {
+                "state": {
+                  "terminated": {}
+                },
+                "lastState": {
+                  "terminated": {}
+                }
+              }
+            ]
+          }
+        },
+        {
+          "name": "qwen3-32b-fp8-202602261-c4596d89c-tb4ff",
+          "namespace": "service",
+          "status": {
+            "phase": "Pending",
+            "containerStatuses": []
+          }
+        },
+        {
+          "name": "qwen3-32b-fp8-325-202602261-76c565745b-92g2b",
+          "namespace": "service",
+          "status": {
+            "phase": "Running",
+            "containerStatuses": [
+              {
+                "state": {
+                  "terminated": {}
+                },
+                "lastState": {
+                  "terminated": {
+                    "reason": "Error"
+                  }
+                }
+              }
+            ]
+          }
+        },
+        {
+          "name": "qwen3-32b-fp8-325-202602261-897fb9bd8-q2wgg",
+          "namespace": "service",
+          "status": {
+            "phase": "Pending",
+            "containerStatuses": []
+          }
+        }
+      ],
+      "error": ""
+    },
+    {
+      "step": 3,
+      "tool": "gpu.get_metrics",
+      "params": {
+        "node": "worker-03",
+        "namespace": "service"
+      },
+      "success": true,
+      "data": {
+        "output": "0, NVIDIA GeForce RTX 5090, 0, 22685, 32607, 29\n1, NVIDIA GeForce RTX 5090, 0, 22685, 32607, 27\n2, NVIDIA GeForce RTX 5090, 97, 30347, 32607, 54\n3, NVIDIA GeForce RTX 5090, 97, 30347, 32607, 53\n",
+        "error": ""
+      },
+      "error": ""
+    },
+    {
+      "step": 4,
+      "tool": "gpu.get_processes",
+      "params": {
+        "node": "worker-03",
+        "namespace": "service"
+      },
+      "success": true,
+      "data": {
+        "output": "1735788, VLLM::Worker_TP0, GPU-f33786b8-cfc3-17f6-98d5-81e16727ea64, 22676\n1735789, VLLM::Worker_TP1, GPU-5425d001-1c9c-c0ed-dac3-3f7c5d44d88a, 22676\n2806325, VLLM::Worker_TP0, GPU-2144554f-74f0-9f4a-d43a-8232ffe51fec, 30336\n2806326, VLLM::Worker_TP1, GPU-c298e37f-6e04-f003-47fa-72053741c6ff, 30336\n",
+        "error": ""
+      },
+      "error": ""
+    },
+    {
+      "step": 5,
+      "tool": "k8s.describe_pod",
+      "params": {
+        "namespace": "service",
+        "pod_name": "qwen3-32b-fp8-202602261-7f46f958db-dsblw",
+        "node": "worker-03"
+      },
+      "success": true,
+      "data": {
+        "namespace": "service",
+        "pod_name": "qwen3-32b-fp8-202602261-7f46f958db-dsblw",
+        "status": "Running"
+      },
+      "error": ""
+    },
+    {
+      "step": 6,
+      "tool": "k8s.read_pod_logs",
+      "params": {
+        "namespace": "service",
+        "pod_name": "qwen3-32b-fp8-202602261-7f46f958db-dsblw",
+        "node": "worker-03"
+      },
+      "success": true,
+      "data": [
+        "\u001b[0;36m(APIServer pid=1)\u001b[0;0m INFO:     10.0.0.66:61085 - \"GET / HTTP/1.1\" 404 Not Found\n"
+      ],
+      "error": ""
+    },
+    {
+      "step": 7,
+      "tool": "k8s.describe_pod",
+      "params": {
+        "namespace": "service",
+        "pod_name": "vllm-qwen3-32b-fp8-202602261-7df4474bbd-25cmh",
+        "node": "worker-03"
+      },
+      "success": false,
+      "data": null,
+      "error": "pod 'vllm-qwen3-32b-fp8-202602261-7df4474bbd-25cmh' not found in namespace 'service'"
+    },
+    {
+      "step": 8,
+      "tool": "prometheus.query_instant",
+      "params": {
+        "promql": "DCGM_FI_DEV_FB_USED{gpu=\"2\", instance=\"10.0.10.239:9400\"}",
+        "node": "worker-03",
+        "namespace": "service"
+      },
+      "success": true,
+      "data": 30346.0,
+      "error": ""
+    }
+  ],
+  "diagnosis_result": {
+    "root_cause": "Legitimate LLM inference workload from VLLM::Worker_TP0 and VLLM::Worker_TP1 processes (PIDs 2806325, 2806326) consuming 30336MB each on GPU 2, driving sustained utilization to 97%.",
+    "root_cause_layer": "service",
+    "root_cause_entities": [
+      "VLLM::Worker_TP0 (PID 2806325)",
+      "VLLM::Worker_TP1 (PID 2806326)",
+      "GPU 2 (UUID: GPU-2144554f-74f0-9f4a-d43a-8232ffe51fec)",
+      "wj-lab-cpt-03"
+    ],
+    "confidence": 0.85,
+    "hypotheses": [],
+    "propagation_chain": [],
+    "impact_summary": "GPU 2 utilization at 97% with only ~2260MB free memory. The GPU is processing active LLM inference requests from VLLM workers. No service degradation observed; this is expected behavior under inference load.",
+    "affected_services": [
+      "qwen3-32b-fp8 inference service"
+    ],
+    "recommended_fix": null,
+    "triage_priority": "P3",
+    "ranked_candidates": [],
+    "diagnosis_certainty": "probable"
+  },
+  "remediation_plan": null,
+  "session_id": "b8dd52f8b4c64ad4826d585b3630e7ba"
+}

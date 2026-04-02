@@ -1,113 +1,184 @@
-import { useEffect, useMemo } from "react";
-import { Alert, Card, Col, Empty, Row, Space, Spin, Tabs, Tag, Tree, Typography } from "antd";
-import type { DataNode } from "antd/es/tree";
+import { useEffect, useMemo, useRef } from "react";
 
-import EntityDetail from "../components/EntityDetail";
-import TopologyGraph from "../components/TopologyGraph";
-import { useTopologyStore } from "../store/topologyStore";
+import type { TopologyCanvasHandle } from "../features/topologyExplorer/components/TopologyCanvas";
+import TopologyExplorer from "../features/topologyExplorer/components/TopologyExplorer";
+import TopologyHeader from "../features/topologyExplorer/components/TopologyHeader";
+import {
+  buildTopologyTree,
+  getAffectedObjectsForNode,
+  getNeighborDepths,
+  getPathsForNode,
+  getRelationsForNode,
+  getSummaryMetrics,
+  getVisibleTopology,
+} from "../features/topologyExplorer/selectors";
+import { useTopologyExplorerStore } from "../features/topologyExplorer/store";
+import "../features/topologyExplorer/topologyExplorer.css";
 
 function TopologyPage() {
-  const { nodes, edges, activeAlerts, recentEvents, selectedNodeId, isLoading, error, fetchTopology, selectNode } = useTopologyStore();
+  const canvasRef = useRef<TopologyCanvasHandle | null>(null);
+  const {
+    data,
+    isLoading,
+    error,
+    viewMode,
+    selectedNodeId,
+    inspectorOpen,
+    searchQuery,
+    matchedNodeIds,
+    hoveredNodeId,
+    searchFeedback,
+    statusFilter,
+    layerFilter,
+    summaryFilter,
+    legendOpen,
+    layoutPreset,
+    inspectorTab,
+    fetchTopologyExplorer,
+    setViewMode,
+    setSelectedNodeId,
+    setInspectorOpen,
+    setSearchQuery,
+    locateSearchResult,
+    setStatusFilter,
+    setLayerFilter,
+    applySummaryFilter,
+    setLegendOpen,
+    cycleLayoutPreset,
+    setHoveredNodeId,
+    setInspectorTab,
+    resetExplorerView,
+  } = useTopologyExplorerStore();
 
   useEffect(() => {
-    void fetchTopology();
-  }, [fetchTopology]);
+    void fetchTopologyExplorer();
+  }, [fetchTopologyExplorer]);
 
-  const selectedNode = nodes.find((node) => node.id === selectedNodeId);
+  const summaryMetrics = useMemo(() => getSummaryMetrics(data), [data]);
+  const visibleTopology = useMemo(
+    () =>
+      getVisibleTopology(data, {
+        statusFilter,
+        layerFilter,
+        summaryFilter,
+      }),
+    [data, layerFilter, statusFilter, summaryFilter],
+  );
+  const tree = useMemo(() => buildTopologyTree(data), [data]);
+  const selectedNode = data?.nodes?.find((node) => node.id === selectedNodeId);
+  const neighborDepths = useMemo(() => getNeighborDepths(data?.edges ?? [], selectedNodeId), [data?.edges, selectedNodeId]);
+  const relations = useMemo(() => getRelationsForNode(data, selectedNodeId), [data, selectedNodeId]);
+  const pathsForSelected = useMemo(() => getPathsForNode(data?.paths ?? [], selectedNodeId), [data?.paths, selectedNodeId]);
+  const affectedObjects = useMemo(() => getAffectedObjectsForNode(data, selectedNodeId), [data, selectedNodeId]);
 
-  const treeData = useMemo<DataNode[]>(() => {
-    const grouped = new Map<string, DataNode[]>();
-    nodes.forEach((node) => {
-      const list = grouped.get(node.entity_type) ?? [];
-      list.push({ key: node.id, title: node.name ?? node.id });
-      grouped.set(node.entity_type, list);
+  const focusCurrentSelection = () => {
+    if (selectedNodeId) {
+      canvasRef.current?.focusNode(selectedNodeId);
+      return;
+    }
+
+    canvasRef.current?.fitView();
+  };
+
+  const handleSearchSubmit = () => {
+    const targetId = locateSearchResult();
+    if (!targetId) {
+      return;
+    }
+
+    window.requestAnimationFrame(() => {
+      canvasRef.current?.focusNode(targetId);
     });
-    return Array.from(grouped.entries()).map(([entityType, children]) => ({
-      key: entityType,
-      title: `${entityType} (${children.length})`,
-      children,
-    }));
-  }, [nodes]);
+  };
+
+  const handleSummarySelect = (filter: typeof summaryFilter) => {
+    applySummaryFilter(filter);
+    window.requestAnimationFrame(() => {
+      const state = useTopologyExplorerStore.getState();
+
+      if (state.selectedNodeId) {
+        canvasRef.current?.focusNode(state.selectedNodeId);
+      } else {
+        canvasRef.current?.fitView();
+      }
+    });
+  };
+
+  const handleViewModeChange = (nextViewMode: typeof viewMode) => {
+    const resolvedViewMode = nextViewMode === "impact" ? "graph" : nextViewMode;
+    setViewMode(resolvedViewMode);
+
+    window.requestAnimationFrame(() => {
+      focusCurrentSelection();
+    });
+  };
+
+  const handleResetView = () => {
+    resetExplorerView();
+    window.requestAnimationFrame(() => {
+      canvasRef.current?.fitView();
+    });
+  };
 
   return (
-    <div className="page-grid">
-      <Card className="hero-card">
-        <Space direction="vertical" size="large" style={{ width: "100%" }}>
-          <Typography.Title level={2} style={{ margin: 0 }}>
-            AIDC Topology Command Surface
-          </Typography.Title>
-          <Typography.Text type="secondary">
-            Track physical, network, platform, and service relationships in one graph so blast radius is visible before we act.
-          </Typography.Text>
-          <div className="metric-strip">
-            <div className="metric-card">
-              <div className="metric-label">Entities</div>
-              <div className="metric-value">{nodes.length}</div>
-            </div>
-            <div className="metric-card">
-              <div className="metric-label">Relationships</div>
-              <div className="metric-value">{edges.length}</div>
-            </div>
-            <div className="metric-card">
-              <div className="metric-label">Active Alerts</div>
-              <div className="metric-value">{activeAlerts}</div>
-            </div>
-          </div>
-        </Space>
-      </Card>
+    <div className="page-grid topology-modified-page">
+      <TopologyHeader lastUpdated={data?.lastUpdated} />
 
-      <Row gutter={[20, 20]}>
-        <Col xs={24} xl={16}>
-          <Card className="panel-card" title="Topology Explorer" extra={<Tag color="cyan">D3 + Tree</Tag>}>
-            {isLoading ? (
-              <Spin />
-            ) : error ? (
-              <Alert
-                type="error"
-                showIcon
-                message="Unable to load topology"
-                description={error}
-              />
-            ) : nodes.length === 0 ? (
-              <Empty description="No topology data is available in the current ontology graph." />
-            ) : (
-              <Tabs
-                defaultActiveKey="graph"
-                items={[
-                  {
-                    key: "graph",
-                    label: "Force Graph",
-                    children: <TopologyGraph nodes={nodes} edges={edges} selectedId={selectedNodeId} onSelect={selectNode} />,
-                  },
-                  {
-                    key: "tree",
-                    label: "Grouped Tree",
-                    children: <Tree treeData={treeData} selectedKeys={selectedNodeId ? [selectedNodeId] : []} onSelect={(keys) => selectNode(String(keys[0]))} />,
-                  },
-                ]}
-              />
-            )}
-          </Card>
-        </Col>
-        <Col xs={24} xl={8}>
-          <Space direction="vertical" size="large" style={{ width: "100%" }}>
-            <EntityDetail node={selectedNode} />
-            <Card className="panel-card" title="Recent Events">
-              {recentEvents.length === 0 ? (
-                <Typography.Text type="secondary">No recent topology events are available.</Typography.Text>
-              ) : (
-                <Space direction="vertical" style={{ width: "100%" }}>
-                  {recentEvents.map((event) => (
-                    <Tag key={event} style={{ padding: "10px 12px" }}>
-                      {event}
-                    </Tag>
-                  ))}
-                </Space>
-              )}
-            </Card>
-          </Space>
-        </Col>
-      </Row>
+      <TopologyExplorer
+        affectedObjects={affectedObjects}
+        canvasRef={canvasRef}
+        downstream={relations.downstream}
+        error={error}
+        graphEdges={visibleTopology.edges}
+        graphNodes={visibleTopology.nodes}
+        hasSourceData={Boolean(data?.nodes?.length)}
+        hoveredNodeId={hoveredNodeId}
+        inspectorOpen={inspectorOpen}
+        inspectorTab={inspectorTab}
+        isLoading={isLoading}
+        layerFilter={layerFilter}
+        layoutPreset={layoutPreset}
+        legendOpen={legendOpen}
+        matchedCount={matchedNodeIds.length}
+        matchedNodeIds={matchedNodeIds}
+        neighborDepths={neighborDepths}
+        neighbors={relations.neighbors}
+        onCycleLayoutPreset={() => {
+          cycleLayoutPreset();
+          window.requestAnimationFrame(() => canvasRef.current?.fitView());
+        }}
+        onFitCanvas={() => canvasRef.current?.fitView()}
+        onHighlightInGraph={() => {
+          setViewMode("graph");
+          window.requestAnimationFrame(focusCurrentSelection);
+        }}
+        onHoverNode={setHoveredNodeId}
+        onInspectorOpenChange={setInspectorOpen}
+        onInspectorTabChange={setInspectorTab}
+        onLayerFilterChange={setLayerFilter}
+        onRecenter={() => canvasRef.current?.recenter(selectedNodeId)}
+        onResetView={handleResetView}
+        onSearchQueryChange={setSearchQuery}
+        onSearchSubmit={handleSearchSubmit}
+        onSelectNode={setSelectedNodeId}
+        onStatusFilterChange={setStatusFilter}
+        onSummarySelect={handleSummarySelect}
+        onToggleLegend={() => setLegendOpen(!legendOpen)}
+        onViewModeChange={handleViewModeChange}
+        onZoomIn={() => canvasRef.current?.zoomIn()}
+        onZoomOut={() => canvasRef.current?.zoomOut()}
+        paths={pathsForSelected}
+        searchFeedback={searchFeedback}
+        searchQuery={searchQuery}
+        selectedNode={selectedNode}
+        selectedNodeId={selectedNodeId}
+        statusFilter={statusFilter}
+        summaryFilter={summaryFilter}
+        summaryMetrics={summaryMetrics}
+        tree={tree}
+        upstream={relations.upstream}
+        viewMode={viewMode === "impact" ? "graph" : viewMode}
+      />
     </div>
   );
 }

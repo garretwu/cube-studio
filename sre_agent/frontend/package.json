@@ -5,19 +5,25 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "mock-backend": "python mock_backend.py",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
-    "test": "vitest run"
+    "test": "vitest run",
+    "contract:sync": "python ../scripts/sync_frontend_contract.py",
+    "contract:doc:sync": "python ../scripts/sync_contract_doc.py",
+    "contract:doc:check": "python ../scripts/sync_contract_doc.py --check",
+    "contract:check": "python ../scripts/sync_frontend_contract.py --check && python ../scripts/sync_contract_doc.py --check"
   },
   "dependencies": {
-    "@ant-design/icons": "^5.5.0",
-    "antd": "^5.23.4",
+    "@ant-design/x": "^2.4.0",
+    "@fontsource/inter": "^5.2.8",
+    "@fontsource/inter-tight": "^5.2.7",
+    "@xyflow/react": "^12.10.1",
+    "antd": "^6.3.4",
     "axios": "^1.8.4",
     "d3": "^7.9.0",
-    "i18next": "^25.0.2",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
-    "react-i18next": "^15.4.1",
     "react-router-dom": "^6.30.0",
     "zustand": "^5.0.3"
   },

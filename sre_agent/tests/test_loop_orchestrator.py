@@ -163,6 +163,9 @@ class TestLoopOrchestratorIntegration:
         assert result.winning_candidate is not None
         assert result.winning_candidate.root_cause == "gpu contention"
         assert publisher.events
+        assert publisher.events[0]["type"] == "loop_start"
+        assert publisher.events[0]["data"]["candidate_count"] == 2
+        assert any(event["type"] == "loop_progress" for event in publisher.events)
 
     @pytest.mark.asyncio
     async def test_integration_triggers_re_diagnosis_when_candidates_exhausted(self) -> None:

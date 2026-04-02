@@ -108,12 +108,12 @@ class TestOntologyStorageIntegration:
         scanner = K8sScanner(channel=_FakeK8sChannel())
         nodes, edges = await scanner.scan(namespace="infer", label_selector="app=vllm")
 
-        assert len(nodes) == 1
-        assert nodes[0].id == "pod:infer:vllm-0"
-        assert nodes[0].entity_type == EntityType.K8S_POD
-        assert len(edges) == 1
-        assert edges[0].relation == RelationType.HOSTED_ON
-        assert edges[0].target_id == "node-a"
+        assert {node.entity_type for node in nodes} == {EntityType.K8S_POD, EntityType.K8S_CLUSTER}
+        assert any(node.id == "pod:infer:vllm-0" for node in nodes)
+        assert any(node.id == "k8s:lab-cluster" for node in nodes)
+        assert len(edges) == 3
+        assert {edge.relation for edge in edges} == {RelationType.HOSTED_ON, RelationType.PART_OF}
+        assert any(edge.relation == RelationType.HOSTED_ON and edge.target_id == "node-a" for edge in edges)
 
 
 class TestOntologyStorageE2E:
@@ -131,9 +131,9 @@ class TestOntologyStorageE2E:
         summary = graph.summarize()
         neighbors = graph.get_neighbors("node-a", relation=RelationType.HOSTED_ON)
 
-        assert summary["node_count"] == 2
-        assert summary["edge_count"] == 1
-        assert summary["entity_type_counts"] == {"k8s_pod": 1, "node": 1}
+        assert summary["node_count"] == 3
+        assert summary["edge_count"] == 3
+        assert summary["entity_type_counts"] == {"k8s_cluster": 1, "k8s_pod": 1, "node": 1}
         assert [item["entity"].id for item in neighbors] == ["pod:infer:vllm-0"]
 
         await graph.close()

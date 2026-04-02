@@ -133,6 +133,25 @@ class TestRemediationUnit:
         assert result.approved is True
         assert result.method == "auto"
 
+    @pytest.mark.asyncio
+    async def test_unit_approval_gate_routes_decisions_by_session(self) -> None:
+        gate = ApprovalGate(default_policy="human_confirm")
+        plan = _make_plan(tool="k8s.scale_deployment")
+
+        task_s1 = asyncio.create_task(gate.request_approval(plan, session_id="session-1"))
+        task_s2 = asyncio.create_task(gate.request_approval(plan, session_id="session-2"))
+        await asyncio.sleep(0)
+        await gate.submit_decision("session-2", ApprovalInput(approved=False, user="bob", reason="reject"))
+        await gate.submit_decision("session-1", ApprovalInput(approved=True, user="alice"))
+
+        result_s1 = await task_s1
+        result_s2 = await task_s2
+
+        assert result_s1.approved is True
+        assert result_s1.approver == "alice"
+        assert result_s2.approved is False
+        assert result_s2.reason == "reject"
+
     def test_unit_wal_records_entry_when_step_has_rollback(self, tmp_path: Path) -> None:
         wal = RollbackJournal(tmp_path / "journal.jsonl")
         wal.record("fault-1", "plan-1", 1, "k8s.delete_pod", {"pod_name": "rollback"})

@@ -22,7 +22,7 @@ def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Seed node/BMC/GPU topology into the ontology DB from a lab YAML file.")
     parser.add_argument(
         "--config",
-        default="config.lab.test.yaml",
+        default="sre_agent/conf/config.lab.test.yaml",
         help="Path to the lab topology config file.",
     )
     return parser.parse_args()

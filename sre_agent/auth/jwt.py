@@ -97,7 +97,7 @@ async def get_current_user(
 
 
 async def ws_authenticate(websocket: WebSocket) -> CurrentUser:
-    token = websocket.query_params.get("token")
+    token = _extract_ws_token(websocket)
     if not token:
         await websocket.close(code=4001, reason="Missing token")
         raise WebSocketDisconnect(code=4001)
@@ -110,3 +110,26 @@ async def ws_authenticate(websocket: WebSocket) -> CurrentUser:
     except jwt.PyJWTError as exc:
         await websocket.close(code=4001, reason=str(exc))
         raise WebSocketDisconnect(code=4001) from exc
+
+
+def _extract_ws_token(websocket: WebSocket) -> str:
+    token = str(websocket.query_params.get("token", "")).strip()
+    if token:
+        return token
+
+    auth_header = str(websocket.headers.get("authorization", "")).strip()
+    if auth_header.lower().startswith("bearer "):
+        candidate = auth_header[7:].strip()
+        if candidate:
+            return candidate
+
+    protocol_header = str(websocket.headers.get("sec-websocket-protocol", "")).strip()
+    if protocol_header:
+        for item in protocol_header.split(","):
+            candidate = item.strip()
+            if candidate.lower().startswith("bearer "):
+                candidate = candidate[7:].strip()
+            if candidate and candidate.lower() not in {"bearer", "token"}:
+                return candidate
+
+    return ""

@@ -48,6 +48,8 @@ compile.py
 /sre_agent/docs/channel_gaps.md
 /sre_agent/frontend/node_modules/
 /sre_agent/frontend/.bin/
+/sre_agent/frontend/dist/
+/sre_agent/frontend/tsconfig.tsbuildinfo
 /sre_agent/docs/SREtesting.md
 /sre_agent/docs/plan0319.md
 /sre_agent/skills/DEPENDENCIES.md
@@ -60,3 +62,9 @@ conftest.py
 config.lab.test.yaml
 config.lab.yaml
 /sre_agent/temp
+/sre_agent/scripts/agent_demo.py
+/sre_agent/scripts/agent_demo_test.json
+/sre_agent/scripts/agent_demo_no_key_test.json
+/sre_agent/scripts/agent_demo_model_fallback_test.json
+/sre_agent/docs/evidence/
+/sre_agent/.devlogs
