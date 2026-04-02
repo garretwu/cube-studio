@@ -3402,6 +3402,41 @@
   gap: 10px;
 }
 
+.diagnosis-plan-instruction {
+  width: 100%;
+  min-height: 84px;
+  border: 1px solid rgba(15, 23, 42, 0.16);
+  border-radius: 10px;
+  padding: 10px 12px;
+  resize: vertical;
+  font: inherit;
+}
+
+.diagnosis-plan-instruction:disabled {
+  background: rgba(148, 163, 184, 0.12);
+  cursor: not-allowed;
+}
+
+.diagnosis-plan-details {
+  display: grid;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid rgba(15, 23, 42, 0.1);
+  border-radius: 10px;
+  background: rgba(148, 163, 184, 0.08);
+}
+
+.diagnosis-plan-steps {
+  display: grid;
+  gap: 8px;
+}
+
+.diagnosis-plan-step {
+  padding: 8px 10px;
+  border: 1px dashed rgba(15, 23, 42, 0.18);
+  border-radius: 8px;
+}
+
 .diagnosis-send-trigger {
   border-radius: 14px;
   font-weight: 600;

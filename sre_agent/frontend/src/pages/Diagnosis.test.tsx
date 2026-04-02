@@ -40,10 +40,21 @@ describe("DiagnosisPage", () => {
       session: undefined,
       activeSessionId: undefined,
       messages: [],
+      events: [],
       isLoadingSession: false,
       bootstrapStatus: "idle",
       traceStatus: "unknown",
       isSendingMessage: false,
+      isRevisingPlan: false,
+      isApprovingPlan: false,
+      currentPlanVersion: null,
+      latestPlanVersion: null,
+      approvedPlanVersion: null,
+      canApprove: false,
+      approvalBlockReason: undefined,
+      hasPlan: false,
+      planMissingReason: undefined,
+      effectiveReviseInstruction: undefined,
       connectionState: "closed",
       error: undefined,
     });
@@ -51,6 +62,7 @@ describe("DiagnosisPage", () => {
 
   afterEach(() => {
     vi.useRealTimers();
+    vi.restoreAllMocks();
   });
 
   it("renders diagnosis chat workspace with script trigger", async () => {
@@ -130,5 +142,40 @@ describe("DiagnosisPage", () => {
         }),
       );
     });
+  });
+
+  it("always renders remediation approval card and blocks approval when status is not approval_required", async () => {
+    renderDiagnosisPage("/diagnosis/sess-latency-001");
+
+    await waitFor(() => {
+      expect(screen.getByText("修复审批")).toBeInTheDocument();
+    });
+
+    expect(screen.getByRole("button", { name: "审批通过" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /拒\s*绝/ })).toBeDisabled();
+    expect(screen.getByText(/当前状态：/)).toBeInTheDocument();
+  });
+
+  it("allows revise submission without typed instruction", async () => {
+    const user = userEvent.setup();
+    const reviseSpy = vi.spyOn(useDiagnosisStore.getState(), "revisePlan").mockResolvedValue(undefined);
+
+    renderDiagnosisPage("/diagnosis/sess-latency-001");
+
+    const reviseButton = await screen.findByRole("button", { name: "修改方案" });
+    expect(reviseButton).toBeEnabled();
+    await user.click(reviseButton);
+
+    await waitFor(() => {
+      expect(reviseSpy).toHaveBeenCalledWith("");
+    });
+  });
+
+  it("keeps approval card visible even when plan details are missing", async () => {
+    renderDiagnosisPage("/diagnosis/sess-latency-001");
+
+    expect(await screen.findByText("修复审批")).toBeInTheDocument();
+    expect(screen.queryByText(/根因：/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/步骤 \d+：/)).not.toBeInTheDocument();
   });
 });

@@ -39,7 +39,14 @@ class _FakeDiagnosisRunner:
                     tool="k8s.delete_pod",
                     params={"namespace": "infer", "pod_name": "vllm-0"},
                     verification=VerificationConfig(method="wait", wait_seconds=1),
-                )
+                ),
+                RemediationStep(
+                    step_id=2,
+                    description="delete canary pod",
+                    tool="k8s.delete_pod",
+                    params={"namespace": "infer", "pod_name": "vllm-canary-0"},
+                    verification=VerificationConfig(method="wait", wait_seconds=1),
+                ),
             ],
         )
         diagnosis = DiagnosisResult(
@@ -369,7 +376,14 @@ def _build_client(monkeypatch: pytest.MonkeyPatch) -> tuple[TestClient, str]:
         )
     )
     registry, context = _registry()
+    config = SREAgentConfig.model_validate(
+        {
+            "global": {"aidc_id": "aidc-demo"},
+            "remediation": {"execution_mode": "mock", "observation_seconds": 0},
+        }
+    )
     app = create_app(
+        config=config,
         diagnosis_runner=_FakeDiagnosisRunner(),
         ontology=graph,
         memory=_FakeMemory(),
@@ -958,6 +972,129 @@ class TestAPIE2E:
         assert first["data"]["stage"] == "execution_started"
         assert second["type"] == EventType.REMEDIATION_PROGRESS.value
         assert second["data"]["stage"] == "execution_succeeded"
+        assert isinstance(second["data"].get("step_results"), list)
+        assert second["data"]["step_results"]
+        assert second["data"]["step_results"][0]["command"].startswith("mock::")
+
+    def test_e2e_approve_route_rejects_outdated_plan_version(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        client, token = _build_client(monkeypatch)
+        try:
+            diagnose = client.post("/api/diagnose", json=_alert_payload(), headers=_auth_headers(token)).json()
+            session_id = diagnose["data"]["session_id"]
+
+            revise = client.post(
+                f"/api/remediate/{session_id}/plan/revise",
+                json={"instruction": "调整为先观察后执行"},
+                headers=_auth_headers(token),
+            )
+            assert revise.status_code == 200
+            assert revise.json()["success"] is True
+            assert revise.json()["data"]["plan_version"] == 2
+
+            approve = client.post(
+                f"/api/remediate/{session_id}/approve",
+                json={"approved": True, "user": "alice", "plan_version": 1},
+                headers=_auth_headers(token),
+            )
+            assert approve.status_code == 200
+            payload = approve.json()
+            assert payload["success"] is False
+            assert payload["error"]["code"] == ErrorCode.REMEDIATION_PLAN_VERSION_OUTDATED.value
+            assert payload["error"]["message"] == "plan_version_outdated"
+        finally:
+            client.close()
+
+    def test_e2e_revise_plan_removes_step_and_updates_session_plan(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        client, token = _build_client(monkeypatch)
+        try:
+            diagnose = client.post("/api/diagnose", json=_alert_payload(), headers=_auth_headers(token)).json()
+            session_id = diagnose["data"]["session_id"]
+
+            revise = client.post(
+                f"/api/remediate/{session_id}/plan/revise",
+                json={"instruction": "移除步骤2"},
+                headers=_auth_headers(token),
+            )
+            assert revise.status_code == 200
+            payload = revise.json()
+            assert payload["success"] is True
+            plan_steps = payload["data"]["plan"]["steps"]
+            assert len(plan_steps) == 1
+            assert plan_steps[0]["step_id"] == 1
+
+            session_resp = client.get(f"/api/sessions/{session_id}", headers=_auth_headers(token))
+            assert session_resp.status_code == 200
+            session_payload = session_resp.json()
+            assert session_payload["data"]["diagnosis_result"]["recommended_fix"]["steps"] == plan_steps
+        finally:
+            client.close()
+
+    def test_e2e_approve_route_timeout_sets_timeout_status_and_records_progress(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        client, token = _build_client(monkeypatch)
+        try:
+            diagnose = client.post("/api/diagnose", json=_alert_payload(), headers=_auth_headers(token)).json()
+            session_id = diagnose["data"]["session_id"]
+
+            services = client.app.state.services
+            client.app.state.config.remediation.execution_timeout_seconds = 1
+            original_approve = services.remediation_engine.approve_and_execute
+
+            async def _slow_approve(target_session_id: str, approval_input: Any) -> Any:
+                await asyncio.sleep(1.2)
+                return await original_approve(target_session_id, approval_input)
+
+            services.remediation_engine.approve_and_execute = _slow_approve  # type: ignore[method-assign]
+
+            approve = client.post(
+                f"/api/remediate/{session_id}/approve",
+                json={"approved": True, "user": "alice"},
+                headers=_auth_headers(token),
+            )
+            assert approve.status_code == 200
+            approve_payload = approve.json()
+            assert approve_payload["success"] is False
+            assert "timeout" in str(approve_payload["error"]["message"]).lower()
+
+            session_resp = client.get(f"/api/sessions/{session_id}", headers=_auth_headers(token))
+            assert session_resp.status_code == 200
+            assert session_resp.json()["data"]["status"] == "timeout"
+
+            events_resp = client.get(f"/api/sessions/{session_id}/events", headers=_auth_headers(token))
+            assert events_resp.status_code == 200
+            stages = [
+                str(item.get("data", {}).get("stage", ""))
+                for item in events_resp.json()["data"]
+                if item.get("type") == EventType.REMEDIATION_PROGRESS.value
+            ]
+            assert "execution_timeout" in stages
+        finally:
+            client.close()
+
+    def test_e2e_sessions_events_returns_revision_events(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        client, token = _build_client(monkeypatch)
+        try:
+            diagnose = client.post("/api/diagnose", json=_alert_payload(), headers=_auth_headers(token)).json()
+            session_id = diagnose["data"]["session_id"]
+
+            revise = client.post(
+                f"/api/remediate/{session_id}/plan/revise",
+                json={"instruction": "观察阶段延长到180秒"},
+                headers=_auth_headers(token),
+            )
+            assert revise.status_code == 200
+            assert revise.json()["success"] is True
+
+            events = client.get(f"/api/sessions/{session_id}/events", headers=_auth_headers(token))
+            assert events.status_code == 200
+            payload = events.json()
+            assert payload["success"] is True
+            event_types = [item["type"] for item in payload["data"]]
+            assert EventType.PLAN_REVISED.value in event_types
+            assert EventType.APPROVAL_REQUIRED.value in event_types
+        finally:
+            client.close()
 
     def test_e2e_rollback_route_returns_success_and_emits_progress(self, monkeypatch: pytest.MonkeyPatch) -> None:
         client, token = _build_client(monkeypatch)

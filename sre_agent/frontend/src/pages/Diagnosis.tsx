@@ -5,7 +5,7 @@ import type { MenuProps } from "antd";
 import { isValidElement, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
 
-import type { WSEvent } from "../api/types";
+import type { RemediationPlan, WSEvent } from "../api/types";
 import { buildBackendWsUrl } from "../api/ws";
 import { SectionHeader, StatusChip, SurfaceCard } from "../components/ui";
 import { useWebSocket } from "../hooks/useWebSocket";
@@ -219,6 +219,37 @@ function renderChatAnswerCard(payload: ChatAnswerPayload) {
           <pre>{payload.thinkingRaw}</pre>
         </details>
       ) : null}
+    </div>
+  );
+}
+
+function renderPlanDetails(plan: RemediationPlan) {
+  return (
+    <div className="diagnosis-plan-details">
+      <p className="diagnosis-chat-state-card__copy">
+        根因：{plan.root_cause} | 优先级：{plan.priority} | 置信度：{Math.round((plan.confidence ?? 0) * 100)}%
+      </p>
+      <p className="diagnosis-chat-state-card__copy">方案说明：{plan.description}</p>
+      <p className="diagnosis-chat-state-card__copy">预估影响：{plan.estimated_impact}</p>
+      {plan.steps.length ? (
+        <div className="diagnosis-plan-steps">
+          {plan.steps.map((step) => (
+            <div className="diagnosis-plan-step" key={`${plan.plan_id}-${step.step_id}`}>
+              <p className="diagnosis-chat-state-card__copy">
+                步骤 {step.step_id}：{step.description}
+              </p>
+              <p className="diagnosis-chat-state-card__copy">工具：{step.tool}</p>
+              <p className="diagnosis-chat-state-card__copy">
+                验证：{step.verification.method}
+                {step.verification.query ? ` | query: ${step.verification.query}` : ""}
+                {step.verification.tool ? ` | tool: ${step.verification.tool}` : ""}
+              </p>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <p className="diagnosis-chat-state-card__copy">当前计划暂无执行步骤。</p>
+      )}
     </div>
   );
 }
@@ -530,6 +561,7 @@ function renderApprovalPlanCard(payload: ApprovalPlanPayload) {
 function DiagnosisPage() {
   const params = useParams<{ sessionId?: string }>();
   const [draft, setDraft] = useState("");
+  const [planInstruction, setPlanInstruction] = useState("");
   const [demoActiveStep, setDemoActiveStep] = useState(0);
   const [isExecutingDemoStep, setIsExecutingDemoStep] = useState(false);
   const [demoMessages, setDemoMessages] = useState<DisplayMessage[]>([]);
@@ -543,12 +575,24 @@ function DiagnosisPage() {
     bootstrapStatus,
     traceStatus,
     isSendingMessage,
+    isRevisingPlan,
+    isApprovingPlan,
+    canApprove,
+    approvalBlockReason,
+    currentPlanVersion,
+    latestPlanVersion,
+    approvedPlanVersion,
+    hasPlan,
+    planMissingReason,
+    effectiveReviseInstruction,
     chatContextApplied,
     chatContextMeta,
     connectionState,
     error,
     bootstrapSession,
     sendMessage,
+    revisePlan,
+    approvePlan,
     applyEvent,
     setConnectionState,
   } = useDiagnosisStore();
@@ -1167,7 +1211,66 @@ function DiagnosisPage() {
               </div>
             ) : null}
 
-            <Bubble.List autoScroll className="diagnosis-bubble-list" items={bubbleItems} role={bubbleRoles} />
+              <Bubble.List autoScroll className="diagnosis-bubble-list" items={bubbleItems} role={bubbleRoles} />
+
+            <div className="diagnosis-chat-state-card">
+              <p className="diagnosis-chat-state-card__title">修复审批</p>
+              <p className="diagnosis-chat-state-card__copy">可直接点击“修改方案”，未输入时将使用默认优化指令。</p>
+              <p className="diagnosis-chat-state-card__copy">
+                当前状态：{session?.status ?? "unknown"}，当前版本：v{currentPlanVersion ?? "-"}，最新版本：v
+                {latestPlanVersion ?? "-"}，已审批版本：v{approvedPlanVersion ?? "-"}。
+              </p>
+              {approvalBlockReason ? <p className="diagnosis-chat-state-card__copy">{approvalBlockReason}</p> : null}
+              {hasPlan && session?.diagnosis_result?.recommended_fix
+                ? renderPlanDetails(session.diagnosis_result.recommended_fix)
+                : <p className="diagnosis-chat-state-card__copy">{planMissingReason}</p>}
+              <textarea
+                className="diagnosis-plan-instruction"
+                disabled={isRevisingPlan || isApprovingPlan}
+                onChange={(event) => setPlanInstruction(event.target.value)}
+                placeholder="例如：把第2步改为先观察再执行，观察窗口30秒。"
+                rows={3}
+                value={planInstruction}
+              />
+              <div className="diagnosis-sender-actions">
+                <Button
+                  disabled={isRevisingPlan || isApprovingPlan}
+                  loading={isRevisingPlan}
+                  onClick={() => {
+                    const text = planInstruction.trim();
+                    setPlanInstruction("");
+                    void revisePlan(text);
+                  }}
+                >
+                  修改方案
+                </Button>
+                <Button
+                  danger
+                  disabled={!canApprove || isApprovingPlan || isRevisingPlan}
+                  onClick={() => {
+                    void approvePlan(false);
+                  }}
+                >
+                  拒绝
+                </Button>
+                <Button
+                  disabled={!canApprove || isApprovingPlan || isRevisingPlan}
+                  loading={isApprovingPlan}
+                  onClick={() => {
+                    void approvePlan(true);
+                  }}
+                  type="primary"
+                >
+                  审批通过
+                </Button>
+              </div>
+              {!planInstruction.trim() ? (
+                <p className="diagnosis-chat-state-card__copy">
+                  未填写指令时，将使用默认优化指令：
+                  {effectiveReviseInstruction ?? "请优化当前修复方案，补充更稳妥步骤与验证"}
+                </p>
+              ) : null}
+            </div>
 
             <div className="diagnosis-chat-composer">
               <Sender

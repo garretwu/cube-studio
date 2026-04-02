@@ -157,6 +157,9 @@ class RemediationConfig(BaseModel):
     default_policy: str = "human_confirm"
     dry_run: bool = False
     max_concurrent_remediations: int = 2
+    execution_mode: str = "mock"
+    observation_seconds: int = 180
+    execution_timeout_seconds: int = 600
 
 
 class LoopOrchestratorConfig(BaseModel):

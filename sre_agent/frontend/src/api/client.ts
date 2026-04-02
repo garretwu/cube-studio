@@ -16,9 +16,11 @@ import type {
   OntologyEdge,
   OntologyNode,
   RemediationOverview,
+  RemediationPlan,
   RemediationResult,
   SREApiEnvelope,
   SessionSummary,
+  SessionEvent,
   SkillDescriptor,
   ToolChannelsStatusResponse,
   LLMRuntimeStatus,
@@ -469,35 +471,110 @@ export const apiClient = {
     return loop;
   },
 
-  approveRemediation: async (sessionId: string, approved: boolean, user = "ui-operator") => {
+  approveRemediation: async (sessionId: string, approved: boolean, user = "ui-operator", planVersion?: number) => {
     const response = await api.post<SREApiEnvelope<RemediationResult> | RemediationResult>(`/api/remediate/${sessionId}/approve`, {
       approved,
       user,
+      plan_version: planVersion,
+    });
+    return unwrapPayload(response.data);
+  },
+
+  reviseRemediationPlan: async (sessionId: string, instruction: string, basePlanVersion?: number) => {
+    const response = await api.post<
+      SREApiEnvelope<{
+        session_id: string;
+        plan_version: number;
+        plan: RemediationPlan;
+        session: DiagnosisSession;
+      }>
+    >(`/api/remediate/${sessionId}/plan/revise`, {
+      instruction,
+      base_plan_version: basePlanVersion,
+    });
+    return unwrapPayload(response.data);
+  },
+
+  getSessionEvents: async (sessionId: string, limit = 200) => {
+    const response = await api.get<SREApiEnvelope<SessionEvent[]> | SessionEvent[]>(`/api/sessions/${sessionId}/events`, {
+      params: { limit },
     });
     return unwrapPayload(response.data);
   },
 
   getRemediationOverview: async (sessionId?: string) => {
-    const loop = await apiClient.getSessionLoop(sessionId);
-    return {
-      session_id: loop.session_id,
-      plan: {
-        plan_id: loop.session_id,
-        root_cause: loop.winning_candidate?.root_cause ?? "pending",
-        description: "Derived from loop result",
-        steps: [],
-        estimated_impact: "unknown",
-        confidence: loop.winning_candidate?.confidence ?? 0,
-        priority: "P2" as const,
-      },
-      progress: {
-        status: loop.outcome,
-        completed_steps: loop.attempts.length,
-        total_steps: loop.attempts.length,
-        batch_status: [],
-      },
-      approval_required: false,
-    } as RemediationOverview;
+    const resolved = (sessionId ?? getRememberedSessionId()).trim();
+    if (!resolved) {
+      throw new Error("session_id is required");
+    }
+    try {
+      const session = await apiClient.getDiagnosisSession(resolved);
+      if (!session) {
+        throw new Error("session not found");
+      }
+      const events = await apiClient.getSessionEvents(resolved);
+      const currentPlan = session.diagnosis_result?.recommended_fix;
+      if (!currentPlan) {
+        throw new Error("remediation plan not found");
+      }
+      const revisedEvents = events.filter((event) => event.type === "plan_revised");
+      const latestRevision = revisedEvents.at(-1);
+      const planVersionFromPlanId = Number(/-v(\d+)$/.exec(currentPlan.plan_id)?.[1] ?? 1);
+      const planVersion = Number((latestRevision?.data?.["plan_version"] as number | undefined) ?? planVersionFromPlanId);
+      const remediationEvents = events.filter((event) => event.type === "remediation_progress");
+      const latestRemediationEvent = remediationEvents.at(-1);
+      const latestStage = String(latestRemediationEvent?.data?.["stage"] ?? "").trim().toLowerCase();
+      const latestSucceededEvent = [...remediationEvents]
+        .reverse()
+        .find((event) => String(event.data?.["stage"] ?? "").trim().toLowerCase() === "execution_succeeded");
+      const completedSteps = Number(
+        latestSucceededEvent?.data?.["steps_completed"] ??
+          (String(session.status ?? "").trim().toLowerCase() === "resolved" ? currentPlan.steps.length : 0),
+      );
+      const progressStatus = String(session.status || "").trim() || latestStage || "pending";
+
+      return {
+        session_id: resolved,
+        plan: currentPlan,
+        plan_version: planVersion,
+        plan_history: revisedEvents.map((event, index) => ({
+          version: Number(event.data?.["plan_version"] ?? index + 2),
+          plan_id: String(event.data?.["plan_id"] ?? ""),
+          revised_at: event.timestamp,
+          instruction: String(event.data?.["instruction"] ?? ""),
+        })),
+        progress: {
+          status: progressStatus,
+          completed_steps: completedSteps,
+          total_steps: currentPlan.steps.length,
+          batch_status: [],
+        },
+        timeline: events,
+        approval_required: session.status === "approval_required",
+      } as RemediationOverview;
+    } catch {
+      const loop = await apiClient.getSessionLoop(resolved);
+      return {
+        session_id: loop.session_id,
+        plan: {
+          plan_id: loop.session_id,
+          root_cause: loop.winning_candidate?.root_cause ?? "pending",
+          description: "Derived from loop result",
+          steps: [],
+          estimated_impact: "unknown",
+          confidence: loop.winning_candidate?.confidence ?? 0,
+          priority: "P2" as const,
+        },
+        progress: {
+          status: loop.outcome,
+          completed_steps: loop.attempts.length,
+          total_steps: loop.attempts.length,
+          batch_status: [],
+        },
+        timeline: [],
+        approval_required: false,
+      } as RemediationOverview;
+    }
   },
 
   postChatMessage: async (sessionOrContent: string, maybeContent?: string) => {

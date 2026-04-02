@@ -12,10 +12,21 @@ describe("useDiagnosisStore", () => {
       session: undefined,
       activeSessionId: undefined,
       messages: [],
+      events: [],
       isLoadingSession: false,
       bootstrapStatus: "idle",
       traceStatus: "unknown",
       isSendingMessage: false,
+      isRevisingPlan: false,
+      isApprovingPlan: false,
+      currentPlanVersion: null,
+      latestPlanVersion: null,
+      approvedPlanVersion: null,
+      canApprove: false,
+      approvalBlockReason: undefined,
+      hasPlan: false,
+      planMissingReason: undefined,
+      effectiveReviseInstruction: undefined,
       connectionState: "closed",
       error: undefined,
     });
@@ -104,5 +115,37 @@ describe("useDiagnosisStore", () => {
     expect(state.session?.trace?.steps?.at(-1)).toMatchObject({
       tool: "metrics.query",
     });
+  });
+
+  it("uses default instruction when revising plan without input", async () => {
+    let capturedInstruction = "";
+    server.use(
+      http.post("/api/remediate/:sessionId/plan/revise", async ({ request, params }) => {
+        const body = (await request.json()) as { instruction?: string };
+        capturedInstruction = String(body.instruction ?? "");
+        return HttpResponse.json({
+          session_id: String(params.sessionId ?? "sess-latency-001"),
+          plan_version: 2,
+          plan: {
+            plan_id: "plan-v2",
+            root_cause: "x",
+            description: "y",
+            steps: [],
+            estimated_impact: "low",
+            confidence: 0.7,
+            priority: "P2",
+          },
+          session: {
+            ...diagnosisSession,
+            session_id: String(params.sessionId ?? "sess-latency-001"),
+            status: "approval_required",
+          },
+        });
+      }),
+    );
+    await useDiagnosisStore.getState().bootstrapSession("sess-latency-001");
+    await useDiagnosisStore.getState().revisePlan("");
+
+    expect(capturedInstruction).toBe("请优化当前修复方案，补充更稳妥步骤与验证");
   });
 });
