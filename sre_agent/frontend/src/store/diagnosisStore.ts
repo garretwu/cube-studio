@@ -120,7 +120,17 @@ function getEventError(event: WSEvent) {
   return "The diagnosis engine returned an error event.";
 }
 
-function formatRemediationEventMessage(event: WSEvent): string | null {
+type EventLike = Pick<WSEvent, "type" | "session_id" | "timestamp" | "data">;
+
+function getEventStage(event: EventLike): string {
+  if (event.type !== "remediation_progress") {
+    return event.type;
+  }
+  const data = isRecord(event.data) ? event.data : {};
+  return String(data.stage ?? "").trim().toLowerCase();
+}
+
+function formatRemediationEventMessage(event: EventLike): string | null {
   const data = isRecord(event.data) ? event.data : {};
   if (event.type === "execution_mocked") {
     return String(data.message ?? "mock 已执行修复计划");
@@ -138,19 +148,67 @@ function formatRemediationEventMessage(event: WSEvent): string | null {
     return String(data.message ?? "需要工程师介入");
   }
   if (event.type === "remediation_progress") {
-    const stage = String(data.stage ?? "").trim();
-    if (["execution_mocked", "observation_started", "observation_result", "escalation_required"].includes(stage)) {
-      return null;
+    const stage = getEventStage(event);
+    if (stage === "execution_failed" || stage === "escalation_required") {
+      return "需要工程师介入";
     }
-    if (typeof data.message === "string" && data.message.trim()) {
-      return data.message;
+    if (["execution_started", "execution_mocked", "observation_started", "observation_result"].includes(stage)) {
+      return null;
     }
     if (stage === "execution_timeout") {
       return "修复执行超时退出";
     }
+    if (typeof data.message === "string" && data.message.trim()) {
+      return data.message;
+    }
     return stage ? `修复进度：${stage}` : null;
   }
   return null;
+}
+
+function toEventMessageKey(event: EventLike): string {
+  return `${event.type}:${getEventStage(event)}:${event.timestamp}`;
+}
+
+function mergeEventMessages(
+  currentMessages: ChatMessage[],
+  events: EventLike[],
+  sessionId: string | undefined,
+): ChatMessage[] {
+  if (!sessionId || events.length === 0) {
+    return currentMessages;
+  }
+  const existingKeys = new Set(
+    currentMessages
+      .map((message) => String(message.metadata?.event_key ?? ""))
+      .filter((value) => value.length > 0),
+  );
+  const nextMessages = [...currentMessages];
+
+  events.forEach((event) => {
+    const content = formatRemediationEventMessage(event);
+    if (!content) {
+      return;
+    }
+    const eventKey = toEventMessageKey(event);
+    if (existingKeys.has(eventKey)) {
+      return;
+    }
+    existingKeys.add(eventKey);
+    nextMessages.push({
+      id: `event-${eventKey.replace(/[^a-zA-Z0-9:_-]/g, "-")}`,
+      role: "assistant",
+      content,
+      created_at: event.timestamp,
+      metadata: {
+        session_id: sessionId,
+        event_type: event.type,
+        event_key: eventKey,
+      },
+    });
+  });
+
+  return nextMessages;
 }
 
 function parsePlanVersionFromPlanId(planId: string | undefined): number | null {
@@ -344,7 +402,7 @@ export const useDiagnosisStore = create<DiagnosisState>((set, get) => ({
       set({
         session,
         activeSessionId: resolvedSessionId,
-        messages,
+        messages: mergeEventMessages(messages, events, resolvedSessionId),
         events,
         isLoadingSession: false,
         bootstrapStatus: "ready",
@@ -505,11 +563,12 @@ export const useDiagnosisStore = create<DiagnosisState>((set, get) => ({
         apiClient.getSessionEvents(sessionId).catch(() => []),
       ]);
       const approvalState = deriveApprovalState(session ?? undefined, events);
-      set({
+      set((state) => ({
         session: session ?? undefined,
         events,
         ...approvalState,
-      });
+        messages: mergeEventMessages(state.messages, events, sessionId),
+      }));
     };
 
     if (approved && typeof window !== "undefined") {
@@ -540,12 +599,13 @@ export const useDiagnosisStore = create<DiagnosisState>((set, get) => ({
     const session = await apiClient.getDiagnosisSession(sessionId);
     const events = await apiClient.getSessionEvents(sessionId).catch(() => []);
     const approvalState = deriveApprovalState(session ?? undefined, events);
-    set({
+    set((state) => ({
       session: session ?? undefined,
       events,
       ...approvalState,
       isApprovingPlan: false,
-    });
+      messages: mergeEventMessages(state.messages, events, sessionId),
+    }));
   },
   setConnectionState: (connectionState) => set({ connectionState }),
   applyEvent: (event) =>
@@ -634,20 +694,7 @@ export const useDiagnosisStore = create<DiagnosisState>((set, get) => ({
       const nextEvents = [...state.events, event];
       const approvalState = deriveApprovalState(nextSession, nextEvents);
 
-      const eventMessage = formatRemediationEventMessage(event);
-      const nextMessages =
-        eventMessage && activeSessionId
-          ? [
-              ...state.messages,
-              {
-                id: `event-${event.type}-${event.timestamp}-${state.messages.length + 1}`,
-                role: "assistant" as const,
-                content: eventMessage,
-                created_at: event.timestamp,
-                metadata: { session_id: activeSessionId, event_type: event.type },
-              },
-            ]
-          : state.messages;
+      const nextMessages = mergeEventMessages(state.messages, [event], activeSessionId);
 
       return {
         session: nextSession,

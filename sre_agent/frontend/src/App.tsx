@@ -4,6 +4,7 @@ import { Navigate, Route, Routes, useLocation, useNavigate } from "react-router-
 import { apiClient } from "./api/client";
 import type { DiagnosisSessionSummary } from "./api/types";
 import { AppShell } from "./components/ui";
+import { useAlertsRealtimeSync } from "./hooks/useAlertsRealtimeSync";
 import HistoryPage from "./pages/History";
 import DiagnosisPage from "./pages/Diagnosis";
 import SkillDetailPage from "./pages/SkillDetail";
@@ -44,6 +45,7 @@ function AppRoutes() {
 function App() {
   const navigate = useNavigate();
   const location = useLocation();
+  useAlertsRealtimeSync();
   const [historySessions, setHistorySessions] = useState<DiagnosisSessionSummary[]>([]);
   const [historyLoading, setHistoryLoading] = useState(true);
   const [historyLoadError, setHistoryLoadError] = useState<string>("");

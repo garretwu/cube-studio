@@ -43,9 +43,43 @@ function formatAlertStatus(status: AlertStatus) {
   }
 }
 
+function websocketTone(state: "connecting" | "open" | "closed" | "error") {
+  switch (state) {
+    case "open":
+      return "success";
+    case "connecting":
+      return "warning";
+    case "error":
+      return "danger";
+    default:
+      return "neutral";
+  }
+}
+
+function websocketLabel(state: "connecting" | "open" | "closed" | "error") {
+  switch (state) {
+    case "open":
+      return "WS 已连接";
+    case "connecting":
+      return "WS 连接中";
+    case "error":
+      return "WS 异常";
+    default:
+      return "WS 未连接";
+  }
+}
+
 function AlertsModifiedPage() {
   const navigate = useNavigate();
-  const { alerts, clusters, fetchAlerts, isLoading } = useAlertStore();
+  const {
+    alerts,
+    clusters,
+    fetchAlerts,
+    isLoading,
+    wsState,
+    lastSnapshotSyncAt,
+    realtimeEnabled,
+  } = useAlertStore();
   const [query, setQuery] = useState("");
   const [severityFilter, setSeverityFilter] = useState<Severity | "all">("all");
   const [activeSession, setActiveSession] = useState<DiagnosisSession | undefined>();
@@ -205,6 +239,10 @@ function AlertsModifiedPage() {
           <StatusChip tone="accent">{`${mergedCount} 个并入已有 Session`}</StatusChip>
           <StatusChip tone="danger">{`${createCount} 个将创建 Session`}</StatusChip>
           <StatusChip tone="warning">{`${observeCount} 个观察中`}</StatusChip>
+          <StatusChip tone={realtimeEnabled ? websocketTone(wsState) : "neutral"}>
+            {realtimeEnabled ? websocketLabel(wsState) : "实时同步未启用"}
+          </StatusChip>
+          <StatusChip tone="neutral">{`快照 ${formatTimestamp(lastSnapshotSyncAt)}`}</StatusChip>
         </div>
         {diagnosisError ? (
           <div className="state-block">
