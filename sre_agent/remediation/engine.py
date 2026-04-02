@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import logging
+import re
 import time
 from dataclasses import replace
 from datetime import UTC, datetime
@@ -16,6 +19,8 @@ from sre_agent.remediation.canary import CanaryExecutor, _compare
 from sre_agent.remediation.validator import PlanValidationError, PlanValidator
 from sre_agent.remediation.wal import RollbackJournal
 from sre_agent.tools import ToolExecutionContext, ToolRegistry
+
+LOGGER = logging.getLogger(__name__)
 
 
 class RollbackResult(BaseModel):
@@ -37,6 +42,7 @@ class RemediationEngine:
         prometheus: Any | None = None,
         validator: PlanValidator | None = None,
         execution_context: ToolExecutionContext | None = None,
+        execution_mode: str = "mock",
     ) -> None:
         self.tools = tool_registry
         self.approval = approval_gate
@@ -46,14 +52,68 @@ class RemediationEngine:
         self.execution_context = execution_context or ToolExecutionContext()
         self.canary = CanaryExecutor(wal=wal, prometheus=prometheus)
         self._plans_by_session: dict[str, RemediationPlan] = {}
+        self._plan_versions_by_session: dict[str, list[RemediationPlan]] = {}
+        mode = str(execution_mode or "mock").strip().lower()
+        self.execution_mode = mode if mode in {"mock", "real"} else "mock"
 
     def register_plan(self, session_id: str, plan: RemediationPlan) -> None:
         self._plans_by_session[session_id] = plan
+        versions = self._plan_versions_by_session.setdefault(session_id, [])
+        if not versions:
+            versions.append(plan)
+            return
+        latest = versions[-1]
+        if latest.model_dump(mode="json") != plan.model_dump(mode="json"):
+            versions.append(plan)
 
     async def approve_and_execute(self, session_id: str, approval: ApprovalInput) -> RemediationResult:
         plan = self._plans_by_session[session_id]
         await self.approval.submit_decision(session_id, approval)
         return await self.execute(plan, session_id=session_id)
+
+    def get_plan(self, session_id: str) -> RemediationPlan | None:
+        return self._plans_by_session.get(session_id)
+
+    def get_plan_history(self, session_id: str) -> list[RemediationPlan]:
+        return list(self._plan_versions_by_session.get(session_id, []))
+
+    def get_latest_plan_version(self, session_id: str) -> int:
+        versions = self._plan_versions_by_session.get(session_id) or []
+        if not versions:
+            return 0
+        return len(versions)
+
+    def revise_plan(
+        self,
+        *,
+        session_id: str,
+        instruction: str,
+        base_plan_version: int | None = None,
+    ) -> tuple[int, RemediationPlan]:
+        versions = self._plan_versions_by_session.get(session_id) or []
+        if not versions:
+            raise KeyError(session_id)
+
+        if base_plan_version is None:
+            base_plan = versions[-1]
+        else:
+            index = max(1, int(base_plan_version)) - 1
+            if index >= len(versions):
+                raise ValueError("base_plan_version out of range")
+            base_plan = versions[index]
+
+        revised_note = str(instruction or "").strip() or "operator requested plan refinement"
+        plan_data = base_plan.model_dump(mode="json")
+        next_version = len(versions) + 1
+        plan_data["plan_id"] = f"{self._base_plan_id(base_plan.plan_id)}-v{next_version}"
+        plan_data["steps"] = self._revise_steps(plan_data.get("steps", []), revised_note)
+        plan_data["description"] = f"{base_plan.description} | Revised: {revised_note}"
+        plan_data["estimated_impact"] = f"{base_plan.estimated_impact} | Revision note: {revised_note}"
+        revised_plan = RemediationPlan.model_validate(plan_data)
+        versions.append(revised_plan)
+        self._plans_by_session[session_id] = revised_plan
+        self._plan_versions_by_session[session_id] = versions
+        return next_version, revised_plan
 
     async def rollback(self, session_id: str) -> RollbackResult:
         try:
@@ -81,6 +141,12 @@ class RemediationEngine:
 
         start = time.monotonic()
         try:
+            if self.execution_mode == "mock":
+                print("mock 已执行修复计划")
+                LOGGER.info("mock 已执行修复计划: plan_id=%s", plan.plan_id)
+                result = await self._execute_steps_mock(plan)
+                duration = int(time.monotonic() - start)
+                return result.model_copy(update={"duration_seconds": duration})
             if plan.canary and plan.canary.enabled:
                 targets = self._collect_targets(plan)
                 return await self.canary.execute_with_canary(
@@ -102,6 +168,32 @@ class RemediationEngine:
                 error=str(exc),
                 duration_seconds=int(time.monotonic() - start),
             )
+
+    async def _execute_steps_mock(self, plan: RemediationPlan) -> RemediationResult:
+        verification_results: list[dict[str, Any]] = []
+        for step in plan.steps:
+            await asyncio.sleep(0)
+            command = self._mock_command_for_step(step.tool, step.params)
+            result_message = f"mock 已执行修复计划，步骤 {step.step_id} 已完成"
+            verification_results.append(
+                {
+                    "step_id": step.step_id,
+                    "tool": step.tool,
+                    "command": command,
+                    "result": result_message,
+                    "success": True,
+                    "verified": True,
+                    "mocked": True,
+                    "message": result_message,
+                }
+            )
+        return RemediationResult(
+            plan_id=plan.plan_id,
+            success=True,
+            steps_completed=len(plan.steps),
+            steps_total=len(plan.steps),
+            verification_results=verification_results,
+        )
 
     async def _execute_steps(self, plan: RemediationPlan) -> RemediationResult:
         completed = 0
@@ -197,6 +289,61 @@ class RemediationEngine:
                 if isinstance(value, str) and value.strip():
                     targets.append(value.strip())
         return sorted(set(targets))
+
+    @staticmethod
+    def _base_plan_id(plan_id: str) -> str:
+        normalized = re.sub(r"-v\d+$", "", str(plan_id or "").strip())
+        return normalized or "plan"
+
+    def _revise_steps(self, raw_steps: list[dict[str, Any]], instruction: str) -> list[dict[str, Any]]:
+        steps = [dict(item) for item in raw_steps if isinstance(item, dict)]
+        removed_step_ids = self._parse_removed_step_ids(instruction)
+        if not removed_step_ids:
+            return steps
+
+        steps = [item for item in steps if int(item.get("step_id", 0) or 0) not in removed_step_ids]
+        if not steps:
+            removed_text = ", ".join(str(step_id) for step_id in sorted(removed_step_ids))
+            raise ValueError(f"cannot remove steps ({removed_text}): plan must keep at least one step")
+        for index, item in enumerate(steps, start=1):
+            item["step_id"] = index
+        return steps
+
+    @staticmethod
+    def _parse_removed_step_ids(instruction: str) -> set[int]:
+        text = str(instruction or "")
+        if not text.strip():
+            return set()
+        lowered = text.lower()
+        remove_keywords = ("移除", "删除", "删掉", "去掉", "remove", "drop")
+        if not any(keyword in text or keyword in lowered for keyword in remove_keywords):
+            return set()
+
+        found: set[int] = set()
+        for match in re.findall(r"(?:步骤|step)\s*([0-9]+)", text, flags=re.IGNORECASE):
+            found.add(int(match))
+        for match in re.findall(r"第\s*([0-9]+)\s*步", text):
+            found.add(int(match))
+        if found:
+            return found
+
+        remove_block = re.search(
+            r"(?:移除|删除|删掉|去掉|remove|drop)\s*([0-9,\s，、和and]+)",
+            text,
+            flags=re.IGNORECASE,
+        )
+        if remove_block:
+            for match in re.findall(r"[0-9]+", remove_block.group(1)):
+                found.add(int(match))
+        return found
+
+    @staticmethod
+    def _mock_command_for_step(tool: str, params: dict[str, Any]) -> str:
+        command = params.get("command")
+        if isinstance(command, str) and command.strip():
+            return command.strip()
+        compact_params = json.dumps(params or {}, ensure_ascii=False, sort_keys=True)
+        return f"mock::{tool} {compact_params}"
 
 
 def _extract_field(payload: Any, path: str) -> Any:

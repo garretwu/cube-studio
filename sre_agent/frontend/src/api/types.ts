@@ -172,6 +172,7 @@ export type DiagnosisResult = {
   affected_services: string[];
   triage_priority: "P0" | "P1" | "P2" | "P3";
   diagnosis_certainty: "confirmed" | "probable" | "ambiguous";
+  recommended_fix?: RemediationPlan | null;
 };
 
 export type DiagnosisBootstrapAlertItem = {
@@ -211,6 +212,14 @@ export type DiagnosisSession = {
   re_diagnosis_round?: number;
   duration_seconds: number;
   outcome?: string | null;
+};
+
+export type SessionEvent = {
+  schema_version: string;
+  type: EventType;
+  session_id: string;
+  timestamp: string;
+  data: Record<string, unknown>;
 };
 
 export type SessionSummary = {
@@ -317,12 +326,15 @@ export type RemediationPlan = {
 export type RemediationOverview = {
   session_id: string;
   plan: RemediationPlan;
+  plan_version?: number;
+  plan_history?: Array<{ version: number; plan_id: string; revised_at?: string; instruction?: string }>;
   progress: {
     status: string;
     completed_steps: number;
     total_steps: number;
     batch_status: Array<{ batch: string; progress: number; status: string }>;
   };
+  timeline?: SessionEvent[];
   approval_required: boolean;
 };
 

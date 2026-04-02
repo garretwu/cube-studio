@@ -146,6 +146,10 @@ export const handlers = [
       session_id: sessionId || diagnosisSession.session_id,
     });
   }),
+  http.get("/api/sessions/:sessionId/events", async () => {
+    await delay(40);
+    return HttpResponse.json([]);
+  }),
 
   http.get("/api/diagnosis/session/current", async () => {
     await delay(80);
@@ -221,6 +225,29 @@ export const handlers = [
       steps_total: 2,
       duration_seconds: 10,
       error: null,
+    });
+  }),
+  http.post("/api/remediate/:sessionId/plan/revise", async ({ params, request }) => {
+    await delay(60);
+    const body = (await request.json()) as { instruction?: string };
+    const sessionId = String(params.sessionId ?? diagnosisSession.session_id);
+    return HttpResponse.json({
+      session_id: sessionId,
+      plan_version: 2,
+      plan: {
+        plan_id: "plan-2",
+        root_cause: diagnosisSession.diagnosis_result?.root_cause ?? "unknown",
+        description: body.instruction ?? "revised",
+        steps: [],
+        estimated_impact: "low",
+        confidence: 0.7,
+        priority: "P2",
+      },
+      session: {
+        ...diagnosisSession,
+        session_id: sessionId,
+        status: "approval_required",
+      },
     });
   }),
   http.post("/api/remediation/:sessionId/approve", async () => {

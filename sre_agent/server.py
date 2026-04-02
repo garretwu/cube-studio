@@ -173,6 +173,19 @@ class InMemoryTracePublisher:
             async with self._condition:
                 await self._condition.wait()
 
+    def list_events(self, session_id: str, *, limit: int | None = None, after: str | None = None) -> list[WSEvent]:
+        events = list(self._events.get(session_id, []))
+        start_index = 0
+        if after is not None:
+            for pos, event in enumerate(events):
+                if str(event.data.get("event_id")) == str(after):
+                    start_index = pos + 1
+                    break
+        sliced = events[start_index:]
+        if limit is not None and limit > 0:
+            return sliced[-limit:]
+        return sliced
+
 
 class InMemoryAlertStore:
     def __init__(self, *, max_items: int = 200) -> None:
@@ -1284,6 +1297,7 @@ def create_app(
         prometheus=prometheus,
         validator=validator,
         execution_context=context,
+        execution_mode=cfg.remediation.execution_mode,
     )
     register_remediation_channel(
         context=context,

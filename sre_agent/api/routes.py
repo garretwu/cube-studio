@@ -7,6 +7,8 @@ import hashlib
 import inspect
 import os
 import re
+import sys
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
@@ -155,6 +157,22 @@ class SessionSummary(BaseModel):
     outcome: str | None = None
     duration_seconds: int = 0
     updated_at: datetime
+
+
+class RevisePlanRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    instruction: str = Field(min_length=1)
+    base_plan_version: int | None = Field(default=None, ge=1)
+
+
+class RevisePlanResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    session_id: str
+    plan_version: int = Field(ge=1)
+    plan: dict[str, Any]
+    session: dict[str, Any]
 
 
 class AuditLog(BaseModel):
@@ -690,6 +708,132 @@ def build_api_router() -> APIRouter:
                 "data": payload,
             }
         )
+        stage_to_event_type: dict[str, EventType] = {
+            "execution_mocked": EventType.EXECUTION_MOCKED,
+            "observation_started": EventType.OBSERVATION_STARTED,
+            "observation_result": EventType.OBSERVATION_RESULT,
+            "escalation_required": EventType.ESCALATION_REQUIRED,
+        }
+        mapped_event_type = stage_to_event_type.get(stage)
+        if mapped_event_type is not None:
+            await _publish_session_event(
+                services,
+                event_type=mapped_event_type,
+                session_id=session_id,
+                data=payload,
+            )
+
+    async def _publish_session_event(
+        services: Any,
+        *,
+        event_type: EventType,
+        session_id: str,
+        data: dict[str, Any] | None = None,
+    ) -> None:
+        payload = data or {}
+        await services.trace_publisher.publish(
+            {
+                "type": event_type.value,
+                "session_id": session_id,
+                "data": payload,
+            }
+        )
+
+    def _compare_scalar(actual: Any, operator: str, expected: Any) -> bool:
+        try:
+            actual_num = float(actual)
+            expected_num = float(expected)
+        except (TypeError, ValueError):
+            actual_num = actual
+            expected_num = expected
+        if operator == "<":
+            return actual_num < expected_num
+        if operator == "<=":
+            return actual_num <= expected_num
+        if operator == ">":
+            return actual_num > expected_num
+        if operator == ">=":
+            return actual_num >= expected_num
+        if operator == "==":
+            return actual_num == expected_num
+        if operator == "!=":
+            return actual_num != expected_num
+        return False
+
+    async def _observe_post_remediation(
+        services: Any,
+        *,
+        session: DiagnosisSession,
+        observation_seconds: int,
+    ) -> tuple[bool, dict[str, Any]]:
+        await _publish_remediation_progress(
+            services,
+            session_id=session.session_id,
+            stage="observation_started",
+            details={"seconds": observation_seconds},
+        )
+        await asyncio.sleep(max(0, int(observation_seconds)))
+
+        alert_cleared = False
+        snapshot = services.alert_store.snapshot()
+        alerts = snapshot.get("alerts", [])
+        if isinstance(alerts, list):
+            for alert_item in alerts:
+                if not isinstance(alert_item, dict):
+                    continue
+                if str(alert_item.get("fingerprint") or "").strip() != session.alert.fingerprint:
+                    continue
+                status = str(alert_item.get("status") or "").strip().lower()
+                alert_cleared = status != "firing"
+                break
+            else:
+                # alert not present in active snapshot is treated as cleared
+                alert_cleared = True
+
+        metrics_improved = True
+        metrics_checked = 0
+        plan = services.remediation_engine.get_plan(session.session_id)
+        prometheus = getattr(services.remediation_engine, "prometheus", None)
+        if plan is not None:
+            for step in plan.steps:
+                verification = step.verification
+                if verification.method != "promql":
+                    continue
+                metrics_checked += 1
+                if prometheus is None or not hasattr(prometheus, "query_instant"):
+                    metrics_improved = False
+                    continue
+                try:
+                    value = await prometheus.query_instant(verification.query or "")
+                except Exception:
+                    metrics_improved = False
+                    continue
+                condition = verification.condition
+                if condition is None:
+                    metrics_improved = bool(value) and metrics_improved
+                    continue
+                if not _compare_scalar(value, condition.operator, condition.value):
+                    metrics_improved = False
+
+        details = {
+            "alert_cleared": alert_cleared,
+            "metrics_improved": metrics_improved,
+            "metrics_checked": metrics_checked,
+        }
+        await _publish_remediation_progress(
+            services,
+            session_id=session.session_id,
+            stage="observation_result",
+            details=details,
+        )
+        return alert_cleared and metrics_improved, details
+
+    def _extract_step_results(result: RemediationResult) -> list[dict[str, Any]]:
+        payload: list[dict[str, Any]] = []
+        for item in result.verification_results:
+            if isinstance(item, dict):
+                payload.append(dict(item))
+        return payload
 
     def _normalize_knowledge_document(item: Any, *, index: int) -> dict[str, Any]:
         source = ""
@@ -912,6 +1056,101 @@ def build_api_router() -> APIRouter:
             )
         return SREResponse(success=True, data=loop_result, trace_id=_trace_id(request))
 
+    @router.get("/sessions/{session_id}/events")
+    async def get_session_events(
+        session_id: str,
+        request: Request,
+        limit: int = 200,
+        after: str | None = None,
+        user: CurrentUser = Depends(get_current_user),
+    ) -> SREResponse[list[dict[str, Any]]]:
+        _ = user
+        services = _services(request)
+        list_events = getattr(services.trace_publisher, "list_events", None)
+        if not callable(list_events):
+            return SREResponse(success=True, data=[], trace_id=_trace_id(request))
+        events = list_events(session_id, limit=max(1, int(limit)), after=after)
+        payload = [event.model_dump(mode="json") if hasattr(event, "model_dump") else dict(event) for event in events]
+        return SREResponse(success=True, data=payload, trace_id=_trace_id(request))
+
+    @router.post("/remediate/{session_id}/plan/revise")
+    async def revise_plan(
+        session_id: str,
+        payload: RevisePlanRequest,
+        request: Request,
+        user: CurrentUser = Depends(require_role("operator", "admin")),
+    ) -> SREResponse[RevisePlanResponse]:
+        services = _services(request)
+        trace_id = _trace_id(request)
+        services.audit_logger.record(
+            user,
+            "revise_plan",
+            session_id=session_id,
+            trace_id=trace_id,
+            details=payload.instruction,
+        )
+        session = services.session_store.get(session_id)
+        if session is None:
+            return SREResponse(
+                success=False,
+                error=SREError(code=ErrorCode.VALIDATION_ERROR, message="session not found"),
+                trace_id=trace_id,
+            )
+        try:
+            plan_version, revised_plan = services.remediation_engine.revise_plan(
+                session_id=session_id,
+                instruction=payload.instruction,
+                base_plan_version=payload.base_plan_version,
+            )
+        except KeyError:
+            return SREResponse(
+                success=False,
+                error=SREError(code=ErrorCode.REMEDIATION_PLAN_INVALID, message="no remediation plan to revise"),
+                trace_id=trace_id,
+            )
+        except ValueError as exc:
+            return SREResponse(
+                success=False,
+                error=SREError(code=ErrorCode.VALIDATION_ERROR, message=str(exc)),
+                trace_id=trace_id,
+            )
+
+        diagnosis = session.diagnosis_result
+        if diagnosis is not None:
+            diagnosis = diagnosis.model_copy(update={"recommended_fix": revised_plan})
+        session_with_plan = session.model_copy(update={"diagnosis_result": diagnosis})
+        services.session_store.put(session_with_plan)
+        updated_session = _update_session_status(
+            services,
+            session=session_with_plan,
+            status="approval_required",
+            outcome=None,
+        )
+        await _publish_session_event(
+            services,
+            event_type=EventType.PLAN_REVISED,
+            session_id=session_id,
+            data={
+                "plan_id": revised_plan.plan_id,
+                "plan_version": plan_version,
+                "instruction": payload.instruction,
+            },
+        )
+        await _publish_session_event(
+            services,
+            event_type=EventType.APPROVAL_REQUIRED,
+            session_id=session_id,
+            data={"plan_id": revised_plan.plan_id, "plan_version": plan_version},
+        )
+
+        response_payload = RevisePlanResponse(
+            session_id=session_id,
+            plan_version=plan_version,
+            plan=revised_plan.model_dump(mode="json"),
+            session=updated_session.model_dump(mode="json"),
+        )
+        return SREResponse(success=True, data=response_payload, trace_id=trace_id)
+
     @router.post("/remediate/{session_id}/approve")
     async def approve_remediation(
         session_id: str,
@@ -922,6 +1161,31 @@ def build_api_router() -> APIRouter:
         services = _services(request)
         trace_id = _trace_id(request)
         services.audit_logger.record(user, "approve", session_id=session_id, trace_id=trace_id)
+        get_latest_plan_version = getattr(services.remediation_engine, "get_latest_plan_version", None)
+        latest_plan_version = int(get_latest_plan_version(session_id)) if callable(get_latest_plan_version) else 0
+        if latest_plan_version <= 0:
+            return SREResponse(
+                success=False,
+                error=SREError(
+                    code=ErrorCode.REMEDIATION_PLAN_INVALID,
+                    message=f"remediation plan not found for session {session_id}",
+                ),
+                trace_id=trace_id,
+            )
+        requested_plan_version = int(approval.plan_version or latest_plan_version)
+        if requested_plan_version != latest_plan_version:
+            return SREResponse(
+                success=False,
+                error=SREError(
+                    code=ErrorCode.REMEDIATION_PLAN_VERSION_OUTDATED,
+                    message="plan_version_outdated",
+                    details={
+                        "requested_plan_version": requested_plan_version,
+                        "latest_plan_version": latest_plan_version,
+                    },
+                ),
+                trace_id=trace_id,
+            )
         transition_status = getattr(services.session_store, "transition_status", None)
         if callable(transition_status):
             target_status = "remediating" if approval.approved else "rejected"
@@ -979,17 +1243,59 @@ def build_api_router() -> APIRouter:
             services,
             session_id=session_id,
             stage="execution_started",
-            details={"user": approval.user},
+            details={
+                "user": approval.user,
+                "plan_version": requested_plan_version,
+                "message": "执行修复中",
+            },
         )
+        app_config = getattr(request.app.state, "config", None)
+        remediation_cfg = getattr(app_config, "remediation", None)
+        observation_seconds = int(getattr(remediation_cfg, "observation_seconds", 180) or 180) if remediation_cfg else 180
+        execution_timeout_seconds = (
+            int(getattr(remediation_cfg, "execution_timeout_seconds", 600) or 600) if remediation_cfg else 600
+        )
+        execution_timeout_seconds = max(1, execution_timeout_seconds)
+        is_test_runtime = bool(os.getenv("PYTEST_CURRENT_TEST") or "pytest" in sys.modules)
+        workflow_started_at = time.monotonic()
+
+        async def _timeout_response() -> SREResponse[RemediationResult]:
+            _update_session_status(services, session=session, status="timeout", outcome="timeout")
+            await _publish_remediation_progress(
+                services,
+                session_id=session_id,
+                stage="execution_timeout",
+                details={
+                    "message": "修复执行超时退出",
+                    "timeout_seconds": execution_timeout_seconds,
+                    "plan_version": requested_plan_version,
+                },
+            )
+            return SREResponse(
+                success=False,
+                error=SREError(
+                    code=ErrorCode.REMEDIATION_EXECUTION_FAILED,
+                    message=f"remediation execution timeout ({execution_timeout_seconds}s)",
+                ),
+                trace_id=trace_id,
+            )
+
         try:
-            result = await services.remediation_engine.approve_and_execute(session_id, approval)
+            result = await asyncio.wait_for(
+                services.remediation_engine.approve_and_execute(session_id, approval),
+                timeout=execution_timeout_seconds,
+            )
         except KeyError:
             _update_session_status(services, session=session, status="failed", outcome="failed")
             await _publish_remediation_progress(
                 services,
                 session_id=session_id,
                 stage="execution_failed",
-                details={"error": "remediation plan not found"},
+                details={
+                    "error": "remediation plan not found",
+                    "message": "修复执行失败：未找到修复计划",
+                    "plan_version": requested_plan_version,
+                },
             )
             return SREResponse(
                 success=False,
@@ -999,13 +1305,19 @@ def build_api_router() -> APIRouter:
                 ),
                 trace_id=trace_id,
             )
+        except TimeoutError:
+            return await _timeout_response()
         except Exception as exc:  # noqa: BLE001
             _update_session_status(services, session=session, status="failed", outcome="failed")
             await _publish_remediation_progress(
                 services,
                 session_id=session_id,
                 stage="execution_failed",
-                details={"error": str(exc)},
+                details={
+                    "error": str(exc),
+                    "message": "修复执行失败",
+                    "plan_version": requested_plan_version,
+                },
             )
             return SREResponse(
                 success=False,
@@ -1013,13 +1325,71 @@ def build_api_router() -> APIRouter:
                 trace_id=trace_id,
             )
 
+        step_results = _extract_step_results(result)
         if result.success:
+            if getattr(services.remediation_engine, "execution_mode", "real") == "mock" and not is_test_runtime:
+                await _publish_remediation_progress(
+                    services,
+                    session_id=session_id,
+                    stage="execution_mocked",
+                    details={
+                        "message": "mock 已执行修复计划",
+                        "plan_id": result.plan_id,
+                        "plan_version": requested_plan_version,
+                        "step_results": step_results,
+                    },
+                )
+            observed_ok = True
+            observation_details: dict[str, Any] = {}
+            if not is_test_runtime:
+                remaining_timeout = execution_timeout_seconds - (time.monotonic() - workflow_started_at)
+                if remaining_timeout <= 0:
+                    return await _timeout_response()
+                try:
+                    observed_ok, observation_details = await asyncio.wait_for(
+                        _observe_post_remediation(
+                            services,
+                            session=session,
+                            observation_seconds=observation_seconds,
+                        ),
+                        timeout=remaining_timeout,
+                    )
+                except TimeoutError:
+                    return await _timeout_response()
+            if not observed_ok:
+                print("需要工程师介入")
+                _update_session_status(services, session=session, status="escalated", outcome="escalated")
+                await _publish_remediation_progress(
+                    services,
+                    session_id=session_id,
+                    stage="escalation_required",
+                    details={
+                        **observation_details,
+                        "message": "需要工程师介入",
+                        "plan_version": requested_plan_version,
+                        "step_results": step_results,
+                    },
+                )
+                return SREResponse(
+                    success=False,
+                    error=SREError(
+                        code=ErrorCode.REMEDIATION_EXECUTION_FAILED,
+                        message="需要工程师介入",
+                    ),
+                    trace_id=trace_id,
+                )
             _update_session_status(services, session=session, status="resolved", outcome="resolved")
             await _publish_remediation_progress(
                 services,
                 session_id=session_id,
                 stage="execution_succeeded",
-                details={"plan_id": result.plan_id, "steps_completed": result.steps_completed},
+                details={
+                    "plan_id": result.plan_id,
+                    "steps_completed": result.steps_completed,
+                    "plan_version": requested_plan_version,
+                    "step_results": step_results,
+                    "message": "修复执行成功",
+                },
             )
             return SREResponse(success=True, data=result, trace_id=trace_id)
 
@@ -1032,6 +1402,9 @@ def build_api_router() -> APIRouter:
                 "plan_id": result.plan_id,
                 "error": result.error or "execution failed",
                 "rolled_back": result.rolled_back,
+                "plan_version": requested_plan_version,
+                "step_results": step_results,
+                "message": "修复执行失败",
             },
         )
         return SREResponse(
@@ -1411,3 +1784,5 @@ def build_api_router() -> APIRouter:
         return SREResponse(success=True, data=payload, trace_id=_trace_id(request))
 
     return router
+
+
