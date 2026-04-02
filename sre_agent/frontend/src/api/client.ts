@@ -34,6 +34,7 @@ const api = axios.create({
   timeout: 10000,
 });
 const DIAGNOSE_REQUEST_TIMEOUT_MS = 120000;
+const CHAT_REQUEST_TIMEOUT_MS = 120000;
 const DIAGNOSE_SESSION_POLL_MS = 2000;
 const DIAGNOSE_SESSION_POLL_ATTEMPTS = 30;
 
@@ -514,6 +515,7 @@ export const apiClient = {
     >(
       "/api/chat",
       { content, session_id: maybeContent ? sessionOrContent : undefined },
+      { timeout: CHAT_REQUEST_TIMEOUT_MS },
     );
     const payload = unwrapPayload(response.data);
     const responseMeta = payload.meta ?? undefined;

@@ -2,11 +2,14 @@
 from __future__ import annotations
 
 import inspect
+import logging
 import re
 from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol
 
 from .base import BaseChannel, ChannelResult, SafetyViolationError
+
+LOGGER = logging.getLogger(__name__)
 
 
 class LokiLogBackend(Protocol):
@@ -495,20 +498,30 @@ class LogChannel(BaseChannel):
 
         if start is not None and end is not None and hasattr(self.loki, "query_range"):
             method = getattr(self.loki, "query_range")
-            response = await self._call_query_range(
-                method=method,
-                query=query,
-                start=start,
-                end=end,
-                step=step,
-                limit=limit,
-            )
-            return response
+            try:
+                response = await self._call_query_range(
+                    method=method,
+                    query=query,
+                    start=start,
+                    end=end,
+                    step=step,
+                    limit=limit,
+                )
+                return response
+            except Exception as exc:  # noqa: BLE001
+                if self._is_recoverable_loki_error(exc):
+                    return self._empty_loki_response(query=query, error=exc)
+                raise
 
         if hasattr(self.loki, "query"):
             method = getattr(self.loki, "query")
-            response = await self._call_query(method=method, query=query, limit=limit)
-            return response
+            try:
+                response = await self._call_query(method=method, query=query, limit=limit)
+                return response
+            except Exception as exc:  # noqa: BLE001
+                if self._is_recoverable_loki_error(exc):
+                    return self._empty_loki_response(query=query, error=exc)
+                raise
 
         if hasattr(self.loki, "query_range"):
             method = getattr(self.loki, "query_range")
@@ -516,14 +529,19 @@ class LogChannel(BaseChannel):
                 lookback="15m",
                 default=timedelta(minutes=15),
             )
-            return await self._call_query_range(
-                method=method,
-                query=query,
-                start=computed_start,
-                end=computed_end,
-                step=step,
-                limit=limit,
-            )
+            try:
+                return await self._call_query_range(
+                    method=method,
+                    query=query,
+                    start=computed_start,
+                    end=computed_end,
+                    step=step,
+                    limit=limit,
+                )
+            except Exception as exc:  # noqa: BLE001
+                if self._is_recoverable_loki_error(exc):
+                    return self._empty_loki_response(query=query, error=exc)
+                raise
 
         raise RuntimeError("loki dependency does not provide query/query_range")
 
@@ -544,14 +562,19 @@ class LogChannel(BaseChannel):
         method = getattr(self.loki, "query_range", None)
         if method is None:
             raise RuntimeError("loki dependency does not provide query_range")
-        return await self._call_query_range(
-            method=method,
-            query=query,
-            start=start,
-            end=end,
-            step=step,
-            limit=limit,
-        )
+        try:
+            return await self._call_query_range(
+                method=method,
+                query=query,
+                start=start,
+                end=end,
+                step=step,
+                limit=limit,
+            )
+        except Exception as exc:  # noqa: BLE001
+            if self._is_recoverable_loki_error(exc):
+                return self._empty_loki_response(query=query, error=exc)
+            raise
 
     async def _call_query(self, *, method: Any, query: str, limit: int) -> Any:
         kwargs_options = [
@@ -865,6 +888,16 @@ class LogChannel(BaseChannel):
         if inspect.isawaitable(value):
             return await value
         return value
+
+    @staticmethod
+    def _is_recoverable_loki_error(exc: Exception) -> bool:
+        message = str(exc).lower()
+        return "400 bad request" in message or "invalid query" in message or "parse error" in message
+
+    @staticmethod
+    def _empty_loki_response(*, query: str, error: Exception) -> dict[str, Any]:
+        LOGGER.warning("loki query degraded to empty result: query=%s error=%s", query, error)
+        return {"data": {"result": []}}
 
     @staticmethod
     def _normalize_lines(value: Any) -> list[str]:

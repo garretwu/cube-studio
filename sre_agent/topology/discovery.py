@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 from datetime import UTC, datetime
 from pathlib import Path
@@ -19,6 +20,8 @@ from sre_agent.ontology.discovery.bmc_scanner import BMCScanner
 from sre_agent.ontology.discovery.k8s_scanner import K8sScanner
 from sre_agent.ontology.discovery.prometheus_scanner import PrometheusScanner
 from sre_agent.ontology.discovery.switch_scanner import SwitchScanner
+
+LOGGER = logging.getLogger(__name__)
 
 
 def _summary_counts(nodes: list[OntologyNode], edges: list[OntologyEdge]) -> dict[str, int]:
@@ -253,6 +256,26 @@ def _extract_connected_worker(interface: Any, worker_names: list[str]) -> str | 
     return None
 
 
+def _normalize_secret_value(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    if text.upper() in {"REPLACE_ME", "CHANGEME", "TODO"}:
+        return ""
+    return text
+
+
+def _resolve_bool(raw: Any, *, default: bool) -> bool:
+    if isinstance(raw, bool):
+        return raw
+    text = str(raw or "").strip().lower()
+    if text in {"1", "true", "yes", "on"}:
+        return True
+    if text in {"0", "false", "no", "off"}:
+        return False
+    return default
+
+
 async def scan_live_sources(
     raw_config: dict[str, Any],
     *,
@@ -281,33 +304,55 @@ async def scan_live_sources(
     ]
 
     bmc_payloads: list[dict[str, Any]] = []
+    bmc_warnings: list[str] = []
+    env_redfish_username = _normalize_secret_value(os.getenv("SRE_REDFISH_USERNAME", ""))
+    env_redfish_password = _normalize_secret_value(os.getenv("SRE_REDFISH_PASSWORD", ""))
+    env_redfish_verify_tls = os.getenv("SRE_REDFISH_VERIFY_TLS", "")
     for worker in workers:
         worker_name = str(worker["name"]).strip()
         redfish_cfg: dict[str, Any] = worker["redfish"]
+        username = _normalize_secret_value(redfish_cfg.get("username")) or env_redfish_username
+        password = _normalize_secret_value(redfish_cfg.get("password")) or env_redfish_password
+        if not username or not password:
+            bmc_warnings.append(
+                f"worker={worker_name} missing redfish credentials; "
+                "provide redfish.username/password or SRE_REDFISH_USERNAME/SRE_REDFISH_PASSWORD"
+            )
+            continue
+        verify_tls_raw = redfish_cfg.get("verify_tls")
+        verify_tls = _resolve_bool(
+            verify_tls_raw if verify_tls_raw is not None else env_redfish_verify_tls,
+            default=True,
+        )
         timeout_sec = int(redfish_cfg.get("timeout", 30))
         redfish = RedfishChannel(timeout=timeout_sec)
         try:
             auth = await redfish.authenticate(
                 str(redfish_cfg["bmc_host"]),
-                str(redfish_cfg["username"]),
-                str(redfish_cfg["password"]),
-                verify_tls=bool(redfish_cfg.get("verify_tls", True)),
+                username,
+                password,
+                verify_tls=verify_tls,
             )
             if not auth.success:
-                raise RuntimeError(
-                    f"live BMC auth failed for worker={worker_name} host={redfish_cfg['bmc_host']}: {auth.error}"
+                bmc_warnings.append(
+                    f"worker={worker_name} redfish auth failed for host={redfish_cfg['bmc_host']}: {auth.error}"
                 )
+                continue
             info = await redfish.get_bmc_info(
                 str(redfish_cfg["bmc_host"]),
-                verify_tls=bool(redfish_cfg.get("verify_tls", True)),
+                verify_tls=verify_tls,
             )
             if not info.success:
-                raise RuntimeError(
-                    f"live BMC info query failed for worker={worker_name} host={redfish_cfg['bmc_host']}: {info.error}"
+                bmc_warnings.append(
+                    f"worker={worker_name} redfish info failed for host={redfish_cfg['bmc_host']}: {info.error}"
                 )
+                continue
             info_json = yaml.safe_load(info.output) if info.output else {}
             if not isinstance(info_json, dict):
                 info_json = {}
+        except Exception as exc:  # noqa: BLE001
+            bmc_warnings.append(f"worker={worker_name} redfish scan exception: {exc}")
+            continue
         finally:
             await redfish.close()
 
@@ -430,6 +475,10 @@ async def scan_live_sources(
         "prometheus": _summary_counts(prom_nodes, prom_edges),
         "switch": _summary_counts(switch_nodes, switch_edges),
     }
+    if bmc_warnings:
+        preview = "; ".join(bmc_warnings[:3])
+        suffix = f" (and {len(bmc_warnings) - 3} more)" if len(bmc_warnings) > 3 else ""
+        LOGGER.warning("live BMC scan degraded: %s%s", preview, suffix)
     return all_nodes, all_edges, scanner_counts
 
 

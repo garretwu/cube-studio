@@ -28,6 +28,30 @@ class EntityType(str, Enum):
     METRIC_ENDPOINT = "metric_endpoint"
     UNKNOWN = "unknown"
 
+    @classmethod
+    def _missing_(cls, value: object) -> EntityType | None:
+        if not isinstance(value, str):
+            return None
+        normalized = value.strip().lower()
+        aliases = {
+            "network": "switch",
+            "switches": "switch",
+            "service": "inference_service",
+            "services": "inference_service",
+            "cluster": "k8s_cluster",
+            "pod": "k8s_pod",
+            "metric": "metric_endpoint",
+            "metrics": "metric_endpoint",
+            "bmc": "bmc_endpoint",
+            "host": "node",
+            "hardware": "node",
+        }
+        candidate = aliases.get(normalized, normalized)
+        for member in cls:
+            if member.value == candidate:
+                return member
+        return None
+
 
 class RelationType(str, Enum):
     """Supported ontology relationship directions."""

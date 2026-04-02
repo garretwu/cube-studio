@@ -6,6 +6,7 @@ import { isValidElement, useCallback, useEffect, useMemo, useRef, useState } fro
 import { useParams } from "react-router-dom";
 
 import type { WSEvent } from "../api/types";
+import { buildBackendWsUrl } from "../api/ws";
 import { SectionHeader, StatusChip, SurfaceCard } from "../components/ui";
 import { useWebSocket } from "../hooks/useWebSocket";
 import { useDiagnosisStore } from "../store/diagnosisStore";
@@ -568,7 +569,10 @@ function DiagnosisPage() {
   const websocketEnabled = import.meta.env.VITE_WS_ENABLED === "true" && Boolean(activeSessionId);
 
   const websocketUrl = useMemo(
-    () => `${window.location.origin.replace(/^http/, "ws")}/ws/thinking-trace/${activeSessionId ?? "pending"}`,
+    () =>
+      buildBackendWsUrl(`/ws/thinking-trace/${activeSessionId ?? "pending"}`, {
+        token: import.meta.env.VITE_API_TOKEN ?? "",
+      }),
     [activeSessionId],
   );
 
@@ -1131,6 +1135,13 @@ function DiagnosisPage() {
             {bootstrapStatus === "error" && error ? (
               <div className="diagnosis-chat-state-card diagnosis-chat-state-card--error">
                 <p className="diagnosis-chat-state-card__title">诊断请求失败</p>
+                <p className="diagnosis-chat-state-card__copy">{error}</p>
+              </div>
+            ) : null}
+
+            {bootstrapStatus === "ready" && error ? (
+              <div className="diagnosis-chat-state-card diagnosis-chat-state-card--error">
+                <p className="diagnosis-chat-state-card__title">追问发送失败</p>
                 <p className="diagnosis-chat-state-card__copy">{error}</p>
               </div>
             ) : null}
