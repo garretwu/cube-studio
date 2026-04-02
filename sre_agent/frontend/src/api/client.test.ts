@@ -54,7 +54,7 @@ describe("apiClient.getTopology", () => {
           data: {
             session_id: "sess-1",
             alert: {
-              alert_name: "GPUUtilizationHigh",
+              alert_name: "VLLMInterTokenLatencyP95High",
               severity: "warning",
               labels: {},
               annotations: {},
@@ -131,7 +131,7 @@ describe("apiClient.getTopology", () => {
     );
 
     const sessionId = await apiClient.handleAlert({
-      alert_name: "GPUUtilizationHigh",
+      alert_name: "VLLMInterTokenLatencyP95High",
       severity: "warning",
       labels: {},
       annotations: {},
@@ -153,7 +153,7 @@ describe("apiClient.getTopology", () => {
             {
               session_id: "sess-2",
               status: "diagnosed",
-              alert_name: "GPUUtilizationHigh",
+              alert_name: "VLLMInterTokenLatencyP95High",
               severity: "warning",
               fingerprint: "fp-2",
               outcome: null,
@@ -171,6 +171,110 @@ describe("apiClient.getTopology", () => {
     const sessions = await apiClient.getSessions();
     expect(sessions).toHaveLength(1);
     expect(sessions[0]?.session_id).toBe("sess-2");
+  });
+
+  it("filters blocked alerts from /api/alerts response", async () => {
+    server.use(
+      http.get("/api/alerts", async () =>
+        HttpResponse.json({
+          success: true,
+          data: {
+            alerts: [
+              {
+                alert_name: "GPU utilization is high",
+                severity: "warning",
+                labels: { alertname: "GPU utilization is high" },
+                annotations: {},
+                starts_at: "2026-03-26T00:00:00Z",
+                fingerprint: "fp-blocked",
+                status: "firing",
+              },
+              {
+                alert_name: "VLLMInterTokenLatencyP95High",
+                severity: "critical",
+                labels: { alertname: "VLLMInterTokenLatencyP95High" },
+                annotations: {},
+                starts_at: "2026-03-26T00:01:00Z",
+                fingerprint: "fp-allowed",
+                status: "firing",
+              },
+            ],
+            clusters: [
+              { cluster_id: "c-1", summary: "mixed", severity: "critical", alerts: ["fp-blocked", "fp-allowed"] },
+            ],
+          },
+          error: null,
+          trace_id: "trace-alerts",
+          timestamp: "2026-03-26T00:00:00Z",
+        }),
+      ),
+    );
+
+    const payload = await apiClient.getAlerts();
+    expect(payload.alerts).toHaveLength(1);
+    expect(payload.alerts[0]?.fingerprint).toBe("fp-allowed");
+    expect(payload.clusters).toHaveLength(1);
+    expect(payload.clusters[0]?.alerts).toEqual(["fp-allowed"]);
+  });
+
+  it("blocks diagnose request when alert is filtered locally", async () => {
+    let called = false;
+    server.use(
+      http.post("/api/diagnose", async () => {
+        called = true;
+        return HttpResponse.json({
+          success: true,
+          data: null,
+          error: null,
+          trace_id: "trace-diagnose",
+          timestamp: "2026-03-26T00:00:00Z",
+        });
+      }),
+    );
+
+    await expect(
+      apiClient.diagnoseAlert({
+        alert_name: "GPUUtilizationHigh",
+        severity: "warning",
+        labels: { alertname: "GPUUtilizationHigh" },
+        annotations: {},
+        starts_at: "2026-03-26T00:00:00Z",
+        fingerprint: "fp-blocked-2",
+        status: "firing",
+      }),
+    ).rejects.toThrow("temporarily filtered");
+
+    expect(called).toBe(false);
+  });
+
+  it("blocks handle request when alert is filtered locally", async () => {
+    let called = false;
+    server.use(
+      http.post("/api/handle", async () => {
+        called = true;
+        return HttpResponse.json({
+          success: true,
+          data: { session_id: "sess-3" },
+          error: null,
+          trace_id: "trace-handle",
+          timestamp: "2026-03-26T00:00:00Z",
+        });
+      }),
+    );
+
+    await expect(
+      apiClient.handleAlert({
+        alert_name: "GPU utilization is high",
+        severity: "warning",
+        labels: { alertname: "GPU utilization is high" },
+        annotations: {},
+        starts_at: "2026-03-26T00:00:00Z",
+        fingerprint: "fp-blocked-3",
+        status: "firing",
+      }),
+    ).rejects.toThrow("temporarily filtered");
+
+    expect(called).toBe(false);
   });
 
   it("loads chat history from /api/chat/history", async () => {

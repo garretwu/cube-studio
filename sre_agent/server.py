@@ -19,6 +19,7 @@ from fastapi import FastAPI
 
 from lib.channels.alert import AlertChannel
 from sre_agent.agent import ConversationalAgent, run_diagnosis
+from sre_agent.alerts_filter import build_blocked_alert_name_set, filter_blocked_alerts
 from sre_agent.api import build_api_router, build_websocket_router, install_middlewares
 from sre_agent.api.routes import AuditLogger
 from sre_agent.auth.jwt import CurrentUser, JWTSettings, resolve_jwt_settings
@@ -257,11 +258,13 @@ class AlertPollingService:
         alert_store: InMemoryAlertStore,
         trace_publisher: InMemoryTracePublisher,
         poll_interval_seconds: float = 5.0,
+        blocked_alert_names: set[str] | None = None,
     ) -> None:
         self._channel = channel
         self._alert_store = alert_store
         self._trace_publisher = trace_publisher
         self._poll_interval_seconds = max(0.2, float(poll_interval_seconds))
+        self._blocked_alert_names = blocked_alert_names or set()
         self._stop_event = asyncio.Event()
         self._task: asyncio.Task[None] | None = None
         self._last_versions: dict[str, str] = {}
@@ -292,6 +295,7 @@ class AlertPollingService:
             while not self._stop_event.is_set():
                 try:
                     alerts = await self._channel.get_firing_alerts()
+                    alerts = filter_blocked_alerts(alerts, blocked_names=self._blocked_alert_names)
                     self._alert_store.replace(alerts)
                     await self._publish_changes(alerts)
                 except asyncio.CancelledError:
@@ -1009,11 +1013,13 @@ def _build_alert_polling_service(
         LOGGER.warning("alert poller disabled: alert channel does not implement required methods")
         return None
     interval = _resolve_alert_poll_interval_seconds(cfg)
+    blocked_alert_names = build_blocked_alert_name_set(getattr(cfg.global_, "blocked_alert_names", None))
     return AlertPollingService(
         channel=channel,
         alert_store=alert_store,
         trace_publisher=trace_publisher,
         poll_interval_seconds=interval,
+        blocked_alert_names=blocked_alert_names,
     )
 
 

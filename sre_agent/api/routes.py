@@ -16,6 +16,7 @@ from typing import Any, Literal
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, ConfigDict, Field
 
+from sre_agent.alerts_filter import build_blocked_alert_name_set, is_blocked_alert
 from sre_agent.auth.jwt import CurrentUser, get_current_user
 from sre_agent.auth.rbac import require_role
 from sre_agent.models.alert import Alert
@@ -905,6 +906,51 @@ def build_api_router() -> APIRouter:
                     count += 1
         return count
 
+    def _blocked_alert_names_from_request(request: Request) -> set[str]:
+        cfg = getattr(request.app.state, "config", None)
+        global_cfg = getattr(cfg, "global_", None) if cfg is not None else None
+        raw = getattr(global_cfg, "blocked_alert_names", None) if global_cfg is not None else None
+        return build_blocked_alert_name_set(raw)
+
+    def _blocked_alert_response(request: Request, alert_name: str) -> SREResponse[Any]:
+        message = f"alert '{alert_name}' is temporarily filtered and cannot be processed"
+        return SREResponse(
+            success=False,
+            error=SREError(code=ErrorCode.VALIDATION_ERROR, message=message),
+            trace_id=_trace_id(request),
+        )
+
+    def _filter_alert_snapshot(alerts: Any, clusters: Any, *, blocked_alert_names: set[str]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        filtered_alerts: list[dict[str, Any]] = []
+        if isinstance(alerts, list):
+            for item in alerts:
+                if not isinstance(item, dict):
+                    continue
+                if is_blocked_alert(item, blocked_names=blocked_alert_names):
+                    continue
+                filtered_alerts.append(item)
+
+        allowed_fingerprints = {
+            str(item.get("fingerprint", "")).strip()
+            for item in filtered_alerts
+            if isinstance(item.get("fingerprint"), str) and str(item.get("fingerprint", "")).strip()
+        }
+        filtered_clusters: list[dict[str, Any]] = []
+        if isinstance(clusters, list):
+            for cluster in clusters:
+                if not isinstance(cluster, dict):
+                    continue
+                refs = cluster.get("alerts", [])
+                if not isinstance(refs, list):
+                    refs = []
+                kept = [ref for ref in refs if isinstance(ref, str) and ref in allowed_fingerprints]
+                if not kept:
+                    continue
+                copied = dict(cluster)
+                copied["alerts"] = kept
+                filtered_clusters.append(copied)
+        return filtered_alerts, filtered_clusters
+
     def _enrich_alert_with_topology_summary(services: Any, alert: Alert) -> Alert:
         try:
             ontology = services.ontology
@@ -946,6 +992,9 @@ def build_api_router() -> APIRouter:
         user: CurrentUser = Depends(require_role("operator", "admin")),
     ) -> SREResponse[DiagnosisSession]:
         services = _services(request)
+        blocked_alert_names = _blocked_alert_names_from_request(request)
+        if is_blocked_alert(alert, blocked_names=blocked_alert_names):
+            return _blocked_alert_response(request, alert.alert_name)
         if services.diagnosis_runner is None:
             raise HTTPException(status_code=500, detail="diagnosis runner is not configured")
         prepared_alert = _enrich_alert_with_topology_summary(services, alert)
@@ -964,6 +1013,9 @@ def build_api_router() -> APIRouter:
         user: CurrentUser = Depends(require_role("operator", "admin")),
     ) -> SREResponse[LoopResult]:
         _ = user
+        blocked_alert_names = _blocked_alert_names_from_request(request)
+        if is_blocked_alert(alert, blocked_names=blocked_alert_names):
+            return _blocked_alert_response(request, alert.alert_name)
         services = _services(request)
         prepared_alert = _enrich_alert_with_topology_summary(services, alert)
         try:
@@ -1529,7 +1581,13 @@ def build_api_router() -> APIRouter:
         _ = user
         services = _services(request)
         snapshot = services.alert_store.snapshot()
-        payload = AlertSnapshotResponse(alerts=snapshot.get("alerts", []), clusters=snapshot.get("clusters", []))
+        blocked_alert_names = _blocked_alert_names_from_request(request)
+        filtered_alerts, filtered_clusters = _filter_alert_snapshot(
+            snapshot.get("alerts", []),
+            snapshot.get("clusters", []),
+            blocked_alert_names=blocked_alert_names,
+        )
+        payload = AlertSnapshotResponse(alerts=filtered_alerts, clusters=filtered_clusters)
         return SREResponse(success=True, data=payload, trace_id=_trace_id(request))
 
     @router.get("/ontology")
