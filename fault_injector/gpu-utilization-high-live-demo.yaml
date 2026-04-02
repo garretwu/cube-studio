@@ -75,7 +75,7 @@ scenarios:
     target_nodes:
       - "worker-03"
     params:
-      duration: 60
+      duration: 6000
       memory: "90%"
       gpu_ids: [0]
-      intensity: 100
+      intensity: 90

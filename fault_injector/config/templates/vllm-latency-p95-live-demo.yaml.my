@@ -22,21 +22,17 @@ demo:
   vllm_inter_token_latency_p95_alert_remediation:
     alert_name: "VLLMInterTokenLatencyP95High"
     alert_severity: "critical"
-    node: "worker-01"
-    namespace: "service"
-    service: "vllm-deepseek"
+    llm:
+      api_key: "replace-with-provider-key"
+      base_url: "https://coding.dashscope.aliyuncs.com/v1"
+      model: "MiniMax-M2.5"
     kubeconfig: "~/.kube/config"
     latency_promql: 'histogram_quantile(0.95, sum by(le) (rate(vllm:inter_token_latency_seconds_bucket{namespace="service",service="vllm-deepseek"}[1m])))'
     latency_threshold_ms: 50
+    remediation_wait_seconds: 60
     load_simulator_config: "load_simulator/config/inference-soak.yaml"
     load_warmup_seconds: 30
     alert_wait_seconds: 360
-    allowed_tools:
-      - "prometheus.query_instant"
-      - "gpu.get_metrics"
-      - "gpu.get_processes"
-      - "k8s.list_pods"
-      - "network.get_rdma_stats"
     total_timeout: 180
     step_timeout: 60
     max_steps: 6
@@ -52,10 +48,16 @@ inventory:
         password: "admin@123"
         timeout: 30
         use_sudo: false
-      interface: "eth0"
-      roles:
-        - "compute"
-        - "rdma"
+
+switches:
+  sw-200g:
+    host: "10.11.8.52"
+    port: 830
+    username: "apitest"
+    password: "ApiTest@2026"
+    timeout: 30
+    type: "H3C S9855-24B8D"
+    description: "200G Data Network Switch"
 
 scenarios:
   gpu_contention:

@@ -22,17 +22,54 @@ if str(REPO_ROOT) not in sys.path:
 
 from lib.channels.alert import AlertChannel
 from lib.channels.kubernetes import K8sChannel
+from lib.channels.ontology import OntologyChannel
 from lib.channels.prometheus import PrometheusChannel
 from lib.channels.ssh import SSHChannel
+from lib.channels.switch import SwitchChannel
 from lib.tests._real_backends import PrometheusHttpBackend
 from sre_agent.agent import run_diagnosis
+from sre_agent.agent.prompts import build_alert_diagnosis_prompt
 from sre_agent.config import load_config as load_agent_config
+from sre_agent.memory.factory import create_memory_store
 from sre_agent.models.alert import Alert
-from sre_agent.tools import ToolExecutionContext
+from sre_agent.models.remediation import RemediationPlan, VerificationCondition, VerificationConfig
+from sre_agent.ontology.graph import OntologyGraph
+from sre_agent.remediation import ApprovalGate, PlanValidationError, RemediationEngine, RollbackJournal
+from sre_agent.topology import (
+    augment_runtime_ontology,
+    build_topology_context,
+    infer_node_name_from_inventory_ip,
+    resolve_node_ip_from_pod,
+    resolve_pod_name_from_service,
+)
+from sre_agent.tools import SafetyLevel, ToolExecutionContext, ToolRegistry, build_default_registry
 
 DEFAULT_AGENT_CONFIG = Path("config.yaml")
 DEFAULT_DEMO_CONFIG = Path("fault_injector/vllm-latency-p95-live-demo.yaml")
 DEFAULT_DEMO_KEY = "vllm_inter_token_latency_p95_alert_remediation"
+DEFAULT_WAL_PATH = Path("data/wal/vllm-latency-p95-live-demo.jsonl")
+
+READ_ONLY_TOOL_CHANNELS: dict[str, set[str]] = {
+    "gpu.get_metrics": {"ssh"},
+    "gpu.get_processes": {"ssh"},
+    "k8s.describe_pod": {"k8s"},
+    "k8s.list_pods": {"k8s"},
+    "k8s.resolve_pod_node_ip": {"k8s"},
+    "k8s.resolve_service_pods": {"k8s"},
+    "k8s.read_pod_logs": {"log"},
+    "k8s.top_oomkilled": {"k8s"},
+    "k8s.top_pending": {"k8s"},
+    "memory.get_config_baseline": {"memory"},
+    "memory.search_incidents": {"memory"},
+    "memory.search_patterns": {"memory"},
+    "network.get_rdma_stats": {"ssh"},
+    "network.get_switch_port_counters": {"switch"},
+    "ontology.blast_radius": {"ontology"},
+    "ontology.path": {"ontology"},
+    "ontology.query": {"ontology"},
+    "prometheus.query_instant": {"prometheus"},
+    "prometheus.query_range": {"prometheus"},
+}
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -52,14 +89,39 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--output-format", choices=["json", "txt"], default="", help="Optional output format override.")
     parser.add_argument("--model", default="", help="Override SRE_LLM_MODEL for this run.")
     parser.add_argument("--base-url", default="", help="Override SRE_OPENAI_BASE_URL for this run.")
+    parser.add_argument(
+        "--execute-remediation",
+        action="store_true",
+        help="Execute the generated remediation plan through RemediationEngine if one is produced.",
+    )
+    parser.add_argument(
+        "--approval-user",
+        default="demo-admin",
+        help="Approver identity recorded when remediation execution is enabled.",
+    )
+    parser.add_argument(
+        "--wal-path",
+        default=str(DEFAULT_WAL_PATH),
+        help="WAL path used when executing remediation.",
+    )
     return parser
 
 
-def apply_model_env(args: argparse.Namespace) -> None:
-    if args.model:
-        os.environ["SRE_LLM_MODEL"] = args.model
-    if args.base_url:
-        os.environ["SRE_OPENAI_BASE_URL"] = args.base_url
+def apply_model_env(args: argparse.Namespace, demo: dict[str, Any] | None = None) -> None:
+    llm_cfg = demo.get("llm") if isinstance(demo, dict) else None
+    if not isinstance(llm_cfg, dict):
+        llm_cfg = {}
+
+    api_key = str(llm_cfg.get("api_key") or "").strip()
+    base_url = str(args.base_url or llm_cfg.get("base_url") or "").strip()
+    model = str(args.model or llm_cfg.get("model") or "").strip()
+
+    if api_key:
+        os.environ["OPENAI_API_KEY"] = api_key
+    if base_url:
+        os.environ["SRE_OPENAI_BASE_URL"] = base_url
+    if model:
+        os.environ["SRE_LLM_MODEL"] = model
 
 
 def load_demo_config(path: str) -> dict[str, Any]:
@@ -94,7 +156,15 @@ def _build_node_config(node_name: str, raw_node: dict[str, Any]) -> Any:
     )
     if not ssh_config.host:
         raise SystemExit(f"inventory node {node_name!r} is missing ssh.host")
-    return SimpleNamespace(name=node_name, ssh=ssh_config)
+    roles = raw_node.get("roles")
+    if not isinstance(roles, list):
+        roles = []
+    return SimpleNamespace(
+        name=node_name,
+        ssh=ssh_config,
+        interface=raw_node.get("interface"),
+        roles=[str(item) for item in roles if str(item).strip()],
+    )
 
 
 def flatten_inventory(raw_cfg: dict[str, Any]) -> dict[str, Any]:
@@ -113,6 +183,19 @@ def flatten_inventory(raw_cfg: dict[str, Any]) -> dict[str, Any]:
                 continue
             flattened[node_name] = _build_node_config(node_name, raw_node)
     return flattened
+
+
+def load_switch_devices(raw_cfg: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    raw_switches = raw_cfg.get("switches", {})
+    if not isinstance(raw_switches, dict):
+        return {}
+    devices: dict[str, dict[str, Any]] = {}
+    for name, cfg in raw_switches.items():
+        switch_name = str(name or "").strip()
+        if not switch_name or not isinstance(cfg, dict):
+            continue
+        devices[switch_name] = dict(cfg)
+    return devices
 
 
 def load_prometheus_url(raw_cfg: dict[str, Any]) -> str:
@@ -136,52 +219,6 @@ def normalize_alert_payload(alert: Alert) -> dict[str, Any]:
         "fingerprint": alert.fingerprint,
         "source": alert.source,
     }
-
-
-def build_threshold_alert(
-    *,
-    alert_name: str,
-    severity: str,
-    node: str,
-    namespace: str,
-    service: str,
-    latency_value_ms: float,
-    latency_threshold_ms: int,
-    latency_promql: str,
-) -> Alert:
-    now = datetime.now(UTC)
-    latency_text = f"{latency_value_ms:.2f}"
-    labels = {
-        "alertname": alert_name,
-        "severity": severity,
-        "node": node,
-        "Hostname": node,
-        "exported_namespace": namespace,
-        "namespace": namespace,
-        "service": service,
-        "exported_container": service,
-        "threshold_source": "promql",
-    }
-    annotations = {
-        "summary": "Inter-token latency threshold breached",
-        "description": (
-            f"PromQL threshold trigger: p95 inter-token latency is {latency_text}ms, "
-            f"above threshold {latency_threshold_ms}ms. node={node}, namespace={namespace}, service={service}. "
-            f"promql={latency_promql}"
-        ),
-    }
-    fingerprint = f"{alert_name}:{node}:{namespace}:{service}:promql-threshold"
-    return Alert(
-        alert_name=alert_name,
-        severity=severity,
-        labels=labels,
-        annotations=annotations,
-        starts_at=now,
-        ends_at=None,
-        fingerprint=fingerprint,
-        status="firing",
-        source="promql_threshold",
-    )
 
 
 def _node_match_score(node: str, labels: dict[str, Any]) -> int:
@@ -270,36 +307,85 @@ async def query_latency_value_ms(*, prometheus_url: str, latency_promql: str) ->
 def build_query(
     *,
     alert: Alert,
-    demo: dict[str, Any],
     node: str,
     namespace: str,
     service: str,
     latency_promql: str,
     latency_threshold_ms: int,
     history_count: int,
+    available_tools: list[str],
+    topology_context: dict[str, Any] | None = None,
 ) -> str:
-    alert_payload = json.dumps(normalize_alert_payload(alert), ensure_ascii=False, indent=2)
-    return (
-        "You are running the VLLMInterTokenLatencyP95High demo.\n"
-        "An inter-token latency alert was received and you should perform a read-only ReAct diagnosis.\n"
-        "Focus on deciding whether the p95 inter-token latency regression is caused by GPU contention, network/RDMA issues, or normal load.\n"
-        "Use the available read-only tools to gather concrete evidence.\n"
-        "Preferred evidence order:\n"
-        f"1. Query p95 inter-token latency with prometheus.query_instant using this exact PromQL: {latency_promql}\n"
-        f"2. Inspect GPU metrics on node {node} with gpu.get_metrics.\n"
-        f"3. Inspect GPU processes on node {node} with gpu.get_processes.\n"
-        f"4. Inspect pods in namespace {namespace} with k8s.list_pods.\n"
-        f"5. If useful, inspect RDMA stats on node {node} with network.get_rdma_stats.\n"
-        f"If inter-token latency is above {latency_threshold_ms}ms and you identify a rogue contention process, produce a proposal-only remediation plan.\n"
-        "Prefer kill_process for a rogue gpu_burn-style process. Do not claim any write action was executed.\n\n"
-        f"Configured node hint: {node}\n"
-        f"Configured namespace hint: {namespace}\n"
-        f"Configured service hint: {service}\n"
-        f"Configured inter-token latency threshold ms: {latency_threshold_ms}\n"
-        f"Historical alert samples found in lookback window: {history_count}\n"
-        f"Reference scenario: {json.dumps(demo, ensure_ascii=False)}\n\n"
-        f"Live alert payload:\n{alert_payload}"
+    expected_process_prefixes = _expected_gpu_process_prefixes(service)
+    investigation_steps: list[str] = []
+    if "prometheus.query_instant" in available_tools:
+        investigation_steps.append(
+            f"Validate the triggering latency signal with prometheus.query_instant using: {latency_promql}"
+        )
+    if "gpu.get_metrics" in available_tools:
+        investigation_steps.append(f"Inspect GPU utilization and memory on node {node} with gpu.get_metrics")
+    if "gpu.get_processes" in available_tools:
+        investigation_steps.append(f"Inspect GPU-bound processes on node {node} with gpu.get_processes")
+    if "k8s.list_pods" in available_tools:
+        investigation_steps.append(f"Inspect workloads in namespace {namespace} with k8s.list_pods")
+    if "network.get_rdma_stats" in available_tools:
+        investigation_steps.append(f"Inspect RDMA and link health on node {node} with network.get_rdma_stats")
+
+    return build_alert_diagnosis_prompt(
+        alert_payload=normalize_alert_payload(alert),
+        available_tool_names=available_tools,
+        diagnosis_goal=(
+            "Identify the most likely root cause of the alert, evaluate plausible alternatives, "
+            "and explain which hypotheses are confirmed, eliminated, or still uncertain based on evidence."
+        ),
+        investigation_steps=investigation_steps,
+        context_hints={
+            "node": node,
+            "namespace": namespace,
+            "service": service,
+            "inter-token latency threshold ms": latency_threshold_ms,
+            "expected GPU worker process prefixes": expected_process_prefixes,
+        },
+        extra_context={
+            "topology_context": topology_context,
+        },
+        remediation_guidance=(
+            "If the evidence supports a single conservative corrective action, propose it as proposal-only remediation. "
+            "Prefer the smallest blast-radius action supported by the write-tool schema and the collected evidence. "
+            "Do not claim any write action was executed."
+        ),
+        history_count=history_count,
     )
+
+
+def _expected_gpu_process_prefixes(service: str) -> list[str]:
+    prefixes: list[str] = []
+    service_text = str(service or "").strip()
+    service_tokens = [service_text]
+    if service_text:
+        service_tokens.extend(part for part in service_text.split("-") if part)
+    for candidate in ["VLLM::Worker", "vllm", *service_tokens]:
+        text = str(candidate).strip()
+        if text and text not in prefixes:
+            prefixes.append(text)
+    return prefixes
+
+
+def _resolve_allowed_readonly_tools(
+    registry: ToolRegistry,
+    context: ToolExecutionContext,
+) -> list[str]:
+    available_channels = {
+        name
+        for name, channel in context.channels.items()
+        if channel is not None
+    }
+    allowed: list[str] = []
+    for tool in registry.get_tools_by_level(SafetyLevel.READ_ONLY):
+        required_channels = READ_ONLY_TOOL_CHANNELS.get(tool.name, set())
+        if required_channels.issubset(available_channels):
+            allowed.append(tool.name)
+    return allowed
 
 
 def render_text_output(payload: dict[str, Any]) -> str:
@@ -320,6 +406,9 @@ def render_text_output(payload: dict[str, Any]) -> str:
         "Selected Alert:",
         json.dumps(payload.get("alert"), ensure_ascii=False, indent=2),
         "",
+        "Topology Context:",
+        json.dumps(payload.get("topology_context"), ensure_ascii=False, indent=2),
+        "",
         "Summary:",
         str(payload.get("summary") or ""),
         "",
@@ -328,6 +417,9 @@ def render_text_output(payload: dict[str, Any]) -> str:
         "",
         "Remediation Plan:",
         json.dumps(payload.get("remediation_plan"), ensure_ascii=False, indent=2),
+        "",
+        "Remediation Execution:",
+        json.dumps(payload.get("remediation_execution"), ensure_ascii=False, indent=2),
         "",
         "LLM Interactions:",
     ]
@@ -376,45 +468,123 @@ def maybe_write_output(path_text: str, output_format: str, payload: dict[str, An
 
 async def close_context(context: ToolExecutionContext) -> None:
     for channel in context.channels.values():
-        close = getattr(channel, "close", None)
-        if callable(close):
-            value = close()
+        for method_name in ("disconnect", "close"):
+            method = getattr(channel, method_name, None)
+            if not callable(method):
+                continue
+            value = method()
+            if hasattr(value, "__await__"):
+                await value
+            break
+    for closer in context.metadata.get("extra_closers", []):
+        if callable(closer):
+            value = closer()
             if hasattr(value, "__await__"):
                 await value
 
 
+async def execute_remediation_plan(
+    *,
+    plan_payload: dict[str, Any] | None,
+    context: ToolExecutionContext,
+    wal_path: str,
+    approval_user: str,
+    prometheus_url: str,
+    latency_promql: str,
+    latency_threshold_ms: int,
+    remediation_wait_seconds: int,
+) -> dict[str, Any]:
+    if not isinstance(plan_payload, dict):
+        return {"executed": False, "reason": "no remediation plan generated"}
+
+    plan = _with_promql_verification(
+        RemediationPlan.model_validate(plan_payload),
+        latency_promql=latency_promql,
+        latency_threshold_ms=latency_threshold_ms,
+        remediation_wait_seconds=remediation_wait_seconds,
+    )
+    wal_target = Path(wal_path).expanduser()
+    wal_target.parent.mkdir(parents=True, exist_ok=True)
+
+    registry = build_default_registry()
+    engine = RemediationEngine(
+        tool_registry=registry,
+        approval_gate=ApprovalGate(default_policy="auto_approve"),
+        wal=RollbackJournal(wal_target),
+        prometheus=context.channels.get("prometheus"),
+        execution_context=context,
+    )
+    session_id = f"remediation-{datetime.now(UTC).strftime('%Y%m%d%H%M%S')}"
+    try:
+        result = await engine.execute(plan, session_id=session_id)
+    except PlanValidationError as exc:
+        return {
+            "executed": False,
+            "session_id": session_id,
+            "approval_user": approval_user,
+            "wal_path": str(wal_target),
+            "error": "plan validation failed",
+            "details": exc.errors,
+            "plan": plan.model_dump(mode="json"),
+        }
+
+    post_latency_ms = await query_latency_value_ms(prometheus_url=prometheus_url, latency_promql=latency_promql)
+    return {
+        "executed": True,
+        "session_id": session_id,
+        "approval_user": approval_user,
+        "wal_path": str(wal_target),
+        "plan": plan.model_dump(mode="json"),
+        "result": result.model_dump(mode="json"),
+        "post_remediation_latency_ms": post_latency_ms,
+    }
+
+
+def _with_promql_verification(
+    plan: RemediationPlan,
+    *,
+    latency_promql: str,
+    latency_threshold_ms: int,
+    remediation_wait_seconds: int,
+) -> RemediationPlan:
+    threshold_seconds = float(latency_threshold_ms) / 1000.0
+    plan_data = plan.model_dump(mode="json")
+    for step in plan_data.get("steps", []):
+        tool_name = str(step.get("tool") or "").strip()
+        if tool_name != "kill_process":
+            continue
+        step["verification"] = VerificationConfig(
+            method="promql",
+            query=latency_promql,
+            condition=VerificationCondition(
+                field="value",
+                operator="<",
+                value=threshold_seconds,
+            ),
+            wait_seconds=remediation_wait_seconds,
+        ).model_dump(mode="json")
+    return RemediationPlan.model_validate(plan_data)
+
+
 async def main_async(args: argparse.Namespace) -> int:
-    apply_model_env(args)
     agent_cfg = load_agent_config(args.config)
     raw_demo_cfg = load_demo_config(args.demo_config)
     demo = load_demo_settings(raw_demo_cfg, args.demo_key, args.demo_config)
+    apply_model_env(args, demo)
     inventory = flatten_inventory(raw_demo_cfg)
+    switch_devices = load_switch_devices(raw_demo_cfg)
 
-    node = str(demo.get("node") or "").strip()
+    node_hint = str(demo.get("node") or "").strip()
     namespace_hint = str(demo.get("namespace") or "").strip()
     service_hint = str(demo.get("service") or "").strip()
     alert_name = str(demo.get("alert_name") or "VLLMInterTokenLatencyP95High").strip()
-    alert_severity = str(demo.get("alert_severity") or "critical").strip()
     lookback = str(demo.get("lookback") or "6h").strip()
     kubeconfig = str(demo.get("kubeconfig") or "~/.kube/config").strip()
     latency_promql = str(demo.get("latency_promql") or "").strip()
     latency_threshold_ms = int(demo.get("latency_threshold_ms") or 50)
-    if not node:
-        raise SystemExit("demo.node is required")
-    if node not in inventory:
-        raise SystemExit(f"demo.node {node!r} not found in demo inventory")
+    remediation_wait_seconds = int(demo.get("remediation_wait_seconds") or 60)
     if not latency_promql:
         raise SystemExit("demo.latency_promql is required")
-
-    allowed_tools = demo.get("allowed_tools") or [
-        "prometheus.query_instant",
-        "gpu.get_metrics",
-        "gpu.get_processes",
-        "k8s.list_pods",
-        "network.get_rdma_stats",
-    ]
-    if not isinstance(allowed_tools, list) or not all(isinstance(item, str) for item in allowed_tools):
-        raise SystemExit("demo.allowed_tools must be a list of tool names")
 
     prometheus_url = load_prometheus_url(raw_demo_cfg) or str(agent_cfg.global_.prometheus_url or "").strip()
     if not prometheus_url:
@@ -423,62 +593,113 @@ async def main_async(args: argparse.Namespace) -> int:
     latency_value_ms = await query_latency_value_ms(prometheus_url=prometheus_url, latency_promql=latency_promql)
 
     alert_source = "live"
-    current_alerts: list[Alert] = []
-    history_alerts: list[Alert] = []
-    try:
-        selected_alert, current_alerts, history_alerts = await collect_alert_context(
-            prometheus_url=prometheus_url,
-            alert_name=alert_name,
-            lookback=lookback,
-            node=node,
-            service=service_hint,
-            namespace=namespace_hint,
-        )
-    except SystemExit:
-        if latency_value_ms is None:
-            raise SystemExit(
-                f"No current or historical alerts found for {alert_name}, and PromQL returned no usable value"
-            )
-        if latency_value_ms < float(latency_threshold_ms):
-            raise SystemExit(
-                f"No current or historical alerts found for {alert_name}, and PromQL value "
-                f"{latency_value_ms:.2f}ms is below threshold {latency_threshold_ms}ms"
-            )
-        selected_alert = build_threshold_alert(
-            alert_name=alert_name,
-            severity=alert_severity,
-            node=node,
-            namespace=namespace_hint or "default",
-            service=service_hint or "unknown-service",
-            latency_value_ms=latency_value_ms,
-            latency_threshold_ms=latency_threshold_ms,
-            latency_promql=latency_promql,
-        )
-        alert_source = "promql_threshold"
+    selected_alert, current_alerts, history_alerts = await collect_alert_context(
+        prometheus_url=prometheus_url,
+        alert_name=alert_name,
+        lookback=lookback,
+        node=node_hint,
+        service=service_hint,
+        namespace=namespace_hint,
+    )
 
     labels = selected_alert.labels
     namespace = str(labels.get("exported_namespace") or labels.get("namespace") or namespace_hint or "default").strip()
     service = str(labels.get("exported_container") or labels.get("service") or service_hint).strip()
     pod_name = str(labels.get("exported_pod") or labels.get("pod") or "").strip()
+    k8s_channel = K8sChannel(client=None, kubeconfig=kubeconfig)
+    if not pod_name:
+        pod_name = await resolve_pod_name_from_service(
+            k8s_channel=k8s_channel,
+            namespace=namespace,
+            service=service,
+        )
+    node_ip = ""
+    if pod_name:
+        node_ip = await resolve_node_ip_from_pod(
+            k8s_channel=k8s_channel,
+            namespace=namespace,
+            pod_name=pod_name,
+        )
+    node = infer_node_name_from_inventory_ip(inventory, node_ip) or node_hint
+    if not node:
+        raise SystemExit("unable to determine target node from alert -> service -> pod -> node IP")
+    if node not in inventory:
+        raise SystemExit(f"resolved node {node!r} not found in demo inventory")
 
+    channels: dict[str, Any] = {
+        "ssh": SSHChannel(inventory=inventory, dry_run=False),
+        "k8s": k8s_channel,
+        "prometheus": PrometheusChannel(base_url=prometheus_url),
+    }
+    if switch_devices:
+        channels["switch"] = SwitchChannel(devices=switch_devices, dry_run=False)
+    extra_closers: list[Any] = []
+    context_warnings: dict[str, str] = {}
+
+    try:
+        memory_store = create_memory_store(
+            agent_cfg.global_.aidc_id,
+            db_dir=agent_cfg.memory.db_dir,
+            mode="demo",
+        )
+        connect = getattr(memory_store, "connect", None)
+        if callable(connect):
+            value = connect()
+            if hasattr(value, "__await__"):
+                await value
+        channels["memory"] = memory_store
+    except Exception as exc:  # noqa: BLE001
+        context_warnings["memory"] = str(exc)
+
+    try:
+        ontology_graph = OntologyGraph(agent_cfg.ontology.db_path)
+        await ontology_graph.connect()
+        channels["ontology"] = OntologyChannel(ontology=ontology_graph)
+        extra_closers.append(ontology_graph.close)
+    except Exception as exc:  # noqa: BLE001
+        context_warnings["ontology"] = str(exc)
+
+    context = ToolExecutionContext(
+        channels=channels,
+        metadata={
+            "aidc_id": agent_cfg.global_.aidc_id,
+            "extra_closers": extra_closers,
+            "context_warnings": context_warnings,
+        },
+    )
+    runtime_ontology = await augment_runtime_ontology(
+        context=context,
+        alert=selected_alert,
+        namespace=namespace,
+        service=service,
+        pod_name=pod_name,
+        node=node,
+        node_ip=node_ip,
+        latency_value_ms=latency_value_ms,
+    )
+    registry = build_default_registry()
+    allowed_tools = _resolve_allowed_readonly_tools(registry, context)
+    topology_context = await build_topology_context(
+        context=context,
+        inventory=inventory,
+        switch_devices=switch_devices,
+        namespace=namespace,
+        service=service,
+        pod_name=pod_name,
+        node=node,
+        node_ip=node_ip,
+        runtime_ontology=runtime_ontology,
+    )
     query = build_query(
         alert=selected_alert,
-        demo=demo,
         node=node,
         namespace=namespace,
         service=service,
         latency_promql=latency_promql,
         latency_threshold_ms=latency_threshold_ms,
         history_count=len(history_alerts),
-    )
-
-    context = ToolExecutionContext(
-        channels={
-            "ssh": SSHChannel(inventory=inventory, dry_run=False),
-            "k8s": K8sChannel(client=None, kubeconfig=kubeconfig),
-            "prometheus": PrometheusChannel(base_url=prometheus_url),
-        },
-        metadata={"aidc_id": agent_cfg.global_.aidc_id},
+        available_tools=allowed_tools,
+        topology_context=topology_context,
     )
     try:
         result = await run_diagnosis(
@@ -489,17 +710,35 @@ async def main_async(args: argparse.Namespace) -> int:
                 "alert_name": alert_name,
                 "namespace": namespace,
                 "node": node,
+                "node_ip": node_ip,
                 "service": service,
                 "pod_name": pod_name,
+                "topology_context": topology_context,
                 "promql": latency_promql,
                 "latency_threshold_ms": latency_threshold_ms,
                 "alert": normalize_alert_payload(selected_alert),
             },
             allowed_tool_names=allowed_tools,
+            tool_registry=registry,
             checkpoint_dir=None,
             step_timeout_sec=float(demo.get("step_timeout") or 60.0),
             total_timeout_sec=float(demo.get("total_timeout") or 180.0),
             max_steps=int(demo.get("max_steps") or 6),
+        )
+
+        remediation_execution = (
+            await execute_remediation_plan(
+                plan_payload=result.get("remediation_plan"),
+                context=context,
+                wal_path=str(args.wal_path),
+                approval_user=str(args.approval_user),
+                prometheus_url=prometheus_url,
+                latency_promql=latency_promql,
+                latency_threshold_ms=latency_threshold_ms,
+                remediation_wait_seconds=remediation_wait_seconds,
+            )
+            if args.execute_remediation
+            else {"executed": False, "reason": "execution disabled"}
         )
     finally:
         await close_context(context)
@@ -512,19 +751,24 @@ async def main_async(args: argparse.Namespace) -> int:
         "current_alert_count": len(current_alerts),
         "history_alert_count": len(history_alerts),
         "node": node,
+        "node_ip": node_ip,
         "namespace": namespace,
         "service": service,
         "pod_name": pod_name,
+        "topology_context": topology_context,
         "prometheus_url": prometheus_url,
         "latency_promql": latency_promql,
         "latency_threshold_ms": latency_threshold_ms,
         "latency_value_ms": latency_value_ms,
+        "allowed_tool_names": allowed_tools,
+        "context_warnings": context_warnings,
         "status": result.get("status"),
         "summary": result.get("summary"),
         "llm_interactions": result.get("llm_interactions"),
         "tool_runs": result.get("tool_runs"),
         "diagnosis_result": result.get("diagnosis_result"),
         "remediation_plan": result.get("remediation_plan"),
+        "remediation_execution": remediation_execution,
         "session_id": result.get("session_id"),
     }
 

@@ -35,6 +35,14 @@ class _FakeK8sChannel:
         self.calls.append({"action": "get_pod_status", "namespace": namespace, "pod_name": pod_name})
         return "Running"
 
+    async def resolve_pod_names_for_service(self, namespace: str, service_name: str) -> list[str]:
+        self.calls.append({"action": "resolve_pod_names_for_service", "namespace": namespace, "service_name": service_name})
+        return [f"{service_name}-pod-a", f"{service_name}-pod-b"]
+
+    async def resolve_node_ip_for_pod(self, namespace: str, pod_name: str) -> str:
+        self.calls.append({"action": "resolve_node_ip_for_pod", "namespace": namespace, "pod_name": pod_name})
+        return "10.0.0.10"
+
     async def count_pending_pods(self, namespace: str, label_selector: str | None = None) -> int:
         self.calls.append({"action": "count_pending_pods", "namespace": namespace, "label_selector": label_selector})
         return 2
@@ -175,6 +183,10 @@ class _ExecuteOnlyK8sChannel:
             return _FakeChannelResult(success=False, error="Unknown action: list_pods")
         if action == "get_pods":
             return _FakeChannelResult(output="pod-a\npod-b")
+        if action == "resolve_service_pods":
+            return _FakeChannelResult(data=["svc-pod-a", "svc-pod-b"])
+        if action == "resolve_pod_node_ip":
+            return _FakeChannelResult(data="10.0.0.20")
         return _FakeChannelResult(success=False, error=f"Unknown action: {action}")
 
 
@@ -203,7 +215,15 @@ class _IntegrationK8sClient:
 
     def get_pod(self, namespace: str, pod_name: str) -> dict[str, Any]:
         self.calls.append({"action": "get_pod", "namespace": namespace, "pod_name": pod_name})
-        return {"name": pod_name, "status": {"phase": "Running"}}
+        return {"name": pod_name, "status": {"phase": "Running"}, "spec": {"nodeName": "worker-01"}}
+
+    def get_service(self, namespace: str, service_name: str) -> dict[str, Any]:
+        self.calls.append({"action": "get_service", "namespace": namespace, "service_name": service_name})
+        return {"spec": {"selector": {"app": service_name}}}
+
+    def get_node(self, node_name: str) -> dict[str, Any]:
+        self.calls.append({"action": "get_node", "node_name": node_name})
+        return {"status": {"addresses": [{"type": "InternalIP", "address": "10.0.0.30"}]}}
 
     def delete_pods(self, namespace: str, label_selector: str) -> dict[str, Any]:
         self.calls.append({"action": "delete_pods", "namespace": namespace, "label_selector": label_selector})
@@ -426,6 +446,22 @@ class TestToolRegistryUnit(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(describe_result.success)
         self.assertEqual(describe_result.data["status"], "Unknown")
 
+        service_pods_result = await registry.execute(
+            "k8s.resolve_service_pods",
+            {"namespace": "default", "service_name": "svc"},
+            context,
+        )
+        self.assertTrue(service_pods_result.success)
+        self.assertEqual(service_pods_result.data, ["svc-pod-a", "svc-pod-b"])
+
+        pod_node_ip_result = await registry.execute(
+            "k8s.resolve_pod_node_ip",
+            {"namespace": "default", "pod_name": "pod-a"},
+            context,
+        )
+        self.assertTrue(pod_node_ip_result.success)
+        self.assertEqual(pod_node_ip_result.data, "10.0.0.20")
+
         pending_result = await registry.execute("k8s.top_pending", {"namespace": "default"}, context)
         self.assertFalse(pending_result.success)
         self.assertIn("capability gap", pending_result.error)
@@ -468,6 +504,8 @@ class TestToolRegistryUnit(unittest.IsolatedAsyncioTestCase):
 
         results = [
             await registry.execute("k8s.describe_pod", {"namespace": "default", "pod_name": "pod-a"}, context),
+            await registry.execute("k8s.resolve_service_pods", {"namespace": "default", "service_name": "svc"}, context),
+            await registry.execute("k8s.resolve_pod_node_ip", {"namespace": "default", "pod_name": "pod-a"}, context),
             await registry.execute("k8s.read_pod_logs", {"namespace": "default", "pod_name": "pod-a"}, context),
             await registry.execute("prometheus.query_instant", {"promql": "up"}, context),
             await registry.execute("gpu.get_metrics", {"node": "gpu-1-1"}, context),
@@ -529,6 +567,22 @@ class TestToolRegistryIntegration(unittest.IsolatedAsyncioTestCase):
         )
         self.assertTrue(describe_result.success)
         self.assertEqual(describe_result.data["status"], "Running")
+
+        service_pods_result = await registry.execute(
+            "k8s.resolve_service_pods",
+            {"namespace": "default", "service_name": "svc"},
+            context,
+        )
+        self.assertTrue(service_pods_result.success)
+        self.assertEqual(service_pods_result.data, ["pod-a", "pod-b"])
+
+        pod_node_ip_result = await registry.execute(
+            "k8s.resolve_pod_node_ip",
+            {"namespace": "default", "pod_name": "pod-a"},
+            context,
+        )
+        self.assertTrue(pod_node_ip_result.success)
+        self.assertEqual(pod_node_ip_result.data, "10.0.0.30")
 
         pending_result = await registry.execute("k8s.top_pending", {"namespace": "default"}, context)
         self.assertTrue(pending_result.success)
@@ -598,6 +652,19 @@ class TestToolRegistryIntegration(unittest.IsolatedAsyncioTestCase):
         )
         self.assertTrue(range_result.success)
         self.assertEqual(range_result.data, [(1.0, 2.0), (2.0, 3.0)])
+
+        range_iso_result = await registry.execute(
+            "prometheus.query_range",
+            {
+                "promql": "up",
+                "start": "2026-04-01T02:00:00Z",
+                "end": "2026-04-01T02:10:00Z",
+                "step": "30s",
+            },
+            context,
+        )
+        self.assertTrue(range_iso_result.success)
+        self.assertEqual(range_iso_result.data, [(1.0, 2.0), (2.0, 3.0)])
 
         path_result = await registry.execute(
             "ontology.path",

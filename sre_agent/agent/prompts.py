@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from typing import Iterable
+from typing import Any, Iterable
 
 from sre_agent.tools import SafetyLevel, ToolDefinition, ToolRegistry
 
@@ -135,3 +135,47 @@ def _render_tool_definition(tool: ToolDefinition) -> list[str]:
         f"  safety_level: {tool.safety_level.value}",
         f"  params_schema: {schema}",
     ]
+
+
+def build_alert_diagnosis_prompt(
+    *,
+    alert_payload: dict[str, Any],
+    available_tool_names: Iterable[str],
+    diagnosis_goal: str,
+    investigation_steps: Iterable[str] = (),
+    context_hints: dict[str, Any] | None = None,
+    remediation_guidance: str | None = None,
+    history_count: int | None = None,
+    extra_context: dict[str, Any] | None = None,
+) -> str:
+    lines = [
+        "Diagnose the operational issue described by the alert below using a read-only ReAct workflow.",
+        diagnosis_goal.strip(),
+        f"Available read-only tools for this run: {json.dumps(list(available_tool_names), ensure_ascii=False)}.",
+    ]
+
+    hints = {str(key): value for key, value in (context_hints or {}).items() if value not in (None, "", [], {})}
+    if hints:
+        lines.append("Context hints:")
+        for key, value in hints.items():
+            lines.append(f"- {key}: {value}")
+
+    if history_count is not None:
+        lines.append(f"Historical alert samples found in lookback window: {history_count}")
+
+    steps = [str(step).strip() for step in investigation_steps if str(step).strip()]
+    if steps:
+        lines.append("Suggested investigation order:")
+        for idx, step in enumerate(steps, start=1):
+            lines.append(f"{idx}. {step}")
+
+    if remediation_guidance:
+        lines.append(f"Remediation guidance: {remediation_guidance.strip()}")
+
+    extra = {str(key): value for key, value in (extra_context or {}).items() if value not in (None, "", [], {})}
+    if extra:
+        lines.append(f"Additional run context: {json.dumps(extra, ensure_ascii=False)}")
+
+    lines.append("Live alert payload:")
+    lines.append(json.dumps(alert_payload, ensure_ascii=False, indent=2))
+    return "\n".join(lines)

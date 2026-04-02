@@ -15,6 +15,7 @@ OUTPUT_FORMAT="txt"
 LOAD_CONFIG=""
 LOAD_WARMUP_SECONDS=30
 ALERT_WAIT_SECONDS=360
+EXECUTE_REMEDIATION=1
 LOAD_PID=""
 INJECT_PID=""
 
@@ -28,6 +29,7 @@ Run the vLLM inter-token latency P95 demo:
 3. Start gpu_contention via fault_injector
 4. Wait for alert window
 5. Run live diagnosis
+6. Execute the generated remediation plan
 
 Options:
   --demo-config PATH         Demo YAML path
@@ -40,6 +42,7 @@ Options:
   --base-url URL             Optional SRE_OPENAI_BASE_URL override
   --output PATH              Demo output path
   --output-format json|txt   Demo output format
+  --no-execute-remediation   Skip live remediation execution
   -h, --help                 Show this help message
 EOF
 }
@@ -71,6 +74,7 @@ while [[ $# -gt 0 ]]; do
     --base-url) BASE_URL="$2"; shift 2 ;;
     --output) OUTPUT="$2"; shift 2 ;;
     --output-format) OUTPUT_FORMAT="$2"; shift 2 ;;
+    --no-execute-remediation) EXECUTE_REMEDIATION=0; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "Unknown option: $1" >&2; usage >&2; exit 2 ;;
   esac
@@ -138,6 +142,9 @@ if [[ -n "$MODEL" ]]; then
 fi
 if [[ -n "$BASE_URL" ]]; then
   demo_cmd+=("--base-url" "$BASE_URL")
+fi
+if [[ "$EXECUTE_REMEDIATION" -eq 1 ]]; then
+  demo_cmd+=("--execute-remediation")
 fi
 "${demo_cmd[@]}"
 

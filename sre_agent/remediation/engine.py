@@ -160,9 +160,11 @@ class RemediationEngine:
 
     async def _verify(self, config: VerificationConfig) -> bool:
         if config.method == "wait":
-            await asyncio.sleep(0)
+            await asyncio.sleep(max(0, config.wait_seconds))
             return True
         if config.method == "promql":
+            if config.wait_seconds > 0:
+                await asyncio.sleep(config.wait_seconds)
             if self.prometheus is None or not hasattr(self.prometheus, "query_instant"):
                 return True
             value = await self.prometheus.query_instant(config.query or "")
@@ -171,6 +173,8 @@ class RemediationEngine:
             actual = _extract_field({"value": value}, config.condition.field)
             return _compare(actual, config.condition.operator, config.condition.value)
         if config.method == "tool_call":
+            if config.wait_seconds > 0:
+                await asyncio.sleep(config.wait_seconds)
             result = await self.tools.execute(
                 config.tool or "",
                 config.tool_params or {},

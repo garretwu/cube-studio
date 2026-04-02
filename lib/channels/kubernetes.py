@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 from typing import Any
 
 from .base import BaseChannel, ChannelResult, SafetyViolationError
@@ -78,6 +79,18 @@ class K8sChannel(BaseChannel):
         if action == "list_pods":
             pods = await self.list_pods(params.get("namespace", "default"), params.get("label_selector"))
             return ChannelResult(success=True, data=pods)
+        if action == "resolve_service_pods":
+            pod_names = await self.resolve_pod_names_for_service(
+                params.get("namespace", "default"),
+                params.get("service_name", ""),
+            )
+            return ChannelResult(success=True, data=pod_names)
+        if action == "resolve_pod_node_ip":
+            node_ip = await self.resolve_node_ip_for_pod(
+                params.get("namespace", "default"),
+                params.get("pod_name", ""),
+            )
+            return ChannelResult(success=True, data=node_ip)
         if action == "delete_pod":
             result = await self.delete_pod(
                 params.get("label_selector"),
@@ -107,6 +120,113 @@ class K8sChannel(BaseChannel):
 
     async def list_pods(self, namespace: str, label_selector: str | None = None) -> list[dict[str, Any]]:
         return self.client.list_pods(namespace=namespace, label_selector=label_selector)
+
+    @staticmethod
+    def _selector_to_string(selector: dict[str, Any] | None) -> str | None:
+        if not isinstance(selector, dict) or not selector:
+            return None
+        parts = []
+        for key, value in selector.items():
+            key_text = str(key).strip()
+            value_text = str(value).strip()
+            if key_text and value_text:
+                parts.append(f"{key_text}={value_text}")
+        return ",".join(parts) or None
+
+    @staticmethod
+    async def _maybe_await(value: Any) -> Any:
+        if inspect.isawaitable(value):
+            return await value
+        return value
+
+    @staticmethod
+    def _node_ip_from_addresses(addresses: Any) -> str:
+        if not isinstance(addresses, list):
+            return ""
+        by_type: dict[str, str] = {}
+        for item in addresses:
+            if not isinstance(item, dict):
+                continue
+            addr_type = str(item.get("type") or "").strip()
+            address = str(item.get("address") or "").strip()
+            if addr_type and address and addr_type not in by_type:
+                by_type[addr_type] = address
+        for preferred in ("InternalIP", "ExternalIP", "Hostname"):
+            if preferred in by_type:
+                return by_type[preferred]
+        return ""
+
+    async def resolve_pod_names_for_service(self, namespace: str, service_name: str) -> list[str]:
+        service_name = str(service_name or "").strip()
+        if not service_name:
+            raise ValueError("service_name is required")
+
+        if self.client is not None:
+            resolver = getattr(self.client, "resolve_pod_names_for_service", None)
+            if callable(resolver):
+                pod_names = await resolver(namespace=namespace, service_name=service_name)
+                return [str(name).strip() for name in pod_names if str(name).strip()]
+
+            selector: str | None = None
+            get_service = getattr(self.client, "get_service", None)
+            if callable(get_service):
+                service = await self._maybe_await(get_service(namespace=namespace, service_name=service_name))
+                if isinstance(service, dict):
+                    spec = service.get("spec", {})
+                    if isinstance(spec, dict):
+                        selector = self._selector_to_string(spec.get("selector"))
+            if selector is None:
+                selector = self.LABEL_SELECTORS["inference"].format(service_name=service_name)
+
+            pods = await self.list_pods(namespace=namespace, label_selector=selector)
+            names: list[str] = []
+            for pod in pods:
+                if not isinstance(pod, dict):
+                    continue
+                name = str(pod.get("name") or pod.get("metadata", {}).get("name") or "").strip()
+                if name:
+                    names.append(name)
+            return names
+
+        result = await self._resolve_service_pods(namespace, service_name)
+        if not result.success:
+            raise RuntimeError(str(result.error or "failed to resolve pods for service"))
+        pod_names = result.data or []
+        return [str(name).strip() for name in pod_names if str(name).strip()]
+
+    async def resolve_node_ip_for_pod(self, namespace: str, pod_name: str) -> str:
+        pod_name = str(pod_name or "").strip()
+        if not pod_name:
+            raise ValueError("pod_name is required")
+
+        if self.client is not None:
+            resolver = getattr(self.client, "resolve_node_ip_for_pod", None)
+            if callable(resolver):
+                node_ip = await resolver(namespace=namespace, pod_name=pod_name)
+                return str(node_ip or "").strip()
+
+            get_pod = getattr(self.client, "get_pod", None)
+            if callable(get_pod):
+                pod = await self._maybe_await(get_pod(namespace=namespace, pod_name=pod_name))
+                if isinstance(pod, dict):
+                    spec = pod.get("spec", {})
+                    node_name = str(spec.get("nodeName") or "").strip() if isinstance(spec, dict) else ""
+                    if node_name:
+                        get_node = getattr(self.client, "get_node", None)
+                        if callable(get_node):
+                            node = await self._maybe_await(get_node(node_name=node_name))
+                            if isinstance(node, dict):
+                                status = node.get("status", {})
+                                if isinstance(status, dict):
+                                    node_ip = self._node_ip_from_addresses(status.get("addresses"))
+                                    if node_ip:
+                                        return node_ip
+                        return node_name
+
+        result = await self._resolve_pod_node_ip(namespace, pod_name)
+        if not result.success:
+            raise RuntimeError(str(result.error or "failed to resolve node IP for pod"))
+        return str(result.data or "").strip()
 
     async def get_pod_status(self, namespace: str, pod_name: str) -> str:
         pod = self.client.get_pod(namespace=namespace, pod_name=pod_name)
@@ -259,6 +379,10 @@ class K8sChannel(BaseChannel):
             return await self._get_pods(params["namespace"], params.get("label_selector"))
         if action == "get_pods":
             return await self._get_pods(params["namespace"], params.get("label_selector"))
+        if action == "resolve_service_pods":
+            return await self._resolve_service_pods(params["namespace"], params["service_name"])
+        if action == "resolve_pod_node_ip":
+            return await self._resolve_pod_node_ip(params["namespace"], params["pod_name"])
         if action == "delete_pod":
             return await self._delete_pod(params["pod_name"], params["namespace"])
         if action == "scale_deployment":
@@ -329,6 +453,66 @@ class K8sChannel(BaseChannel):
                 data=structured,
                 output="\n".join(name for name in names if name),
             )
+        except Exception as exc:
+            return ChannelResult(success=False, error=str(exc))
+
+    async def _resolve_service_pods(self, namespace: str, service_name: str) -> ChannelResult:
+        try:
+            self._ensure_client()
+            service = await asyncio.to_thread(
+                self._core_v1.read_namespaced_service,
+                service_name,
+                namespace,
+            )
+            selector = self._selector_to_string(getattr(getattr(service, "spec", None), "selector", None))
+            if not selector:
+                return ChannelResult(
+                    success=True,
+                    data=[],
+                    output="",
+                )
+            pods_result = await self._get_pods(namespace, selector)
+            if not pods_result.success:
+                return pods_result
+            pod_names = []
+            for pod in pods_result.data or []:
+                if not isinstance(pod, dict):
+                    continue
+                name = str(pod.get("name") or "").strip()
+                if name:
+                    pod_names.append(name)
+            return ChannelResult(
+                success=True,
+                data=pod_names,
+                output="\n".join(pod_names),
+            )
+        except Exception as exc:
+            return ChannelResult(success=False, error=str(exc))
+
+    async def _resolve_pod_node_ip(self, namespace: str, pod_name: str) -> ChannelResult:
+        try:
+            self._ensure_client()
+            pod = await asyncio.to_thread(
+                self._core_v1.read_namespaced_pod,
+                pod_name,
+                namespace,
+            )
+            node_name = str(getattr(getattr(pod, "spec", None), "node_name", "") or "")
+            if not node_name:
+                return ChannelResult(success=False, error=f"pod {pod_name!r} is not scheduled to a node")
+            node = await asyncio.to_thread(self._core_v1.read_node, node_name)
+            addresses_raw = getattr(getattr(node, "status", None), "addresses", None) or []
+            addresses = [
+                {
+                    "type": str(getattr(item, "type", "") or ""),
+                    "address": str(getattr(item, "address", "") or ""),
+                }
+                for item in addresses_raw
+            ]
+            node_ip = self._node_ip_from_addresses(addresses)
+            if not node_ip:
+                return ChannelResult(success=False, error=f"node IP not found for node {node_name!r}")
+            return ChannelResult(success=True, data=node_ip, output=node_ip)
         except Exception as exc:
             return ChannelResult(success=False, error=str(exc))
 
