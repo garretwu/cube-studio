@@ -39,6 +39,7 @@ const DIAGNOSE_REQUEST_TIMEOUT_MS = 120000;
 const CHAT_REQUEST_TIMEOUT_MS = 120000;
 const DIAGNOSE_SESSION_POLL_MS = 2000;
 const DIAGNOSE_SESSION_POLL_ATTEMPTS = 30;
+const BLOCKED_ALERT_NAMES = new Set(["gpu utilization is high", "gpuutilizationhigh"]);
 
 let hasWarnedAboutDevFallback = false;
 
@@ -93,6 +94,30 @@ function unwrapPayload<T>(payload: SREApiEnvelope<T> | T): T {
     throw new Error(message);
   }
   return payload.data;
+}
+
+function normalizeAlertName(value: string | null | undefined): string {
+  return String(value ?? "").trim().toLowerCase();
+}
+
+function isBlockedAlert(alert: Alert): boolean {
+  const candidates = [
+    normalizeAlertName(alert.alert_name),
+    normalizeAlertName(alert.labels?.alertname),
+  ].filter(Boolean);
+  return candidates.some((name) => BLOCKED_ALERT_NAMES.has(name));
+}
+
+function filterAlertSnapshot(payload: { alerts: Alert[]; clusters: AlertCluster[] }): { alerts: Alert[]; clusters: AlertCluster[] } {
+  const alerts = payload.alerts.filter((alert) => !isBlockedAlert(alert));
+  const allowedFingerprints = new Set(alerts.map((alert) => alert.fingerprint));
+  const clusters = payload.clusters
+    .map((cluster) => ({
+      ...cluster,
+      alerts: cluster.alerts.filter((fingerprint) => allowedFingerprints.has(fingerprint)),
+    }))
+    .filter((cluster) => cluster.alerts.length > 0);
+  return { alerts, clusters };
 }
 
 function getRememberedSessionId(): string {
@@ -348,16 +373,19 @@ export const apiClient = {
         const response = await api.get<SREApiEnvelope<{ alerts: Alert[]; clusters: AlertCluster[] }> | { alerts: Alert[]; clusters: AlertCluster[] }>(
           "/api/alerts",
         );
-        return unwrapPayload(response.data);
+        return filterAlertSnapshot(unwrapPayload(response.data));
       },
       async () => {
         const { getAlertsFallback } = await import("./devFallback");
-        return getAlertsFallback();
+        return filterAlertSnapshot(getAlertsFallback());
       },
       "getAlerts",
     ),
 
   handleAlert: async (alert: Alert) => {
+    if (isBlockedAlert(alert)) {
+      throw new Error(`Alert '${alert.alert_name}' is temporarily filtered and cannot be processed.`);
+    }
     const response = await api.post<SREApiEnvelope<LoopResult>>("/api/handle", alert);
     const payload = response.data;
     if (!isEnvelope<LoopResult>(payload)) {
@@ -378,6 +406,9 @@ export const apiClient = {
   },
 
   diagnoseAlert: async (alert: Alert) => {
+    if (isBlockedAlert(alert)) {
+      throw new Error(`Alert '${alert.alert_name}' is temporarily filtered and cannot be processed.`);
+    }
     try {
       const response = await api.post<SREApiEnvelope<DiagnosisSession> | DiagnosisSession>("/api/diagnose", alert, {
         timeout: DIAGNOSE_REQUEST_TIMEOUT_MS,

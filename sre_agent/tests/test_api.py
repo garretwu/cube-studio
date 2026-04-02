@@ -352,6 +352,18 @@ def _alert_payload() -> dict[str, Any]:
     }
 
 
+def _blocked_alert_payload() -> dict[str, Any]:
+    return {
+        "alert_name": "GPUUtilizationHigh",
+        "severity": "warning",
+        "labels": {"alertname": "GPU utilization is high", "instance": "gpu-operator-0"},
+        "annotations": {"summary": "temporarily blocked in test stage"},
+        "starts_at": "2026-03-18T12:00:00Z",
+        "fingerprint": "fp-api-blocked-1",
+        "status": "firing",
+    }
+
+
 @pytest.fixture(autouse=True)
 def _ensure_llm_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("SRE_OPENAI_API_KEY", "test-key")
@@ -728,6 +740,34 @@ class TestAPIIntegration:
         assert payload["success"] is True
         assert payload["data"]["alerts"][0]["fingerprint"] == "fp-api-1"
         assert isinstance(payload["data"]["clusters"], list)
+
+    def test_integration_diagnose_rejects_filtered_alert(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        client, token = _build_client(monkeypatch)
+
+        response = client.post("/api/diagnose", json=_blocked_alert_payload(), headers=_auth_headers(token))
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["success"] is False
+        assert payload["error"]["code"] == ErrorCode.VALIDATION_ERROR.value
+        assert "temporarily filtered" in payload["error"]["message"]
+
+        sessions = client.get("/api/sessions", headers=_auth_headers(token)).json()["data"]
+        assert all(item["fingerprint"] != "fp-api-blocked-1" for item in sessions)
+
+    def test_integration_handle_rejects_filtered_alert(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        client, token = _build_client(monkeypatch)
+
+        response = client.post("/api/handle", json=_blocked_alert_payload(), headers=_auth_headers(token))
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["success"] is False
+        assert payload["error"]["code"] == ErrorCode.VALIDATION_ERROR.value
+        assert "temporarily filtered" in payload["error"]["message"]
+
+        sessions = client.get("/api/sessions", headers=_auth_headers(token)).json()["data"]
+        assert all(item["fingerprint"] != "fp-api-blocked-1" for item in sessions)
 
     def test_integration_get_knowledge_documents_returns_document_list(self, monkeypatch: pytest.MonkeyPatch) -> None:
         client, token = _build_client(monkeypatch)
@@ -1269,7 +1309,8 @@ class TestAPIE2E:
         token = encode_token(CurrentUser(user_id="u1", username="alice", role="operator"), settings)
         registry, context = _registry()
         fake_alert = Alert.model_validate(_alert_payload())
-        fake_channel = _FakeAlertChannel([fake_alert])
+        blocked_alert = Alert.model_validate(_blocked_alert_payload())
+        fake_channel = _FakeAlertChannel([fake_alert, blocked_alert])
         context.channels["alert"] = fake_channel
         config = SREAgentConfig.model_validate(
             {
@@ -1298,7 +1339,9 @@ class TestAPIE2E:
                 time.sleep(0.1)
             assert snapshot is not None
             assert snapshot["success"] is True
-            assert snapshot["data"]["alerts"][0]["fingerprint"] == "fp-api-1"
+            fingerprints = {item["fingerprint"] for item in snapshot["data"]["alerts"]}
+            assert "fp-api-1" in fingerprints
+            assert "fp-api-blocked-1" not in fingerprints
             assert fake_channel.connected is True
         assert fake_channel.connected is False
 
