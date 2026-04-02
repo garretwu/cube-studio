@@ -15,10 +15,10 @@
     "contract:check": "python ../scripts/sync_frontend_contract.py --check && python ../scripts/sync_contract_doc.py --check"
   },
   "dependencies": {
-    "@ant-design/x": "^2.4.0",
+    "@ant-design/x": "^2.5.0",
     "@fontsource/inter": "^5.2.8",
     "@fontsource/inter-tight": "^5.2.7",
-    "@xyflow/react": "^12.10.1",
+    "@xyflow/react": "^12.10.2",
     "antd": "^6.3.4",
     "axios": "^1.8.4",
     "d3": "^7.9.0",

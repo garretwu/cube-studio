@@ -284,7 +284,7 @@ async def run_diagnosis(
     session_id: str | None = None,
     step_timeout_sec: float = 60.0,
     total_timeout_sec: float = 600.0,
-    max_steps: int = 6,
+    max_steps: int = 50,
     checkpoint_dir: str | None = "./data/checkpoints/sre_agent",
     allowed_tool_names: list[str] | None = None,
     trace_callback: TraceEventCallback | None = None,

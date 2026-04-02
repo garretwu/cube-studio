@@ -58,12 +58,38 @@ class SSHChannel(BaseChannel):
         self.command_timeout = command_timeout
         self.connect_timeout = connect_timeout
         self._connections: dict[str, asyncssh.SSHClientConnection] = {}
+        # 构建 IP 到节点名的反向映射
+        self._ip_to_node: dict[str, str] = {}
+        for node_name, node_config in inventory.items():
+            ssh_host = getattr(node_config.ssh, 'host', None) if hasattr(node_config, 'ssh') else None
+            if ssh_host:
+                self._ip_to_node[ssh_host] = node_name
+
+    def _resolve_node_name(self, node: str) -> str:
+        """解析节点名称，支持通过 IP 或节点名查找。
+
+        Args:
+            node: 节点名称或 IP 地址
+
+        Returns:
+            节点名称
+        """
+        # 直接匹配节点名
+        if node in self.inventory:
+            return node
+        # 通过 IP 查找节点名
+        if node in self._ip_to_node:
+            resolved = self._ip_to_node[node]
+            logger.debug(f"Resolved node IP '{node}' to name '{resolved}'")
+            return resolved
+        return node
 
     def _get_node_config(self, node: str) -> TargetNodeConfig:
-        """获取节点配置"""
-        if node not in self.inventory:
+        """获取节点配置，支持通过 IP 或节点名查找"""
+        resolved_node = self._resolve_node_name(node)
+        if resolved_node not in self.inventory:
             raise ValueError(f"节点 '{node}' 不在清单中")
-        return self.inventory[node]
+        return self.inventory[resolved_node]
 
     def _should_use_sudo(self, node: str) -> bool:
         """检查节点是否需要使用 sudo（默认 True）"""
@@ -78,7 +104,7 @@ class SSHChannel(BaseChannel):
         获取或创建到节点的 SSH 连接。
 
         Args:
-            node: 节点名称
+            node: 节点名称或 IP 地址
 
         Returns:
             asyncssh.SSHClientConnection
@@ -87,14 +113,17 @@ class SSHChannel(BaseChannel):
             ValueError: 节点不存在
             asyncssh.Error: 连接失败
         """
-        # 检查现有连接
-        if node in self._connections:
-            conn = self._connections[node]
+        # 解析节点名（支持 IP 查找）
+        resolved_node = self._resolve_node_name(node)
+
+        # 检查现有连接（使用解析后的节点名作为 key）
+        if resolved_node in self._connections:
+            conn = self._connections[resolved_node]
             if not conn.is_closed():
                 return conn
 
         # 获取节点配置
-        node_config = self._get_node_config(node)
+        node_config = self._get_node_config(resolved_node)
         ssh_config = node_config.ssh
 
         # 构建连接参数
@@ -118,12 +147,12 @@ class SSHChannel(BaseChannel):
                 asyncssh.connect(**connect_kwargs),
                 timeout=self.connect_timeout,
             )
-            self._connections[node] = conn
-            logger.info(f"SSH 连接成功: {node} ({ssh_config.host})")
+            self._connections[resolved_node] = conn
+            logger.info(f"SSH 连接成功: {resolved_node} ({ssh_config.host})")
             return conn
         except asyncio.TimeoutError:
             raise asyncssh.Error(
-                f"SSH 连接超时: {node} ({ssh_config.host})"
+                f"SSH 连接超时: {resolved_node} ({ssh_config.host})"
             )
 
     async def run_command(

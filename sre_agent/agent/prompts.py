@@ -19,6 +19,7 @@ Rules:
   1. the leading root-cause hypothesis,
   2. one alternative that was eliminated or weakened,
   3. one alternative that remains testing or lower-confidence.
+- **GPU evidence is MANDATORY for GPU-related alerts**: When diagnosing alerts involving GPU nodes or GPU metrics, you MUST call ALL available GPU read-only tools (gpu.get_metrics AND gpu.get_processes) to collect comprehensive evidence. Use the node IP address or node name as the 'node' parameter.
 - After enough evidence is collected, return JSON only.
 
 Final JSON shape:

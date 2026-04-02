@@ -3,9 +3,11 @@ from __future__ import annotations
 import ast
 import asyncio
 import json
+import logging
 import re
 from dataclasses import asdict
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage, messages_to_dict
@@ -18,6 +20,13 @@ from sre_agent.models.diagnosis import DiagnosisResult, Observation, ThinkingSte
 from sre_agent.models.remediation import RemediationPlan
 from sre_agent.skills import SkillExecutor, SkillPolicy, SkillRegistry
 from sre_agent.tools import ToolExecutionContext, ToolRegistry, build_default_registry
+
+# LLM 交互日志记录器
+_llm_logger = logging.getLogger("sre_agent.llm")
+_llm_logger.setLevel(logging.DEBUG)
+_llm_logger.addHandler(logging.NullHandler())  # 默认空 handler，避免警告
+
+LLM_LOG_DIR = Path("./data/llm_logs")
 
 
 class FinalDiagnosisEnvelope(BaseModel):
@@ -60,6 +69,88 @@ def initialize_state(
         "checkpoint_dir": checkpoint_dir,
         "allowed_tool_names": allowed_tool_names,
     }
+
+
+def _log_tool_execution(
+    *,
+    session_id: str,
+    step: int,
+    tool_name: str,
+    tool_args: dict[str, Any],
+    result: dict[str, Any],
+) -> None:
+    """将工具执行结果写入日志文件。
+
+    日志格式: JSONL (每行一个 JSON 对象)
+    日志路径: ./data/llm_logs/{session_id}.jsonl
+    """
+    try:
+        LLM_LOG_DIR.mkdir(parents=True, exist_ok=True)
+        log_file = LLM_LOG_DIR / f"{session_id}.jsonl"
+
+        log_entry = {
+            "timestamp": datetime.now(UTC).isoformat(),
+            "session_id": session_id,
+            "step": step,
+            "mode": "tool_execution",
+            "tool_name": tool_name,
+            "tool_args": tool_args,
+            "result": result,
+        }
+
+        with log_file.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(log_entry, ensure_ascii=False) + "\n")
+
+        _llm_logger.debug("Tool execution logged to %s", log_file)
+    except Exception:
+        _llm_logger.exception("Failed to log tool execution")
+
+
+def _log_llm_interaction(
+    *,
+    session_id: str,
+    step: int,
+    prompt_messages: list[Any],
+    response: AIMessage,
+    mode: str,
+    tool_choice: str,
+    tool_calls: list[dict[str, Any]],
+) -> None:
+    """将 LLM 交互日志写入文件，便于调试和分析。
+
+    日志格式: JSONL (每行一个 JSON 对象)
+    日志路径: ./data/llm_logs/{session_id}.jsonl
+    """
+    try:
+        LLM_LOG_DIR.mkdir(parents=True, exist_ok=True)
+        log_file = LLM_LOG_DIR / f"{session_id}.jsonl"
+
+        # 构建日志内容
+        log_entry = {
+            "timestamp": datetime.now(UTC).isoformat(),
+            "session_id": session_id,
+            "step": step,
+            "mode": mode,
+            "tool_choice": tool_choice,
+            "prompt": {
+                "messages": messages_to_dict(prompt_messages),
+                "message_count": len(prompt_messages),
+            },
+            "response": {
+                "content": _extract_text(response.content),
+                "tool_calls": tool_calls,
+                "response_metadata": getattr(response, "response_metadata", {}),
+            },
+        }
+
+        # 追加写入 JSONL 文件
+        with log_file.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(log_entry, ensure_ascii=False) + "\n")
+
+        _llm_logger.debug("LLM interaction logged to %s", log_file)
+    except Exception:  # noqa: BLE001
+        # 日志记录失败不应影响诊断流程
+        _llm_logger.exception("Failed to log LLM interaction")
 
 
 async def reason_node(
@@ -150,6 +241,18 @@ async def reason_node(
     updated_interactions = list(state.get("llm_interactions", []))
     pending_tool_calls = list(response.tool_calls or [])
     step_index = state.get("step_count", 0) + 1
+
+    # 记录 LLM 交互到日志文件
+    _log_llm_interaction(
+        session_id=str(state.get("session_id", "unknown")),
+        step=step_index,
+        prompt_messages=list(invoked_messages),
+        response=response,
+        mode=interaction_mode,
+        tool_choice=tool_choice,
+        tool_calls=list(pending_tool_calls),
+    )
+
     updated_interactions.append(
         {
             "step": step_index,
@@ -335,6 +438,18 @@ async def act_node(
             "data": result.data,
             "error": result.error,
         }
+        # 记录工具执行结果到日志文件
+        _log_tool_execution(
+            session_id=str(state.get("session_id", "unknown")),
+            step=serialized["step"],
+            tool_name=tool_name,
+            tool_args=tool_args,
+            result={
+                "success": result.success,
+                "data": _safe_jsonable(result.data),
+                "error": result.error,
+            },
+        )
         tool_runs.append(serialized)
         messages.append(
             ToolMessage(

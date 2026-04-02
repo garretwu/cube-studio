@@ -10,6 +10,8 @@ from sre_agent.models.alert import Alert
 DEFAULT_BLOCKED_ALERT_NAMES: tuple[str, ...] = (
     "GPU utilization is high",
     "GPUUtilizationHigh",
+    "AI inference TTFT P99 is high",
+    "AIServiceTTFTP99High",
 )
 
 
