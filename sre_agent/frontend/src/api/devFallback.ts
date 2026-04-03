@@ -106,3 +106,11 @@ export function getKnowledgeSourcesFallback(): KnowledgeDocument[] {
 export function getSkillsFallback(): SkillDescriptor[] {
   return skills;
 }
+
+export function getSkillFallback(skillId: string): SkillDescriptor {
+  const matched = skills.find((skill) => skill.id === skillId);
+  if (!matched) {
+    throw new Error("未找到对应技能");
+  }
+  return matched;
+}

@@ -1,4 +1,4 @@
-﻿import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 
@@ -130,6 +130,25 @@ describe("App shell", () => {
     expect(container.querySelectorAll(".nav-item__status--completed")).toHaveLength(completedCount);
   });
 
+  it("renders history alert names and severities in separate slots", async () => {
+    const { container } = render(
+      <MemoryRouter initialEntries={["/topology"]}>
+        <App />
+      </MemoryRouter>,
+    );
+
+    await waitFor(() => {
+      expect(container.querySelectorAll(".nav-item--history").length).toBeGreaterThan(0);
+    });
+
+    const firstHistoryItem = container.querySelector(".nav-item--history");
+    expect(firstHistoryItem?.querySelector(".nav-item__label")?.textContent).toBe(diagnosisHistorySessions[0]?.alert_name);
+    expect(firstHistoryItem?.querySelector(".nav-item__meta")?.textContent).toBe(
+      diagnosisHistorySessions[0]?.severity.toUpperCase(),
+    );
+  });
+
+
   it("exposes the modified alerts route as its own navigation entry", async () => {
     const modifiedAlertsLabel = appRoutes.find((route) => route.key === "alertsModified")?.label;
 
@@ -145,4 +164,3 @@ describe("App shell", () => {
     expect(modifiedAlertsButton.className).toContain("nav-item--active");
   });
 });
-

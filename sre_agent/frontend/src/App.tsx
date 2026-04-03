@@ -94,9 +94,11 @@ function App() {
       collapseBehavior: "hide" as const,
       items: historySessions.map((session) => ({
         key: session.session_id,
-        label: session.title,
+        label: session.alert_name,
         active: session.session_id === historySessionId,
         kind: "history" as const,
+        metaLabel: session.severity.toUpperCase(),
+        metaTone: session.severity,
         status: resolveHistoryChannelStatus(session),
         onClick: () => navigate(`/history/${session.session_id}`),
       })),

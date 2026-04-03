@@ -416,6 +416,9 @@ export type SkillDescriptor = {
   match_score: number;
   status?: "available" | "unavailable";
   updated_at?: string;
+  lifecycle_status?: "draft" | "published";
+  file_name?: string | null;
+  markdown_content?: string | null;
 };
 
 export type ToolChannelStatus = {

@@ -103,7 +103,7 @@ describe("DiagnosisPage", () => {
 
     await waitFor(
       () => {
-        expect(screen.getByText(/规划完成：观测动作与工具调用顺序已明确/)).toBeInTheDocument();
+        expect(screen.getByText(/下一步工具选择/)).toBeInTheDocument();
       },
       { timeout: 6000 },
     );
@@ -179,3 +179,4 @@ describe("DiagnosisPage", () => {
     expect(screen.queryByText(/步骤 \d+：/)).not.toBeInTheDocument();
   });
 });
+
