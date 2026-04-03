@@ -303,9 +303,8 @@ function RemediationPage() {
     <div className="page-grid remediation-page">
       <div className="page-intro">
         <SectionHeader
-          eyebrow="修复台账"
-          title="修复记录与执行工作台"
-          description="按修复记录查看审批、方案版本、金丝雀策略和执行结果。页面收口为单主体台账表，所有详情都放在行内展开区。"
+          title="修复与执行"
+          description="按修复记录查看审批、版本、金丝雀策略和执行结果。"
           actions={
             <AppButton iconLeft="refresh" loading={actionLoading} onClick={() => void handleRefresh()} variant="secondary">
               刷新数据

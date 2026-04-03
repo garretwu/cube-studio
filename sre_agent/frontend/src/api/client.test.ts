@@ -277,6 +277,29 @@ describe("apiClient.getTopology", () => {
     expect(called).toBe(false);
   });
 
+  it("falls back to /api/diagnosis/sessions when /api/sessions fails", async () => {
+    server.use(
+      http.get("/api/sessions", async () => HttpResponse.json({ message: "boom" }, { status: 500 })),
+      http.get("/api/diagnosis/sessions", async () =>
+        HttpResponse.json([
+          {
+            session_id: "sess-fallback",
+            status: "diagnosed",
+            alert_name: "VLLMInterTokenLatencyP95High",
+            severity: "warning",
+            fingerprint: "fp-fallback",
+            outcome: null,
+            duration_seconds: 10,
+            updated_at: "2026-03-26T00:00:00Z",
+          },
+        ]),
+      ),
+    );
+
+    const sessions = await apiClient.getDiagnosisHistorySessions();
+    expect(sessions).toHaveLength(1);
+    expect(sessions[0]?.session_id).toBe("sess-fallback");
+  });
   it("loads chat history from /api/chat/history", async () => {
     server.use(
       http.get("/api/chat/history", async () =>

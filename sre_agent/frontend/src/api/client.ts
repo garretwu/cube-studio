@@ -487,8 +487,18 @@ export const apiClient = {
   },
 
   getDiagnosisHistorySessions: async () => {
-    const sessions = await apiClient.getSessions(50);
-    return sessions.map(mapSummaryToDiagnosisSummary);
+    try {
+      const sessions = await apiClient.getSessions(50);
+      return sessions.map(mapSummaryToDiagnosisSummary);
+    } catch (primaryError) {
+      try {
+        const response = await api.get<SREApiEnvelope<SessionSummary[]> | SessionSummary[]>('/api/diagnosis/sessions');
+        const sessions = unwrapPayload(response.data);
+        return sessions.map(mapSummaryToDiagnosisSummary);
+      } catch {
+        throw primaryError;
+      }
+    }
   },
 
   getSessionLoop: async (sessionId?: string) => {
@@ -584,6 +594,14 @@ export const apiClient = {
         approval_required: session.status === "approval_required",
       } as RemediationOverview;
     } catch {
+      if (import.meta.env.DEV) {
+        const { getRemediationOverviewFallback } = await import("./devFallback");
+        const fallback = getRemediationOverviewFallback();
+        return {
+          ...fallback,
+          session_id: resolved,
+        } as RemediationOverview;
+      }
       const loop = await apiClient.getSessionLoop(resolved);
       return {
         session_id: loop.session_id,
