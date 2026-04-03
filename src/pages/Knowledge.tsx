@@ -18,7 +18,6 @@ function KnowledgePage() {
       <div className="page-intro">
         <SectionHeader
           description="在控制台内直接检索运行手册、硬件笔记与过往运维经验，不必切换到外部知识库。"
-          eyebrow="知识层"
           title="知识检索"
         />
         <SurfaceCard bodyClassName="page-stack" variant="hero">

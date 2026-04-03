@@ -49,7 +49,6 @@ function AlertsPage() {
       <div className="page-intro">
         <SectionHeader
           description="按级别、实体与服务上下文筛选告警候选，在进入诊断前先完成快速归并与聚焦。"
-          eyebrow="告警关联"
           title="告警关联看板"
         />
         <SurfaceCard bodyClassName="page-stack" variant="hero">

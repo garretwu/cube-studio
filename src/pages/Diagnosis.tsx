@@ -1344,7 +1344,6 @@ sources in parallel to identify the affected pods and their conditions.`;
       <div className="diagnosis-chat-page__content">
         <div className="page-intro diagnosis-chat-page__intro">
           <SectionHeader
-            eyebrow="诊断"
             title="诊断对话"
             description="保留诊断交互与 WebSocket 事件消费，使用简洁对话框作为当前实现基线。"
           />

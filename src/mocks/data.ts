@@ -220,9 +220,9 @@ const remediationPlan: RemediationPlan = {
 export const diagnosisSession: DiagnosisSession = {
   session_id: "sess-latency-001",
   alert: alerts[0],
-  status: "re_diagnosed",
+  status: "remediating",
   re_diagnosis_round: 1,
-  duration_seconds: 142,
+  duration_seconds: 182,
   outcome: "proposed_fix_ready",
   bootstrap: {
     session_name: "3月18日推理变慢",
@@ -389,14 +389,14 @@ export const remediationTimeline: SessionEvent[] = [
       stage: "execution_succeeded",
       user: "system",
       message: "金丝雀批次验证通过，等待继续扩容",
-      steps_completed: 1,
+      steps_completed: 2,
       timeout_seconds: 120,
       step_results: [
         {
           step_id: 3,
           tool: "metrics.check",
           command: "confirm canary batch",
-          result: "healthy",
+          result: { status: "healthy", canary_p95_ms: 214 },
           success: true,
           mocked: true,
         },
@@ -407,10 +407,16 @@ export const remediationTimeline: SessionEvent[] = [
 
 export const remediationOverview: RemediationOverview = {
   session_id: diagnosisSession.session_id,
-  approval_required: true,
+  approval_required: false,
   plan: remediationPlan,
   plan_version: 3,
   plan_history: [
+    {
+      version: 1,
+      plan_id: "plan-rollback-01-v1",
+      revised_at: "2026-03-18T12:03:40Z",
+      instruction: "请先给出一个最小可执行的缓解方案。",
+    },
     {
       version: 2,
       plan_id: "plan-rollback-01-v2",
@@ -425,24 +431,23 @@ export const remediationOverview: RemediationOverview = {
     },
   ],
   progress: {
-    status: "awaiting_approval",
-    completed_steps: 1,
+    status: "remediating",
+    completed_steps: 2,
     total_steps: 3,
     batch_status: [
       { batch: "金丝雀 10%", progress: 100, status: "execution_succeeded" },
-      { batch: "全量扩容", progress: 35, status: "validating" },
+      { batch: "全量扩容", progress: 42, status: "validating" },
     ],
   },
   timeline: remediationTimeline,
 };
-
 export const diagnosisHistorySessions: DiagnosisSessionSummary[] = [
   {
     session_id: diagnosisSession.session_id,
     title: "3月18日推理变慢",
-    summary: "vLLM 推理链路出现持续高延迟，已完成一轮复诊并生成待审批修复方案。",
+    summary: "vLLM 推理链路仍在修复中，金丝雀验证已通过，等待全量恢复观察。",
     started_at: diagnosisSession.alert.starts_at,
-    updated_at: "2026-03-18T12:05:00Z",
+    updated_at: "2026-03-18T12:08:40Z",
     status: diagnosisSession.status,
     severity: diagnosisSession.alert.severity,
     alert_name: diagnosisSession.alert.alert_name,

@@ -174,7 +174,6 @@ function AlertsModifiedPage() {
             </StatusChip>
           </div>
         }
-        eyebrow="告警（修改）"
         title="收敛结果看板"
       />
 

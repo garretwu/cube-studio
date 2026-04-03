@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import asyncio
 import contextlib
@@ -125,18 +125,30 @@ async def get_current_session(session_id: str | None = None) -> dict[str, Any]:
     return deepcopy(session_store.get(resolved_id, session_store[SESSION_ID]))
 
 
-@app.get("/api/diagnosis/sessions")
-async def get_sessions() -> list[dict[str, Any]]:
-    session = session_store[SESSION_ID]
-    return [
-        {
-            "session_id": session["session_id"],
-            "started_at": session["started_at"],
-            "status": session["status"],
-            "summary": session["summary"],
-        }
-    ]
+def build_session_summary(session: dict[str, Any]) -> dict[str, Any]:
+    alert = session.get("alert") or {}
+    return {
+        "session_id": session["session_id"],
+        "status": session.get("status", "unknown"),
+        "alert_name": alert.get("alert_name", "unknown"),
+        "severity": alert.get("severity", "warning"),
+        "fingerprint": alert.get("fingerprint", session["session_id"]),
+        "outcome": session.get("outcome"),
+        "duration_seconds": session.get("duration_seconds", 0),
+        "updated_at": now_iso(),
+    }
 
+
+@app.get("/api/sessions")
+async def get_sessions(limit: int = 50) -> list[dict[str, Any]]:
+    session = session_store[SESSION_ID]
+    return [build_session_summary(session)][: max(1, int(limit))]
+
+
+@app.get("/api/diagnosis/sessions")
+async def get_diagnosis_sessions(limit: int = 50) -> list[dict[str, Any]]:
+    session = session_store[SESSION_ID]
+    return [build_session_summary(session)][: max(1, int(limit))]
 
 @app.get("/api/chat/history")
 async def get_chat_history(session_id: str | None = None) -> list[dict[str, Any]]:
