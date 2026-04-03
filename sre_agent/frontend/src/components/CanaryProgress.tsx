@@ -15,6 +15,11 @@ function toneByStatus(status: string) {
   switch (status) {
     case "validating":
       return "warning";
+    case "failed":
+    case "timeout":
+    case "escalated":
+    case "rejected":
+      return "danger";
     case "pending":
       return "neutral";
     default:

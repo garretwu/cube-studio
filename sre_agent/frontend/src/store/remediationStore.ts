@@ -91,10 +91,10 @@ export const useRemediationStore = create<RemediationState>((set, get) => ({
         window.clearInterval(pollTimer);
       }
     }
-    const loop = await apiClient.getSessionLoop(sessionId);
     const overview = await apiClient.getRemediationOverview(sessionId);
+    const loop = await apiClient.getSessionLoop(sessionId).catch(() => undefined);
     set({
-      loop,
+      loop: loop ?? get().loop,
       overview,
       events: overview.timeline ?? [],
     });

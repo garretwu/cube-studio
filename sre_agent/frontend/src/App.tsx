@@ -7,6 +7,7 @@ import { AppShell } from "./components/ui";
 import { useAlertsRealtimeSync } from "./hooks/useAlertsRealtimeSync";
 import HistoryPage from "./pages/History";
 import DiagnosisPage from "./pages/Diagnosis";
+import RemediationPage from "./pages/Remediation";
 import SkillDetailPage from "./pages/SkillDetail";
 import { appRoutes } from "./routes";
 
@@ -31,6 +32,7 @@ function AppRoutes() {
       <Route path="/history/:sessionId" element={<DiagnosisPage />} />
       <Route path="/diagnosis" element={<DiagnosisPage />} />
       <Route path="/diagnosis/:sessionId" element={<DiagnosisPage />} />
+      <Route path="/remediation/:sessionId" element={<RemediationPage />} />
       <Route path="/skills/:skillId" element={<SkillDetailPage />} />
       <Route path="/topology-modified" element={<Navigate to="/topology" replace />} />
       {appRoutes

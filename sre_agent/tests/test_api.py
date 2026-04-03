@@ -460,6 +460,20 @@ class TestAPIIntegration:
         assert response.json()["success"] is True
         assert response.json()["data"]["session_id"] == "fp-api-1"
 
+    def test_integration_diagnose_emits_approval_required_event_when_plan_exists(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        client, token = _build_client(monkeypatch)
+        response = client.post("/api/diagnose", json=_alert_payload(), headers=_auth_headers(token))
+        assert response.status_code == 200
+        session_id = response.json()["data"]["session_id"]
+
+        events = client.get(f"/api/sessions/{session_id}/events", headers=_auth_headers(token))
+        assert events.status_code == 200
+        payload = events.json()
+        assert payload["success"] is True
+        assert any(item["type"] == EventType.APPROVAL_REQUIRED.value for item in payload["data"])
+
     def test_integration_runs_handle_route_when_full_pipeline_available(self, monkeypatch: pytest.MonkeyPatch) -> None:
         client, token = _build_client(monkeypatch)
         response = client.post("/api/handle", json=_alert_payload(), headers=_auth_headers(token))
@@ -1004,17 +1018,20 @@ class TestAPIE2E:
         assert response.status_code == 200
         assert response.json()["success"] is True
 
-        with client.websocket_connect(f"/ws/thinking-trace/{session_id}?token={token}") as websocket:
-            first = websocket.receive_json()
-            second = websocket.receive_json()
-
-        assert first["type"] == EventType.REMEDIATION_PROGRESS.value
-        assert first["data"]["stage"] == "execution_started"
-        assert second["type"] == EventType.REMEDIATION_PROGRESS.value
-        assert second["data"]["stage"] == "execution_succeeded"
-        assert isinstance(second["data"].get("step_results"), list)
-        assert second["data"]["step_results"]
-        assert second["data"]["step_results"][0]["command"].startswith("mock::")
+        events_response = client.get(f"/api/sessions/{session_id}/events", headers=_auth_headers(token))
+        assert events_response.status_code == 200
+        events_payload = events_response.json()
+        assert events_payload["success"] is True
+        remediation_events = [
+            item for item in events_payload["data"] if item["type"] == EventType.REMEDIATION_PROGRESS.value
+        ]
+        assert len(remediation_events) >= 3
+        assert remediation_events[0]["data"]["stage"] == "approval_accepted"
+        assert remediation_events[1]["data"]["stage"] == "execution_started"
+        assert remediation_events[-1]["data"]["stage"] == "execution_succeeded"
+        assert isinstance(remediation_events[-1]["data"].get("step_results"), list)
+        assert remediation_events[-1]["data"]["step_results"]
+        assert remediation_events[-1]["data"]["step_results"][0]["command"].startswith("mock::")
 
     def test_e2e_approve_route_rejects_outdated_plan_version(self, monkeypatch: pytest.MonkeyPatch) -> None:
         client, token = _build_client(monkeypatch)
@@ -1147,6 +1164,11 @@ class TestAPIE2E:
         )
         assert approve.status_code == 200
         assert approve.json()["success"] is True
+        existing_events = client.get(f"/api/sessions/{session_id}/events", headers=_auth_headers(token))
+        assert existing_events.status_code == 200
+        existing_payload = existing_events.json()
+        assert existing_payload["success"] is True
+        last_event_id = str(existing_payload["data"][-1]["data"]["event_id"])
 
         response = client.post(
             f"/api/remediate/{session_id}/rollback",
@@ -1156,7 +1178,9 @@ class TestAPIE2E:
         payload = response.json()
         assert payload["success"] is True
 
-        with client.websocket_connect(f"/ws/thinking-trace/{session_id}?token={token}&last_event_id=2") as websocket:
+        with client.websocket_connect(
+            f"/ws/thinking-trace/{session_id}?token={token}&last_event_id={last_event_id}"
+        ) as websocket:
             first = websocket.receive_json()
             second = websocket.receive_json()
         assert first["type"] == EventType.REMEDIATION_PROGRESS.value

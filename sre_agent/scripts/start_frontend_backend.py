@@ -19,6 +19,8 @@ import socket
 import subprocess
 import sys
 import time
+import urllib.error
+import urllib.request
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -34,6 +36,9 @@ from sre_agent.config import apply_llm_env_from_config, load_config
 
 DEFAULT_CONFIG_PATH = "sre_agent/conf/config.yaml"
 DEFAULT_KUBECONFIG_PATH = str((REPO_ROOT / "sre_agent" / "conf" / "kube.conf").resolve())
+DEFAULT_LOCAL_LLM_BASE_URL = "http://10.11.4.13:18080/v1"
+DEFAULT_LOCAL_LLM_MODEL = "MiniMax-M2.5-IQ4_XS-00001-of-00004.gguf"
+LOCAL_LLM_PLACEHOLDER_KEY = "local-llama-placeholder"
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -51,6 +56,22 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--role", choices=["viewer", "operator", "admin"], default="operator", help="JWT role for frontend requests.")
     parser.add_argument("--username", default="local-ui", help="JWT username.")
     parser.add_argument("--token-expire-seconds", type=int, default=8 * 3600, help="Frontend token expire seconds.")
+    parser.add_argument(
+        "--llm-mode",
+        choices=["minimax_api", "minimax_local"],
+        default="minimax_api",
+        help="minimax_api: keep current cloud MiniMax config; minimax_local: use local llama.cpp gateway.",
+    )
+    parser.add_argument(
+        "--local-llm-base-url",
+        default=DEFAULT_LOCAL_LLM_BASE_URL,
+        help="Local OpenAI-compatible base URL used when --llm-mode=minimax_local.",
+    )
+    parser.add_argument(
+        "--local-model",
+        default=DEFAULT_LOCAL_LLM_MODEL,
+        help="Local model name used when --llm-mode=minimax_local.",
+    )
     parser.add_argument(
         "--runtime-info",
         default="sre_agent/temp/dev_runtime_info.json",
@@ -72,6 +93,63 @@ def resolve_npm_command() -> str:
     raise SystemExit("missing required command: npm (or npm.cmd)")
 
 
+def _http_json_request(
+    *,
+    method: str,
+    url: str,
+    payload: dict[str, object] | None = None,
+    timeout_seconds: float = 8.0,
+) -> tuple[int, dict[str, object]]:
+    data = None
+    headers: dict[str, str] = {}
+    if payload is not None:
+        data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        headers["Content-Type"] = "application/json"
+    request = urllib.request.Request(url=url, data=data, headers=headers, method=method)
+    try:
+        with urllib.request.urlopen(request, timeout=max(1.0, float(timeout_seconds))) as response:
+            status_code = int(getattr(response, "status", 200) or 200)
+            raw = response.read().decode("utf-8", "replace")
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode("utf-8", "replace")
+        snippet = body[:240]
+        raise SystemExit(f"local llm probe failed: {method} {url} returned status={exc.code}, body={snippet}") from exc
+    except Exception as exc:  # noqa: BLE001
+        raise SystemExit(f"local llm probe failed: {method} {url} request error: {exc}") from exc
+
+    try:
+        parsed = json.loads(raw) if raw.strip() else {}
+    except Exception:  # noqa: BLE001
+        parsed = {"raw": raw}
+    if not isinstance(parsed, dict):
+        parsed = {"data": parsed}
+    return status_code, parsed
+
+
+def _probe_local_llm(*, base_url: str, model: str) -> None:
+    normalized_base = base_url.rstrip("/")
+    model_name = model.strip()
+    if not normalized_base:
+        raise SystemExit("local llm probe failed: base_url is empty")
+    if not model_name:
+        raise SystemExit("local llm probe failed: model is empty")
+
+    models_url = f"{normalized_base}/models"
+    _http_json_request(method="GET", url=models_url, timeout_seconds=8.0)
+
+    completion_url = f"{normalized_base}/chat/completions"
+    payload = {
+        "model": model_name,
+        "messages": [{"role": "user", "content": "Reply with OK"}],
+        "temperature": 0,
+        "max_tokens": 8,
+    }
+    _, completion = _http_json_request(method="POST", url=completion_url, payload=payload, timeout_seconds=30.0)
+    choices = completion.get("choices")
+    if not isinstance(choices, list):
+        raise SystemExit(f"local llm probe failed: POST {completion_url} missing choices field in response")
+
+
 def build_runtime_env(
     *,
     config_path: str,
@@ -82,6 +160,9 @@ def build_runtime_env(
     role: str,
     username: str,
     token_expire_seconds: int,
+    llm_mode: str = "minimax_api",
+    local_llm_base_url: str = DEFAULT_LOCAL_LLM_BASE_URL,
+    local_model: str = DEFAULT_LOCAL_LLM_MODEL,
 ) -> tuple[dict[str, str], dict[str, str]]:
     resolved_config_path = _resolve_config_path(config_path)
     config = load_config(resolved_config_path)
@@ -101,11 +182,25 @@ def build_runtime_env(
 
     env = dict(os.environ)
     apply_llm_env_from_config(config, env, only_if_missing=True)
+    resolved_llm_mode = str(llm_mode or "minimax_api").strip().lower()
+    if resolved_llm_mode not in {"minimax_api", "minimax_local"}:
+        raise SystemExit(f"invalid --llm-mode: {llm_mode}")
+
+    llm_local_probe_passed = "false"
+    llm_local_selected_model = ""
+    llm_local_base_url = ""
+    if resolved_llm_mode == "minimax_local":
+        llm_local_selected_model = str(local_model or DEFAULT_LOCAL_LLM_MODEL).strip() or DEFAULT_LOCAL_LLM_MODEL
+        llm_local_base_url = str(local_llm_base_url or DEFAULT_LOCAL_LLM_BASE_URL).strip().rstrip("/")
+        _probe_local_llm(base_url=llm_local_base_url, model=llm_local_selected_model)
+        llm_local_probe_passed = "true"
+        env["SRE_OPENAI_BASE_URL"] = llm_local_base_url
+        env["SRE_LLM_MODEL"] = llm_local_selected_model
+        env["SRE_OPENAI_API_KEY"] = LOCAL_LLM_PLACEHOLDER_KEY
+
     llm_api_key = str(env.get("SRE_OPENAI_API_KEY") or env.get("OPENAI_API_KEY") or "").strip()
-    if not llm_api_key:
-        raise SystemExit(
-            "missing required LLM API key: set SRE_OPENAI_API_KEY (or OPENAI_API_KEY) before starting backend"
-        )
+    if resolved_llm_mode == "minimax_api" and not llm_api_key:
+        raise SystemExit("missing required LLM API key: set SRE_OPENAI_API_KEY (or OPENAI_API_KEY) before starting backend")
     env[auth["jwt_secret_env"]] = jwt_secret
     env["VITE_API_TOKEN"] = token
     env["VITE_API_PROXY_TARGET"] = backend_url
@@ -133,7 +228,11 @@ def build_runtime_env(
         "api_base_url": env.get("VITE_API_BASE_URL", ""),
         "sre_kubeconfig": env["SRE_KUBECONFIG"],
         "config_path": str(resolved_config_path),
-        "llm_api_key_configured": "true",
+        "llm_mode": resolved_llm_mode,
+        "llm_local_probe_passed": llm_local_probe_passed,
+        "llm_local_selected_model": llm_local_selected_model,
+        "llm_local_base_url": llm_local_base_url,
+        "llm_api_key_configured": "true" if llm_api_key else "false",
         "llm_api_key_length": str(len(llm_api_key)),
         "llm_model": str(env.get("SRE_LLM_MODEL", "")).strip(),
         "llm_base_url": str(env.get("SRE_OPENAI_BASE_URL", "")).strip(),
@@ -261,6 +360,9 @@ def main() -> int:
         role=args.role,
         username=args.username,
         token_expire_seconds=args.token_expire_seconds,
+        llm_mode=args.llm_mode,
+        local_llm_base_url=args.local_llm_base_url,
+        local_model=args.local_model,
     )
 
     config_path = str(_resolve_config_path(args.config))
@@ -287,9 +389,17 @@ def main() -> int:
         f"[ok] llm key configured={info['llm_api_key_configured']} "
         f"key_length={info['llm_api_key_length']} "
         f"model={info['llm_model'] or '<default>'} "
-        f"base_url={info['llm_base_url'] or '<default>'}",
+        f"base_url={info['llm_base_url'] or '<default>'} "
+        f"mode={info['llm_mode']}",
         flush=True,
     )
+    if info["llm_mode"] == "minimax_local":
+        print(
+            f"[ok] local llm probe passed={info['llm_local_probe_passed']} "
+            f"selected_model={info['llm_local_selected_model']} "
+            f"local_base_url={info['llm_local_base_url']}",
+            flush=True,
+        )
     print(f"[ok] config={info['config_path']} SRE_KUBECONFIG={info['sre_kubeconfig']}", flush=True)
     print(f"[ok] runtime info saved: {args.runtime_info}", flush=True)
     print("[hint] press Ctrl+C to stop both processes", flush=True)
