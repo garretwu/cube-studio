@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+﻿import { useEffect, useMemo, useState } from "react";
 import { Navigate, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 
 import { apiClient } from "./api/client";
@@ -32,6 +32,7 @@ function AppRoutes() {
       <Route path="/diagnosis/:sessionId" element={<DiagnosisPage />} />
       <Route path="/skills/:skillId" element={<SkillDetailPage />} />
       <Route path="/topology-modified" element={<Navigate to="/topology" replace />} />
+      <Route path="/alerts-modified" element={<Navigate to="/alerts" replace />} />
       {appRoutes
         .filter((route) => route.key !== "diagnosis")
         .map((route) => (

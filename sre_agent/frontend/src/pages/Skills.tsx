@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 
 import { apiClient } from "../api/client";
-import { AppButton, AppIcon, AppInput, SectionHeader, StatusChip, SurfaceCard } from "../components/ui";
+import { AppButton, AppIcon, AppInput, MetricTile, SectionHeader, StatusChip, SurfaceCard } from "../components/ui";
 import {
   formatSkillLifecycleLabel,
   formatSkillScopeLabel,
@@ -59,47 +59,20 @@ function SkillsPage() {
         <SectionHeader
           eyebrow="Global Skills"
           title="技能管理"
-          description="查看全局技能列表，进入详情页后可直接查看每个技能对应的 SKILL.md 文件内容。"
+          description="按统一视图查看技能元数据、生命周期和可用状态，便于快速筛选与进入详情。"
         />
+      </div>
 
-        <SurfaceCard bodyClassName="skills-manage-notice" variant="soft">
-          <AppIcon name="infoCircle" size={18} />
-          <p>
-            请直接粘贴完整的 <strong>SKILL.md</strong> 原文。页面只保留基础元数据字段，Markdown 内容会整体写入
-            <strong> SKILL.md</strong>。
-          </p>
-        </SurfaceCard>
-
-        <SurfaceCard bodyClassName="skills-manage-hero" className="skills-manage-hero-shell" variant="hero">
-          <div className="skills-manage-hero__copy">
-            <p className="skills-manage-hero__eyebrow">Skill Registry</p>
-            <h3 className="skills-manage-hero__title">统一管理技能元数据与文件内容</h3>
-            <p className="skills-manage-hero__description">
-              列表页聚焦名称、状态、描述和更新时间，详情页展示元数据和完整 SKILL.md 原文，方便后续接入编辑与发布流程。
-            </p>
-          </div>
-
-          <div className="skills-manage-hero__stats">
-            <div className="skills-manage-hero__stat">
-              <span className="skills-manage-hero__stat-label">技能总数</span>
-              <strong className="skills-manage-hero__stat-value">{skills.length}</strong>
-            </div>
-            <div className="skills-manage-hero__stat">
-              <span className="skills-manage-hero__stat-label">已发布</span>
-              <strong className="skills-manage-hero__stat-value">{publishedCount}</strong>
-            </div>
-            <div className="skills-manage-hero__stat">
-              <span className="skills-manage-hero__stat-label">自定义</span>
-              <strong className="skills-manage-hero__stat-value">{customCount}</strong>
-            </div>
-          </div>
-        </SurfaceCard>
+      <div className="card-grid--metrics skills-manage-metrics">
+        <MetricTile label="技能总数" value={skills.length} />
+        <MetricTile label="已发布" value={publishedCount} />
+        <MetricTile label="自定义" value={customCount} />
       </div>
 
       <SurfaceCard bodyClassName="skills-manage-toolbar" variant="soft">
         <div className="skills-manage-toolbar__summary">
           <StatusChip tone="info">全局列表</StatusChip>
-          <StatusChip tone="neutral">{filteredSkills.length} 个技能</StatusChip>
+          <StatusChip tone="neutral">{filteredSkills.length} 项结果</StatusChip>
         </div>
 
         <div className="skills-manage-toolbar__actions">
@@ -131,14 +104,14 @@ function SkillsPage() {
 
       {!errorMessage && isLoading ? (
         <SurfaceCard bodyClassName="skills-empty" variant="soft">
-          <p className="skills-empty__title">正在加载技能列表</p>
-          <p className="skills-empty__description">请稍候，正在同步最新技能注册信息。</p>
+          <p className="skills-empty__title">技能列表加载中</p>
+          <p className="skills-empty__description">正在同步最新技能元数据，请稍候。</p>
         </SurfaceCard>
       ) : null}
 
       {!errorMessage && !isLoading && filteredSkills.length === 0 ? (
         <SurfaceCard bodyClassName="skills-empty" variant="soft">
-          <p className="skills-empty__title">没有找到匹配的技能</p>
+          <p className="skills-empty__title">没有匹配的技能</p>
           <p className="skills-empty__description">可以尝试更换关键词，或清空搜索条件后重新查看。</p>
         </SurfaceCard>
       ) : null}
@@ -150,7 +123,7 @@ function SkillsPage() {
               <tr>
                 <th>SKILL</th>
                 <th>状态</th>
-                <th>描述</th>
+                <th>说明</th>
                 <th>更新时间</th>
                 <th>操作</th>
               </tr>
@@ -163,7 +136,7 @@ function SkillsPage() {
                   <tr key={skill.id} className="skills-manage-row">
                     <td>
                       <button
-                        aria-label={`进入技能详情 ${skill.name}`}
+                        aria-label={`打开技能 ${skill.name}`}
                         className="skills-manage-row__name-button"
                         onClick={() => navigate(`/skills/${encodeURIComponent(skill.id)}`)}
                         type="button"
@@ -184,7 +157,7 @@ function SkillsPage() {
                       <div className="skills-manage-row__description-wrap">
                         <p className="skills-manage-row__description">{skill.summary}</p>
                         {skill.status === "unavailable" ? (
-                          <span className="skills-manage-row__hint">当前仅展示文件信息，未接入执行链路。</span>
+                          <span className="skills-manage-row__hint">当前仅展示技能说明，暂未接入执行链路。</span>
                         ) : null}
                       </div>
                     </td>

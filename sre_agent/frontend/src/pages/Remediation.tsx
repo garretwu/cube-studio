@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
+﻿import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
 
 import { apiClient } from "../api/client";
 import type { DiagnosisSessionSummary, RemediationOverview, SessionEvent } from "../api/types";
@@ -229,7 +229,7 @@ function RemediationPage() {
       setSelectedSessionId((current) => {
         const candidate = preferredSessionId || current;
         if (candidate && nextRecords.some((item) => item.summary.session_id === candidate)) return candidate;
-        return nextRecords[0]?.summary.session_id ?? "";
+        return "";
       });
     } catch (error) {
       setRecords([]);
@@ -260,8 +260,8 @@ function RemediationPage() {
   }, [query, records, statusFilter]);
 
   const selectedRecord = useMemo(
-    () => records.find((record) => record.summary.session_id === selectedSessionId) ?? filteredRecords[0] ?? null,
-    [filteredRecords, records, selectedSessionId],
+    () => records.find((record) => record.summary.session_id === selectedSessionId) ?? null,
+    [records, selectedSessionId],
   );
 
   const detailOverview = selectedRecord?.summary.session_id === overview?.session_id ? overview : selectedRecord?.overview;
@@ -385,7 +385,14 @@ function RemediationPage() {
 
                       return (
                         <Fragment key={record.summary.session_id}>
-                          <tr className={`remediation-record-table__row${isExpanded ? " remediation-record-table__row--active" : ""}`} onClick={() => setSelectedSessionId(record.summary.session_id)}>
+                          <tr
+                            className={`remediation-record-table__row${isExpanded ? " remediation-record-table__row--active" : ""}`}
+                            onClick={() =>
+                              setSelectedSessionId((current) =>
+                                current === record.summary.session_id ? "" : record.summary.session_id,
+                              )
+                            }
+                          >
                             <td className="remediation-record-table__cell remediation-record-table__cell--record">
                               <span className="remediation-record-table__chevron">
                                 <AppIcon name={isExpanded ? "down" : "right"} size={14} />
@@ -434,7 +441,7 @@ function RemediationPage() {
                                   <div className="remediation-record-table__expand-panel">
                                     <div className="remediation-record-table__expand-header">
                                       <div className="remediation-record-table__expand-heading">
-                                        <span className="remediation-record-table__expand-kicker">详细记录</span>
+                                        <span className="remediation-record-table__expand-kicker">记录明细</span>
                                         <h4 className="remediation-record-table__expand-title">{record.summary.title}</h4>
                                         <p className="remediation-record-table__expand-note">{expandedOverview?.plan.description ?? record.summary.summary}</p>
                                       </div>
@@ -445,13 +452,20 @@ function RemediationPage() {
                                           {expandedOverview?.plan.confidence ? <StatusChip tone="info">{`置信度 ${formatPercent(expandedOverview.plan.confidence)}`}</StatusChip> : null}
                                           {expandedOverview?.plan_version ? <StatusChip tone="neutral">{`当前方案 v${expandedOverview.plan_version}`}</StatusChip> : null}
                                         </div>
-                                        <AppButton disabled={!expandedOverview?.approval_required || actionLoading || isLoading} onClick={() => setApprovalDialogOpen(true)} variant="primary">
-                                          进入审批
-                                        </AppButton>
+                                        <div className="remediation-record-table__expand-action-buttons">
+                                          <AppButton onClick={() => setSelectedSessionId("")} variant="tertiary">
+                                            收起详细记录
+                                          </AppButton>
+                                          <AppButton disabled={!expandedOverview?.approval_required || actionLoading || isLoading} onClick={() => setApprovalDialogOpen(true)} variant="primary">
+                                            进入审批
+                                          </AppButton>
+                                        </div>
                                       </div>
                                     </div>
 
-                                    <div className="remediation-record-table__detail-form">
+                                    <div className="remediation-record-table__subsection">
+                                      <div className="remediation-record-table__subsection-header"><div><p className="remediation-record-table__subsection-title">基础信息</p><p className="remediation-record-table__subsection-copy">汇总诊断、审批人与当前记录状态。</p></div></div>
+                                      <div className="remediation-record-table__detail-form">
                                       <div className="remediation-record-table__detail-field"><span className="remediation-record-table__detail-label">诊断 ID</span><strong className="remediation-record-table__detail-value">{record.summary.session_id}</strong></div>
                                       <div className="remediation-record-table__detail-field"><span className="remediation-record-table__detail-label">诊断名称</span><strong className="remediation-record-table__detail-value">{record.summary.alert_name}</strong></div>
                                       <div className="remediation-record-table__detail-field"><span className="remediation-record-table__detail-label">审批人</span><strong className="remediation-record-table__detail-value">{expandedApprover}</strong></div>
@@ -468,10 +482,11 @@ function RemediationPage() {
                                       <div className="remediation-record-table__detail-field"><span className="remediation-record-table__detail-label">金丝雀策略</span><strong className="remediation-record-table__detail-value">{expandedOverview?.plan.canary?.enabled ? `目标 ${formatPercent(expandedOverview.plan.canary.target_percentage)} · 观察 ${expandedOverview.plan.canary.monitor_duration}s` : "未启用"}</strong></div>
                                       <div className="remediation-record-table__detail-field"><span className="remediation-record-table__detail-label">全量进度</span><strong className="remediation-record-table__detail-value">{getOverallProgress(expandedOverview)}%</strong></div>
                                       <div className="remediation-record-table__detail-field"><span className="remediation-record-table__detail-label">已完成步骤</span><strong className="remediation-record-table__detail-value">{expandedOverview?.progress.completed_steps ?? 0} / {expandedOverview?.progress.total_steps ?? 0}</strong></div>
+                                      </div>
                                     </div>
 
                                     <div className="remediation-record-table__subsection">
-                                      <div className="remediation-record-table__subsection-header"><div><p className="remediation-record-table__subsection-title">审批与版本</p><p className="remediation-record-table__subsection-copy">查看方案修订记录与当前审批状态。</p></div></div>
+                                      <div className="remediation-record-table__subsection-header"><div><p className="remediation-record-table__subsection-title">方案信息</p><p className="remediation-record-table__subsection-copy">查看方案修订记录与当前审批状态。</p></div></div>
                                       <div className="remediation-version-list remediation-record-table__embedded-list">
                                         {(expandedOverview?.plan_history?.length ?? 0) === 0 ? (
                                           <p className="data-list__copy">当前只有基础方案版本，尚未出现修订记录。</p>
@@ -488,7 +503,7 @@ function RemediationPage() {
                                     </div>
 
                                     <div className="remediation-record-table__subsection">
-                                      <div className="remediation-record-table__subsection-header"><div><p className="remediation-record-table__subsection-title">金丝雀与执行进度</p><p className="remediation-record-table__subsection-copy">把灰度策略和全量推进情况收拢到同一块明细里。</p></div></div>
+                                      <div className="remediation-record-table__subsection-header"><div><p className="remediation-record-table__subsection-title">执行信息</p><p className="remediation-record-table__subsection-copy">把灰度策略和全量推进情况收拢到同一块明细里。</p></div></div>
                                       <div className="page-stack remediation-record-table__embedded-list">
                                         <div className="remediation-inline-grid remediation-inline-grid--compact">
                                           <div className="remediation-stat-card remediation-stat-card--canary"><span>金丝雀策略</span><strong>{expandedOverview?.plan.canary?.enabled ? `${formatPercent(expandedOverview.plan.canary.target_percentage)} / ${expandedOverview.plan.canary.monitor_duration}s` : "未启用"}</strong></div>
