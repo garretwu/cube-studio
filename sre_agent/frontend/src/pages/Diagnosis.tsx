@@ -1,5 +1,5 @@
-﻿import { Bubble, Sender, ThoughtChain } from "@ant-design/x";
-import type { BubbleItemType, BubbleListProps, ThoughtChainItemType } from "@ant-design/x";
+﻿import { Bubble, Sender, Think } from "@ant-design/x";
+import type { BubbleItemType, BubbleListProps } from "@ant-design/x";
 import { Button, Collapse, Dropdown } from "antd";
 import type { MenuProps } from "antd";
 import { isValidElement, useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -7,7 +7,7 @@ import { useParams } from "react-router-dom";
 
 import type { RemediationPlan, WSEvent } from "../api/types";
 import { buildBackendWsUrl } from "../api/ws";
-import { SectionHeader, StatusChip, SurfaceCard } from "../components/ui";
+import { AppIcon, SectionHeader, StatusChip, SurfaceCard } from "../components/ui";
 import { useWebSocket } from "../hooks/useWebSocket";
 import { useDiagnosisStore } from "../store/diagnosisStore";
 import { formatTimestamp } from "../utils/format";
@@ -42,6 +42,13 @@ type ThinkingPlanItem = {
 type ThinkingPlanPayload = {
   kind: "thinking_plan";
   summary: string;
+  thinkTitle: string;
+  thinkingText: string;
+  conclusionText: string;
+  toolName: string;
+  toolParams: Record<string, unknown>;
+  typingStage?: "thinking" | "conclusion" | "complete";
+  blink?: boolean;
   items: ThinkingPlanItem[];
 };
 
@@ -122,15 +129,16 @@ type DisplayMessage = {
 };
 
 const DEMO_STEP_LABELS = [
-  "确认影响范围",
-  "规划观测动作",
-  "收集关键观测",
-  "输出初步诊断",
-  "展示候选根因",
-  "生成待审批方案",
-  "人工审批执行",
-  "执行受控修复",
-  "输出最终结果",
+  { id: "1", title: "确认影响范围" },
+  { id: "2", title: "规划观测动作" },
+  { id: "2.1", title: "DeepThink 流式思考" },
+  { id: "3", title: "收集关键观测" },
+  { id: "4", title: "输出初步诊断" },
+  { id: "5", title: "展示候选根因" },
+  { id: "6", title: "生成待审批方案" },
+  { id: "7", title: "人工审批执行" },
+  { id: "8", title: "执行受控修复" },
+  { id: "9", title: "输出最终结果" },
 ] as const;
 
 const STEP6_APPROVAL_PLAN: ApprovalPlanPayload = {
@@ -173,6 +181,10 @@ const STEP6_APPROVAL_PLAN: ApprovalPlanPayload = {
   ],
   rollbackSummary: "步骤 1 支持自动回滚（k8s_uncordon: node-gpu-01）；步骤 2 无自动回滚，保留人工兜底。",
 };
+
+function getDemoStepDisplayLabel(index: number) {
+  return DEMO_STEP_LABELS[index]?.id ?? String(index + 1);
+}
 
 function renderBubbleMeta(meta?: BubbleMeta) {
   if (!meta) {
@@ -365,40 +377,168 @@ function renderToolEventCard(payload: ToolEventPayload) {
   );
 }
 
-function renderThinkingPlanCard(payload: ThinkingPlanPayload) {
-  const chainItems: ThoughtChainItemType[] = payload.items.map((item) => ({
-    key: item.key,
-    title: item.title,
-    description: item.description,
-    status: item.status,
-    blink: item.blink,
-    collapsible: true,
-    content: (
-      <div className="diagnosis-thinking-plan__content">
-        <p className="diagnosis-thinking-plan__row">
-          <span className="diagnosis-thinking-plan__label">工具：</span>
-          <code className="diagnosis-thinking-plan__value">{item.toolName}</code>
-        </p>
-        <p className="diagnosis-thinking-plan__row">
-          <span className="diagnosis-thinking-plan__label">检查目标：</span>
-          <span>{item.checkTarget}</span>
-        </p>
-      </div>
-    ),
-  }));
+type StreamingBlockProps = {
+  text: string;
+  speed?: number;
+  mode: "hidden" | "streaming" | "complete";
+  onComplete?: () => void;
+};
 
-  const expandedKeys = payload.items.length ? [payload.items[0].key] : [];
+function StreamingBlock({ text, speed = 6, mode, onComplete }: StreamingBlockProps) {
+  const [visibleLength, setVisibleLength] = useState(mode === "complete" ? text.length : 0);
+
+  useEffect(() => {
+    if (mode === "hidden") {
+      setVisibleLength(0);
+      return;
+    }
+
+    if (mode === "complete") {
+      setVisibleLength(text.length);
+      return;
+    }
+
+    setVisibleLength(0);
+  }, [mode, text]);
+
+  useEffect(() => {
+    if (mode !== "streaming") {
+      return;
+    }
+
+    if (visibleLength >= text.length) {
+      onComplete?.();
+      return;
+    }
+
+    const timer = window.setTimeout(() => {
+      setVisibleLength((current) => Math.min(current + 1, text.length));
+    }, speed);
+
+    return () => window.clearTimeout(timer);
+  }, [mode, onComplete, speed, text.length, visibleLength]);
+
+  const renderedText = text.slice(0, visibleLength);
+  const showCursor = mode === "streaming" && visibleLength < text.length;
+
+  return (
+    <pre className="diagnosis-thinking-plan__stream">
+      {renderedText}
+      {showCursor ? <span className="diagnosis-thinking-plan__cursor" aria-hidden="true" /> : null}
+    </pre>
+  );
+}
+
+function ThinkingPlanCard({ payload }: { payload: ThinkingPlanPayload }) {
+  const [thinkingDone, setThinkingDone] = useState(payload.typingStage !== "thinking");
+  const [conclusionDone, setConclusionDone] = useState(payload.typingStage === "complete");
+  const showConclusion = payload.typingStage !== "thinking" && thinkingDone;
+  const showToolSelection = payload.typingStage === "complete" && conclusionDone;
+
+  useEffect(() => {
+    setThinkingDone(payload.typingStage !== "thinking");
+    setConclusionDone(payload.typingStage === "complete");
+  }, [payload.thinkTitle, payload.thinkingText, payload.conclusionText]);
 
   return (
     <div className="diagnosis-thinking-plan">
-      <p className="diagnosis-thinking-plan__summary">{payload.summary}</p>
-      <ThoughtChain
-        className="diagnosis-thought-chain diagnosis-thought-chain--inline"
-        defaultExpandedKeys={expandedKeys}
-        items={chainItems}
-      />
+      <Think
+        className="diagnosis-thinking-plan__think"
+        title={payload.thinkTitle}
+        loading={!showToolSelection}
+        blink={payload.blink}
+        defaultExpanded
+      >
+        <div className="diagnosis-thinking-plan__think-body">
+          <div className="diagnosis-thinking-plan__panel">
+            <div className="diagnosis-thinking-plan__section diagnosis-thinking-plan__section--thinking">
+              <div className="diagnosis-thinking-plan__section-header">
+                <span className="diagnosis-thinking-plan__section-icon diagnosis-thinking-plan__section-icon--thinking">
+                  <AppIcon name="algorithm" size={16} />
+                </span>
+                <div className="diagnosis-thinking-plan__section-copy">
+                  <p className="diagnosis-thinking-plan__section-title">思考过程</p>
+                  <p className="diagnosis-thinking-plan__section-description">展示当前正在组织的观测路径与判断依据。</p>
+                </div>
+              </div>
+              <StreamingBlock
+                text={payload.thinkingText}
+                mode={thinkingDone ? "complete" : "streaming"}
+                speed={3}
+                onComplete={() => setThinkingDone(true)}
+              />
+            </div>
+
+            {showConclusion ? (
+              <div className="diagnosis-thinking-plan__section diagnosis-thinking-plan__section--answer">
+                <div className="diagnosis-thinking-plan__section-header">
+                  <span className="diagnosis-thinking-plan__section-icon diagnosis-thinking-plan__section-icon--answer">
+                    <AppIcon name="documentCheck" size={16} />
+                  </span>
+                  <div className="diagnosis-thinking-plan__section-copy">
+                    <p className="diagnosis-thinking-plan__section-title">阶段结论</p>
+                    <p className="diagnosis-thinking-plan__section-description">将上一段推理收敛为当前回合的可解释判断。</p>
+                  </div>
+                </div>
+                <StreamingBlock
+                  text={payload.conclusionText}
+                  mode={conclusionDone ? "complete" : "streaming"}
+                  speed={4}
+                  onComplete={() => setConclusionDone(true)}
+                />
+              </div>
+            ) : null}
+
+            {showToolSelection ? (
+              <div className="diagnosis-thinking-plan__tool-call diagnosis-thinking-plan__section diagnosis-thinking-plan__section--tool">
+                <div className="diagnosis-thinking-plan__section-header">
+                  <span className="diagnosis-thinking-plan__section-icon diagnosis-thinking-plan__section-icon--tool">
+                    <AppIcon name="clipboardTasks" size={16} />
+                  </span>
+                  <div className="diagnosis-thinking-plan__section-copy">
+                    <p className="diagnosis-thinking-plan__section-title">下一步工具选择</p>
+                    <p className="diagnosis-thinking-plan__section-description">这里只决定下一步要调用哪个 tool 以及准备传什么参数，当前阶段尚未执行。</p>
+                  </div>
+                </div>
+                <div className="status-row diagnosis-thinking-plan__tool-chips">
+                  <StatusChip tone="info">计划调用</StatusChip>
+                  <StatusChip tone="warning">未执行</StatusChip>
+                </div>
+                <p className="diagnosis-thinking-plan__row">
+                  <span className="diagnosis-thinking-plan__label">工具名</span>
+                  <code className="diagnosis-thinking-plan__value">{payload.toolName}</code>
+                </p>
+                <p className="diagnosis-thinking-plan__row">
+                  <span className="diagnosis-thinking-plan__label">说明</span>
+                  本阶段仅完成 tool 选择与参数草拟，真正执行后的结果将在后续工具消息中展示。
+                </p>
+                <Collapse
+                  bordered={false}
+                  className="diagnosis-thinking-plan__collapse"
+                  ghost
+                  items={[
+                    {
+                      key: "params",
+                      label: "查看计划传入参数",
+                      children: (
+                        <pre className="diagnosis-thinking-plan__params">
+                          {JSON.stringify(payload.toolParams, null, 2)}
+                        </pre>
+                      ),
+                    },
+                  ]}
+                  size="small"
+                />
+              </div>
+            ) : null}
+          </div>
+        </div>
+      </Think>
     </div>
   );
+}
+function renderThinkingPlanCard(payload: ThinkingPlanPayload) {
+  return <ThinkingPlanCard payload={payload} />;
 }
 
 function renderRootCauseCandidatesCard(payload: RootCauseCandidatesPayload) {
@@ -711,7 +851,7 @@ function DiagnosisPage() {
       setDemoActiveStep((prev) => Math.min(prev + 1, DEMO_STEP_LABELS.length));
       setIsExecutingDemoStep(false);
       demoStepTimerRef.current = undefined;
-    }, 1100);
+    }, 250);
   }, [isExecutingDemoStep]);
 
   const runStepTwoThinkingPlan = useCallback(() => {
@@ -733,32 +873,52 @@ function DiagnosisPage() {
         createdAt: now.toISOString(),
         content: {
           kind: "thinking_plan",
-          summary: "规划开始：下一步将先调用 metrics.query(gpu_utilization) 检查热点是否持续。",
+          summary: "规划开始：先展示思考闪烁状态，再逐步吐出推理内容与结论。",
+          thinkTitle: "Deep Thinking 正在规划观测动作",
+          thinkingText: `The user wants me to diagnose a 'KubePodNotReady' alert with critical severity.
+The topology blast radius shows no affected entities, which is unusual. Let me start
+by gathering evidence about what pods might be not ready in the Kubernetes
+cluster.
+
+Let me begin by:
+
+1. Listing pods across namespaces to find not-ready pods
+2. Looking for OOMKilled or pending pods
+3. Checking service status
+4. Querying logs for any errors
+
+Let me start with multiple parallel queries to understand the state of the cluster.`,
+          conclusionText: `I'll start by gathering evidence about the cluster state. Let me query multiple
+sources in parallel to identify the affected pods and their conditions.`,
+          toolName: "k8s.list_pods",
+          toolParams: { kwargs: { all_namespaces: true } },
+          typingStage: "thinking",
+          blink: true,
           items: [
             {
               key: "step2-plan-1",
-              title: "检查 GPU 利用率趋势",
-              description: "确认 node-gpu-01 是否存在持续高位占用。",
-              toolName: "metrics.query(gpu_utilization)",
-              checkTarget: "验证资源热点是否稳定复现。",
-              nextToolName: "check_gpu_processes(node-gpu-01)",
+              title: "检查 Pod 就绪状态",
+              description: "先在所有命名空间里找出 NotReady 的 Pod。",
+              toolName: "k8s.list_pods",
+              checkTarget: "定位真实受影响的 Pod 与命名空间。",
+              nextToolName: "k8s.list_events",
               status: "loading",
               blink: true,
             },
             {
               key: "step2-plan-2",
-              title: "核查节点异常 GPU 进程",
-              description: "排查是否存在基准测试或异常任务占用。",
-              toolName: "check_gpu_processes(node-gpu-01)",
-              checkTarget: "判断是否存在可疑进程争用。",
-              nextToolName: "network.get_congestion_summary(sw-01)",
+              title: "补充异常事件与重启原因",
+              description: "确认是否存在 OOMKilled、Pending 或镜像拉取失败。",
+              toolName: "k8s.list_events",
+              checkTarget: "补齐 Pod 不就绪背后的直接异常信号。",
+              nextToolName: "k8s.query_logs",
             },
             {
               key: "step2-plan-3",
-              title: "补充网络拥塞信号",
-              description: "确认交换机路径是否足以解释时延放大。",
-              toolName: "network.get_congestion_summary(sw-01)",
-              checkTarget: "评估网络是否属于主导因素。",
+              title: "并行抓取服务与日志",
+              description: "把服务状态和错误日志一起纳入后续证据链。",
+              toolName: "k8s.query_logs",
+              checkTarget: "为 Step 3 的关键观测采集准备工具路径。",
               nextToolName: "Step 3: 收集关键观测（按规划依次执行）",
             },
           ],
@@ -785,7 +945,9 @@ function DiagnosisPage() {
     demoStepTimerRef.current = window.setTimeout(() => {
       updateThinkingPlan((payload) => ({
         ...payload,
-        summary: "第一步完成：已确认资源热点，下一步调用 check_gpu_processes(node-gpu-01) 核查异常进程。",
+        summary: "思考内容已流式输出完成，开始吐出结论与首个工具调用。",
+        typingStage: "conclusion",
+        blink: true,
         items: payload.items.map((item) => {
           if (item.key === "step2-plan-1") {
             return { ...item, status: "success", blink: false };
@@ -800,7 +962,9 @@ function DiagnosisPage() {
       demoStepTimerRef.current = window.setTimeout(() => {
         updateThinkingPlan((payload) => ({
           ...payload,
-          summary: "第二步完成：异常进程检查已纳入计划，下一步调用 network.get_congestion_summary(sw-01) 补网络证据。",
+          summary: "结论已输出，继续展示后续观测动作编排。",
+          typingStage: "complete",
+          blink: false,
           items: payload.items.map((item) => {
             if (item.key === "step2-plan-2") {
               return { ...item, status: "success", blink: false };
@@ -815,7 +979,9 @@ function DiagnosisPage() {
         demoStepTimerRef.current = window.setTimeout(() => {
           updateThinkingPlan((payload) => ({
             ...payload,
-            summary: "规划完成：观测动作与工具调用顺序已明确，可进入 Step 3 执行关键观测采集。",
+            summary: "规划完成：观测动作与工具调用顺序已明确，thinking 与结论输出均已结束。",
+            typingStage: "complete",
+            blink: false,
             items: payload.items.map((item) => ({
               ...item,
               status: "success",
@@ -826,12 +992,136 @@ function DiagnosisPage() {
           setDemoActiveStep((prev) => Math.min(prev + 1, DEMO_STEP_LABELS.length));
           setIsExecutingDemoStep(false);
           demoStepTimerRef.current = undefined;
-        }, 900);
-      }, 900);
-    }, 900);
+        }, 250);
+      }, 450);
+    }, 500);
   }, [isExecutingDemoStep]);
 
-  const runStepFiveRootCauseCandidates = useCallback(() => {
+  
+const runStepTwoPointOneDeepThink = useCallback(() => {
+    if (isExecutingDemoStep) {
+      return;
+    }
+
+    const now = new Date();
+    const baseId = String(now.getTime());
+
+    setIsExecutingDemoStep(true);
+    setDemoMessages((prev) => [
+      ...prev,
+      {
+        id: `demo-step21-banner-${baseId}`,
+        role: "assistant",
+        createdAt: now.toISOString(),
+        content:
+          "Step 2.1 已切换到全新 DeepThink 演示：这一段会先闪烁，再逐字输出 thinking，随后再输出结论和工具调用。",
+      },
+      {
+        id: `demo-step21-thinking-${baseId}`,
+        role: "assistant",
+        createdAt: new Date(now.getTime() + 10).toISOString(),
+        content: {
+          kind: "thinking_plan",
+          summary: "Step 2.1：这是独立于原 Step 2 的新版 DeepThink 演示卡片。",
+          thinkTitle: "Step 2.1 · DeepThink Streaming Demo",
+          thinkingText: `The user wants me to diagnose a 'KubePodNotReady' alert with critical severity.
+The topology blast radius shows no affected entities, which is unusual. Let me start
+by gathering evidence about what pods might be not ready in the Kubernetes
+cluster.
+
+Let me begin by:
+
+1. Listing pods across namespaces to find not-ready pods
+2. Looking for OOMKilled or pending pods
+3. Checking service status
+4. Querying logs for any errors
+
+Let me start with multiple parallel queries to understand the state of the cluster.`,
+          conclusionText: `I'll start by gathering evidence about the cluster state. Let me query multiple
+sources in parallel to identify the affected pods and their conditions.`,
+          toolName: "k8s.list_pods",
+          toolParams: { kwargs: { all_namespaces: true } },
+          typingStage: "thinking",
+          blink: true,
+          items: [
+            {
+              key: "step21-plan-1",
+              title: "Step 2.1 / Thinking 闪烁",
+              description: "顶部 Think 状态先进入 blink 和 loading。",
+              toolName: "@ant-design/x Think",
+              checkTarget: "明确告诉用户当前处于思考阶段。",
+              status: "loading",
+              blink: true,
+            },
+            {
+              key: "step21-plan-2",
+              title: "Step 2.1 / 流式吐字",
+              description: "thinking 与 conclusion 分阶段逐字输出。",
+              toolName: "StreamingBlock",
+              checkTarget: "避免 thinking 一次性整段出现。",
+            },
+          ],
+        },
+      },
+    ]);
+
+    demoStepTimerRef.current = window.setTimeout(() => {
+      setDemoMessages((prev) =>
+        prev.map((message) => {
+          if (message.id !== `demo-step21-thinking-${baseId}` || !isThinkingPlanPayload(message.content)) {
+            return message;
+          }
+
+          return {
+            ...message,
+            createdAt: new Date().toISOString(),
+            content: {
+              ...message.content,
+              summary: "Step 2.1：thinking 已经输出完成，开始吐出结论和工具参数。",
+              typingStage: "conclusion",
+              items: message.content.items.map((item) => ({
+                ...item,
+                status: item.key === "step21-plan-1" ? "success" : "loading",
+                blink: item.key === "step21-plan-2",
+              })),
+            },
+          };
+        }),
+      );
+
+      demoStepTimerRef.current = window.setTimeout(() => {
+        setDemoMessages((prev) =>
+          prev.map((message) => {
+            if (message.id !== `demo-step21-thinking-${baseId}` || !isThinkingPlanPayload(message.content)) {
+              return message;
+            }
+
+            return {
+              ...message,
+              createdAt: new Date().toISOString(),
+              content: {
+                ...message.content,
+                summary: "Step 2.1：新版 DeepThink 演示完成，现在可以继续走后续诊断步骤。",
+                typingStage: "complete",
+                blink: false,
+                items: message.content.items.map((item) => ({
+                  ...item,
+                  status: "success",
+                  blink: false,
+                })),
+              },
+            };
+          }),
+        );
+
+        setDemoActiveStep((prev) => Math.min(prev + 1, DEMO_STEP_LABELS.length));
+        setIsExecutingDemoStep(false);
+        demoStepTimerRef.current = undefined;
+      }, 2400);
+    }, 500);
+  }, [isExecutingDemoStep]);
+
+const runStepFiveRootCauseCandidates = useCallback(() => {
     if (isExecutingDemoStep) {
       return;
     }
@@ -1090,16 +1380,21 @@ function DiagnosisPage() {
       }
 
       if (clickedStep === 2) {
+        runStepTwoPointOneDeepThink();
+        return;
+      }
+
+      if (clickedStep === 3) {
         setDemoActiveStep((prev) => Math.min(prev + 2, DEMO_STEP_LABELS.length));
         return;
       }
 
-      if (clickedStep === 4) {
+      if (clickedStep === 5) {
         runStepFiveRootCauseCandidates();
         return;
       }
 
-      if (clickedStep === 5) {
+      if (clickedStep === 6) {
         runStepSixGenerateApprovalPlan();
         return;
       }
@@ -1111,6 +1406,7 @@ function DiagnosisPage() {
       isExecutingDemoStep,
       runStepOneImpactScope,
       runStepTwoThinkingPlan,
+      runStepTwoPointOneDeepThink,
       runStepFiveRootCauseCandidates,
       runStepSixGenerateApprovalPlan,
     ],
@@ -1130,7 +1426,7 @@ function DiagnosisPage() {
           disabled: !isActive || isActiveAndBusy,
           label: (
             <div className={`diagnosis-demo-menu__item diagnosis-demo-menu__item--${stateClassName}`}>
-              <strong>{`${index + 1}、${step}`}</strong>
+              <strong>{`${getDemoStepDisplayLabel(index)}、${step.title}`}</strong>
               <span>{stateText}</span>
             </div>
           ),
@@ -1318,6 +1614,13 @@ function DiagnosisPage() {
 }
 
 export default DiagnosisPage;
+
+
+
+
+
+
+
 
 
 

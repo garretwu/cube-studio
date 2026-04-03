@@ -1,6 +1,6 @@
-export function formatTimestamp(value?: string | null) {
+﻿export function formatTimestamp(value?: string | null) {
   if (!value) {
-    return "\u6682\u65e0";
+    return "暂无";
   }
 
   const date = new Date(value);
@@ -19,7 +19,7 @@ export function formatTimestamp(value?: string | null) {
 
 export function formatDateTime(value?: string | null) {
   if (!value) {
-    return "\u6682\u65e0";
+    return "暂无";
   }
 
   const date = new Date(value);
@@ -38,6 +38,31 @@ export function formatDateTime(value?: string | null) {
   }).format(date);
 }
 
+export function formatDateTimeParts(value?: string | null) {
+  if (!value) {
+    return { date: "暂无", time: "" };
+  }
+
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return { date: value, time: "" };
+  }
+
+  return {
+    date: new Intl.DateTimeFormat("zh-CN", {
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).format(date),
+    time: new Intl.DateTimeFormat("zh-CN", {
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      hour12: false,
+    }).format(date),
+  };
+}
+
 export function formatDurationSeconds(value?: number | null) {
   if (value === null || value === undefined || Number.isNaN(value)) {
     return "--";
@@ -49,14 +74,14 @@ export function formatDurationSeconds(value?: number | null) {
   const seconds = totalSeconds % 60;
 
   if (hours > 0) {
-    return `${hours}\u5c0f\u65f6 ${minutes}\u5206`;
+    return `${hours}小时 ${minutes}分`;
   }
 
   if (minutes > 0) {
-    return `${minutes}\u5206 ${seconds}\u79d2`;
+    return `${minutes}分 ${seconds}秒`;
   }
 
-  return `${seconds}\u79d2`;
+  return `${seconds}秒`;
 }
 
 export function formatPercent(value: number) {

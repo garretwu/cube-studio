@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+﻿import { useEffect, useMemo, useState } from "react";
 import { Navigate, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 
 import { apiClient } from "./api/client";
@@ -35,6 +35,7 @@ function AppRoutes() {
       <Route path="/remediation/:sessionId" element={<RemediationPage />} />
       <Route path="/skills/:skillId" element={<SkillDetailPage />} />
       <Route path="/topology-modified" element={<Navigate to="/topology" replace />} />
+      <Route path="/alerts-modified" element={<Navigate to="/alerts" replace />} />
       {appRoutes
         .filter((route) => route.key !== "diagnosis")
         .map((route) => (
@@ -98,9 +99,11 @@ function App() {
       collapseBehavior: "hide" as const,
       items: historySessions.map((session) => ({
         key: session.session_id,
-        label: session.title,
+        label: session.alert_name,
         active: session.session_id === historySessionId,
         kind: "history" as const,
+        metaLabel: session.severity.toUpperCase(),
+        metaTone: session.severity,
         status: resolveHistoryChannelStatus(session),
         onClick: () => navigate(`/history/${session.session_id}`),
       })),

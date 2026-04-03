@@ -194,6 +194,15 @@ export const handlers = [
     return HttpResponse.json({ documents: knowledgeDocuments });
   }),
 
+  http.get("/api/skills/:skillId", async ({ params }) => {
+    await delay(50);
+    const skillId = String(params.skillId ?? "");
+    const matched = skills.find((skill) => skill.id === skillId);
+    if (!matched) {
+      return HttpResponse.json({ message: "skill not found" }, { status: 404 });
+    }
+    return HttpResponse.json(matched);
+  }),
   http.get("/api/skills", async () => {
     await delay(50);
     return HttpResponse.json(skills);

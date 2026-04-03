@@ -751,6 +751,33 @@ export const apiClient = {
     return unwrapPayload(response.data);
   },
 
+  getSkill: async (skillId: string) =>
+    withDevFallback(
+      async () => {
+        try {
+          const response = await api.get<SREApiEnvelope<SkillDescriptor> | SkillDescriptor>(
+            `/api/skills/${encodeURIComponent(skillId)}`,
+          );
+          return unwrapPayload(response.data);
+        } catch (error) {
+          if (axios.isAxiosError(error) && error.response?.status === 404) {
+            const skills = await apiClient.getSkills();
+            const matched = skills.find((skill) => skill.id === skillId);
+            if (matched) {
+              return matched;
+            }
+            throw new Error("未找到对应技能");
+          }
+          throw error;
+        }
+      },
+      async () => {
+        const { getSkillFallback } = await import("./devFallback");
+        return getSkillFallback(skillId);
+      },
+      "getSkill",
+    ),
+
   getSkills: async () =>
     withDevFallback(
       async () => {
