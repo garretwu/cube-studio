@@ -1,0 +1,55 @@
+import { render, screen } from "@testing-library/react";
+import { http, HttpResponse } from "msw";
+import { MemoryRouter, Route, Routes } from "react-router-dom";
+
+import type { SkillDescriptor } from "../api/types";
+import { server } from "../test/server";
+import SkillDetailPage from "./SkillDetail";
+
+const testSkill: SkillDescriptor = {
+  id: "builtin-topology-navigator",
+  name: "Topology Navigator",
+  scope: "builtin",
+  summary: "Aggregate topology relations and surface the most relevant dependency path.",
+  source: "builtin://topology",
+  permissions: ["read:ontology", "read:events"],
+  match_score: 0.96,
+  status: "available",
+  updated_at: "2026-03-26T09:32:18Z",
+  lifecycle_status: "published",
+  file_name: "SKILL.md",
+  markdown_content: [
+    "---",
+    "name: Topology Navigator",
+    "description: Aggregate topology relations and surface the most relevant dependency path.",
+    "---",
+    "",
+    "## Runtime Metadata",
+    "```yaml",
+    "id: builtin-topology-navigator",
+    "scope: builtin",
+    "```",
+  ].join("\n"),
+};
+
+describe("SkillDetailPage", () => {
+  it("renders metadata and the raw SKILL.md content", async () => {
+    server.use(http.get("/api/skills/:skillId", async () => HttpResponse.json(testSkill)));
+
+    render(
+      <MemoryRouter initialEntries={["/skills/builtin-topology-navigator"]}>
+        <Routes>
+          <Route path="/skills/:skillId" element={<SkillDetailPage />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByRole("heading", { name: "Topology Navigator" })).toBeInTheDocument();
+    expect(screen.getByText("SKILL ID")).toBeInTheDocument();
+    expect(screen.getByText("builtin-topology-navigator")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "SKILL.md" })).toBeInTheDocument();
+    expect(screen.getByText("name: Topology Navigator")).toBeInTheDocument();
+    expect(screen.getByText("id: builtin-topology-navigator")).toBeInTheDocument();
+    expect(screen.getByText("read:ontology")).toBeInTheDocument();
+  });
+});
