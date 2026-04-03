@@ -148,4 +148,58 @@ describe("useDiagnosisStore", () => {
 
     expect(capturedInstruction).toBe("请优化当前修复方案，补充更稳妥步骤与验证");
   });
+
+  it("appends escalation chat message when approval ends in execution_failed via polled events", async () => {
+    const sessionId = diagnosisSession.session_id;
+    let eventsRequestCount = 0;
+    server.use(
+      http.post("/api/remediate/:sessionId/approve", async () =>
+        HttpResponse.json({
+          plan_id: "plan-v1",
+          success: false,
+          steps_completed: 0,
+          steps_total: 2,
+          duration_seconds: 3,
+          error: "execution failed",
+        }),
+      ),
+      http.get("/api/sessions/:sessionId", async ({ params }) =>
+        HttpResponse.json({
+          ...diagnosisSession,
+          session_id: String(params.sessionId ?? sessionId),
+          status: "failed",
+        }),
+      ),
+      http.get("/api/sessions/:sessionId/events", async ({ params }) =>
+        HttpResponse.json(
+          eventsRequestCount++ === 0
+            ? []
+            : [
+                {
+                  schema_version: "1",
+                  type: "remediation_progress",
+                  session_id: String(params.sessionId ?? sessionId),
+                  timestamp: "2026-04-02T10:00:00Z",
+                  data: {
+                    stage: "execution_failed",
+                    message: "修复执行失败",
+                    plan_version: 1,
+                  },
+                },
+              ],
+        ),
+      ),
+    );
+
+    await useDiagnosisStore.getState().bootstrapSession(sessionId);
+    const baselineCount = useDiagnosisStore
+      .getState()
+      .messages.filter((message) => message.content === "需要工程师介入").length;
+    await useDiagnosisStore.getState().approvePlan(true);
+
+    const state = useDiagnosisStore.getState();
+    expect(state.session?.status).toBe("failed");
+    const escalationMessages = state.messages.filter((message) => message.content === "需要工程师介入");
+    expect(escalationMessages.length).toBeGreaterThan(baselineCount);
+  });
 });

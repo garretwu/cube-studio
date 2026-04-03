@@ -6,12 +6,48 @@ import AlertTable from "../components/AlertTable";
 import { AppIcon, AppInput, SectionHeader, StatusChip, SurfaceCard } from "../components/ui";
 import { useAlertStore } from "../store/alertStore";
 import { formatSeverity } from "../utils/display";
+import { formatTimestamp } from "../utils/format";
+
+function websocketTone(state: "connecting" | "open" | "closed" | "error") {
+  switch (state) {
+    case "open":
+      return "success";
+    case "connecting":
+      return "warning";
+    case "error":
+      return "danger";
+    default:
+      return "neutral";
+  }
+}
+
+function websocketLabel(state: "connecting" | "open" | "closed" | "error") {
+  switch (state) {
+    case "open":
+      return "WS 已连接";
+    case "connecting":
+      return "WS 连接中";
+    case "error":
+      return "WS 异常";
+    default:
+      return "WS 未连接";
+  }
+}
 
 function AlertsPage() {
   const [searchParams] = useSearchParams();
   const urlQuery = searchParams.get("q") ?? "";
   const [query, setQuery] = useState("");
-  const { alerts, clusters, severityFilter, fetchAlerts, setSeverityFilter } = useAlertStore();
+  const {
+    alerts,
+    clusters,
+    severityFilter,
+    fetchAlerts,
+    setSeverityFilter,
+    wsState,
+    lastSnapshotSyncAt,
+    realtimeEnabled,
+  } = useAlertStore();
 
   useEffect(() => {
     setQuery(urlQuery);
@@ -71,7 +107,11 @@ function AlertsPage() {
               prefix={<AppIcon name="search" size={16} />}
               value={query}
             />
-            <StatusChip tone="danger">{filtered.length} 条候选告警</StatusChip>
+            <StatusChip tone="danger">{`${filtered.length} 条候选告警`}</StatusChip>
+            <StatusChip tone={realtimeEnabled ? websocketTone(wsState) : "neutral"}>
+              {realtimeEnabled ? websocketLabel(wsState) : "实时同步未启用"}
+            </StatusChip>
+            <StatusChip tone="neutral">{`快照 ${formatTimestamp(lastSnapshotSyncAt)}`}</StatusChip>
           </div>
         </SurfaceCard>
       </div>
@@ -89,10 +129,10 @@ function AlertsPage() {
                   <StatusChip tone={cluster.severity === "critical" ? "danger" : "warning"}>
                     {formatSeverity(cluster.severity)}
                   </StatusChip>
-                  <StatusChip tone="neutral">{cluster.alerts.length} 条告警</StatusChip>
+                  <StatusChip tone="neutral">{`${cluster.alerts.length} 条告警`}</StatusChip>
                 </div>
                 <p className="mini-card__title">{cluster.summary}</p>
-                <p className="mini-card__copy">分组编号：{cluster.cluster_id}</p>
+                <p className="mini-card__copy">{`分组编号：${cluster.cluster_id}`}</p>
               </div>
             ))}
           </div>
@@ -103,3 +143,4 @@ function AlertsPage() {
 }
 
 export default AlertsPage;
+

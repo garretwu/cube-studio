@@ -1004,6 +1004,14 @@ def build_api_router() -> APIRouter:
             services.remediation_engine.register_plan(session.session_id, plan)
             session = session.model_copy(update={"status": "approval_required"})
         services.session_store.put(session)
+        if plan is not None:
+            plan_version = services.remediation_engine.get_latest_plan_version(session.session_id)
+            await _publish_session_event(
+                services,
+                event_type=EventType.APPROVAL_REQUIRED,
+                session_id=session.session_id,
+                data={"plan_id": plan.plan_id, "plan_version": plan_version},
+            )
         return SREResponse(success=True, data=session, trace_id=_trace_id(request))
 
     @router.post("/handle")
@@ -1291,6 +1299,16 @@ def build_api_router() -> APIRouter:
                 trace_id=trace_id,
             )
 
+        await _publish_remediation_progress(
+            services,
+            session_id=session_id,
+            stage="approval_accepted",
+            details={
+                "user": approval.user,
+                "plan_version": requested_plan_version,
+                "message": "审批通过，准备执行修复",
+            },
+        )
         await _publish_remediation_progress(
             services,
             session_id=session_id,

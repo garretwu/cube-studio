@@ -563,6 +563,22 @@ export const apiClient = {
           (String(session.status ?? "").trim().toLowerCase() === "resolved" ? currentPlan.steps.length : 0),
       );
       const progressStatus = String(session.status || "").trim() || latestStage || "pending";
+      const totalSteps = currentPlan.steps.length;
+      const normalizedCompletedSteps = Number.isFinite(completedSteps) ? Math.max(0, Math.min(totalSteps, completedSteps)) : 0;
+      const batchProgress = totalSteps > 0 ? Math.round((normalizedCompletedSteps / totalSteps) * 100) : 0;
+      const normalizedStatus = progressStatus.toLowerCase();
+      const oneShotStatus =
+        normalizedStatus === "resolved"
+          ? "resolved"
+          : normalizedStatus === "failed"
+            ? "failed"
+            : normalizedStatus === "timeout"
+              ? "timeout"
+              : normalizedStatus === "escalated"
+                ? "escalated"
+                : normalizedStatus === "rejected"
+                  ? "rejected"
+                  : "validating";
 
       return {
         session_id: resolved,
@@ -576,9 +592,23 @@ export const apiClient = {
         })),
         progress: {
           status: progressStatus,
-          completed_steps: completedSteps,
-          total_steps: currentPlan.steps.length,
-          batch_status: [],
+          completed_steps: normalizedCompletedSteps,
+          total_steps: totalSteps,
+          batch_status: [
+            {
+              batch: "一次性执行",
+              progress:
+                oneShotStatus === "resolved"
+                  ? 100
+                  : oneShotStatus === "failed" ||
+                      oneShotStatus === "timeout" ||
+                      oneShotStatus === "escalated" ||
+                      oneShotStatus === "rejected"
+                    ? Math.max(0, Math.min(100, batchProgress))
+                    : Math.max(0, Math.min(100, batchProgress)),
+              status: oneShotStatus,
+            },
+          ],
         },
         timeline: events,
         approval_required: session.status === "approval_required",
@@ -600,7 +630,13 @@ export const apiClient = {
           status: loop.outcome,
           completed_steps: loop.attempts.length,
           total_steps: loop.attempts.length,
-          batch_status: [],
+          batch_status: [
+            {
+              batch: "一次性执行",
+              progress: loop.attempts.length > 0 ? 100 : 0,
+              status: loop.outcome === "resolved" ? "resolved" : loop.outcome,
+            },
+          ],
         },
         timeline: [],
         approval_required: false,
