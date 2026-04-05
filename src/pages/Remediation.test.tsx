@@ -1,4 +1,4 @@
-import { render, waitFor, within } from "@testing-library/react";
+﻿import { render, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
 
@@ -15,9 +15,10 @@ describe("RemediationPage", () => {
       expect(container.querySelector(".remediation-record-table__row")).toBeTruthy();
     });
 
-    expect(queryByText(/修复记录加载失败/)).toBeNull();
+    expect(queryByText(/淇璁板綍鍔犺浇澶辫触/)).toBeNull();
   });
-  it("keeps detailed records collapsed by default and toggles them on click", async () => {
+
+  it("opens the selected record in a right-side drawer and closes it", async () => {
     const user = userEvent.setup();
     const { container } = render(<RemediationPage />);
 
@@ -26,29 +27,34 @@ describe("RemediationPage", () => {
     });
 
     expect(container.querySelector(".remediation-record-table__expand-row")).toBeFalsy();
+    expect(container.querySelector(".remediation-drawer__panel")).toBeFalsy();
 
     const firstRow = container.querySelector<HTMLElement>(".remediation-record-table__row");
     expect(firstRow).toBeTruthy();
     await user.click(firstRow!);
 
-    const expandRow = await waitFor(() => {
-      const row = container.querySelector<HTMLElement>(".remediation-record-table__expand-row");
-      expect(row).toBeTruthy();
-      return row;
+    const drawer = await waitFor(() => {
+      const panel = container.querySelector<HTMLElement>(".remediation-drawer__panel");
+      expect(panel).toBeTruthy();
+      return panel;
     });
 
-    const scoped = within(expandRow as HTMLElement);
-    expect(scoped.queryByRole("heading", { name: /详细记录/ })).toBeNull();
-    expect(scoped.getByText("基础信息")).toBeInTheDocument();
-    expect(scoped.getByText("方案信息")).toBeInTheDocument();
-    expect(scoped.getByText("执行信息")).toBeInTheDocument();
-    expect(scoped.getByRole("button", { name: "收起详细记录" })).toBeInTheDocument();
-    expect(scoped.getByText("修复时间线")).toBeInTheDocument();
+    const scoped = within(drawer!);
+    expect(drawer!.querySelector(".remediation-plan-overview__facts")).toBeTruthy();
+    expect(scoped.getByRole("button", { name: /返回修复列表/ })).toBeTruthy();
 
-    await user.click(scoped.getByRole("button", { name: "收起详细记录" }));
+    const stepButton = scoped.getByRole("button", { name: /查看步骤 1 详情/ });
+    await user.click(stepButton);
+
+    expect(scoped.getByText("步骤 1 详情")).toBeTruthy();
+    expect(scoped.getByText("执行参数")).toBeTruthy();
+
+    await user.click(scoped.getByRole("button", { name: /返回修复列表/ }));
 
     await waitFor(() => {
-      expect(container.querySelector(".remediation-record-table__expand-row")).toBeFalsy();
+      expect(container.querySelector(".remediation-drawer__panel")).toBeFalsy();
     });
   });
 });
+
+
