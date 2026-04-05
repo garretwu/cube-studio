@@ -5392,6 +5392,48 @@
   -webkit-line-clamp: 2;
 }
 
+.remediation-record-table__summary-layout {
+  display: grid;
+  gap: 12px;
+}
+
+.remediation-record-table__summary-card {
+  display: grid;
+  gap: 8px;
+  padding: 14px 16px;
+  border: 1px solid rgba(214, 220, 230, 0.9);
+  border-radius: 14px;
+  background: linear-gradient(180deg, rgba(248, 250, 252, 0.92), rgba(255, 255, 255, 0.96));
+}
+
+.remediation-record-table__summary-card--wide {
+  min-width: 0;
+}
+
+.remediation-record-table__summary-text {
+  margin: 0;
+  color: rgba(15, 23, 42, 0.82);
+  font-size: 14px;
+  line-height: 22px;
+  font-weight: 600;
+}
+
+.remediation-record-table__summary-strip {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.remediation-record-table__summary-metric {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  padding: 12px 14px;
+  border-radius: 12px;
+  border: 1px solid rgba(226, 232, 240, 0.92);
+  background: rgba(255, 255, 255, 0.88);
+}
+
 @media (max-width: 1280px) {
   .remediation-layout {
     grid-template-columns: 1fr;
@@ -5420,6 +5462,10 @@
   }
 
   .remediation-record-table__detail-form {
+    grid-template-columns: 1fr;
+  }
+
+  .remediation-record-table__summary-strip {
     grid-template-columns: 1fr;
   }
 
