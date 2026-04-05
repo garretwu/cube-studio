@@ -144,13 +144,20 @@ function SkillsPage() {
         {!errorMessage && !isLoading && filteredSkills.length > 0 ? (
           <div className="skills-manage-table-shell">
             <table className="skills-manage-table">
+              <colgroup>
+                <col className="skills-manage-table__column skills-manage-table__column--skill" />
+                <col className="skills-manage-table__column skills-manage-table__column--status" />
+                <col className="skills-manage-table__column skills-manage-table__column--description" />
+                <col className="skills-manage-table__column skills-manage-table__column--updated" />
+                <col className="skills-manage-table__column skills-manage-table__column--actions" />
+              </colgroup>
               <thead>
                 <tr>
                   <th>SKILL</th>
                   <th>状态</th>
                   <th>说明</th>
                   <th>更新时间</th>
-                  <th>操作</th>
+                  <th className="skills-manage-table__head--actions">操作</th>
                 </tr>
               </thead>
               <tbody>

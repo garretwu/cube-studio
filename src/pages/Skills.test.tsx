@@ -48,13 +48,13 @@ describe("SkillsPage", () => {
 
     expect(await screen.findByRole("heading", { name: "技能管理" })).toBeInTheDocument();
     expect(screen.getByText("技能总数")).toBeInTheDocument();
-    expect(screen.getByText("全局列表")).toBeInTheDocument();
+    expect(screen.getByText("筛选条件")).toBeInTheDocument();
     expect(screen.queryByText("统一管理技能元数据与文件内容")).not.toBeInTheDocument();
     expect(screen.queryByText("请直接粘贴完整的 SKILL.md 原文")).not.toBeInTheDocument();
     expect(await screen.findByText("Topology Navigator")).toBeInTheDocument();
     expect(screen.getByText("builtin-topology-navigator")).toBeInTheDocument();
     expect(screen.getAllByText("已发布").length).toBeGreaterThan(0);
-    expect(screen.getByText("草稿")).toBeInTheDocument();
+    expect(screen.getAllByText("草稿").length).toBeGreaterThan(0);
     expect(screen.getAllByText("自定义").length).toBeGreaterThan(0);
 
     await user.type(screen.getByPlaceholderText("搜索技能名称、ID 或描述"), "release");

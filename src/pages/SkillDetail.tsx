@@ -45,7 +45,7 @@ function SkillDetailPage() {
       setSkill(normalizeSkill(nextSkill));
     } catch (error) {
       setSkill(null);
-      setErrorMessage(error instanceof Error ? error.message : "技能详情加载失败");
+      setErrorMessage(error instanceof Error ? error.message : "技能详情加载失败。");
     } finally {
       setIsLoading(false);
       setIsRefreshing(false);
@@ -64,25 +64,27 @@ function SkillDetailPage() {
   }, [skill]);
 
   const updatedAt = formatDateTimeParts(skill?.updated_at);
+  const updatedAtLabel = [updatedAt.date, updatedAt.time].filter(Boolean).join(" ") || "--";
   const statusMeta = skill ? getSkillStatusMeta(skill) : null;
 
   return (
     <div className="page-grid skill-file-page">
       <div className="page-intro">
-        <AppButton iconLeft="arrowLeft" onClick={() => navigate("/skills")} variant="tertiary">
-          返回技能列表
-        </AppButton>
-
         <SectionHeader
-          title={skill?.name ?? "技能详情"}
-          description="查看技能的基础元数据和 SKILL.md 文件内容。"
+          actions={
+            <AppButton iconLeft="arrowLeft" onClick={() => navigate("/skills")} variant="tertiary">
+              返回技能列表
+            </AppButton>
+          }
+          title="技能详情"
+          description="查看技能定义与 SKILL.md 只读预览。"
         />
       </div>
 
       {errorMessage ? (
         <SurfaceCard
           actions={
-            <AppButton onClick={() => void loadSkill(true)} variant="secondary">
+            <AppButton loading={isRefreshing} onClick={() => void loadSkill(true)} variant="secondary">
               重新加载
             </AppButton>
           }
@@ -98,57 +100,43 @@ function SkillDetailPage() {
       {!errorMessage && isLoading ? (
         <SurfaceCard bodyClassName="skills-empty" variant="soft">
           <p className="skills-empty__title">正在加载技能详情</p>
-          <p className="skills-empty__description">请稍候，正在同步当前技能的元数据与文件内容。</p>
+          <p className="skills-empty__description">请稍候，正在同步当前技能的元数据与文档内容。</p>
         </SurfaceCard>
       ) : null}
 
       {!errorMessage && !isLoading && skill ? (
-        <>
-          <SurfaceCard
-            actions={
-              <AppButton iconLeft="refresh" loading={isRefreshing} onClick={() => void loadSkill(true)} variant="secondary">
-                刷新
-              </AppButton>
-            }
-            bodyClassName="skill-file-meta"
-            className="skill-file-meta-shell"
-            variant="hero"
-          >
-            <div className="skill-file-meta__main">
-              <div className="skill-file-meta__chips">
-                <StatusChip tone={getSkillLifecycleTone(skill.lifecycle_status)}>
-                  {formatSkillLifecycleLabel(skill.lifecycle_status)}
-                </StatusChip>
-                <StatusChip tone={getSkillScopeTone(skill.scope)}>{formatSkillScopeLabel(skill.scope)}</StatusChip>
-                {statusMeta ? <StatusChip tone={statusMeta.tone}>{statusMeta.label}</StatusChip> : null}
-              </div>
+        <SurfaceCard bodyClassName="skill-detail-canvas" className="skill-detail-canvas-card" variant="panel">
+          <section className="skill-detail-overview">
+            <div className="skill-detail-overview__chips-row">
+              <StatusChip tone={getSkillLifecycleTone(skill.lifecycle_status)}>{formatSkillLifecycleLabel(skill.lifecycle_status)}</StatusChip>
+              <StatusChip tone={getSkillScopeTone(skill.scope)}>{formatSkillScopeLabel(skill.scope)}</StatusChip>
+              {statusMeta ? <StatusChip tone={statusMeta.tone}>{statusMeta.label}</StatusChip> : null}
+            </div>
 
-              <div className="skill-file-meta__grid">
-                <div className="skill-file-meta__field">
-                  <span className="skill-file-meta__label">SKILL ID</span>
-                  <strong className="skill-file-meta__value">{skill.id}</strong>
-                </div>
-                <div className="skill-file-meta__field">
-                  <span className="skill-file-meta__label">名称</span>
-                  <strong className="skill-file-meta__value">{skill.name}</strong>
-                </div>
-                <div className="skill-file-meta__field skill-file-meta__field--full">
-                  <span className="skill-file-meta__label">描述</span>
-                  <p className="skill-file-meta__text">{skill.summary}</p>
-                </div>
-                <div className="skill-file-meta__field">
-                  <span className="skill-file-meta__label">文件名</span>
-                  <strong className="skill-file-meta__value">{skill.file_name}</strong>
-                </div>
-                <div className="skill-file-meta__field">
-                  <span className="skill-file-meta__label">来源</span>
-                  <strong className="skill-file-meta__value">{skill.source}</strong>
-                </div>
+            <div className="skill-detail-field-grid skill-detail-field-grid--compact">
+              <div className="skill-detail-field">
+                <span className="skill-detail-field__label">名称</span>
+                <strong className="skill-detail-field__value">{skill.name}</strong>
               </div>
-
-              <div className="skill-file-meta__permissions">
-                <span className="skill-file-meta__label">权限</span>
-                <div className="skill-file-meta__permission-list">
+              <div className="skill-detail-field">
+                <span className="skill-detail-field__label">Skill ID</span>
+                <strong className="skill-detail-field__value">{skill.id}</strong>
+              </div>
+              <div className="skill-detail-field">
+                <span className="skill-detail-field__label">文件名</span>
+                <strong className="skill-detail-field__value">{skill.file_name}</strong>
+              </div>
+              <div className="skill-detail-field">
+                <span className="skill-detail-field__label">更新时间</span>
+                <strong className="skill-detail-field__value">{updatedAtLabel}</strong>
+              </div>
+              <div className="skill-detail-field skill-detail-field--full">
+                <span className="skill-detail-field__label">描述</span>
+                <p className="skill-detail-field__text">{skill.summary}</p>
+              </div>
+              <div className="skill-detail-field skill-detail-field--full">
+                <span className="skill-detail-field__label">权限</span>
+                <div className="skill-detail-permissions__list">
                   {skill.permissions.length > 0 ? (
                     skill.permissions.map((permission) => (
                       <StatusChip key={permission} tone="neutral">
@@ -156,52 +144,36 @@ function SkillDetailPage() {
                       </StatusChip>
                     ))
                   ) : (
-                    <span className="skill-file-meta__permission-empty">未声明权限</span>
+                    <span className="skill-detail-permissions__empty">未声明权限</span>
                   )}
                 </div>
               </div>
             </div>
+          </section>
 
-            <aside className="skill-file-meta__aside">
-              <div className="skill-file-meta__stat">
-                <span className="skill-file-meta__stat-label">更新时间</span>
-                <strong className="skill-file-meta__stat-value">{updatedAt.date}</strong>
-                <span className="skill-file-meta__stat-note">{updatedAt.time || "--"}</span>
-              </div>
-              <div className="skill-file-meta__stat">
-                <span className="skill-file-meta__stat-label">权限数量</span>
-                <strong className="skill-file-meta__stat-value">{skill.permissions.length}</strong>
-                <span className="skill-file-meta__stat-note">当前技能声明的访问范围</span>
-              </div>
-              <div className="skill-file-meta__stat">
-                <span className="skill-file-meta__stat-label">文件状态</span>
-                <strong className="skill-file-meta__stat-value">{formatSkillLifecycleLabel(skill.lifecycle_status)}</strong>
-                <span className="skill-file-meta__stat-note">{statusMeta?.description ?? "技能文件已加载完成"}</span>
-              </div>
-            </aside>
-          </SurfaceCard>
-
-          <SurfaceCard bodyClassName="skills-manage-notice" variant="soft">
-            <p>请将完整的 SKILL.md 内容粘贴到下方编辑器中，按需修改标题、描述和内容后，再进行保存或发布。</p>
-          </SurfaceCard>
-
-          <SurfaceCard
-            actions={<StatusChip tone="info">{markdownLines.length} 行</StatusChip>}
-            bodyClassName="skill-markdown-viewer-shell"
-            description="页面会展示完整的 SKILL.md 原文，方便核对技能定义和运行元数据。"
-            title={skill.file_name}
-            variant="panel"
-          >
-            <div className="skill-markdown-viewer" role="presentation">
-              {markdownLines.map((line, index) => (
-                <div key={`${skill.id}-${index + 1}`} className="skill-markdown-viewer__row">
-                  <span className="skill-markdown-viewer__line-number">{index + 1}</span>
-                  <code className="skill-markdown-viewer__line-content">{line || " "}</code>
-                </div>
-              ))}
+          <section className="skill-detail-document" aria-labelledby="skill-detail-preview">
+            <div className="skill-detail-section__intro skill-detail-section__intro--document">
+              <h4 className="skill-detail-section__title" id="skill-detail-preview">
+                文档预览
+              </h4>
+              <span className="skill-markdown-editor__status">只读</span>
             </div>
-          </SurfaceCard>
-        </>
+
+            <div className="skill-markdown-editor" aria-label="SKILL.md 只读预览">
+              <div className="skill-markdown-editor__toolbar">
+                <span className="skill-markdown-editor__tab">{skill.file_name}</span>
+              </div>
+              <div className="skill-markdown-viewer" role="presentation">
+                {markdownLines.map((line, index) => (
+                  <div key={`${skill.id}-${index + 1}`} className="skill-markdown-viewer__row">
+                    <span className="skill-markdown-viewer__line-number">{index + 1}</span>
+                    <code className="skill-markdown-viewer__line-content">{line || " "}</code>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </section>
+        </SurfaceCard>
       ) : null}
     </div>
   );

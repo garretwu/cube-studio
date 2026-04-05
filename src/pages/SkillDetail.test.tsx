@@ -33,7 +33,7 @@ const testSkill: SkillDescriptor = {
 };
 
 describe("SkillDetailPage", () => {
-  it("renders metadata and the raw SKILL.md content", async () => {
+  it("renders a unified read-only skill detail canvas", async () => {
     server.use(http.get("/api/skills/:skillId", async () => HttpResponse.json(testSkill)));
 
     render(
@@ -44,12 +44,17 @@ describe("SkillDetailPage", () => {
       </MemoryRouter>,
     );
 
-    expect(await screen.findByRole("heading", { name: "Topology Navigator" })).toBeInTheDocument();
-    expect(screen.getByText("SKILL ID")).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "技能详情" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "返回技能列表" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "文档预览" })).toBeInTheDocument();
+    expect(screen.getByText("Topology Navigator")).toBeInTheDocument();
+    expect(screen.getByText("Skill ID")).toBeInTheDocument();
     expect(screen.getByText("builtin-topology-navigator")).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "SKILL.md" })).toBeInTheDocument();
+    expect(screen.getByText("只读")).toBeInTheDocument();
     expect(screen.getByText("name: Topology Navigator")).toBeInTheDocument();
     expect(screen.getByText("id: builtin-topology-navigator")).toBeInTheDocument();
     expect(screen.getByText("read:ontology")).toBeInTheDocument();
+    expect(screen.queryByText("刷新详情")).not.toBeInTheDocument();
+    expect(screen.queryByText(/保存或发布/)).not.toBeInTheDocument();
   });
 });
