@@ -432,8 +432,10 @@ function RemediationPage() {
                             const expandedOverview = record.summary.session_id === overview?.session_id ? overview : recordOverview;
                             const expandedEvents = expandedOverview?.session_id === overview?.session_id ? sortEvents(events) : sortEvents(expandedOverview?.timeline ?? []);
                             const expandedStatus = String(expandedOverview?.progress.status ?? record.summary.status ?? "pending").trim();
-                            const expandedApprover = getApprover(expandedEvents) ?? (expandedOverview?.approval_required ? "待审批" : "未记录");
                             const expandedStartedAt = getExecutionStartedAt(expandedEvents);
+                            const expandedRootCause = expandedOverview?.plan.root_cause ?? record.summary.root_cause ?? "待补充";
+                            const expandedImpact = expandedOverview?.plan.estimated_impact ?? "待补充";
+                            const expandedSummary = expandedOverview?.plan.description ?? record.summary.summary;
                             return (
                               <tr className="remediation-record-table__expand-row">
                                 <td className="remediation-record-table__expand-cell" colSpan={7}>
@@ -442,7 +444,7 @@ function RemediationPage() {
                                       <div className="remediation-record-table__expand-heading">
                                         <span className="remediation-record-table__expand-kicker">记录明细</span>
                                         <h4 className="remediation-record-table__expand-title">{record.summary.title}</h4>
-                                        <p className="remediation-record-table__expand-note">{expandedOverview?.plan.description ?? record.summary.summary}</p>
+                                        <p className="remediation-record-table__expand-note">{expandedSummary}</p>
                                       </div>
                                       <div className="remediation-record-table__expand-actions">
                                         <div className="status-row remediation-record-table__expand-chips">
@@ -461,28 +463,34 @@ function RemediationPage() {
                                         </div>
                                       </div>
                                     </div>
-
                                     <div className="remediation-record-table__subsection">
-                                      <div className="remediation-record-table__subsection-header"><div><p className="remediation-record-table__subsection-title">基础信息</p><p className="remediation-record-table__subsection-copy">汇总诊断、审批人与当前记录状态。</p></div></div>
-                                      <div className="remediation-record-table__detail-form">
-                                      <div className="remediation-record-table__detail-field"><span className="remediation-record-table__detail-label">诊断 ID</span><strong className="remediation-record-table__detail-value">{record.summary.session_id}</strong></div>
-                                      <div className="remediation-record-table__detail-field"><span className="remediation-record-table__detail-label">诊断名称</span><strong className="remediation-record-table__detail-value">{record.summary.alert_name}</strong></div>
-                                      <div className="remediation-record-table__detail-field"><span className="remediation-record-table__detail-label">审批人</span><strong className="remediation-record-table__detail-value">{expandedApprover}</strong></div>
-                                      <div className="remediation-record-table__detail-field"><span className="remediation-record-table__detail-label">审批状态</span><strong className="remediation-record-table__detail-value">{expandedOverview?.approval_required ? "等待批准" : getStatusLabel(expandedStatus)}</strong></div>
-                                      <div className="remediation-record-table__detail-field remediation-record-table__detail-field--wide"><span className="remediation-record-table__detail-label">根因定位</span><strong className="remediation-record-table__detail-value">{expandedOverview?.plan.root_cause ?? record.summary.root_cause ?? "待补充"}</strong></div>
-                                      <div className="remediation-record-table__detail-field remediation-record-table__detail-field--wide"><span className="remediation-record-table__detail-label">修复内容</span><p className="remediation-record-table__detail-value remediation-record-table__detail-value--multiline">{expandedOverview?.plan.description ?? record.summary.summary}</p></div>
-                                      <div className="remediation-record-table__detail-field"><span className="remediation-record-table__detail-label">开始修复</span><strong className="remediation-record-table__detail-value">{expandedStartedAt ? formatDateTime(expandedStartedAt) : "尚未开始"}</strong></div>
-                                      <div className="remediation-record-table__detail-field"><span className="remediation-record-table__detail-label">处理耗时</span><strong className="remediation-record-table__detail-value">{formatDurationSeconds(record.summary.duration_seconds)}</strong></div>
-                                      <div className="remediation-record-table__detail-field"><span className="remediation-record-table__detail-label">方案版本</span><strong className="remediation-record-table__detail-value">{expandedOverview?.plan_version ? `v${expandedOverview.plan_version}` : "v1"}</strong></div>
-                                      <div className="remediation-record-table__detail-field"><span className="remediation-record-table__detail-label">优先级</span><strong className="remediation-record-table__detail-value">{expandedOverview?.plan.priority ?? "P?"}</strong></div>
-                                      <div className="remediation-record-table__detail-field"><span className="remediation-record-table__detail-label">更新时间</span><strong className="remediation-record-table__detail-value">{formatDateTime(record.summary.updated_at)}</strong></div>
-                                      <div className="remediation-record-table__detail-field"><span className="remediation-record-table__detail-label">最新状态</span><strong className="remediation-record-table__detail-value">{getStatusLabel(expandedStatus)}</strong></div>
-                                      <div className="remediation-record-table__detail-field"><span className="remediation-record-table__detail-label">风险影响</span><strong className="remediation-record-table__detail-value">{expandedOverview?.plan.estimated_impact ?? "待补充"}</strong></div>
-                                      <div className="remediation-record-table__detail-field"><span className="remediation-record-table__detail-label">金丝雀策略</span><strong className="remediation-record-table__detail-value">{expandedOverview?.plan.canary?.enabled ? `目标 ${formatPercent(expandedOverview.plan.canary.target_percentage)} · 观察 ${expandedOverview.plan.canary.monitor_duration}s` : "未启用"}</strong></div>
-                                      <div className="remediation-record-table__detail-field"><span className="remediation-record-table__detail-label">全量进度</span><strong className="remediation-record-table__detail-value">{getOverallProgress(expandedOverview)}%</strong></div>
-                                      <div className="remediation-record-table__detail-field"><span className="remediation-record-table__detail-label">已完成步骤</span><strong className="remediation-record-table__detail-value">{expandedOverview?.progress.completed_steps ?? 0} / {expandedOverview?.progress.total_steps ?? 0}</strong></div>
+                                      <div className="remediation-record-table__subsection-header"><div><p className="remediation-record-table__subsection-title">基础信息</p><p className="remediation-record-table__subsection-copy">只保留辅助判断的补充上下文，避免和上方记录卡片重复。</p></div></div>
+                                      <div className="remediation-record-table__summary-layout">
+                                        <div className="remediation-record-table__summary-card remediation-record-table__summary-card--wide">
+                                          <span className="remediation-record-table__detail-label">根因定位</span>
+                                          <p className="remediation-record-table__summary-text">{expandedRootCause}</p>
+                                        </div>
+                                        <div className="remediation-record-table__summary-card remediation-record-table__summary-card--wide">
+                                          <span className="remediation-record-table__detail-label">风险影响</span>
+                                          <p className="remediation-record-table__summary-text">{expandedImpact}</p>
+                                        </div>
+                                        <div className="remediation-record-table__summary-strip">
+                                          <div className="remediation-record-table__summary-metric">
+                                            <span className="remediation-record-table__detail-label">开始修复</span>
+                                            <strong className="remediation-record-table__detail-value">{expandedStartedAt ? formatDateTime(expandedStartedAt) : "尚未开始"}</strong>
+                                          </div>
+                                          <div className="remediation-record-table__summary-metric">
+                                            <span className="remediation-record-table__detail-label">最近更新</span>
+                                            <strong className="remediation-record-table__detail-value">{formatDateTime(record.summary.updated_at)}</strong>
+                                          </div>
+                                          <div className="remediation-record-table__summary-metric">
+                                            <span className="remediation-record-table__detail-label">处理耗时</span>
+                                            <strong className="remediation-record-table__detail-value">{formatDurationSeconds(record.summary.duration_seconds)}</strong>
+                                          </div>
+                                        </div>
                                       </div>
                                     </div>
+
 
                                     <div className="remediation-record-table__subsection">
                                       <div className="remediation-record-table__subsection-header"><div><p className="remediation-record-table__subsection-title">方案信息</p><p className="remediation-record-table__subsection-copy">查看方案修订记录与当前审批状态。</p></div></div>

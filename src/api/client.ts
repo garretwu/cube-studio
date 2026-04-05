@@ -96,6 +96,26 @@ function unwrapPayload<T>(payload: SREApiEnvelope<T> | T): T {
   return payload.data;
 }
 
+function normalizeSessionSummaryList(payload: unknown): SessionSummary[] {
+  if (Array.isArray(payload)) {
+    return payload.filter((item): item is SessionSummary => !!item && typeof item === "object");
+  }
+  if (!payload || typeof payload !== "object") {
+    return [];
+  }
+
+  const candidate = payload as {
+    data?: unknown;
+    sessions?: unknown;
+    items?: unknown;
+  };
+  const raw = candidate.data ?? candidate.sessions ?? candidate.items;
+  if (Array.isArray(raw)) {
+    return raw.filter((item): item is SessionSummary => !!item && typeof item === "object");
+  }
+  return [];
+}
+
 function normalizeAlertName(value: string | null | undefined): string {
   return String(value ?? "").trim().toLowerCase();
 }
@@ -432,7 +452,7 @@ export const apiClient = {
           const summariesResponse = await api.get<SREApiEnvelope<SessionSummary[]> | SessionSummary[]>("/api/sessions", {
             params: { limit: 50 },
           });
-          const summaries = unwrapPayload(summariesResponse.data);
+          const summaries = normalizeSessionSummaryList(unwrapPayload(summariesResponse.data));
           const matched = summaries.find((item) => item.fingerprint === alert.fingerprint);
           if (matched) {
             const detailResponse = await api.get<SREApiEnvelope<DiagnosisSession> | DiagnosisSession>(`/api/sessions/${matched.session_id}`);
@@ -454,7 +474,7 @@ export const apiClient = {
 
   getSessions: async (limit = 50) => {
     const response = await api.get<SREApiEnvelope<SessionSummary[]> | SessionSummary[]>("/api/sessions", { params: { limit } });
-    return unwrapPayload(response.data);
+    return normalizeSessionSummaryList(unwrapPayload(response.data));
   },
 
   getDiagnosisSession: async (sessionId?: string) => {
@@ -493,7 +513,7 @@ export const apiClient = {
     } catch (primaryError) {
       try {
         const response = await api.get<SREApiEnvelope<SessionSummary[]> | SessionSummary[]>('/api/diagnosis/sessions');
-        const sessions = unwrapPayload(response.data);
+        const sessions = normalizeSessionSummaryList(unwrapPayload(response.data));
         return sessions.map(mapSummaryToDiagnosisSummary);
       } catch {
         throw primaryError;

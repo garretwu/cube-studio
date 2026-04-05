@@ -173,6 +173,37 @@ describe("apiClient.getTopology", () => {
     expect(sessions[0]?.session_id).toBe("sess-2");
   });
 
+  it("normalizes nested session collections from /api/sessions", async () => {
+    server.use(
+      http.get("/api/sessions", async () =>
+        HttpResponse.json({
+          success: true,
+          data: {
+            sessions: [
+              {
+                session_id: "sess-nested",
+                status: "diagnosed",
+                alert_name: "VLLMInterTokenLatencyP95High",
+                severity: "warning",
+                fingerprint: "fp-nested",
+                outcome: null,
+                duration_seconds: 14,
+                updated_at: "2026-03-26T00:00:00Z",
+              },
+            ],
+          },
+          error: null,
+          trace_id: "trace-sessions-nested",
+          timestamp: "2026-03-26T00:00:00Z",
+        }),
+      ),
+    );
+
+    const sessions = await apiClient.getSessions();
+    expect(sessions).toHaveLength(1);
+    expect(sessions[0]?.session_id).toBe("sess-nested");
+  });
+
   it("filters blocked alerts from /api/alerts response", async () => {
     server.use(
       http.get("/api/alerts", async () =>
