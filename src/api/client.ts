@@ -10,6 +10,8 @@ import type {
   DiagnosisSession,
   DiagnosisSessionSummary,
   IncidentRecord,
+  KnowledgeBaseDetail,
+  KnowledgeBaseSummary,
   KnowledgeDocument,
   LearnedPattern,
   LoopResult,
@@ -704,6 +706,36 @@ export const apiClient = {
     return unwrapPayload(response.data);
   },
 
+  getKnowledgeBases: async () =>
+    withDevFallback(
+      async () => {
+        const response = await api.get<SREApiEnvelope<KnowledgeBaseSummary[]> | { items: KnowledgeBaseSummary[] }>("/api/knowledge/bases");
+        if (isEnvelope<KnowledgeBaseSummary[]>(response.data)) {
+          return unwrapPayload(response.data);
+        }
+        return response.data.items;
+      },
+      async () => {
+        const { getKnowledgeBasesFallback } = await import("./devFallback");
+        return getKnowledgeBasesFallback();
+      },
+      "getKnowledgeBases",
+    ),
+
+  getKnowledgeBaseDetail: async (knowledgeBaseId: string) =>
+    withDevFallback(
+      async () => {
+        const response = await api.get<SREApiEnvelope<KnowledgeBaseDetail> | KnowledgeBaseDetail>(
+          `/api/knowledge/bases/${encodeURIComponent(knowledgeBaseId)}`,
+        );
+        return unwrapPayload(response.data);
+      },
+      async () => {
+        const { getKnowledgeBaseDetailFallback } = await import("./devFallback");
+        return getKnowledgeBaseDetailFallback(knowledgeBaseId);
+      },
+      "getKnowledgeBaseDetail",
+    ),
   searchKnowledge: async (query: string, category?: string) =>
     withDevFallback(
       async () => {
@@ -805,3 +837,4 @@ export const apiClient = {
 };
 
 export type ApiClient = typeof apiClient;
+

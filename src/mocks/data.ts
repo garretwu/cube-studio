@@ -554,6 +554,8 @@ export const knowledgeDocuments: KnowledgeDocument[] = [
   },
 ];
 
+export { knowledgeBaseDetails, knowledgeBases } from "./knowledgeData";
+
 export const incidents: IncidentRecord[] = [
   {
     incident_id: "inc-demo-004",
@@ -627,3 +629,4 @@ const legacySkills: SkillDescriptor[] = [
 ];
 
 void legacySkills;
+
