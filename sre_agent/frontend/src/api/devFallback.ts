@@ -1,9 +1,11 @@
-import {
+﻿import {
   alertClusters,
   alerts,
   diagnosisHistorySessions,
   diagnosisSession,
   initialChatMessages,
+  knowledgeBaseDetails,
+  knowledgeBases,
   knowledgeDocuments,
   remediationOverview,
   skills,
@@ -17,6 +19,8 @@ import type {
   ChatMessage,
   DiagnosisSession,
   DiagnosisSessionSummary,
+  KnowledgeBaseDetail,
+  KnowledgeBaseSummary,
   KnowledgeDocument,
   OntologyEdge,
   OntologyNode,
@@ -88,6 +92,18 @@ export function postChatMessageFallback(sessionId: string, content: string): Cha
     created_at: new Date().toISOString(),
     content: `已绑定会话 ${sessionId}。收到你的问题：“${content}”。建议先检查 GPU 进程列表，再结合最近 15 分钟的影响链路继续排查。`,
   };
+}
+
+export function getKnowledgeBasesFallback(): KnowledgeBaseSummary[] {
+  return knowledgeBases;
+}
+
+export function getKnowledgeBaseDetailFallback(knowledgeBaseId: string): KnowledgeBaseDetail {
+  const matched = knowledgeBaseDetails.find((item) => item.id === knowledgeBaseId);
+  if (!matched) {
+    throw new Error("未找到对应知识库");
+  }
+  return matched;
 }
 
 export function searchKnowledgeFallback(query: string, category?: string): KnowledgeDocument[] {

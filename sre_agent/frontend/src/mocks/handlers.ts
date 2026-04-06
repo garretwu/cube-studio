@@ -1,4 +1,4 @@
-import { delay, http, HttpResponse } from "msw";
+﻿import { delay, http, HttpResponse } from "msw";
 
 import {
   alertClusters,
@@ -6,6 +6,8 @@ import {
   diagnosisHistorySessions,
   diagnosisSession,
   initialChatMessages,
+  knowledgeBaseDetails,
+  knowledgeBases,
   knowledgeDocuments,
   skills,
   topologyEdges,
@@ -172,11 +174,24 @@ export const handlers = [
         id: `assistant-${Date.now()}`,
         role: "assistant",
         created_at: new Date().toISOString(),
-        content: `已收到：${body.content ?? ""}`,
+        content: `宸叉敹鍒帮細${body.content ?? ""}`,
       },
     });
   }),
 
+  http.get("/api/knowledge/bases", async () => {
+    await delay(70);
+    return HttpResponse.json({ items: knowledgeBases });
+  }),
+  http.get("/api/knowledge/bases/:knowledgeBaseId", async ({ params }) => {
+    await delay(70);
+    const knowledgeBaseId = String(params.knowledgeBaseId ?? "");
+    const matched = knowledgeBaseDetails.find((item) => item.id === knowledgeBaseId);
+    if (!matched) {
+      return HttpResponse.json({ message: "knowledge base not found" }, { status: 404 });
+    }
+    return HttpResponse.json(matched);
+  }),
   http.get("/api/knowledge/search", async ({ request }) => {
     await delay(70);
     const url = new URL(request.url);
@@ -267,3 +282,4 @@ export const handlers = [
     });
   }),
 ];
+

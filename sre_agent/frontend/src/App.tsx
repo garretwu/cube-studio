@@ -6,6 +6,7 @@ import type { DiagnosisSessionSummary } from "./api/types";
 import { AppShell } from "./components/ui";
 import HistoryPage from "./pages/History";
 import DiagnosisPage from "./pages/Diagnosis";
+import KnowledgeDetailPage from "./pages/KnowledgeDetail";
 import SkillDetailPage from "./pages/SkillDetail";
 import { appRoutes } from "./routes";
 
@@ -31,6 +32,7 @@ function AppRoutes() {
       <Route path="/diagnosis" element={<DiagnosisPage />} />
       <Route path="/diagnosis/:sessionId" element={<DiagnosisPage />} />
       <Route path="/skills/:skillId" element={<SkillDetailPage />} />
+      <Route path="/knowledge/:knowledgeBaseId" element={<KnowledgeDetailPage />} />
       <Route path="/topology-modified" element={<Navigate to="/topology" replace />} />
       <Route path="/alerts-modified" element={<Navigate to="/alerts" replace />} />
       {appRoutes
@@ -129,3 +131,4 @@ function App() {
 
 export default App;
 export { resolveActiveRouteKey };
+

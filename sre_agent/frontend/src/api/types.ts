@@ -371,6 +371,62 @@ export type KnowledgeDocument = {
   score?: number;
 };
 
+export type KnowledgeBaseScope = "shared" | "private";
+export type KnowledgeBaseStatus = "enabled" | "disabled";
+export type KnowledgeIndexStatus = "ready" | "indexing" | "failed" | "pending";
+export type KnowledgeDocSourceType = "file" | "manual" | "link";
+
+export type KnowledgeDocumentPreviewSection = {
+  id: string;
+  heading: string;
+  body: string;
+};
+
+export type KnowledgeDocumentPreview = {
+  title: string;
+  description: string;
+  source_label: string;
+  source_uri?: string | null;
+  tags: string[];
+  updated_at: string;
+  sections: KnowledgeDocumentPreviewSection[];
+  warning?: string | null;
+};
+
+export type KnowledgeBaseDocument = {
+  id: string;
+  title: string;
+  source_type: KnowledgeDocSourceType;
+  source_label: string;
+  file_name: string;
+  size_bytes: number | null;
+  index_status: KnowledgeIndexStatus;
+  status: KnowledgeBaseStatus;
+  updated_at: string;
+  preview_summary: string;
+  tags: string[];
+  preview: KnowledgeDocumentPreview;
+};
+
+export type KnowledgeBaseSummary = {
+  id: string;
+  name: string;
+  code: string;
+  scope: KnowledgeBaseScope;
+  document_count: number;
+  storage_bytes: number;
+  index_status: KnowledgeIndexStatus;
+  status: KnowledgeBaseStatus;
+  updated_at: string;
+  description: string;
+};
+
+export type KnowledgeBaseDetail = KnowledgeBaseSummary & {
+  knowledge_base_id: string;
+  created_at: string;
+  indexed_at: string | null;
+  documents: KnowledgeBaseDocument[];
+};
 export type IncidentRecord = {
   incident_id: string;
   aidc_id: string;
@@ -454,3 +510,4 @@ export type WSEvent = {
   timestamp: string;
   data: Record<string, unknown>;
 };
+
