@@ -98,7 +98,7 @@ describe("AlertsModifiedPage", () => {
     expect(screen.getByText("鍘嬬缉 1 鏉￠噸澶嶄簨浠?)).toBeInTheDocument();
     expect(screen.getByText("2 娆′簨浠?)).toBeInTheDocument();
     expect(screen.getByText("閲嶅鎶樺彔")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "鏌ョ湅 Session" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "查看诊断" })).toBeInTheDocument();
     expect(screen.getByText("绗?2 娆￠噸璇曚簨浠?)).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "鍒囨崲 fp-001 浜嬩欢娴? }));
@@ -108,4 +108,5 @@ describe("AlertsModifiedPage", () => {
     expect(screen.getByText("GPU 娓╁害鎸佺画楂樹簬鐩爣闃堝€?)).toBeInTheDocument();
   });
 });
+
 
