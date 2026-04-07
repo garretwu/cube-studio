@@ -10,6 +10,14 @@ llm:
   model: "MiniMax-M2.7"
 
 knowledge_base:
+  provider: dify
+  base_url: "http://10.11.4.3:31984/"
+  api_key: "dataset-OiFA2zZ7CwCMPPUKzU0sbIaG"
+  dataset_id: "dataset-OiFA2zZ7CwCMPPUKzU0sbIaG"
+  runbook_dataset_id: "dataset-OiFA2zZ7CwCMPPUKzU0sbIaG"
+  timeout: 15
+  retries: 2
+  api_prefix: "/v1"
   persist_dir: ./data/knowledge_db_lab
 
 memory:

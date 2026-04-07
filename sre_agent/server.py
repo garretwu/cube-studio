@@ -18,6 +18,7 @@ import yaml
 from fastapi import FastAPI
 
 from lib.channels.alert import AlertChannel
+from lib.channels.knowledge import DifyKnowledgeStoreAdapter
 from sre_agent.agent import ConversationalAgent, run_diagnosis
 from sre_agent.alerts_filter import build_blocked_alert_name_set, filter_blocked_alerts
 from sre_agent.api import build_api_router, build_websocket_router, install_middlewares
@@ -982,6 +983,36 @@ def _collect_llm_runtime_status() -> dict[str, Any]:
     return status
 
 
+def _build_knowledge_store(cfg: SREAgentConfig, explicit_knowledge: Any | None) -> tuple[Any, bool]:
+    if explicit_knowledge is not None:
+        return explicit_knowledge, False
+
+    provider = str(getattr(cfg.knowledge_base, "provider", "local") or "local").strip().lower()
+    if provider == "dify":
+        try:
+            base_url = str(getattr(cfg.knowledge_base, "base_url", "") or "").strip()
+            api_key = str(getattr(cfg.knowledge_base, "api_key", "") or "").strip()
+            dataset_id = str(getattr(cfg.knowledge_base, "dataset_id", "") or "").strip()
+            runbook_dataset_id = str(getattr(cfg.knowledge_base, "runbook_dataset_id", "") or "").strip() or dataset_id
+            timeout = float(getattr(cfg.knowledge_base, "timeout", 15.0) or 15.0)
+            retries = int(getattr(cfg.knowledge_base, "retries", 2) or 2)
+            api_prefix = str(getattr(cfg.knowledge_base, "api_prefix", "/v1") or "/v1")
+            store = DifyKnowledgeStoreAdapter(
+                base_url=base_url,
+                api_key=api_key,
+                default_dataset_id=dataset_id,
+                runbook_dataset_id=runbook_dataset_id,
+                timeout=timeout,
+                retries=retries,
+                api_prefix=api_prefix,
+            )
+            return store, True
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.warning("failed to initialize dify knowledge adapter, fallback to local store: %s", exc)
+
+    return KnowledgeStore(persist_dir=cfg.knowledge_base.persist_dir), True
+
+
 def _should_require_llm_runtime(
     *,
     diagnosis_runner: DiagnosisRunnerProtocol | None,
@@ -1234,7 +1265,7 @@ def create_app(
     created_ontology = ontology is None
     memory_store = memory or create_memory_store(aidc_id=cfg.global_.aidc_id, db_dir=cfg.memory.db_dir)
     created_memory = memory is None
-    knowledge_store = knowledge or KnowledgeStore(persist_dir=cfg.knowledge_base.persist_dir)
+    knowledge_store, created_knowledge = _build_knowledge_store(cfg, knowledge)
     registry = tool_registry or build_default_registry()
     context = execution_context or ToolExecutionContext()
     if "alert" not in context.channels:
@@ -1404,6 +1435,14 @@ def create_app(
                 await topology_discovery_service.stop()
             if alert_polling_service is not None:
                 await alert_polling_service.stop()
+            if created_knowledge:
+                close_method = getattr(knowledge_store, "aclose", None)
+                if callable(close_method):
+                    await close_method()
+                else:
+                    close_method = getattr(knowledge_store, "close", None)
+                    if callable(close_method):
+                        close_method()
             if created_memory and hasattr(memory_store, "close"):
                 await memory_store.close()
             if created_ontology:

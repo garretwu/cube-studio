@@ -118,8 +118,16 @@ class KnowledgeSourceConfig(BaseModel):
 class KnowledgeConfig(BaseModel):
     model_config = ConfigDict(extra="allow")
 
+    provider: str = "local"
     persist_dir: str = "./data/knowledge_db"
     embedding_model: str = "text-embedding-3-small"
+    base_url: str | None = None
+    api_key: str | None = None
+    dataset_id: str | None = None
+    runbook_dataset_id: str | None = None
+    timeout: float = 15.0
+    retries: int = 2
+    api_prefix: str = "/v1"
     sources: list[KnowledgeSourceConfig] = Field(default_factory=list)
 
 

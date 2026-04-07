@@ -100,6 +100,10 @@ describe("App shell", () => {
     expect(appRoutes.some((route) => route.key === "chat")).toBe(false);
   });
 
+  it("does not expose the legacy alerts route in navigation", () => {
+    expect(appRoutes.some((route) => route.key === "alerts")).toBe(false);
+  });
+
   it("marks history as the active route when a historical session is opened", async () => {
     const { container } = render(
       <MemoryRouter initialEntries={["/history/sess-latency-001"]}>
@@ -156,6 +160,20 @@ describe("App shell", () => {
 
     render(
       <MemoryRouter initialEntries={["/alerts-modified"]}>
+        <App />
+      </MemoryRouter>,
+    );
+
+    const modifiedAlertsButton = await screen.findByRole("button", { name: modifiedAlertsLabel! });
+    expect(modifiedAlertsButton.className).toContain("nav-item--active");
+  });
+
+  it("redirects /alerts to /alerts-modified and keeps alerts navigation active", async () => {
+    const modifiedAlertsLabel = appRoutes.find((route) => route.key === "alertsModified")?.label;
+    expect(modifiedAlertsLabel).toBeTruthy();
+
+    render(
+      <MemoryRouter initialEntries={["/alerts"]}>
         <App />
       </MemoryRouter>,
     );

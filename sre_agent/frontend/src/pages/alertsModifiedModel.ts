@@ -190,7 +190,7 @@ function buildRouteDecision(alerts: Alert[], activeSession?: DiagnosisSession) {
       label: "观察中" as const,
       tone: "neutral" as const,
       ctaLabel: "回看原始告警",
-      path: `/alerts?q=${focusFingerprint}`,
+      path: `/alerts-modified?q=${focusFingerprint}`,
       note: "当前不新建诊断会话",
     };
   }
@@ -209,7 +209,7 @@ function buildRouteDecision(alerts: Alert[], activeSession?: DiagnosisSession) {
     label: "观察中" as const,
     tone: "warning" as const,
     ctaLabel: "继续观察",
-    path: `/alerts?q=${focusFingerprint}`,
+    path: `/alerts-modified?q=${focusFingerprint}`,
     note: "先保留在观察队列",
   };
 }

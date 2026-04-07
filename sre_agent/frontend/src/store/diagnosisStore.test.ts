@@ -6,6 +6,24 @@ import { diagnosisSession, initialChatMessages } from "../mocks/data";
 import { server } from "../test/server";
 import { useDiagnosisStore } from "./diagnosisStore";
 
+async function waitUntil(assertion: () => void, timeoutMs = 1200): Promise<void> {
+  const startedAt = Date.now();
+  // eslint-disable-next-line no-constant-condition
+  while (true) {
+    try {
+      assertion();
+      return;
+    } catch (error) {
+      if (Date.now() - startedAt >= timeoutMs) {
+        throw error;
+      }
+      await new Promise((resolve) => {
+        setTimeout(resolve, 30);
+      });
+    }
+  }
+}
+
 describe("useDiagnosisStore", () => {
   beforeEach(() => {
     useDiagnosisStore.setState({
@@ -117,6 +135,34 @@ describe("useDiagnosisStore", () => {
     });
   });
 
+  it("updates session status immediately when diagnosis_result arrives", async () => {
+    await useDiagnosisStore.getState().bootstrapSession(diagnosisSession.session_id);
+    useDiagnosisStore.setState((state) => ({
+      session: state.session
+        ? {
+            ...state.session,
+            status: "diagnosing",
+            diagnosis_result: null,
+          }
+        : state.session,
+    }));
+
+    useDiagnosisStore.getState().applyEvent({
+      schema_version: "1",
+      type: "diagnosis_result",
+      session_id: diagnosisSession.session_id,
+      timestamp: "2026-04-03T14:00:00Z",
+      data: {
+        ...(diagnosisSession.diagnosis_result ?? {}),
+        recommended_fix: null,
+      },
+    });
+
+    await waitUntil(() => {
+      expect(useDiagnosisStore.getState().session?.status).toBe("diagnosed");
+    });
+  });
+
   it("uses default instruction when revising plan without input", async () => {
     let capturedInstruction = "";
     server.use(
@@ -201,5 +247,121 @@ describe("useDiagnosisStore", () => {
     expect(state.session?.status).toBe("failed");
     const escalationMessages = state.messages.filter((message) => message.content === "需要工程师介入");
     expect(escalationMessages.length).toBeGreaterThan(baselineCount);
+  });
+
+  it("extracts remediation plan from ranked_candidates when top-level plan is empty", async () => {
+    const candidatePlan = {
+      plan_id: "candidate-plan-v2",
+      root_cause: "gpu contention",
+      description: "candidate fallback plan",
+      steps: [
+        {
+          step_id: 1,
+          description: "kill gpu-burn",
+          tool: "shell_command",
+          params: { command: "pkill -f gpu-burn" },
+          verification: { method: "wait", wait_seconds: 2 },
+          timeout: 60,
+        },
+      ],
+      estimated_impact: "minor",
+      confidence: 0.86,
+      priority: "P1",
+    };
+    server.use(
+      http.get("/api/sessions/:sessionId", async ({ params }) =>
+        HttpResponse.json({
+          ...diagnosisSession,
+          session_id: String(params.sessionId ?? diagnosisSession.session_id),
+          status: "approval_required",
+          diagnosis_result: {
+            ...(diagnosisSession.diagnosis_result ?? {}),
+            recommended_fix: null,
+            ranked_candidates: [
+              {
+                rank: 1,
+                root_cause: "gpu contention",
+                root_cause_layer: "service",
+                confidence: 0.86,
+                recommended_fix: candidatePlan,
+              },
+            ],
+          },
+        }),
+      ),
+      http.get("/api/sessions/:sessionId/events", async () => HttpResponse.json([])),
+    );
+
+    await useDiagnosisStore.getState().bootstrapSession(diagnosisSession.session_id);
+    const state = useDiagnosisStore.getState();
+    expect(state.hasPlan).toBe(true);
+    expect(state.planMissingReason).toBeUndefined();
+    expect(state.currentPlanVersion).toBe(2);
+  });
+
+  it("backfills session snapshot after approval_required event to avoid missing final diagnosis payload", async () => {
+    const sessionId = "sess-backfill-001";
+    const repairedPlan = {
+      plan_id: "plan-backfill-v1",
+      root_cause: "gpu contention",
+      description: "backfilled plan",
+      steps: [],
+      estimated_impact: "minor",
+      confidence: 0.8,
+      priority: "P1",
+    };
+    let capturedAfter = "";
+    let sessionFetchCount = 0;
+    server.use(
+      http.get("/api/sessions/:sessionId", async ({ params }) => {
+        sessionFetchCount += 1;
+        const withPlan = sessionFetchCount > 1;
+        return HttpResponse.json({
+          ...diagnosisSession,
+          session_id: String(params.sessionId ?? sessionId),
+          status: "approval_required",
+          diagnosis_result: {
+            ...(diagnosisSession.diagnosis_result ?? {}),
+            recommended_fix: withPlan ? repairedPlan : null,
+          },
+        });
+      }),
+      http.get("/api/sessions/:sessionId/events", async ({ request, params }) => {
+        const url = new URL(request.url);
+        capturedAfter = url.searchParams.get("after") ?? "";
+        return HttpResponse.json([
+          {
+            schema_version: "1",
+            type: "diagnosis_result",
+            session_id: String(params.sessionId ?? sessionId),
+            timestamp: "2026-04-03T12:00:00Z",
+            data: {
+              event_id: "evt-backfill-200",
+              ...(diagnosisSession.diagnosis_result ?? {}),
+              recommended_fix: repairedPlan,
+            },
+          },
+        ]);
+      }),
+    );
+
+    await useDiagnosisStore.getState().bootstrapSession(sessionId);
+    useDiagnosisStore.getState().applyEvent({
+      schema_version: "1",
+      type: "approval_required",
+      session_id: sessionId,
+      timestamp: "2026-04-03T11:59:59Z",
+      data: {
+        plan_id: "plan-backfill-v1",
+        plan_version: 1,
+        event_id: "evt-backfill-100",
+      },
+    });
+
+    await waitUntil(() => {
+      expect(useDiagnosisStore.getState().session?.diagnosis_result?.recommended_fix?.plan_id).toBe("plan-backfill-v1");
+    });
+    expect(sessionFetchCount).toBeGreaterThan(1);
+    expect(capturedAfter).toBe("evt-backfill-100");
   });
 });

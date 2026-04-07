@@ -162,6 +162,17 @@ export type Hypothesis = {
   confidence: number;
 };
 
+export type RankedRootCause = {
+  rank: number;
+  root_cause: string;
+  root_cause_layer: string;
+  root_cause_entities?: string[];
+  confidence: number;
+  evidence_summary?: string;
+  distinguishing_verification?: string | null;
+  recommended_fix?: RemediationPlan | null;
+};
+
 export type DiagnosisResult = {
   root_cause: string;
   root_cause_layer: string;
@@ -173,6 +184,7 @@ export type DiagnosisResult = {
   triage_priority: "P0" | "P1" | "P2" | "P3";
   diagnosis_certainty: "confirmed" | "probable" | "ambiguous";
   recommended_fix?: RemediationPlan | null;
+  ranked_candidates?: RankedRootCause[];
 };
 
 export type DiagnosisBootstrapAlertItem = {
@@ -370,6 +382,37 @@ export type KnowledgeDocument = {
   tags: string[];
   score?: number;
 };
+
+export type KnowledgeDataset = {
+  id: string;
+  name: string;
+  description?: string;
+  document_count?: number;
+  word_count?: number;
+  created_at?: string | null;
+  updated_at?: string | null;
+  status?: string;
+};
+
+export type KnowledgeDocumentDetail = KnowledgeDocument & {
+  created_at?: string | null;
+  updated_at?: string | null;
+  status?: string;
+  metadata?: Record<string, unknown>;
+};
+
+export type KnowledgeSegment = {
+  id: string;
+  document_id: string;
+  content: string;
+  status?: string;
+  source?: string;
+  position?: number | string | null;
+  score?: number;
+  metadata?: Record<string, unknown>;
+};
+
+export type KnowledgeSearchHit = KnowledgeSegment;
 
 export type IncidentRecord = {
   incident_id: string;

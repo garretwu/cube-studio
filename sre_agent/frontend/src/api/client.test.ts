@@ -247,6 +247,56 @@ describe("apiClient.getTopology", () => {
     expect(called).toBe(false);
   });
 
+  it("falls back to /api/diagnose when /api/diagnose/start is unavailable", async () => {
+    let startCalled = false;
+    let diagnoseCalled = false;
+    server.use(
+      http.post("/api/diagnose/start", async () => {
+        startCalled = true;
+        return HttpResponse.json({ message: "not found" }, { status: 404 });
+      }),
+      http.post("/api/diagnose", async () => {
+        diagnoseCalled = true;
+        return HttpResponse.json({
+          success: true,
+          data: {
+            session_id: "sess-start-fallback",
+            alert: {
+              alert_name: "VLLMInterTokenLatencyP95High",
+              severity: "warning",
+              labels: {},
+              annotations: {},
+              starts_at: "2026-03-26T00:00:00Z",
+              fingerprint: "fp-fallback",
+              status: "firing",
+              source: "alertmanager",
+            },
+            status: "diagnosing",
+            duration_seconds: 0,
+          },
+          error: null,
+          trace_id: "trace-diagnose-fallback",
+          timestamp: "2026-03-26T00:00:00Z",
+        });
+      }),
+    );
+
+    const session = await apiClient.startDiagnoseAlert({
+      alert_name: "VLLMInterTokenLatencyP95High",
+      severity: "warning",
+      labels: {},
+      annotations: {},
+      starts_at: "2026-03-26T00:00:00Z",
+      fingerprint: "fp-fallback",
+      status: "firing",
+      source: "alertmanager",
+    });
+
+    expect(startCalled).toBe(true);
+    expect(diagnoseCalled).toBe(true);
+    expect(session.session_id).toBe("sess-start-fallback");
+  });
+
   it("blocks handle request when alert is filtered locally", async () => {
     let called = false;
     server.use(
@@ -300,5 +350,71 @@ describe("apiClient.getTopology", () => {
     const history = await apiClient.getChatHistory();
     expect(history).toHaveLength(1);
     expect(history[0]?.id).toBe("chat-1");
+  });
+
+  it("loads knowledge datasets from /api/knowledge/datasets", async () => {
+    server.use(
+      http.get("/api/knowledge/datasets", async () =>
+        HttpResponse.json({
+          success: true,
+          data: [
+            { id: "dataset-default", name: "SRE Dataset", document_count: 3, status: "ready" },
+            { id: "dataset-network", name: "Network Dataset", document_count: 2, status: "ready" },
+          ],
+          error: null,
+          trace_id: "trace-knowledge-datasets",
+          timestamp: "2026-04-03T00:00:00Z",
+        }),
+      ),
+    );
+
+    const datasets = await apiClient.getKnowledgeDatasets();
+    expect(datasets).toHaveLength(2);
+    expect(datasets[0]?.id).toBe("dataset-default");
+  });
+
+  it("accepts raw array payload from /api/knowledge/documents", async () => {
+    server.use(
+      http.get("/api/knowledge/documents", async () =>
+        HttpResponse.json([
+          {
+            id: "kb-raw-1",
+            title: "Raw payload doc",
+            source: "docs/raw.md",
+            category: "runbook",
+            excerpt: "raw payload",
+            tags: [],
+            score: 0.8,
+          },
+        ]),
+      ),
+    );
+
+    const docs = await apiClient.getKnowledgeSources(undefined, 1, 20, "dataset-runbook");
+    expect(docs).toHaveLength(1);
+    expect(docs[0]?.id).toBe("kb-raw-1");
+  });
+
+  it("passes dataset_id when querying knowledge documents and segments", async () => {
+    let docsDatasetId = "";
+    let segmentsDatasetId = "";
+    server.use(
+      http.get("/api/knowledge/documents", async ({ request }) => {
+        const url = new URL(request.url);
+        docsDatasetId = url.searchParams.get("dataset_id") ?? "";
+        return HttpResponse.json([]);
+      }),
+      http.get("/api/knowledge/segments/search", async ({ request }) => {
+        const url = new URL(request.url);
+        segmentsDatasetId = url.searchParams.get("dataset_id") ?? "";
+        return HttpResponse.json([]);
+      }),
+    );
+
+    await apiClient.getKnowledgeSources(undefined, 1, 20, "dataset-network");
+    await apiClient.searchKnowledgeSegments("roce", 5, "dataset-network");
+
+    expect(docsDatasetId).toBe("dataset-network");
+    expect(segmentsDatasetId).toBe("dataset-network");
   });
 });

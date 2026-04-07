@@ -28,6 +28,7 @@ function AppRoutes() {
   return (
     <Routes>
       <Route path="/" element={<Navigate to="/topology" replace />} />
+      <Route path="/alerts" element={<Navigate to="/alerts-modified" replace />} />
       <Route path="/history" element={<HistoryPage />} />
       <Route path="/history/:sessionId" element={<DiagnosisPage />} />
       <Route path="/diagnosis" element={<DiagnosisPage />} />
@@ -35,7 +36,6 @@ function AppRoutes() {
       <Route path="/remediation/:sessionId" element={<RemediationPage />} />
       <Route path="/skills/:skillId" element={<SkillDetailPage />} />
       <Route path="/topology-modified" element={<Navigate to="/topology" replace />} />
-      <Route path="/alerts-modified" element={<Navigate to="/alerts" replace />} />
       {appRoutes
         .filter((route) => route.key !== "diagnosis")
         .map((route) => (

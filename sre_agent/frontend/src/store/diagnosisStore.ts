@@ -1,7 +1,7 @@
 import { create } from "zustand";
 
 import { apiClient } from "../api/client";
-import type { ChatMessage, DiagnosisSession, Observation, SessionEvent, ThinkingStep, WSEvent } from "../api/types";
+import type { ChatMessage, DiagnosisSession, Observation, RemediationPlan, SessionEvent, ThinkingStep, WSEvent } from "../api/types";
 
 type ConnectionState = "connecting" | "open" | "closed" | "error";
 type BootstrapStatus = "idle" | "loading" | "ready" | "empty" | "error";
@@ -40,12 +40,16 @@ type DiagnosisState = {
 
 const DEFAULT_REVISE_INSTRUCTION = "请优化当前修复方案，补充更稳妥步骤与验证";
 
+const SESSION_BACKFILL_THROTTLE_MS = 1200;
+const sessionBackfillLastRunAt = new Map<string, number>();
+const sessionBackfillInFlight = new Set<string>();
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function toThinkingStep(event: WSEvent, fallbackStep: number): ThinkingStep | null {
-  if (event.type !== "thinking_step") {
+  if (event.type !== "thinking_step" && event.type !== "tool_call") {
     return null;
   }
 
@@ -228,6 +232,149 @@ function normalizePlanVersion(value: unknown): number | null {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
 }
 
+function sortByCandidateRank(left: { rank?: number }, right: { rank?: number }) {
+  const lhs = Number(left.rank ?? Number.POSITIVE_INFINITY);
+  const rhs = Number(right.rank ?? Number.POSITIVE_INFINITY);
+  return lhs - rhs;
+}
+
+export function extractRecommendedPlan(session: DiagnosisSession | undefined): RemediationPlan | null {
+  if (!session?.diagnosis_result) {
+    return null;
+  }
+  if (session.diagnosis_result.recommended_fix) {
+    return session.diagnosis_result.recommended_fix;
+  }
+  const rankedCandidates = [...(session.diagnosis_result.ranked_candidates ?? [])].sort(sortByCandidateRank);
+  for (const candidate of rankedCandidates) {
+    if (candidate.recommended_fix) {
+      return candidate.recommended_fix;
+    }
+  }
+  return null;
+}
+
+function diagnosisResultHasRecommendedPlan(
+  diagnosisResult: DiagnosisSession["diagnosis_result"] | null | undefined,
+): boolean {
+  if (!diagnosisResult) {
+    return false;
+  }
+  if (diagnosisResult.recommended_fix) {
+    return true;
+  }
+  const rankedCandidates = diagnosisResult.ranked_candidates ?? [];
+  return rankedCandidates.some((candidate) => Boolean(candidate?.recommended_fix));
+}
+
+function getEventDataEventId(event: { data?: Record<string, unknown> }): string | undefined {
+  const data = event.data;
+  if (!isRecord(data)) {
+    return undefined;
+  }
+  const rawValue = data.event_id;
+  if (rawValue === undefined || rawValue === null) {
+    return undefined;
+  }
+  const value = String(rawValue).trim();
+  return value.length > 0 ? value : undefined;
+}
+
+function mergeSessionEvents(current: SessionEvent[], incoming: SessionEvent[]): SessionEvent[] {
+  if (!incoming.length) {
+    return current;
+  }
+  const seen = new Set<string>();
+  const identity = (event: SessionEvent) => {
+    const eventId = getEventDataEventId(event);
+    if (eventId) {
+      return `id:${eventId}`;
+    }
+    return `${event.type}:${event.timestamp}:${JSON.stringify(event.data ?? {})}`;
+  };
+  const merged: SessionEvent[] = [];
+  [...current, ...incoming].forEach((event) => {
+    const key = identity(event);
+    if (seen.has(key)) {
+      return;
+    }
+    seen.add(key);
+    merged.push(event);
+  });
+  return merged;
+}
+
+function getLastEventId(events: SessionEvent[]): string | undefined {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const eventId = getEventDataEventId(events[index]);
+    if (eventId) {
+      return eventId;
+    }
+  }
+  return undefined;
+}
+
+function shouldTriggerSessionBackfill(event: WSEvent): boolean {
+  if (event.type === "diagnosis_result" || event.type === "approval_required" || event.type === "plan_revised") {
+    return true;
+  }
+  if (event.type !== "remediation_progress") {
+    return false;
+  }
+  const data = isRecord(event.data) ? event.data : {};
+  const stage = String(data.stage ?? "").trim().toLowerCase();
+  return [
+    "execution_started",
+    "execution_succeeded",
+    "execution_failed",
+    "execution_timeout",
+    "escalation_required",
+    "observation_result",
+  ].includes(stage);
+}
+
+async function runSessionBackfill(sessionId: string): Promise<void> {
+  if (sessionBackfillInFlight.has(sessionId)) {
+    return;
+  }
+  sessionBackfillInFlight.add(sessionId);
+  try {
+    const snapshot = useDiagnosisStore.getState();
+    const activeSessionId = snapshot.activeSessionId ?? snapshot.session?.session_id;
+    if (!activeSessionId || activeSessionId !== sessionId) {
+      return;
+    }
+    const after = getLastEventId(snapshot.events);
+    const [session, incomingEvents] = await Promise.all([
+      apiClient.getDiagnosisSession(sessionId).catch(() => null),
+      apiClient.getSessionEvents(sessionId, 200, after).catch(() => [] as SessionEvent[]),
+    ]);
+    const mergedEvents = mergeSessionEvents(snapshot.events, Array.isArray(incomingEvents) ? incomingEvents : []);
+    const nextSession = session ?? snapshot.session;
+    const approvalState = deriveApprovalState(nextSession ?? undefined, mergedEvents);
+    const traceStatus: TraceStatus = nextSession?.trace?.steps?.length ? "ready" : "empty";
+    useDiagnosisStore.setState((state) => ({
+      session: nextSession ?? undefined,
+      events: mergedEvents,
+      traceStatus,
+      messages: mergeEventMessages(state.messages, mergedEvents, sessionId),
+      ...approvalState,
+    }));
+  } finally {
+    sessionBackfillInFlight.delete(sessionId);
+  }
+}
+
+function scheduleSessionBackfill(sessionId: string): void {
+  const now = Date.now();
+  const lastRunAt = sessionBackfillLastRunAt.get(sessionId) ?? 0;
+  if (now - lastRunAt < SESSION_BACKFILL_THROTTLE_MS) {
+    return;
+  }
+  sessionBackfillLastRunAt.set(sessionId, now);
+  void runSessionBackfill(sessionId);
+}
+
 function deriveApprovalState(
   session: DiagnosisSession | undefined,
   events: SessionEvent[],
@@ -241,7 +388,7 @@ function deriveApprovalState(
   | "hasPlan"
   | "planMissingReason"
 > {
-  const plan = session?.diagnosis_result?.recommended_fix;
+  const plan = extractRecommendedPlan(session);
   const hasPlan = Boolean(plan && plan.steps);
   const currentPlanVersion = parsePlanVersionFromPlanId(plan?.plan_id) ?? 1;
   let latestPlanVersion = currentPlanVersion;
@@ -288,7 +435,7 @@ function deriveApprovalState(
 }
 
 function getPlanStepCount(session: DiagnosisSession | undefined): number {
-  return session?.diagnosis_result?.recommended_fix?.steps?.length ?? 0;
+  return extractRecommendedPlan(session)?.steps?.length ?? 0;
 }
 
 export const useDiagnosisStore = create<DiagnosisState>((set, get) => ({
@@ -608,13 +755,14 @@ export const useDiagnosisStore = create<DiagnosisState>((set, get) => ({
     }));
   },
   setConnectionState: (connectionState) => set({ connectionState }),
-  applyEvent: (event) =>
+  applyEvent: (event) => {
+    const currentState = get();
+    const activeSessionId = currentState.activeSessionId ?? currentState.session?.session_id;
+    const targetSessionId = activeSessionId ?? event.session_id;
+    if (activeSessionId && event.session_id !== activeSessionId) {
+      return;
+    }
     set((state) => {
-      const activeSessionId = state.activeSessionId ?? state.session?.session_id;
-      if (activeSessionId && event.session_id !== activeSessionId) {
-        return state;
-      }
-
       const currentTrace = state.session?.trace?.steps ?? [];
       const nextEntries = [
         toThinkingStep(event, currentTrace.length + 1),
@@ -624,9 +772,15 @@ export const useDiagnosisStore = create<DiagnosisState>((set, get) => ({
       let nextSession = appendTraceEntries(state.session, nextEntries);
 
       if (event.type === "diagnosis_result" && nextSession) {
+        const diagnosisResult = event.data as DiagnosisSession["diagnosis_result"];
         nextSession = {
           ...nextSession,
-          diagnosis_result: event.data as DiagnosisSession["diagnosis_result"],
+          diagnosis_result: diagnosisResult,
+          status: diagnosisResultHasRecommendedPlan(diagnosisResult)
+            ? "approval_required"
+            : nextSession.status === "diagnosing"
+              ? "diagnosed"
+              : nextSession.status,
         };
       }
       if (event.type === "approval_required" && nextSession) {
@@ -691,10 +845,9 @@ export const useDiagnosisStore = create<DiagnosisState>((set, get) => ({
         }
       }
 
-      const nextEvents = [...state.events, event];
+      const nextEvents = mergeSessionEvents(state.events, [event as SessionEvent]);
       const approvalState = deriveApprovalState(nextSession, nextEvents);
-
-      const nextMessages = mergeEventMessages(state.messages, [event], activeSessionId);
+      const nextMessages = mergeEventMessages(state.messages, [event], targetSessionId);
 
       return {
         session: nextSession,
@@ -708,5 +861,9 @@ export const useDiagnosisStore = create<DiagnosisState>((set, get) => ({
             ? "ready"
             : state.traceStatus,
       };
-    }),
+    });
+    if (targetSessionId && shouldTriggerSessionBackfill(event)) {
+      scheduleSessionBackfill(targetSessionId);
+    }
+  },
 }));

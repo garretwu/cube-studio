@@ -184,7 +184,7 @@ function AlertsModifiedPage() {
     setDiagnosisError(null);
     setDiagnosingResultId(resultId);
     try {
-      const session = await apiClient.diagnoseAlert(selected);
+      const session = await apiClient.startDiagnoseAlert(selected);
       setActiveSession(session);
       navigate(`/diagnosis/${session.session_id}`);
     } catch (error) {

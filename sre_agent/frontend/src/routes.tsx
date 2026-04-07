@@ -1,7 +1,6 @@
-import React from "react";
+﻿import React from "react";
 
 import type { AppIconName } from "./components/ui";
-import AlertsPage from "./pages/Alerts";
 import AlertsModifiedPage from "./pages/AlertsModified";
 import DesignTokensPage from "./pages/DesignTokens";
 import DiagnosisPage from "./pages/Diagnosis";
@@ -29,17 +28,9 @@ export const appRoutes: AppRoute[] = [
     element: <TopologyPage />,
   },
   {
-    key: "alerts",
-    path: "/alerts",
-    label: "告警",
-    section: "operations",
-    icon: "alerts",
-    element: <AlertsPage />,
-  },
-  {
     key: "alertsModified",
     path: "/alerts-modified",
-    label: "告警（修改）",
+    label: "告警",
     section: "operations",
     icon: "alerts",
     element: <AlertsModifiedPage />,

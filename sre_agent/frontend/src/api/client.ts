@@ -9,8 +9,12 @@ import type {
   ConfigBaseline,
   DiagnosisSession,
   DiagnosisSessionSummary,
+  KnowledgeDataset,
   IncidentRecord,
   KnowledgeDocument,
+  KnowledgeDocumentDetail,
+  KnowledgeSearchHit,
+  KnowledgeSegment,
   LearnedPattern,
   LoopResult,
   OntologyEdge,
@@ -452,6 +456,24 @@ export const apiClient = {
     }
   },
 
+  startDiagnoseAlert: async (alert: Alert) => {
+    if (isBlockedAlert(alert)) {
+      throw new Error(`Alert '${alert.alert_name}' is temporarily filtered and cannot be processed.`);
+    }
+    const response = await api.post<SREApiEnvelope<DiagnosisSession> | DiagnosisSession>("/api/diagnose/start", alert, {
+      validateStatus: () => true,
+    });
+    if (response.status === 404) {
+      return apiClient.diagnoseAlert(alert);
+    }
+    if (response.status >= 400) {
+      throw new Error(`Request failed with status ${response.status}.`);
+    }
+    const session = unwrapPayload(response.data);
+    rememberSessionId(session.session_id);
+    return session;
+  },
+
   getSessions: async (limit = 50) => {
     const response = await api.get<SREApiEnvelope<SessionSummary[]> | SessionSummary[]>("/api/sessions", { params: { limit } });
     return unwrapPayload(response.data);
@@ -526,9 +548,9 @@ export const apiClient = {
     return unwrapPayload(response.data);
   },
 
-  getSessionEvents: async (sessionId: string, limit = 200) => {
+  getSessionEvents: async (sessionId: string, limit = 200, after?: string) => {
     const response = await api.get<SREApiEnvelope<SessionEvent[]> | SessionEvent[]>(`/api/sessions/${sessionId}/events`, {
-      params: { limit },
+      params: { limit, after },
     });
     return unwrapPayload(response.data);
   },
@@ -720,14 +742,55 @@ export const apiClient = {
       "searchKnowledge",
     ),
 
-  getKnowledgeSources: async () =>
+  getKnowledgeDatasets: async (keyword?: string, page = 1, limit = 50) =>
     withDevFallback(
       async () => {
-        const response = await api.get<SREApiEnvelope<KnowledgeDocument[]> | { documents: KnowledgeDocument[] }>("/api/knowledge/documents");
+        const response = await api.get<SREApiEnvelope<KnowledgeDataset[]> | KnowledgeDataset[]>("/api/knowledge/datasets", {
+          params: { keyword, page, limit },
+        });
+        return unwrapPayload(response.data);
+      },
+      async () => {
+        const single = await apiClient.getKnowledgeDataset();
+        return single ? [single] : [];
+      },
+      "getKnowledgeDatasets",
+    ),
+
+  getKnowledgeDataset: async (datasetId?: string) =>
+    withDevFallback(
+      async () => {
+        const response = await api.get<SREApiEnvelope<KnowledgeDataset> | KnowledgeDataset>("/api/knowledge/dataset", {
+          params: datasetId ? { dataset_id: datasetId } : undefined,
+        });
+        return unwrapPayload(response.data);
+      },
+      async () => ({
+        id: "dataset-local",
+        name: "Local Knowledge Base",
+        description: "Fallback dataset for local development",
+        document_count: 0,
+        word_count: 0,
+        status: "ready",
+      }),
+      "getKnowledgeDataset",
+    ),
+
+  getKnowledgeSources: async (keyword?: string, page = 1, limit = 50, datasetId?: string) =>
+    withDevFallback(
+      async () => {
+        const response = await api.get<
+          SREApiEnvelope<KnowledgeDocument[]> | { documents: KnowledgeDocument[] } | KnowledgeDocument[]
+        >("/api/knowledge/documents", {
+          params: { keyword, page, limit, dataset_id: datasetId },
+        });
         if (isEnvelope<KnowledgeDocument[]>(response.data)) {
           return unwrapPayload(response.data);
         }
-        return response.data.documents;
+        if (Array.isArray(response.data)) {
+          return response.data;
+        }
+        return response.data.documents ?? [];
       },
       async () => {
         const { getKnowledgeSourcesFallback } = await import("./devFallback");
@@ -735,6 +798,42 @@ export const apiClient = {
       },
       "getKnowledgeSources",
     ),
+
+  getKnowledgeDocumentDetail: async (documentId: string, datasetId?: string) => {
+    const response = await api.get<SREApiEnvelope<KnowledgeDocumentDetail> | KnowledgeDocumentDetail>(
+      `/api/knowledge/documents/${encodeURIComponent(documentId)}`,
+      {
+        params: datasetId ? { dataset_id: datasetId } : undefined,
+      },
+    );
+    return unwrapPayload(response.data);
+  },
+
+  getKnowledgeDocumentSegments: async (
+    documentId: string,
+    options: { keyword?: string; status?: string; page?: number; limit?: number; datasetId?: string } = {},
+  ) => {
+    const response = await api.get<SREApiEnvelope<KnowledgeSegment[]> | KnowledgeSegment[]>(
+      `/api/knowledge/documents/${encodeURIComponent(documentId)}/segments`,
+      {
+        params: {
+          keyword: options.keyword,
+          status: options.status,
+          page: options.page ?? 1,
+          limit: options.limit ?? 50,
+          dataset_id: options.datasetId,
+        },
+      },
+    );
+    return unwrapPayload(response.data);
+  },
+
+  searchKnowledgeSegments: async (query: string, topK = 5, datasetId?: string) => {
+    const response = await api.get<SREApiEnvelope<KnowledgeSearchHit[]> | KnowledgeSearchHit[]>("/api/knowledge/segments/search", {
+      params: { query, top_k: topK, dataset_id: datasetId },
+    });
+    return unwrapPayload(response.data);
+  },
 
   getMemoryIncidents: async (last = 10) => {
     const response = await api.get<SREApiEnvelope<IncidentRecord[]> | IncidentRecord[]>("/api/memory/incidents", { params: { last } });

@@ -3,6 +3,7 @@ import type {
   AlertCluster,
   ChatMessage,
   ConfigBaseline,
+  KnowledgeDataset,
   DiagnosisSession,
   DiagnosisSessionSummary,
   IncidentRecord,
@@ -422,6 +423,23 @@ export const knowledgeDocuments: KnowledgeDocument[] = [
     excerpt: "终止 gpu-burn，核对 DCGM 进程列表，再通过 10% 金丝雀窗口逐步恢复流量。",
     tags: ["gpu", "runbook", "latency"],
     score: 0.83,
+  },
+];
+
+export const knowledgeDatasets: KnowledgeDataset[] = [
+  {
+    id: "dataset-runbook",
+    name: "Runbook Dataset",
+    description: "Default remediation and troubleshooting runbooks",
+    document_count: 2,
+    status: "ready",
+  },
+  {
+    id: "dataset-network",
+    name: "Network Dataset",
+    description: "RoCE and data-center network operations",
+    document_count: 1,
+    status: "ready",
   },
 ];
 

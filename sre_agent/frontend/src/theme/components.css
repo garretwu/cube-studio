@@ -3600,6 +3600,48 @@
   min-height: 420px;
 }
 
+.diagnosis-session-card-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.diagnosis-session-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 14px;
+  border-radius: 12px;
+  border: 1px solid rgba(15, 23, 42, 0.12);
+  background: rgba(15, 23, 42, 0.02);
+}
+
+.diagnosis-session-card__summary-list {
+  margin: 0;
+  padding-left: 18px;
+  display: grid;
+  gap: 4px;
+}
+
+.diagnosis-session-card__summary-item {
+  color: rgba(15, 23, 42, 0.82);
+  font-size: 13px;
+  line-height: 1.45;
+  word-break: break-word;
+}
+
+.diagnosis-session-card__json {
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px dashed rgba(15, 23, 42, 0.2);
+  background: rgba(15, 23, 42, 0.04);
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
 .diagnosis-bubble__stack {
   display: flex;
   flex-direction: column;

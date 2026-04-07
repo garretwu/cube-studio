@@ -39,6 +39,10 @@ DEFAULT_KUBECONFIG_PATH = str((REPO_ROOT / "sre_agent" / "conf" / "kube.conf").r
 DEFAULT_LOCAL_LLM_BASE_URL = "http://10.11.4.13:18080/v1"
 DEFAULT_LOCAL_LLM_MODEL = "MiniMax-M2.5-IQ4_XS-00001-of-00004.gguf"
 LOCAL_LLM_PLACEHOLDER_KEY = "local-llama-placeholder"
+BACKEND_READINESS_PATH = "/openapi.json"
+BACKEND_READINESS_TIMEOUT_SECONDS = 180.0
+BACKEND_READINESS_INTERVAL_SECONDS = 1.0
+BACKEND_READINESS_PROBE_TIMEOUT_SECONDS = 2.0
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -343,6 +347,50 @@ def terminate_process(proc: subprocess.Popen[bytes] | None, name: str) -> None:
         proc.wait(timeout=5)
 
 
+def _probe_backend_ready(readiness_url: str, *, timeout_seconds: float = BACKEND_READINESS_PROBE_TIMEOUT_SECONDS) -> bool:
+    request = urllib.request.Request(url=readiness_url, method="GET")
+    try:
+        with urllib.request.urlopen(request, timeout=max(0.5, float(timeout_seconds))) as response:
+            status_code = int(getattr(response, "status", 200) or 200)
+            return status_code == 200
+    except urllib.error.HTTPError:
+        return False
+    except urllib.error.URLError:
+        return False
+    except TimeoutError:
+        return False
+    except OSError:
+        return False
+
+
+def wait_backend_ready(
+    *,
+    backend: subprocess.Popen[bytes],
+    readiness_url: str,
+    timeout_seconds: float = BACKEND_READINESS_TIMEOUT_SECONDS,
+    interval_seconds: float = BACKEND_READINESS_INTERVAL_SECONDS,
+    probe_timeout_seconds: float = BACKEND_READINESS_PROBE_TIMEOUT_SECONDS,
+) -> bool:
+    timeout = max(0.0, float(timeout_seconds))
+    interval = max(0.1, float(interval_seconds))
+    deadline = time.monotonic() + timeout
+    print(f"[wait] backend readiness probe url={readiness_url} timeout={timeout:.1f}s", flush=True)
+    while True:
+        backend_exit_code = backend.poll()
+        if backend_exit_code is not None:
+            print(f"[error] backend exited before ready code={backend_exit_code} url={readiness_url}", flush=True)
+            return False
+        if _probe_backend_ready(readiness_url, timeout_seconds=probe_timeout_seconds):
+            print(f"[ok] backend ready, starting frontend url={readiness_url}", flush=True)
+            return True
+        now = time.monotonic()
+        if now >= deadline:
+            waited = max(0.0, timeout)
+            print(f"[error] backend readiness timeout url={readiness_url} waited={waited:.1f}s", flush=True)
+            return False
+        time.sleep(interval)
+
+
 def main() -> int:
     backend_port = _next_free_port(args.backend_host, args.backend_port)
     frontend_port = _next_free_port("0.0.0.0", args.frontend_port)
@@ -367,8 +415,17 @@ def main() -> int:
 
     config_path = str(_resolve_config_path(args.config))
     backend = spawn_backend(config_path, args.backend_host, backend_port, env)
+    readiness_url = f"http://{args.backend_host}:{backend_port}{BACKEND_READINESS_PATH}"
     try:
+        if not wait_backend_ready(backend=backend, readiness_url=readiness_url):
+            terminate_process(backend, "backend")
+            exit_code = backend.poll()
+            return int(exit_code) if exit_code is not None else 1
         frontend = spawn_frontend(frontend_port, env)
+    except KeyboardInterrupt:
+        print("\n[stop] received Ctrl+C", flush=True)
+        terminate_process(backend, "backend")
+        return 0
     except Exception:  # noqa: BLE001
         terminate_process(backend, "backend")
         raise

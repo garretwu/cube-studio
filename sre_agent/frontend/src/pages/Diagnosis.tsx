@@ -5,11 +5,11 @@ import type { MenuProps } from "antd";
 import { isValidElement, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
 
-import type { RemediationPlan, WSEvent } from "../api/types";
+import type { DiagnosisSession, RemediationPlan, WSEvent } from "../api/types";
 import { buildBackendWsUrl } from "../api/ws";
 import { AppIcon, SectionHeader, StatusChip, SurfaceCard } from "../components/ui";
 import { useWebSocket } from "../hooks/useWebSocket";
-import { useDiagnosisStore } from "../store/diagnosisStore";
+import { extractRecommendedPlan, useDiagnosisStore } from "../store/diagnosisStore";
 import { formatTimestamp } from "../utils/format";
 
 type BubbleRoleType = NonNullable<BubbleListProps["role"]>;
@@ -127,6 +127,35 @@ type DisplayMessage = {
   createdAt: string;
   toolName?: string;
 };
+
+type SessionLoopCard = {
+  kind: "loop";
+  id: string;
+  timestamp: string;
+  toolName: string;
+  toolParams: Record<string, unknown>;
+  resultSummary: string;
+  resultPayload: Record<string, unknown>;
+  conclusion?: string;
+};
+
+type SessionConclusionCard = {
+  kind: "diagnosis_result";
+  id: string;
+  timestamp: string;
+  rootCause: string;
+  confidence: number;
+  impactSummary: string;
+};
+
+type SessionPlanCard = {
+  kind: "plan";
+  id: string;
+  timestamp: string;
+  plan: RemediationPlan;
+};
+
+type SessionCard = SessionLoopCard | SessionConclusionCard | SessionPlanCard;
 
 const DEMO_STEP_LABELS = [
   { id: "1", title: "确认影响范围" },
@@ -265,6 +294,223 @@ function renderPlanDetails(plan: RemediationPlan) {
     </div>
   );
 }
+
+function toJsonText(payload: unknown): string {
+  try {
+    return JSON.stringify(payload ?? {}, null, 2);
+  } catch {
+    return String(payload ?? "");
+  }
+}
+
+function truncateText(value: string, maxLength = 180): string {
+  if (value.length <= maxLength) {
+    return value;
+  }
+  return `${value.slice(0, maxLength - 3)}...`;
+}
+
+function toCompactValue(value: unknown): string {
+  if (value === null || value === undefined) {
+    return "null";
+  }
+  if (typeof value === "string") {
+    const normalized = value.replace(/\s+/g, " ").trim();
+    return truncateText(normalized || "(empty)");
+  }
+  if (typeof value === "number" || typeof value === "boolean") {
+    return String(value);
+  }
+  if (Array.isArray(value)) {
+    if (!value.length) {
+      return "[]";
+    }
+    const preview = value.slice(0, 2).map((item) => toCompactValue(item)).join(", ");
+    return truncateText(`[${value.length}] ${preview}${value.length > 2 ? ", ..." : ""}`);
+  }
+  if (typeof value === "object") {
+    const keys = Object.keys(value as Record<string, unknown>);
+    return keys.length ? `{${keys.slice(0, 4).join(", ")}${keys.length > 4 ? ", ..." : ""}}` : "{}";
+  }
+  return truncateText(String(value));
+}
+
+function summarizePayload(payload: Record<string, unknown>, maxItems = 5): Array<{ key: string; value: string }> {
+  return Object.entries(payload)
+    .slice(0, maxItems)
+    .map(([key, value]) => ({ key, value: toCompactValue(value) }));
+}
+
+function summarizeResultPayload(result: Record<string, unknown>): string {
+  const keys = Object.keys(result);
+  if (keys.length === 0) {
+    return "工具已执行，未返回结构化字段。";
+  }
+  const preview = keys.slice(0, 4).join("、");
+  return `返回字段：${preview}${keys.length > 4 ? "..." : ""}`;
+}
+
+function buildSessionCards(session: DiagnosisSession | undefined, plan: RemediationPlan | null): SessionCard[] {
+  const cards: SessionCard[] = [];
+  if (!session) {
+    return cards;
+  }
+  const trace = session.trace?.steps ?? [];
+  const fallbackTimestamp = trace.length > 0
+    ? (trace[trace.length - 1]?.timestamp ?? new Date().toISOString())
+    : new Date().toISOString();
+  let pendingLoop: { toolName: string; toolParams: Record<string, unknown>; bufferedConclusion?: string } | null = null;
+  let delayedConclusion: string | undefined;
+
+  trace.forEach((entry, index) => {
+    if ("thought" in entry) {
+      if (entry.action_type === "tool_call") {
+        pendingLoop = {
+          toolName: entry.tool_name ?? "tool_call",
+          toolParams: entry.tool_params ?? {},
+        };
+        return;
+      }
+      if (entry.action_type === "conclude") {
+        const conclusion = entry.thought?.trim();
+        if (!conclusion) {
+          return;
+        }
+        for (let cardIndex = cards.length - 1; cardIndex >= 0; cardIndex -= 1) {
+          const candidate = cards[cardIndex];
+          if (candidate.kind === "loop" && !candidate.conclusion) {
+            candidate.conclusion = conclusion;
+            return;
+          }
+        }
+        if (pendingLoop) {
+          pendingLoop.bufferedConclusion = conclusion;
+        } else {
+          delayedConclusion = conclusion;
+        }
+      }
+      return;
+    }
+
+    const loopCard: SessionLoopCard = {
+      kind: "loop",
+      id: `loop-${index}-${entry.timestamp ?? "now"}`,
+      timestamp: entry.timestamp ?? new Date().toISOString(),
+      toolName: pendingLoop?.toolName ?? entry.tool ?? "tool_result",
+      toolParams: pendingLoop?.toolParams ?? entry.params ?? {},
+      resultSummary: summarizeResultPayload(entry.result ?? {}),
+      resultPayload: entry.result ?? {},
+      conclusion: pendingLoop?.bufferedConclusion ?? delayedConclusion,
+    };
+    cards.push(loopCard);
+    pendingLoop = null;
+    delayedConclusion = undefined;
+  });
+
+  if (session.diagnosis_result) {
+    cards.push({
+      kind: "diagnosis_result",
+      id: `diagnosis-result-${session.session_id}`,
+      timestamp: fallbackTimestamp,
+      rootCause: session.diagnosis_result.root_cause,
+      confidence: session.diagnosis_result.confidence,
+      impactSummary: session.diagnosis_result.impact_summary,
+    });
+  }
+  if (plan) {
+    cards.push({
+      kind: "plan",
+      id: `plan-${plan.plan_id}`,
+      timestamp: fallbackTimestamp,
+      plan,
+    });
+  }
+  return cards;
+}
+
+function renderSessionCard(card: SessionCard) {
+  if (card.kind === "loop") {
+    const paramSummary = summarizePayload(card.toolParams);
+    const resultSummary = summarizePayload(card.resultPayload);
+    return (
+      <div key={card.id} className="diagnosis-session-card">
+        <div className="status-row">
+          <StatusChip tone="accent">循环卡片</StatusChip>
+          <StatusChip tone="neutral">{card.toolName}</StatusChip>
+          <StatusChip tone="neutral">{formatTimestamp(card.timestamp)}</StatusChip>
+        </div>
+        <p className="diagnosis-chat-state-card__copy">{card.resultSummary}</p>
+        <p className="diagnosis-chat-state-card__copy">工具参数摘要</p>
+        {paramSummary.length ? (
+          <ul className="diagnosis-session-card__summary-list">
+            {paramSummary.map((item) => (
+              <li key={`${card.id}-param-${item.key}`} className="diagnosis-session-card__summary-item">
+                <strong>{item.key}</strong>：{item.value}
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p className="diagnosis-chat-state-card__copy">无参数</p>
+        )}
+        <p className="diagnosis-chat-state-card__copy">工具结果摘要</p>
+        {resultSummary.length ? (
+          <ul className="diagnosis-session-card__summary-list">
+            {resultSummary.map((item) => (
+              <li key={`${card.id}-result-${item.key}`} className="diagnosis-session-card__summary-item">
+                <strong>{item.key}</strong>：{item.value}
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p className="diagnosis-chat-state-card__copy">无结构化结果</p>
+        )}
+        <Collapse
+          bordered={false}
+          ghost
+          size="small"
+          items={[
+            {
+              key: "params",
+              label: "查看完整工具参数 JSON",
+              children: <pre className="diagnosis-session-card__json">{toJsonText(card.toolParams)}</pre>,
+            },
+            {
+              key: "result",
+              label: "查看完整工具结果 JSON",
+              children: <pre className="diagnosis-session-card__json">{toJsonText(card.resultPayload)}</pre>,
+            },
+          ]}
+        />
+        {card.conclusion ? <p className="diagnosis-chat-state-card__copy">该轮结论：{card.conclusion}</p> : null}
+      </div>
+    );
+  }
+  if (card.kind === "diagnosis_result") {
+    return (
+      <div key={card.id} className="diagnosis-session-card">
+        <div className="status-row">
+          <StatusChip tone="success">诊断结论</StatusChip>
+          <StatusChip tone="neutral">{formatTimestamp(card.timestamp)}</StatusChip>
+        </div>
+        <p className="diagnosis-chat-state-card__copy">根因：{card.rootCause}</p>
+        <p className="diagnosis-chat-state-card__copy">置信度：{Math.round(card.confidence * 100)}%</p>
+        <p className="diagnosis-chat-state-card__copy">影响：{card.impactSummary}</p>
+      </div>
+    );
+  }
+  return (
+    <div key={card.id} className="diagnosis-session-card">
+      <div className="status-row">
+        <StatusChip tone="warning">修复计划</StatusChip>
+        <StatusChip tone="neutral">{card.plan.plan_id}</StatusChip>
+      </div>
+      <p className="diagnosis-chat-state-card__copy">根因：{card.plan.root_cause}</p>
+      <p className="diagnosis-chat-state-card__copy">说明：{card.plan.description}</p>
+      <p className="diagnosis-chat-state-card__copy">步骤数：{card.plan.steps.length}</p>
+    </div>
+  );
+}
+
 function getRootCauseLayerLabel(layer: RankedCandidateItem["rootCauseLayer"]) {
   switch (layer) {
     case "hardware":
@@ -711,6 +957,7 @@ function DiagnosisPage() {
     session,
     activeSessionId,
     messages,
+    events,
     isLoadingSession,
     bootstrapStatus,
     traceStatus,
@@ -1204,42 +1451,21 @@ const runStepFiveRootCauseCandidates = useCallback(() => {
 
     setDemoActiveStep((prev) => Math.min(prev + 1, DEMO_STEP_LABELS.length));
   }, [isExecutingDemoStep]);
+  const effectivePlan = useMemo(() => extractRecommendedPlan(session), [session]);
+  const sessionCards = useMemo(() => buildSessionCards(session, effectivePlan), [session, effectivePlan]);
+  const lastUpdatedAt = useMemo(() => {
+    const lastEventAt = events.length > 0 ? events[events.length - 1]?.timestamp : undefined;
+    if (lastEventAt) {
+      return lastEventAt;
+    }
+    const traceSteps = session?.trace?.steps ?? [];
+    if (traceSteps.length > 0) {
+      return traceSteps[traceSteps.length - 1]?.timestamp ?? undefined;
+    }
+    return undefined;
+  }, [events, session?.trace?.steps]);
   const timelineMessages = useMemo<DisplayMessage[]>(
     () => {
-      const traceMessages: DisplayMessage[] = (session?.trace?.steps ?? []).map((entry, index) => {
-        const fallbackTs = new Date().toISOString();
-        if ("thought" in entry) {
-          const step = entry.step ?? index + 1;
-          const thought = entry.thought?.trim() || `Step ${step} reasoning`;
-          const toolName = entry.tool_name ?? undefined;
-          const params = entry.tool_params && Object.keys(entry.tool_params).length ? `\n参数: ${JSON.stringify(entry.tool_params)}` : "";
-          return {
-            id: `trace-thinking-${step}-${entry.timestamp}`,
-            role: "assistant",
-            content: `[思考 ${step}] ${thought}${toolName ? `\n工具: ${toolName}` : ""}${params}`,
-            createdAt: entry.timestamp || fallbackTs,
-            toolName,
-          };
-        }
-
-        const toolName = entry.tool || "tool_result";
-        const resultSummary = typeof entry.result === "object" && entry.result !== null ? Object.keys(entry.result).slice(0, 3).join(", ") : "";
-        return {
-          id: `trace-tool-${index + 1}-${entry.timestamp}`,
-          role: "tool",
-          content: {
-            kind: "tool_event",
-            toolName,
-            status: "success",
-            stepLabel: `Step ${index + 1}`,
-            toolParams: entry.params,
-            summaryLines: [resultSummary ? `返回字段: ${resultSummary}` : "工具执行完成。"],
-          },
-          createdAt: entry.timestamp || fallbackTs,
-          toolName,
-        };
-      });
-
       const chatMessages: DisplayMessage[] = messages.map((message) => ({
         id: message.id,
         role: message.role,
@@ -1255,9 +1481,9 @@ const runStepFiveRootCauseCandidates = useCallback(() => {
         toolName: message.tool_name,
       }));
 
-      return [...traceMessages, ...chatMessages, ...demoMessages];
+      return [...chatMessages, ...demoMessages];
     },
-    [session?.trace?.steps, messages, demoMessages],
+    [messages, demoMessages],
   );
 
   const bubbleItems = useMemo<BubbleItemType[]>(
@@ -1450,11 +1676,13 @@ const runStepFiveRootCauseCandidates = useCallback(() => {
           <SectionHeader
             eyebrow="诊断"
             title="诊断对话"
-            description="保留诊断交互与 WebSocket 事件消费，使用简洁对话框作为当前实现基线。"
+            description="会话先创建后流式推送，诊断过程按循环卡片分段展示。"
           />
           <div className="status-row">
             <StatusChip tone={connectionState === "open" ? "success" : "info"}>WebSocket {connectionState}</StatusChip>
             {activeSessionId ? <StatusChip tone="neutral">会话 {activeSessionId}</StatusChip> : null}
+            <StatusChip tone="accent">状态 {session?.status ?? "unknown"}</StatusChip>
+            {lastUpdatedAt ? <StatusChip tone="neutral">更新 {formatTimestamp(lastUpdatedAt)}</StatusChip> : null}
             {activeSessionId ? (
               <StatusChip tone={chatContextApplied ? "success" : "info"}>
                 上下文 {chatContextApplied ? "已加载" : "待加载"}
@@ -1500,14 +1728,20 @@ const runStepFiveRootCauseCandidates = useCallback(() => {
               </div>
             ) : null}
 
-            {bootstrapStatus === "ready" && !isLoadingSession && !bubbleItems.length ? (
+            {bootstrapStatus === "ready" && !isLoadingSession && !bubbleItems.length && !sessionCards.length ? (
               <div className="diagnosis-chat-state-card">
                 <p className="diagnosis-chat-state-card__title">暂无消息</p>
                 <p className="diagnosis-chat-state-card__copy">当前会话还没有可展示的对话内容。</p>
               </div>
             ) : null}
 
-              <Bubble.List autoScroll className="diagnosis-bubble-list" items={bubbleItems} role={bubbleRoles} />
+            {sessionCards.length > 0 ? (
+              <div className="diagnosis-session-card-list">
+                {sessionCards.map((card) => renderSessionCard(card))}
+              </div>
+            ) : null}
+
+            <Bubble.List autoScroll className="diagnosis-bubble-list" items={bubbleItems} role={bubbleRoles} />
 
             <div className="diagnosis-chat-state-card">
               <p className="diagnosis-chat-state-card__title">修复审批</p>
@@ -1517,8 +1751,8 @@ const runStepFiveRootCauseCandidates = useCallback(() => {
                 {latestPlanVersion ?? "-"}，已审批版本：v{approvedPlanVersion ?? "-"}。
               </p>
               {approvalBlockReason ? <p className="diagnosis-chat-state-card__copy">{approvalBlockReason}</p> : null}
-              {hasPlan && session?.diagnosis_result?.recommended_fix
-                ? renderPlanDetails(session.diagnosis_result.recommended_fix)
+              {hasPlan && effectivePlan
+                ? renderPlanDetails(effectivePlan)
                 : <p className="diagnosis-chat-state-card__copy">{planMissingReason}</p>}
               <textarea
                 className="diagnosis-plan-instruction"
