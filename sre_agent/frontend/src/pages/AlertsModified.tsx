@@ -302,7 +302,7 @@ function AlertsModifiedPage() {
                       <AppButton
                         iconRight="arrowRight"
                         onClick={() => {
-                          if (result.route.label === "将创建 Session") {
+                          if (result.route.label === "将创建诊断") {
                             void startDiagnosisFromResult(result.id, result.primaryFingerprint);
                             return;
                           }
@@ -372,4 +372,5 @@ function AlertsModifiedPage() {
 }
 
 export default AlertsModifiedPage;
+
 
