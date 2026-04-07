@@ -1674,7 +1674,6 @@ const runStepFiveRootCauseCandidates = useCallback(() => {
       <div className="diagnosis-chat-page__content">
         <div className="page-intro diagnosis-chat-page__intro">
           <SectionHeader
-            eyebrow="诊断"
             title="诊断对话"
             description="会话先创建后流式推送，诊断过程按循环卡片分段展示。"
           />

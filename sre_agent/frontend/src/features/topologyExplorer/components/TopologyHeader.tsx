@@ -9,7 +9,6 @@ function TopologyHeader({ lastUpdated }: TopologyHeaderProps) {
   return (
     <div className="page-intro topology-modified-header">
       <SectionHeader
-        eyebrow="运行拓扑"
         title="运行拓扑"
         description="在关系图中查看资源、依赖、链路与影响范围，快速理解对象关系和影响半径。"
         actions={

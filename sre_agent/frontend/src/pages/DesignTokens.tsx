@@ -239,7 +239,6 @@ function DesignTokensPage() {
               <StatusChip tone="neutral">{`Updated ${formatUpdatedAt(updatedAt)}`}</StatusChip>
             </div>
           }
-          eyebrow="Runtime Design System"
           title="Global Token Explorer"
           description="This page reads live CSS custom properties at runtime, so foundation, semantic, component, and icon updates stay in sync with the actual app."
         />
@@ -309,7 +308,6 @@ function DesignTokensPage() {
         <SurfaceCard className="token-empty" variant="soft">
           <SectionHeader
             align="center"
-            eyebrow="No Tokens"
             title="Nothing matched this token query"
             description="Try a broader search term or clear the filter to inspect the entire layered token surface."
           />
@@ -361,7 +359,6 @@ function DesignTokensPage() {
         ) : (
           <SectionHeader
             align="center"
-            eyebrow="No Icons"
             title="Nothing matched this icon query"
             description="Search by canonical name, legacy alias, or icon keyword to validate coverage."
           />

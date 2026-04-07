@@ -43,43 +43,9 @@ function formatAlertStatus(status: AlertStatus) {
   }
 }
 
-function websocketTone(state: "connecting" | "open" | "closed" | "error") {
-  switch (state) {
-    case "open":
-      return "success";
-    case "connecting":
-      return "warning";
-    case "error":
-      return "danger";
-    default:
-      return "neutral";
-  }
-}
-
-function websocketLabel(state: "connecting" | "open" | "closed" | "error") {
-  switch (state) {
-    case "open":
-      return "WS 已连接";
-    case "connecting":
-      return "WS 连接中";
-    case "error":
-      return "WS 异常";
-    default:
-      return "WS 未连接";
-  }
-}
-
 function AlertsModifiedPage() {
   const navigate = useNavigate();
-  const {
-    alerts,
-    clusters,
-    fetchAlerts,
-    isLoading,
-    wsState,
-    lastSnapshotSyncAt,
-    realtimeEnabled,
-  } = useAlertStore();
+  const { alerts, clusters, fetchAlerts, isLoading } = useAlertStore();
   const [query, setQuery] = useState("");
   const [severityFilter, setSeverityFilter] = useState<Severity | "all">("all");
   const [activeSession, setActiveSession] = useState<DiagnosisSession | undefined>();
@@ -150,12 +116,7 @@ function AlertsModifiedPage() {
       return flow[0].fingerprint;
     });
   }, [flow]);
-
-  const mergedCount = results.filter((result) => result.route.label === "并入已有 Session").length;
-  const createCount = results.filter((result) => result.route.label === "将创建 Session").length;
-  const observeCount = results.filter((result) => result.route.label === "观察中").length;
   const fingerprintCount = flow.length;
-  const foldedEventCount = results.reduce((total, result) => total + result.duplicateFoldedCount, 0);
 
   const startDiagnosisFromResult = async (resultId: string, fingerprint: string) => {
     const candidates = filteredAlerts.filter((item) => item.fingerprint === fingerprint);
@@ -198,18 +159,8 @@ function AlertsModifiedPage() {
   return (
     <div className="page-grid alerts-convergence-page">
       <SectionHeader
-        actions={
-          <div className="status-row">
-            <StatusChip tone="accent">{`${results.length} 个结果`}</StatusChip>
-            <StatusChip tone="danger">{`${filteredAlerts.length} 条事件`}</StatusChip>
-            <StatusChip tone="neutral">{`${fingerprintCount} 个 fingerprint`}</StatusChip>
-            <StatusChip tone="neutral">
-              {activeSession ? `当前 Session ${activeSession.session_id}` : "暂无已绑定 Session"}
-            </StatusChip>
-          </div>
-        }
-        eyebrow="告警（修改）"
-        title="收敛结果看板"
+        description="聚合原始告警并收敛到统一处理入口，帮助值班快速完成分诊与诊断发起。"
+        title="告警收敛"
       />
 
       <SurfaceCard bodyClassName="alerts-convergence-toolbar-card__body" className="alerts-convergence-toolbar-card">
@@ -232,17 +183,6 @@ function AlertsModifiedPage() {
             value={query}
           />
           <StatusChip tone={isLoading ? "warning" : "success"}>{isLoading ? "同步中" : "已同步"}</StatusChip>
-        </div>
-
-        <div className="status-row alerts-convergence-toolbar__summary">
-          <StatusChip tone="accent">{`压缩 ${foldedEventCount} 条重复事件`}</StatusChip>
-          <StatusChip tone="accent">{`${mergedCount} 个并入已有 Session`}</StatusChip>
-          <StatusChip tone="danger">{`${createCount} 个将创建 Session`}</StatusChip>
-          <StatusChip tone="warning">{`${observeCount} 个观察中`}</StatusChip>
-          <StatusChip tone={realtimeEnabled ? websocketTone(wsState) : "neutral"}>
-            {realtimeEnabled ? websocketLabel(wsState) : "实时同步未启用"}
-          </StatusChip>
-          <StatusChip tone="neutral">{`快照 ${formatTimestamp(lastSnapshotSyncAt)}`}</StatusChip>
         </div>
         {diagnosisError ? (
           <div className="state-block">

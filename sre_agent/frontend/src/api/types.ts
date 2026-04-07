@@ -162,17 +162,6 @@ export type Hypothesis = {
   confidence: number;
 };
 
-export type RankedRootCause = {
-  rank: number;
-  root_cause: string;
-  root_cause_layer: string;
-  root_cause_entities?: string[];
-  confidence: number;
-  evidence_summary?: string;
-  distinguishing_verification?: string | null;
-  recommended_fix?: RemediationPlan | null;
-};
-
 export type DiagnosisResult = {
   root_cause: string;
   root_cause_layer: string;
@@ -184,7 +173,6 @@ export type DiagnosisResult = {
   triage_priority: "P0" | "P1" | "P2" | "P3";
   diagnosis_certainty: "confirmed" | "probable" | "ambiguous";
   recommended_fix?: RemediationPlan | null;
-  ranked_candidates?: RankedRootCause[];
 };
 
 export type DiagnosisBootstrapAlertItem = {
@@ -414,6 +402,62 @@ export type KnowledgeSegment = {
 
 export type KnowledgeSearchHit = KnowledgeSegment;
 
+export type KnowledgeBaseScope = "shared" | "private";
+export type KnowledgeBaseStatus = "enabled" | "disabled";
+export type KnowledgeIndexStatus = "ready" | "indexing" | "failed" | "pending";
+export type KnowledgeDocSourceType = "file" | "manual" | "link";
+
+export type KnowledgeDocumentPreviewSection = {
+  id: string;
+  heading: string;
+  body: string;
+};
+
+export type KnowledgeDocumentPreview = {
+  title: string;
+  description: string;
+  source_label: string;
+  source_uri?: string | null;
+  tags: string[];
+  updated_at: string;
+  sections: KnowledgeDocumentPreviewSection[];
+  warning?: string | null;
+};
+
+export type KnowledgeBaseDocument = {
+  id: string;
+  title: string;
+  source_type: KnowledgeDocSourceType;
+  source_label: string;
+  file_name: string;
+  size_bytes: number | null;
+  index_status: KnowledgeIndexStatus;
+  status: KnowledgeBaseStatus;
+  updated_at: string;
+  preview_summary: string;
+  tags: string[];
+  preview: KnowledgeDocumentPreview;
+};
+
+export type KnowledgeBaseSummary = {
+  id: string;
+  name: string;
+  code: string;
+  scope: KnowledgeBaseScope;
+  document_count: number;
+  storage_bytes: number;
+  index_status: KnowledgeIndexStatus;
+  status: KnowledgeBaseStatus;
+  updated_at: string;
+  description: string;
+};
+
+export type KnowledgeBaseDetail = KnowledgeBaseSummary & {
+  knowledge_base_id: string;
+  created_at: string;
+  indexed_at: string | null;
+  documents: KnowledgeBaseDocument[];
+};
 export type IncidentRecord = {
   incident_id: string;
   aidc_id: string;
@@ -497,3 +541,4 @@ export type WSEvent = {
   timestamp: string;
   data: Record<string, unknown>;
 };
+

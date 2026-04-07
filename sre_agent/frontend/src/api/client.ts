@@ -11,6 +11,8 @@ import type {
   DiagnosisSessionSummary,
   KnowledgeDataset,
   IncidentRecord,
+  KnowledgeBaseDetail,
+  KnowledgeBaseSummary,
   KnowledgeDocument,
   KnowledgeDocumentDetail,
   KnowledgeSearchHit,
@@ -98,6 +100,26 @@ function unwrapPayload<T>(payload: SREApiEnvelope<T> | T): T {
     throw new Error(message);
   }
   return payload.data;
+}
+
+function normalizeSessionSummaryList(payload: unknown): SessionSummary[] {
+  if (Array.isArray(payload)) {
+    return payload.filter((item): item is SessionSummary => !!item && typeof item === "object");
+  }
+  if (!payload || typeof payload !== "object") {
+    return [];
+  }
+
+  const candidate = payload as {
+    data?: unknown;
+    sessions?: unknown;
+    items?: unknown;
+  };
+  const raw = candidate.data ?? candidate.sessions ?? candidate.items;
+  if (Array.isArray(raw)) {
+    return raw.filter((item): item is SessionSummary => !!item && typeof item === "object");
+  }
+  return [];
 }
 
 function normalizeAlertName(value: string | null | undefined): string {
@@ -436,7 +458,7 @@ export const apiClient = {
           const summariesResponse = await api.get<SREApiEnvelope<SessionSummary[]> | SessionSummary[]>("/api/sessions", {
             params: { limit: 50 },
           });
-          const summaries = unwrapPayload(summariesResponse.data);
+          const summaries = normalizeSessionSummaryList(unwrapPayload(summariesResponse.data));
           const matched = summaries.find((item) => item.fingerprint === alert.fingerprint);
           if (matched) {
             const detailResponse = await api.get<SREApiEnvelope<DiagnosisSession> | DiagnosisSession>(`/api/sessions/${matched.session_id}`);
@@ -476,7 +498,7 @@ export const apiClient = {
 
   getSessions: async (limit = 50) => {
     const response = await api.get<SREApiEnvelope<SessionSummary[]> | SessionSummary[]>("/api/sessions", { params: { limit } });
-    return unwrapPayload(response.data);
+    return normalizeSessionSummaryList(unwrapPayload(response.data));
   },
 
   getDiagnosisSession: async (sessionId?: string) => {
@@ -509,8 +531,18 @@ export const apiClient = {
   },
 
   getDiagnosisHistorySessions: async () => {
-    const sessions = await apiClient.getSessions(50);
-    return sessions.map(mapSummaryToDiagnosisSummary);
+    try {
+      const sessions = await apiClient.getSessions(50);
+      return sessions.map(mapSummaryToDiagnosisSummary);
+    } catch (primaryError) {
+      try {
+        const response = await api.get<SREApiEnvelope<SessionSummary[]> | SessionSummary[]>('/api/diagnosis/sessions');
+        const sessions = normalizeSessionSummaryList(unwrapPayload(response.data));
+        return sessions.map(mapSummaryToDiagnosisSummary);
+      } catch {
+        throw primaryError;
+      }
+    }
   },
 
   getSessionLoop: async (sessionId?: string) => {
@@ -636,6 +668,14 @@ export const apiClient = {
         approval_required: session.status === "approval_required",
       } as RemediationOverview;
     } catch {
+      if (import.meta.env.DEV) {
+        const { getRemediationOverviewFallback } = await import("./devFallback");
+        const fallback = getRemediationOverviewFallback();
+        return {
+          ...fallback,
+          session_id: resolved,
+        } as RemediationOverview;
+      }
       const loop = await apiClient.getSessionLoop(resolved);
       return {
         session_id: loop.session_id,
@@ -724,6 +764,36 @@ export const apiClient = {
     return unwrapPayload(response.data);
   },
 
+  getKnowledgeBases: async () =>
+    withDevFallback(
+      async () => {
+        const response = await api.get<SREApiEnvelope<KnowledgeBaseSummary[]> | { items: KnowledgeBaseSummary[] }>("/api/knowledge/bases");
+        if (isEnvelope<KnowledgeBaseSummary[]>(response.data)) {
+          return unwrapPayload(response.data);
+        }
+        return response.data.items;
+      },
+      async () => {
+        const { getKnowledgeBasesFallback } = await import("./devFallback");
+        return getKnowledgeBasesFallback();
+      },
+      "getKnowledgeBases",
+    ),
+
+  getKnowledgeBaseDetail: async (knowledgeBaseId: string) =>
+    withDevFallback(
+      async () => {
+        const response = await api.get<SREApiEnvelope<KnowledgeBaseDetail> | KnowledgeBaseDetail>(
+          `/api/knowledge/bases/${encodeURIComponent(knowledgeBaseId)}`,
+        );
+        return unwrapPayload(response.data);
+      },
+      async () => {
+        const { getKnowledgeBaseDetailFallback } = await import("./devFallback");
+        return getKnowledgeBaseDetailFallback(knowledgeBaseId);
+      },
+      "getKnowledgeBaseDetail",
+    ),
   searchKnowledge: async (query: string, category?: string) =>
     withDevFallback(
       async () => {
@@ -902,3 +972,4 @@ export const apiClient = {
 };
 
 export type ApiClient = typeof apiClient;
+

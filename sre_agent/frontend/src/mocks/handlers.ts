@@ -1,4 +1,4 @@
-import { delay, http, HttpResponse } from "msw";
+﻿import { delay, http, HttpResponse } from "msw";
 
 import {
   alertClusters,
@@ -6,6 +6,8 @@ import {
   diagnosisHistorySessions,
   diagnosisSession,
   initialChatMessages,
+  knowledgeBaseDetails,
+  knowledgeBases,
   knowledgeDatasets,
   knowledgeDocuments,
   skills,
@@ -173,11 +175,24 @@ export const handlers = [
         id: `assistant-${Date.now()}`,
         role: "assistant",
         created_at: new Date().toISOString(),
-        content: `已收到：${body.content ?? ""}`,
+        content: `宸叉敹鍒帮細${body.content ?? ""}`,
       },
     });
   }),
 
+  http.get("/api/knowledge/bases", async () => {
+    await delay(70);
+    return HttpResponse.json({ items: knowledgeBases });
+  }),
+  http.get("/api/knowledge/bases/:knowledgeBaseId", async ({ params }) => {
+    await delay(70);
+    const knowledgeBaseId = String(params.knowledgeBaseId ?? "");
+    const matched = knowledgeBaseDetails.find((item) => item.id === knowledgeBaseId);
+    if (!matched) {
+      return HttpResponse.json({ message: "knowledge base not found" }, { status: 404 });
+    }
+    return HttpResponse.json(matched);
+  }),
   http.get("/api/knowledge/search", async ({ request }) => {
     await delay(70);
     const url = new URL(request.url);
@@ -211,9 +226,8 @@ export const handlers = [
     const url = new URL(request.url);
     const keyword = (url.searchParams.get("keyword") ?? "").trim().toLowerCase();
     const datasetId = (url.searchParams.get("dataset_id") ?? "").trim();
-    const scoped = datasetId === "dataset-network"
-      ? knowledgeDocuments.filter((item) => item.category === "hardware")
-      : knowledgeDocuments;
+    const scoped =
+      datasetId === "dataset-network" ? knowledgeDocuments.filter((item) => item.category === "hardware") : knowledgeDocuments;
     const rows = keyword
       ? scoped.filter((item) => `${item.title} ${item.excerpt} ${item.tags.join(" ")}`.toLowerCase().includes(keyword))
       : scoped;
@@ -246,9 +260,7 @@ export const handlers = [
         score: 0.87,
       },
     ];
-    const rows = keyword
-      ? baseSegments.filter((item) => item.content.toLowerCase().includes(keyword))
-      : baseSegments;
+    const rows = keyword ? baseSegments.filter((item) => item.content.toLowerCase().includes(keyword)) : baseSegments;
     return HttpResponse.json(rows);
   }),
   http.get("/api/knowledge/segments/search", async ({ request }) => {
@@ -348,3 +360,4 @@ export const handlers = [
     });
   }),
 ];
+

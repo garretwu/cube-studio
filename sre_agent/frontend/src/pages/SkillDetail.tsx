@@ -74,7 +74,6 @@ function SkillDetailPage() {
         </AppButton>
 
         <SectionHeader
-          eyebrow="Skill File"
           title={skill?.name ?? "技能详情"}
           description="查看技能的基础元数据和 SKILL.md 文件内容。"
         />
