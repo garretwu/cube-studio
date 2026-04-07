@@ -90,6 +90,23 @@ class TestSkillsUnit(unittest.IsolatedAsyncioTestCase):
         self.assertGreaterEqual(ranked[0].match_score, ranked[1].match_score)
         self.assertIn("rdma", " ".join(ranked[0].tags).lower())
 
+    async def test_policy_prefers_vllm_skill_for_alert_like_query(self) -> None:
+        registry = SkillRegistry()
+        skills = registry.discover()
+        policy = SkillPolicy()
+
+        ranked = policy.rank(
+            (
+                "alertname VLLMInterTokenLatencyP95High "
+                "summary vLLM inter-token latency p95 is high "
+                "service qwen3-32b-fp8-202602261 "
+                "topology inference_service gpu"
+            ),
+            skills,
+            top_k=3,
+        )
+        self.assertEqual(ranked[0].id, "builtin-vllm-diagnosis")
+
     async def test_executor_success_path(self) -> None:
         skill_registry = SkillRegistry()
         skill_registry.discover()

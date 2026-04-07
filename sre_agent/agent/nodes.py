@@ -14,7 +14,7 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, Tool
 from pydantic import BaseModel, Field
 
 from sre_agent.agent.checkpoint import persist_state_snapshot
-from sre_agent.agent.prompts import build_system_prompt
+from sre_agent.agent.prompts import build_skill_selection_prompt, build_system_prompt
 from sre_agent.agent.state import SREAgentState
 from sre_agent.models.diagnosis import DiagnosisResult, Observation, ThinkingStep, ThinkingTrace
 from sre_agent.models.remediation import RemediationPlan
@@ -32,6 +32,18 @@ LLM_LOG_DIR = Path("./data/llm_logs")
 class FinalDiagnosisEnvelope(BaseModel):
     thought: str = Field(min_length=1)
     diagnosis: dict[str, Any]
+    remediation_plan: dict[str, Any] | None = None
+
+
+class SkillCallEnvelope(BaseModel):
+    skill_id: str = Field(min_length=1)
+    reason: str | None = None
+
+
+class ReasoningEnvelope(BaseModel):
+    thought: str = Field(min_length=1)
+    skill_call: SkillCallEnvelope | None = None
+    diagnosis: dict[str, Any] | None = None
     remediation_plan: dict[str, Any] | None = None
 
 
@@ -60,7 +72,9 @@ def initialize_state(
         "step_timeout_sec": step_timeout_sec,
         "total_timeout_sec": total_timeout_sec,
         "selected_skill_id": None,
+        "skill_selection_attempted": False,
         "skill_catalog": [],
+        "skill_selection_reason": None,
         "diagnosis_result": None,
         "remediation_plan": None,
         "status": None,
@@ -158,6 +172,8 @@ async def reason_node(
     *,
     llm: Any,
     registry: ToolRegistry,
+    skill_registry: SkillRegistry | None = None,
+    skill_policy: SkillPolicy | None = None,
 ) -> SREAgentState:
     if state.get("step_count", 0) >= state.get("max_steps", 6):
         updated = {
@@ -169,9 +185,46 @@ async def reason_node(
         persist_state_snapshot(updated.get("checkpoint_dir"), updated["session_id"], "reason-timeout", updated)
         return updated
 
+    discovered_skills: list[Any] = []
+    ranked_skills: list[Any] = []
+    if skill_registry is not None:
+        try:
+            discovered_skills = skill_registry.discover()
+            if skill_policy is not None:
+                ranked_skills = skill_policy.rank(str(state.get("query", "") or "").strip(), discovered_skills, top_k=5)
+        except Exception:  # noqa: BLE001
+            discovered_skills = []
+            ranked_skills = []
+    skill_reference = [
+        {
+            "id": skill.id,
+            "name": skill.name,
+            "summary": skill.summary,
+            "tags": list(skill.tags),
+            "match_score": skill.match_score,
+        }
+        for skill in (ranked_skills or discovered_skills)
+    ]
+    top_skill_score = 0.0
+    if ranked_skills:
+        top_skill_score = float(getattr(ranked_skills[0], "match_score", 0.0) or 0.0)
+    query_text = str(state.get("query", "") or "")
+    alert_shaped_query = _looks_like_alert_driven_query(query_text)
+    strong_skill_match = bool(not state.get("tool_runs") and alert_shaped_query and top_skill_score >= 0.02)
+    preferred_skill = None
+    if strong_skill_match and ranked_skills:
+        preferred_skill = {
+            "id": ranked_skills[0].id,
+            "name": ranked_skills[0].name,
+            "summary": ranked_skills[0].summary,
+            "tags": list(ranked_skills[0].tags),
+            "match_score": ranked_skills[0].match_score,
+        }
     system_prompt = build_system_prompt(
         registry,
         allowed_tool_names=state.get("allowed_tool_names"),
+        available_skills=skill_reference,
+        preferred_skill=preferred_skill,
     )
     messages = _coerce_messages(state.get("messages", []))
     if not messages:
@@ -205,7 +258,7 @@ async def reason_node(
             tool_names=state.get("allowed_tool_names"),
         )
         bound_tool_names = [str(getattr(tool, "name", "")) for tool in bound_tools]
-        tool_choice = "required" if not state.get("tool_runs") else "auto"
+        tool_choice = "auto" if strong_skill_match else ("required" if not state.get("tool_runs") else "auto")
         try:
             call_model = llm.bind_tools(
                 bound_tools,
@@ -240,6 +293,7 @@ async def reason_node(
     updated_trace = list(state.get("trace_items", []))
     updated_interactions = list(state.get("llm_interactions", []))
     pending_tool_calls = list(response.tool_calls or [])
+    raw_response_text = _extract_text(response.content)
     step_index = state.get("step_count", 0) + 1
 
     # 记录 LLM 交互到日志文件
@@ -261,17 +315,50 @@ async def reason_node(
             "bound_tool_names": [name for name in bound_tool_names if name],
             "prompt_messages": messages_to_dict(invoked_messages),
             "response_message": messages_to_dict([response])[0],
-            "raw_response_text": _extract_text(response.content),
+            "raw_response_text": raw_response_text,
             "tool_calls": pending_tool_calls,
         }
     )
+
+    inferred_skill_id = _infer_skill_selection_from_text(
+        content=raw_response_text,
+        available_skills=ranked_skills or discovered_skills,
+    )
+    if inferred_skill_id and not state.get("tool_runs"):
+        updated_trace.append(
+            {
+                "type": "thought",
+                "step": step_index,
+                "content": raw_response_text or f"Selecting reusable skill {inferred_skill_id}.",
+                "action": "tool_call",
+                "tool_name": inferred_skill_id,
+                "tool_params": {"kind": "skill", "reason": "inferred from free-form model response"},
+                "confidence": None,
+            }
+        )
+        updated = {
+            **state,
+            "messages": updated_messages,
+            "llm_interactions": updated_interactions,
+            "trace_items": updated_trace,
+            "pending_tool_calls": [],
+            "step_count": step_index,
+            "skill_catalog": [skill.id for skill in discovered_skills],
+            "selected_skill_id": inferred_skill_id,
+            "skill_selection_reason": raw_response_text or "inferred from free-form model response",
+            "status": "running",
+            "summary": None,
+            "error": None,
+        }
+        persist_state_snapshot(updated.get("checkpoint_dir"), updated["session_id"], "reason", updated)
+        return updated
 
     if pending_tool_calls:
         updated_trace.append(
             {
                 "type": "thought",
                 "step": step_index,
-                "content": _extract_text(response.content) or "Requesting read-only evidence via tools.",
+                "content": raw_response_text or "Requesting read-only evidence via tools.",
                 "action": "tool_call",
                 "tool_name": pending_tool_calls[0]["name"],
                 "tool_params": pending_tool_calls[0].get("args", {}),
@@ -285,6 +372,9 @@ async def reason_node(
             "trace_items": updated_trace,
             "pending_tool_calls": pending_tool_calls,
             "step_count": step_index,
+            "skill_catalog": [skill.id for skill in discovered_skills],
+            "selected_skill_id": None,
+            "skill_selection_reason": None,
             "status": "running",
             "summary": None,
             "error": None,
@@ -292,14 +382,73 @@ async def reason_node(
         persist_state_snapshot(updated.get("checkpoint_dir"), updated["session_id"], "reason", updated)
         return updated
 
-    raw_response_text = _extract_text(response.content)
     try:
-        parsed = _parse_final_output(raw_response_text)
+        parsed = _parse_reasoning_output(raw_response_text)
     except Exception:  # noqa: BLE001
-        parsed = _build_fallback_final_output(
+        parsed = _build_fallback_reasoning_output(
             query=str(state.get("query", "")).strip(),
             content=raw_response_text,
         )
+    if parsed.skill_call is not None:
+        selected_skill_id = parsed.skill_call.skill_id.strip()
+        known_skill_ids = {skill.id for skill in discovered_skills}
+        if selected_skill_id not in known_skill_ids:
+            updated = {
+                **state,
+                "messages": updated_messages,
+                "llm_interactions": updated_interactions,
+                "pending_tool_calls": [],
+                "step_count": step_index,
+                "skill_catalog": [skill.id for skill in discovered_skills],
+                "selected_skill_id": None,
+                "skill_selection_reason": None,
+                "status": "failed",
+                "summary": f"selected skill is not available: {selected_skill_id}",
+                "error": f"selected skill is not available: {selected_skill_id}",
+            }
+            persist_state_snapshot(updated.get("checkpoint_dir"), updated["session_id"], "reason-failed", updated)
+            return updated
+        updated_trace.append(
+            {
+                "type": "thought",
+                "step": step_index,
+                "content": parsed.thought,
+                "action": "tool_call",
+                "tool_name": selected_skill_id,
+                "tool_params": {"kind": "skill", "reason": (parsed.skill_call.reason or "").strip()},
+                "confidence": None,
+            }
+        )
+        updated = {
+            **state,
+            "messages": updated_messages,
+            "llm_interactions": updated_interactions,
+            "trace_items": updated_trace,
+            "pending_tool_calls": [],
+            "step_count": step_index,
+            "skill_catalog": [skill.id for skill in discovered_skills],
+            "selected_skill_id": selected_skill_id,
+            "skill_selection_reason": (parsed.skill_call.reason or "").strip() or parsed.thought,
+            "status": "running",
+            "summary": None,
+            "error": None,
+        }
+        persist_state_snapshot(updated.get("checkpoint_dir"), updated["session_id"], "reason", updated)
+        return updated
+    if parsed.diagnosis is None:
+        parsed = _build_fallback_reasoning_output(
+            query=str(state.get("query", "")).strip(),
+            content=raw_response_text,
+        )
+        if parsed.diagnosis is None:
+            parsed = ReasoningEnvelope(
+                thought="Converted non-JSON model output to a structured low-confidence diagnosis.",
+                diagnosis=_build_fallback_final_output(
+                    query=str(state.get("query", "")).strip(),
+                    content=raw_response_text,
+                ).diagnosis,
+                remediation_plan=None,
+            )
     diagnosis = DiagnosisResult.model_validate(_normalize_diagnosis_payload(parsed.diagnosis))
     remediation_plan = _normalize_remediation_plan_payload(
         raw_plan=parsed.remediation_plan,
@@ -324,6 +473,9 @@ async def reason_node(
         "trace_items": updated_trace,
         "pending_tool_calls": [],
         "step_count": step_index,
+        "skill_catalog": [skill.id for skill in discovered_skills],
+        "selected_skill_id": None,
+        "skill_selection_reason": None,
         "diagnosis_result": diagnosis.model_dump(mode="json"),
         "remediation_plan": None if remediation_plan is None else remediation_plan.model_dump(mode="json"),
         "status": "diagnosed",
@@ -393,6 +545,15 @@ def _build_fallback_final_output(*, query: str, content: str) -> FinalDiagnosisE
             },
             "remediation_plan": None,
         }
+    )
+
+
+def _build_fallback_reasoning_output(*, query: str, content: str) -> ReasoningEnvelope:
+    fallback = _build_fallback_final_output(query=query, content=content)
+    return ReasoningEnvelope(
+        thought=fallback.thought,
+        diagnosis=fallback.diagnosis,
+        remediation_plan=fallback.remediation_plan,
     )
 
 
@@ -548,11 +709,21 @@ def finalize_node(state: SREAgentState) -> SREAgentState:
 def route_after_reason(state: SREAgentState) -> str:
     if state.get("status") in {"failed", "timeout"}:
         return "finalize"
+    if state.get("selected_skill_id"):
+        return "execute_selected_skill"
     if state.get("pending_tool_calls"):
         return "act"
     if state.get("diagnosis_result") is not None:
         return "finalize"
     return "finalize"
+
+
+def route_after_skill_selection(state: SREAgentState) -> str:
+    if state.get("status") in {"failed", "timeout"}:
+        return "finalize"
+    if state.get("selected_skill_id"):
+        return "execute_selected_skill"
+    return "reason"
 
 
 def route_after_decide(state: SREAgentState) -> str:
@@ -563,44 +734,128 @@ def route_after_decide(state: SREAgentState) -> str:
     return "reason"
 
 
-def load_and_select_skill_node(
+async def load_and_select_skill_node(
     state: SREAgentState,
     *,
+    llm: Any,
     registry: SkillRegistry,
     policy: SkillPolicy,
+    tool_registry: ToolRegistry,
 ) -> SREAgentState:
+    if state.get("skill_selection_attempted"):
+        return state
     query = str(state.get("query", "") or "").strip()
     skills = registry.discover()
     catalog = [skill.id for skill in skills]
-    if not skills:
+    ranked = policy.rank(query, skills, top_k=5) if skills else []
+    top_skill_score = float(getattr(ranked[0], "match_score", 0.0) or 0.0) if ranked else 0.0
+    strong_skill_match = bool(
+        not state.get("tool_runs")
+        and _looks_like_alert_driven_query(query)
+        and top_skill_score >= 0.02
+    )
+    if not skills or not strong_skill_match:
         return {
             **state,
             "skill_catalog": catalog,
             "selected_skill_id": None,
-            "status": "failed",
-            "summary": "no skills discovered",
-            "error": "no skills discovered",
+            "skill_selection_attempted": True,
         }
 
-    ranked = policy.rank(query, skills, top_k=1)
-    if not ranked or ranked[0].match_score <= 0:
-        return {
-            **state,
-            "skill_catalog": catalog,
-            "selected_skill_id": None,
-            "status": "failed",
-            "summary": "no skill matched the query",
-            "error": "no skill matched the query",
+    skill_reference = [
+        {
+            "id": skill.id,
+            "name": skill.name,
+            "summary": skill.summary,
+            "tags": list(skill.tags),
+            "match_score": skill.match_score,
         }
+        for skill in ranked
+    ]
+    preferred_skill = skill_reference[0] if skill_reference else None
+    system_prompt = build_system_prompt(
+        tool_registry,
+        allowed_tool_names=state.get("allowed_tool_names"),
+        available_skills=skill_reference,
+        preferred_skill=preferred_skill,
+    )
+    selection_prompt = build_skill_selection_prompt(
+        query=query,
+        available_skills=skill_reference,
+    )
+    messages = [SystemMessage(content=system_prompt), HumanMessage(content=selection_prompt)]
+    response = await asyncio.wait_for(llm.ainvoke(messages), timeout=state["step_timeout_sec"])
+    if not isinstance(response, AIMessage):
+        raise RuntimeError(f"expected AIMessage from LLM, got {type(response).__name__}")
+    raw_response_text = _extract_text(response.content)
+    step_index = state.get("step_count", 0) + 1
 
-    selected = ranked[0]
+    _log_llm_interaction(
+        session_id=str(state.get("session_id", "unknown")),
+        step=step_index,
+        prompt_messages=messages,
+        response=response,
+        mode="skill_selection",
+        tool_choice="none",
+        tool_calls=[],
+    )
+
+    updated_interactions = list(state.get("llm_interactions", []))
+    updated_interactions.append(
+        {
+            "step": step_index,
+            "mode": "skill_selection",
+            "tool_choice": "none",
+            "bound_tool_names": [],
+            "prompt_messages": messages_to_dict(messages),
+            "response_message": messages_to_dict([response])[0],
+            "raw_response_text": raw_response_text,
+            "tool_calls": [],
+        }
+    )
+
+    try:
+        parsed = _parse_reasoning_output(raw_response_text)
+    except Exception:  # noqa: BLE001
+        parsed = ReasoningEnvelope(thought=raw_response_text or "No skill selected.", skill_call=None)
+
+    selected_skill_id: str | None = None
+    selection_reason: str | None = None
+    if parsed.skill_call is not None:
+        candidate = parsed.skill_call.skill_id.strip()
+        if candidate in {skill.id for skill in skills}:
+            selected_skill_id = candidate
+            selection_reason = (parsed.skill_call.reason or "").strip() or parsed.thought
+    if selected_skill_id is None:
+        inferred_skill_id = _infer_skill_selection_from_text(raw_response_text, ranked or skills)
+        if inferred_skill_id:
+            selected_skill_id = inferred_skill_id
+            selection_reason = raw_response_text or "inferred from free-form model response"
+
+    updated_trace = list(state.get("trace_items", []))
+    if selected_skill_id:
+        updated_trace.append(
+            {
+                "type": "thought",
+                "step": step_index,
+                "content": parsed.thought or raw_response_text or f"Selecting reusable skill {selected_skill_id}.",
+                "action": "tool_call",
+                "tool_name": selected_skill_id,
+                "tool_params": {"kind": "skill", "reason": selection_reason},
+                "confidence": None,
+            }
+        )
+
     return {
         **state,
+        "llm_interactions": updated_interactions,
+        "trace_items": updated_trace,
+        "step_count": step_index,
         "skill_catalog": catalog,
-        "selected_skill_id": selected.id,
-        "status": None,
-        "summary": None,
-        "error": None,
+        "selected_skill_id": selected_skill_id,
+        "skill_selection_attempted": True,
+        "skill_selection_reason": selection_reason,
+        "status": "running" if selected_skill_id else state.get("status"),
     }
 
 
@@ -637,19 +892,56 @@ async def execute_selected_skill_node(
         context=context,
         variables=state.get("variables", {}),
     )
+    serialized_runs = [_serialize_tool_run(item) for item in result.tool_runs]
+    existing_runs = list(state.get("tool_runs", []))
+    messages = list(_coerce_messages(state.get("messages", [])))
+    if serialized_runs:
+        messages.append(
+            HumanMessage(
+                content=(
+                    f"Skill execution result for {selected_skill_id}:\n"
+                    f"{_summarize_tool_runs(serialized_runs)}"
+                )
+            )
+        )
+    trace_items = list(state.get("trace_items", []))
+    trace_items.extend(
+        [
+            {
+                "type": "observation",
+                "tool": item["tool"],
+                "params": item["params"],
+                "result": {
+                    "success": item["success"],
+                    "data": _safe_jsonable(item.get("data")),
+                    "error": item.get("error"),
+                },
+            }
+            for item in serialized_runs
+        ]
+    )
+    llm_interactions = list(state.get("llm_interactions", []))
+    llm_interactions.append(
+        {
+            "step": state.get("step_count", 0),
+            "mode": "skill_execution",
+            "skill_id": selected_skill_id,
+            "skill_reason": state.get("skill_selection_reason"),
+            "tool_runs": serialized_runs,
+        }
+    )
     return {
         **state,
-        "tool_runs": [_serialize_tool_run(item) for item in result.tool_runs],
-        "status": result.status,
-        "summary": result.summary,
+        "messages": messages,
+        "llm_interactions": llm_interactions,
+        "trace_items": trace_items,
+        "tool_runs": [*existing_runs, *serialized_runs],
+        "selected_skill_id": None,
+        "skill_selection_reason": None,
+        "status": "running" if result.status == "success" else "failed",
+        "summary": state.get("summary") if result.status == "success" else result.summary,
         "error": None if result.status == "success" else result.summary,
     }
-
-
-def should_execute_selected_skill(state: SREAgentState) -> str:
-    if state.get("selected_skill_id") and state.get("status") != "failed":
-        return "execute_selected_skill"
-    return "finalize"
 
 
 def _serialize_tool_run(value: Any) -> dict[str, Any]:
@@ -731,7 +1023,7 @@ def _extract_text(content: Any) -> str:
     return str(content or "").strip()
 
 
-def _parse_final_output(content: str) -> FinalDiagnosisEnvelope:
+def _parse_reasoning_output(content: str) -> ReasoningEnvelope:
     stripped = re.sub(r"(?is)<think>.*?</think>", "", content or "").strip()
     stripped = re.sub(r"^```json\s*", "", stripped, flags=re.IGNORECASE)
     stripped = re.sub(r"\s*```$", "", stripped)
@@ -749,7 +1041,65 @@ def _parse_final_output(content: str) -> FinalDiagnosisEnvelope:
                 payload = ast.literal_eval(body)
             except Exception as exc:  # noqa: BLE001
                 raise RuntimeError(f"final diagnosis payload is not valid JSON: {content}") from exc
-    return FinalDiagnosisEnvelope.model_validate(payload)
+    return ReasoningEnvelope.model_validate(payload)
+
+
+def _parse_final_output(content: str) -> FinalDiagnosisEnvelope:
+    parsed = _parse_reasoning_output(content)
+    if parsed.diagnosis is None:
+        raise RuntimeError(f"final diagnosis payload does not contain diagnosis: {content}")
+    return FinalDiagnosisEnvelope(
+        thought=parsed.thought,
+        diagnosis=parsed.diagnosis,
+        remediation_plan=parsed.remediation_plan,
+    )
+
+
+def _infer_skill_selection_from_text(content: str, available_skills: list[Any]) -> str | None:
+    text = (content or "").strip()
+    if not text:
+        return None
+    lowered = text.lower()
+    selection_verbs = (
+        "select",
+        "selected",
+        "choose",
+        "chosen",
+        "use",
+        "using",
+        "run",
+        "execute",
+        "apply",
+        "pick",
+    )
+    if not any(verb in lowered for verb in selection_verbs):
+        return None
+    if "skill" not in lowered:
+        return None
+
+    for skill in available_skills:
+        skill_id = str(getattr(skill, "id", "") or "").strip()
+        skill_name = str(getattr(skill, "name", "") or "").strip()
+        candidates = [value.lower() for value in (skill_id, skill_name) if value]
+        if any(candidate in lowered for candidate in candidates):
+            return skill_id or None
+    return None
+
+
+def _looks_like_alert_driven_query(query: str) -> bool:
+    lowered = (query or "").lower()
+    signals = (
+        "alert",
+        "alertname",
+        "severity",
+        "namespace",
+        "service",
+        "firing",
+        "labels",
+        "annotations",
+        "payload",
+    )
+    return any(signal in lowered for signal in signals)
 
 
 def _safe_jsonable(value: Any) -> Any:

@@ -18,8 +18,10 @@
 |------|------|------|------|------|
 | `prometheus.query_instant` | `read_only` | 否 | `prometheus` / `metrics` | 查询单点 PromQL 指标 |
 | `prometheus.query_range` | `read_only` | 否 | `prometheus` / `metrics` | 查询时间区间 PromQL 数据 |
+| `get_inference_latency` | `read_only` | 否 | `prometheus` / `metrics` | 查询服务级推理延迟摘要（p50/p95/p99、qps、error_rate） |
 | `gpu.get_metrics` | `read_only` | 否 | `ssh` | 查看 GPU 利用率、显存、温度 |
 | `gpu.get_processes` | `read_only` | 否 | `ssh` | 查看 GPU 上的计算进程 |
+| `get_thermal_status` | `read_only` | 否 | `ssh` | 查看节点温度与风扇状态 |
 | `k8s.list_pods` | `read_only` | 否 | `k8s` | 列出 namespace 下的 Pod |
 | `k8s.describe_pod` | `read_only` | 否 | `k8s` | 查看 Pod 状态摘要 |
 | `k8s.resolve_service_pods` | `read_only` | 否 | `k8s` | 根据 namespace + service 解析后端 Pod 名称 |
@@ -29,6 +31,7 @@
 | `k8s.top_oomkilled` | `read_only` | 否 | `k8s` | 统计 OOMKilled Pod 数量 |
 | `network.get_rdma_stats` | `read_only` | 否 | `ssh` | 查看 RDMA 和链路健康信息 |
 | `network.get_switch_port_counters` | `read_only` | 否 | `switch` | 查看交换机端口计数器和状态 |
+| `check_nic_errors` | `read_only` | 否 | `ssh` | 查看指定网卡接口的错误、丢包和 CRC 计数 |
 | `ontology.query` | `read_only` | 否 | `ontology` | 查询实体或过滤实体 |
 | `ontology.path` | `read_only` | 否 | `ontology` | 查询实体间路径 |
 | `ontology.blast_radius` | `read_only` | 否 | `ontology` | 查询影响面 |
@@ -60,10 +63,13 @@
 常用工具：
 
 - `prometheus.query_instant`
+- `get_inference_latency`
 - `gpu.get_metrics`
 - `gpu.get_processes`
+- `get_thermal_status`
 - `k8s.list_pods`
 - `network.get_rdma_stats`
+- `check_nic_errors`
 - `kill_process`（修复阶段）
 
 对应脚本：

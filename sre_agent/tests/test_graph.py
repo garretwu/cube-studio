@@ -76,6 +76,18 @@ class _FakeLLM:
         self.index = 0
         self.calls: list[dict[str, Any]] = []
 
+    async def ainvoke(self, messages: list[Any]) -> AIMessage:
+        self.calls.append(
+            {
+                "messages": messages,
+                "tools": [],
+                "tool_choice": "none",
+            }
+        )
+        response = self.responses[self.index]
+        self.index += 1
+        return response
+
     def bind_tools(self, tools: list[Any], tool_choice: str = "auto") -> _FakeBoundLLM:
         return _FakeBoundLLM(self, tools, tool_choice)
 
@@ -94,6 +106,241 @@ class _SlowLLM:
 
 
 class TestGraphUnit(unittest.IsolatedAsyncioTestCase):
+    async def test_react_can_select_and_execute_skill_before_concluding(self) -> None:
+        llm = _FakeLLM(
+            [
+                AIMessage(
+                    content=json.dumps(
+                        {
+                            "thought": "This looks like a repeated Prometheus triage pattern, so use a reusable skill first.",
+                            "skill_call": {
+                                "skill_id": "custom-prometheus-triage",
+                                "reason": "The alert only needs a quick Prometheus confirmation before concluding.",
+                            },
+                        }
+                    )
+                ),
+                AIMessage(
+                    content=json.dumps(
+                        {
+                            "thought": "The skill evidence confirms the metric is healthy enough to conclude.",
+                            "diagnosis": {
+                                "root_cause": "No active platform issue detected",
+                                "root_cause_layer": "platform",
+                                "root_cause_entities": ["cluster:default"],
+                                "confidence": 0.82,
+                                "impact_summary": "Skill-collected evidence does not show an active issue.",
+                                "affected_services": ["platform"],
+                                "triage_priority": "P3",
+                                "diagnosis_certainty": "probable",
+                            },
+                            "remediation_plan": None,
+                        }
+                    )
+                ),
+            ]
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            skill_root = Path(tmpdir) / "skills"
+            skill_dir = skill_root / "prometheus-triage"
+            skill_dir.mkdir(parents=True, exist_ok=True)
+            (skill_dir / "SKILL.md").write_text(
+                """---
+name: Prometheus Triage
+description: Confirm a single Prometheus metric before broader diagnosis.
+---
+
+## Runtime Metadata
+```yaml
+id: custom-prometheus-triage
+scope: custom
+permissions:
+  - read:metrics
+tags:
+  - prometheus
+  - metric
+```
+
+## Steps
+```yaml
+- description: Query Prometheus metric.
+  tool: prometheus.query_instant
+  params:
+    promql: "${promql}"
+```
+""",
+                encoding="utf-8",
+            )
+            from sre_agent.skills import SkillPolicy, SkillRegistry
+
+            result = await run_diagnosis(
+                query="Use prometheus metric triage for this platform alert.",
+                context=_happy_context(),
+                variables={"promql": "up"},
+                llm=llm,
+                step_timeout_sec=5.0,
+                total_timeout_sec=10.0,
+                checkpoint_dir=tmpdir,
+                allowed_tool_names=["prometheus.query_instant"],
+                skill_registry=SkillRegistry(root=skill_root),
+                skill_policy=SkillPolicy(),
+            )
+            self.assertEqual(result["status"], "diagnosed")
+            self.assertEqual(result["tool_runs"][0]["tool"], "prometheus.query_instant")
+            self.assertEqual(result["skill_catalog"], ["custom-prometheus-triage"])
+            self.assertIsNone(result["selected_skill_id"])
+            self.assertTrue(any(item.get("mode") == "skill_execution" for item in result["llm_interactions"]))
+            self.assertTrue(
+                any(
+                    item.get("action") == "tool_call" and item.get("tool_params", {}).get("kind") == "skill"
+                    for item in result["trace_items"]
+                    if item.get("type") == "thought"
+                )
+            )
+
+    async def test_first_turn_runs_skill_selection_subround_when_skill_match_is_strong(self) -> None:
+        llm = _FakeLLM(
+            [
+                AIMessage(
+                    content=json.dumps(
+                        {
+                            "thought": "This vLLM latency alert strongly matches the reusable skill.",
+                            "skill_call": {
+                                "skill_id": "builtin-vllm-diagnosis",
+                                "reason": "The alert semantics align strongly with the vLLM latency playbook.",
+                            },
+                        }
+                    )
+                ),
+                AIMessage(
+                    content=json.dumps(
+                        {
+                            "thought": "The skill evidence is sufficient to conclude.",
+                            "diagnosis": {
+                                "root_cause": "Reusable vLLM diagnosis skill completed triage",
+                                "root_cause_layer": "service",
+                                "root_cause_entities": ["service:test"],
+                                "confidence": 0.8,
+                                "impact_summary": "The reusable skill gathered enough evidence to conclude.",
+                                "affected_services": ["service:test"],
+                                "triage_priority": "P2",
+                                "diagnosis_certainty": "probable",
+                            },
+                            "remediation_plan": None,
+                        }
+                    )
+                ),
+            ]
+        )
+        from sre_agent.skills import SkillPolicy, SkillRegistry
+
+        result = await run_diagnosis(
+            query=(
+                "alertname VLLMInterTokenLatencyP95High "
+                "summary vLLM inter-token latency p95 is high "
+                "service qwen3-32b-fp8-202602261 topology inference_service gpu"
+            ),
+            context=_happy_context(),
+            variables={"promql": "up", "namespace": "service", "node": "worker-01"},
+            llm=llm,
+            step_timeout_sec=5.0,
+            total_timeout_sec=10.0,
+            allowed_tool_names=["prometheus.query_instant", "k8s.list_pods", "gpu.get_metrics"],
+            skill_registry=SkillRegistry(),
+            skill_policy=SkillPolicy(),
+        )
+        self.assertEqual(result["status"], "diagnosed")
+        self.assertEqual(llm.calls[0]["tool_choice"], "none")
+        self.assertTrue(any(item.get("mode") == "skill_selection" for item in result["llm_interactions"]))
+        self.assertTrue(any(item.get("mode") == "skill_execution" for item in result["llm_interactions"]))
+
+    async def test_react_infers_skill_selection_from_free_form_text_before_tool_calls(self) -> None:
+        llm = _FakeLLM(
+            [
+                AIMessage(
+                    content=(
+                        "This alert matches the reusable skill builtin-vllm-diagnosis. "
+                        "I will select that skill first before making direct tool calls."
+                    ),
+                    tool_calls=[
+                        {
+                            "name": "prometheus.query_instant",
+                            "args": {"promql": "up"},
+                            "id": "call-1",
+                            "type": "tool_call",
+                        }
+                    ],
+                ),
+                AIMessage(
+                    content=json.dumps(
+                        {
+                            "thought": "The skill evidence confirms a stable diagnosis.",
+                            "diagnosis": {
+                                "root_cause": "vLLM latency triage completed via reusable skill",
+                                "root_cause_layer": "service",
+                                "root_cause_entities": ["service:test"],
+                                "confidence": 0.8,
+                                "impact_summary": "Reusable skill gathered enough evidence to conclude the issue.",
+                                "affected_services": ["service:test"],
+                                "triage_priority": "P2",
+                                "diagnosis_certainty": "probable",
+                            },
+                            "remediation_plan": None,
+                        }
+                    )
+                ),
+            ]
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            skill_root = Path(tmpdir) / "skills"
+            skill_dir = skill_root / "vllm-diagnosis"
+            skill_dir.mkdir(parents=True, exist_ok=True)
+            (skill_dir / "SKILL.md").write_text(
+                """---
+name: vLLM Latency Diagnosis
+description: Diagnose vLLM latency issues with a reusable skill.
+---
+
+## Runtime Metadata
+```yaml
+id: builtin-vllm-diagnosis
+scope: builtin
+permissions:
+  - read:metrics
+tags:
+  - vllm
+  - latency
+  - gpu
+```
+
+## Steps
+```yaml
+- description: Query Prometheus metric.
+  tool: prometheus.query_instant
+  params:
+    promql: "${promql}"
+```
+""",
+                encoding="utf-8",
+            )
+            from sre_agent.skills import SkillPolicy, SkillRegistry
+
+            result = await run_diagnosis(
+                query="VLLMInterTokenLatencyP95High alert for vllm service latency issue.",
+                context=_happy_context(),
+                variables={"promql": "up"},
+                llm=llm,
+                step_timeout_sec=5.0,
+                total_timeout_sec=10.0,
+                checkpoint_dir=tmpdir,
+                allowed_tool_names=["prometheus.query_instant"],
+                skill_registry=SkillRegistry(root=skill_root),
+                skill_policy=SkillPolicy(),
+            )
+            self.assertEqual(result["status"], "diagnosed")
+            self.assertEqual(result["tool_runs"][0]["tool"], "prometheus.query_instant")
+            self.assertTrue(any(item.get("mode") == "skill_execution" for item in result["llm_interactions"]))
+
     async def test_react_happy_path_generates_trace_and_diagnosis(self) -> None:
         llm = _FakeLLM(
             [
@@ -218,6 +465,18 @@ class TestGraphUnit(unittest.IsolatedAsyncioTestCase):
         self.assertIn("prometheus.query_instant", prompt)
         self.assertIn("k8s.apply_manifest", prompt)
         self.assertIn("not callable in this phase", prompt)
+
+        preferred_prompt = build_system_prompt(
+            registry,
+            allowed_tool_names=["prometheus.query_instant"],
+            preferred_skill={
+                "id": "builtin-vllm-diagnosis",
+                "summary": "Diagnose vLLM latency incidents by checking latency metrics, namespace pod state, and node GPU utilization.",
+                "match_score": 0.0246,
+            },
+        )
+        self.assertIn("Current turn guidance:", preferred_prompt)
+        self.assertIn("prefer returning a `skill_call`", preferred_prompt)
 
         llm = _FakeLLM(
             [

@@ -34,6 +34,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--scenario", default="gpu_contention", help="Fault injector scenario name.")
     parser.add_argument("--poll-seconds", type=int, default=15, help="Alert polling interval in seconds.")
     parser.add_argument("--timeout-seconds", type=int, default=900, help="Overall timeout waiting for the alert.")
+    parser.add_argument(
+        "--hold-seconds",
+        type=int,
+        default=0,
+        help="After the alert is detected, keep load and fault injection running for this many extra seconds before cleanup.",
+    )
     parser.add_argument("--output", default=str(DEFAULT_OUTPUT), help="Capture output path.")
     parser.add_argument("--output-format", choices=["json", "txt"], default="json", help="Capture output format.")
     return parser
@@ -87,6 +93,8 @@ def render_text_output(payload: dict[str, Any]) -> str:
         f"Scenario: {payload.get('scenario')}",
         f"Detected: {payload.get('detected')}",
         f"Detected At: {payload.get('detected_at')}",
+        f"Hold Seconds: {payload.get('hold_seconds')}",
+        f"Holding Until: {payload.get('holding_until')}",
         f"Poll Count: {payload.get('poll_count')}",
         f"Current Alert Count: {payload.get('current_alert_count')}",
         f"History Alert Count: {payload.get('history_alert_count')}",
@@ -227,6 +235,12 @@ async def main_async(args: argparse.Namespace) -> int:
             "scenario": args.scenario,
             "detected": selected_alert is not None,
             "detected_at": datetime.now(UTC).isoformat(),
+            "hold_seconds": int(args.hold_seconds),
+            "holding_until": (
+                datetime.fromtimestamp(datetime.now(UTC).timestamp() + int(args.hold_seconds), tz=UTC).isoformat()
+                if selected_alert is not None and int(args.hold_seconds) > 0
+                else None
+            ),
             "poll_count": poll_count,
             "current_alert_count": len(current_alerts),
             "history_alert_count": len(history_alerts),
@@ -234,6 +248,9 @@ async def main_async(args: argparse.Namespace) -> int:
         }
         maybe_write_output(args.output, args.output_format, payload)
         print(json.dumps(payload, ensure_ascii=False, indent=2))
+        if selected_alert is not None and int(args.hold_seconds) > 0:
+            print(f"Holding alert window for {int(args.hold_seconds)}s before cleanup...")
+            await asyncio.sleep(int(args.hold_seconds))
         return 0 if selected_alert is not None else 1
     finally:
         await stop_process(inject_proc, name="fault_injector")

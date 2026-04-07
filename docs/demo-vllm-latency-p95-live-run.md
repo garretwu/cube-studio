@@ -2,14 +2,14 @@
 
 ## 目标
 
-这份文档对应 `VLLMInterTokenLatencyP95High` 场景的一次完整闭环实录：
+这份文档对应 `VLLMInterTokenLatencyP95High` 场景的一次真实 live diagnosis 实录：
 
 - 先用 `load_simulator` 给目标 vLLM 服务打持续推理流量
 - 再用 `fault_injector` 在目标节点注入 `gpu_burn`
 - 等待 `VLLMInterTokenLatencyP95High` live alert 触发
 - 让 Agent 用 ReAct 完成 live diagnosis
-- 执行 remediation plan
-- 用 PromQL 复验修复结果
+- 生成 remediation plan
+- 记录 LLM / skill / tool 的真实交互链路
 
 ## 本次成功实录
 
@@ -17,21 +17,21 @@
 
 - [vllm-inter-token-latency-p95-live-demo.txt](/root/workspace/cube-studio/data/demo/vllm-inter-token-latency-p95-live-demo.txt)
 
-这次完整 run 的核心结果是：
+这次 skill-enabled run 的核心结果是：
 
 - `alert_name = VLLMInterTokenLatencyP95High`
 - `alert_source = live`
 - `status = diagnosed`
-- `session_id = b30d3bac306f44198bfe1101e4053ce1`
-- 告警值：`73.78ms`
+- `session_id = c2c7651107c142699f296380b07a2a70`
+- 告警值：`48.78ms`
 - 阈值：`50ms`
 - 目标服务：`qwen3-32b-fp8-202602261`
 - 目标 Pod：`qwen3-32b-fp8-202602261-5495cc6f4b-kt6kd`
 - 目标节点：`worker-03 (10.11.4.12)`
-- 根因：`fi_gpu_burn_gpu_contention_c1d1a97e`
-- remediation：`kill_process(node="worker-03", process_name="fi_gpu_burn_gpu_contention_c1d1a97e")`
-- remediation execution：`success = true`
-- 修复后验证值：`48.87ms`
+- 选中的 skill：`builtin-vllm-diagnosis`
+- 根因：`GPU compute saturation on worker-03`
+- remediation proposal：`k8s.scale_deployment(namespace="service", name="qwen3-32b-fp8-202602261", replicas=2)`
+- remediation execution：`executed = false`
 
 这轮也验证了运行时拓扑增强已经生效：
 
@@ -49,26 +49,12 @@
 ## 时间线
 
 ```text
-[08:36:00] ┌─ Demo 启动 ──────────────────────────────────────────────┐
-           │ 启动 load_simulator，对 qwen3-32b-fp8-202602261 打持续流量 │
+[09:21:xx] ┌─ Alert 接收 ─────────────────────────────────────────────┐
+           │ 收到 live alert: VLLMInterTokenLatencyP95High            │
+           │ labels: namespace=service, service=qwen3-32b-fp8-202602261 │
            └──────────────────────────────────────────────────────────┘
 
-[08:36:30] ── 故障注入 ──
-           fault_injector 在 worker-03 上启动 gpu_burn
-           场景: gpu_contention
-           GPU: 0
-           显存占用: 90%
-           持续时间: 600s
-           fault session: 91bf663c
-
-[08:36:47+] ── 告警进入 firing ──
-           Prometheus 观测到:
-           VLLMInterTokenLatencyP95High
-           value = 0.0737595s = 73.76ms
-           threshold = 50ms
-           for = 5m
-
-[08:42:xx] ── Topology Context 构建 ──
+[09:21:xx] ── Topology Context 构建 ──
            根据 alert payload 自动解析:
            service = qwen3-32b-fp8-202602261
            -> pod = qwen3-32b-fp8-202602261-5495cc6f4b-kt6kd
@@ -77,84 +63,80 @@
 
            诊断前补全 runtime topology:
            service -> pod -> node
-           node -> gpu[0..3]
            node -> nic/rdma
            switch -> switch_port
+           并将 Topology Context 一并提供给 LLM
 
-[08:43:xx] ── Step 1 [Think] ──
-           Agent 接收 live alert + topology context，决定先确认：
-           1. latency 是否真的超阈
-           2. GPU 是否存在资源争用
-           3. 是否可能是 RDMA/网络问题
-           4. Pod 是否正常运行
+[09:21:xx] ── Step 1 [Skill Selection] ──
+           Agent 首轮不直接查 tool，而是先判断是否应使用 reusable skill
+           top skill = builtin-vllm-diagnosis
+           match_score = 0.0246
+           结论: 先执行 builtin-vllm-diagnosis
 
-[08:43:xx] ── Step 2 [Act] ── tool_call
-           → prometheus.query_instant(latency_promql)
+[09:21:xx] ── Step 2 [Skill Execution] ──
+           builtin-vllm-diagnosis 固定执行:
+           1. prometheus.query_instant(latency_promql)
+           2. k8s.list_pods(namespace="service")
+           3. gpu.get_metrics(node="worker-03")
 
-[08:43:xx] ── Step 2 [Observe] ──
-           73.78ms
-           "已高于 50ms 阈值，inter-token latency 回归真实存在"
+[09:21:xx] ── Step 2 [Observe] ──
+           skill result:
+           - P95 inter-token latency = 48.8ms
+           - namespace 内目标 pod 正在 Running
+           - worker-03 上 GPU utilization = 97-98%
+           "skill 已证明 latency 升高且整机 GPU 极度繁忙"
 
-[08:43:xx] ── Step 3 [Act] ── tool_call
-           → gpu.get_metrics(node="worker-03")
+[09:21:xx] ── Step 3 [Think] ──
+           Agent 读取 skill 结果后判断：
+           1. compute saturation 信号很强
+           2. 仍需补充 pod/node 与 RDMA 证据
+           3. 继续少量 ReAct 证据收集后再收敛
 
-[08:43:xx] ── Step 3 [Observe] ──
-           GPU-0 util=100%, mem=31194/32607 MB
-           GPU-1 util=98%,  mem=22685/32607 MB
-           GPU-2 util=97%,  mem=30347/32607 MB
-           GPU-3 util=97%,  mem=30347/32607 MB
-           "整机 GPU 已接近饱和，存在明显 contention 信号"
-
-[08:43:xx] ── Step 4 [Act] ── tool_call
-           → gpu.get_processes(node="worker-03")
-
-[08:43:xx] ── Step 4 [Observe] ──
-           VLLM::Worker_TP0 / TP1
-           fi_gpu_burn_gpu_contention_c1d1a97e (8504MB)
-           "确认存在 rogue gpu_burn 进程，与 VLLM worker 竞争 GPU-0 资源"
-
-[08:43:xx] ── Step 5 [Act] ── tool_call
+[09:21:xx] ── Step 4 [Act] ── tool_call
+           → k8s.resolve_pod_node_ip(namespace="service", pod_name="qwen3-32b-fp8-202602261-5495cc6f4b-kt6kd")
            → network.get_rdma_stats(node="worker-03")
 
-[08:43:xx] ── Step 5 [Observe] ──
-           mlx5_0/1 ACTIVE
-           mlx5_1/1 DOWN
-           mlx5_200/1 ACTIVE
-           "虽有一条 RDMA link down，但冗余链路仍在，非主因"
+[09:21:xx] ── Step 4 [Observe] ──
+           - pod 所在节点 = 10.11.4.12 / worker-03
+           - RDMA:
+             mlx5_0/1 ACTIVE
+             mlx5_1/1 DOWN
+             mlx5_200/1 ACTIVE
+           "存在冗余链路 down，但主工作链路仍可用，网络不是最强主因"
 
-[08:43:xx] ── Step 6 [Act] ── tool_call
-           → k8s.list_pods(namespace="service", node="worker-03")
+[09:21:xx] ── Step 5 [Act] ── tool_call
+           → prometheus.query_instant(gpu_token_latency_promql)
 
-[08:43:xx] ── Step 6 [Observe] ──
-           qwen3-32b-fp8-202602261-5495cc6f4b-kt6kd 处于 Running
-           "业务 Pod 正常在跑，不像是 Pod 崩溃或重启导致的延迟问题"
+[09:21:xx] ── Step 5 [Observe] ──
+           结合 skill 结果与补充证据，模型收敛为：
+           - GPU 侧证据强
+           - pod 正常运行
+           - RDMA 仅为次要异常
 
-[08:43:42] ── Step 7 [Conclude] ──
-           主因: GPU resource contention from unauthorized fi_gpu_burn process
-           备选1: Network RDMA link failure → eliminated
-           备选2: vLLM worker configuration or model loading issue → eliminated
-           置信度: 0.90
+[09:21:xx] ── Step 6 [Conclude] ──
+           主因: GPU compute saturation on worker-03
+           层级: hardware
+           影响对象:
+             - worker-03
+             - qwen3-32b-fp8-202602261-5495cc6f4b-kt6kd
 
-[08:43:42] ── Step 8 [Remediate] ──
-           remediation plan:
-           kill_process(
-             node="worker-03",
-             process_name="fi_gpu_burn_gpu_contention_c1d1a97e"
+           hypotheses:
+           - GPU compute saturation → confirmed
+           - RDMA network issue → eliminated
+           - vLLM configuration/model issue → testing
+
+[09:21:xx] ── Step 7 [Remediation Plan] ──
+           remediation proposal:
+           k8s.scale_deployment(
+             namespace="service",
+             name="qwen3-32b-fp8-202602261",
+             replicas=2
            )
 
-[08:43:42 - 08:44:42] ── 修复执行与验证 ──
-           human approval policy: auto_approve (demo-admin)
-           WAL: data/wal/vllm-latency-p95-live-demo.jsonl
-           执行 kill_process 成功
-           等待 60s
-           使用 PromQL 复验:
-           post_remediation_latency_ms = 48.87
-           结果: verified = true
-
-[08:46:30] ── 故障自动回收 ──
-           fault_injector watchdog 超时自动回收
-           SIGTERM + pkill fi_gpu_burn_gpu_contention_c1d1a97e
-           session 91bf663c completed
+[09:21:xx] ── Step 8 [Execution] ──
+           本轮未执行 remediation
+           executed = false
+           原因: 直接运行诊断脚本，未开启 execute-remediation
 ```
 
 ## 配置文件
@@ -248,33 +230,31 @@ python sre_agent/scripts/vllm_latency_p95_live_demo.py \
 
 这次完整 run 最终给出的 hypotheses 是：
 
-- `GPU resource contention from unauthorized burn/contention test process` → `confirmed`
-- `Network RDMA link failure causing distributed inference delays` → `eliminated`
-- `vLLM worker configuration or model loading issue` → `eliminated`
+- `GPU compute saturation causing request queuing and latency increase` → `confirmed`
+- `RDMA network issue causing latency` → `eliminated`
+- `vLLM configuration or model issue` → `testing`
 
 也就是说，这条 demo 现在不只是“定位一个根因”，而是已经显式展示了多假设排查过程。
 
-## 修复闭环
+## 本次 run 的边界
 
-这次不是只停在 proposal-only，而是完整执行了 remediation：
+这次记录的是一次真实的 `skill_selection -> skill_execution -> ReAct` 诊断链路，修复没有执行：
 
-- tool: `kill_process`
-- target: `worker-03`
-- process_name: `fi_gpu_burn_gpu_contention_c1d1a97e`
-- approval user: `demo-admin`
-- execution result: `success = true`
-- verification: `promql + wait_seconds = 60`
-- post remediation latency: `48.87ms`
+- selected skill: `builtin-vllm-diagnosis`
+- remediation tool proposal: `k8s.scale_deployment`
+- execution result: `executed = false`
+- 原因：这次是直接运行 `vllm_latency_p95_live_demo.py`，未开启 remediation execution
 
-因此这次 run 已经完整覆盖：
+因此这次 run 实际覆盖的是：
 
-1. 压测
-2. 错误注入
-3. 告警接收
-4. 拓扑扫描
+1. 告警接收
+2. 拓扑扫描
+3. skill selection
+4. skill execution
 5. ReAct 诊断
-6. remediation 执行
-7. PromQL 验证恢复
+6. remediation proposal 生成
+
+如果需要完整覆盖“执行修复 + 验证恢复”，应使用带 `--execute-remediation` 的完整闭环运行。
 
 ## 大模型和 Agent 的交互记录
 
@@ -306,26 +286,23 @@ python sre_agent/scripts/vllm_latency_p95_live_demo.py \
 
 ## 当前实现边界
 
-这条 demo 是“当前工具能力下的最小可运行版本”，因此和概念文档存在一点差异：
+这条 demo 现在已经补上了高层语义诊断 tool，但和概念文档仍有一点差异：
 
 - 已支持：
-  - `prometheus.query_instant`
+  - `get_inference_latency`
   - `gpu.get_metrics`
   - `gpu.get_processes`
+  - `get_thermal_status`
   - `k8s.list_pods`
   - `network.get_rdma_stats`
-  - `kill_process`
-- 还没有独立 Agent tool 的步骤：
-  - `get_inference_latency`
-  - `get_thermal_status`
   - `check_nic_errors`
+  - `kill_process`
+- 仍然存在的差异：
+  - `get_inference_latency` 当前默认基于 `vllm:inter_token_latency_seconds_bucket` 封装，而不是 request duration
+  - `get_thermal_status` 当前能稳定覆盖 GPU 温度和主机 `sensors` 输出，但不是完整硬件管理面采集
+  - `check_nic_errors` 当前基于 `ip -s link` + `ethtool -S`，更偏 Linux 主机网卡视角
 
-所以可运行 demo 会用：
-
-- PromQL 查询 p95 latency
-- RDMA 只读统计
-
-来替代概念 Trace 里的专用热/网工具。
+所以当前 demo 已经能用“正式 tool”表达概念文档里的大部分步骤，只是底层数据源和理想化版本还有一点实现层差异。
 
 ## 预期结果
 
@@ -333,9 +310,10 @@ python sre_agent/scripts/vllm_latency_p95_live_demo.py \
 
 - `alert_name = VLLMInterTokenLatencyP95High`
 - `status = diagnosed`
-- 根因：GPU contention / rogue gpu_burn process
-- remediation plan：`kill_process(node=..., process_name=...)`
-- remediation execution：成功执行并将 `post_remediation_latency_ms` 压回阈值以下
+- 先进行 `skill_selection`
+- 命中 `builtin-vllm-diagnosis` 或继续直接 tool-driven ReAct
+- 根因收敛到 GPU / 网络 / 配置三类候选中的一个主因
+- remediation plan：生成 proposal-only，或在开启执行开关时进入 remediation execution
 
 如果 live alert 没有触发，最常见原因是：
 

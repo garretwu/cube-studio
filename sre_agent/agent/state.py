@@ -16,7 +16,9 @@ class SREAgentState(TypedDict):
     step_timeout_sec: float
     total_timeout_sec: float
     selected_skill_id: str | None
+    skill_selection_attempted: bool
     skill_catalog: list[str]
+    skill_selection_reason: str | None
     diagnosis_result: dict[str, Any] | None
     remediation_plan: dict[str, Any] | None
     status: str | None
