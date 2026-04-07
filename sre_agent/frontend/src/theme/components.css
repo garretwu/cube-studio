@@ -3843,6 +3843,53 @@
   min-height: 420px;
 }
 
+/* Layer 1: Diagnosis input context card */
+.diagnosis-input-card {
+  margin-bottom: 8px;
+}
+
+.diagnosis-input-card__body {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.diagnosis-input-card__section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.diagnosis-input-card__details {
+  margin-top: 4px;
+}
+
+.diagnosis-input-card__details > summary {
+  cursor: pointer;
+  font-size: 13px;
+  color: rgba(15, 23, 42, 0.55);
+  user-select: none;
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.diagnosis-input-card__details > summary::before {
+  content: "▸ ";
+  font-size: 11px;
+  transition: transform 0.15s ease;
+}
+
+.diagnosis-input-card__details[open] > summary::before {
+  transform: rotate(90deg);
+}
+
+.diagnosis-input-card__details > summary:hover {
+  color: rgba(15, 23, 42, 0.8);
+}
+
+/* Step grouping in session card list */
 .diagnosis-session-card-list {
   display: flex;
   flex-direction: column;

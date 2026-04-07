@@ -36,6 +36,8 @@ def initialize_state(
     max_steps: int,
     checkpoint_dir: str | None = None,
     allowed_tool_names: list[str] | None = None,
+    alert_snapshot: dict[str, Any] | None = None,
+    topology_context: dict[str, Any] | None = None,
 ) -> SREAgentState:
     return {
         "query": query,
@@ -59,6 +61,8 @@ def initialize_state(
         "error": None,
         "checkpoint_dir": checkpoint_dir,
         "allowed_tool_names": allowed_tool_names,
+        "alert_snapshot": alert_snapshot,
+        "topology_context": topology_context,
     }
 
 

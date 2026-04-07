@@ -737,6 +737,8 @@ class DefaultDiagnosisRunner:
             tool_registry=self._tool_registry,
             checkpoint_dir=None,
             trace_callback=trace_callback,
+            alert_snapshot=enriched_alert.model_dump(mode="json"),
+            topology_context=topology_context,
         )
         return _diagnosis_session_from_state(alert=enriched_alert, state=result)
 
@@ -786,6 +788,8 @@ class DefaultReDiagnoseRunner:
             session_id=session.session_id,
             checkpoint_dir=None,
             trace_callback=trace_callback,
+            alert_snapshot=alert.model_dump(mode="json"),
+            topology_context=topology_context,
         )
         updated = _diagnosis_session_from_state(alert=alert, state=result)
         return updated.model_copy(update={"re_diagnosis_round": session.re_diagnosis_round + 1})

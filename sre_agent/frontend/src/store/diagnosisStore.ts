@@ -1,7 +1,7 @@
 import { create } from "zustand";
 
 import { apiClient } from "../api/client";
-import type { ChatMessage, DiagnosisSession, Observation, RemediationPlan, SessionEvent, ThinkingStep, WSEvent } from "../api/types";
+import type { ChatMessage, DiagnosisSession, DiagnosisStartedData, Observation, RemediationPlan, SessionEvent, ThinkingStep, WSEvent } from "../api/types";
 
 type ConnectionState = "connecting" | "open" | "closed" | "error";
 type BootstrapStatus = "idle" | "loading" | "ready" | "empty" | "error";
@@ -30,6 +30,8 @@ type DiagnosisState = {
   hasPlan: boolean;
   planMissingReason?: string;
   effectiveReviseInstruction?: string;
+  alertSnapshot: DiagnosisStartedData["alert"] | null;
+  topologyContext: DiagnosisStartedData["topology"] | null;
   bootstrapSession: (sessionId?: string) => Promise<void>;
   sendMessage: (content: string) => Promise<ChatMessage | undefined>;
   revisePlan: (instruction: string) => Promise<void>;
@@ -459,6 +461,8 @@ export const useDiagnosisStore = create<DiagnosisState>((set, get) => ({
   hasPlan: false,
   planMissingReason: undefined,
   effectiveReviseInstruction: undefined,
+  alertSnapshot: null,
+  topologyContext: null,
   connectionState: "closed",
   error: undefined,
   bootstrapSession: async (sessionId) => {
@@ -485,6 +489,8 @@ export const useDiagnosisStore = create<DiagnosisState>((set, get) => ({
       effectiveReviseInstruction: undefined,
       chatContextApplied: false,
       chatContextMeta: undefined,
+      alertSnapshot: null,
+      topologyContext: null,
     });
 
     try {
@@ -546,6 +552,14 @@ export const useDiagnosisStore = create<DiagnosisState>((set, get) => ({
       const traceStatus: TraceStatus = traceSteps.length ? "ready" : "empty";
       const approvalState = deriveApprovalState(session, events);
 
+      // Extract alert/topology from diagnosis_started events in history
+      const startedEvent = Array.isArray(events)
+        ? events.find((e) => e.type === "diagnosis_started")
+        : undefined;
+      const startedData = startedEvent && isRecord(startedEvent.data) ? startedEvent.data : {};
+      const historicalAlert = (startedData.alert as DiagnosisStartedData["alert"]) ?? null;
+      const historicalTopology = (startedData.topology as DiagnosisStartedData["topology"]) ?? null;
+
       set({
         session,
         activeSessionId: resolvedSessionId,
@@ -561,6 +575,8 @@ export const useDiagnosisStore = create<DiagnosisState>((set, get) => ({
         effectiveReviseInstruction: undefined,
         chatContextApplied: false,
         chatContextMeta: undefined,
+        alertSnapshot: historicalAlert,
+        topologyContext: historicalTopology,
         error: undefined,
       });
     } catch (error) {
@@ -771,6 +787,15 @@ export const useDiagnosisStore = create<DiagnosisState>((set, get) => ({
 
       let nextSession = appendTraceEntries(state.session, nextEntries);
 
+      // Capture alert/topology context from diagnosis_started event
+      let nextAlertSnapshot = state.alertSnapshot;
+      let nextTopologyContext = state.topologyContext;
+      if (event.type === "diagnosis_started") {
+        const data = isRecord(event.data) ? event.data : {};
+        nextAlertSnapshot = (data.alert as DiagnosisStartedData["alert"]) ?? null;
+        nextTopologyContext = (data.topology as DiagnosisStartedData["topology"]) ?? null;
+      }
+
       if (event.type === "diagnosis_result" && nextSession) {
         const diagnosisResult = event.data as DiagnosisSession["diagnosis_result"];
         nextSession = {
@@ -855,6 +880,8 @@ export const useDiagnosisStore = create<DiagnosisState>((set, get) => ({
         ...approvalState,
         effectiveReviseInstruction: state.effectiveReviseInstruction,
         messages: nextMessages,
+        alertSnapshot: nextAlertSnapshot,
+        topologyContext: nextTopologyContext,
         error: getEventError(event) ?? state.error,
         traceStatus:
           nextEntries.length > 0 || event.type === "diagnosis_result"

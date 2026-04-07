@@ -1,4 +1,5 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -64,16 +65,6 @@ function buildTimeline(stepDescription: string): SessionEvent[] {
         stage: "execution_succeeded",
         steps_completed: 1,
         step_results: [{ step_id: 1, tool: "k8s.restart_deployment", command: "rollout restart", success: true }],
-      },
-    },
-    {
-      schema_version: "1.0",
-      type: "remediation_progress",
-      session_id: "sess-1",
-      timestamp: "2026-04-03T10:03:00Z",
-      data: {
-        stage: "observation_result",
-        message: `观察通过：${stepDescription}`,
       },
     },
   ];
@@ -167,29 +158,24 @@ describe("RemediationPage", () => {
     });
   });
 
-  it("renders the new table design and keeps remediation timeline/steps behavior", async () => {
-    const { container } = renderWithRoute("/remediation");
+  it("renders current table + drawer architecture and step details", async () => {
+    const user = userEvent.setup();
+    renderWithRoute("/remediation");
 
-    expect(screen.getByRole("heading", { name: "修复记录与执行工作台" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "修复与执行" })).toBeInTheDocument();
 
     await waitFor(() => {
       expect(mockedStore.setSessionId).toHaveBeenCalledWith("sess-1");
       expect(mockedStore.fetchOverview).toHaveBeenCalledWith("sess-1");
-      expect(container.querySelector(".remediation-record-table__expand-row")).toBeTruthy();
     });
 
-    const expandRow = container.querySelector(".remediation-record-table__expand-row");
-    expect(expandRow).toBeTruthy();
-    const scoped = within(expandRow as HTMLElement);
+    expect(await screen.findByRole("dialog", { name: "修复详情" })).toBeInTheDocument();
+    expect(screen.getByText("方案信息")).toBeInTheDocument();
+    expect(screen.getByText("执行步骤")).toBeInTheDocument();
 
-    expect(scoped.getByText("记录明细")).toBeInTheDocument();
-    expect(scoped.getByText("根因定位")).toBeInTheDocument();
-    expect(scoped.getByText("修复内容")).toBeInTheDocument();
-    expect(scoped.getByText("restart deployment")).toBeInTheDocument();
-    expect(scoped.getByText("等待人工审批后执行修复计划")).toBeInTheDocument();
-    expect(scoped.getByText("修复执行成功")).toBeInTheDocument();
-    expect(scoped.getByText("一次性执行")).toBeInTheDocument();
-    expect(scoped.queryByText("diagnosis_result")).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "查看步骤 1 详情" }));
+    expect(screen.getByText("步骤 1 详情")).toBeInTheDocument();
+    expect(screen.getAllByText("restart deployment").length).toBeGreaterThan(0);
   });
 
   it("supports /remediation/:sessionId deep-link selection", async () => {
@@ -198,7 +184,9 @@ describe("RemediationPage", () => {
     await waitFor(() => {
       expect(mockedStore.setSessionId).toHaveBeenCalledWith("sess-2");
       expect(mockedStore.fetchOverview).toHaveBeenCalledWith("sess-2");
-      expect(screen.getByText("scale deployment")).toBeInTheDocument();
     });
+
+    expect(await screen.findByRole("dialog", { name: "修复详情" })).toBeInTheDocument();
+    expect(screen.getByText("scale deployment")).toBeInTheDocument();
   });
 });

@@ -21,6 +21,8 @@
 | `POST` | `/api/diagnose` | Bearer JWT | `SREResponse_DiagnosisSession_` |
 | `POST` | `/api/diagnose/start` | Bearer JWT | `SREResponse_DiagnosisSession_` |
 | `POST` | `/api/handle` | Bearer JWT | `SREResponse_LoopResult_` |
+| `GET` | `/api/knowledge/bases` | Bearer JWT | `SREResponse_list_dict_str__Any___` |
+| `GET` | `/api/knowledge/bases/{knowledge_base_id}` | Bearer JWT | `SREResponse_dict_str__Any__` |
 | `GET` | `/api/knowledge/dataset` | Bearer JWT | `SREResponse_dict_str__Any__` |
 | `GET` | `/api/knowledge/datasets` | Bearer JWT | `SREResponse_list_dict_str__Any___` |
 | `GET` | `/api/knowledge/documents` | Bearer JWT | `SREResponse_list_dict_str__Any___` |

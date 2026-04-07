@@ -162,6 +162,17 @@ export type Hypothesis = {
   confidence: number;
 };
 
+export type RankedRootCause = {
+  rank: number;
+  root_cause: string;
+  root_cause_layer: string;
+  root_cause_entities?: string[];
+  confidence: number;
+  evidence_summary?: string | null;
+  recommended_fix?: RemediationPlan | null;
+  distinguishing_verification?: string | null;
+};
+
 export type DiagnosisResult = {
   root_cause: string;
   root_cause_layer: string;
@@ -172,6 +183,7 @@ export type DiagnosisResult = {
   affected_services: string[];
   triage_priority: "P0" | "P1" | "P2" | "P3";
   diagnosis_certainty: "confirmed" | "probable" | "ambiguous";
+  ranked_candidates?: RankedRootCause[];
   recommended_fix?: RemediationPlan | null;
 };
 
@@ -220,6 +232,28 @@ export type SessionEvent = {
   session_id: string;
   timestamp: string;
   data: Record<string, unknown>;
+};
+
+/** Data payload for the diagnosis_started event. */
+export type DiagnosisStartedData = {
+  alert: {
+    alert_name: string;
+    severity: string;
+    labels: Record<string, string>;
+    annotations?: Record<string, string>;
+    fingerprint?: string;
+    summary?: string;
+    description?: string;
+    source?: string;
+    status?: string;
+  } | null;
+  topology: {
+    roots: string[];
+    affected_count: number;
+    affected_entities: { id: string; type: string; name?: string }[];
+    summary: string;
+  } | null;
+  variables: Record<string, unknown>;
 };
 
 export type SessionSummary = {

@@ -976,6 +976,8 @@ function DiagnosisPage() {
     chatContextMeta,
     connectionState,
     error,
+    alertSnapshot,
+    topologyContext,
     bootstrapSession,
     sendMessage,
     revisePlan,
@@ -1689,6 +1691,58 @@ const runStepFiveRootCauseCandidates = useCallback(() => {
             ) : null}
           </div>
         </div>
+
+        {/* Layer 1: Input context — alert & topology snapshot */}
+        {alertSnapshot || topologyContext ? (
+          <SurfaceCard
+            className="diagnosis-input-card"
+            description="展示触发本次诊断的告警上下文与拓扑爆炸半径。"
+            title="输入信息"
+            variant="soft"
+          >
+            <div className="diagnosis-input-card__body">
+              {alertSnapshot ? (
+                <div className="diagnosis-input-card__section">
+                  <p className="diagnosis-chat-state-card__copy">
+                    <strong>告警：</strong>
+                    {alertSnapshot.alert_name ?? "unknown"} | 严重度：{alertSnapshot.severity ?? "unknown"}
+                    {alertSnapshot.summary ? ` | 摘要：${alertSnapshot.summary}` : ""}
+                  </p>
+                  {alertSnapshot.labels && Object.keys(alertSnapshot.labels).length > 0 ? (
+                    <details className="diagnosis-input-card__details">
+                      <summary>告警标签 ({Object.keys(alertSnapshot.labels).length})</summary>
+                      <pre className="diagnosis-session-card__json">{JSON.stringify(alertSnapshot.labels, null, 2)}</pre>
+                    </details>
+                  ) : null}
+                  <details className="diagnosis-input-card__details">
+                    <summary>原始告警 JSON</summary>
+                    <pre className="diagnosis-session-card__json">{JSON.stringify(alertSnapshot, null, 2)}</pre>
+                  </details>
+                </div>
+              ) : null}
+              {topologyContext ? (
+                <div className="diagnosis-input-card__section">
+                  <p className="diagnosis-chat-state-card__copy">
+                    <strong>拓扑上下文：</strong>
+                    {topologyContext.summary ?? `爆炸半径 ${topologyContext.affected_count ?? 0} 个实体`}
+                  </p>
+                  {topologyContext.affected_entities && topologyContext.affected_entities.length > 0 ? (
+                    <details className="diagnosis-input-card__details">
+                      <summary>受影响实体 ({topologyContext.affected_entities.length})</summary>
+                      <ul className="diagnosis-session-card__summary-list">
+                        {topologyContext.affected_entities.slice(0, 20).map((entity) => (
+                          <li key={entity.id} className="diagnosis-session-card__summary-item">
+                            {entity.name ?? entity.id} ({entity.type})
+                          </li>
+                        ))}
+                      </ul>
+                    </details>
+                  ) : null}
+                </div>
+              ) : null}
+            </div>
+          </SurfaceCard>
+        ) : null}
 
         <div className="diagnosis-chat-workspace">
           <SurfaceCard bodyClassName="diagnosis-chat-shell__body" className="diagnosis-chat-shell">

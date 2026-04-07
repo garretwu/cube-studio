@@ -1026,6 +1026,208 @@ def build_api_router() -> APIRouter:
             result["score"] = score_value
         return result
 
+    def _normalize_knowledge_scope(value: Any) -> str:
+        normalized = str(value or "").strip().lower()
+        if normalized in {"private", "personal", "user"}:
+            return "private"
+        return "shared"
+
+    def _normalize_knowledge_status(value: Any) -> str:
+        if isinstance(value, bool):
+            return "enabled" if value else "disabled"
+        normalized = str(value or "").strip().lower()
+        if normalized in {"disabled", "disable", "inactive", "off", "false", "0"}:
+            return "disabled"
+        return "enabled"
+
+    def _normalize_knowledge_index_status(value: Any) -> str:
+        normalized = str(value or "").strip().lower()
+        if normalized in {"ready", "enabled", "active", "indexed", "available"}:
+            return "ready"
+        if normalized in {"indexing", "building", "processing", "running"}:
+            return "indexing"
+        if normalized in {"failed", "error", "unavailable"}:
+            return "failed"
+        return "pending"
+
+    def _safe_int(value: Any, default: int = 0) -> int:
+        try:
+            if value is None:
+                return default
+            if isinstance(value, bool):
+                return default
+            return int(value)
+        except (TypeError, ValueError):
+            return default
+
+    def _normalize_timestamp(value: Any, *, fallback: str | None = None) -> str:
+        if isinstance(value, datetime):
+            return value.isoformat()
+        text = str(value or "").strip()
+        if text:
+            return text
+        return fallback or datetime.now(UTC).isoformat()
+
+    def _slugify_code(value: str) -> str:
+        normalized = re.sub(r"[^a-zA-Z0-9]+", "_", value.strip().lower()).strip("_")
+        return normalized or "knowledge_base"
+
+    def _as_payload_dict(item: Any) -> dict[str, Any]:
+        if hasattr(item, "model_dump"):
+            payload = item.model_dump(mode="json")
+        elif isinstance(item, dict):
+            payload = dict(item)
+        else:
+            payload = {}
+        return payload if isinstance(payload, dict) else {}
+
+    def _normalize_knowledge_base_summary(item: Any, *, default_dataset_id: str = "") -> dict[str, Any]:
+        payload = _as_payload_dict(item)
+        dataset = _normalize_knowledge_dataset(payload, default_dataset_id=default_dataset_id)
+        dataset_id = str(dataset.get("id") or default_dataset_id or "default")
+        name = str(dataset.get("name") or payload.get("title") or dataset_id or "Knowledge Base")
+        code = str(payload.get("code") or payload.get("dataset_code") or _slugify_code(name or dataset_id))
+        document_count = _safe_int(payload.get("document_count", dataset.get("document_count")), default=0)
+        storage_bytes = _safe_int(
+            payload.get("storage_bytes")
+            or payload.get("size_bytes")
+            or payload.get("bytes")
+            or payload.get("word_count")
+            or dataset.get("word_count"),
+            default=0,
+        )
+        summary = {
+            "id": dataset_id,
+            "name": name,
+            "code": code,
+            "scope": _normalize_knowledge_scope(payload.get("scope") or payload.get("visibility") or payload.get("access")),
+            "document_count": max(document_count, 0),
+            "storage_bytes": max(storage_bytes, 0),
+            "index_status": _normalize_knowledge_index_status(
+                payload.get("index_status") or payload.get("indexing_status") or dataset.get("status")
+            ),
+            "status": _normalize_knowledge_status(payload.get("status") if "status" in payload else payload.get("enabled")),
+            "updated_at": _normalize_timestamp(payload.get("updated_at") or dataset.get("updated_at")),
+            "description": str(payload.get("description") or dataset.get("description") or ""),
+        }
+        return summary
+
+    def _normalize_preview_sections(raw_sections: Any, *, fallback_text: str) -> list[dict[str, str]]:
+        sections: list[dict[str, str]] = []
+        if isinstance(raw_sections, list):
+            for idx, section in enumerate(raw_sections):
+                section_payload = _as_payload_dict(section)
+                if not section_payload:
+                    continue
+                heading = str(section_payload.get("heading") or section_payload.get("title") or f"Section {idx + 1}")
+                body = str(section_payload.get("body") or section_payload.get("content") or "")
+                section_id = str(section_payload.get("id") or f"section-{idx + 1}")
+                if not heading.strip() and not body.strip():
+                    continue
+                sections.append({"id": section_id, "heading": heading, "body": body})
+        if sections:
+            return sections
+        return [{"id": "section-1", "heading": "摘要", "body": fallback_text or "暂无正文片段"}]
+
+    def _infer_knowledge_source_type(payload: dict[str, Any], *, source_label: str, file_name: str) -> str:
+        explicit = str(payload.get("source_type") or "").strip().lower()
+        if explicit in {"file", "manual", "link"}:
+            return explicit
+        source = str(payload.get("source_uri") or payload.get("source") or source_label).strip().lower()
+        if source.startswith("http://") or source.startswith("https://"):
+            return "link"
+        if source.startswith("manual://"):
+            return "manual"
+        if source.startswith(("platform://", "repo://", "archive://", "file://")):
+            return "file"
+        if "." in file_name:
+            return "file"
+        return "manual"
+
+    def _normalize_knowledge_base_document(item: Any, *, index: int) -> dict[str, Any]:
+        payload = _as_payload_dict(item)
+        normalized = _normalize_knowledge_document(payload, index=index)
+        preview_payload = _as_payload_dict(payload.get("preview"))
+        title = str(normalized.get("title") or f"Document {index + 1}")
+        excerpt = str(normalized.get("excerpt") or "")
+        source_label = str(
+            payload.get("source_label")
+            or preview_payload.get("source_label")
+            or normalized.get("source")
+            or "unknown"
+        )
+        source_uri_raw = str(payload.get("source_uri") or preview_payload.get("source_uri") or "")
+        source_uri = source_uri_raw.strip() or (source_label if source_label.startswith(("http://", "https://")) else None)
+        updated_at = _normalize_timestamp(
+            payload.get("updated_at")
+            or preview_payload.get("updated_at")
+            or payload.get("created_at"),
+        )
+
+        raw_tags = preview_payload.get("tags", payload.get("tags", normalized.get("tags", [])))
+        if isinstance(raw_tags, list):
+            tags = [str(tag) for tag in raw_tags if str(tag).strip()]
+        elif isinstance(raw_tags, str):
+            tags = [segment.strip() for segment in raw_tags.split(",") if segment.strip()]
+        else:
+            tags = []
+
+        file_name = str(payload.get("file_name") or payload.get("filename") or payload.get("name") or f"{_slugify_code(title)}.md")
+        size_raw = payload.get("size_bytes")
+        size_bytes = _safe_int(size_raw, default=0) if size_raw is not None else None
+        index_status = _normalize_knowledge_index_status(payload.get("index_status") or payload.get("indexing_status"))
+        status = _normalize_knowledge_status(payload.get("status") if "status" in payload else payload.get("enabled"))
+        preview_summary = str(payload.get("preview_summary") or preview_payload.get("description") or excerpt or "暂无摘要")
+        warning = str(preview_payload.get("warning") or "").strip() or None
+        if warning is None and index_status != "ready":
+            warning = "该文档索引未就绪，预览可能不完整。"
+
+        preview = {
+            "title": str(preview_payload.get("title") or title),
+            "description": str(preview_payload.get("description") or excerpt or "暂无摘要"),
+            "source_label": source_label,
+            "source_uri": source_uri,
+            "tags": tags,
+            "updated_at": updated_at,
+            "sections": _normalize_preview_sections(preview_payload.get("sections"), fallback_text=excerpt),
+            "warning": warning,
+        }
+
+        return {
+            "id": str(normalized.get("id") or payload.get("document_id") or f"doc-{index + 1}"),
+            "title": title,
+            "source_type": _infer_knowledge_source_type(payload, source_label=source_label, file_name=file_name),
+            "source_label": source_label,
+            "file_name": file_name,
+            "size_bytes": size_bytes,
+            "index_status": index_status,
+            "status": status,
+            "updated_at": updated_at,
+            "preview_summary": preview_summary,
+            "tags": tags,
+            "preview": preview,
+        }
+
+    def _normalize_knowledge_base_detail(dataset_item: Any, documents: list[Any], *, default_dataset_id: str = "") -> dict[str, Any]:
+        dataset_payload = _as_payload_dict(dataset_item)
+        summary = _normalize_knowledge_base_summary(dataset_payload, default_dataset_id=default_dataset_id)
+        mapped_documents = [_normalize_knowledge_base_document(item, index=idx) for idx, item in enumerate(documents)]
+        indexed_at_raw = dataset_payload.get("indexed_at")
+        indexed_at = (
+            _normalize_timestamp(indexed_at_raw)
+            if indexed_at_raw is not None
+            else (summary["updated_at"] if summary["index_status"] == "ready" else None)
+        )
+        document_count = max(summary["document_count"], len(mapped_documents))
+        return {
+            **summary,
+            "document_count": document_count,
+            "knowledge_base_id": str(dataset_payload.get("knowledge_base_id") or summary["id"]),
+            "created_at": _normalize_timestamp(dataset_payload.get("created_at"), fallback=summary["updated_at"]),
+            "indexed_at": indexed_at,
+            "documents": mapped_documents,
+        }
+
     def _knowledge_default_dataset_id(request: Request, knowledge: Any | None = None) -> str:
         cfg = getattr(request.app.state, "config", None)
         kb_cfg = getattr(cfg, "knowledge_base", None) if cfg is not None else None
@@ -2198,6 +2400,91 @@ def build_api_router() -> APIRouter:
                 error=SREError(code=ErrorCode.VALIDATION_ERROR, message=f"knowledge datasets query failed: {exc}"),
                 trace_id=_trace_id(request),
             )
+
+    @router.get("/knowledge/bases")
+    async def knowledge_bases(
+        request: Request,
+        keyword: str | None = None,
+        page: int = 1,
+        limit: int = 50,
+        user: CurrentUser = Depends(get_current_user),
+    ) -> SREResponse[list[dict[str, Any]]]:
+        _ = user
+        datasets_response = await knowledge_datasets(
+            request=request,
+            keyword=keyword,
+            page=page,
+            limit=limit,
+            user=user,
+        )
+        if not datasets_response.success:
+            return SREResponse(
+                success=False,
+                error=datasets_response.error,
+                trace_id=_trace_id(request),
+            )
+
+        knowledge = _services(request).knowledge
+        default_dataset_id = _knowledge_default_dataset_id(request, knowledge)
+        datasets = datasets_response.data if isinstance(datasets_response.data, list) else []
+        payload = [_normalize_knowledge_base_summary(item, default_dataset_id=default_dataset_id) for item in datasets]
+        return SREResponse(success=True, data=payload, trace_id=_trace_id(request))
+
+    @router.get("/knowledge/bases/{knowledge_base_id}")
+    async def knowledge_base_detail(
+        knowledge_base_id: str,
+        request: Request,
+        user: CurrentUser = Depends(get_current_user),
+    ) -> SREResponse[dict[str, Any]]:
+        _ = user
+        target_id = str(knowledge_base_id).strip()
+        if not target_id:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="knowledge base not found")
+
+        datasets_response = await knowledge_datasets(
+            request=request,
+            keyword=None,
+            page=1,
+            limit=200,
+            user=user,
+        )
+        if not datasets_response.success:
+            return SREResponse(
+                success=False,
+                error=datasets_response.error,
+                trace_id=_trace_id(request),
+            )
+
+        datasets = datasets_response.data if isinstance(datasets_response.data, list) else []
+        selected_dataset = next(
+            (
+                item
+                for item in datasets
+                if str(_as_payload_dict(item).get("id", "")).strip() == target_id
+            ),
+            None,
+        )
+        if selected_dataset is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"knowledge base not found: {target_id}")
+
+        documents_response = await knowledge_documents(
+            request=request,
+            keyword=None,
+            dataset_id=target_id,
+            page=1,
+            limit=200,
+            user=user,
+        )
+        if not documents_response.success:
+            return SREResponse(
+                success=False,
+                error=documents_response.error,
+                trace_id=_trace_id(request),
+            )
+
+        documents = documents_response.data if isinstance(documents_response.data, list) else []
+        payload = _normalize_knowledge_base_detail(selected_dataset, documents, default_dataset_id=target_id)
+        return SREResponse(success=True, data=payload, trace_id=_trace_id(request))
 
     @router.get("/knowledge/documents")
     async def knowledge_documents(

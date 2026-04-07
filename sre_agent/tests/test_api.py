@@ -1095,6 +1095,48 @@ class TestAPIIntegration:
         assert isinstance(payload["data"], list)
         assert payload["data"][0]["id"] == "dataset-default"
 
+    def test_integration_get_knowledge_bases_returns_summary_list(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        client, token = _build_client(monkeypatch)
+
+        response = client.get("/api/knowledge/bases", headers=_auth_headers(token))
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["success"] is True
+        assert isinstance(payload["data"], list)
+        assert payload["data"][0]["id"] == "dataset-default"
+        assert payload["data"][0]["scope"] in {"shared", "private"}
+        assert payload["data"][0]["status"] in {"enabled", "disabled"}
+        assert payload["data"][0]["index_status"] in {"ready", "indexing", "failed", "pending"}
+        assert "code" in payload["data"][0]
+
+    def test_integration_get_knowledge_base_detail_returns_preview_documents(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        client, token = _build_client(monkeypatch)
+        knowledge = client.app.state.services.knowledge
+
+        response = client.get("/api/knowledge/bases/dataset-network", headers=_auth_headers(token))
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["success"] is True
+        assert payload["data"]["id"] == "dataset-network"
+        assert payload["data"]["knowledge_base_id"] == "dataset-network"
+        assert isinstance(payload["data"]["documents"], list)
+        assert payload["data"]["documents"][0]["id"] == "doc-1"
+        assert payload["data"]["documents"][0]["source_type"] in {"file", "manual", "link"}
+        assert "preview" in payload["data"]["documents"][0]
+        assert payload["data"]["documents"][0]["preview"]["sections"]
+        assert knowledge.last_documents_dataset_id == "dataset-network"
+
+    def test_integration_get_knowledge_base_detail_returns_404_when_missing(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        client, token = _build_client(monkeypatch)
+
+        response = client.get("/api/knowledge/bases/not-exist", headers=_auth_headers(token))
+
+        assert response.status_code == 404
+        payload = response.json()
+        assert "knowledge base not found" in str(payload.get("detail", "")).lower()
+
     def test_integration_knowledge_routes_forward_dataset_id_query(self, monkeypatch: pytest.MonkeyPatch) -> None:
         client, token = _build_client(monkeypatch)
         knowledge = client.app.state.services.knowledge
