@@ -81,6 +81,7 @@
 | `observation_started` | 通用事件 |
 | `observation_result` | 通用事件 |
 | `escalation_required` | 通用事件 |
+| `diagnosis_started` | 通用事件 |
 | `alert` | 告警变更事件 |
 | `topology` | 拓扑同步与节点/边增量事件 |
 | `error` | 错误事件 |

@@ -9,15 +9,34 @@
       "post": {
         "summary": "Diagnose",
         "operationId": "diagnose_api_diagnose_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "extra_alert_fingerprints",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "title": "Extra Alert Fingerprints"
+            }
+          }
+        ],
         "requestBody": {
+          "required": true,
           "content": {
             "application/json": {
               "schema": {
                 "$ref": "#/components/schemas/Alert"
               }
             }
-          },
-          "required": true
+          }
         },
         "responses": {
           "200": {
@@ -40,27 +59,41 @@
               }
             }
           }
-        },
-        "security": [
-          {
-            "HTTPBearer": []
-          }
-        ]
+        }
       }
     },
     "/api/diagnose/start": {
       "post": {
         "summary": "Diagnose Start",
         "operationId": "diagnose_start_api_diagnose_start_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "extra_alert_fingerprints",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "title": "Extra Alert Fingerprints"
+            }
+          }
+        ],
         "requestBody": {
+          "required": true,
           "content": {
             "application/json": {
               "schema": {
                 "$ref": "#/components/schemas/Alert"
               }
             }
-          },
-          "required": true
+          }
         },
         "responses": {
           "200": {
@@ -83,12 +116,7 @@
               }
             }
           }
-        },
-        "security": [
-          {
-            "HTTPBearer": []
-          }
-        ]
+        }
       }
     },
     "/api/handle": {

@@ -59,7 +59,7 @@ export type TopologyStatus = {
   scanner_counts: Record<string, { nodes: number; edges: number }>;
 };
 
-export type TopologyObjectType = "rack" | "node" | "gpu" | "switch" | "service" | "cluster";
+export type TopologyObjectType = "rack" | "node" | "gpu" | "switch" | "service" | "pod" | "cluster";
 export type TopologyObjectStatus = "healthy" | "abnormal" | "impacted" | "maintenance";
 export type TopologyLayer = "physical" | "network" | "compute" | "service";
 export type TopologyImpactLevel = "low" | "medium" | "high";

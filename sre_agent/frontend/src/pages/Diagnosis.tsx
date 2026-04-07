@@ -5,7 +5,7 @@ import type { MenuProps } from "antd";
 import { isValidElement, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
 
-import type { DiagnosisSession, RemediationPlan, WSEvent } from "../api/types";
+import type { DiagnosisSession, Observation, RemediationPlan, ThinkingStep, WSEvent } from "../api/types";
 import { buildBackendWsUrl } from "../api/ws";
 import { AppIcon, SectionHeader, StatusChip, SurfaceCard } from "../components/ui";
 import { useWebSocket } from "../hooks/useWebSocket";
@@ -156,6 +156,103 @@ type SessionPlanCard = {
 };
 
 type SessionCard = SessionLoopCard | SessionConclusionCard | SessionPlanCard;
+
+type ThinkingRoundPhase = "thinking" | "tool_call" | "observation" | "conclusion" | "complete";
+
+type ThinkingRound = {
+  roundIndex: number;
+  roundId: string;
+  timestamp: string;
+  thinkingText: string;
+  toolName: string | null;
+  toolParams: Record<string, unknown>;
+  observation: Observation | null;
+  conclusionText: string | null;
+  phase: ThinkingRoundPhase;
+  isActive: boolean;
+};
+
+const PHASE_ORDER: Record<ThinkingRoundPhase, number> = {
+  thinking: 0,
+  tool_call: 1,
+  observation: 2,
+  conclusion: 3,
+  complete: 4,
+};
+
+function phaseAtLeast(phase: ThinkingRoundPhase, threshold: ThinkingRoundPhase): boolean {
+  return PHASE_ORDER[phase] >= PHASE_ORDER[threshold];
+}
+
+function isThinkingStep(entry: ThinkingStep | Observation): entry is ThinkingStep {
+  return "thought" in entry;
+}
+
+function buildThinkingRounds(steps: Array<ThinkingStep | Observation>): ThinkingRound[] {
+  if (!steps.length) {
+    return [];
+  }
+
+  const rounds: ThinkingRound[] = [];
+  let currentRound: ThinkingRound | null = null;
+
+  for (const entry of steps) {
+    if (isThinkingStep(entry)) {
+      if (entry.action_type === "tool_call") {
+        currentRound = {
+          roundIndex: rounds.length,
+          roundId: `round-${rounds.length}-${entry.timestamp ?? Date.now()}`,
+          timestamp: entry.timestamp ?? new Date().toISOString(),
+          thinkingText: entry.thought ?? "",
+          toolName: entry.tool_name ?? null,
+          toolParams: entry.tool_params ?? {},
+          observation: null,
+          conclusionText: null,
+          phase: "tool_call",
+          isActive: false,
+        };
+        rounds.push(currentRound);
+        continue;
+      }
+
+      if (entry.action_type === "conclude" || entry.action_type === "remediate") {
+        const conclusion = entry.thought?.trim();
+        if (!conclusion) {
+          continue;
+        }
+        // Walk backward to find a round missing a conclusion
+        for (let i = rounds.length - 1; i >= 0; i--) {
+          if (!rounds[i].conclusionText) {
+            rounds[i].conclusionText = conclusion;
+            if (rounds[i].phase === "observation" || rounds[i].phase === "tool_call") {
+              rounds[i].phase = "complete";
+            }
+            break;
+          }
+        }
+      }
+      continue;
+    }
+
+    // Observation
+    if (currentRound && !currentRound.observation) {
+      currentRound.observation = entry;
+      if (currentRound.phase === "tool_call") {
+        currentRound.phase = "observation";
+      }
+    }
+  }
+
+  // Mark the last non-complete round as active
+  for (let i = rounds.length - 1; i >= 0; i--) {
+    if (rounds[i].phase !== "complete") {
+      rounds[i].isActive = true;
+      break;
+    }
+  }
+
+  return rounds;
+}
 
 const DEMO_STEP_LABELS = [
   { id: "1", title: "确认影响范围" },
@@ -785,6 +882,236 @@ function ThinkingPlanCard({ payload }: { payload: ThinkingPlanPayload }) {
 }
 function renderThinkingPlanCard(payload: ThinkingPlanPayload) {
   return <ThinkingPlanCard payload={payload} />;
+}
+
+function ThinkingRoundCard({ round }: { round: ThinkingRound }) {
+  const showToolCall = phaseAtLeast(round.phase, "tool_call") && round.toolName;
+  const showObservation = phaseAtLeast(round.phase, "observation") && round.observation !== null;
+  const showConclusion = round.conclusionText !== null;
+
+  const phaseLabel: Record<ThinkingRoundPhase, string> = {
+    thinking: "思考中",
+    tool_call: "选择工具",
+    observation: "观测中",
+    conclusion: "归纳中",
+    complete: "已完成",
+  };
+
+  const phaseTone: Record<ThinkingRoundPhase, "accent" | "info" | "success" | "warning" | "neutral"> = {
+    thinking: "accent",
+    tool_call: "info",
+    observation: "warning",
+    conclusion: "info",
+    complete: "success",
+  };
+
+  return (
+    <div className="diagnosis-thinking-loop__round">
+      <div className="diagnosis-thinking-loop__round-header">
+        <StatusChip tone="accent">第 {round.roundIndex + 1} 轮</StatusChip>
+        <StatusChip tone={phaseTone[round.phase]}>{phaseLabel[round.phase]}</StatusChip>
+        <StatusChip tone="neutral">{formatTimestamp(round.timestamp)}</StatusChip>
+      </div>
+
+      {/* Thinking section */}
+      <div className="diagnosis-thinking-plan__section diagnosis-thinking-plan__section--thinking">
+        <div className="diagnosis-thinking-plan__section-header">
+          <span className="diagnosis-thinking-plan__section-icon diagnosis-thinking-plan__section-icon--thinking">
+            <AppIcon name="algorithm" size={16} />
+          </span>
+          <div className="diagnosis-thinking-plan__section-copy">
+            <p className="diagnosis-thinking-plan__section-title">思考过程</p>
+          </div>
+        </div>
+        <StreamingBlock
+          text={round.thinkingText}
+          mode={round.isActive && round.phase === "thinking" ? "streaming" : "complete"}
+          speed={3}
+        />
+      </div>
+
+      {/* Tool call section */}
+      {showToolCall ? (
+        <div className="diagnosis-thinking-plan__section diagnosis-thinking-plan__section--tool">
+          <div className="diagnosis-thinking-plan__section-header">
+            <span className="diagnosis-thinking-plan__section-icon diagnosis-thinking-plan__section-icon--tool">
+              <AppIcon name="clipboardTasks" size={16} />
+            </span>
+            <div className="diagnosis-thinking-plan__section-copy">
+              <p className="diagnosis-thinking-plan__section-title">工具调用</p>
+            </div>
+          </div>
+          <div className="status-row diagnosis-thinking-plan__tool-chips">
+            <StatusChip tone="info">{round.toolName}</StatusChip>
+            <StatusChip tone={phaseAtLeast(round.phase, "observation") ? "success" : "warning"}>
+              {phaseAtLeast(round.phase, "observation") ? "已完成" : "执行中"}
+            </StatusChip>
+          </div>
+          <Collapse
+            bordered={false}
+            className="diagnosis-thinking-plan__collapse"
+            ghost
+            items={[
+              {
+                key: "params",
+                label: "查看工具参数",
+                children: (
+                  <pre className="diagnosis-thinking-plan__params">
+                    {JSON.stringify(round.toolParams, null, 2)}
+                  </pre>
+                ),
+              },
+            ]}
+            size="small"
+          />
+        </div>
+      ) : null}
+
+      {/* Observation section */}
+      {showObservation ? (
+        <div className="diagnosis-thinking-plan__section diagnosis-thinking-plan__section--answer">
+          <div className="diagnosis-thinking-plan__section-header">
+            <span className="diagnosis-thinking-plan__section-icon diagnosis-thinking-plan__section-icon--answer">
+              <AppIcon name="documentCheck" size={16} />
+            </span>
+            <div className="diagnosis-thinking-plan__section-copy">
+              <p className="diagnosis-thinking-plan__section-title">观测结果</p>
+            </div>
+          </div>
+          <p className="diagnosis-chat-state-card__copy">
+            {summarizeResultPayload(round.observation?.result ?? {})}
+          </p>
+          <Collapse
+            bordered={false}
+            ghost
+            size="small"
+            items={[
+              {
+                key: "result",
+                label: "查看完整结果 JSON",
+                children: (
+                  <pre className="diagnosis-session-card__json">
+                    {toJsonText(round.observation?.result ?? {})}
+                  </pre>
+                ),
+              },
+            ]}
+          />
+        </div>
+      ) : null}
+
+      {/* Conclusion section */}
+      {showConclusion ? (
+        <div className="diagnosis-thinking-plan__section diagnosis-thinking-plan__section--answer">
+          <div className="diagnosis-thinking-plan__section-header">
+            <span className="diagnosis-thinking-plan__section-icon diagnosis-thinking-plan__section-icon--answer">
+              <AppIcon name="documentCheck" size={16} />
+            </span>
+            <div className="diagnosis-thinking-plan__section-copy">
+              <p className="diagnosis-thinking-plan__section-title">阶段结论</p>
+            </div>
+          </div>
+          <StreamingBlock
+            text={round.conclusionText ?? ""}
+            mode={round.isActive && round.phase === "conclusion" ? "streaming" : "complete"}
+            speed={4}
+          />
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function ThinkingLoopVisualization({
+  rounds,
+  diagnosisResult,
+  effectivePlan,
+}: {
+  rounds: ThinkingRound[];
+  diagnosisResult: DiagnosisSession["diagnosis_result"] | null;
+  effectivePlan: RemediationPlan | null;
+}) {
+  if (!rounds.length) {
+    return null;
+  }
+
+  const lastCompleteIndex = rounds.reduce(
+    (acc, round, i) => (round.phase === "complete" ? i : acc),
+    -1,
+  );
+
+  return (
+    <div className="diagnosis-thinking-loop">
+      {/* Round indicator bar */}
+      <div className="diagnosis-thinking-loop__indicator-bar">
+        {rounds.map((round, index) => {
+          const isCompleted = round.phase === "complete";
+          const isActive = round.isActive;
+          const stateClassName = isCompleted
+            ? "completed"
+            : isActive
+              ? "active"
+              : "pending";
+
+          return (
+            <div key={round.roundId} className="diagnosis-thinking-loop__indicator-group">
+              {index > 0 ? <span className="diagnosis-thinking-loop__indicator-line" /> : null}
+              <span
+                className={`diagnosis-thinking-loop__indicator-dot diagnosis-thinking-loop__indicator-dot--${stateClassName}`}
+                title={`第 ${index + 1} 轮`}
+              >
+                {isCompleted ? "✓" : index + 1}
+              </span>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Round cards with connectors */}
+      {rounds.map((round, index) => (
+        <div key={round.roundId}>
+          <ThinkingRoundCard round={round} />
+          {index < rounds.length - 1 ? (
+            <div className="diagnosis-thinking-loop__connector" />
+          ) : null}
+        </div>
+      ))}
+
+      {/* Final diagnosis card */}
+      {diagnosisResult ? (
+        <>
+          <div className="diagnosis-thinking-loop__connector" />
+          <div className="diagnosis-session-card">
+            <div className="status-row">
+              <StatusChip tone="success">诊断结论</StatusChip>
+              <StatusChip tone="neutral">{formatTimestamp(new Date().toISOString())}</StatusChip>
+            </div>
+            <p className="diagnosis-chat-state-card__copy">根因：{diagnosisResult.root_cause}</p>
+            <p className="diagnosis-chat-state-card__copy">
+              置信度：{Math.round((diagnosisResult.confidence ?? 0) * 100)}%
+            </p>
+            <p className="diagnosis-chat-state-card__copy">影响：{diagnosisResult.impact_summary}</p>
+          </div>
+        </>
+      ) : null}
+
+      {/* Remediation plan card */}
+      {effectivePlan ? (
+        <>
+          <div className="diagnosis-thinking-loop__connector" />
+          <div className="diagnosis-session-card">
+            <div className="status-row">
+              <StatusChip tone="warning">修复计划</StatusChip>
+              <StatusChip tone="neutral">{effectivePlan.plan_id}</StatusChip>
+            </div>
+            <p className="diagnosis-chat-state-card__copy">根因：{effectivePlan.root_cause}</p>
+            <p className="diagnosis-chat-state-card__copy">说明：{effectivePlan.description}</p>
+            <p className="diagnosis-chat-state-card__copy">步骤数：{effectivePlan.steps.length}</p>
+          </div>
+        </>
+      ) : null}
+    </div>
+  );
 }
 
 function renderRootCauseCandidatesCard(payload: RootCauseCandidatesPayload) {
@@ -1455,6 +1782,10 @@ const runStepFiveRootCauseCandidates = useCallback(() => {
   }, [isExecutingDemoStep]);
   const effectivePlan = useMemo(() => extractRecommendedPlan(session), [session]);
   const sessionCards = useMemo(() => buildSessionCards(session, effectivePlan), [session, effectivePlan]);
+  const thinkingRounds = useMemo(
+    () => buildThinkingRounds(session?.trace?.steps ?? []),
+    [session?.trace?.steps],
+  );
   const lastUpdatedAt = useMemo(() => {
     const lastEventAt = events.length > 0 ? events[events.length - 1]?.timestamp : undefined;
     if (lastEventAt) {
@@ -1781,14 +2112,20 @@ const runStepFiveRootCauseCandidates = useCallback(() => {
               </div>
             ) : null}
 
-            {bootstrapStatus === "ready" && !isLoadingSession && !bubbleItems.length && !sessionCards.length ? (
+            {bootstrapStatus === "ready" && !isLoadingSession && !bubbleItems.length && !thinkingRounds.length && !sessionCards.length ? (
               <div className="diagnosis-chat-state-card">
                 <p className="diagnosis-chat-state-card__title">暂无消息</p>
                 <p className="diagnosis-chat-state-card__copy">当前会话还没有可展示的对话内容。</p>
               </div>
             ) : null}
 
-            {sessionCards.length > 0 ? (
+            {thinkingRounds.length > 0 ? (
+              <ThinkingLoopVisualization
+                rounds={thinkingRounds}
+                diagnosisResult={session?.diagnosis_result ?? null}
+                effectivePlan={effectivePlan}
+              />
+            ) : sessionCards.length > 0 ? (
               <div className="diagnosis-session-card-list">
                 {sessionCards.map((card) => renderSessionCard(card))}
               </div>

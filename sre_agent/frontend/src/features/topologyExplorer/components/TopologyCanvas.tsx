@@ -85,6 +85,7 @@ function getBasePositions(nodes: TopologyObject[], layoutPreset: ExplorerLayoutP
     switch: { x: 430, y: 120 },
     node: { x: 430, y: 320 },
     gpu: { x: 760, y: 220 },
+    pod: { x: 1020, y: 220 },
     service: { x: 1030, y: 340 },
   };
 

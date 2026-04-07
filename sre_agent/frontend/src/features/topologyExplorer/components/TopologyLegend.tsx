@@ -11,7 +11,7 @@ type TopologyLegendProps = {
   open: boolean;
 };
 
-const typeItems = ["rack", "node", "gpu", "switch", "service", "cluster"] as const;
+const typeItems = ["rack", "node", "gpu", "switch", "service", "pod", "cluster"] as const;
 const statusItems = ["healthy", "abnormal", "impacted", "maintenance"] as const;
 const relationItems = ["contains", "runs_on", "connects_to", "depends_on", "uplink_to", "aggregated"] as const;
 

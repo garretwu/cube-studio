@@ -227,6 +227,37 @@ class _LiveK8sDiscoveryChannel:
 
         return await asyncio.to_thread(_fetch)
 
+    async def list_services(self, namespace: str) -> list[dict[str, Any]]:
+        def _fetch() -> list[dict[str, Any]]:
+            try:
+                from kubernetes import client as k8s_client
+                from kubernetes import config as k8s_config
+            except Exception as exc:  # noqa: BLE001
+                raise RuntimeError("python package 'kubernetes' is required for live K8s discovery") from exc
+
+            k8s_config.load_kube_config(config_file=self._kubeconfig)
+            api = k8s_client.CoreV1Api()
+            services = api.list_namespaced_service(namespace)
+            payloads: list[dict[str, Any]] = []
+            for service in services.items:
+                payloads.append(
+                    {
+                        "metadata": {
+                            "name": service.metadata.name,
+                            "labels": dict(service.metadata.labels or {}),
+                        },
+                        "spec": {
+                            "selector": dict(service.spec.selector or {}),
+                            "type": service.spec.type,
+                            "clusterIP": service.spec.cluster_ip,
+                        },
+                        "status": {},
+                    }
+                )
+            return payloads
+
+        return await asyncio.to_thread(_fetch)
+
 
 class _LivePrometheusQueryChannel:
     def __init__(self, base_url: str, queries: dict[str, str]) -> None:
@@ -480,6 +511,83 @@ async def scan_live_sources(
         suffix = f" (and {len(bmc_warnings) - 3} more)" if len(bmc_warnings) > 3 else ""
         LOGGER.warning("live BMC scan degraded: %s%s", preview, suffix)
     return all_nodes, all_edges, scanner_counts
+
+
+def _merge_static_dynamic_nodes(
+    static_nodes: list[OntologyNode],
+    dynamic_nodes: list[OntologyNode],
+) -> list[OntologyNode]:
+    by_id: dict[str, OntologyNode] = {node.id: node for node in static_nodes}
+    for node in dynamic_nodes:
+        # Static inventory remains authoritative for long-lived infra assets.
+        if node.id in by_id:
+            continue
+        by_id[node.id] = node
+    return sorted(by_id.values(), key=lambda item: item.id)
+
+
+async def discover_k8s_workload_snapshot(
+    config: SREAgentConfig,
+) -> tuple[list[OntologyNode], list[OntologyEdge], dict[str, dict[str, int]]]:
+    discovery_cfg = config.ontology.discovery
+    effective_kubeconfig = os.getenv("SRE_KUBECONFIG", "").strip() or "~/.kube/config"
+    namespaces = [item.strip() for item in discovery_cfg.k8s_namespaces if item and item.strip()]
+    if not namespaces:
+        namespaces = ["default"]
+    cluster_name = str(discovery_cfg.k8s_cluster_name).strip() or "lab-cluster"
+
+    k8s_channel = _LiveK8sDiscoveryChannel(kubeconfig=effective_kubeconfig)
+    nodes: list[OntologyNode] = []
+    edges: list[OntologyEdge] = []
+    for namespace in namespaces:
+        ns_nodes, ns_edges = await K8sScanner(channel=k8s_channel).scan(
+            namespace=namespace,
+            label_selector=None,
+            cluster_name=cluster_name,
+        )
+        nodes.extend(ns_nodes)
+        edges.extend(ns_edges)
+    deduped_nodes = _dedupe_nodes(nodes)
+    deduped_edges = _dedupe_edges(edges)
+    return deduped_nodes, deduped_edges, {"k8s_workload": _summary_counts(deduped_nodes, deduped_edges)}
+
+
+async def discover_hybrid_snapshot(
+    config: SREAgentConfig,
+) -> tuple[list[OntologyNode], list[OntologyEdge], dict[str, dict[str, int]], str | None]:
+    static_nodes, static_edges, static_counts = await discover_static_snapshot(config)
+    static_node_ids = {node.id for node in static_nodes}
+    try:
+        dynamic_nodes, dynamic_edges, dynamic_counts = await discover_k8s_workload_snapshot(config)
+    except Exception as exc:  # noqa: BLE001
+        fallback_reason = f"dynamic K8s workload discovery failed, retained static snapshot: {exc}"
+        LOGGER.warning(fallback_reason)
+        return static_nodes, static_edges, static_counts, fallback_reason
+
+    hosted_node_ids = {
+        edge.target_id
+        for edge in dynamic_edges
+        if edge.relation == RelationType.HOSTED_ON and edge.target_id and edge.target_id not in static_node_ids
+    }
+    placeholder_nodes = [
+        OntologyNode(
+            id=node_id,
+            entity_type=EntityType.NODE,
+            name=node_id,
+            properties={
+                "source": "k8s_placeholder",
+                "placeholder": True,
+            },
+            status="online",
+            updated_at=datetime.now(UTC),
+        )
+        for node_id in sorted(hosted_node_ids)
+    ]
+
+    merged_nodes = _merge_static_dynamic_nodes(static_nodes, [*dynamic_nodes, *placeholder_nodes])
+    merged_edges = _dedupe_edges([*static_edges, *dynamic_edges])
+    scanner_counts = {**static_counts, **dynamic_counts}
+    return merged_nodes, merged_edges, scanner_counts, None
 
 
 async def discover_live_snapshot(

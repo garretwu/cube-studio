@@ -256,6 +256,10 @@
   background: #0f766e;
 }
 
+.topology-modified-legend__pill--pod .topology-modified-legend__dot {
+  background: #15803d;
+}
+
 .topology-modified-legend__pill--cluster .topology-modified-legend__dot {
   background: #0d6bcb;
 }
@@ -396,6 +400,10 @@
 
 .topology-flow-node--service {
   border-top: 5px solid #0f766e;
+}
+
+.topology-flow-node--pod {
+  border-top: 5px solid #15803d;
 }
 
 .topology-flow-node--cluster {
@@ -1434,6 +1442,12 @@
   color: #fff;
 }
 
+.topology-modified-legend__icon--pod {
+  background: #15803d;
+  border-color: #15803d;
+  color: #fff;
+}
+
 .topology-modified-legend__icon--cluster {
   background: #0d6bcb;
   border-color: #0d6bcb;
@@ -1476,6 +1490,10 @@
 
 .topology-flow-node__icon--service {
   color: #0f766e;
+}
+
+.topology-flow-node__icon--pod {
+  color: #15803d;
 }
 
 .topology-flow-node__icon--cluster {
@@ -1530,6 +1548,10 @@
   color: #0f766e;
 }
 
+.topology-modified-tree__node-icon--pod {
+  color: #15803d;
+}
+
 .topology-modified-tree__node-icon--cluster {
   color: #0d6bcb;
 }
@@ -1571,6 +1593,10 @@
 
 .topology-modified-stage-panel__icon--service {
   color: #0f766e;
+}
+
+.topology-modified-stage-panel__icon--pod {
+  color: #15803d;
 }
 
 .topology-modified-stage-panel__icon--cluster {
