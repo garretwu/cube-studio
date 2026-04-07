@@ -13,7 +13,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, ConfigDict, Field
 
 from sre_agent.alerts_filter import build_blocked_alert_name_set, is_blocked_alert
@@ -682,16 +682,46 @@ def build_api_router() -> APIRouter:
             return True
         return any(parameter.kind == inspect.Parameter.VAR_KEYWORD for parameter in signature.parameters.values())
 
+    def _supports_extra_alerts(method: Any) -> bool:
+        try:
+            signature = inspect.signature(method)
+        except (TypeError, ValueError):
+            return False
+        if "extra_alerts" in signature.parameters:
+            return True
+        return any(parameter.kind == inspect.Parameter.VAR_KEYWORD for parameter in signature.parameters.values())
+
+    def _lookup_extra_alerts(alert_store: Any, fingerprints: list[str]) -> list[Alert]:
+        """Look up extra alerts from the alert store by fingerprint."""
+        if not fingerprints:
+            return []
+        snapshot = alert_store.snapshot()
+        raw_alerts = snapshot.get("alerts", [])
+        fingerprint_set = set(fingerprints)
+        results: list[Alert] = []
+        for item in raw_alerts:
+            if not isinstance(item, dict):
+                continue
+            fp = str(item.get("fingerprint", "")).strip()
+            if fp in fingerprint_set:
+                try:
+                    results.append(Alert.model_validate(item))
+                except Exception:
+                    continue
+        return results
+
     async def _run_diagnose_with_optional_trace_callback(
         services: Any,
         *,
         alert: Alert,
         trace_callback: Any | None,
+        extra_alerts: list[Alert] | None = None,
     ) -> DiagnosisSession:
         method = services.diagnosis_runner.adiagnose
+        kwargs: dict[str, Any] = {"extra_alerts": extra_alerts} if extra_alerts else {}
         if trace_callback is not None and _supports_trace_callback(method):
-            return await method(alert, trace_callback=trace_callback)
-        return await method(alert)
+            return await method(alert, trace_callback=trace_callback, **kwargs)
+        return await method(alert, **kwargs)
 
     async def _replay_trace_and_diagnosis_events(
         services: Any,
@@ -1320,6 +1350,106 @@ def build_api_router() -> APIRouter:
                 filtered_clusters.append(copied)
         return filtered_alerts, filtered_clusters
 
+    def _resolve_alert_entity_ids(alert_data: dict[str, Any], ontology: Any) -> list[str]:
+        """Extract entity candidates from alert labels and resolve against ontology graph."""
+        raw_labels = alert_data.get("labels")
+        labels = raw_labels if isinstance(raw_labels, dict) else {}
+        candidates = [
+            str(labels.get(key, "")).strip()
+            for key in ("node", "instance", "service", "pod", "switch", "host", "job", "kubernetes_node")
+        ]
+        candidates = [item for item in candidates if item]
+        resolved: list[str] = []
+        for candidate in candidates:
+            if ontology.get_entity(candidate) is not None:
+                resolved.append(candidate)
+                continue
+            by_name = ontology.find_entities(filters={"name": candidate})
+            if by_name:
+                resolved.append(by_name[0].id)
+        return resolved
+
+    def _build_topology_aware_clusters(
+        alerts: list[dict[str, Any]],
+        ontology: Any,
+    ) -> list[dict[str, Any]]:
+        """Build alert clusters based on topology entity relationships."""
+        if not alerts or ontology is None:
+            return []
+        fingerprint_to_entities: dict[str, list[str]] = {}
+        alert_by_fingerprint: dict[str, dict[str, Any]] = {}
+        for alert_data in alerts:
+            if not isinstance(alert_data, dict):
+                continue
+            fp = str(alert_data.get("fingerprint", "")).strip()
+            if not fp:
+                continue
+            alert_by_fingerprint[fp] = alert_data
+            fingerprint_to_entities[fp] = _resolve_alert_entity_ids(alert_data, ontology)
+
+        fingerprints = list(alert_by_fingerprint.keys())
+        parent: dict[str, str] = {fp: fp for fp in fingerprints}
+
+        def find(x: str) -> str:
+            while parent[x] != x:
+                parent[x] = parent[parent[x]]
+                x = parent[x]
+            return x
+
+        def union(a: str, b: str) -> None:
+            ra, rb = find(a), find(b)
+            if ra != rb:
+                parent[ra] = rb
+
+        # Merge alerts whose entities are connected in the topology graph
+        for i in range(len(fingerprints)):
+            entities_i = fingerprint_to_entities.get(fingerprints[i], [])
+            for j in range(i + 1, len(fingerprints)):
+                entities_j = fingerprint_to_entities.get(fingerprints[j], [])
+                if _entities_topologically_connected(entities_i, entities_j, ontology):
+                    union(fingerprints[i], fingerprints[j])
+
+        # Build clusters from union-find groups
+        groups: dict[str, list[str]] = {}
+        for fp in fingerprints:
+            root = find(fp)
+            groups.setdefault(root, []).append(fp)
+
+        severity_rank = {"critical": 3, "warning": 2, "info": 1}
+        clusters: list[dict[str, Any]] = []
+        for idx, group_fps in enumerate(groups.values(), start=1):
+            group_alerts = [alert_by_fingerprint[fp] for fp in group_fps]
+            summary = str(group_alerts[0].get("annotations", {}).get("summary", "") or group_alerts[0].get("alert_name", ""))
+            top_severity = max(
+                (str(a.get("severity", "info")) for a in group_alerts),
+                key=lambda s: severity_rank.get(s, 0),
+            )
+            clusters.append({
+                "cluster_id": f"cluster-{idx}",
+                "summary": summary,
+                "severity": top_severity,
+                "alerts": group_fps,
+            })
+        return clusters
+
+    def _entities_topologically_connected(
+        entities_a: list[str],
+        entities_b: list[str],
+        ontology: Any,
+        max_depth: int = 2,
+    ) -> bool:
+        """Check if any entity from group A has a topology path to any entity in group B."""
+        if not entities_a or not entities_b:
+            return False
+        for ea in entities_a:
+            for eb in entities_b:
+                if ea == eb:
+                    return True
+                path = ontology.get_path(ea, eb)
+                if path is not None and len(path) <= max_depth + 1:
+                    return True
+        return False
+
     def _enrich_alert_with_topology_summary(services: Any, alert: Alert) -> Alert:
         try:
             ontology = services.ontology
@@ -1359,6 +1489,7 @@ def build_api_router() -> APIRouter:
         alert: Alert,
         request: Request,
         user: CurrentUser = Depends(require_role("operator", "admin")),
+        extra_alert_fingerprints: list[str] = Query(default_factory=list),
     ) -> SREResponse[DiagnosisSession]:
         services = _services(request)
         blocked_alert_names = _blocked_alert_names_from_request(request)
@@ -1367,7 +1498,11 @@ def build_api_router() -> APIRouter:
         if services.diagnosis_runner is None:
             raise HTTPException(status_code=500, detail="diagnosis runner is not configured")
         prepared_alert = _enrich_alert_with_topology_summary(services, alert)
-        session = await services.diagnosis_runner.adiagnose(prepared_alert)
+        extra_alerts = _lookup_extra_alerts(services.alert_store, extra_alert_fingerprints) if extra_alert_fingerprints else []
+        if _supports_extra_alerts(services.diagnosis_runner.adiagnose):
+            session = await services.diagnosis_runner.adiagnose(prepared_alert, extra_alerts=extra_alerts)
+        else:
+            session = await services.diagnosis_runner.adiagnose(prepared_alert)
         plan = _extract_recommended_fix(session)
         if plan is not None:
             services.remediation_engine.register_plan(session.session_id, plan)
@@ -1388,6 +1523,7 @@ def build_api_router() -> APIRouter:
         alert: Alert,
         request: Request,
         user: CurrentUser = Depends(require_role("operator", "admin")),
+        extra_alert_fingerprints: list[str] = Query(default_factory=list),
     ) -> SREResponse[DiagnosisSession]:
         _ = user
         services = _services(request)
@@ -1398,6 +1534,7 @@ def build_api_router() -> APIRouter:
             raise HTTPException(status_code=500, detail="diagnosis runner is not configured")
 
         prepared_alert = _enrich_alert_with_topology_summary(services, alert)
+        extra_alerts = _lookup_extra_alerts(services.alert_store, extra_alert_fingerprints) if extra_alert_fingerprints else []
         initial_session = DiagnosisSession.create(prepared_alert)
         services.session_store.put(initial_session)
 
@@ -1423,6 +1560,7 @@ def build_api_router() -> APIRouter:
                     services,
                     alert=prepared_alert,
                     trace_callback=_trace_callback,
+                    extra_alerts=extra_alerts,
                 )
                 completed = completed.model_copy(update={"session_id": initial_session.session_id})
 
@@ -2058,12 +2196,17 @@ def build_api_router() -> APIRouter:
         services = _services(request)
         snapshot = services.alert_store.snapshot()
         blocked_alert_names = _blocked_alert_names_from_request(request)
-        filtered_alerts, filtered_clusters = _filter_alert_snapshot(
-            snapshot.get("alerts", []),
-            snapshot.get("clusters", []),
+        raw_alerts = snapshot.get("alerts", [])
+        raw_clusters = snapshot.get("clusters", [])
+        filtered_alerts, _ = _filter_alert_snapshot(
+            raw_alerts,
+            raw_clusters,
             blocked_alert_names=blocked_alert_names,
         )
-        payload = AlertSnapshotResponse(alerts=filtered_alerts, clusters=filtered_clusters)
+        # Build topology-aware clusters instead of namespace+service grouping
+        ontology = getattr(services, "ontology", None)
+        topology_clusters = _build_topology_aware_clusters(filtered_alerts, ontology) if ontology is not None else []
+        payload = AlertSnapshotResponse(alerts=filtered_alerts, clusters=topology_clusters)
         return SREResponse(success=True, data=payload, trace_id=_trace_id(request))
 
     @router.get("/ontology")

@@ -131,6 +131,7 @@ describe("AlertsModifiedPage", () => {
         expect.objectContaining({
           fingerprint: "fp-001",
         }),
+        expect.arrayContaining(["fp-002"]),
       );
     });
     expect(await screen.findByText("diagnosis page reached")).toBeInTheDocument();

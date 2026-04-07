@@ -7,10 +7,7 @@ from typing import Any, TypeVar
 
 from sre_agent.models.alert import Alert
 
-DEFAULT_BLOCKED_ALERT_NAMES: tuple[str, ...] = (
-    "GPU utilization is high",
-    "GPUUtilizationHigh",
-)
+DEFAULT_BLOCKED_ALERT_NAMES: tuple[str, ...] = ()
 
 
 def normalize_alert_name(value: str | None) -> str:

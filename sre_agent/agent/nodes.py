@@ -38,6 +38,7 @@ def initialize_state(
     allowed_tool_names: list[str] | None = None,
     alert_snapshot: dict[str, Any] | None = None,
     topology_context: dict[str, Any] | None = None,
+    extra_alerts: list[dict[str, Any]] | None = None,
 ) -> SREAgentState:
     return {
         "query": query,
@@ -63,6 +64,7 @@ def initialize_state(
         "allowed_tool_names": allowed_tool_names,
         "alert_snapshot": alert_snapshot,
         "topology_context": topology_context,
+        "extra_alerts": extra_alerts,
     }
 
 
@@ -72,7 +74,7 @@ async def reason_node(
     llm: Any,
     registry: ToolRegistry,
 ) -> SREAgentState:
-    if state.get("step_count", 0) >= state.get("max_steps", 6):
+    if state.get("step_count", 0) >= state.get("max_steps", 10):
         updated = {
             **state,
             "status": "timeout",
@@ -96,7 +98,7 @@ async def reason_node(
     invoked_messages = model_messages
     bound_tool_names: list[str] = []
     tool_choice = "auto"
-    final_turn = bool(state.get("tool_runs")) and state.get("step_count", 0) >= max(state.get("max_steps", 6) - 1, 1)
+    final_turn = bool(state.get("tool_runs")) and state.get("step_count", 0) >= max(state.get("max_steps", 10) - 1, 1)
     interaction_mode = "final_json" if final_turn else "tool_bound"
     if final_turn and hasattr(llm, "ainvoke"):
         final_messages = [

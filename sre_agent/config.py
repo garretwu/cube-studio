@@ -30,7 +30,7 @@ class GlobalConfig(BaseModel):
     cors_allow_headers: list[str] = Field(default_factory=lambda: ["Authorization", "Content-Type", "x-trace-id"])
     cors_expose_headers: list[str] = Field(default_factory=lambda: ["x-trace-id"])
     blocked_alert_names: list[str] = Field(
-        default_factory=lambda: ["GPU utilization is high", "GPUUtilizationHigh"]
+        default_factory=lambda: []
     )
 
 

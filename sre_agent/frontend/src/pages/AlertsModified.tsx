@@ -142,10 +142,15 @@ function AlertsModifiedPage() {
       setDiagnosisError("未找到可用于诊断的告警事件，请先刷新告警数据。");
       return;
     }
+    // Gather all fingerprints from the same convergence result as extra context
+    const convergenceResult = results.find((r) => r.id === resultId);
+    const extraFingerprints = convergenceResult
+      ? convergenceResult.fingerprints.filter((fp) => fp !== fingerprint)
+      : [];
     setDiagnosisError(null);
     setDiagnosingResultId(resultId);
     try {
-      const session = await apiClient.startDiagnoseAlert(selected);
+      const session = await apiClient.startDiagnoseAlert(selected, extraFingerprints.length > 0 ? extraFingerprints : undefined);
       setActiveSession(session);
       navigate(`/diagnosis/${session.session_id}`);
     } catch (error) {

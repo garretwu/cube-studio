@@ -280,13 +280,14 @@ async def run_diagnosis(
     variables: dict[str, Any] | None = None,
     alert_snapshot: dict[str, Any] | None = None,
     topology_context: dict[str, Any] | None = None,
+    extra_alerts: list[dict[str, Any]] | None = None,
     llm: Any | None = None,
     guardrails: Any | None = None,
     tool_registry: ToolRegistry | None = None,
     session_id: str | None = None,
     step_timeout_sec: float = 60.0,
     total_timeout_sec: float = 600.0,
-    max_steps: int = 6,
+    max_steps: int = 10,
     checkpoint_dir: str | None = "./data/checkpoints/sre_agent",
     allowed_tool_names: list[str] | None = None,
     trace_callback: TraceEventCallback | None = None,
@@ -310,6 +311,7 @@ async def run_diagnosis(
         allowed_tool_names=allowed_tool_names,
         alert_snapshot=alert_snapshot,
         topology_context=topology_context,
+        extra_alerts=extra_alerts,
     )
 
     # Emit diagnosis_started event so frontend can display alert/topology context immediately.
@@ -323,6 +325,7 @@ async def run_diagnosis(
                     "alert": alert_snapshot,
                     "topology": topology_context,
                     "variables": variables or {},
+                    "extra_alerts": extra_alerts or [],
                 },
             },
         )

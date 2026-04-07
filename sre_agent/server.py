@@ -34,7 +34,7 @@ from sre_agent.models.events import EventType, WSEvent
 from sre_agent.ontology.graph import OntologyGraph
 from sre_agent.remediation import ApprovalGate, IncidentHandler, LoopConfig, LoopOrchestrator, PlanValidator, RemediationEngine, RollbackJournal
 from sre_agent.runtime import bootstrap_tool_channels, register_remediation_channel
-from sre_agent.topology.discovery import discover_live_snapshot, discover_static_snapshot
+from sre_agent.topology.discovery import discover_hybrid_snapshot, discover_live_snapshot, discover_static_snapshot
 from sre_agent.tools import ToolExecutionContext, build_default_registry
 
 LOGGER = logging.getLogger(__name__)
@@ -213,36 +213,8 @@ class InMemoryAlertStore:
         self._alerts = ordered
 
     def snapshot(self) -> dict[str, Any]:
-        severity_rank = {
-            AlertSeverity.CRITICAL.value: 3,
-            AlertSeverity.WARNING.value: 2,
-            AlertSeverity.INFO.value: 1,
-        }
         alerts_payload = [alert.model_dump(mode="json") for alert in self._alerts]
-        clusters: list[dict[str, Any]] = []
-        buckets: dict[tuple[str, str], list[Alert]] = {}
-        for alert in self._alerts:
-            namespace = alert.labels.get("exported_namespace") or alert.labels.get("namespace") or ""
-            service = (
-                alert.labels.get("exported_container")
-                or alert.labels.get("service")
-                or alert.labels.get("job")
-                or alert.alert_name
-            )
-            key = (namespace, service)
-            buckets.setdefault(key, []).append(alert)
-        for idx, grouped in enumerate(buckets.values(), start=1):
-            summary = grouped[0].summary or grouped[0].alert_name
-            top = max(grouped, key=lambda item: severity_rank.get(item.severity.value, 0))
-            clusters.append(
-                {
-                    "cluster_id": f"cluster-{idx}",
-                    "summary": summary,
-                    "severity": top.severity.value,
-                    "alerts": [item.fingerprint for item in grouped],
-                }
-            )
-        return {"alerts": alerts_payload, "clusters": clusters}
+        return {"alerts": alerts_payload, "clusters": []}
 
 
 class AlertChannelProtocol(Protocol):
@@ -397,8 +369,13 @@ class TopologyDiscoveryService:
         self._last_error: str | None = None
         self._scanner_counts: dict[str, dict[str, int]] = {}
         self._sync_state: Literal["idle", "syncing", "ready", "degraded", "error"] = "idle"
-        mode = str(self._config.ontology.discovery.mode or "static").strip().lower()
-        self._mode = mode if mode in {"static", "live"} else "static"
+        configured_mode = str(self._config.ontology.discovery.mode or "static").strip().lower()
+        if configured_mode in {"hybrid", "mixed"}:
+            self._mode = "hybrid"
+        elif configured_mode in {"static", "live"}:
+            self._mode = configured_mode
+        else:
+            self._mode = "static"
 
     async def start(self) -> None:
         if not bool(self._config.ontology.discovery.auto_discovery):
@@ -532,6 +509,9 @@ class TopologyDiscoveryService:
         self,
     ) -> tuple[list[Any], list[Any], dict[str, dict[str, int]], str, str | None]:
         fallback_reason: str | None = None
+        if self._mode == "hybrid":
+            nodes, edges, scanner_counts, fallback_reason = await discover_hybrid_snapshot(self._config)
+            return nodes, edges, scanner_counts, "hybrid", fallback_reason
         if self._mode == "live":
             try:
                 nodes, edges, scanner_counts = await discover_live_snapshot(
@@ -717,12 +697,23 @@ class DefaultDiagnosisRunner:
         self,
         alert: Alert,
         trace_callback: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
+        extra_alerts: list[Alert] | None = None,
     ) -> DiagnosisSession:
         topology_context = _build_alert_blast_radius_context(self._ontology, alert)
         annotations = dict(alert.annotations)
         annotations["topology_blast_radius_summary"] = str(topology_context["summary"])
         enriched_alert = alert.model_copy(update={"annotations": annotations})
         query = f"{_build_default_query(enriched_alert)}\n{topology_context['summary']}"
+        if extra_alerts:
+            query += "\n\nAdditional correlated alerts from the same convergence group:"
+            for idx, extra in enumerate(extra_alerts, start=1):
+                query += (
+                    f"\n- Alert {idx + 1}: '{extra.alert_name}' severity={extra.severity.value}"
+                    f" entity={extra.labels.get('instance', extra.labels.get('node', 'unknown'))}"
+                    f" summary={extra.summary or 'n/a'}"
+                )
+            query += "\nConsider all above alerts as context when forming diagnosis hypotheses."
+        extra_alerts_payload = [a.model_dump(mode="json") for a in (extra_alerts or [])]
         result = await run_diagnosis(
             query=query,
             context=self._execution_context,
@@ -733,12 +724,14 @@ class DefaultDiagnosisRunner:
                 "annotations": enriched_alert.annotations,
                 "aidc_id": self._config.global_.aidc_id,
                 "topology_blast_radius": topology_context,
+                "extra_alerts": extra_alerts_payload,
             },
             tool_registry=self._tool_registry,
             checkpoint_dir=None,
             trace_callback=trace_callback,
             alert_snapshot=enriched_alert.model_dump(mode="json"),
             topology_context=topology_context,
+            extra_alerts=extra_alerts_payload,
         )
         return _diagnosis_session_from_state(alert=enriched_alert, state=result)
 

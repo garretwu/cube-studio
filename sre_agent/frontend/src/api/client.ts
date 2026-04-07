@@ -45,7 +45,7 @@ const DIAGNOSE_REQUEST_TIMEOUT_MS = 120000;
 const CHAT_REQUEST_TIMEOUT_MS = 120000;
 const DIAGNOSE_SESSION_POLL_MS = 2000;
 const DIAGNOSE_SESSION_POLL_ATTEMPTS = 30;
-const BLOCKED_ALERT_NAMES = new Set(["gpu utilization is high", "gpuutilizationhigh"]);
+const BLOCKED_ALERT_NAMES = new Set<string>();
 
 let hasWarnedAboutDevFallback = false;
 
@@ -206,7 +206,7 @@ function mapSummaryToDiagnosisSummary(item: SessionSummary): DiagnosisSessionSum
   };
 }
 
-function mapEntityTypeToExplorerType(entityType: string): "rack" | "node" | "gpu" | "switch" | "service" | "cluster" {
+function mapEntityTypeToExplorerType(entityType: string): "rack" | "node" | "gpu" | "switch" | "service" | "pod" | "cluster" {
   const value = entityType.toLowerCase();
   if (value.includes("gpu")) {
     return "gpu";
@@ -217,7 +217,10 @@ function mapEntityTypeToExplorerType(entityType: string): "rack" | "node" | "gpu
   if (value.includes("cluster")) {
     return "cluster";
   }
-  if (value.includes("service") || value.includes("pod") || value.includes("inference")) {
+  if (value.includes("pod")) {
+    return "pod";
+  }
+  if (value.includes("service") || value.includes("inference")) {
     return "service";
   }
   if (value.includes("rack")) {
@@ -247,6 +250,9 @@ function mapLayer(type: ReturnType<typeof mapEntityTypeToExplorerType>): Topolog
   if (type === "gpu" || type === "node") {
     return "compute";
   }
+  if (type === "pod") {
+    return "service";
+  }
   if (type === "cluster") {
     return "physical";
   }
@@ -260,6 +266,9 @@ function mapRelationType(relation: string): "contains" | "runs_on" | "connects_t
   }
   if (value.includes("hosted") || value.includes("runs_on") || value.includes("run_on")) {
     return "runs_on";
+  }
+  if (value.includes("serve")) {
+    return "depends_on";
   }
   if (value.includes("uplink")) {
     return "uplink_to";
@@ -277,9 +286,22 @@ function buildTopologyExplorerFromSnapshot(snapshot: TopologySnapshot): Topology
   const nodes = snapshot.nodes.map((node) => {
     const entityType = mapEntityTypeToExplorerType(node.entity_type);
     const attributes = typeof node.properties === "object" && node.properties ? node.properties : {};
+    const attrs = attributes as Record<string, unknown>;
     const region = String((attributes as Record<string, unknown>).region ?? "AIDC-CN");
     const zone = String((attributes as Record<string, unknown>).zone ?? "zone-a");
     const domain = String((attributes as Record<string, unknown>).domain ?? "aidc");
+    const podPhaseRaw = attrs.phase ?? node.status ?? "Unknown";
+    const podPhase = typeof podPhaseRaw === "string" ? podPhaseRaw : String(podPhaseRaw);
+    const podRestartRaw = attrs.restart_count ?? attrs.restartCount;
+    const podRestartNumeric = typeof podRestartRaw === "number" ? podRestartRaw : Number(podRestartRaw);
+    const podRestartCount = Number.isFinite(podRestartNumeric) ? podRestartNumeric : null;
+    const metrics: Record<string, string | number | null> | undefined =
+      entityType === "pod"
+        ? {
+            phase: podPhase,
+            restartCount: podRestartCount,
+          }
+        : undefined;
 
     return {
       id: node.id,
@@ -290,13 +312,15 @@ function buildTopologyExplorerFromSnapshot(snapshot: TopologySnapshot): Topology
       domain,
       region,
       zone,
-      cluster: String((attributes as Record<string, unknown>).cluster ?? "") || undefined,
+      cluster: String(attrs.cluster ?? attrs.cluster_id ?? "") || undefined,
       rack: String((attributes as Record<string, unknown>).rack ?? "") || undefined,
       slot: String((attributes as Record<string, unknown>).slot ?? "") || undefined,
       summary: `${node.name || node.id} (${node.entity_type})`,
-      tags: [],
+      tags: [String(attrs.namespace ?? ""), String(attrs.source ?? "")]
+        .map((item) => item.trim())
+        .filter(Boolean),
       updatedAt: node.updated_at,
-      metrics: undefined,
+      metrics,
       attributes,
     };
   });
@@ -431,12 +455,17 @@ export const apiClient = {
     throw new Error(payload.error?.message ?? "handle alert returned no session_id");
   },
 
-  diagnoseAlert: async (alert: Alert) => {
+  diagnoseAlert: async (alert: Alert, extraAlertFingerprints?: string[]) => {
     if (isBlockedAlert(alert)) {
       throw new Error(`Alert '${alert.alert_name}' is temporarily filtered and cannot be processed.`);
     }
+    const params: Record<string, string | string[]> = {};
+    if (extraAlertFingerprints && extraAlertFingerprints.length > 0) {
+      params.extra_alert_fingerprints = extraAlertFingerprints;
+    }
     try {
       const response = await api.post<SREApiEnvelope<DiagnosisSession> | DiagnosisSession>("/api/diagnose", alert, {
+        params,
         timeout: DIAGNOSE_REQUEST_TIMEOUT_MS,
       });
       const session = unwrapPayload(response.data);
@@ -478,15 +507,20 @@ export const apiClient = {
     }
   },
 
-  startDiagnoseAlert: async (alert: Alert) => {
+  startDiagnoseAlert: async (alert: Alert, extraAlertFingerprints?: string[]) => {
     if (isBlockedAlert(alert)) {
       throw new Error(`Alert '${alert.alert_name}' is temporarily filtered and cannot be processed.`);
     }
+    const params: Record<string, string | string[]> = {};
+    if (extraAlertFingerprints && extraAlertFingerprints.length > 0) {
+      params.extra_alert_fingerprints = extraAlertFingerprints;
+    }
     const response = await api.post<SREApiEnvelope<DiagnosisSession> | DiagnosisSession>("/api/diagnose/start", alert, {
+      params,
       validateStatus: () => true,
     });
     if (response.status === 404) {
-      return apiClient.diagnoseAlert(alert);
+      return apiClient.diagnoseAlert(alert, extraAlertFingerprints);
     }
     if (response.status >= 400) {
       throw new Error(`Request failed with status ${response.status}.`);
