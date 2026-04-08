@@ -12,7 +12,17 @@ BASE_SYSTEM_PROMPT = """You are an SRE diagnosis agent.
 Rules:
 - Use only the bound read-only tools for evidence gathering.
 - Never execute fixes or pretend a write action was executed.
-- If a reusable skill is a strong match for the current alert/context, you may select it instead of making the next direct tool call.
+- If reusable skills may help, use the fixed skill tools:
+  1. `skills.list_skills`
+  2. `skills.load_skill`
+  3. `skills.read_skill_ref`
+  4. `skills.run_skill`
+- Prefer using skill tools when they can accelerate diagnosis, but keep the overall loop tool-driven.
+- Skill execution is a two-step process:
+  1. call `skills.load_skill` and inspect the returned `scripts` list,
+  2. then call `skills.run_skill` with both `skill_id` and one concrete `script` from that list.
+- Never call `skills.run_skill` without a `script`.
+- If a loaded skill has no scripts, do not call `skills.run_skill`; continue with normal read-only tools instead.
 - If evidence is insufficient, call a relevant read-only tool.
 - Do not keep querying equivalent metrics after repeated empty or zero-valued results; treat that as evidence.
 - Prefer at most 2-3 rounds of evidence gathering before concluding.
@@ -22,18 +32,6 @@ Rules:
   3. one alternative that remains testing or lower-confidence.
 - **GPU evidence is MANDATORY for GPU-related alerts**: When diagnosing alerts involving GPU nodes or GPU metrics, you MUST call ALL available GPU read-only tools (gpu.get_metrics AND gpu.get_processes) to collect comprehensive evidence. Use the node IP address or node name as the 'node' parameter.
 - After enough evidence is collected, return JSON only.
-
-Skill selection JSON shape:
-{
-  "thought": "brief reasoning summary",
-  "skill_call": {
-    "skill_id": "skill id from the available skills reference",
-    "reason": "why this skill is the best next move"
-  }
-}
-
-Return a skill_call only when the skill is a strong, specific match and is likely to accelerate diagnosis.
-If the situation is open-ended or the fit is weak, prefer direct tool calls instead.
 
 Final JSON shape:
 {
@@ -112,26 +110,18 @@ def build_system_prompt(
     available_skills: Iterable[dict[str, Any]] | None = None,
     preferred_skill: dict[str, Any] | None = None,
 ) -> str:
-    preferred_skill_block = render_preferred_skill_block(preferred_skill)
     read_only_block = render_tool_reference_block(
         registry,
         tool_names=allowed_tool_names,
         safety_levels=[SafetyLevel.READ_ONLY],
         title="Read-only tool reference",
     )
-    skill_block = render_skill_reference_block(
-        available_skills or [],
-        title="Reusable skill reference",
-    )
     write_block = render_tool_reference_block(
         registry,
         safety_levels=[SafetyLevel.LOW, SafetyLevel.MEDIUM, SafetyLevel.HIGH, SafetyLevel.CRITICAL],
         title="Write-tool schema reference (not callable in this phase)",
     )
-    blocks = [BASE_SYSTEM_PROMPT]
-    if preferred_skill_block:
-        blocks.append(preferred_skill_block)
-    blocks.extend([read_only_block, skill_block, write_block])
+    blocks = [BASE_SYSTEM_PROMPT, read_only_block, write_block]
     return "\n\n".join(blocks)
 
 
@@ -160,58 +150,6 @@ def _render_tool_definition(tool: ToolDefinition) -> list[str]:
         f"  safety_level: {tool.safety_level.value}",
         f"  params_schema: {schema}",
     ]
-
-
-def render_skill_reference_block(
-    skills: Iterable[dict[str, Any]],
-    *,
-    title: str,
-) -> str:
-    lines = [title + ":"]
-    rendered = False
-    for skill in skills:
-        skill_id = str(skill.get("id", "")).strip()
-        if not skill_id:
-            continue
-        rendered = True
-        tags = skill.get("tags", [])
-        lines.append(f"- {skill_id}")
-        lines.append(f"  name: {skill.get('name', '')}")
-        lines.append(f"  summary: {skill.get('summary', '')}")
-        lines.append(f"  tags: {json.dumps(tags, ensure_ascii=False)}")
-        match_score = skill.get("match_score")
-        if match_score is not None:
-            lines.append(f"  match_score: {match_score}")
-    if not rendered:
-        lines.append("- none")
-    return "\n".join(lines)
-
-
-def render_preferred_skill_block(preferred_skill: dict[str, Any] | None) -> str:
-    if not preferred_skill:
-        return ""
-    skill_id = str(preferred_skill.get("id", "")).strip()
-    if not skill_id:
-        return ""
-    score = preferred_skill.get("match_score")
-    summary = str(preferred_skill.get("summary", "")).strip()
-    lines = [
-        "Current turn guidance:",
-        (
-            f"- The top reusable skill match for this alert is `{skill_id}`"
-            + (f" with match_score={score}." if score is not None else ".")
-        ),
-    ]
-    if summary:
-        lines.append(f"- Skill summary: {summary}")
-    lines.append(
-        "- Because this is the first investigation round and the skill match is strong, "
-        "prefer returning a `skill_call` for this skill before making direct tool calls."
-    )
-    lines.append(
-        "- Only skip the skill if you can clearly infer that it is a poor fit for the current alert/context."
-    )
-    return "\n".join(lines)
 
 
 def build_alert_diagnosis_prompt(
@@ -255,39 +193,4 @@ def build_alert_diagnosis_prompt(
 
     lines.append("Live alert payload:")
     lines.append(json.dumps(alert_payload, ensure_ascii=False, indent=2))
-    return "\n".join(lines)
-
-
-def build_skill_selection_prompt(
-    *,
-    query: str,
-    available_skills: Iterable[dict[str, Any]],
-) -> str:
-    lines = [
-        "Decide whether this alert/context should first use a reusable diagnosis skill.",
-        "Return JSON only.",
-        "If one skill is a strong fit, return:",
-        '{"thought":"brief reasoning","skill_call":{"skill_id":"...","reason":"..."}}',
-        "If no skill is a strong fit, return:",
-        '{"thought":"brief reasoning","skill_call":null}',
-        "Do not call tools in this step.",
-        f"Original query: {query}",
-    ]
-    rendered = [skill for skill in available_skills if str(skill.get("id", "")).strip()]
-    if rendered:
-        lines.append("Candidate skills:")
-        for skill in rendered:
-            lines.append(
-                "- "
-                + json.dumps(
-                    {
-                        "id": skill.get("id"),
-                        "name": skill.get("name"),
-                        "summary": skill.get("summary"),
-                        "tags": skill.get("tags"),
-                        "match_score": skill.get("match_score"),
-                    },
-                    ensure_ascii=False,
-                )
-            )
     return "\n".join(lines)

@@ -5,8 +5,6 @@ import json
 import os
 import re
 from dataclasses import dataclass
-from typing import Any
-
 import pytest
 
 from fault_injector.config.schema import SSHConfig, TargetNodeConfig
@@ -14,10 +12,10 @@ from lib.channels.kubernetes import K8sChannel
 from lib.channels.prometheus import PrometheusChannel
 from lib.channels.ssh import SSHChannel
 from lib.tests._real_test_support import require_env, require_real_tests
-from sre_agent.skills import SkillExecutor, SkillPolicy, SkillRegistry
+from sre_agent.skills import SkillExecutor, SkillPolicy, SkillRegistry, rank_skills
 from sre_agent.skills.executor import SkillExecutionResult
 from sre_agent.skills.registry import SkillDescriptor
-from sre_agent.tools import ToolExecutionContext, build_default_registry
+from sre_agent.tools import ToolExecutionContext
 
 
 def _env_bool(name: str, default: bool = False) -> bool:
@@ -70,11 +68,8 @@ async def _close_context(context: ToolExecutionContext) -> None:
 
 
 class _DeterministicSkillSelector:
-    def __init__(self, policy: SkillPolicy) -> None:
-        self._policy = policy
-
     def select_skill_id(self, query: str, skills: list[SkillDescriptor]) -> str:
-        ranked = self._policy.rank(query, skills, top_k=1)
+        ranked = rank_skills(query, skills, top_k=1)
         if not ranked:
             raise RuntimeError("no skills available for deterministic selection")
         return ranked[0].id
@@ -162,7 +157,6 @@ class _SkillConsumer:
     registry: SkillRegistry
     policy: SkillPolicy
     executor: SkillExecutor
-    tools: Any
     context: ToolExecutionContext
     real_llm_selector: _OpenAISkillSelector | None = None
     _loaded: bool = False
@@ -179,7 +173,7 @@ class _SkillConsumer:
                 raise RuntimeError("real_llm selector is not configured")
             selector = self.real_llm_selector
         else:
-            selector = _DeterministicSkillSelector(self.policy)
+            selector = _DeterministicSkillSelector()
         selected_id = selector.select_skill_id(query, skills)
         if selected_id not in {item.id for item in skills}:
             raise RuntimeError(f"selected skill is not in discovered catalog: {selected_id}")
@@ -189,11 +183,14 @@ class _SkillConsumer:
         if not self._loaded:
             self.load_skills()
         skill = self.registry.get(skill_id)
+        if not skill.scripts:
+            raise RuntimeError(f"selected skill has no runnable scripts: {skill_id}")
         return await self.executor.execute(
             skill=skill,
-            registry=self.tools,
-            context=self.context,
-            variables=variables,
+            script=skill.scripts[0],
+            args=[],
+            policy=self.policy,
+            skill_registry=self.registry,
         )
 
 
@@ -204,7 +201,6 @@ def _build_real_consumer(context: ToolExecutionContext) -> _SkillConsumer:
         registry=SkillRegistry(),
         policy=SkillPolicy(),
         executor=SkillExecutor(),
-        tools=build_default_registry(),
         context=context,
         real_llm_selector=_OpenAISkillSelector(model=llm_model, base_url=llm_base_url),
     )
@@ -245,8 +241,8 @@ async def test_real_platform_health_skill_succeeds() -> None:
             _common_variables(env["SRE_TEST_NAMESPACE"], env["SRE_TEST_NODE"], promql),
         )
         assert result.status == "success", result.summary
-        assert len(result.tool_runs) > 0
-        assert all(run.success for run in result.tool_runs)
+        assert result.script is not None
+        assert result.stdout or result.stderr
     finally:
         await _close_context(context)
 
@@ -264,8 +260,7 @@ async def test_real_rdma_diagnosis_skill_succeeds() -> None:
 
     registry = SkillRegistry()
     registry.discover()
-    skill = registry.get("builtin-rdma-diagnosis")
-    tool_registry = build_default_registry()
+    skill = registry.get("gpu-fault-sop")
     executor = SkillExecutor()
     context = _build_real_context(
         namespace=env["SRE_TEST_NAMESPACE"],
@@ -276,12 +271,13 @@ async def test_real_rdma_diagnosis_skill_succeeds() -> None:
     try:
         result = await executor.execute(
             skill=skill,
-            registry=tool_registry,
-            context=context,
-            variables=_common_variables(env["SRE_TEST_NAMESPACE"], env["SRE_TEST_NODE"], promql),
+            script="gpu_health_check.sh",
+            args=[],
+            policy=SkillPolicy(),
+            skill_registry=registry,
         )
         assert result.status == "success", result.summary
-        assert all(run.success for run in result.tool_runs)
+        assert result.script == "gpu_health_check.sh"
     finally:
         await _close_context(context)
 
@@ -295,8 +291,7 @@ async def test_real_skill_missing_variable_fails_fast() -> None:
 
     registry = SkillRegistry()
     registry.discover()
-    skill = registry.get("builtin-platform-health")
-    tool_registry = build_default_registry()
+    skill = registry.get("gpu-fault-sop")
     executor = SkillExecutor()
     context = _build_real_context(
         namespace=env["SRE_TEST_NAMESPACE"],
@@ -307,13 +302,13 @@ async def test_real_skill_missing_variable_fails_fast() -> None:
     try:
         result = await executor.execute(
             skill=skill,
-            registry=tool_registry,
-            context=context,
-            variables={"namespace": env["SRE_TEST_NAMESPACE"], "promql": "up"},
+            script="missing.sh",
+            args=[],
+            policy=SkillPolicy(),
+            skill_registry=registry,
         )
         assert result.status == "failed"
-        assert "missing required variable: node" in result.summary
-        assert result.tool_runs[-1].success is False
+        assert "script not found" in result.summary
     finally:
         await _close_context(context)
 
@@ -359,6 +354,6 @@ async def test_real_skill_consumer_with_openai_selector() -> None:
             _common_variables(env["SRE_TEST_NAMESPACE"], env["SRE_TEST_NODE"], promql),
         )
         assert result.status == "success", result.summary
-        assert len(result.tool_runs) > 0
+        assert result.script is not None
     finally:
         await _close_context(context)

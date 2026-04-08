@@ -317,7 +317,7 @@ class ToolRegistry:
 
 def build_default_registry() -> ToolRegistry:
     """Build the default Agent-B tool layout."""
-    from sre_agent.tools.readonly import bmc, gpu, k8s, knowledge, logs, memory, network, ontology, platform, prometheus
+    from sre_agent.tools.readonly import bmc, gpu, k8s, knowledge, logs, memory, network, ontology, platform, prometheus, skills
     from sre_agent.tools.write import k8s as write_k8s
     from sre_agent.tools.write import network as write_network
     from sre_agent.tools.write import remediation as write_remediation
@@ -556,6 +556,58 @@ def build_default_registry() -> ToolRegistry:
             tags=("logs", "readonly"),
         ),
         logs.read_system,
+    )
+
+    # readonly/skills.py
+    registry.register(
+        ToolDefinition(
+            name="skills.list_skills",
+            description="List discovered skills and available scripts/references.",
+            safety_level=SafetyLevel.READ_ONLY,
+            params_schema={"type": "object"},
+            tags=("skills", "readonly"),
+        ),
+        skills.list_skills,
+    )
+    registry.register(
+        ToolDefinition(
+            name="skills.load_skill",
+            description="Load a skill's SKILL.md content and resource inventory, including the exact `scripts` list you must choose from before calling `skills.run_skill`.",
+            safety_level=SafetyLevel.READ_ONLY,
+            params_schema={"type": "object", "required": ["skill_id"]},
+            tags=("skills", "readonly"),
+        ),
+        skills.load_skill,
+    )
+    registry.register(
+        ToolDefinition(
+            name="skills.read_skill_ref",
+            description="Read a reference document from a skill's references directory.",
+            safety_level=SafetyLevel.READ_ONLY,
+            params_schema={"type": "object", "required": ["skill_id", "reference"]},
+            tags=("skills", "readonly"),
+        ),
+        skills.read_skill_ref,
+    )
+    registry.register(
+        ToolDefinition(
+            name="skills.run_skill",
+            description="Run one specific script from a loaded skill. Always provide both `skill_id` and an exact `script` value copied from the skill's `scripts` list.",
+            safety_level=SafetyLevel.READ_ONLY,
+            params_schema={
+                "type": "object",
+                "required": ["skill_id", "script"],
+                "properties": {
+                    "skill_id": {"type": "string"},
+                    "script": {"type": "string"},
+                    "args": {"type": "array", "items": {"type": "string"}},
+                    "timeout_sec": {"type": "number"},
+                    "output_limit": {"type": "integer"},
+                },
+            },
+            tags=("skills", "readonly"),
+        ),
+        skills.run_skill,
     )
 
     # readonly/bmc.py

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 import yaml
@@ -12,102 +12,184 @@ class SkillRegistryError(RuntimeError):
 
 
 @dataclass(frozen=True)
-class SkillStep:
-    tool: str
-    params: dict[str, Any] = field(default_factory=dict)
-    description: str = ""
+class SkillRoot:
+    scope: str
+    path: Path
 
 
-@dataclass(frozen=True)
+@dataclass
 class SkillDescriptor:
     id: str
     name: str
     scope: str
     summary: str
+    description: str
     source: str
+    path: str
+    skill_file: Path
+    directory: Path
     permissions: list[str] = field(default_factory=list)
     tags: list[str] = field(default_factory=list)
     match_score: float = 0.0
-    steps: list[SkillStep] = field(default_factory=list)
+    scripts: list[str] = field(default_factory=list)
+    references: list[str] = field(default_factory=list)
+    metadata: dict[str, Any] = field(default_factory=dict)
+    version: str | None = None
+    script_paths: dict[str, Path] = field(default_factory=dict, repr=False)
+    reference_paths: dict[str, Path] = field(default_factory=dict, repr=False)
+
+    def read_markdown(self) -> str:
+        return self.skill_file.read_text(encoding="utf-8")
 
 
 class SkillRegistry:
-    """Discovers and validates markdown-based skills."""
+    """Discovers and indexes Claude-style skills."""
 
-    REQUIRED_FRONTMATTER_KEYS = ("name", "description")
-
-    def __init__(self, *, root: Path | None = None) -> None:
-        self.root = root or (Path(__file__).resolve().parent / "builtin")
+    def __init__(
+        self,
+        *,
+        root: Path | None = None,
+        roots: list[SkillRoot] | None = None,
+    ) -> None:
+        self.roots = roots or self._default_roots(root=root)
         self._skills: dict[str, SkillDescriptor] = {}
+        self._warnings: list[str] = []
 
-    def discover(self) -> list[SkillDescriptor]:
+    @staticmethod
+    def _default_roots(*, root: Path | None = None) -> list[SkillRoot]:
+        if root is not None:
+            return [SkillRoot(scope="custom", path=Path(root).resolve())]
+        base = Path(__file__).resolve().parent
+        return [
+            SkillRoot(scope="builtin", path=(base / "builtin").resolve()),
+            SkillRoot(scope="custom", path=(base / "custom").resolve()),
+            SkillRoot(scope="shared", path=(Path.home() / ".claude" / "skills").resolve()),
+        ]
+
+    @property
+    def warnings(self) -> list[str]:
+        return list(self._warnings)
+
+    def refresh(self) -> list[SkillDescriptor]:
         self._skills.clear()
-        if not self.root.exists():
-            return []
+        self._warnings.clear()
 
-        for skill_file in sorted(self.root.glob("*/SKILL.md")):
-            skill = self._parse_skill_file(skill_file)
-            if skill.id in self._skills:
-                raise SkillRegistryError(f"duplicate skill id: {skill.id}")
-            self._skills[skill.id] = skill
+        for root in self.roots:
+            if not root.path.exists():
+                continue
+            for skill_file in sorted(root.path.rglob("SKILL.md")):
+                try:
+                    skill = self._parse_skill_file(skill_file, root=root)
+                except Exception as exc:  # noqa: BLE001
+                    self._warnings.append(f"{skill_file}: {exc}")
+                    continue
+                if skill.id in self._skills:
+                    self._warnings.append(f"{skill_file}: duplicate skill id: {skill.id}")
+                    continue
+                self._skills[skill.id] = skill
         return self.list_skills()
 
-    def list_skills(self) -> list[SkillDescriptor]:
+    def discover(self, *, refresh: bool = False) -> list[SkillDescriptor]:
+        if refresh or not self._skills:
+            return self.refresh()
+        return self.list_skills()
+
+    def list_skills(self, *, refresh: bool = False) -> list[SkillDescriptor]:
+        if refresh or not self._skills:
+            self.refresh()
         return [self._skills[key] for key in sorted(self._skills)]
 
-    def get(self, skill_id: str) -> SkillDescriptor:
+    def get(self, skill_id: str, *, refresh_if_missing: bool = True) -> SkillDescriptor:
         skill = self._skills.get(skill_id)
+        if skill is None and refresh_if_missing:
+            self.refresh()
+            skill = self._skills.get(skill_id)
         if skill is None:
             raise SkillRegistryError(f"skill not found: {skill_id}")
         return skill
 
-    def _parse_skill_file(self, path: Path) -> SkillDescriptor:
+    def load_skill(self, skill_id: str) -> tuple[SkillDescriptor, str]:
+        skill = self.get(skill_id)
+        return skill, skill.read_markdown()
+
+    def resolve_script_path(self, skill_id: str, script: str) -> Path:
+        skill = self.get(skill_id)
+        normalized = self._normalize_relative_path(script, label="script")
+        path = skill.script_paths.get(normalized)
+        if path is None:
+            raise SkillRegistryError(f"script not found for {skill_id}: {normalized}")
+        return path
+
+    def resolve_reference_path(self, skill_id: str, reference: str) -> Path:
+        skill = self.get(skill_id)
+        normalized = self._normalize_relative_path(reference, label="reference")
+        path = skill.reference_paths.get(normalized)
+        if path is None:
+            raise SkillRegistryError(f"reference not found for {skill_id}: {normalized}")
+        return path
+
+    @staticmethod
+    def _normalize_relative_path(value: str, *, label: str) -> str:
+        text = str(value or "").strip()
+        if not text:
+            raise SkillRegistryError(f"{label} path is required")
+        pure = PurePosixPath(text.replace("\\", "/"))
+        if pure.is_absolute():
+            raise SkillRegistryError(f"{label} path must be relative: {value}")
+        if any(part == ".." for part in pure.parts):
+            raise SkillRegistryError(f"{label} path must not escape the skill directory: {value}")
+        normalized = pure.as_posix()
+        if normalized in {"", "."}:
+            raise SkillRegistryError(f"{label} path is invalid: {value}")
+        return normalized
+
+    def _parse_skill_file(self, path: Path, *, root: SkillRoot) -> SkillDescriptor:
         raw = path.read_text(encoding="utf-8")
         frontmatter, body = self._split_frontmatter(raw, source=str(path))
-        self._validate_frontmatter(frontmatter, source=str(path))
-
         runtime_metadata = self._extract_named_yaml_block(body, heading="## Runtime Metadata", source=str(path))
-        steps_payload = self._extract_named_yaml_block(body, heading="## Steps", source=str(path))
-        if runtime_metadata is None:
-            runtime_metadata = {}
-        if not isinstance(runtime_metadata, dict):
-            raise SkillRegistryError(f"runtime metadata block must be a mapping: {path}")
+        if runtime_metadata is not None and not isinstance(runtime_metadata, dict):
+            raise SkillRegistryError("runtime metadata block must be a mapping")
 
-        # Claude-first front-matter keys are name/description.
-        # Engineering metadata can come from either front-matter or runtime metadata.
-        skill_id = self._get_optional_text(frontmatter, "id") or self._get_optional_text(runtime_metadata, "id")
-        if not skill_id:
-            skill_id = f"builtin-{path.parent.name}"
-        scope = self._get_optional_text(frontmatter, "scope") or self._get_optional_text(runtime_metadata, "scope")
-        if not scope:
-            scope = "builtin"
+        relative_path = path.parent.relative_to(root.path).as_posix()
+        metadata = runtime_metadata or {}
+        skill_id = self._resolve_skill_id(frontmatter, metadata, relative_path)
+        name = self._resolve_display_name(frontmatter, body, path)
+        description = self._resolve_description(frontmatter, body)
+        summary = self._summarize_description(description)
+        permissions = self._resolve_text_list(frontmatter, metadata, key="permissions")
+        tags = self._resolve_text_list(frontmatter, metadata, key="tags")
+        scripts, script_paths = self._collect_scripts(path.parent)
+        references, reference_paths = self._collect_references(path.parent)
+        version = self._resolve_optional_text(frontmatter, metadata, key="version")
 
-        permissions = self._resolve_text_list(frontmatter, runtime_metadata, key="permissions")
-        tags = self._resolve_text_list(frontmatter, runtime_metadata, key="tags")
-        summary = str(frontmatter["description"]).strip()
-
-        steps = self._parse_steps(steps_payload, source=str(path))
-        source_ref = f"{scope}://{path.parent.name}"
         return SkillDescriptor(
             id=skill_id,
-            name=str(frontmatter["name"]).strip(),
-            scope=scope,
+            name=name,
+            scope=root.scope,
             summary=summary,
-            source=source_ref,
+            description=description,
+            source=f"{root.scope}://{relative_path}",
+            path=relative_path,
+            skill_file=path,
+            directory=path.parent,
             permissions=permissions,
             tags=tags,
-            steps=steps,
+            scripts=scripts,
+            references=references,
+            metadata={"frontmatter": frontmatter, "runtime_metadata": metadata},
+            version=version or None,
+            script_paths=script_paths,
+            reference_paths=reference_paths,
         )
 
     @staticmethod
     def _split_frontmatter(raw: str, *, source: str) -> tuple[dict[str, Any], str]:
-        text = raw.strip()
+        text = raw.lstrip()
         if not text.startswith("---"):
-            raise SkillRegistryError(f"missing yaml front matter: {source}")
+            return {}, raw
         chunks = text.split("---", 2)
         if len(chunks) < 3:
             raise SkillRegistryError(f"invalid yaml front matter: {source}")
-
         meta_text = chunks[1].strip()
         body = chunks[2]
         metadata = yaml.safe_load(meta_text) or {}
@@ -115,69 +197,105 @@ class SkillRegistry:
             raise SkillRegistryError(f"front matter must be a mapping: {source}")
         return metadata, body
 
-    def _validate_frontmatter(self, metadata: dict[str, Any], *, source: str) -> None:
-        for key in self.REQUIRED_FRONTMATTER_KEYS:
-            value = metadata.get(key)
-            if value is None:
-                raise SkillRegistryError(f"missing required metadata '{key}': {source}")
-            if isinstance(value, str) and not value.strip():
-                raise SkillRegistryError(f"metadata '{key}' must not be blank: {source}")
+    @staticmethod
+    def _resolve_skill_id(frontmatter: dict[str, Any], metadata: dict[str, Any], relative_path: str) -> str:
+        explicit_id = str(frontmatter.get("id") or metadata.get("id") or "").strip()
+        if explicit_id:
+            return explicit_id
+        name_override = str(frontmatter.get("name") or "").strip()
+        if name_override and SkillRegistry._looks_like_machine_skill_name(name_override):
+            return name_override
+        return relative_path
 
-    def _resolve_text_list(self, frontmatter: dict[str, Any], runtime_meta: dict[str, Any], *, key: str) -> list[str]:
+    @staticmethod
+    def _looks_like_machine_skill_name(value: str) -> bool:
+        if not value or any(ch.isspace() for ch in value):
+            return False
+        allowed = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789:._/-")
+        return all(ch in allowed for ch in value)
+
+    @staticmethod
+    def _resolve_display_name(frontmatter: dict[str, Any], body: str, path: Path) -> str:
+        name = str(frontmatter.get("title") or frontmatter.get("display_name") or frontmatter.get("name") or "").strip()
+        if name:
+            return name
+        for line in body.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("# "):
+                return stripped[2:].strip()
+        return path.parent.name
+
+    @staticmethod
+    def _resolve_description(frontmatter: dict[str, Any], body: str) -> str:
+        description = str(frontmatter.get("description") or "").strip()
+        if description:
+            return description
+        return SkillRegistry._extract_first_paragraph(body) or "No description provided."
+
+    @staticmethod
+    def _extract_first_paragraph(body: str) -> str:
+        lines = body.splitlines()
+        in_fence = False
+        paragraph: list[str] = []
+        for raw_line in lines:
+            line = raw_line.strip()
+            if line.startswith("```"):
+                in_fence = not in_fence
+                if paragraph:
+                    break
+                continue
+            if in_fence:
+                continue
+            if not line:
+                if paragraph:
+                    break
+                continue
+            if line.startswith("#"):
+                if paragraph:
+                    break
+                continue
+            paragraph.append(line)
+        return " ".join(paragraph).strip()
+
+    @staticmethod
+    def _summarize_description(description: str, *, limit: int = 220) -> str:
+        text = str(description or "").strip()
+        if len(text) <= limit:
+            return text
+        return text[: limit - 3].rstrip() + "..."
+
+    @staticmethod
+    def _resolve_text_list(frontmatter: dict[str, Any], metadata: dict[str, Any], *, key: str) -> list[str]:
         if key in frontmatter:
-            return self._as_str_list(frontmatter[key], key=key, source="front-matter")
-        if key in runtime_meta:
-            return self._as_str_list(runtime_meta[key], key=key, source="runtime metadata")
+            return SkillRegistry._as_str_list(frontmatter[key], key=key, source="front-matter")
+        if key in metadata:
+            return SkillRegistry._as_str_list(metadata[key], key=key, source="runtime metadata")
         return []
 
     @staticmethod
-    def _get_optional_text(metadata: dict[str, Any], key: str) -> str:
-        value = metadata.get(key)
+    def _resolve_optional_text(frontmatter: dict[str, Any], metadata: dict[str, Any], *, key: str) -> str:
+        value = frontmatter.get(key)
         if value is None:
-            return ""
-        text = str(value).strip()
-        return text
+            value = metadata.get(key)
+        return str(value).strip() if value is not None else ""
 
     @staticmethod
     def _as_str_list(value: Any, *, key: str, source: str) -> list[str]:
         if not isinstance(value, list):
             raise SkillRegistryError(f"metadata '{key}' must be a list: {source}")
-        out: list[str] = []
+        items: list[str] = []
         for item in value:
             text = str(item).strip()
             if not text:
                 raise SkillRegistryError(f"metadata '{key}' contains blank value: {source}")
-            out.append(text)
-        return out
-
-    @staticmethod
-    def _parse_steps(steps_payload: Any, *, source: str) -> list[SkillStep]:
-        if not isinstance(steps_payload, list):
-            raise SkillRegistryError(f"steps yaml must be a list: {source}")
-        if not steps_payload:
-            raise SkillRegistryError(f"skill must define at least one step: {source}")
-        steps: list[SkillStep] = []
-        for idx, item in enumerate(steps_payload):
-            if not isinstance(item, dict):
-                raise SkillRegistryError(f"step #{idx + 1} must be a mapping: {source}")
-            tool = str(item.get("tool", "")).strip()
-            if not tool:
-                raise SkillRegistryError(f"step #{idx + 1} missing tool: {source}")
-            params = item.get("params", {})
-            if not isinstance(params, dict):
-                raise SkillRegistryError(f"step #{idx + 1} params must be mapping: {source}")
-            description = str(item.get("description", "")).strip()
-            steps.append(SkillStep(tool=tool, params=params, description=description))
-        return steps
+            items.append(text)
+        return items
 
     @staticmethod
     def _extract_named_yaml_block(body: str, *, heading: str, source: str) -> Any | None:
         heading_pos = body.find(heading)
         if heading_pos < 0:
-            if heading == "## Runtime Metadata":
-                return None
-            raise SkillRegistryError(f"missing section '{heading}': {source}")
-
+            return None
         segment = body[heading_pos + len(heading) :]
         fence = "```yaml"
         start = segment.find(fence)
@@ -189,3 +307,30 @@ class SkillRegistry:
             raise SkillRegistryError(f"unterminated yaml block under '{heading}': {source}")
         text = segment[start:end].strip()
         return yaml.safe_load(text)
+
+    @staticmethod
+    def _collect_scripts(skill_dir: Path) -> tuple[list[str], dict[str, Path]]:
+        script_map: dict[str, Path] = {}
+        script_dir = skill_dir / "scripts"
+        if script_dir.exists():
+            for item in sorted(script_dir.rglob("*")):
+                if item.is_file():
+                    script_map[item.relative_to(script_dir).as_posix()] = item
+        else:
+            for item in sorted(skill_dir.iterdir()):
+                if not item.is_file() or item.name == "SKILL.md":
+                    continue
+                if item.suffix.lower() not in {".sh", ".py", ".bash"}:
+                    continue
+                script_map[item.name] = item
+        return sorted(script_map), script_map
+
+    @staticmethod
+    def _collect_references(skill_dir: Path) -> tuple[list[str], dict[str, Path]]:
+        ref_map: dict[str, Path] = {}
+        ref_dir = skill_dir / "references"
+        if ref_dir.exists():
+            for item in sorted(ref_dir.rglob("*")):
+                if item.is_file():
+                    ref_map[item.relative_to(ref_dir).as_posix()] = item
+        return sorted(ref_map), ref_map

@@ -1,12 +1,7 @@
 ---
+id: builtin-gpu-health
 name: GPU Health Check
 description: Run a GPU health check by inspecting node GPU metrics, scheduler visibility, and utilization signal.
----
-
-## Runtime Metadata
-```yaml
-id: builtin-gpu-health
-scope: builtin
 permissions:
   - read:gpu
   - read:k8s
@@ -15,20 +10,19 @@ tags:
   - gpu
   - health
   - node
-```
+---
 
-## Steps
-```yaml
-- description: Collect GPU metrics on target node.
-  tool: gpu.get_metrics
-  params:
-    node: "${node}"
-- description: Verify pods scheduled in namespace.
-  tool: k8s.list_pods
-  params:
-    namespace: "${namespace}"
-- description: Query GPU utilization aggregate metric.
-  tool: prometheus.query_instant
-  params:
-    promql: "${promql}"
-```
+## When To Use
+- Suspected node-level GPU health problems.
+- Periodic GPU checks before or after incident handling.
+- Situations where we need a quick signal on utilization and scheduler visibility.
+
+## Required Context
+- `node`
+- `namespace`
+- `promql` or another GPU-related metric query
+
+## Suggested Checks
+- Sample GPU metrics on the node.
+- Confirm the namespace workload is visible to the scheduler.
+- Check the aggregate utilization or health signal from metrics.
