@@ -1,4 +1,4 @@
-﻿import type { WSEventType } from "./generated/backend-contract";
+import type { WSEventType } from "./generated/backend-contract";
 
 export type Severity = "critical" | "warning" | "info";
 export type AlertStatus = "firing" | "resolved" | "silenced";
@@ -162,15 +162,37 @@ export type Hypothesis = {
   confidence: number;
 };
 
+
+export type PropagationStep = {
+  entity_id: string;
+  entity_type: string;
+  metric: string;
+  value_before: number | string;
+  value_after: number | string;
+  description: string;
+};
+
+export type RankedRootCause = {
+  rank: number;
+  root_cause: string;
+  root_cause_layer: "hardware" | "network" | "os" | "platform" | "service";
+  root_cause_entities?: string[];
+  confidence: number;
+  evidence_summary: string;
+  recommended_fix?: RemediationPlan | null;
+  distinguishing_verification?: string | null;
+};
 export type DiagnosisResult = {
   root_cause: string;
   root_cause_layer: string;
   root_cause_entities: string[];
   confidence: number;
   hypotheses: Hypothesis[];
+  propagation_chain?: PropagationStep[];
   impact_summary: string;
   affected_services: string[];
   triage_priority: "P0" | "P1" | "P2" | "P3";
+  ranked_candidates?: RankedRootCause[];
   diagnosis_certainty: "confirmed" | "probable" | "ambiguous";
   recommended_fix?: RemediationPlan | null;
 };
