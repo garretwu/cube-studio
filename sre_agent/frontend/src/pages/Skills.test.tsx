@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+﻿import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
@@ -18,6 +18,7 @@ const testSkills: SkillDescriptor[] = [
     match_score: 0.96,
     status: "available",
     updated_at: "2026-03-26T09:32:18Z",
+    lifecycle_status: "published",
   },
   {
     id: "custom-release-window",
@@ -29,18 +30,15 @@ const testSkills: SkillDescriptor[] = [
     match_score: 0.83,
     status: "unavailable",
     updated_at: "2026-03-20T08:15:31Z",
+    lifecycle_status: "draft",
   },
 ];
 
 describe("SkillsPage", () => {
-  it("renders skill cards with core metadata and filters by search query", async () => {
+  it("renders skill rows with management metadata and filters by search query", async () => {
     const user = userEvent.setup();
 
-    server.use(
-      http.get("/api/skills", async () => {
-        return HttpResponse.json(testSkills);
-      }),
-    );
+    server.use(http.get("/api/skills", async () => HttpResponse.json(testSkills)));
 
     render(
       <MemoryRouter>
@@ -48,30 +46,27 @@ describe("SkillsPage", () => {
       </MemoryRouter>,
     );
 
-    expect(await screen.findByRole("heading", { name: "\u6280\u80fd\u4e2d\u5fc3" })).toBeInTheDocument();
-    expect(await screen.findByText("\u62d3\u6251\u5bfc\u822a\u5668")).toBeInTheDocument();
-    expect(screen.getByText("Skill ID: builtin-topology-navigator")).toBeInTheDocument();
-    expect(screen.getByText("\u53ef\u7528")).toBeInTheDocument();
-    expect(screen.getByText("\u4e0d\u53ef\u7528")).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "技能管理" })).toBeInTheDocument();
+    expect(await screen.findByText("Topology Navigator")).toBeInTheDocument();
+    expect(screen.getByText("builtin-topology-navigator")).toBeInTheDocument();
+    expect(screen.getAllByText("已发布").length).toBeGreaterThan(0);
+    expect(screen.getByText("草稿")).toBeInTheDocument();
+    expect(screen.getAllByText("自定义").length).toBeGreaterThan(0);
 
-    await user.type(screen.getByPlaceholderText("\u641c\u7d22 Skill \u540d\u79f0\u6216 ID"), "release");
+    await user.type(screen.getByPlaceholderText("搜索技能名称、ID 或描述"), "release");
 
     await waitFor(() => {
-      expect(screen.queryByText("\u62d3\u6251\u5bfc\u822a\u5668")).not.toBeInTheDocument();
+      expect(screen.queryByText("Topology Navigator")).not.toBeInTheDocument();
     });
 
     expect(screen.getByText("Release Window Review")).toBeInTheDocument();
-    expect(screen.getByText("Skill ID: custom-release-window")).toBeInTheDocument();
+    expect(screen.getByText("custom-release-window")).toBeInTheDocument();
   });
 
-  it("navigates to the detail route when a skill card is clicked", async () => {
+  it("navigates to the detail route when the detail action is clicked", async () => {
     const user = userEvent.setup();
 
-    server.use(
-      http.get("/api/skills", async () => {
-        return HttpResponse.json(testSkills);
-      }),
-    );
+    server.use(http.get("/api/skills", async () => HttpResponse.json(testSkills)));
 
     render(
       <MemoryRouter initialEntries={["/skills"]}>
@@ -82,8 +77,8 @@ describe("SkillsPage", () => {
       </MemoryRouter>,
     );
 
-    await screen.findByText("拓扑导航器");
-    await user.click(screen.getByRole("button", { name: "查看技能详情 拓扑导航器" }));
+    await screen.findByText("Topology Navigator");
+    await user.click(screen.getByRole("button", { name: "查看技能详情 Topology Navigator" }));
 
     expect(await screen.findByText("detail route reached")).toBeInTheDocument();
   });

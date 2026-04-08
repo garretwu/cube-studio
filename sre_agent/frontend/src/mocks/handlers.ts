@@ -1,4 +1,4 @@
-import { delay, http, HttpResponse } from "msw";
+﻿import { delay, http, HttpResponse } from "msw";
 
 import {
   alertClusters,
@@ -6,6 +6,9 @@ import {
   diagnosisHistorySessions,
   diagnosisSession,
   initialChatMessages,
+  knowledgeBaseDetails,
+  knowledgeBases,
+  knowledgeDatasets,
   knowledgeDocuments,
   skills,
   topologyEdges,
@@ -172,11 +175,24 @@ export const handlers = [
         id: `assistant-${Date.now()}`,
         role: "assistant",
         created_at: new Date().toISOString(),
-        content: `已收到：${body.content ?? ""}`,
+        content: `宸叉敹鍒帮細${body.content ?? ""}`,
       },
     });
   }),
 
+  http.get("/api/knowledge/bases", async () => {
+    await delay(70);
+    return HttpResponse.json({ items: knowledgeBases });
+  }),
+  http.get("/api/knowledge/bases/:knowledgeBaseId", async ({ params }) => {
+    await delay(70);
+    const knowledgeBaseId = String(params.knowledgeBaseId ?? "");
+    const matched = knowledgeBaseDetails.find((item) => item.id === knowledgeBaseId);
+    if (!matched) {
+      return HttpResponse.json({ message: "knowledge base not found" }, { status: 404 });
+    }
+    return HttpResponse.json(matched);
+  }),
   http.get("/api/knowledge/search", async ({ request }) => {
     await delay(70);
     const url = new URL(request.url);
@@ -189,11 +205,97 @@ export const handlers = [
     });
     return HttpResponse.json({ results });
   }),
-  http.get("/api/knowledge/documents", async () => {
+  http.get("/api/knowledge/datasets", async ({ request }) => {
+    await delay(60);
+    const url = new URL(request.url);
+    const keyword = (url.searchParams.get("keyword") ?? "").trim().toLowerCase();
+    const rows = keyword
+      ? knowledgeDatasets.filter((item) => `${item.name} ${item.description ?? ""}`.toLowerCase().includes(keyword))
+      : knowledgeDatasets;
+    return HttpResponse.json(rows);
+  }),
+  http.get("/api/knowledge/dataset", async ({ request }) => {
+    await delay(60);
+    const url = new URL(request.url);
+    const datasetId = (url.searchParams.get("dataset_id") ?? "").trim();
+    const matched = knowledgeDatasets.find((item) => item.id === datasetId) ?? knowledgeDatasets[0];
+    return HttpResponse.json(matched);
+  }),
+  http.get("/api/knowledge/documents", async ({ request }) => {
     await delay(70);
-    return HttpResponse.json({ documents: knowledgeDocuments });
+    const url = new URL(request.url);
+    const keyword = (url.searchParams.get("keyword") ?? "").trim().toLowerCase();
+    const datasetId = (url.searchParams.get("dataset_id") ?? "").trim();
+    const scoped =
+      datasetId === "dataset-network" ? knowledgeDocuments.filter((item) => item.category === "hardware") : knowledgeDocuments;
+    const rows = keyword
+      ? scoped.filter((item) => `${item.title} ${item.excerpt} ${item.tags.join(" ")}`.toLowerCase().includes(keyword))
+      : scoped;
+    return HttpResponse.json(rows);
+  }),
+  http.get("/api/knowledge/documents/:documentId", async ({ params }) => {
+    await delay(60);
+    const documentId = String(params.documentId ?? "");
+    const detail = knowledgeDocuments.find((item) => item.id === documentId) ?? knowledgeDocuments[0];
+    return HttpResponse.json(detail);
+  }),
+  http.get("/api/knowledge/documents/:documentId/segments", async ({ params, request }) => {
+    await delay(70);
+    const documentId = String(params.documentId ?? "");
+    const url = new URL(request.url);
+    const keyword = (url.searchParams.get("keyword") ?? "").trim().toLowerCase();
+    const baseSegments = [
+      {
+        id: `${documentId}-seg-1`,
+        document_id: documentId,
+        content: "Check ECN and PFC counters before changing routing weights.",
+        status: "enabled",
+        score: 0.93,
+      },
+      {
+        id: `${documentId}-seg-2`,
+        document_id: documentId,
+        content: "Use 10% canary traffic and monitor p95 latency for 120 seconds.",
+        status: "enabled",
+        score: 0.87,
+      },
+    ];
+    const rows = keyword ? baseSegments.filter((item) => item.content.toLowerCase().includes(keyword)) : baseSegments;
+    return HttpResponse.json(rows);
+  }),
+  http.get("/api/knowledge/segments/search", async ({ request }) => {
+    await delay(70);
+    const url = new URL(request.url);
+    const query = (url.searchParams.get("query") ?? "").trim().toLowerCase();
+    const datasetId = (url.searchParams.get("dataset_id") ?? "").trim();
+    const rows = [
+      {
+        id: "seg-search-1",
+        document_id: datasetId === "dataset-network" ? "kb-1" : "kb-2",
+        content: "ECN misconfiguration can amplify RoCE tail latency.",
+        status: "enabled",
+        score: 0.9,
+      },
+      {
+        id: "seg-search-2",
+        document_id: "kb-2",
+        content: "Kill abnormal gpu-burn process then verify queue depth.",
+        status: "enabled",
+        score: 0.85,
+      },
+    ].filter((item) => !query || item.content.toLowerCase().includes(query));
+    return HttpResponse.json(rows);
   }),
 
+  http.get("/api/skills/:skillId", async ({ params }) => {
+    await delay(50);
+    const skillId = String(params.skillId ?? "");
+    const matched = skills.find((skill) => skill.id === skillId);
+    if (!matched) {
+      return HttpResponse.json({ message: "skill not found" }, { status: 404 });
+    }
+    return HttpResponse.json(matched);
+  }),
   http.get("/api/skills", async () => {
     await delay(50);
     return HttpResponse.json(skills);
@@ -258,3 +360,4 @@ export const handlers = [
     });
   }),
 ];
+

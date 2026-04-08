@@ -198,11 +198,150 @@ class _FakeStreamingDiagnosisRunner:
         )
 
 
-class _FakeKnowledge:
-    async def search(self, query: str, category: str | None = None, top_k: int = 5) -> list[dict[str, Any]]:
-        return [{"query": query, "category": category or "all", "top_k": top_k}]
+class _FakePartialStreamingDiagnosisRunner:
+    def __init__(self) -> None:
+        self.callback_count = 0
 
-    async def list_documents(self) -> list[dict[str, Any]]:
+    async def adiagnose(self, alert: Alert, trace_callback=None) -> DiagnosisSession:  # noqa: ANN001
+        if trace_callback is not None:
+            await trace_callback(
+                {
+                    "type": EventType.TOOL_CALL.value,
+                    "session_id": alert.fingerprint,
+                    "data": {
+                        "step": 1,
+                        "timestamp": "2026-03-18T12:00:00Z",
+                        "thought": "collect gpu metrics",
+                        "action_type": "tool_call",
+                        "tool_name": "gpu.get_metrics",
+                        "tool_params": {"node": "node-a"},
+                    },
+                }
+            )
+            self.callback_count += 1
+            await trace_callback(
+                {
+                    "type": EventType.TOOL_RESULT.value,
+                    "session_id": alert.fingerprint,
+                    "data": {
+                        "tool": "gpu.get_metrics",
+                        "params": {"node": "node-a"},
+                        "result": {"success": True, "data": {"utilization": 97}},
+                        "timestamp": "2026-03-18T12:00:01Z",
+                    },
+                }
+            )
+            self.callback_count += 1
+
+        plan = RemediationPlan(
+            plan_id=f"plan-{alert.fingerprint}",
+            root_cause="gpu contention",
+            description="terminate abnormal benchmark process",
+            estimated_impact="minor",
+            confidence=0.91,
+            priority="P1",
+            steps=[
+                RemediationStep(
+                    step_id=1,
+                    description="terminate gpu-burn",
+                    tool="shell_command",
+                    params={"command": "pkill -f gpu-burn"},
+                    verification=VerificationConfig(method="wait", wait_seconds=2),
+                )
+            ],
+        )
+        diagnosis = DiagnosisResult(
+            root_cause="gpu contention",
+            root_cause_layer="service",
+            confidence=0.91,
+            impact_summary="latency spike",
+            triage_priority="P1",
+            diagnosis_certainty="confirmed",
+            ranked_candidates=[
+                RankedRootCause(
+                    rank=1,
+                    root_cause="gpu contention",
+                    root_cause_layer="service",
+                    confidence=0.91,
+                    evidence_summary="high util",
+                    recommended_fix=plan,
+                )
+            ],
+        )
+        trace = ThinkingTrace(
+            steps=[
+                ThinkingStep(
+                    step=1,
+                    thought="collect gpu metrics",
+                    action_type="tool_call",
+                    tool_name="gpu.get_metrics",
+                    tool_params={"node": "node-a"},
+                ),
+                Observation(
+                    tool="gpu.get_metrics",
+                    params={"node": "node-a"},
+                    result={"success": True, "data": {"utilization": 97}},
+                ),
+            ]
+        )
+        return DiagnosisSession(
+            session_id=alert.fingerprint,
+            alert=alert,
+            status="diagnosed",
+            diagnosis_result=diagnosis,
+            trace=trace,
+        )
+
+
+class _FakeKnowledge:
+    def __init__(self) -> None:
+        self.last_documents_dataset_id: str | None = None
+        self.last_document_detail_dataset_id: str | None = None
+        self.last_segments_dataset_id: str | None = None
+        self.last_search_category: str | None = None
+
+    async def list_datasets(self, *args: Any, **kwargs: Any) -> list[dict[str, Any]]:
+        _ = (args, kwargs)
+        return [
+            {
+                "id": "dataset-default",
+                "name": "SRE Dataset",
+                "description": "dataset for test",
+                "document_count": 1,
+                "word_count": 1234,
+                "status": "ready",
+            },
+            {
+                "id": "dataset-network",
+                "name": "Network Dataset",
+                "description": "network specific docs",
+                "document_count": 1,
+                "word_count": 800,
+                "status": "ready",
+            },
+        ]
+
+    async def search(self, query: str, category: str | None = None, top_k: int = 5) -> list[dict[str, Any]]:
+        self.last_search_category = category
+        return [
+            {
+                "id": "seg-search-1",
+                "query": query,
+                "category": category or "all",
+                "top_k": top_k,
+                "content": f"match for {query}",
+                "source": "kb://runbooks/roce",
+                "score": 0.88,
+                "document_id": "doc-1",
+            }
+        ]
+
+    async def list_documents(self, *args: Any, **kwargs: Any) -> list[dict[str, Any]]:
+        _ = kwargs
+        if args:
+            self.last_documents_dataset_id = str(args[0])
+        else:
+            self.last_documents_dataset_id = None
         return [
             {
                 "id": "doc-1",
@@ -212,6 +351,49 @@ class _FakeKnowledge:
                 "excerpt": "ECN and PFC checks for packet loss bursts.",
                 "tags": ["roce", "network"],
                 "score": 0.92,
+            }
+        ]
+
+    async def get_dataset(self, dataset_id: str) -> dict[str, Any]:
+        return {
+            "id": dataset_id,
+            "name": "SRE Dataset",
+            "description": "dataset for test",
+            "document_count": 1,
+            "word_count": 1234,
+            "status": "ready",
+        }
+
+    async def get_document(self, dataset_id: str, document_id: str) -> dict[str, Any]:
+        self.last_document_detail_dataset_id = dataset_id
+        return {
+            "id": document_id,
+            "title": "RoCEv2 Troubleshooting Guide",
+            "source": "kb://runbooks/roce",
+            "category": "network",
+            "excerpt": "ECN and PFC checks for packet loss bursts.",
+            "tags": ["roce", "network"],
+            "score": 0.92,
+        }
+
+    async def list_document_segments(
+        self,
+        dataset_id: str,
+        document_id: str,
+        *,
+        page: int = 1,
+        limit: int = 20,
+        keyword: str | None = None,
+    ) -> list[dict[str, Any]]:
+        _ = (page, limit, keyword)
+        self.last_segments_dataset_id = dataset_id
+        return [
+            {
+                "id": "seg-1",
+                "document_id": document_id,
+                "content": "Check ECN and PFC settings first.",
+                "status": "enabled",
+                "score": 0.9,
             }
         ]
 
@@ -459,6 +641,101 @@ class TestAPIIntegration:
         assert response.status_code == 200
         assert response.json()["success"] is True
         assert response.json()["data"]["session_id"] == "fp-api-1"
+
+    def test_integration_diagnose_start_returns_diagnosing_then_advances(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        client, token = _build_client(monkeypatch)
+        response = client.post("/api/diagnose/start", json=_alert_payload(), headers=_auth_headers(token))
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["success"] is True
+        assert payload["data"]["status"] == "diagnosing"
+        session_id = payload["data"]["session_id"]
+        assert session_id
+
+        finalized: dict[str, Any] | None = None
+        for _ in range(30):
+            current = client.get(f"/api/sessions/{session_id}", headers=_auth_headers(token))
+            assert current.status_code == 200
+            data = current.json()["data"]
+            if data["status"] != "diagnosing":
+                finalized = data
+                break
+            time.sleep(0.05)
+
+        assert finalized is not None
+        assert finalized["status"] in {"diagnosed", "approval_required", "failed"}
+
+    def test_integration_diagnose_start_emits_approval_required_when_plan_exists(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        client, token = _build_client(monkeypatch)
+        response = client.post("/api/diagnose/start", json=_alert_payload(), headers=_auth_headers(token))
+
+        assert response.status_code == 200
+        session_id = response.json()["data"]["session_id"]
+
+        found = False
+        for _ in range(30):
+            events = client.get(f"/api/sessions/{session_id}/events", headers=_auth_headers(token))
+            assert events.status_code == 200
+            event_types = [item["type"] for item in events.json()["data"]]
+            if EventType.APPROVAL_REQUIRED.value in event_types:
+                found = True
+                break
+            time.sleep(0.05)
+        assert found is True
+
+    def test_integration_diagnose_start_backfills_diagnosis_result_when_live_stream_misses_tail_event(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        monkeypatch.setenv("JWT_SECRET", "secret")
+        settings = resolve_jwt_settings()
+        token = encode_token(CurrentUser(user_id="u1", username="alice", role="operator"), settings)
+        registry, context = _registry()
+        config = SREAgentConfig.model_validate(
+            {
+                "global": {"aidc_id": "test-aidc"},
+                "ontology": {"db_path": str(tmp_path / "ontology.db")},
+                "memory": {"db_dir": str(tmp_path / "memory")},
+                "loop_orchestrator": {"enable_re_diagnosis": False},
+            }
+        )
+        with TestClient(
+            create_app(
+                config=config,
+                diagnosis_runner=_FakePartialStreamingDiagnosisRunner(),
+                ontology=OntologyGraph(),
+                memory=_FakeMemory(),
+                knowledge=_FakeKnowledge(),
+                tool_registry=registry,
+                execution_context=context,
+            )
+        ) as client:
+            start = client.post("/api/diagnose/start", json=_alert_payload(), headers=_auth_headers(token))
+            assert start.status_code == 200
+            session_id = start.json()["data"]["session_id"]
+            assert session_id
+
+            found_diagnosis_result = False
+            for _ in range(40):
+                events = client.get(f"/api/sessions/{session_id}/events", headers=_auth_headers(token))
+                assert events.status_code == 200
+                payload = events.json()
+                if any(item["type"] == EventType.DIAGNOSIS_RESULT.value for item in payload["data"]):
+                    found_diagnosis_result = True
+                    break
+                time.sleep(0.05)
+
+            assert found_diagnosis_result is True
+            session_response = client.get(f"/api/sessions/{session_id}", headers=_auth_headers(token))
+            assert session_response.status_code == 200
+            session_payload = session_response.json()
+            assert session_payload["success"] is True
+            assert session_payload["data"]["status"] == "approval_required"
+            assert session_payload["data"]["diagnosis_result"]["ranked_candidates"][0]["recommended_fix"]["steps"]
 
     def test_integration_diagnose_emits_approval_required_event_when_plan_exists(
         self, monkeypatch: pytest.MonkeyPatch
@@ -796,6 +1073,142 @@ class TestAPIIntegration:
         assert payload["data"][0]["title"] == "RoCEv2 Troubleshooting Guide"
         assert payload["data"][0]["tags"] == ["roce", "network"]
 
+    def test_integration_get_knowledge_dataset_returns_dataset_info(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        client, token = _build_client(monkeypatch)
+
+        response = client.get("/api/knowledge/dataset", headers=_auth_headers(token))
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["success"] is True
+        assert payload["data"]["name"] == "SRE Dataset"
+        assert payload["data"]["status"] == "ready"
+
+    def test_integration_get_knowledge_datasets_returns_dataset_list(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        client, token = _build_client(monkeypatch)
+
+        response = client.get("/api/knowledge/datasets", headers=_auth_headers(token))
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["success"] is True
+        assert isinstance(payload["data"], list)
+        assert payload["data"][0]["id"] == "dataset-default"
+
+    def test_integration_get_knowledge_bases_returns_summary_list(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        client, token = _build_client(monkeypatch)
+
+        response = client.get("/api/knowledge/bases", headers=_auth_headers(token))
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["success"] is True
+        assert isinstance(payload["data"], list)
+        assert payload["data"][0]["id"] == "dataset-default"
+        assert payload["data"][0]["scope"] in {"shared", "private"}
+        assert payload["data"][0]["status"] in {"enabled", "disabled"}
+        assert payload["data"][0]["index_status"] in {"ready", "indexing", "failed", "pending"}
+        assert "code" in payload["data"][0]
+
+    def test_integration_get_knowledge_base_detail_returns_preview_documents(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        client, token = _build_client(monkeypatch)
+        knowledge = client.app.state.services.knowledge
+
+        response = client.get("/api/knowledge/bases/dataset-network", headers=_auth_headers(token))
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["success"] is True
+        assert payload["data"]["id"] == "dataset-network"
+        assert payload["data"]["knowledge_base_id"] == "dataset-network"
+        assert isinstance(payload["data"]["documents"], list)
+        assert payload["data"]["documents"][0]["id"] == "doc-1"
+        assert payload["data"]["documents"][0]["source_type"] in {"file", "manual", "link"}
+        assert "preview" in payload["data"]["documents"][0]
+        assert payload["data"]["documents"][0]["preview"]["sections"]
+        assert knowledge.last_documents_dataset_id == "dataset-network"
+
+    def test_integration_get_knowledge_base_detail_returns_404_when_missing(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        client, token = _build_client(monkeypatch)
+
+        response = client.get("/api/knowledge/bases/not-exist", headers=_auth_headers(token))
+
+        assert response.status_code == 404
+        payload = response.json()
+        assert "knowledge base not found" in str(payload.get("detail", "")).lower()
+
+    def test_integration_knowledge_routes_forward_dataset_id_query(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        client, token = _build_client(monkeypatch)
+        knowledge = client.app.state.services.knowledge
+
+        docs_response = client.get(
+            "/api/knowledge/documents",
+            params={"dataset_id": "dataset-network"},
+            headers=_auth_headers(token),
+        )
+        detail_response = client.get(
+            "/api/knowledge/documents/doc-1",
+            params={"dataset_id": "dataset-network"},
+            headers=_auth_headers(token),
+        )
+        segments_response = client.get(
+            "/api/knowledge/documents/doc-1/segments",
+            params={"dataset_id": "dataset-network"},
+            headers=_auth_headers(token),
+        )
+        search_response = client.get(
+            "/api/knowledge/segments/search",
+            params={"query": "roce", "dataset_id": "dataset-network"},
+            headers=_auth_headers(token),
+        )
+
+        assert docs_response.status_code == 200
+        assert detail_response.status_code == 200
+        assert segments_response.status_code == 200
+        assert search_response.status_code == 200
+        assert knowledge.last_documents_dataset_id == "dataset-network"
+        assert knowledge.last_document_detail_dataset_id == "dataset-network"
+        assert knowledge.last_segments_dataset_id == "dataset-network"
+        assert knowledge.last_search_category == "dataset-network"
+
+    def test_integration_get_knowledge_document_detail_returns_detail(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        client, token = _build_client(monkeypatch)
+
+        response = client.get("/api/knowledge/documents/doc-1", headers=_auth_headers(token))
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["success"] is True
+        assert payload["data"]["id"] == "doc-1"
+        assert payload["data"]["title"] == "RoCEv2 Troubleshooting Guide"
+
+    def test_integration_get_knowledge_document_segments_returns_rows(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        client, token = _build_client(monkeypatch)
+
+        response = client.get("/api/knowledge/documents/doc-1/segments", headers=_auth_headers(token))
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["success"] is True
+        assert isinstance(payload["data"], list)
+        assert payload["data"][0]["id"] == "seg-1"
+        assert payload["data"][0]["document_id"] == "doc-1"
+
+    def test_integration_get_knowledge_segments_search_returns_hits(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        client, token = _build_client(monkeypatch)
+
+        response = client.get(
+            "/api/knowledge/segments/search",
+            params={"query": "roce", "top_k": 3},
+            headers=_auth_headers(token),
+        )
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["success"] is True
+        assert isinstance(payload["data"], list)
+        assert payload["data"][0]["id"] == "seg-search-1"
+
     def test_integration_get_memory_baseline_returns_enveloped_baseline(self, monkeypatch: pytest.MonkeyPatch) -> None:
         client, token = _build_client(monkeypatch)
 
@@ -1025,9 +1438,15 @@ class TestAPIE2E:
         remediation_events = [
             item for item in events_payload["data"] if item["type"] == EventType.REMEDIATION_PROGRESS.value
         ]
-        assert len(remediation_events) >= 3
+        assert len(remediation_events) >= 5
         assert remediation_events[0]["data"]["stage"] == "approval_accepted"
         assert remediation_events[1]["data"]["stage"] == "execution_started"
+        assert remediation_events[2]["data"]["stage"] == "pre_remediation_baseline_collected"
+        assert remediation_events[2]["data"]["baseline_alert"] is not None
+        assert isinstance(remediation_events[2]["data"]["baseline_metrics"], list)
+        assert remediation_events[-2]["data"]["stage"] == "observation_result"
+        assert "alert_review" in remediation_events[-2]["data"]
+        assert "metric_reviews" in remediation_events[-2]["data"]
         assert remediation_events[-1]["data"]["stage"] == "execution_succeeded"
         assert isinstance(remediation_events[-1]["data"].get("step_results"), list)
         assert remediation_events[-1]["data"]["step_results"]
@@ -1257,6 +1676,57 @@ class TestAPIE2E:
                 third = websocket.receive_json()
                 fourth = websocket.receive_json()
 
+        assert first["type"] == EventType.TOOL_CALL.value
+        assert second["type"] == EventType.TOOL_RESULT.value
+        assert third["type"] == EventType.THINKING_STEP.value
+        assert fourth["type"] == EventType.DIAGNOSIS_RESULT.value
+
+    def test_e2e_diagnose_start_streams_live_trace_events(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        monkeypatch.setenv("JWT_SECRET", "secret")
+        settings = resolve_jwt_settings()
+        token = encode_token(CurrentUser(user_id="u1", username="alice", role="operator"), settings)
+        registry, context = _registry()
+        runner = _FakeStreamingDiagnosisRunner()
+        config = SREAgentConfig.model_validate(
+            {
+                "global": {"aidc_id": "test-aidc"},
+                "ontology": {"db_path": str(tmp_path / "ontology.db")},
+                "memory": {"db_dir": str(tmp_path / "memory")},
+                "loop_orchestrator": {"enable_re_diagnosis": False},
+            }
+        )
+        with TestClient(
+            create_app(
+                config=config,
+                diagnosis_runner=runner,
+                ontology=OntologyGraph(),
+                memory=_FakeMemory(),
+                knowledge=_FakeKnowledge(),
+                tool_registry=registry,
+                execution_context=context,
+            )
+        ) as client:
+            response = client.post("/api/diagnose/start", json=_alert_payload(), headers=_auth_headers(token))
+            assert response.status_code == 200
+            assert response.json()["success"] is True
+            session_id = response.json()["data"]["session_id"]
+            assert session_id
+            for _ in range(20):
+                if runner.callback_count >= 4:
+                    break
+                time.sleep(0.05)
+            assert runner.callback_count >= 4
+
+            with client.websocket_connect(f"/ws/thinking-trace/{session_id}?token={token}") as websocket:
+                first = websocket.receive_json()
+                second = websocket.receive_json()
+                third = websocket.receive_json()
+                fourth = websocket.receive_json()
+
+        assert first["session_id"] == session_id
+        assert second["session_id"] == session_id
+        assert third["session_id"] == session_id
+        assert fourth["session_id"] == session_id
         assert first["type"] == EventType.TOOL_CALL.value
         assert second["type"] == EventType.TOOL_RESULT.value
         assert third["type"] == EventType.THINKING_STEP.value

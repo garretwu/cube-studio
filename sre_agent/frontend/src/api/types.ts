@@ -59,7 +59,7 @@ export type TopologyStatus = {
   scanner_counts: Record<string, { nodes: number; edges: number }>;
 };
 
-export type TopologyObjectType = "rack" | "node" | "gpu" | "switch" | "service" | "cluster";
+export type TopologyObjectType = "rack" | "node" | "gpu" | "switch" | "service" | "pod" | "cluster";
 export type TopologyObjectStatus = "healthy" | "abnormal" | "impacted" | "maintenance";
 export type TopologyLayer = "physical" | "network" | "compute" | "service";
 export type TopologyImpactLevel = "low" | "medium" | "high";
@@ -162,6 +162,17 @@ export type Hypothesis = {
   confidence: number;
 };
 
+export type RankedRootCause = {
+  rank: number;
+  root_cause: string;
+  root_cause_layer: string;
+  root_cause_entities?: string[];
+  confidence: number;
+  evidence_summary?: string | null;
+  recommended_fix?: RemediationPlan | null;
+  distinguishing_verification?: string | null;
+};
+
 export type DiagnosisResult = {
   root_cause: string;
   root_cause_layer: string;
@@ -172,6 +183,7 @@ export type DiagnosisResult = {
   affected_services: string[];
   triage_priority: "P0" | "P1" | "P2" | "P3";
   diagnosis_certainty: "confirmed" | "probable" | "ambiguous";
+  ranked_candidates?: RankedRootCause[];
   recommended_fix?: RemediationPlan | null;
 };
 
@@ -212,6 +224,7 @@ export type DiagnosisSession = {
   re_diagnosis_round?: number;
   duration_seconds: number;
   outcome?: string | null;
+  remediation_evidence?: RemediationEvidence | null;
 };
 
 export type SessionEvent = {
@@ -220,6 +233,28 @@ export type SessionEvent = {
   session_id: string;
   timestamp: string;
   data: Record<string, unknown>;
+};
+
+/** Data payload for the diagnosis_started event. */
+export type DiagnosisStartedData = {
+  alert: {
+    alert_name: string;
+    severity: string;
+    labels: Record<string, string>;
+    annotations?: Record<string, string>;
+    fingerprint?: string;
+    summary?: string;
+    description?: string;
+    source?: string;
+    status?: string;
+  } | null;
+  topology: {
+    roots: string[];
+    affected_count: number;
+    affected_entities: { id: string; type: string; name?: string }[];
+    summary: string;
+  } | null;
+  variables: Record<string, unknown>;
 };
 
 export type SessionSummary = {
@@ -295,6 +330,7 @@ export type RemediationAction = {
   description: string;
   tool: string;
   params: Record<string, unknown>;
+  command?: string | null;
   rollback_tool?: string | null;
   verification: VerificationConfig;
   timeout: number;
@@ -323,6 +359,63 @@ export type RemediationPlan = {
   safety_level?: string;
 };
 
+export type RemediationAlertSnapshot = {
+  fingerprint: string;
+  alert_name: string;
+  status: string;
+  is_firing: boolean;
+  collected_at: string;
+  available: boolean;
+  error?: string | null;
+};
+
+export type RemediationMetricSnapshot = {
+  metric_key: string;
+  query: string;
+  value?: string | number | boolean | null;
+  condition?: Record<string, unknown> | null;
+  collected_at: string;
+  available: boolean;
+  error?: string | null;
+};
+
+export type RemediationCheckSnapshot = {
+  alert?: RemediationAlertSnapshot | null;
+  metrics: RemediationMetricSnapshot[];
+  collected_at: string;
+};
+
+export type RemediationAlertReview = {
+  fingerprint: string;
+  alert_name: string;
+  before_status: string;
+  after_status: string;
+  cleared: boolean;
+  reviewed_at: string;
+};
+
+export type RemediationMetricReview = {
+  metric_key: string;
+  query: string;
+  before_value?: string | number | boolean | null;
+  after_value?: string | number | boolean | null;
+  condition?: Record<string, unknown> | null;
+  improved: boolean;
+  available: boolean;
+  error?: string | null;
+  reviewed_at: string;
+};
+
+export type RemediationEvidence = {
+  pre_check?: RemediationCheckSnapshot | null;
+  post_check?: RemediationCheckSnapshot | null;
+  alert_review?: RemediationAlertReview | null;
+  metric_reviews: RemediationMetricReview[];
+  alert_cleared?: boolean | null;
+  metrics_improved?: boolean | null;
+  collected_at: string;
+};
+
 export type RemediationOverview = {
   session_id: string;
   plan: RemediationPlan;
@@ -336,6 +429,7 @@ export type RemediationOverview = {
   };
   timeline?: SessionEvent[];
   approval_required: boolean;
+  baseline_review?: RemediationEvidence | null;
 };
 
 export type ChatMessage = {
@@ -371,6 +465,93 @@ export type KnowledgeDocument = {
   score?: number;
 };
 
+export type KnowledgeDataset = {
+  id: string;
+  name: string;
+  description?: string;
+  document_count?: number;
+  word_count?: number;
+  created_at?: string | null;
+  updated_at?: string | null;
+  status?: string;
+};
+
+export type KnowledgeDocumentDetail = KnowledgeDocument & {
+  created_at?: string | null;
+  updated_at?: string | null;
+  status?: string;
+  metadata?: Record<string, unknown>;
+};
+
+export type KnowledgeSegment = {
+  id: string;
+  document_id: string;
+  content: string;
+  status?: string;
+  source?: string;
+  position?: number | string | null;
+  score?: number;
+  metadata?: Record<string, unknown>;
+};
+
+export type KnowledgeSearchHit = KnowledgeSegment;
+
+export type KnowledgeBaseScope = "shared" | "private";
+export type KnowledgeBaseStatus = "enabled" | "disabled";
+export type KnowledgeIndexStatus = "ready" | "indexing" | "failed" | "pending";
+export type KnowledgeDocSourceType = "file" | "manual" | "link";
+
+export type KnowledgeDocumentPreviewSection = {
+  id: string;
+  heading: string;
+  body: string;
+};
+
+export type KnowledgeDocumentPreview = {
+  title: string;
+  description: string;
+  source_label: string;
+  source_uri?: string | null;
+  tags: string[];
+  updated_at: string;
+  sections: KnowledgeDocumentPreviewSection[];
+  warning?: string | null;
+};
+
+export type KnowledgeBaseDocument = {
+  id: string;
+  title: string;
+  source_type: KnowledgeDocSourceType;
+  source_label: string;
+  file_name: string;
+  size_bytes: number | null;
+  index_status: KnowledgeIndexStatus;
+  status: KnowledgeBaseStatus;
+  updated_at: string;
+  preview_summary: string;
+  tags: string[];
+  preview: KnowledgeDocumentPreview;
+};
+
+export type KnowledgeBaseSummary = {
+  id: string;
+  name: string;
+  code: string;
+  scope: KnowledgeBaseScope;
+  document_count: number;
+  storage_bytes: number;
+  index_status: KnowledgeIndexStatus;
+  status: KnowledgeBaseStatus;
+  updated_at: string;
+  description: string;
+};
+
+export type KnowledgeBaseDetail = KnowledgeBaseSummary & {
+  knowledge_base_id: string;
+  created_at: string;
+  indexed_at: string | null;
+  documents: KnowledgeBaseDocument[];
+};
 export type IncidentRecord = {
   incident_id: string;
   aidc_id: string;
@@ -416,6 +597,9 @@ export type SkillDescriptor = {
   match_score: number;
   status?: "available" | "unavailable";
   updated_at?: string;
+  lifecycle_status?: "draft" | "published";
+  file_name?: string | null;
+  markdown_content?: string | null;
 };
 
 export type ToolChannelStatus = {
@@ -451,3 +635,4 @@ export type WSEvent = {
   timestamp: string;
   data: Record<string, unknown>;
 };
+

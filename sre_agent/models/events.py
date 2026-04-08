@@ -27,6 +27,7 @@ class EventType(str, Enum):
     OBSERVATION_STARTED = "observation_started"
     OBSERVATION_RESULT = "observation_result"
     ESCALATION_REQUIRED = "escalation_required"
+    DIAGNOSIS_STARTED = "diagnosis_started"
     ALERT = "alert"
     TOPOLOGY = "topology"
     ERROR = "error"

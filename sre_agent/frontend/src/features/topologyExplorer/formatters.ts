@@ -6,6 +6,7 @@ export function formatTopologyType(value: TopologyObject["type"]) {
     cluster: "集群",
     gpu: "GPU",
     node: "节点",
+    pod: "Pod",
     rack: "机柜",
     service: "服务",
     switch: "交换机",
@@ -19,6 +20,7 @@ export function getTopologyTypeIconName(value: TopologyObject["type"]): AppIconN
     cluster: "clusterMesh",
     gpu: "gpuChip",
     node: "serverNode",
+    pod: "serverNode",
     rack: "serverRack",
     service: "servicePulse",
     switch: "networkSwitch",
@@ -146,6 +148,10 @@ export function getNodeMetricSummary(node: TopologyObject) {
 
   if (node.type === "service") {
     return `P95 ${formatTopologyMetricValue(node.metrics.p95LatencyMs)} ms · QPS ${formatTopologyMetricValue(node.metrics.qps)}`;
+  }
+
+  if (node.type === "pod") {
+    return `状态 ${formatTopologyMetricValue(node.metrics.phase)} · 重启 ${formatTopologyMetricValue(node.metrics.restartCount)}`;
   }
 
   if (node.type === "switch") {

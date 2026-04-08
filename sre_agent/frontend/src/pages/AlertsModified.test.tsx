@@ -1,4 +1,4 @@
-﻿import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
@@ -44,7 +44,7 @@ const alerts: Alert[] = [
 const clusters: AlertCluster[] = [
   {
     cluster_id: "cluster-01",
-    summary: "延迟突增与单个推理节点的热压异常高度相关",
+    summary: "延迟突增与单个推理节点热压异常高度相关",
     severity: "critical",
     alerts: ["fp-001", "fp-002"],
   },
@@ -57,11 +57,12 @@ const session: DiagnosisSession = {
   duration_seconds: 142,
 };
 
-function renderAlertsModifiedPage() {
+function renderAlertsModifiedPage(initialRoute = "/alerts-modified") {
   return render(
-    <MemoryRouter initialEntries={["/alerts-modified"]}>
+    <MemoryRouter initialEntries={[initialRoute]}>
       <Routes>
         <Route path="/alerts-modified" element={<AlertsModifiedPage />} />
+        <Route path="/diagnosis/:sessionId" element={<div>diagnosis page reached</div>} />
       </Routes>
     </MemoryRouter>,
   );
@@ -73,32 +74,32 @@ describe("AlertsModifiedPage", () => {
       alerts: [],
       clusters: [],
       severityFilter: "all",
+      wsState: "closed",
+      lastAlertEventAt: undefined,
+      lastSnapshotSyncAt: undefined,
+      realtimeEnabled: false,
       isLoading: false,
+      hasLoaded: false,
+      error: undefined,
     });
 
     vi.spyOn(apiClient, "getAlerts").mockResolvedValue({ alerts, clusters });
-    vi.spyOn(apiClient, "getDiagnosisSession").mockResolvedValue(session);
   });
 
   afterEach(() => {
     vi.restoreAllMocks();
   });
 
-  it("renders the dense convergence workspace and supports grouped expansion", async () => {
+  it("renders convergence workspace and supports grouped expansion", async () => {
     const user = userEvent.setup();
+    vi.spyOn(apiClient, "getDiagnosisSession").mockResolvedValue(session);
+
     renderAlertsModifiedPage();
 
-    await waitFor(() => {
-      expect(screen.getByRole("heading", { name: "收敛结果看板" })).toBeInTheDocument();
-    });
-
-    expect(screen.queryByText("让值班同学只看最终处理结果，不再理解中间归并对象。")).not.toBeInTheDocument();
-    expect(screen.queryByText("系统内部逻辑已收敛到结果视图")).not.toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "告警收敛" })).toBeInTheDocument();
     expect(screen.getAllByText("2 个 fingerprint").length).toBeGreaterThan(0);
-    expect(screen.getByText("压缩 1 条重复事件")).toBeInTheDocument();
     expect(screen.getByText("2 次事件")).toBeInTheDocument();
-    expect(screen.getByText("重复折叠")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "查看 Session" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "查看诊断" })).toBeInTheDocument();
     expect(screen.getByText("第 2 次重试事件")).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "切换 fp-001 事件流" }));
@@ -106,5 +107,33 @@ describe("AlertsModifiedPage", () => {
 
     await user.click(screen.getByRole("button", { name: "切换 fp-002 事件流" }));
     expect(screen.getByText("GPU 温度持续高于目标阈值")).toBeInTheDocument();
+  });
+
+  it("starts diagnosis via new async API and navigates immediately", async () => {
+    const user = userEvent.setup();
+    vi.spyOn(apiClient, "getDiagnosisSession").mockResolvedValue(null);
+    vi.spyOn(apiClient, "startDiagnoseAlert").mockResolvedValue({
+      session_id: "sess-created-001",
+      alert: alerts[0],
+      status: "diagnosing",
+      duration_seconds: 0,
+    });
+
+    renderAlertsModifiedPage();
+
+    await screen.findByRole("heading", { name: "告警收敛" });
+
+    await user.click(screen.getByRole("button", { name: "进入诊断" }));
+
+    await waitFor(() => {
+      expect(apiClient.startDiagnoseAlert).toHaveBeenCalledTimes(1);
+      expect(apiClient.startDiagnoseAlert).toHaveBeenCalledWith(
+        expect.objectContaining({
+          fingerprint: "fp-001",
+        }),
+        expect.arrayContaining(["fp-002"]),
+      );
+    });
+    expect(await screen.findByText("diagnosis page reached")).toBeInTheDocument();
   });
 });

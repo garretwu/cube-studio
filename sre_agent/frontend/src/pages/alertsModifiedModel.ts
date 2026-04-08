@@ -3,7 +3,7 @@
 type ChipTone = "neutral" | "accent" | "success" | "warning" | "danger" | "info";
 
 type RouteDecision = {
-  label: "并入已有 Session" | "将创建 Session" | "观察中";
+  label: "并入已有诊断" | "将创建诊断" | "观察中";
   tone: ChipTone;
   ctaLabel: string;
   path: string;
@@ -65,8 +65,8 @@ const severityRank: Record<Alert["severity"], number> = {
 };
 
 const routeRank: Record<RouteDecision["label"], number> = {
-  "并入已有 Session": 0,
-  "将创建 Session": 1,
+  "并入已有诊断": 0,
+  "将创建诊断": 1,
   "观察中": 2,
 };
 
@@ -176,11 +176,11 @@ function buildRouteDecision(alerts: Alert[], activeSession?: DiagnosisSession) {
   const focusFingerprint = encodeURIComponent(pickPrimaryFingerprint(alerts));
   if (activeSession && alerts.some((alert) => alert.fingerprint === activeSession.alert.fingerprint)) {
     return {
-      label: "并入已有 Session" as const,
+      label: "并入已有诊断" as const,
       tone: "accent" as const,
-      ctaLabel: "查看 Session",
+      ctaLabel: "查看诊断",
       path: `/diagnosis/${activeSession.session_id}`,
-      note: `已命中 Session ${activeSession.session_id}`,
+      note: `已命中诊断 ${activeSession.session_id}`,
     };
   }
 
@@ -190,18 +190,18 @@ function buildRouteDecision(alerts: Alert[], activeSession?: DiagnosisSession) {
       label: "观察中" as const,
       tone: "neutral" as const,
       ctaLabel: "回看原始告警",
-      path: `/alerts?q=${focusFingerprint}`,
+      path: `/alerts-modified?q=${focusFingerprint}`,
       note: "当前不新建诊断会话",
     };
   }
 
   if (alerts.length > 1 || alerts.some((alert) => alert.severity === "critical")) {
     return {
-      label: "将创建 Session" as const,
+      label: "将创建诊断" as const,
       tone: "danger" as const,
       ctaLabel: "进入诊断",
       path: "/diagnosis",
-      note: "系统将按收敛结果统一建会话",
+      note: "系统将按收敛结果统一创建诊断",
     };
   }
 
@@ -209,7 +209,7 @@ function buildRouteDecision(alerts: Alert[], activeSession?: DiagnosisSession) {
     label: "观察中" as const,
     tone: "warning" as const,
     ctaLabel: "继续观察",
-    path: `/alerts?q=${focusFingerprint}`,
+    path: `/alerts-modified?q=${focusFingerprint}`,
     note: "先保留在观察队列",
   };
 }
@@ -365,3 +365,4 @@ export function buildAlertConvergenceView(
 
   return { results, flow };
 }
+

@@ -184,6 +184,15 @@ class PrometheusChannelTests(unittest.IsolatedAsyncioTestCase):
 
 
 class K8sChannelTests(unittest.IsolatedAsyncioTestCase):
+    async def test_list_namespaces(self) -> None:
+        class _Client:
+            def list_namespaces(self):  # noqa: ANN201
+                return ["default", "inference", "default", "  "]
+
+        ch = K8sChannel(client=_Client())
+        namespaces = await ch.list_namespaces()
+        self.assertEqual(namespaces, ["default", "inference", "default"])
+
     async def test_pending_count(self) -> None:
         class _Client:
             def list_pods(self, namespace, label_selector=None):  # noqa: ANN001, ANN201

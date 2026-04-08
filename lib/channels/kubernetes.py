@@ -121,6 +121,24 @@ class K8sChannel(BaseChannel):
     async def list_pods(self, namespace: str, label_selector: str | None = None) -> list[dict[str, Any]]:
         return self.client.list_pods(namespace=namespace, label_selector=label_selector)
 
+    async def list_namespaces(self) -> list[str]:
+        if self.client is not None:
+            resolver = getattr(self.client, "list_namespaces", None)
+            if callable(resolver):
+                payload = await self._maybe_await(resolver())
+                return [str(item).strip() for item in payload if str(item).strip()]
+            return []
+
+        self._ensure_client()
+        response = await asyncio.to_thread(self._core_v1.list_namespace)
+        names: list[str] = []
+        for namespace in getattr(response, "items", []) or []:
+            metadata = getattr(namespace, "metadata", None)
+            name = str(getattr(metadata, "name", "") or "").strip()
+            if name:
+                names.append(name)
+        return names
+
     @staticmethod
     def _selector_to_string(selector: dict[str, Any] | None) -> str | None:
         if not isinstance(selector, dict) or not selector:

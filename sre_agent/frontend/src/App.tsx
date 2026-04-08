@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+﻿import { useEffect, useMemo, useState } from "react";
 import { Navigate, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 
 import { apiClient } from "./api/client";
@@ -7,6 +7,7 @@ import { AppShell } from "./components/ui";
 import { useAlertsRealtimeSync } from "./hooks/useAlertsRealtimeSync";
 import HistoryPage from "./pages/History";
 import DiagnosisPage from "./pages/Diagnosis";
+import KnowledgeDetailPage from "./pages/KnowledgeDetail";
 import RemediationPage from "./pages/Remediation";
 import SkillDetailPage from "./pages/SkillDetail";
 import { appRoutes } from "./routes";
@@ -28,12 +29,14 @@ function AppRoutes() {
   return (
     <Routes>
       <Route path="/" element={<Navigate to="/topology" replace />} />
+      <Route path="/alerts" element={<Navigate to="/alerts-modified" replace />} />
       <Route path="/history" element={<HistoryPage />} />
       <Route path="/history/:sessionId" element={<DiagnosisPage />} />
       <Route path="/diagnosis" element={<DiagnosisPage />} />
       <Route path="/diagnosis/:sessionId" element={<DiagnosisPage />} />
       <Route path="/remediation/:sessionId" element={<RemediationPage />} />
       <Route path="/skills/:skillId" element={<SkillDetailPage />} />
+      <Route path="/knowledge/:knowledgeBaseId" element={<KnowledgeDetailPage />} />
       <Route path="/topology-modified" element={<Navigate to="/topology" replace />} />
       {appRoutes
         .filter((route) => route.key !== "diagnosis")
@@ -98,9 +101,11 @@ function App() {
       collapseBehavior: "hide" as const,
       items: historySessions.map((session) => ({
         key: session.session_id,
-        label: session.title,
+        label: session.alert_name,
         active: session.session_id === historySessionId,
         kind: "history" as const,
+        metaLabel: session.severity.toUpperCase(),
+        metaTone: session.severity,
         status: resolveHistoryChannelStatus(session),
         onClick: () => navigate(`/history/${session.session_id}`),
       })),
@@ -130,3 +135,4 @@ function App() {
 
 export default App;
 export { resolveActiveRouteKey };
+

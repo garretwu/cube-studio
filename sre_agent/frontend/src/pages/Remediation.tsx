@@ -1,372 +1,418 @@
-import { useEffect, useMemo, useState } from "react";
-import { Select } from "antd";
-import { useNavigate, useParams } from "react-router-dom";
+﻿import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
+import { useParams } from "react-router-dom";
 
 import { apiClient } from "../api/client";
-import type { SessionEvent, SessionSummary } from "../api/types";
+import type { DiagnosisSessionSummary, RemediationOverview, SessionEvent } from "../api/types";
 import ApprovalDialog from "../components/ApprovalDialog";
-import CanaryProgress from "../components/CanaryProgress";
-import { AppButton, SectionHeader, StatusChip, SurfaceCard } from "../components/ui";
+import RemediationDetailDrawer from "../components/RemediationDetailDrawer";
+import { AppIcon, AppInput, MetricTile, SectionHeader, StatusChip, SurfaceCard } from "../components/ui";
 import { useRemediationStore } from "../store/remediationStore";
-import { formatVerificationMethod, formatWorkflowStatus } from "../utils/display";
 import { formatPercent, formatTimestamp } from "../utils/format";
 
-type StepResult = {
-  step_id?: number;
-  tool?: string;
-  command?: string;
-  result?: unknown;
-  success?: boolean;
-  mocked?: boolean;
-  message?: string;
+type RemediationRecord = {
+  summary: DiagnosisSessionSummary;
+  overview?: RemediationOverview;
+};
+
+type StatusFilter = "all" | "approval" | "running" | "done" | "attention";
+
+const STATUS_LABELS: Record<string, string> = {
+  approval_required: "待审批",
+  approval_rejected: "已驳回",
+  approved: "已批准",
+  awaiting_approval: "待审批",
+  escalated: "已升级处理",
+  execution_failed: "执行失败",
+  execution_started: "开始修复",
+  execution_succeeded: "执行成功",
+  execution_timeout: "执行超时",
+  failed: "失败",
+  partially_resolved: "部分恢复",
+  pending: "待开始",
+  plan_revised: "方案已修订",
+  proposed_fix_ready: "方案待执行",
+  re_diagnosed: "复诊完成",
+  rejected: "已驳回",
+  remediating: "修复中",
+  resolved: "已恢复",
+  rollback_failed: "回滚失败",
+  rollback_started: "开始回滚",
+  rollback_succeeded: "回滚成功",
+  timeout: "超时",
+  validating: "验证中",
 };
 
 const TERMINAL_STATUSES = new Set(["resolved", "failed", "escalated", "timeout", "rejected"]);
-const REMEDIATION_KEY_STAGES = new Set([
-  "approval_accepted",
-  "approval_rejected",
-  "execution_started",
-  "execution_mocked",
-  "observation_started",
-  "observation_result",
-  "execution_succeeded",
-  "execution_failed",
-  "execution_timeout",
-  "escalation_required",
-  "rollback_started",
-  "rollback_succeeded",
-  "rollback_failed",
+const ATTENTION_STATUSES = new Set(["failed", "escalated", "timeout", "rejected", "execution_failed", "rollback_failed"]);
+const RELEVANT_OUTCOMES = new Set(["proposed_fix_ready", "resolved", "partially_resolved", "failed", "escalated", "rejected", "timeout"]);
+const RELEVANT_STATUSES = new Set([
+  "approval_required",
+  "awaiting_approval",
+  "approved",
+  "remediating",
+  "resolved",
+  "failed",
+  "escalated",
+  "timeout",
+  "rejected",
+  "diagnosed",
+  "re_diagnosed",
 ]);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+function sortEvents(events: SessionEvent[]): SessionEvent[] {
+  return [...events].sort((left, right) => left.timestamp.localeCompare(right.timestamp));
+}
+
 function getEventStage(event: SessionEvent): string {
-  if (event.type !== "remediation_progress") {
-    return event.type;
-  }
-  const stage = String(event.data?.["stage"] ?? "").trim();
+  if (event.type !== "remediation_progress") return event.type;
+  const stage = String(event.data?.stage ?? "").trim();
   return stage || "remediation_progress";
 }
 
-function isRemediationTimelineEvent(event: SessionEvent): boolean {
-  if (event.type === "approval_required" || event.type === "plan_revised") {
-    return true;
-  }
-  if (event.type !== "remediation_progress") {
-    return false;
-  }
-  const stage = String(event.data?.["stage"] ?? "").trim().toLowerCase();
-  return REMEDIATION_KEY_STAGES.has(stage);
+function getStatusLabel(value?: string | null, fallback = "未知"): string {
+  if (!value) return fallback;
+  return STATUS_LABELS[value] ?? value;
 }
 
-function getEventMessage(event: SessionEvent): string {
-  const data = isRecord(event.data) ? event.data : {};
-  if (typeof data.message === "string" && data.message.trim()) {
-    return data.message;
-  }
-  if (event.type === "approval_required") {
-    return "等待审批";
-  }
-  if (event.type === "plan_revised") {
-    return "修复方案已更新";
-  }
-  const stage = getEventStage(event).toLowerCase();
-  if (stage === "approval_accepted") {
-    return "审批通过，准备执行修复";
-  }
-  if (stage === "approval_rejected") {
-    return "审批拒绝";
-  }
-  if (stage === "execution_started") {
-    return "执行修复中";
-  }
-  if (stage === "execution_mocked") {
-    return "模拟执行完成";
-  }
-  if (stage === "observation_started") {
-    return "开始观察修复效果";
-  }
-  if (stage === "observation_result") {
-    return "观察结果已返回";
-  }
-  if (stage === "execution_succeeded") {
-    return "修复执行成功";
-  }
-  if (stage === "execution_failed") {
-    return "修复执行失败";
-  }
-  if (stage === "execution_timeout") {
-    return "修复执行超时";
-  }
-  if (stage === "escalation_required") {
-    return "需要工程师介入";
-  }
-  if (stage === "rollback_started") {
-    return "开始回滚";
-  }
-  if (stage === "rollback_succeeded") {
-    return "回滚成功";
-  }
-  if (stage === "rollback_failed") {
-    return "回滚失败";
-  }
-  return stage;
+function getStatusTone(value?: string | null): "neutral" | "accent" | "success" | "warning" | "danger" | "info" {
+  const normalized = String(value ?? "").trim().toLowerCase();
+  if (ATTENTION_STATUSES.has(normalized)) return "danger";
+  if (TERMINAL_STATUSES.has(normalized) || normalized === "execution_succeeded" || normalized === "rollback_succeeded") return "success";
+  if (normalized === "remediating" || normalized === "execution_started" || normalized === "validating") return "warning";
+  if (normalized === "approval_required" || normalized === "awaiting_approval") return "info";
+  if (normalized === "approved" || normalized === "plan_revised") return "accent";
+  return "neutral";
 }
 
-function getStepResults(event: SessionEvent): StepResult[] {
-  const data = isRecord(event.data) ? event.data : {};
-  const raw = data.step_results;
-  if (!Array.isArray(raw)) {
-    return [];
-  }
-  return raw.filter((item): item is StepResult => isRecord(item));
+function isRemediationRelevant(summary: DiagnosisSessionSummary): boolean {
+  return RELEVANT_OUTCOMES.has(String(summary.outcome ?? "").trim()) || RELEVANT_STATUSES.has(String(summary.status ?? "").trim());
 }
 
-function formatResult(value: unknown): string {
-  if (typeof value === "string") {
-    return value;
+function getApprover(events: SessionEvent[] | undefined): string | null {
+  if (!events?.length) return null;
+  for (const event of sortEvents(events)) {
+    const data = isRecord(event.data) ? event.data : {};
+    if (typeof data.user === "string" && data.user.trim()) return data.user.trim();
   }
-  try {
-    return JSON.stringify(value);
-  } catch {
-    return String(value);
-  }
+  return null;
 }
 
-function sessionOptionLabel(session: SessionSummary): string {
-  return `${session.session_id} | ${session.alert_name} | ${formatWorkflowStatus(session.status)}`;
+function getExecutionStartedAt(events: SessionEvent[] | undefined): string | null {
+  if (!events?.length) return null;
+  for (const event of sortEvents(events)) {
+    if (getEventStage(event) === "execution_started") return event.timestamp;
+  }
+  return null;
+}
+
+function getOverallProgress(overview?: RemediationOverview): number {
+  if (!overview) return 0;
+  const total = Number(overview.progress.total_steps ?? 0);
+  const completed = Number(overview.progress.completed_steps ?? 0);
+  if (total <= 0) return 0;
+  return Math.max(0, Math.min(100, Math.round((completed / total) * 100)));
+}
+
+function getCanaryProgress(overview?: RemediationOverview): number | null {
+  if (!overview?.plan.canary?.enabled) return null;
+  const batches = overview.progress.batch_status ?? [];
+  if (batches.length > 0) {
+    const canaryBatch = batches.find((item) => /canary|金丝雀/i.test(item.batch)) ?? batches[0];
+    return Math.max(0, Math.min(100, Math.round(Number(canaryBatch.progress ?? 0))));
+  }
+  if (String(overview.progress.status ?? "").trim().toLowerCase() === "resolved") return 100;
+  return getOverallProgress(overview);
+}
+
+function getCanarySummary(overview?: RemediationOverview): string {
+  if (!overview?.plan.canary?.enabled) return "未启用";
+  if ((overview.progress.batch_status?.length ?? 0) > 0) return `${getCanaryProgress(overview) ?? 0}%`;
+  return `目标 ${formatPercent(overview.plan.canary.target_percentage)} · 观察 ${overview.plan.canary.monitor_duration}s`;
+}
+
+function matchesFilter(record: RemediationRecord, filter: StatusFilter): boolean {
+  if (filter === "all") return true;
+  const status = String(record.overview?.progress.status ?? record.summary.status ?? "").trim().toLowerCase();
+  if (filter === "approval") return status === "approval_required" || status === "awaiting_approval";
+  if (filter === "running") return status === "remediating";
+  if (filter === "done") return status === "resolved";
+  return ATTENTION_STATUSES.has(status);
+}
+
+function buildSearchText(record: RemediationRecord): string {
+  return [
+    record.summary.session_id,
+    record.summary.title,
+    record.summary.alert_name,
+    record.summary.root_cause,
+    record.summary.summary,
+    record.overview?.plan.root_cause,
+    record.overview?.plan.description,
+    getApprover(record.overview?.timeline),
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
 }
 
 function RemediationPage() {
-  const navigate = useNavigate();
   const { sessionId: sessionIdFromRoute } = useParams<{ sessionId?: string }>();
-  const { overview, events, approvalDialogOpen, fetchOverview, setApprovalDialogOpen, submitApproval, setSessionId } =
+  const { overview, events, approvalDialogOpen, fetchOverview, isLoading, setApprovalDialogOpen, setSessionId, submitApproval } =
     useRemediationStore();
-
-  const [sessionOptions, setSessionOptions] = useState<SessionSummary[]>([]);
+  const [records, setRecords] = useState<RemediationRecord[]>([]);
+  const [recordsLoading, setRecordsLoading] = useState(false);
+  const [recordsError, setRecordsError] = useState<string | null>(null);
   const [selectedSessionId, setSelectedSessionId] = useState("");
-  const [isLoadingSessions, setIsLoadingSessions] = useState(false);
-  const [sessionLoadError, setSessionLoadError] = useState<string | null>(null);
+  const [activeStepSelection, setActiveStepSelection] = useState<{ sessionId: string; stepId: number } | null>(null);
+  const [query, setQuery] = useState("");
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
+  const [actionLoading, setActionLoading] = useState(false);
 
-  useEffect(() => {
-    let cancelled = false;
-
-    const loadSessions = async () => {
-      setIsLoadingSessions(true);
-      setSessionLoadError(null);
-      try {
-        const sessions = await apiClient.getSessions(50);
-        if (cancelled) {
-          return;
-        }
-        setSessionOptions(sessions);
-
+  const loadRecords = useCallback(async (preferredSessionId?: string) => {
+    setRecordsLoading(true);
+    setRecordsError(null);
+    try {
+      const summaries = (await apiClient.getDiagnosisHistorySessions())
+        .filter(isRemediationRelevant)
+        .sort((left, right) => right.updated_at.localeCompare(left.updated_at));
+      const detailResults = await Promise.allSettled(
+        summaries.map(async (summary) => ({
+          summary,
+          overview: await apiClient.getRemediationOverview(summary.session_id),
+        })),
+      );
+      const nextRecords = summaries.map((summary, index) => {
+        const settled = detailResults[index];
+        return settled?.status === "fulfilled" ? settled.value : { summary };
+      });
+      setRecords(nextRecords);
+      setSelectedSessionId((current) => {
         const routeSessionId = String(sessionIdFromRoute ?? "").trim();
-        const targetSessionId = routeSessionId || sessions[0]?.session_id || "";
-        if (!targetSessionId) {
-          setSelectedSessionId("");
-          return;
-        }
-        setSelectedSessionId(targetSessionId);
-        setSessionId(targetSessionId);
-        await fetchOverview(targetSessionId);
-      } catch (error) {
-        if (!cancelled) {
-          setSessionLoadError(error instanceof Error ? error.message : "会话加载失败");
-        }
-      } finally {
-        if (!cancelled) {
-          setIsLoadingSessions(false);
-        }
-      }
-    };
-
-    void loadSessions();
-    return () => {
-      cancelled = true;
-    };
-  }, [fetchOverview, setSessionId, sessionIdFromRoute]);
-
-  const progressStatus = overview?.progress.status ?? "pending";
+        const candidate = preferredSessionId || routeSessionId || current || nextRecords[0]?.summary.session_id || "";
+        if (candidate && nextRecords.some((item) => item.summary.session_id === candidate)) return candidate;
+        return nextRecords[0]?.summary.session_id ?? "";
+      });
+    } catch (error) {
+      setRecords([]);
+      setRecordsError(error instanceof Error ? error.message : "修复记录加载失败");
+    } finally {
+      setRecordsLoading(false);
+    }
+  }, [sessionIdFromRoute]);
 
   useEffect(() => {
-    if (!selectedSessionId) {
-      return;
-    }
-    if (progressStatus !== "remediating") {
-      return;
-    }
-    const timer = window.setInterval(() => {
-      void fetchOverview(selectedSessionId);
-    }, 3000);
-    return () => window.clearInterval(timer);
-  }, [fetchOverview, progressStatus, selectedSessionId]);
+    const routeSessionId = String(sessionIdFromRoute ?? "").trim();
+    void loadRecords(routeSessionId || undefined);
+  }, [loadRecords, sessionIdFromRoute]);
 
-  const orderedEvents = useMemo(() => {
-    return [...events]
-      .filter((event) => isRemediationTimelineEvent(event))
-      .sort((left, right) => left.timestamp.localeCompare(right.timestamp));
-  }, [events]);
+  useEffect(() => {
+    if (!selectedSessionId) return;
+    setSessionId(selectedSessionId);
+    void fetchOverview(selectedSessionId);
+  }, [fetchOverview, selectedSessionId, setSessionId]);
 
-  const planSteps = overview?.plan.steps ?? [];
+  useEffect(() => {
+    if (!overview?.session_id) return;
+    setRecords((current) => current.map((record) => (record.summary.session_id === overview.session_id ? { ...record, overview } : record)));
+  }, [overview]);
+
+  useEffect(() => {
+    setActiveStepSelection(null);
+  }, [selectedSessionId]);
+
+  const filteredRecords = useMemo(() => {
+    const normalizedQuery = query.trim().toLowerCase();
+    return records.filter((record) => matchesFilter(record, statusFilter) && (!normalizedQuery || buildSearchText(record).includes(normalizedQuery)));
+  }, [query, records, statusFilter]);
+
+  const selectedRecord = useMemo(
+    () => records.find((record) => record.summary.session_id === selectedSessionId) ?? null,
+    [records, selectedSessionId],
+  );
+
+  const pendingApprovalCount = records.filter((record) => {
+    const status = String(record.overview?.progress.status ?? record.summary.status ?? "").trim().toLowerCase();
+    return status === "approval_required" || status === "awaiting_approval";
+  }).length;
+  const runningCount = records.filter((record) => String(record.overview?.progress.status ?? record.summary.status ?? "").trim().toLowerCase() === "remediating").length;
+  const canaryEnabledCount = records.filter((record) => Boolean(record.overview?.plan.canary?.enabled)).length;
+
+  const handleSubmitApproval = useCallback(
+    async (approved: boolean) => {
+      setActionLoading(true);
+      try {
+        await submitApproval(approved);
+        await loadRecords(selectedSessionId);
+      } finally {
+        setActionLoading(false);
+      }
+    },
+    [loadRecords, selectedSessionId, submitApproval],
+  );
+
+  const handleSelectStep = useCallback((sessionId: string, stepId: number) => {
+    setActiveStepSelection((current) =>
+      current?.sessionId === sessionId && current.stepId === stepId ? null : { sessionId, stepId },
+    );
+  }, []);
 
   return (
-    <div className="page-grid">
+    <div className="page-grid remediation-page">
       <div className="page-intro">
-        <SectionHeader
-          description="展示修复计划、审批状态、执行进度、观察结果与最终结论。"
-          eyebrow="执行控制"
-          title="修复执行关口"
-        />
-        <SurfaceCard bodyClassName="page-stack" variant="hero">
-          <div className="status-row">
-            <StatusChip tone={TERMINAL_STATUSES.has(progressStatus) ? "success" : "warning"}>
-              {formatWorkflowStatus(progressStatus, "加载中")}
-            </StatusChip>
-            <StatusChip tone="accent">{overview?.plan.priority ?? "P?"}</StatusChip>
-            {overview?.plan.confidence ? <StatusChip tone="info">{formatPercent(overview.plan.confidence)}</StatusChip> : null}
-            {overview?.plan_version ? <StatusChip tone="neutral">v{overview.plan_version}</StatusChip> : null}
-          </div>
-        </SurfaceCard>
+        <SectionHeader title="修复与执行" description="按修复记录查看审批、版本、金丝雀策略和执行结果。" />
+        <div className="card-grid--metrics remediation-page__metrics">
+          <MetricTile hint="已识别到修复流程的诊断会话" label="修复记录" value={records.length} />
+          <MetricTile hint="等待人工批准后进入执行" label="待审批" value={pendingApprovalCount} />
+          <MetricTile hint="正在执行或观察验证中" label="执行中" value={runningCount} />
+          <MetricTile hint="已配置灰度或金丝雀策略" label="金丝雀方案" value={canaryEnabledCount} />
+        </div>
       </div>
 
-      <SurfaceCard
-        description="先选择会话，再查看该会话的执行步骤、审批/执行/观察时间线和最终结果。"
-        title="会话选择"
-        variant="soft"
-      >
-        <div className="input-row">
-          <Select
-            className="app-select"
-            disabled={isLoadingSessions || sessionOptions.length === 0}
-            loading={isLoadingSessions}
-            onChange={(value) => {
-              const nextId = String(value ?? "").trim();
-              setSelectedSessionId(nextId);
-              setSessionId(nextId);
-              navigate(`/remediation/${nextId}`);
-              void fetchOverview(nextId);
-            }}
-            options={sessionOptions.map((session) => ({
-              label: sessionOptionLabel(session),
-              value: session.session_id,
-            }))}
-            placeholder="请选择要查看的修复会话"
-            value={selectedSessionId || undefined}
-          />
-          <AppButton
-            disabled={!selectedSessionId}
-            iconLeft="refresh"
-            onClick={() => {
-              if (selectedSessionId) {
-                void fetchOverview(selectedSessionId);
-              }
-            }}
-            variant="secondary"
-          >
-            刷新
-          </AppButton>
-        </div>
-        {sessionLoadError ? <p className="data-list__copy">{sessionLoadError}</p> : null}
-      </SurfaceCard>
-
-      <SurfaceCard
-        actions={
-          <AppButton
-            disabled={!overview?.approval_required || !selectedSessionId}
-            onClick={() => setApprovalDialogOpen(true)}
-            variant="primary"
-          >
-            打开审批窗口
-          </AppButton>
-        }
-        description="当前修复计划步骤与验证方式。"
-        title="执行步骤"
-      >
-        <div className="mini-card-list">
-          {planSteps.length === 0 ? (
-            <div className="mini-card">
-              <p className="mini-card__title">当前会话暂无可执行步骤</p>
-              <p className="mini-card__copy">请先在诊断阶段生成并审批修复计划。</p>
-            </div>
-          ) : (
-            planSteps.map((step) => (
-              <div key={step.step_id} className="mini-card">
-                <div className="status-row">
-                  <StatusChip tone="accent">步骤 {step.step_id}</StatusChip>
-                  <StatusChip tone="neutral">{step.tool}</StatusChip>
-                  <StatusChip tone="info">{formatVerificationMethod(step.verification.method)}</StatusChip>
+      <div className="remediation-layout">
+        <aside className="remediation-sidebar">
+          <SurfaceCard title="修复记录" description="按状态和关键词快速定位会话，点击行后在右侧查看详情。">
+            <div className="page-stack remediation-sidebar__body">
+              <div className="remediation-toolbar">
+                <AppInput
+                  value={query}
+                  onChange={setQuery}
+                  placeholder="搜索诊断 ID、名称、根因或审批人"
+                  prefix={<AppIcon name="search" size={16} />}
+                />
+                <div className="remediation-filter-row">
+                  {([
+                    ["all", "全部"],
+                    ["approval", "待审批"],
+                    ["running", "执行中"],
+                    ["done", "已恢复"],
+                    ["attention", "需关注"],
+                  ] as const).map(([value, label]) => (
+                    <button
+                      key={value}
+                      type="button"
+                      className={`remediation-filter-chip${statusFilter === value ? " remediation-filter-chip--active" : ""}`}
+                      onClick={() => setStatusFilter(value)}
+                    >
+                      {label}
+                    </button>
+                  ))}
                 </div>
-                <p className="mini-card__title">{step.description}</p>
-                <p className="mini-card__copy">验证方式：{formatVerificationMethod(step.verification.method)}</p>
               </div>
-            ))
-          )}
-        </div>
-      </SurfaceCard>
 
-      <SurfaceCard description="按修复关键事件回放：审批、执行、观察、结果、回滚。" title="修复时间线">
-        <div className="mini-card-list">
-          {orderedEvents.length === 0 ? (
-            <div className="mini-card">
-              <p className="mini-card__title">暂无修复事件</p>
-              <p className="mini-card__copy">请先审批并执行修复，或切换到已有修复记录的会话。</p>
-            </div>
-          ) : (
-            orderedEvents.map((event, index) => {
-              const stage = getEventStage(event);
-              const message = getEventMessage(event);
-              const data = isRecord(event.data) ? event.data : {};
-              const stepResults = getStepResults(event);
-              const timeoutSeconds = data.timeout_seconds;
-              return (
-                <div key={`${event.type}-${event.timestamp}-${index}`} className="mini-card">
-                  <div className="status-row">
-                    <StatusChip tone="neutral">{formatWorkflowStatus(stage, stage)}</StatusChip>
-                    <StatusChip tone="info">{formatTimestamp(event.timestamp)}</StatusChip>
-                  </div>
-                  <p className="mini-card__title">{message}</p>
-                  {event.type === "approval_required" ? (
-                    <p className="mini-card__copy">待审批版本：v{String(data.plan_version ?? "-")}</p>
-                  ) : null}
-                  {event.type === "plan_revised" ? (
-                    <p className="mini-card__copy">修订指令：{String(data.instruction ?? "-")}</p>
-                  ) : null}
-                  {typeof timeoutSeconds === "number" ? <p className="mini-card__copy">超时阈值：{timeoutSeconds} 秒</p> : null}
-                  {stepResults.length ? (
-                    <div className="diagnosis-plan-steps">
-                      {stepResults.map((item, itemIndex) => (
-                        <div className="diagnosis-plan-step" key={`${stage}-${item.step_id ?? itemIndex}`}>
-                          <p className="mini-card__copy">
-                            步骤 {item.step_id ?? itemIndex + 1} | 工具：{item.tool ?? "-"} | 状态：
-                            {item.success === false ? "失败" : "成功"}
-                            {item.mocked ? "（mock）" : ""}
-                          </p>
-                          <p className="mini-card__copy">命令：{item.command ?? "-"}</p>
-                          <p className="mini-card__copy">结果：{formatResult(item.result ?? item.message ?? "-")}</p>
-                        </div>
-                      ))}
-                    </div>
-                  ) : null}
+              {recordsLoading ? <p className="data-list__copy">正在同步修复记录...</p> : null}
+              {recordsError ? <p className="data-list__copy remediation-sidebar__error">{recordsError}</p> : null}
+              {!recordsLoading && filteredRecords.length === 0 ? (
+                <div className="mini-card remediation-empty-state">
+                  <p className="mini-card__title">暂无匹配的修复记录</p>
+                  <p className="mini-card__copy">可以尝试放宽筛选条件，或等待新的诊断会话生成修复计划。</p>
                 </div>
-              );
-            })
-          )}
-        </div>
-      </SurfaceCard>
+              ) : null}
 
-      <SurfaceCard description="当前未启用分批执行；这里显示一次性执行进度和最终修复结果。" title="金丝雀进度">
-        <CanaryProgress batches={overview?.progress.batch_status ?? []} />
-      </SurfaceCard>
+              <div className="remediation-record-table-shell">
+                <table className="remediation-record-table">
+                  <thead>
+                    <tr>
+                      <th>修复记录</th>
+                      <th>状态</th>
+                      <th>修复内容</th>
+                      <th>审批人</th>
+                      <th>开始修复</th>
+                      <th>金丝雀</th>
+                      <th>全量</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {filteredRecords.map((record) => {
+                      const recordOverview = record.overview;
+                      const currentStatus = String(recordOverview?.progress.status ?? record.summary.status ?? "pending").trim();
+                      const approver = getApprover(recordOverview?.timeline) ?? (recordOverview?.approval_required ? "待审批" : "未记录");
+                      const startedAt = getExecutionStartedAt(recordOverview?.timeline);
+                      const totalProgress = getOverallProgress(recordOverview);
+                      const canaryProgress = getCanaryProgress(recordOverview);
+                      const isExpanded = selectedRecord?.summary.session_id === record.summary.session_id;
 
+                      return (
+                        <Fragment key={record.summary.session_id}>
+                          <tr
+                            className={`remediation-record-table__row${isExpanded ? " remediation-record-table__row--active" : ""}`}
+                            onClick={() =>
+                              setSelectedSessionId((current) =>
+                                current === record.summary.session_id ? "" : record.summary.session_id,
+                              )
+                            }
+                          >
+                            <td className="remediation-record-table__cell remediation-record-table__cell--record">
+                              <span className="remediation-record-table__chevron">
+                                <AppIcon name={isExpanded ? "down" : "right"} size={14} />
+                              </span>
+                              <div className="remediation-record-table__record">
+                                <strong>{record.summary.title}</strong>
+                                <span>{record.summary.session_id}</span>
+                              </div>
+                            </td>
+                            <td className="remediation-record-table__cell remediation-record-table__cell--status">
+                              <div className="remediation-record-table__status-stack">
+                                <StatusChip tone={getStatusTone(currentStatus)}>{getStatusLabel(currentStatus)}</StatusChip>
+                                {recordOverview?.plan.confidence ? <span className="remediation-record-table__status-meta">{`置信度 ${formatPercent(recordOverview.plan.confidence)}`}</span> : null}
+                              </div>
+                            </td>
+                            <td className="remediation-record-table__cell remediation-record-table__cell--description">
+                              <div className="remediation-record-table__description" title={recordOverview?.plan.description ?? record.summary.root_cause ?? record.summary.summary}>
+                                {recordOverview?.plan.description ?? record.summary.root_cause ?? record.summary.summary}
+                              </div>
+                            </td>
+                            <td className="remediation-record-table__cell">{approver}</td>
+                            <td className="remediation-record-table__cell">{startedAt ? formatTimestamp(startedAt) : "未开始"}</td>
+                            <td className="remediation-record-table__cell remediation-record-table__cell--progress">
+                              <div className="remediation-record-table__progress-cell">
+                                <span>{recordOverview?.plan.canary?.enabled ? getCanarySummary(recordOverview) : "未启用"}</span>
+                                <div className="progress-track remediation-progress-track remediation-progress-track--canary">
+                                  <div className="progress-track__fill remediation-progress-track__fill remediation-progress-track__fill--canary" style={{ width: `${canaryProgress ?? 0}%` }} />
+                                </div>
+                              </div>
+                            </td>
+                            <td className="remediation-record-table__cell remediation-record-table__cell--progress">
+                              <div className="remediation-record-table__progress-cell">
+                                <span>{totalProgress}%</span>
+                                <div className="progress-track remediation-progress-track">
+                                  <div className="progress-track__fill remediation-progress-track__fill" style={{ width: `${totalProgress}%` }} />
+                                </div>
+                              </div>
+                            </td>
+                          </tr>
+                        </Fragment>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </SurfaceCard>
+        </aside>
+      </div>
+
+      <RemediationDetailDrawer
+        actionLoading={actionLoading}
+        activeStepSelection={activeStepSelection}
+        events={events}
+        isLoading={isLoading}
+        onClose={() => setSelectedSessionId("")}
+        onOpenApproval={() => setApprovalDialogOpen(true)}
+        onSelectStep={handleSelectStep}
+        open={Boolean(selectedRecord)}
+        overview={overview}
+        record={selectedRecord}
+      />
       <ApprovalDialog
-        onApprove={() => void submitApproval(true)}
+        onApprove={() => void handleSubmitApproval(true)}
         onCancel={() => setApprovalDialogOpen(false)}
-        onReject={() => void submitApproval(false)}
+        onReject={() => void handleSubmitApproval(false)}
         open={approvalDialogOpen}
-        plan={overview?.plan}
+        plan={selectedRecord?.summary.session_id === overview?.session_id ? overview?.plan : selectedRecord?.overview?.plan}
       />
     </div>
   );

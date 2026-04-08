@@ -1,15 +1,15 @@
-﻿import { Bubble, Sender, ThoughtChain } from "@ant-design/x";
-import type { BubbleItemType, BubbleListProps, ThoughtChainItemType } from "@ant-design/x";
+﻿import { Bubble, Sender, Think } from "@ant-design/x";
+import type { BubbleItemType, BubbleListProps } from "@ant-design/x";
 import { Button, Collapse, Dropdown } from "antd";
 import type { MenuProps } from "antd";
 import { isValidElement, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
 
-import type { RemediationPlan, WSEvent } from "../api/types";
+import type { DiagnosisSession, Observation, RemediationPlan, ThinkingStep, WSEvent } from "../api/types";
 import { buildBackendWsUrl } from "../api/ws";
-import { SectionHeader, StatusChip, SurfaceCard } from "../components/ui";
+import { AppIcon, SectionHeader, StatusChip, SurfaceCard } from "../components/ui";
 import { useWebSocket } from "../hooks/useWebSocket";
-import { useDiagnosisStore } from "../store/diagnosisStore";
+import { extractRecommendedPlan, useDiagnosisStore } from "../store/diagnosisStore";
 import { formatTimestamp } from "../utils/format";
 
 type BubbleRoleType = NonNullable<BubbleListProps["role"]>;
@@ -42,6 +42,13 @@ type ThinkingPlanItem = {
 type ThinkingPlanPayload = {
   kind: "thinking_plan";
   summary: string;
+  thinkTitle: string;
+  thinkingText: string;
+  conclusionText: string;
+  toolName: string;
+  toolParams: Record<string, unknown>;
+  typingStage?: "thinking" | "conclusion" | "complete";
+  blink?: boolean;
   items: ThinkingPlanItem[];
 };
 
@@ -121,16 +128,143 @@ type DisplayMessage = {
   toolName?: string;
 };
 
+type SessionLoopCard = {
+  kind: "loop";
+  id: string;
+  timestamp: string;
+  toolName: string;
+  toolParams: Record<string, unknown>;
+  resultSummary: string;
+  resultPayload: Record<string, unknown>;
+  conclusion?: string;
+};
+
+type SessionConclusionCard = {
+  kind: "diagnosis_result";
+  id: string;
+  timestamp: string;
+  rootCause: string;
+  confidence: number;
+  impactSummary: string;
+};
+
+type SessionPlanCard = {
+  kind: "plan";
+  id: string;
+  timestamp: string;
+  plan: RemediationPlan;
+};
+
+type SessionCard = SessionLoopCard | SessionConclusionCard | SessionPlanCard;
+
+type ThinkingRoundPhase = "thinking" | "tool_call" | "observation" | "conclusion" | "complete";
+
+type ThinkingRound = {
+  roundIndex: number;
+  roundId: string;
+  timestamp: string;
+  thinkingText: string;
+  toolName: string | null;
+  toolParams: Record<string, unknown>;
+  observation: Observation | null;
+  conclusionText: string | null;
+  phase: ThinkingRoundPhase;
+  isActive: boolean;
+};
+
+const PHASE_ORDER: Record<ThinkingRoundPhase, number> = {
+  thinking: 0,
+  tool_call: 1,
+  observation: 2,
+  conclusion: 3,
+  complete: 4,
+};
+
+function phaseAtLeast(phase: ThinkingRoundPhase, threshold: ThinkingRoundPhase): boolean {
+  return PHASE_ORDER[phase] >= PHASE_ORDER[threshold];
+}
+
+function isThinkingStep(entry: ThinkingStep | Observation): entry is ThinkingStep {
+  return "thought" in entry;
+}
+
+function buildThinkingRounds(steps: Array<ThinkingStep | Observation>): ThinkingRound[] {
+  if (!steps.length) {
+    return [];
+  }
+
+  const rounds: ThinkingRound[] = [];
+  let currentRound: ThinkingRound | null = null;
+
+  for (const entry of steps) {
+    if (isThinkingStep(entry)) {
+      if (entry.action_type === "tool_call") {
+        currentRound = {
+          roundIndex: rounds.length,
+          roundId: `round-${rounds.length}-${entry.timestamp ?? Date.now()}`,
+          timestamp: entry.timestamp ?? new Date().toISOString(),
+          thinkingText: entry.thought ?? "",
+          toolName: entry.tool_name ?? null,
+          toolParams: entry.tool_params ?? {},
+          observation: null,
+          conclusionText: null,
+          phase: "tool_call",
+          isActive: false,
+        };
+        rounds.push(currentRound);
+        continue;
+      }
+
+      if (entry.action_type === "conclude" || entry.action_type === "remediate") {
+        const conclusion = entry.thought?.trim();
+        if (!conclusion) {
+          continue;
+        }
+        // Walk backward to find a round missing a conclusion
+        for (let i = rounds.length - 1; i >= 0; i--) {
+          if (!rounds[i].conclusionText) {
+            rounds[i].conclusionText = conclusion;
+            if (rounds[i].phase === "observation" || rounds[i].phase === "tool_call") {
+              rounds[i].phase = "complete";
+            }
+            break;
+          }
+        }
+      }
+      continue;
+    }
+
+    // Observation
+    if (currentRound && !currentRound.observation) {
+      currentRound.observation = entry;
+      if (currentRound.phase === "tool_call") {
+        currentRound.phase = "observation";
+      }
+    }
+  }
+
+  // Mark the last non-complete round as active
+  for (let i = rounds.length - 1; i >= 0; i--) {
+    if (rounds[i].phase !== "complete") {
+      rounds[i].isActive = true;
+      break;
+    }
+  }
+
+  return rounds;
+}
+
 const DEMO_STEP_LABELS = [
-  "确认影响范围",
-  "规划观测动作",
-  "收集关键观测",
-  "输出初步诊断",
-  "展示候选根因",
-  "生成待审批方案",
-  "人工审批执行",
-  "执行受控修复",
-  "输出最终结果",
+  { id: "1", title: "确认影响范围" },
+  { id: "2", title: "规划观测动作" },
+  { id: "2.1", title: "DeepThink 流式思考" },
+  { id: "3", title: "收集关键观测" },
+  { id: "4", title: "输出初步诊断" },
+  { id: "5", title: "展示候选根因" },
+  { id: "6", title: "生成待审批方案" },
+  { id: "7", title: "人工审批执行" },
+  { id: "8", title: "执行受控修复" },
+  { id: "9", title: "输出最终结果" },
 ] as const;
 
 const STEP6_APPROVAL_PLAN: ApprovalPlanPayload = {
@@ -173,6 +307,10 @@ const STEP6_APPROVAL_PLAN: ApprovalPlanPayload = {
   ],
   rollbackSummary: "步骤 1 支持自动回滚（k8s_uncordon: node-gpu-01）；步骤 2 无自动回滚，保留人工兜底。",
 };
+
+function getDemoStepDisplayLabel(index: number) {
+  return DEMO_STEP_LABELS[index]?.id ?? String(index + 1);
+}
 
 function renderBubbleMeta(meta?: BubbleMeta) {
   if (!meta) {
@@ -253,6 +391,223 @@ function renderPlanDetails(plan: RemediationPlan) {
     </div>
   );
 }
+
+function toJsonText(payload: unknown): string {
+  try {
+    return JSON.stringify(payload ?? {}, null, 2);
+  } catch {
+    return String(payload ?? "");
+  }
+}
+
+function truncateText(value: string, maxLength = 180): string {
+  if (value.length <= maxLength) {
+    return value;
+  }
+  return `${value.slice(0, maxLength - 3)}...`;
+}
+
+function toCompactValue(value: unknown): string {
+  if (value === null || value === undefined) {
+    return "null";
+  }
+  if (typeof value === "string") {
+    const normalized = value.replace(/\s+/g, " ").trim();
+    return truncateText(normalized || "(empty)");
+  }
+  if (typeof value === "number" || typeof value === "boolean") {
+    return String(value);
+  }
+  if (Array.isArray(value)) {
+    if (!value.length) {
+      return "[]";
+    }
+    const preview = value.slice(0, 2).map((item) => toCompactValue(item)).join(", ");
+    return truncateText(`[${value.length}] ${preview}${value.length > 2 ? ", ..." : ""}`);
+  }
+  if (typeof value === "object") {
+    const keys = Object.keys(value as Record<string, unknown>);
+    return keys.length ? `{${keys.slice(0, 4).join(", ")}${keys.length > 4 ? ", ..." : ""}}` : "{}";
+  }
+  return truncateText(String(value));
+}
+
+function summarizePayload(payload: Record<string, unknown>, maxItems = 5): Array<{ key: string; value: string }> {
+  return Object.entries(payload)
+    .slice(0, maxItems)
+    .map(([key, value]) => ({ key, value: toCompactValue(value) }));
+}
+
+function summarizeResultPayload(result: Record<string, unknown>): string {
+  const keys = Object.keys(result);
+  if (keys.length === 0) {
+    return "工具已执行，未返回结构化字段。";
+  }
+  const preview = keys.slice(0, 4).join("、");
+  return `返回字段：${preview}${keys.length > 4 ? "..." : ""}`;
+}
+
+function buildSessionCards(session: DiagnosisSession | undefined, plan: RemediationPlan | null): SessionCard[] {
+  const cards: SessionCard[] = [];
+  if (!session) {
+    return cards;
+  }
+  const trace = session.trace?.steps ?? [];
+  const fallbackTimestamp = trace.length > 0
+    ? (trace[trace.length - 1]?.timestamp ?? new Date().toISOString())
+    : new Date().toISOString();
+  let pendingLoop: { toolName: string; toolParams: Record<string, unknown>; bufferedConclusion?: string } | null = null;
+  let delayedConclusion: string | undefined;
+
+  trace.forEach((entry, index) => {
+    if ("thought" in entry) {
+      if (entry.action_type === "tool_call") {
+        pendingLoop = {
+          toolName: entry.tool_name ?? "tool_call",
+          toolParams: entry.tool_params ?? {},
+        };
+        return;
+      }
+      if (entry.action_type === "conclude") {
+        const conclusion = entry.thought?.trim();
+        if (!conclusion) {
+          return;
+        }
+        for (let cardIndex = cards.length - 1; cardIndex >= 0; cardIndex -= 1) {
+          const candidate = cards[cardIndex];
+          if (candidate.kind === "loop" && !candidate.conclusion) {
+            candidate.conclusion = conclusion;
+            return;
+          }
+        }
+        if (pendingLoop) {
+          pendingLoop.bufferedConclusion = conclusion;
+        } else {
+          delayedConclusion = conclusion;
+        }
+      }
+      return;
+    }
+
+    const loopCard: SessionLoopCard = {
+      kind: "loop",
+      id: `loop-${index}-${entry.timestamp ?? "now"}`,
+      timestamp: entry.timestamp ?? new Date().toISOString(),
+      toolName: pendingLoop?.toolName ?? entry.tool ?? "tool_result",
+      toolParams: pendingLoop?.toolParams ?? entry.params ?? {},
+      resultSummary: summarizeResultPayload(entry.result ?? {}),
+      resultPayload: entry.result ?? {},
+      conclusion: pendingLoop?.bufferedConclusion ?? delayedConclusion,
+    };
+    cards.push(loopCard);
+    pendingLoop = null;
+    delayedConclusion = undefined;
+  });
+
+  if (session.diagnosis_result) {
+    cards.push({
+      kind: "diagnosis_result",
+      id: `diagnosis-result-${session.session_id}`,
+      timestamp: fallbackTimestamp,
+      rootCause: session.diagnosis_result.root_cause,
+      confidence: session.diagnosis_result.confidence,
+      impactSummary: session.diagnosis_result.impact_summary,
+    });
+  }
+  if (plan) {
+    cards.push({
+      kind: "plan",
+      id: `plan-${plan.plan_id}`,
+      timestamp: fallbackTimestamp,
+      plan,
+    });
+  }
+  return cards;
+}
+
+function renderSessionCard(card: SessionCard) {
+  if (card.kind === "loop") {
+    const paramSummary = summarizePayload(card.toolParams);
+    const resultSummary = summarizePayload(card.resultPayload);
+    return (
+      <div key={card.id} className="diagnosis-session-card">
+        <div className="status-row">
+          <StatusChip tone="accent">循环卡片</StatusChip>
+          <StatusChip tone="neutral">{card.toolName}</StatusChip>
+          <StatusChip tone="neutral">{formatTimestamp(card.timestamp)}</StatusChip>
+        </div>
+        <p className="diagnosis-chat-state-card__copy">{card.resultSummary}</p>
+        <p className="diagnosis-chat-state-card__copy">工具参数摘要</p>
+        {paramSummary.length ? (
+          <ul className="diagnosis-session-card__summary-list">
+            {paramSummary.map((item) => (
+              <li key={`${card.id}-param-${item.key}`} className="diagnosis-session-card__summary-item">
+                <strong>{item.key}</strong>：{item.value}
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p className="diagnosis-chat-state-card__copy">无参数</p>
+        )}
+        <p className="diagnosis-chat-state-card__copy">工具结果摘要</p>
+        {resultSummary.length ? (
+          <ul className="diagnosis-session-card__summary-list">
+            {resultSummary.map((item) => (
+              <li key={`${card.id}-result-${item.key}`} className="diagnosis-session-card__summary-item">
+                <strong>{item.key}</strong>：{item.value}
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p className="diagnosis-chat-state-card__copy">无结构化结果</p>
+        )}
+        <Collapse
+          bordered={false}
+          ghost
+          size="small"
+          items={[
+            {
+              key: "params",
+              label: "查看完整工具参数 JSON",
+              children: <pre className="diagnosis-session-card__json">{toJsonText(card.toolParams)}</pre>,
+            },
+            {
+              key: "result",
+              label: "查看完整工具结果 JSON",
+              children: <pre className="diagnosis-session-card__json">{toJsonText(card.resultPayload)}</pre>,
+            },
+          ]}
+        />
+        {card.conclusion ? <p className="diagnosis-chat-state-card__copy">该轮结论：{card.conclusion}</p> : null}
+      </div>
+    );
+  }
+  if (card.kind === "diagnosis_result") {
+    return (
+      <div key={card.id} className="diagnosis-session-card">
+        <div className="status-row">
+          <StatusChip tone="success">诊断结论</StatusChip>
+          <StatusChip tone="neutral">{formatTimestamp(card.timestamp)}</StatusChip>
+        </div>
+        <p className="diagnosis-chat-state-card__copy">根因：{card.rootCause}</p>
+        <p className="diagnosis-chat-state-card__copy">置信度：{Math.round(card.confidence * 100)}%</p>
+        <p className="diagnosis-chat-state-card__copy">影响：{card.impactSummary}</p>
+      </div>
+    );
+  }
+  return (
+    <div key={card.id} className="diagnosis-session-card">
+      <div className="status-row">
+        <StatusChip tone="warning">修复计划</StatusChip>
+        <StatusChip tone="neutral">{card.plan.plan_id}</StatusChip>
+      </div>
+      <p className="diagnosis-chat-state-card__copy">根因：{card.plan.root_cause}</p>
+      <p className="diagnosis-chat-state-card__copy">说明：{card.plan.description}</p>
+      <p className="diagnosis-chat-state-card__copy">步骤数：{card.plan.steps.length}</p>
+    </div>
+  );
+}
+
 function getRootCauseLayerLabel(layer: RankedCandidateItem["rootCauseLayer"]) {
   switch (layer) {
     case "hardware":
@@ -365,38 +720,396 @@ function renderToolEventCard(payload: ToolEventPayload) {
   );
 }
 
-function renderThinkingPlanCard(payload: ThinkingPlanPayload) {
-  const chainItems: ThoughtChainItemType[] = payload.items.map((item) => ({
-    key: item.key,
-    title: item.title,
-    description: item.description,
-    status: item.status,
-    blink: item.blink,
-    collapsible: true,
-    content: (
-      <div className="diagnosis-thinking-plan__content">
-        <p className="diagnosis-thinking-plan__row">
-          <span className="diagnosis-thinking-plan__label">工具：</span>
-          <code className="diagnosis-thinking-plan__value">{item.toolName}</code>
-        </p>
-        <p className="diagnosis-thinking-plan__row">
-          <span className="diagnosis-thinking-plan__label">检查目标：</span>
-          <span>{item.checkTarget}</span>
-        </p>
-      </div>
-    ),
-  }));
+type StreamingBlockProps = {
+  text: string;
+  speed?: number;
+  mode: "hidden" | "streaming" | "complete";
+  onComplete?: () => void;
+};
 
-  const expandedKeys = payload.items.length ? [payload.items[0].key] : [];
+function StreamingBlock({ text, speed = 6, mode, onComplete }: StreamingBlockProps) {
+  const [visibleLength, setVisibleLength] = useState(mode === "complete" ? text.length : 0);
+
+  useEffect(() => {
+    if (mode === "hidden") {
+      setVisibleLength(0);
+      return;
+    }
+
+    if (mode === "complete") {
+      setVisibleLength(text.length);
+      return;
+    }
+
+    setVisibleLength(0);
+  }, [mode, text]);
+
+  useEffect(() => {
+    if (mode !== "streaming") {
+      return;
+    }
+
+    if (visibleLength >= text.length) {
+      onComplete?.();
+      return;
+    }
+
+    const timer = window.setTimeout(() => {
+      setVisibleLength((current) => Math.min(current + 1, text.length));
+    }, speed);
+
+    return () => window.clearTimeout(timer);
+  }, [mode, onComplete, speed, text.length, visibleLength]);
+
+  const renderedText = text.slice(0, visibleLength);
+  const showCursor = mode === "streaming" && visibleLength < text.length;
+
+  return (
+    <pre className="diagnosis-thinking-plan__stream">
+      {renderedText}
+      {showCursor ? <span className="diagnosis-thinking-plan__cursor" aria-hidden="true" /> : null}
+    </pre>
+  );
+}
+
+function ThinkingPlanCard({ payload }: { payload: ThinkingPlanPayload }) {
+  const [thinkingDone, setThinkingDone] = useState(payload.typingStage !== "thinking");
+  const [conclusionDone, setConclusionDone] = useState(payload.typingStage === "complete");
+  const showConclusion = payload.typingStage !== "thinking" && thinkingDone;
+  const showToolSelection = payload.typingStage === "complete" && conclusionDone;
+
+  useEffect(() => {
+    setThinkingDone(payload.typingStage !== "thinking");
+    setConclusionDone(payload.typingStage === "complete");
+  }, [payload.thinkTitle, payload.thinkingText, payload.conclusionText]);
 
   return (
     <div className="diagnosis-thinking-plan">
-      <p className="diagnosis-thinking-plan__summary">{payload.summary}</p>
-      <ThoughtChain
-        className="diagnosis-thought-chain diagnosis-thought-chain--inline"
-        defaultExpandedKeys={expandedKeys}
-        items={chainItems}
-      />
+      <Think
+        className="diagnosis-thinking-plan__think"
+        title={payload.thinkTitle}
+        loading={!showToolSelection}
+        blink={payload.blink}
+        defaultExpanded
+      >
+        <div className="diagnosis-thinking-plan__think-body">
+          <div className="diagnosis-thinking-plan__panel">
+            <div className="diagnosis-thinking-plan__section diagnosis-thinking-plan__section--thinking">
+              <div className="diagnosis-thinking-plan__section-header">
+                <span className="diagnosis-thinking-plan__section-icon diagnosis-thinking-plan__section-icon--thinking">
+                  <AppIcon name="algorithm" size={16} />
+                </span>
+                <div className="diagnosis-thinking-plan__section-copy">
+                  <p className="diagnosis-thinking-plan__section-title">思考过程</p>
+                  <p className="diagnosis-thinking-plan__section-description">展示当前正在组织的观测路径与判断依据。</p>
+                </div>
+              </div>
+              <StreamingBlock
+                text={payload.thinkingText}
+                mode={thinkingDone ? "complete" : "streaming"}
+                speed={3}
+                onComplete={() => setThinkingDone(true)}
+              />
+            </div>
+
+            {showConclusion ? (
+              <div className="diagnosis-thinking-plan__section diagnosis-thinking-plan__section--answer">
+                <div className="diagnosis-thinking-plan__section-header">
+                  <span className="diagnosis-thinking-plan__section-icon diagnosis-thinking-plan__section-icon--answer">
+                    <AppIcon name="documentCheck" size={16} />
+                  </span>
+                  <div className="diagnosis-thinking-plan__section-copy">
+                    <p className="diagnosis-thinking-plan__section-title">阶段结论</p>
+                    <p className="diagnosis-thinking-plan__section-description">将上一段推理收敛为当前回合的可解释判断。</p>
+                  </div>
+                </div>
+                <StreamingBlock
+                  text={payload.conclusionText}
+                  mode={conclusionDone ? "complete" : "streaming"}
+                  speed={4}
+                  onComplete={() => setConclusionDone(true)}
+                />
+              </div>
+            ) : null}
+
+            {showToolSelection ? (
+              <div className="diagnosis-thinking-plan__tool-call diagnosis-thinking-plan__section diagnosis-thinking-plan__section--tool">
+                <div className="diagnosis-thinking-plan__section-header">
+                  <span className="diagnosis-thinking-plan__section-icon diagnosis-thinking-plan__section-icon--tool">
+                    <AppIcon name="clipboardTasks" size={16} />
+                  </span>
+                  <div className="diagnosis-thinking-plan__section-copy">
+                    <p className="diagnosis-thinking-plan__section-title">下一步工具选择</p>
+                    <p className="diagnosis-thinking-plan__section-description">这里只决定下一步要调用哪个 tool 以及准备传什么参数，当前阶段尚未执行。</p>
+                  </div>
+                </div>
+                <div className="status-row diagnosis-thinking-plan__tool-chips">
+                  <StatusChip tone="info">计划调用</StatusChip>
+                  <StatusChip tone="warning">未执行</StatusChip>
+                </div>
+                <p className="diagnosis-thinking-plan__row">
+                  <span className="diagnosis-thinking-plan__label">工具名</span>
+                  <code className="diagnosis-thinking-plan__value">{payload.toolName}</code>
+                </p>
+                <p className="diagnosis-thinking-plan__row">
+                  <span className="diagnosis-thinking-plan__label">说明</span>
+                  本阶段仅完成 tool 选择与参数草拟，真正执行后的结果将在后续工具消息中展示。
+                </p>
+                <Collapse
+                  bordered={false}
+                  className="diagnosis-thinking-plan__collapse"
+                  ghost
+                  items={[
+                    {
+                      key: "params",
+                      label: "查看计划传入参数",
+                      children: (
+                        <pre className="diagnosis-thinking-plan__params">
+                          {JSON.stringify(payload.toolParams, null, 2)}
+                        </pre>
+                      ),
+                    },
+                  ]}
+                  size="small"
+                />
+              </div>
+            ) : null}
+          </div>
+        </div>
+      </Think>
+    </div>
+  );
+}
+function renderThinkingPlanCard(payload: ThinkingPlanPayload) {
+  return <ThinkingPlanCard payload={payload} />;
+}
+
+function ThinkingRoundCard({ round }: { round: ThinkingRound }) {
+  const showToolCall = phaseAtLeast(round.phase, "tool_call") && round.toolName;
+  const showObservation = phaseAtLeast(round.phase, "observation") && round.observation !== null;
+  const showConclusion = round.conclusionText !== null;
+
+  const phaseLabel: Record<ThinkingRoundPhase, string> = {
+    thinking: "思考中",
+    tool_call: "选择工具",
+    observation: "观测中",
+    conclusion: "归纳中",
+    complete: "已完成",
+  };
+
+  const phaseTone: Record<ThinkingRoundPhase, "accent" | "info" | "success" | "warning" | "neutral"> = {
+    thinking: "accent",
+    tool_call: "info",
+    observation: "warning",
+    conclusion: "info",
+    complete: "success",
+  };
+
+  return (
+    <div className="diagnosis-thinking-loop__round">
+      <div className="diagnosis-thinking-loop__round-header">
+        <StatusChip tone="accent">第 {round.roundIndex + 1} 轮</StatusChip>
+        <StatusChip tone={phaseTone[round.phase]}>{phaseLabel[round.phase]}</StatusChip>
+        <StatusChip tone="neutral">{formatTimestamp(round.timestamp)}</StatusChip>
+      </div>
+
+      {/* Thinking section */}
+      <div className="diagnosis-thinking-plan__section diagnosis-thinking-plan__section--thinking">
+        <div className="diagnosis-thinking-plan__section-header">
+          <span className="diagnosis-thinking-plan__section-icon diagnosis-thinking-plan__section-icon--thinking">
+            <AppIcon name="algorithm" size={16} />
+          </span>
+          <div className="diagnosis-thinking-plan__section-copy">
+            <p className="diagnosis-thinking-plan__section-title">思考过程</p>
+          </div>
+        </div>
+        <StreamingBlock
+          text={round.thinkingText}
+          mode={round.isActive && round.phase === "thinking" ? "streaming" : "complete"}
+          speed={3}
+        />
+      </div>
+
+      {/* Tool call section */}
+      {showToolCall ? (
+        <div className="diagnosis-thinking-plan__section diagnosis-thinking-plan__section--tool">
+          <div className="diagnosis-thinking-plan__section-header">
+            <span className="diagnosis-thinking-plan__section-icon diagnosis-thinking-plan__section-icon--tool">
+              <AppIcon name="clipboardTasks" size={16} />
+            </span>
+            <div className="diagnosis-thinking-plan__section-copy">
+              <p className="diagnosis-thinking-plan__section-title">工具调用</p>
+            </div>
+          </div>
+          <div className="status-row diagnosis-thinking-plan__tool-chips">
+            <StatusChip tone="info">{round.toolName}</StatusChip>
+            <StatusChip tone={phaseAtLeast(round.phase, "observation") ? "success" : "warning"}>
+              {phaseAtLeast(round.phase, "observation") ? "已完成" : "执行中"}
+            </StatusChip>
+          </div>
+          <Collapse
+            bordered={false}
+            className="diagnosis-thinking-plan__collapse"
+            ghost
+            items={[
+              {
+                key: "params",
+                label: "查看工具参数",
+                children: (
+                  <pre className="diagnosis-thinking-plan__params">
+                    {JSON.stringify(round.toolParams, null, 2)}
+                  </pre>
+                ),
+              },
+            ]}
+            size="small"
+          />
+        </div>
+      ) : null}
+
+      {/* Observation section */}
+      {showObservation ? (
+        <div className="diagnosis-thinking-plan__section diagnosis-thinking-plan__section--answer">
+          <div className="diagnosis-thinking-plan__section-header">
+            <span className="diagnosis-thinking-plan__section-icon diagnosis-thinking-plan__section-icon--answer">
+              <AppIcon name="documentCheck" size={16} />
+            </span>
+            <div className="diagnosis-thinking-plan__section-copy">
+              <p className="diagnosis-thinking-plan__section-title">观测结果</p>
+            </div>
+          </div>
+          <p className="diagnosis-chat-state-card__copy">
+            {summarizeResultPayload(round.observation?.result ?? {})}
+          </p>
+          <Collapse
+            bordered={false}
+            ghost
+            size="small"
+            items={[
+              {
+                key: "result",
+                label: "查看完整结果 JSON",
+                children: (
+                  <pre className="diagnosis-session-card__json">
+                    {toJsonText(round.observation?.result ?? {})}
+                  </pre>
+                ),
+              },
+            ]}
+          />
+        </div>
+      ) : null}
+
+      {/* Conclusion section */}
+      {showConclusion ? (
+        <div className="diagnosis-thinking-plan__section diagnosis-thinking-plan__section--answer">
+          <div className="diagnosis-thinking-plan__section-header">
+            <span className="diagnosis-thinking-plan__section-icon diagnosis-thinking-plan__section-icon--answer">
+              <AppIcon name="documentCheck" size={16} />
+            </span>
+            <div className="diagnosis-thinking-plan__section-copy">
+              <p className="diagnosis-thinking-plan__section-title">阶段结论</p>
+            </div>
+          </div>
+          <StreamingBlock
+            text={round.conclusionText ?? ""}
+            mode={round.isActive && round.phase === "conclusion" ? "streaming" : "complete"}
+            speed={4}
+          />
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function ThinkingLoopVisualization({
+  rounds,
+  diagnosisResult,
+  effectivePlan,
+}: {
+  rounds: ThinkingRound[];
+  diagnosisResult: DiagnosisSession["diagnosis_result"] | null;
+  effectivePlan: RemediationPlan | null;
+}) {
+  if (!rounds.length) {
+    return null;
+  }
+
+  const lastCompleteIndex = rounds.reduce(
+    (acc, round, i) => (round.phase === "complete" ? i : acc),
+    -1,
+  );
+
+  return (
+    <div className="diagnosis-thinking-loop">
+      {/* Round indicator bar */}
+      <div className="diagnosis-thinking-loop__indicator-bar">
+        {rounds.map((round, index) => {
+          const isCompleted = round.phase === "complete";
+          const isActive = round.isActive;
+          const stateClassName = isCompleted
+            ? "completed"
+            : isActive
+              ? "active"
+              : "pending";
+
+          return (
+            <div key={round.roundId} className="diagnosis-thinking-loop__indicator-group">
+              {index > 0 ? <span className="diagnosis-thinking-loop__indicator-line" /> : null}
+              <span
+                className={`diagnosis-thinking-loop__indicator-dot diagnosis-thinking-loop__indicator-dot--${stateClassName}`}
+                title={`第 ${index + 1} 轮`}
+              >
+                {isCompleted ? "✓" : index + 1}
+              </span>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Round cards with connectors */}
+      {rounds.map((round, index) => (
+        <div key={round.roundId}>
+          <ThinkingRoundCard round={round} />
+          {index < rounds.length - 1 ? (
+            <div className="diagnosis-thinking-loop__connector" />
+          ) : null}
+        </div>
+      ))}
+
+      {/* Final diagnosis card */}
+      {diagnosisResult ? (
+        <>
+          <div className="diagnosis-thinking-loop__connector" />
+          <div className="diagnosis-session-card">
+            <div className="status-row">
+              <StatusChip tone="success">诊断结论</StatusChip>
+              <StatusChip tone="neutral">{formatTimestamp(new Date().toISOString())}</StatusChip>
+            </div>
+            <p className="diagnosis-chat-state-card__copy">根因：{diagnosisResult.root_cause}</p>
+            <p className="diagnosis-chat-state-card__copy">
+              置信度：{Math.round((diagnosisResult.confidence ?? 0) * 100)}%
+            </p>
+            <p className="diagnosis-chat-state-card__copy">影响：{diagnosisResult.impact_summary}</p>
+          </div>
+        </>
+      ) : null}
+
+      {/* Remediation plan card */}
+      {effectivePlan ? (
+        <>
+          <div className="diagnosis-thinking-loop__connector" />
+          <div className="diagnosis-session-card">
+            <div className="status-row">
+              <StatusChip tone="warning">修复计划</StatusChip>
+              <StatusChip tone="neutral">{effectivePlan.plan_id}</StatusChip>
+            </div>
+            <p className="diagnosis-chat-state-card__copy">根因：{effectivePlan.root_cause}</p>
+            <p className="diagnosis-chat-state-card__copy">说明：{effectivePlan.description}</p>
+            <p className="diagnosis-chat-state-card__copy">步骤数：{effectivePlan.steps.length}</p>
+          </div>
+        </>
+      ) : null}
     </div>
   );
 }
@@ -571,6 +1284,7 @@ function DiagnosisPage() {
     session,
     activeSessionId,
     messages,
+    events,
     isLoadingSession,
     bootstrapStatus,
     traceStatus,
@@ -589,6 +1303,8 @@ function DiagnosisPage() {
     chatContextMeta,
     connectionState,
     error,
+    alertSnapshot,
+    topologyContext,
     bootstrapSession,
     sendMessage,
     revisePlan,
@@ -711,7 +1427,7 @@ function DiagnosisPage() {
       setDemoActiveStep((prev) => Math.min(prev + 1, DEMO_STEP_LABELS.length));
       setIsExecutingDemoStep(false);
       demoStepTimerRef.current = undefined;
-    }, 1100);
+    }, 250);
   }, [isExecutingDemoStep]);
 
   const runStepTwoThinkingPlan = useCallback(() => {
@@ -733,32 +1449,52 @@ function DiagnosisPage() {
         createdAt: now.toISOString(),
         content: {
           kind: "thinking_plan",
-          summary: "规划开始：下一步将先调用 metrics.query(gpu_utilization) 检查热点是否持续。",
+          summary: "规划开始：先展示思考闪烁状态，再逐步吐出推理内容与结论。",
+          thinkTitle: "Deep Thinking 正在规划观测动作",
+          thinkingText: `The user wants me to diagnose a 'KubePodNotReady' alert with critical severity.
+The topology blast radius shows no affected entities, which is unusual. Let me start
+by gathering evidence about what pods might be not ready in the Kubernetes
+cluster.
+
+Let me begin by:
+
+1. Listing pods across namespaces to find not-ready pods
+2. Looking for OOMKilled or pending pods
+3. Checking service status
+4. Querying logs for any errors
+
+Let me start with multiple parallel queries to understand the state of the cluster.`,
+          conclusionText: `I'll start by gathering evidence about the cluster state. Let me query multiple
+sources in parallel to identify the affected pods and their conditions.`,
+          toolName: "k8s.list_pods",
+          toolParams: { kwargs: { all_namespaces: true } },
+          typingStage: "thinking",
+          blink: true,
           items: [
             {
               key: "step2-plan-1",
-              title: "检查 GPU 利用率趋势",
-              description: "确认 node-gpu-01 是否存在持续高位占用。",
-              toolName: "metrics.query(gpu_utilization)",
-              checkTarget: "验证资源热点是否稳定复现。",
-              nextToolName: "check_gpu_processes(node-gpu-01)",
+              title: "检查 Pod 就绪状态",
+              description: "先在所有命名空间里找出 NotReady 的 Pod。",
+              toolName: "k8s.list_pods",
+              checkTarget: "定位真实受影响的 Pod 与命名空间。",
+              nextToolName: "k8s.list_events",
               status: "loading",
               blink: true,
             },
             {
               key: "step2-plan-2",
-              title: "核查节点异常 GPU 进程",
-              description: "排查是否存在基准测试或异常任务占用。",
-              toolName: "check_gpu_processes(node-gpu-01)",
-              checkTarget: "判断是否存在可疑进程争用。",
-              nextToolName: "network.get_congestion_summary(sw-01)",
+              title: "补充异常事件与重启原因",
+              description: "确认是否存在 OOMKilled、Pending 或镜像拉取失败。",
+              toolName: "k8s.list_events",
+              checkTarget: "补齐 Pod 不就绪背后的直接异常信号。",
+              nextToolName: "k8s.query_logs",
             },
             {
               key: "step2-plan-3",
-              title: "补充网络拥塞信号",
-              description: "确认交换机路径是否足以解释时延放大。",
-              toolName: "network.get_congestion_summary(sw-01)",
-              checkTarget: "评估网络是否属于主导因素。",
+              title: "并行抓取服务与日志",
+              description: "把服务状态和错误日志一起纳入后续证据链。",
+              toolName: "k8s.query_logs",
+              checkTarget: "为 Step 3 的关键观测采集准备工具路径。",
               nextToolName: "Step 3: 收集关键观测（按规划依次执行）",
             },
           ],
@@ -785,7 +1521,9 @@ function DiagnosisPage() {
     demoStepTimerRef.current = window.setTimeout(() => {
       updateThinkingPlan((payload) => ({
         ...payload,
-        summary: "第一步完成：已确认资源热点，下一步调用 check_gpu_processes(node-gpu-01) 核查异常进程。",
+        summary: "思考内容已流式输出完成，开始吐出结论与首个工具调用。",
+        typingStage: "conclusion",
+        blink: true,
         items: payload.items.map((item) => {
           if (item.key === "step2-plan-1") {
             return { ...item, status: "success", blink: false };
@@ -800,7 +1538,9 @@ function DiagnosisPage() {
       demoStepTimerRef.current = window.setTimeout(() => {
         updateThinkingPlan((payload) => ({
           ...payload,
-          summary: "第二步完成：异常进程检查已纳入计划，下一步调用 network.get_congestion_summary(sw-01) 补网络证据。",
+          summary: "结论已输出，继续展示后续观测动作编排。",
+          typingStage: "complete",
+          blink: false,
           items: payload.items.map((item) => {
             if (item.key === "step2-plan-2") {
               return { ...item, status: "success", blink: false };
@@ -815,7 +1555,9 @@ function DiagnosisPage() {
         demoStepTimerRef.current = window.setTimeout(() => {
           updateThinkingPlan((payload) => ({
             ...payload,
-            summary: "规划完成：观测动作与工具调用顺序已明确，可进入 Step 3 执行关键观测采集。",
+            summary: "规划完成：观测动作与工具调用顺序已明确，thinking 与结论输出均已结束。",
+            typingStage: "complete",
+            blink: false,
             items: payload.items.map((item) => ({
               ...item,
               status: "success",
@@ -826,12 +1568,136 @@ function DiagnosisPage() {
           setDemoActiveStep((prev) => Math.min(prev + 1, DEMO_STEP_LABELS.length));
           setIsExecutingDemoStep(false);
           demoStepTimerRef.current = undefined;
-        }, 900);
-      }, 900);
-    }, 900);
+        }, 250);
+      }, 450);
+    }, 500);
   }, [isExecutingDemoStep]);
 
-  const runStepFiveRootCauseCandidates = useCallback(() => {
+  
+const runStepTwoPointOneDeepThink = useCallback(() => {
+    if (isExecutingDemoStep) {
+      return;
+    }
+
+    const now = new Date();
+    const baseId = String(now.getTime());
+
+    setIsExecutingDemoStep(true);
+    setDemoMessages((prev) => [
+      ...prev,
+      {
+        id: `demo-step21-banner-${baseId}`,
+        role: "assistant",
+        createdAt: now.toISOString(),
+        content:
+          "Step 2.1 已切换到全新 DeepThink 演示：这一段会先闪烁，再逐字输出 thinking，随后再输出结论和工具调用。",
+      },
+      {
+        id: `demo-step21-thinking-${baseId}`,
+        role: "assistant",
+        createdAt: new Date(now.getTime() + 10).toISOString(),
+        content: {
+          kind: "thinking_plan",
+          summary: "Step 2.1：这是独立于原 Step 2 的新版 DeepThink 演示卡片。",
+          thinkTitle: "Step 2.1 · DeepThink Streaming Demo",
+          thinkingText: `The user wants me to diagnose a 'KubePodNotReady' alert with critical severity.
+The topology blast radius shows no affected entities, which is unusual. Let me start
+by gathering evidence about what pods might be not ready in the Kubernetes
+cluster.
+
+Let me begin by:
+
+1. Listing pods across namespaces to find not-ready pods
+2. Looking for OOMKilled or pending pods
+3. Checking service status
+4. Querying logs for any errors
+
+Let me start with multiple parallel queries to understand the state of the cluster.`,
+          conclusionText: `I'll start by gathering evidence about the cluster state. Let me query multiple
+sources in parallel to identify the affected pods and their conditions.`,
+          toolName: "k8s.list_pods",
+          toolParams: { kwargs: { all_namespaces: true } },
+          typingStage: "thinking",
+          blink: true,
+          items: [
+            {
+              key: "step21-plan-1",
+              title: "Step 2.1 / Thinking 闪烁",
+              description: "顶部 Think 状态先进入 blink 和 loading。",
+              toolName: "@ant-design/x Think",
+              checkTarget: "明确告诉用户当前处于思考阶段。",
+              status: "loading",
+              blink: true,
+            },
+            {
+              key: "step21-plan-2",
+              title: "Step 2.1 / 流式吐字",
+              description: "thinking 与 conclusion 分阶段逐字输出。",
+              toolName: "StreamingBlock",
+              checkTarget: "避免 thinking 一次性整段出现。",
+            },
+          ],
+        },
+      },
+    ]);
+
+    demoStepTimerRef.current = window.setTimeout(() => {
+      setDemoMessages((prev) =>
+        prev.map((message) => {
+          if (message.id !== `demo-step21-thinking-${baseId}` || !isThinkingPlanPayload(message.content)) {
+            return message;
+          }
+
+          return {
+            ...message,
+            createdAt: new Date().toISOString(),
+            content: {
+              ...message.content,
+              summary: "Step 2.1：thinking 已经输出完成，开始吐出结论和工具参数。",
+              typingStage: "conclusion",
+              items: message.content.items.map((item) => ({
+                ...item,
+                status: item.key === "step21-plan-1" ? "success" : "loading",
+                blink: item.key === "step21-plan-2",
+              })),
+            },
+          };
+        }),
+      );
+
+      demoStepTimerRef.current = window.setTimeout(() => {
+        setDemoMessages((prev) =>
+          prev.map((message) => {
+            if (message.id !== `demo-step21-thinking-${baseId}` || !isThinkingPlanPayload(message.content)) {
+              return message;
+            }
+
+            return {
+              ...message,
+              createdAt: new Date().toISOString(),
+              content: {
+                ...message.content,
+                summary: "Step 2.1：新版 DeepThink 演示完成，现在可以继续走后续诊断步骤。",
+                typingStage: "complete",
+                blink: false,
+                items: message.content.items.map((item) => ({
+                  ...item,
+                  status: "success",
+                  blink: false,
+                })),
+              },
+            };
+          }),
+        );
+
+        setDemoActiveStep((prev) => Math.min(prev + 1, DEMO_STEP_LABELS.length));
+        setIsExecutingDemoStep(false);
+        demoStepTimerRef.current = undefined;
+      }, 2400);
+    }, 500);
+  }, [isExecutingDemoStep]);
+
+const runStepFiveRootCauseCandidates = useCallback(() => {
     if (isExecutingDemoStep) {
       return;
     }
@@ -914,42 +1780,25 @@ function DiagnosisPage() {
 
     setDemoActiveStep((prev) => Math.min(prev + 1, DEMO_STEP_LABELS.length));
   }, [isExecutingDemoStep]);
+  const effectivePlan = useMemo(() => extractRecommendedPlan(session), [session]);
+  const sessionCards = useMemo(() => buildSessionCards(session, effectivePlan), [session, effectivePlan]);
+  const thinkingRounds = useMemo(
+    () => buildThinkingRounds(session?.trace?.steps ?? []),
+    [session?.trace?.steps],
+  );
+  const lastUpdatedAt = useMemo(() => {
+    const lastEventAt = events.length > 0 ? events[events.length - 1]?.timestamp : undefined;
+    if (lastEventAt) {
+      return lastEventAt;
+    }
+    const traceSteps = session?.trace?.steps ?? [];
+    if (traceSteps.length > 0) {
+      return traceSteps[traceSteps.length - 1]?.timestamp ?? undefined;
+    }
+    return undefined;
+  }, [events, session?.trace?.steps]);
   const timelineMessages = useMemo<DisplayMessage[]>(
     () => {
-      const traceMessages: DisplayMessage[] = (session?.trace?.steps ?? []).map((entry, index) => {
-        const fallbackTs = new Date().toISOString();
-        if ("thought" in entry) {
-          const step = entry.step ?? index + 1;
-          const thought = entry.thought?.trim() || `Step ${step} reasoning`;
-          const toolName = entry.tool_name ?? undefined;
-          const params = entry.tool_params && Object.keys(entry.tool_params).length ? `\n参数: ${JSON.stringify(entry.tool_params)}` : "";
-          return {
-            id: `trace-thinking-${step}-${entry.timestamp}`,
-            role: "assistant",
-            content: `[思考 ${step}] ${thought}${toolName ? `\n工具: ${toolName}` : ""}${params}`,
-            createdAt: entry.timestamp || fallbackTs,
-            toolName,
-          };
-        }
-
-        const toolName = entry.tool || "tool_result";
-        const resultSummary = typeof entry.result === "object" && entry.result !== null ? Object.keys(entry.result).slice(0, 3).join(", ") : "";
-        return {
-          id: `trace-tool-${index + 1}-${entry.timestamp}`,
-          role: "tool",
-          content: {
-            kind: "tool_event",
-            toolName,
-            status: "success",
-            stepLabel: `Step ${index + 1}`,
-            toolParams: entry.params,
-            summaryLines: [resultSummary ? `返回字段: ${resultSummary}` : "工具执行完成。"],
-          },
-          createdAt: entry.timestamp || fallbackTs,
-          toolName,
-        };
-      });
-
       const chatMessages: DisplayMessage[] = messages.map((message) => ({
         id: message.id,
         role: message.role,
@@ -965,9 +1814,9 @@ function DiagnosisPage() {
         toolName: message.tool_name,
       }));
 
-      return [...traceMessages, ...chatMessages, ...demoMessages];
+      return [...chatMessages, ...demoMessages];
     },
-    [session?.trace?.steps, messages, demoMessages],
+    [messages, demoMessages],
   );
 
   const bubbleItems = useMemo<BubbleItemType[]>(
@@ -1090,16 +1939,21 @@ function DiagnosisPage() {
       }
 
       if (clickedStep === 2) {
+        runStepTwoPointOneDeepThink();
+        return;
+      }
+
+      if (clickedStep === 3) {
         setDemoActiveStep((prev) => Math.min(prev + 2, DEMO_STEP_LABELS.length));
         return;
       }
 
-      if (clickedStep === 4) {
+      if (clickedStep === 5) {
         runStepFiveRootCauseCandidates();
         return;
       }
 
-      if (clickedStep === 5) {
+      if (clickedStep === 6) {
         runStepSixGenerateApprovalPlan();
         return;
       }
@@ -1111,6 +1965,7 @@ function DiagnosisPage() {
       isExecutingDemoStep,
       runStepOneImpactScope,
       runStepTwoThinkingPlan,
+      runStepTwoPointOneDeepThink,
       runStepFiveRootCauseCandidates,
       runStepSixGenerateApprovalPlan,
     ],
@@ -1130,7 +1985,7 @@ function DiagnosisPage() {
           disabled: !isActive || isActiveAndBusy,
           label: (
             <div className={`diagnosis-demo-menu__item diagnosis-demo-menu__item--${stateClassName}`}>
-              <strong>{`${index + 1}、${step}`}</strong>
+              <strong>{`${getDemoStepDisplayLabel(index)}、${step.title}`}</strong>
               <span>{stateText}</span>
             </div>
           ),
@@ -1152,13 +2007,14 @@ function DiagnosisPage() {
       <div className="diagnosis-chat-page__content">
         <div className="page-intro diagnosis-chat-page__intro">
           <SectionHeader
-            eyebrow="诊断"
             title="诊断对话"
-            description="保留诊断交互与 WebSocket 事件消费，使用简洁对话框作为当前实现基线。"
+            description="会话先创建后流式推送，诊断过程按循环卡片分段展示。"
           />
           <div className="status-row">
             <StatusChip tone={connectionState === "open" ? "success" : "info"}>WebSocket {connectionState}</StatusChip>
             {activeSessionId ? <StatusChip tone="neutral">会话 {activeSessionId}</StatusChip> : null}
+            <StatusChip tone="accent">状态 {session?.status ?? "unknown"}</StatusChip>
+            {lastUpdatedAt ? <StatusChip tone="neutral">更新 {formatTimestamp(lastUpdatedAt)}</StatusChip> : null}
             {activeSessionId ? (
               <StatusChip tone={chatContextApplied ? "success" : "info"}>
                 上下文 {chatContextApplied ? "已加载" : "待加载"}
@@ -1166,6 +2022,58 @@ function DiagnosisPage() {
             ) : null}
           </div>
         </div>
+
+        {/* Layer 1: Input context — alert & topology snapshot */}
+        {alertSnapshot || topologyContext ? (
+          <SurfaceCard
+            className="diagnosis-input-card"
+            description="展示触发本次诊断的告警上下文与拓扑爆炸半径。"
+            title="输入信息"
+            variant="soft"
+          >
+            <div className="diagnosis-input-card__body">
+              {alertSnapshot ? (
+                <div className="diagnosis-input-card__section">
+                  <p className="diagnosis-chat-state-card__copy">
+                    <strong>告警：</strong>
+                    {alertSnapshot.alert_name ?? "unknown"} | 严重度：{alertSnapshot.severity ?? "unknown"}
+                    {alertSnapshot.summary ? ` | 摘要：${alertSnapshot.summary}` : ""}
+                  </p>
+                  {alertSnapshot.labels && Object.keys(alertSnapshot.labels).length > 0 ? (
+                    <details className="diagnosis-input-card__details">
+                      <summary>告警标签 ({Object.keys(alertSnapshot.labels).length})</summary>
+                      <pre className="diagnosis-session-card__json">{JSON.stringify(alertSnapshot.labels, null, 2)}</pre>
+                    </details>
+                  ) : null}
+                  <details className="diagnosis-input-card__details">
+                    <summary>原始告警 JSON</summary>
+                    <pre className="diagnosis-session-card__json">{JSON.stringify(alertSnapshot, null, 2)}</pre>
+                  </details>
+                </div>
+              ) : null}
+              {topologyContext ? (
+                <div className="diagnosis-input-card__section">
+                  <p className="diagnosis-chat-state-card__copy">
+                    <strong>拓扑上下文：</strong>
+                    {topologyContext.summary ?? `爆炸半径 ${topologyContext.affected_count ?? 0} 个实体`}
+                  </p>
+                  {topologyContext.affected_entities && topologyContext.affected_entities.length > 0 ? (
+                    <details className="diagnosis-input-card__details">
+                      <summary>受影响实体 ({topologyContext.affected_entities.length})</summary>
+                      <ul className="diagnosis-session-card__summary-list">
+                        {topologyContext.affected_entities.slice(0, 20).map((entity) => (
+                          <li key={entity.id} className="diagnosis-session-card__summary-item">
+                            {entity.name ?? entity.id} ({entity.type})
+                          </li>
+                        ))}
+                      </ul>
+                    </details>
+                  ) : null}
+                </div>
+              ) : null}
+            </div>
+          </SurfaceCard>
+        ) : null}
 
         <div className="diagnosis-chat-workspace">
           <SurfaceCard bodyClassName="diagnosis-chat-shell__body" className="diagnosis-chat-shell">
@@ -1204,14 +2112,26 @@ function DiagnosisPage() {
               </div>
             ) : null}
 
-            {bootstrapStatus === "ready" && !isLoadingSession && !bubbleItems.length ? (
+            {bootstrapStatus === "ready" && !isLoadingSession && !bubbleItems.length && !thinkingRounds.length && !sessionCards.length ? (
               <div className="diagnosis-chat-state-card">
                 <p className="diagnosis-chat-state-card__title">暂无消息</p>
                 <p className="diagnosis-chat-state-card__copy">当前会话还没有可展示的对话内容。</p>
               </div>
             ) : null}
 
-              <Bubble.List autoScroll className="diagnosis-bubble-list" items={bubbleItems} role={bubbleRoles} />
+            {thinkingRounds.length > 0 ? (
+              <ThinkingLoopVisualization
+                rounds={thinkingRounds}
+                diagnosisResult={session?.diagnosis_result ?? null}
+                effectivePlan={effectivePlan}
+              />
+            ) : sessionCards.length > 0 ? (
+              <div className="diagnosis-session-card-list">
+                {sessionCards.map((card) => renderSessionCard(card))}
+              </div>
+            ) : null}
+
+            <Bubble.List autoScroll className="diagnosis-bubble-list" items={bubbleItems} role={bubbleRoles} />
 
             <div className="diagnosis-chat-state-card">
               <p className="diagnosis-chat-state-card__title">修复审批</p>
@@ -1221,8 +2141,8 @@ function DiagnosisPage() {
                 {latestPlanVersion ?? "-"}，已审批版本：v{approvedPlanVersion ?? "-"}。
               </p>
               {approvalBlockReason ? <p className="diagnosis-chat-state-card__copy">{approvalBlockReason}</p> : null}
-              {hasPlan && session?.diagnosis_result?.recommended_fix
-                ? renderPlanDetails(session.diagnosis_result.recommended_fix)
+              {hasPlan && effectivePlan
+                ? renderPlanDetails(effectivePlan)
                 : <p className="diagnosis-chat-state-card__copy">{planMissingReason}</p>}
               <textarea
                 className="diagnosis-plan-instruction"
@@ -1318,6 +2238,13 @@ function DiagnosisPage() {
 }
 
 export default DiagnosisPage;
+
+
+
+
+
+
+
 
 
 

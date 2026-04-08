@@ -26,3 +26,6 @@ class SREAgentState(TypedDict):
     error: str | None
     checkpoint_dir: str | None
     allowed_tool_names: NotRequired[list[str] | None]
+    alert_snapshot: NotRequired[dict[str, Any] | None]
+    topology_context: NotRequired[dict[str, Any] | None]
+    extra_alerts: NotRequired[list[dict[str, Any]] | None]

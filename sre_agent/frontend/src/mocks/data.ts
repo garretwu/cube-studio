@@ -1,8 +1,9 @@
-import type {
+﻿import type {
   Alert,
   AlertCluster,
   ChatMessage,
   ConfigBaseline,
+  KnowledgeDataset,
   DiagnosisSession,
   DiagnosisSessionSummary,
   IncidentRecord,
@@ -11,6 +12,8 @@ import type {
   OntologyEdge,
   OntologyNode,
   RemediationOverview,
+  RemediationPlan,
+  SessionEvent,
   SkillDescriptor,
 } from "../api/types";
 
@@ -167,15 +170,63 @@ export const alertClusters: AlertCluster[] = [
   },
 ];
 
+const remediationPlan: RemediationPlan = {
+  plan_id: "plan-rollback-01-v3",
+  root_cause: "异常基准测试进程导致 GPU 资源争用",
+  description: "先排空 10% 金丝雀分片，再终止 gpu-burn 进程，最后确认 vLLM p95 与 GPU 利用率恢复正常。",
+  steps: [
+    {
+      step_id: 1,
+      description: "先从热点节点排出一个 10% 金丝雀分片，降低局部资源争用。",
+      tool: "k8s_cordon_drain",
+      params: { node: "node-gpu-01", percentage: 0.1, reason: "gpu-contention" },
+      rollback_tool: "k8s_uncordon",
+      verification: { method: "wait", wait_seconds: 30 },
+      timeout: 60,
+    },
+    {
+      step_id: 2,
+      description: "终止节点上的异常 gpu-burn 进程，并确认不再自动拉起。",
+      tool: "shell_command",
+      params: { host: "node-gpu-01", command: "pkill -f gpu-burn" },
+      rollback_tool: null,
+      verification: { method: "tool_call", tool: "check_gpu_processes" },
+      timeout: 45,
+    },
+    {
+      step_id: 3,
+      description: "持续观察 vLLM 延迟与 GPU 利用率，确认关键指标稳定回落。",
+      tool: "metrics_query",
+      params: { query: "vllm_p95_ms and gpu_utilization" },
+      rollback_tool: null,
+      verification: { method: "promql", query: "vllm_p95_ms < 300 and gpu_utilization < 0.75" },
+      timeout: 120,
+    },
+  ],
+  canary: {
+    enabled: true,
+    target_percentage: 0.1,
+    monitor_duration: 120,
+    success_criteria: [
+      { metric: "vllm_p95_ms", operator: "<", value: 300 },
+      { metric: "gpu_utilization", operator: "<", value: 0.75 },
+    ],
+  },
+  estimated_impact: "业务影响较低，灰度阶段仅影响 10% 推理分片，并保留快速回滚能力。",
+  confidence: 0.93,
+  priority: "P1",
+  safety_level: "high",
+};
+
 export const diagnosisSession: DiagnosisSession = {
   session_id: "sess-latency-001",
   alert: alerts[0],
-  status: "re_diagnosed",
+  status: "remediating",
   re_diagnosis_round: 1,
-  duration_seconds: 142,
+  duration_seconds: 182,
   outcome: "proposed_fix_ready",
   bootstrap: {
-    session_name: "????????",
+    session_name: "3月18日推理变慢",
     started_at: "2026-03-18T12:00:12Z",
     related_alerts: {
       count: 2,
@@ -203,7 +254,7 @@ export const diagnosisSession: DiagnosisSession = {
       service_count: 2,
       affected_entities: ["gpu-01", "node-gpu-01"],
       affected_services: ["vllm-latency", "chat-serving"],
-      blast_radius_summary: "???????????????????????????????",
+      blast_radius_summary: "影响集中在单个热点节点，但已放大到整条推理链路的 p95 延迟。",
     },
   },
   diagnosis_result: {
@@ -211,6 +262,7 @@ export const diagnosisSession: DiagnosisSession = {
     root_cause_layer: "hardware",
     root_cause_entities: ["gpu-01", "node-gpu-01"],
     confidence: 0.93,
+    recommended_fix: remediationPlan,
     hypotheses: [
       {
         description: "RoCE 网络拥塞导致链路退化",
@@ -260,13 +312,143 @@ export const diagnosisSession: DiagnosisSession = {
   },
 };
 
+export const remediationTimeline: SessionEvent[] = [
+  {
+    schema_version: "1",
+    type: "approval_required",
+    session_id: diagnosisSession.session_id,
+    timestamp: "2026-03-18T12:04:30Z",
+    data: {
+      user: "miaomiao.zhou",
+      message: "等待值班工程师审批修复方案",
+      plan_version: 3,
+    },
+  },
+  {
+    schema_version: "1",
+    type: "plan_revised",
+    session_id: diagnosisSession.session_id,
+    timestamp: "2026-03-18T12:05:10Z",
+    data: {
+      user: "auto-sre-bot",
+      message: "已补充 GPU 观测与回滚说明",
+      plan_version: 3,
+      plan_id: "plan-rollback-01-v3",
+      instruction: "请补充执行前校验、回滚条件和观测指标，降低误操作风险。",
+    },
+  },
+  {
+    schema_version: "1",
+    type: "remediation_progress",
+    session_id: diagnosisSession.session_id,
+    timestamp: "2026-03-18T12:06:02Z",
+    data: {
+      stage: "execution_started",
+      user: "auto-sre-bot",
+      message: "开始执行步骤 1：排出热点节点上的 10% 分片",
+      timeout_seconds: 60,
+      step_results: [
+        {
+          step_id: 1,
+          tool: "k8s_cordon_drain",
+          command: "kubectl cordon node-gpu-01 && kubectl drain node-gpu-01 --ignore-daemonsets",
+          result: { cordoned: true, drained_pods: 1 },
+          success: true,
+          mocked: true,
+        },
+      ],
+    },
+  },
+  {
+    schema_version: "1",
+    type: "remediation_progress",
+    session_id: diagnosisSession.session_id,
+    timestamp: "2026-03-18T12:07:20Z",
+    data: {
+      stage: "validating",
+      user: "system",
+      message: "正在验证 p95 与 GPU 利用率是否恢复",
+      timeout_seconds: 120,
+      step_results: [
+        {
+          step_id: 2,
+          tool: "metrics.check",
+          command: "query vllm_p95_ms and gpu_utilization",
+          result: { vllm_p95_ms: 214, gpu_utilization: 0.71, trend: "stable" },
+          success: true,
+          mocked: true,
+        },
+      ],
+    },
+  },
+  {
+    schema_version: "1",
+    type: "remediation_progress",
+    session_id: diagnosisSession.session_id,
+    timestamp: "2026-03-18T12:08:40Z",
+    data: {
+      stage: "execution_succeeded",
+      user: "system",
+      message: "金丝雀批次验证通过，等待继续扩容",
+      steps_completed: 2,
+      timeout_seconds: 120,
+      step_results: [
+        {
+          step_id: 3,
+          tool: "metrics.check",
+          command: "confirm canary batch",
+          result: { status: "healthy", canary_p95_ms: 214 },
+          success: true,
+          mocked: true,
+        },
+      ],
+    },
+  },
+];
+
+export const remediationOverview: RemediationOverview = {
+  session_id: diagnosisSession.session_id,
+  approval_required: false,
+  plan: remediationPlan,
+  plan_version: 3,
+  plan_history: [
+    {
+      version: 1,
+      plan_id: "plan-rollback-01-v1",
+      revised_at: "2026-03-18T12:03:40Z",
+      instruction: "请先给出一个最小可执行的缓解方案。",
+    },
+    {
+      version: 2,
+      plan_id: "plan-rollback-01-v2",
+      revised_at: "2026-03-18T12:04:58Z",
+      instruction: "请补充回滚策略与观察窗口。",
+    },
+    {
+      version: 3,
+      plan_id: "plan-rollback-01-v3",
+      revised_at: "2026-03-18T12:05:10Z",
+      instruction: "请补充执行前校验、回滚条件和观测指标，降低误操作风险。",
+    },
+  ],
+  progress: {
+    status: "remediating",
+    completed_steps: 2,
+    total_steps: 3,
+    batch_status: [
+      { batch: "金丝雀 10%", progress: 100, status: "execution_succeeded" },
+      { batch: "全量扩容", progress: 42, status: "validating" },
+    ],
+  },
+  timeline: remediationTimeline,
+};
 export const diagnosisHistorySessions: DiagnosisSessionSummary[] = [
   {
     session_id: diagnosisSession.session_id,
     title: "3月18日推理变慢",
-    summary: "vLLM 推理链路出现持续高延迟，已完成一轮复诊并生成待审批修复方案。",
+    summary: "vLLM 推理链路仍在修复中，金丝雀验证已通过，等待全量恢复观察。",
     started_at: diagnosisSession.alert.starts_at,
-    updated_at: "2026-03-18T12:05:00Z",
+    updated_at: "2026-03-18T12:08:40Z",
     status: diagnosisSession.status,
     severity: diagnosisSession.alert.severity,
     alert_name: diagnosisSession.alert.alert_name,
@@ -343,58 +525,6 @@ export const diagnosisHistorySessions: DiagnosisSessionSummary[] = [
   },
 ];
 
-export const remediationOverview: RemediationOverview = {
-  session_id: diagnosisSession.session_id,
-  approval_required: true,
-  plan: {
-    plan_id: "plan-rollback-01",
-    root_cause: "异常基准测试进程导致 GPU 资源争用",
-    description: "先从热点节点排出饱和副本，再终止 gpu-burn 进程，最后通过金丝雀流量恢复业务。",
-    estimated_impact: "业务影响较低，排空阶段仅影响单个分片。",
-    confidence: 0.88,
-    priority: "P1",
-    safety_level: "high",
-    canary: {
-      enabled: true,
-      target_percentage: 0.1,
-      monitor_duration: 120,
-      success_criteria: [
-        { metric: "vllm_p95_ms", operator: "<", value: 300 },
-        { metric: "gpu_utilization", operator: "<", value: 0.75 },
-      ],
-    },
-    steps: [
-      {
-        step_id: 1,
-        description: "先从热点节点排出一个金丝雀分片。",
-        tool: "k8s_cordon_drain",
-        params: { node: "node-gpu-01", percentage: 0.1 },
-        rollback_tool: "k8s_uncordon",
-        verification: { method: "wait", wait_seconds: 30 },
-        timeout: 60,
-      },
-      {
-        step_id: 2,
-        description: "终止节点上的异常 gpu-burn 进程。",
-        tool: "shell_command",
-        params: { host: "node-gpu-01", command: "pkill gpu-burn" },
-        rollback_tool: null,
-        verification: { method: "tool_call", tool: "check_gpu_processes" },
-        timeout: 45,
-      },
-    ],
-  },
-  progress: {
-    status: "awaiting_approval",
-    completed_steps: 0,
-    total_steps: 2,
-    batch_status: [
-      { batch: "金丝雀 10%", progress: 30, status: "validating" },
-      { batch: "扩容 50%", progress: 0, status: "pending" },
-    ],
-  },
-};
-
 export const initialChatMessages: ChatMessage[] = [
   {
     id: "chat-1",
@@ -424,6 +554,25 @@ export const knowledgeDocuments: KnowledgeDocument[] = [
     score: 0.83,
   },
 ];
+
+export const knowledgeDatasets: KnowledgeDataset[] = [
+  {
+    id: "dataset-runbook",
+    name: "Runbook Dataset",
+    description: "Default remediation and troubleshooting runbooks",
+    document_count: 2,
+    status: "ready",
+  },
+  {
+    id: "dataset-network",
+    name: "Network Dataset",
+    description: "RoCE and data-center network operations",
+    document_count: 1,
+    status: "ready",
+  },
+];
+
+export { knowledgeBaseDetails, knowledgeBases } from "./knowledgeData";
 
 export const incidents: IncidentRecord[] = [
   {
@@ -496,3 +645,6 @@ const legacySkills: SkillDescriptor[] = [
     match_score: 0.88,
   },
 ];
+
+void legacySkills;
+

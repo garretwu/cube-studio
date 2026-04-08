@@ -13,7 +13,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, ConfigDict, Field
 
 from sre_agent.alerts_filter import build_blocked_alert_name_set, is_blocked_alert
@@ -21,7 +21,15 @@ from sre_agent.auth.jwt import CurrentUser, get_current_user
 from sre_agent.auth.rbac import require_role
 from sre_agent.models.alert import Alert
 from sre_agent.models.common import ErrorCode, SREError, SREResponse
-from sre_agent.models.diagnosis import DiagnosisSession
+from sre_agent.models.diagnosis import (
+    DiagnosisSession,
+    RemediationAlertReview,
+    RemediationAlertSnapshot,
+    RemediationCheckSnapshot,
+    RemediationEvidence,
+    RemediationMetricReview,
+    RemediationMetricSnapshot,
+)
 from sre_agent.models.events import EventType, WSEvent
 from sre_agent.models.memory import ConfigBaseline, IncidentRecord, LearnedPattern
 from sre_agent.models.remediation import LoopResult, RemediationPlan, RemediationResult
@@ -673,6 +681,100 @@ def build_api_router() -> APIRouter:
                 return candidate.recommended_fix
         return None
 
+    def _supports_trace_callback(method: Any) -> bool:
+        try:
+            signature = inspect.signature(method)
+        except (TypeError, ValueError):
+            return False
+        if "trace_callback" in signature.parameters:
+            return True
+        return any(parameter.kind == inspect.Parameter.VAR_KEYWORD for parameter in signature.parameters.values())
+
+    def _supports_extra_alerts(method: Any) -> bool:
+        try:
+            signature = inspect.signature(method)
+        except (TypeError, ValueError):
+            return False
+        if "extra_alerts" in signature.parameters:
+            return True
+        return any(parameter.kind == inspect.Parameter.VAR_KEYWORD for parameter in signature.parameters.values())
+
+    def _lookup_extra_alerts(alert_store: Any, fingerprints: list[str]) -> list[Alert]:
+        """Look up extra alerts from the alert store by fingerprint."""
+        if not fingerprints:
+            return []
+        snapshot = alert_store.snapshot()
+        raw_alerts = snapshot.get("alerts", [])
+        fingerprint_set = set(fingerprints)
+        results: list[Alert] = []
+        for item in raw_alerts:
+            if not isinstance(item, dict):
+                continue
+            fp = str(item.get("fingerprint", "")).strip()
+            if fp in fingerprint_set:
+                try:
+                    results.append(Alert.model_validate(item))
+                except Exception:
+                    continue
+        return results
+
+    async def _run_diagnose_with_optional_trace_callback(
+        services: Any,
+        *,
+        alert: Alert,
+        trace_callback: Any | None,
+        extra_alerts: list[Alert] | None = None,
+    ) -> DiagnosisSession:
+        method = services.diagnosis_runner.adiagnose
+        kwargs: dict[str, Any] = {"extra_alerts": extra_alerts} if extra_alerts else {}
+        if trace_callback is not None and _supports_trace_callback(method):
+            return await method(alert, trace_callback=trace_callback, **kwargs)
+        return await method(alert, **kwargs)
+
+    async def _replay_trace_and_diagnosis_events(
+        services: Any,
+        *,
+        session: DiagnosisSession,
+    ) -> None:
+        if session.trace is not None:
+            for item in session.trace.steps:
+                payload = item.model_dump(mode="json") if hasattr(item, "model_dump") else {}
+                if hasattr(item, "tool"):
+                    await services.trace_publisher.publish(
+                        {
+                            "type": EventType.TOOL_RESULT.value,
+                            "session_id": session.session_id,
+                            "data": payload,
+                        }
+                    )
+                    continue
+                event_type = EventType.THINKING_STEP.value
+                if str(payload.get("action_type", "")).strip().lower() == "tool_call":
+                    event_type = EventType.TOOL_CALL.value
+                await services.trace_publisher.publish(
+                    {
+                        "type": event_type,
+                        "session_id": session.session_id,
+                        "data": payload,
+                    }
+                )
+        if session.diagnosis_result is not None:
+            await services.trace_publisher.publish(
+                {
+                    "type": EventType.DIAGNOSIS_RESULT.value,
+                    "session_id": session.session_id,
+                    "data": session.diagnosis_result.model_dump(mode="json"),
+                }
+            )
+
+    def _track_background_task(app: Any, task: asyncio.Task[Any]) -> None:
+        holder = getattr(app.state, "background_tasks", None)
+        if not isinstance(holder, set):
+            holder = set()
+            app.state.background_tasks = holder
+        holder.add(task)
+        task.add_done_callback(holder.discard)
+
     def _update_session_status(
         services: Any,
         *,
@@ -761,12 +863,235 @@ def build_api_router() -> APIRouter:
             return actual_num != expected_num
         return False
 
+    def _update_session_evidence(
+        services: Any,
+        *,
+        session: DiagnosisSession,
+        evidence: RemediationEvidence,
+    ) -> DiagnosisSession:
+        updated = session.model_copy(update={"remediation_evidence": evidence})
+        services.session_store.put(updated)
+        return updated
+
+    def _normalize_metric_key(raw_key: str, *, fallback_index: int) -> str:
+        value = re.sub(r"[^a-zA-Z0-9_]+", "_", str(raw_key or "").strip()).strip("_").lower()
+        return value or f"metric_{fallback_index}"
+
+    def _default_llm_metric_specs(session: DiagnosisSession) -> list[dict[str, Any]]:
+        labels = session.alert.labels
+        service = str(labels.get("service") or labels.get("app") or "vllm").strip() or "vllm"
+        namespace = str(labels.get("namespace") or "service").strip() or "service"
+        specs = [
+            {
+                "metric_key": "llm_latency_p95",
+                "query": f'vllm_request_latency_p95{{service="{service}",namespace="{namespace}"}}',
+            },
+            {
+                "metric_key": "llm_ttft_p99",
+                "query": (
+                    'histogram_quantile(0.99, sum by (le) '
+                    f'(rate(vllm:time_to_first_token_seconds_bucket{{service="{service}",namespace="{namespace}"}}[5m])))'
+                ),
+            },
+            {
+                "metric_key": "llm_inter_token_latency_p95",
+                "query": f'vllm_inter_token_latency_p95{{service="{service}",namespace="{namespace}"}}',
+            },
+        ]
+        return specs
+
+    def _build_metric_specs(plan: RemediationPlan | None, session: DiagnosisSession) -> list[dict[str, Any]]:
+        specs: list[dict[str, Any]] = []
+        if plan is not None:
+            for index, step in enumerate(plan.steps, start=1):
+                verification = step.verification
+                if verification.method != "promql" or not str(verification.query or "").strip():
+                    continue
+                metric_key = _normalize_metric_key(
+                    step.description or verification.query or f"metric_{index}",
+                    fallback_index=index,
+                )
+                specs.append(
+                    {
+                        "metric_key": metric_key,
+                        "query": str(verification.query or "").strip(),
+                        "condition": verification.condition.model_dump(mode="json") if verification.condition is not None else None,
+                    }
+                )
+        if specs:
+            return specs
+        return _default_llm_metric_specs(session)
+
+    async def _capture_alert_snapshot(session: DiagnosisSession, services: Any) -> RemediationAlertSnapshot:
+        snapshot = services.alert_store.snapshot()
+        alerts = snapshot.get("alerts", [])
+        if not isinstance(alerts, list):
+            return RemediationAlertSnapshot(
+                fingerprint=session.alert.fingerprint,
+                alert_name=session.alert.alert_name,
+                status="unknown",
+                is_firing=False,
+                available=False,
+                error="alert snapshot unavailable",
+            )
+
+        for alert_item in alerts:
+            if not isinstance(alert_item, dict):
+                continue
+            if str(alert_item.get("fingerprint") or "").strip() != session.alert.fingerprint:
+                continue
+            status = str(alert_item.get("status") or "unknown").strip().lower() or "unknown"
+            return RemediationAlertSnapshot(
+                fingerprint=session.alert.fingerprint,
+                alert_name=str(alert_item.get("alert_name") or session.alert.alert_name).strip() or session.alert.alert_name,
+                status=status,
+                is_firing=status == "firing",
+            )
+
+        return RemediationAlertSnapshot(
+            fingerprint=session.alert.fingerprint,
+            alert_name=session.alert.alert_name,
+            status="resolved",
+            is_firing=False,
+        )
+
+    async def _capture_metric_snapshots(
+        *,
+        services: Any,
+        session: DiagnosisSession,
+        plan: RemediationPlan | None,
+    ) -> list[RemediationMetricSnapshot]:
+        specs = _build_metric_specs(plan, session)
+        prometheus = getattr(services.remediation_engine, "prometheus", None)
+        execution_mode = str(getattr(services.remediation_engine, "execution_mode", "real") or "real").strip().lower()
+        snapshots: list[RemediationMetricSnapshot] = []
+        for index, spec in enumerate(specs, start=1):
+            metric_key = str(spec.get("metric_key") or f"metric_{index}")
+            query = str(spec.get("query") or "").strip()
+            condition = spec.get("condition")
+            if not query:
+                snapshots.append(
+                    RemediationMetricSnapshot(
+                        metric_key=metric_key,
+                        query="<missing-query>",
+                        available=False,
+                        error="query missing",
+                        condition=condition if isinstance(condition, dict) else None,
+                    )
+                )
+                continue
+            if prometheus is None or not hasattr(prometheus, "query_instant"):
+                if execution_mode == "mock":
+                    snapshots.append(
+                        RemediationMetricSnapshot(
+                            metric_key=metric_key,
+                            query=query,
+                            value=0,
+                            condition=condition if isinstance(condition, dict) else None,
+                        )
+                    )
+                    continue
+                snapshots.append(
+                    RemediationMetricSnapshot(
+                        metric_key=metric_key,
+                        query=query,
+                        available=False,
+                        error="prometheus unavailable",
+                        condition=condition if isinstance(condition, dict) else None,
+                    )
+                )
+                continue
+            try:
+                value = await prometheus.query_instant(query)
+                snapshots.append(
+                    RemediationMetricSnapshot(
+                        metric_key=metric_key,
+                        query=query,
+                        value=value,
+                        condition=condition if isinstance(condition, dict) else None,
+                    )
+                )
+            except Exception as exc:  # noqa: BLE001
+                snapshots.append(
+                    RemediationMetricSnapshot(
+                        metric_key=metric_key,
+                        query=query,
+                        available=False,
+                        error=str(exc),
+                        condition=condition if isinstance(condition, dict) else None,
+                    )
+                )
+        return snapshots
+
+    async def _capture_check_snapshot(
+        services: Any,
+        *,
+        session: DiagnosisSession,
+        plan: RemediationPlan | None,
+    ) -> RemediationCheckSnapshot:
+        alert_snapshot = await _capture_alert_snapshot(session, services)
+        metric_snapshots = await _capture_metric_snapshots(services=services, session=session, plan=plan)
+        latest_collected_at = max(
+            [alert_snapshot.collected_at, *[item.collected_at for item in metric_snapshots]],
+            default=datetime.now(UTC),
+        )
+        return RemediationCheckSnapshot(alert=alert_snapshot, metrics=metric_snapshots, collected_at=latest_collected_at)
+
+    def _build_metric_reviews(
+        pre_check: RemediationCheckSnapshot | None,
+        post_check: RemediationCheckSnapshot | None,
+    ) -> tuple[list[RemediationMetricReview], bool]:
+        before_metrics = {
+            item.metric_key: item for item in (pre_check.metrics if pre_check is not None else [])
+        }
+        after_metrics = {
+            item.metric_key: item for item in (post_check.metrics if post_check is not None else [])
+        }
+        metric_keys = list(dict.fromkeys([*before_metrics.keys(), *after_metrics.keys()]))
+        reviews: list[RemediationMetricReview] = []
+        all_improved = True
+        for metric_key in metric_keys:
+            before = before_metrics.get(metric_key)
+            after = after_metrics.get(metric_key)
+            available = bool(before and before.available) and bool(after and after.available)
+            condition = (after.condition if after is not None else None) or (before.condition if before is not None else None)
+            improved = False
+            error: str | None = None
+            if not available:
+                all_improved = False
+                error = (after.error if after is not None else None) or (before.error if before is not None else None)
+            elif isinstance(condition, dict):
+                operator = str(condition.get("operator") or "").strip()
+                expected = condition.get("value")
+                improved = bool(operator) and _compare_scalar(after.value, operator, expected)
+                all_improved = all_improved and improved
+            else:
+                try:
+                    improved = float(after.value) <= float(before.value)
+                except (TypeError, ValueError):
+                    improved = False
+                all_improved = all_improved and improved
+            reviews.append(
+                RemediationMetricReview(
+                    metric_key=metric_key,
+                    query=(after.query if after is not None else before.query if before is not None else metric_key),
+                    before_value=before.value if before is not None else None,
+                    after_value=after.value if after is not None else None,
+                    condition=condition,
+                    improved=improved,
+                    available=available,
+                    error=error,
+                )
+            )
+        return reviews, all_improved
+
     async def _observe_post_remediation(
         services: Any,
         *,
         session: DiagnosisSession,
+        pre_check: RemediationCheckSnapshot | None,
         observation_seconds: int,
-    ) -> tuple[bool, dict[str, Any]]:
+    ) -> tuple[bool, dict[str, Any], RemediationEvidence]:
         await _publish_remediation_progress(
             services,
             session_id=session.session_id,
@@ -774,60 +1099,52 @@ def build_api_router() -> APIRouter:
             details={"seconds": observation_seconds},
         )
         await asyncio.sleep(max(0, int(observation_seconds)))
-
-        alert_cleared = False
-        snapshot = services.alert_store.snapshot()
-        alerts = snapshot.get("alerts", [])
-        if isinstance(alerts, list):
-            for alert_item in alerts:
-                if not isinstance(alert_item, dict):
-                    continue
-                if str(alert_item.get("fingerprint") or "").strip() != session.alert.fingerprint:
-                    continue
-                status = str(alert_item.get("status") or "").strip().lower()
-                alert_cleared = status != "firing"
-                break
-            else:
-                # alert not present in active snapshot is treated as cleared
-                alert_cleared = True
-
-        metrics_improved = True
-        metrics_checked = 0
         plan = services.remediation_engine.get_plan(session.session_id)
-        prometheus = getattr(services.remediation_engine, "prometheus", None)
-        if plan is not None:
-            for step in plan.steps:
-                verification = step.verification
-                if verification.method != "promql":
-                    continue
-                metrics_checked += 1
-                if prometheus is None or not hasattr(prometheus, "query_instant"):
-                    metrics_improved = False
-                    continue
-                try:
-                    value = await prometheus.query_instant(verification.query or "")
-                except Exception:
-                    metrics_improved = False
-                    continue
-                condition = verification.condition
-                if condition is None:
-                    metrics_improved = bool(value) and metrics_improved
-                    continue
-                if not _compare_scalar(value, condition.operator, condition.value):
-                    metrics_improved = False
+        post_check = await _capture_check_snapshot(services, session=session, plan=plan)
+        pre_alert = pre_check.alert if pre_check is not None else None
+        post_alert = post_check.alert
+        alert_cleared = bool(post_alert is not None and post_alert.available and not post_alert.is_firing)
+        alert_review = None
+        if pre_alert is not None and post_alert is not None:
+            alert_review = RemediationAlertReview(
+                fingerprint=post_alert.fingerprint,
+                alert_name=post_alert.alert_name,
+                before_status=pre_alert.status,
+                after_status=post_alert.status,
+                cleared=alert_cleared,
+            )
 
+        metric_reviews, metrics_improved = _build_metric_reviews(pre_check, post_check)
+        evidence = RemediationEvidence(
+            pre_check=pre_check,
+            post_check=post_check,
+            alert_review=alert_review,
+            metric_reviews=metric_reviews,
+            alert_cleared=alert_cleared,
+            metrics_improved=metrics_improved,
+        )
         details = {
             "alert_cleared": alert_cleared,
             "metrics_improved": metrics_improved,
-            "metrics_checked": metrics_checked,
+            "metrics_checked": len(metric_reviews),
+            "baseline_alert": pre_alert.model_dump(mode="json") if pre_alert is not None else None,
+            "baseline_metrics": [item.model_dump(mode="json") for item in (pre_check.metrics if pre_check is not None else [])],
+            "post_alert": post_alert.model_dump(mode="json") if post_alert is not None else None,
+            "post_metrics": [item.model_dump(mode="json") for item in post_check.metrics],
+            "pre_check": pre_check.model_dump(mode="json") if pre_check is not None else None,
+            "post_check": post_check.model_dump(mode="json"),
+            "alert_review": alert_review.model_dump(mode="json") if alert_review is not None else None,
+            "metric_reviews": [item.model_dump(mode="json") for item in metric_reviews],
+            "collected_at": evidence.collected_at.isoformat(),
         }
+        updated_session = _update_session_evidence(services, session=session, evidence=evidence)
         await _publish_remediation_progress(
             services,
-            session_id=session.session_id,
+            session_id=updated_session.session_id,
             stage="observation_result",
             details=details,
         )
-        return alert_cleared and metrics_improved, details
+        return alert_cleared and metrics_improved, details, evidence
 
     def _extract_step_results(result: RemediationResult) -> list[dict[str, Any]]:
         payload: list[dict[str, Any]] = []
@@ -855,10 +1172,36 @@ def build_api_router() -> APIRouter:
         if isinstance(payload.get("metadata"), dict):
             metadata = payload["metadata"]
 
-        source = str(payload.get("source") or metadata.get("source") or "")
-        category = str(payload.get("category") or metadata.get("category") or "general")
-        title = str(payload.get("title") or metadata.get("title") or source or f"Document {index + 1}")
-        excerpt = str(payload.get("excerpt") or payload.get("content") or metadata.get("excerpt") or "")
+        source = str(
+            payload.get("source")
+            or payload.get("dataset_name")
+            or metadata.get("source")
+            or metadata.get("dataset_name")
+            or ""
+        )
+        category = str(
+            payload.get("category")
+            or payload.get("dataset_id")
+            or metadata.get("category")
+            or metadata.get("dataset_id")
+            or "general"
+        )
+        title = str(
+            payload.get("title")
+            or payload.get("name")
+            or metadata.get("title")
+            or metadata.get("name")
+            or source
+            or f"Document {index + 1}"
+        )
+        excerpt = str(
+            payload.get("excerpt")
+            or payload.get("content")
+            or payload.get("text")
+            or metadata.get("excerpt")
+            or payload.get("indexing_status")
+            or ""
+        )
 
         raw_tags = payload.get("tags", metadata.get("tags", []))
         if isinstance(raw_tags, list):
@@ -873,7 +1216,7 @@ def build_api_router() -> APIRouter:
             except (TypeError, ValueError):
                 score = None
 
-        doc_id = str(payload.get("id") or metadata.get("id") or f"{category}-{index + 1}")
+        doc_id = str(payload.get("id") or payload.get("document_id") or metadata.get("id") or f"{category}-{index + 1}")
         result = {
             "id": doc_id,
             "title": title,
@@ -885,6 +1228,285 @@ def build_api_router() -> APIRouter:
         if score is not None:
             result["score"] = score
         return result
+
+    def _normalize_knowledge_dataset(item: Any, *, default_dataset_id: str = "") -> dict[str, Any]:
+        payload = item.model_dump(mode="json") if hasattr(item, "model_dump") else dict(item) if isinstance(item, dict) else {}
+        dataset_id = str(payload.get("id") or default_dataset_id)
+        name = str(payload.get("name") or payload.get("title") or dataset_id or "dataset")
+        description = str(payload.get("description") or payload.get("intro") or "")
+        document_count = payload.get("document_count") or payload.get("documents_count") or payload.get("files_count") or 0
+        word_count = payload.get("word_count") or payload.get("tokens") or 0
+        return {
+            "id": dataset_id,
+            "name": name,
+            "description": description,
+            "document_count": int(document_count) if str(document_count).strip().isdigit() else 0,
+            "word_count": int(word_count) if str(word_count).strip().isdigit() else 0,
+            "created_at": payload.get("created_at"),
+            "updated_at": payload.get("updated_at"),
+            "status": payload.get("indexing_status") or payload.get("status") or "ready",
+        }
+
+    def _normalize_knowledge_segment(
+        item: Any,
+        *,
+        index: int,
+        document_id: str | None = None,
+    ) -> dict[str, Any]:
+        payload = item.model_dump(mode="json") if hasattr(item, "model_dump") else dict(item) if isinstance(item, dict) else {}
+        segment = payload.get("segment")
+        if isinstance(segment, dict):
+            merged = dict(segment)
+            merged.update({k: v for k, v in payload.items() if k not in {"segment"}})
+            payload = merged
+        segment_id = str(payload.get("id") or payload.get("segment_id") or f"segment-{index + 1}")
+        content = str(payload.get("content") or payload.get("text") or payload.get("answer") or "")
+        score = payload.get("score")
+        try:
+            score_value = float(score) if score is not None else None
+        except (TypeError, ValueError):
+            score_value = None
+        result = {
+            "id": segment_id,
+            "document_id": str(payload.get("document_id") or document_id or ""),
+            "content": content,
+            "status": str(payload.get("status") or payload.get("enabled") or "enabled"),
+            "source": str(payload.get("source") or payload.get("dataset_name") or ""),
+            "position": payload.get("position"),
+            "metadata": payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {},
+        }
+        if score_value is not None:
+            result["score"] = score_value
+        return result
+
+    def _normalize_knowledge_scope(value: Any) -> str:
+        normalized = str(value or "").strip().lower()
+        if normalized in {"private", "personal", "user"}:
+            return "private"
+        return "shared"
+
+    def _normalize_knowledge_status(value: Any) -> str:
+        if isinstance(value, bool):
+            return "enabled" if value else "disabled"
+        normalized = str(value or "").strip().lower()
+        if normalized in {"disabled", "disable", "inactive", "off", "false", "0"}:
+            return "disabled"
+        return "enabled"
+
+    def _normalize_knowledge_index_status(value: Any) -> str:
+        normalized = str(value or "").strip().lower()
+        if normalized in {"ready", "enabled", "active", "indexed", "available"}:
+            return "ready"
+        if normalized in {"indexing", "building", "processing", "running"}:
+            return "indexing"
+        if normalized in {"failed", "error", "unavailable"}:
+            return "failed"
+        return "pending"
+
+    def _safe_int(value: Any, default: int = 0) -> int:
+        try:
+            if value is None:
+                return default
+            if isinstance(value, bool):
+                return default
+            return int(value)
+        except (TypeError, ValueError):
+            return default
+
+    def _normalize_timestamp(value: Any, *, fallback: str | None = None) -> str:
+        if isinstance(value, datetime):
+            return value.isoformat()
+        text = str(value or "").strip()
+        if text:
+            return text
+        return fallback or datetime.now(UTC).isoformat()
+
+    def _slugify_code(value: str) -> str:
+        normalized = re.sub(r"[^a-zA-Z0-9]+", "_", value.strip().lower()).strip("_")
+        return normalized or "knowledge_base"
+
+    def _as_payload_dict(item: Any) -> dict[str, Any]:
+        if hasattr(item, "model_dump"):
+            payload = item.model_dump(mode="json")
+        elif isinstance(item, dict):
+            payload = dict(item)
+        else:
+            payload = {}
+        return payload if isinstance(payload, dict) else {}
+
+    def _normalize_knowledge_base_summary(item: Any, *, default_dataset_id: str = "") -> dict[str, Any]:
+        payload = _as_payload_dict(item)
+        dataset = _normalize_knowledge_dataset(payload, default_dataset_id=default_dataset_id)
+        dataset_id = str(dataset.get("id") or default_dataset_id or "default")
+        name = str(dataset.get("name") or payload.get("title") or dataset_id or "Knowledge Base")
+        code = str(payload.get("code") or payload.get("dataset_code") or _slugify_code(name or dataset_id))
+        document_count = _safe_int(payload.get("document_count", dataset.get("document_count")), default=0)
+        storage_bytes = _safe_int(
+            payload.get("storage_bytes")
+            or payload.get("size_bytes")
+            or payload.get("bytes")
+            or payload.get("word_count")
+            or dataset.get("word_count"),
+            default=0,
+        )
+        summary = {
+            "id": dataset_id,
+            "name": name,
+            "code": code,
+            "scope": _normalize_knowledge_scope(payload.get("scope") or payload.get("visibility") or payload.get("access")),
+            "document_count": max(document_count, 0),
+            "storage_bytes": max(storage_bytes, 0),
+            "index_status": _normalize_knowledge_index_status(
+                payload.get("index_status") or payload.get("indexing_status") or dataset.get("status")
+            ),
+            "status": _normalize_knowledge_status(payload.get("status") if "status" in payload else payload.get("enabled")),
+            "updated_at": _normalize_timestamp(payload.get("updated_at") or dataset.get("updated_at")),
+            "description": str(payload.get("description") or dataset.get("description") or ""),
+        }
+        return summary
+
+    def _normalize_preview_sections(raw_sections: Any, *, fallback_text: str) -> list[dict[str, str]]:
+        sections: list[dict[str, str]] = []
+        if isinstance(raw_sections, list):
+            for idx, section in enumerate(raw_sections):
+                section_payload = _as_payload_dict(section)
+                if not section_payload:
+                    continue
+                heading = str(section_payload.get("heading") or section_payload.get("title") or f"Section {idx + 1}")
+                body = str(section_payload.get("body") or section_payload.get("content") or "")
+                section_id = str(section_payload.get("id") or f"section-{idx + 1}")
+                if not heading.strip() and not body.strip():
+                    continue
+                sections.append({"id": section_id, "heading": heading, "body": body})
+        if sections:
+            return sections
+        return [{"id": "section-1", "heading": "摘要", "body": fallback_text or "暂无正文片段"}]
+
+    def _infer_knowledge_source_type(payload: dict[str, Any], *, source_label: str, file_name: str) -> str:
+        explicit = str(payload.get("source_type") or "").strip().lower()
+        if explicit in {"file", "manual", "link"}:
+            return explicit
+        source = str(payload.get("source_uri") or payload.get("source") or source_label).strip().lower()
+        if source.startswith("http://") or source.startswith("https://"):
+            return "link"
+        if source.startswith("manual://"):
+            return "manual"
+        if source.startswith(("platform://", "repo://", "archive://", "file://")):
+            return "file"
+        if "." in file_name:
+            return "file"
+        return "manual"
+
+    def _normalize_knowledge_base_document(item: Any, *, index: int) -> dict[str, Any]:
+        payload = _as_payload_dict(item)
+        normalized = _normalize_knowledge_document(payload, index=index)
+        preview_payload = _as_payload_dict(payload.get("preview"))
+        title = str(normalized.get("title") or f"Document {index + 1}")
+        excerpt = str(normalized.get("excerpt") or "")
+        source_label = str(
+            payload.get("source_label")
+            or preview_payload.get("source_label")
+            or normalized.get("source")
+            or "unknown"
+        )
+        source_uri_raw = str(payload.get("source_uri") or preview_payload.get("source_uri") or "")
+        source_uri = source_uri_raw.strip() or (source_label if source_label.startswith(("http://", "https://")) else None)
+        updated_at = _normalize_timestamp(
+            payload.get("updated_at")
+            or preview_payload.get("updated_at")
+            or payload.get("created_at"),
+        )
+
+        raw_tags = preview_payload.get("tags", payload.get("tags", normalized.get("tags", [])))
+        if isinstance(raw_tags, list):
+            tags = [str(tag) for tag in raw_tags if str(tag).strip()]
+        elif isinstance(raw_tags, str):
+            tags = [segment.strip() for segment in raw_tags.split(",") if segment.strip()]
+        else:
+            tags = []
+
+        file_name = str(payload.get("file_name") or payload.get("filename") or payload.get("name") or f"{_slugify_code(title)}.md")
+        size_raw = payload.get("size_bytes")
+        size_bytes = _safe_int(size_raw, default=0) if size_raw is not None else None
+        index_status = _normalize_knowledge_index_status(payload.get("index_status") or payload.get("indexing_status"))
+        status = _normalize_knowledge_status(payload.get("status") if "status" in payload else payload.get("enabled"))
+        preview_summary = str(payload.get("preview_summary") or preview_payload.get("description") or excerpt or "暂无摘要")
+        warning = str(preview_payload.get("warning") or "").strip() or None
+        if warning is None and index_status != "ready":
+            warning = "该文档索引未就绪，预览可能不完整。"
+
+        preview = {
+            "title": str(preview_payload.get("title") or title),
+            "description": str(preview_payload.get("description") or excerpt or "暂无摘要"),
+            "source_label": source_label,
+            "source_uri": source_uri,
+            "tags": tags,
+            "updated_at": updated_at,
+            "sections": _normalize_preview_sections(preview_payload.get("sections"), fallback_text=excerpt),
+            "warning": warning,
+        }
+
+        return {
+            "id": str(normalized.get("id") or payload.get("document_id") or f"doc-{index + 1}"),
+            "title": title,
+            "source_type": _infer_knowledge_source_type(payload, source_label=source_label, file_name=file_name),
+            "source_label": source_label,
+            "file_name": file_name,
+            "size_bytes": size_bytes,
+            "index_status": index_status,
+            "status": status,
+            "updated_at": updated_at,
+            "preview_summary": preview_summary,
+            "tags": tags,
+            "preview": preview,
+        }
+
+    def _normalize_knowledge_base_detail(dataset_item: Any, documents: list[Any], *, default_dataset_id: str = "") -> dict[str, Any]:
+        dataset_payload = _as_payload_dict(dataset_item)
+        summary = _normalize_knowledge_base_summary(dataset_payload, default_dataset_id=default_dataset_id)
+        mapped_documents = [_normalize_knowledge_base_document(item, index=idx) for idx, item in enumerate(documents)]
+        indexed_at_raw = dataset_payload.get("indexed_at")
+        indexed_at = (
+            _normalize_timestamp(indexed_at_raw)
+            if indexed_at_raw is not None
+            else (summary["updated_at"] if summary["index_status"] == "ready" else None)
+        )
+        document_count = max(summary["document_count"], len(mapped_documents))
+        return {
+            **summary,
+            "document_count": document_count,
+            "knowledge_base_id": str(dataset_payload.get("knowledge_base_id") or summary["id"]),
+            "created_at": _normalize_timestamp(dataset_payload.get("created_at"), fallback=summary["updated_at"]),
+            "indexed_at": indexed_at,
+            "documents": mapped_documents,
+        }
+
+    def _knowledge_default_dataset_id(request: Request, knowledge: Any | None = None) -> str:
+        cfg = getattr(request.app.state, "config", None)
+        kb_cfg = getattr(cfg, "knowledge_base", None) if cfg is not None else None
+        dataset_id = str(getattr(kb_cfg, "dataset_id", "") or "").strip() if kb_cfg is not None else ""
+        if dataset_id:
+            return dataset_id
+        runbook_dataset_id = str(getattr(kb_cfg, "runbook_dataset_id", "") or "").strip() if kb_cfg is not None else ""
+        if runbook_dataset_id:
+            return runbook_dataset_id
+        if knowledge is not None:
+            for attribute in ("default_dataset_id", "runbook_dataset_id", "dataset_id"):
+                candidate = str(getattr(knowledge, attribute, "") or "").strip()
+                if candidate:
+                    return candidate
+        return "default"
+
+    def _knowledge_resolved_dataset_id(
+        request: Request,
+        *,
+        knowledge: Any | None = None,
+        dataset_id: str | None = None,
+    ) -> str:
+        explicit_dataset_id = str(dataset_id or "").strip()
+        if explicit_dataset_id:
+            return explicit_dataset_id
+        return _knowledge_default_dataset_id(request, knowledge)
 
     def _topology_status_payload(services: Any) -> TopologyStatusResponse:
         discovery = getattr(services, "topology_discovery", None)
@@ -951,6 +1573,106 @@ def build_api_router() -> APIRouter:
                 filtered_clusters.append(copied)
         return filtered_alerts, filtered_clusters
 
+    def _resolve_alert_entity_ids(alert_data: dict[str, Any], ontology: Any) -> list[str]:
+        """Extract entity candidates from alert labels and resolve against ontology graph."""
+        raw_labels = alert_data.get("labels")
+        labels = raw_labels if isinstance(raw_labels, dict) else {}
+        candidates = [
+            str(labels.get(key, "")).strip()
+            for key in ("node", "instance", "service", "pod", "switch", "host", "job", "kubernetes_node")
+        ]
+        candidates = [item for item in candidates if item]
+        resolved: list[str] = []
+        for candidate in candidates:
+            if ontology.get_entity(candidate) is not None:
+                resolved.append(candidate)
+                continue
+            by_name = ontology.find_entities(filters={"name": candidate})
+            if by_name:
+                resolved.append(by_name[0].id)
+        return resolved
+
+    def _build_topology_aware_clusters(
+        alerts: list[dict[str, Any]],
+        ontology: Any,
+    ) -> list[dict[str, Any]]:
+        """Build alert clusters based on topology entity relationships."""
+        if not alerts or ontology is None:
+            return []
+        fingerprint_to_entities: dict[str, list[str]] = {}
+        alert_by_fingerprint: dict[str, dict[str, Any]] = {}
+        for alert_data in alerts:
+            if not isinstance(alert_data, dict):
+                continue
+            fp = str(alert_data.get("fingerprint", "")).strip()
+            if not fp:
+                continue
+            alert_by_fingerprint[fp] = alert_data
+            fingerprint_to_entities[fp] = _resolve_alert_entity_ids(alert_data, ontology)
+
+        fingerprints = list(alert_by_fingerprint.keys())
+        parent: dict[str, str] = {fp: fp for fp in fingerprints}
+
+        def find(x: str) -> str:
+            while parent[x] != x:
+                parent[x] = parent[parent[x]]
+                x = parent[x]
+            return x
+
+        def union(a: str, b: str) -> None:
+            ra, rb = find(a), find(b)
+            if ra != rb:
+                parent[ra] = rb
+
+        # Merge alerts whose entities are connected in the topology graph
+        for i in range(len(fingerprints)):
+            entities_i = fingerprint_to_entities.get(fingerprints[i], [])
+            for j in range(i + 1, len(fingerprints)):
+                entities_j = fingerprint_to_entities.get(fingerprints[j], [])
+                if _entities_topologically_connected(entities_i, entities_j, ontology):
+                    union(fingerprints[i], fingerprints[j])
+
+        # Build clusters from union-find groups
+        groups: dict[str, list[str]] = {}
+        for fp in fingerprints:
+            root = find(fp)
+            groups.setdefault(root, []).append(fp)
+
+        severity_rank = {"critical": 3, "warning": 2, "info": 1}
+        clusters: list[dict[str, Any]] = []
+        for idx, group_fps in enumerate(groups.values(), start=1):
+            group_alerts = [alert_by_fingerprint[fp] for fp in group_fps]
+            summary = str(group_alerts[0].get("annotations", {}).get("summary", "") or group_alerts[0].get("alert_name", ""))
+            top_severity = max(
+                (str(a.get("severity", "info")) for a in group_alerts),
+                key=lambda s: severity_rank.get(s, 0),
+            )
+            clusters.append({
+                "cluster_id": f"cluster-{idx}",
+                "summary": summary,
+                "severity": top_severity,
+                "alerts": group_fps,
+            })
+        return clusters
+
+    def _entities_topologically_connected(
+        entities_a: list[str],
+        entities_b: list[str],
+        ontology: Any,
+        max_depth: int = 2,
+    ) -> bool:
+        """Check if any entity from group A has a topology path to any entity in group B."""
+        if not entities_a or not entities_b:
+            return False
+        for ea in entities_a:
+            for eb in entities_b:
+                if ea == eb:
+                    return True
+                path = ontology.get_path(ea, eb)
+                if path is not None and len(path) <= max_depth + 1:
+                    return True
+        return False
+
     def _enrich_alert_with_topology_summary(services: Any, alert: Alert) -> Alert:
         try:
             ontology = services.ontology
@@ -990,6 +1712,7 @@ def build_api_router() -> APIRouter:
         alert: Alert,
         request: Request,
         user: CurrentUser = Depends(require_role("operator", "admin")),
+        extra_alert_fingerprints: list[str] = Query(default_factory=list),
     ) -> SREResponse[DiagnosisSession]:
         services = _services(request)
         blocked_alert_names = _blocked_alert_names_from_request(request)
@@ -998,7 +1721,11 @@ def build_api_router() -> APIRouter:
         if services.diagnosis_runner is None:
             raise HTTPException(status_code=500, detail="diagnosis runner is not configured")
         prepared_alert = _enrich_alert_with_topology_summary(services, alert)
-        session = await services.diagnosis_runner.adiagnose(prepared_alert)
+        extra_alerts = _lookup_extra_alerts(services.alert_store, extra_alert_fingerprints) if extra_alert_fingerprints else []
+        if _supports_extra_alerts(services.diagnosis_runner.adiagnose):
+            session = await services.diagnosis_runner.adiagnose(prepared_alert, extra_alerts=extra_alerts)
+        else:
+            session = await services.diagnosis_runner.adiagnose(prepared_alert)
         plan = _extract_recommended_fix(session)
         if plan is not None:
             services.remediation_engine.register_plan(session.session_id, plan)
@@ -1013,6 +1740,98 @@ def build_api_router() -> APIRouter:
                 data={"plan_id": plan.plan_id, "plan_version": plan_version},
             )
         return SREResponse(success=True, data=session, trace_id=_trace_id(request))
+
+    @router.post("/diagnose/start")
+    async def diagnose_start(
+        alert: Alert,
+        request: Request,
+        user: CurrentUser = Depends(require_role("operator", "admin")),
+        extra_alert_fingerprints: list[str] = Query(default_factory=list),
+    ) -> SREResponse[DiagnosisSession]:
+        _ = user
+        services = _services(request)
+        blocked_alert_names = _blocked_alert_names_from_request(request)
+        if is_blocked_alert(alert, blocked_names=blocked_alert_names):
+            return _blocked_alert_response(request, alert.alert_name)
+        if services.diagnosis_runner is None:
+            raise HTTPException(status_code=500, detail="diagnosis runner is not configured")
+
+        prepared_alert = _enrich_alert_with_topology_summary(services, alert)
+        extra_alerts = _lookup_extra_alerts(services.alert_store, extra_alert_fingerprints) if extra_alert_fingerprints else []
+        initial_session = DiagnosisSession.create(prepared_alert)
+        services.session_store.put(initial_session)
+
+        async def _background_run() -> None:
+            live_event_count = 0
+            live_event_types: set[str] = set()
+
+            async def _trace_callback(event: dict[str, Any]) -> None:
+                nonlocal live_event_count
+                payload = dict(event) if isinstance(event, dict) else {}
+                payload["session_id"] = initial_session.session_id
+                event_type = str(payload.get("type", "")).strip().lower()
+                try:
+                    await services.trace_publisher.publish(payload)
+                    live_event_count += 1
+                    if event_type:
+                        live_event_types.add(event_type)
+                except Exception:  # noqa: BLE001
+                    return
+
+            try:
+                completed = await _run_diagnose_with_optional_trace_callback(
+                    services,
+                    alert=prepared_alert,
+                    trace_callback=_trace_callback,
+                    extra_alerts=extra_alerts,
+                )
+                completed = completed.model_copy(update={"session_id": initial_session.session_id})
+
+                if live_event_count == 0:
+                    await _replay_trace_and_diagnosis_events(services, session=completed)
+                    if completed.diagnosis_result is not None:
+                        live_event_types.add(EventType.DIAGNOSIS_RESULT.value)
+                elif (
+                    completed.diagnosis_result is not None
+                    and EventType.DIAGNOSIS_RESULT.value not in live_event_types
+                ):
+                    await services.trace_publisher.publish(
+                        {
+                            "type": EventType.DIAGNOSIS_RESULT.value,
+                            "session_id": completed.session_id,
+                            "data": completed.diagnosis_result.model_dump(mode="json"),
+                        }
+                    )
+
+                plan = _extract_recommended_fix(completed)
+                if plan is not None:
+                    services.remediation_engine.register_plan(completed.session_id, plan)
+                    completed = completed.model_copy(update={"status": "approval_required"})
+                elif completed.status == "diagnosing":
+                    completed = completed.model_copy(update={"status": "diagnosed"})
+                services.session_store.put(completed)
+
+                if plan is not None:
+                    plan_version = services.remediation_engine.get_latest_plan_version(completed.session_id)
+                    await _publish_session_event(
+                        services,
+                        event_type=EventType.APPROVAL_REQUIRED,
+                        session_id=completed.session_id,
+                        data={"plan_id": plan.plan_id, "plan_version": plan_version},
+                    )
+            except Exception as exc:  # noqa: BLE001
+                failed_session = initial_session.model_copy(update={"status": "failed", "outcome": "failed"})
+                services.session_store.put(failed_session)
+                await _publish_session_event(
+                    services,
+                    event_type=EventType.ERROR,
+                    session_id=initial_session.session_id,
+                    data={"message": str(exc)},
+                )
+
+        task = asyncio.create_task(_background_run(), name=f"diagnose-start-{initial_session.session_id}")
+        _track_background_task(request.app, task)
+        return SREResponse(success=True, data=initial_session, trace_id=_trace_id(request))
 
     @router.post("/handle")
     async def handle_alert(
@@ -1327,7 +2146,10 @@ def build_api_router() -> APIRouter:
         )
         execution_timeout_seconds = max(1, execution_timeout_seconds)
         is_test_runtime = bool(os.getenv("PYTEST_CURRENT_TEST") or "pytest" in sys.modules)
+        if is_test_runtime:
+            observation_seconds = 0
         workflow_started_at = time.monotonic()
+        pre_check: RemediationCheckSnapshot | None = None
 
         async def _timeout_response() -> SREResponse[RemediationResult]:
             _update_session_status(services, session=session, status="timeout", outcome="timeout")
@@ -1349,6 +2171,24 @@ def build_api_router() -> APIRouter:
                 ),
                 trace_id=trace_id,
             )
+
+        plan = services.remediation_engine.get_plan(session_id)
+        pre_check = await _capture_check_snapshot(services, session=session, plan=plan)
+        pre_evidence = RemediationEvidence(pre_check=pre_check)
+        session = _update_session_evidence(services, session=session, evidence=pre_evidence)
+        await _publish_remediation_progress(
+            services,
+            session_id=session_id,
+            stage="pre_remediation_baseline_collected",
+            details={
+                "plan_version": requested_plan_version,
+                "baseline_alert": pre_check.alert.model_dump(mode="json") if pre_check.alert is not None else None,
+                "baseline_metrics": [item.model_dump(mode="json") for item in pre_check.metrics],
+                "pre_check": pre_check.model_dump(mode="json"),
+                "collected_at": pre_evidence.collected_at.isoformat(),
+                "message": "已采集修复前基线",
+            },
+        )
 
         try:
             result = await asyncio.wait_for(
@@ -1411,21 +2251,22 @@ def build_api_router() -> APIRouter:
                 )
             observed_ok = True
             observation_details: dict[str, Any] = {}
-            if not is_test_runtime:
-                remaining_timeout = execution_timeout_seconds - (time.monotonic() - workflow_started_at)
-                if remaining_timeout <= 0:
-                    return await _timeout_response()
-                try:
-                    observed_ok, observation_details = await asyncio.wait_for(
-                        _observe_post_remediation(
-                            services,
-                            session=session,
-                            observation_seconds=observation_seconds,
-                        ),
-                        timeout=remaining_timeout,
-                    )
-                except TimeoutError:
-                    return await _timeout_response()
+            remaining_timeout = execution_timeout_seconds - (time.monotonic() - workflow_started_at)
+            if remaining_timeout <= 0:
+                return await _timeout_response()
+            try:
+                observed_ok, observation_details, evidence = await asyncio.wait_for(
+                    _observe_post_remediation(
+                        services,
+                        session=session,
+                        pre_check=pre_check,
+                        observation_seconds=observation_seconds,
+                    ),
+                    timeout=remaining_timeout,
+                )
+                session = _update_session_evidence(services, session=session, evidence=evidence)
+            except TimeoutError:
+                return await _timeout_response()
             if not observed_ok:
                 print("需要工程师介入")
                 _update_session_status(services, session=session, status="escalated", outcome="escalated")
@@ -1600,12 +2441,17 @@ def build_api_router() -> APIRouter:
         services = _services(request)
         snapshot = services.alert_store.snapshot()
         blocked_alert_names = _blocked_alert_names_from_request(request)
-        filtered_alerts, filtered_clusters = _filter_alert_snapshot(
-            snapshot.get("alerts", []),
-            snapshot.get("clusters", []),
+        raw_alerts = snapshot.get("alerts", [])
+        raw_clusters = snapshot.get("clusters", [])
+        filtered_alerts, _ = _filter_alert_snapshot(
+            raw_alerts,
+            raw_clusters,
             blocked_alert_names=blocked_alert_names,
         )
-        payload = AlertSnapshotResponse(alerts=filtered_alerts, clusters=filtered_clusters)
+        # Build topology-aware clusters instead of namespace+service grouping
+        ontology = getattr(services, "ontology", None)
+        topology_clusters = _build_topology_aware_clusters(filtered_alerts, ontology) if ontology is not None else []
+        payload = AlertSnapshotResponse(alerts=filtered_alerts, clusters=topology_clusters)
         return SREResponse(success=True, data=payload, trace_id=_trace_id(request))
 
     @router.get("/ontology")
@@ -1802,13 +2648,89 @@ def build_api_router() -> APIRouter:
         user: CurrentUser = Depends(get_current_user),
     ) -> SREResponse[list[dict[str, Any]]]:
         _ = user
-        results = await _services(request).knowledge.search(query=query, category=category, top_k=top_k)
-        payload = [item.model_dump(mode="json") if hasattr(item, "model_dump") else item for item in results]
+        knowledge = _services(request).knowledge
+        if knowledge is None:
+            return SREResponse(success=True, data=[], trace_id=_trace_id(request))
+        try:
+            results = await _maybe_await(knowledge.search(query=query, category=category, top_k=top_k))
+        except Exception as exc:  # noqa: BLE001
+            return SREResponse(
+                success=False,
+                error=SREError(code=ErrorCode.VALIDATION_ERROR, message=f"knowledge search failed: {exc}"),
+                trace_id=_trace_id(request),
+            )
+        if not isinstance(results, list):
+            results = []
+        payload = [_normalize_knowledge_document(item, index=idx) for idx, item in enumerate(results)]
         return SREResponse(success=True, data=payload, trace_id=_trace_id(request))
 
-    @router.get("/knowledge/documents")
-    async def knowledge_documents(
+    @router.get("/knowledge/dataset")
+    async def knowledge_dataset(
         request: Request,
+        dataset_id: str | None = None,
+        user: CurrentUser = Depends(get_current_user),
+    ) -> SREResponse[dict[str, Any]]:
+        _ = user
+        knowledge = _services(request).knowledge
+        if knowledge is None:
+            return SREResponse(
+                success=False,
+                error=SREError(code=ErrorCode.VALIDATION_ERROR, message="knowledge store is not configured"),
+                trace_id=_trace_id(request),
+            )
+        target_dataset_id = _knowledge_resolved_dataset_id(request, knowledge=knowledge, dataset_id=dataset_id)
+        try:
+            dataset_payload: Any | None = None
+            if hasattr(knowledge, "get_dataset"):
+                try:
+                    dataset_payload = await _maybe_await(knowledge.get_dataset(target_dataset_id))
+                except TypeError:
+                    dataset_payload = await _maybe_await(knowledge.get_dataset())
+            elif hasattr(knowledge, "list_datasets"):
+                datasets = await _maybe_await(knowledge.list_datasets(keyword=None, page=1, limit=100))
+                if isinstance(datasets, list):
+                    for item in datasets:
+                        candidate = item.model_dump(mode="json") if hasattr(item, "model_dump") else item
+                        if isinstance(candidate, dict) and str(candidate.get("id", "")) == target_dataset_id:
+                            dataset_payload = candidate
+                            break
+            if dataset_payload is None and hasattr(knowledge, "list_documents"):
+                documents = await _maybe_await(knowledge.list_documents())
+                doc_count = len(documents) if isinstance(documents, list) else 0
+                dataset_payload = {
+                    "id": target_dataset_id,
+                    "name": "Knowledge Dataset",
+                    "description": "",
+                    "document_count": doc_count,
+                    "status": "ready",
+                }
+            if dataset_payload is None:
+                return SREResponse(
+                    success=False,
+                    error=SREError(
+                        code=ErrorCode.VALIDATION_ERROR,
+                        message=f"knowledge dataset not found: {target_dataset_id}",
+                    ),
+                    trace_id=_trace_id(request),
+                )
+            return SREResponse(
+                success=True,
+                data=_normalize_knowledge_dataset(dataset_payload, default_dataset_id=target_dataset_id),
+                trace_id=_trace_id(request),
+            )
+        except Exception as exc:  # noqa: BLE001
+            return SREResponse(
+                success=False,
+                error=SREError(code=ErrorCode.VALIDATION_ERROR, message=f"knowledge dataset query failed: {exc}"),
+                trace_id=_trace_id(request),
+            )
+
+    @router.get("/knowledge/datasets")
+    async def knowledge_datasets(
+        request: Request,
+        keyword: str | None = None,
+        page: int = 1,
+        limit: int = 50,
         user: CurrentUser = Depends(get_current_user),
     ) -> SREResponse[list[dict[str, Any]]]:
         _ = user
@@ -1816,15 +2738,380 @@ def build_api_router() -> APIRouter:
         if knowledge is None:
             return SREResponse(success=True, data=[], trace_id=_trace_id(request))
 
+        target_dataset_id = _knowledge_resolved_dataset_id(request, knowledge=knowledge)
+        datasets: list[Any] = []
+        try:
+            if hasattr(knowledge, "list_datasets"):
+                list_attempts = [
+                    lambda: knowledge.list_datasets(keyword=keyword, page=max(1, int(page)), limit=max(1, int(limit))),
+                    lambda: knowledge.list_datasets(page=max(1, int(page)), limit=max(1, int(limit))),
+                    lambda: knowledge.list_datasets(),
+                ]
+                for attempt in list_attempts:
+                    try:
+                        datasets = await _maybe_await(attempt())
+                        break
+                    except TypeError:
+                        continue
+            elif hasattr(knowledge, "get_dataset"):
+                get_attempts = [
+                    lambda: knowledge.get_dataset(target_dataset_id),
+                    lambda: knowledge.get_dataset(),
+                ]
+                for attempt in get_attempts:
+                    try:
+                        item = await _maybe_await(attempt())
+                        datasets = [item] if item else []
+                        break
+                    except TypeError:
+                        continue
+            if not isinstance(datasets, list):
+                datasets = []
+
+            payload = [_normalize_knowledge_dataset(item, default_dataset_id=target_dataset_id) for item in datasets]
+            if not payload:
+                payload = [
+                    _normalize_knowledge_dataset(
+                        {
+                            "id": target_dataset_id,
+                            "name": "Knowledge Dataset",
+                            "description": "",
+                            "status": "ready",
+                        },
+                        default_dataset_id=target_dataset_id,
+                    )
+                ]
+            return SREResponse(success=True, data=payload, trace_id=_trace_id(request))
+        except Exception as exc:  # noqa: BLE001
+            return SREResponse(
+                success=False,
+                error=SREError(code=ErrorCode.VALIDATION_ERROR, message=f"knowledge datasets query failed: {exc}"),
+                trace_id=_trace_id(request),
+            )
+
+    @router.get("/knowledge/bases")
+    async def knowledge_bases(
+        request: Request,
+        keyword: str | None = None,
+        page: int = 1,
+        limit: int = 50,
+        user: CurrentUser = Depends(get_current_user),
+    ) -> SREResponse[list[dict[str, Any]]]:
+        _ = user
+        datasets_response = await knowledge_datasets(
+            request=request,
+            keyword=keyword,
+            page=page,
+            limit=limit,
+            user=user,
+        )
+        if not datasets_response.success:
+            return SREResponse(
+                success=False,
+                error=datasets_response.error,
+                trace_id=_trace_id(request),
+            )
+
+        knowledge = _services(request).knowledge
+        default_dataset_id = _knowledge_default_dataset_id(request, knowledge)
+        datasets = datasets_response.data if isinstance(datasets_response.data, list) else []
+        payload = [_normalize_knowledge_base_summary(item, default_dataset_id=default_dataset_id) for item in datasets]
+        return SREResponse(success=True, data=payload, trace_id=_trace_id(request))
+
+    @router.get("/knowledge/bases/{knowledge_base_id}")
+    async def knowledge_base_detail(
+        knowledge_base_id: str,
+        request: Request,
+        user: CurrentUser = Depends(get_current_user),
+    ) -> SREResponse[dict[str, Any]]:
+        _ = user
+        target_id = str(knowledge_base_id).strip()
+        if not target_id:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="knowledge base not found")
+
+        datasets_response = await knowledge_datasets(
+            request=request,
+            keyword=None,
+            page=1,
+            limit=200,
+            user=user,
+        )
+        if not datasets_response.success:
+            return SREResponse(
+                success=False,
+                error=datasets_response.error,
+                trace_id=_trace_id(request),
+            )
+
+        datasets = datasets_response.data if isinstance(datasets_response.data, list) else []
+        selected_dataset = next(
+            (
+                item
+                for item in datasets
+                if str(_as_payload_dict(item).get("id", "")).strip() == target_id
+            ),
+            None,
+        )
+        if selected_dataset is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"knowledge base not found: {target_id}")
+
+        documents_response = await knowledge_documents(
+            request=request,
+            keyword=None,
+            dataset_id=target_id,
+            page=1,
+            limit=200,
+            user=user,
+        )
+        if not documents_response.success:
+            return SREResponse(
+                success=False,
+                error=documents_response.error,
+                trace_id=_trace_id(request),
+            )
+
+        documents = documents_response.data if isinstance(documents_response.data, list) else []
+        payload = _normalize_knowledge_base_detail(selected_dataset, documents, default_dataset_id=target_id)
+        return SREResponse(success=True, data=payload, trace_id=_trace_id(request))
+
+    @router.get("/knowledge/documents")
+    async def knowledge_documents(
+        request: Request,
+        keyword: str | None = None,
+        dataset_id: str | None = None,
+        page: int = 1,
+        limit: int = 50,
+        user: CurrentUser = Depends(get_current_user),
+    ) -> SREResponse[list[dict[str, Any]]]:
+        _ = user
+        knowledge = _services(request).knowledge
+        if knowledge is None:
+            return SREResponse(success=True, data=[], trace_id=_trace_id(request))
+
+        target_dataset_id = _knowledge_resolved_dataset_id(request, knowledge=knowledge, dataset_id=dataset_id)
         documents: list[Any] = []
-        if hasattr(knowledge, "list_documents"):
-            documents = await _maybe_await(knowledge.list_documents())
-        elif hasattr(knowledge, "search"):
-            documents = await _maybe_await(knowledge.search(query="", top_k=50))
+        try:
+            if hasattr(knowledge, "list_documents"):
+                list_attempts = [
+                    lambda: knowledge.list_documents(
+                        target_dataset_id,
+                        page=max(1, int(page)),
+                        limit=max(1, int(limit)),
+                        keyword=keyword,
+                    ),
+                    lambda: knowledge.list_documents(page=max(1, int(page)), limit=max(1, int(limit)), keyword=keyword),
+                    lambda: knowledge.list_documents(target_dataset_id),
+                    lambda: knowledge.list_documents(),
+                ]
+                for attempt in list_attempts:
+                    try:
+                        documents = await _maybe_await(attempt())
+                        break
+                    except TypeError:
+                        continue
+            elif hasattr(knowledge, "list_files") and target_dataset_id:
+                documents = await _maybe_await(
+                    knowledge.list_files(
+                        target_dataset_id,
+                        page=max(1, int(page)),
+                        limit=max(1, int(limit)),
+                        keyword=keyword,
+                    )
+                )
+            elif hasattr(knowledge, "search"):
+                documents = await _maybe_await(knowledge.search(query=keyword or "", top_k=max(1, int(limit))))
+        except Exception as exc:  # noqa: BLE001
+            return SREResponse(
+                success=False,
+                error=SREError(code=ErrorCode.VALIDATION_ERROR, message=f"knowledge documents query failed: {exc}"),
+                trace_id=_trace_id(request),
+            )
 
         if not isinstance(documents, list):
             documents = []
         payload = [_normalize_knowledge_document(item, index=idx) for idx, item in enumerate(documents)]
+        return SREResponse(success=True, data=payload, trace_id=_trace_id(request))
+
+    @router.get("/knowledge/documents/{document_id}")
+    async def knowledge_document_detail(
+        document_id: str,
+        request: Request,
+        dataset_id: str | None = None,
+        user: CurrentUser = Depends(get_current_user),
+    ) -> SREResponse[dict[str, Any]]:
+        _ = user
+        knowledge = _services(request).knowledge
+        if knowledge is None:
+            return SREResponse(
+                success=False,
+                error=SREError(code=ErrorCode.VALIDATION_ERROR, message="knowledge store is not configured"),
+                trace_id=_trace_id(request),
+            )
+        target_dataset_id = _knowledge_resolved_dataset_id(request, knowledge=knowledge, dataset_id=dataset_id)
+        method = getattr(knowledge, "get_document", None)
+        if method is None:
+            method = getattr(knowledge, "get_file", None)
+        if not callable(method):
+            return SREResponse(
+                success=False,
+                error=SREError(code=ErrorCode.VALIDATION_ERROR, message="knowledge provider does not support document detail"),
+                trace_id=_trace_id(request),
+            )
+        try:
+            try:
+                detail = await _maybe_await(method(target_dataset_id, document_id))
+            except TypeError:
+                detail = await _maybe_await(method(document_id))
+        except Exception as exc:  # noqa: BLE001
+            return SREResponse(
+                success=False,
+                error=SREError(code=ErrorCode.VALIDATION_ERROR, message=f"knowledge document query failed: {exc}"),
+                trace_id=_trace_id(request),
+            )
+        payload = _normalize_knowledge_document(detail, index=0)
+        payload["id"] = document_id
+        return SREResponse(success=True, data=payload, trace_id=_trace_id(request))
+
+    @router.get("/knowledge/documents/{document_id}/segments")
+    async def knowledge_document_segments(
+        document_id: str,
+        request: Request,
+        keyword: str | None = None,
+        status: str | None = None,
+        dataset_id: str | None = None,
+        page: int = 1,
+        limit: int = 50,
+        user: CurrentUser = Depends(get_current_user),
+    ) -> SREResponse[list[dict[str, Any]]]:
+        _ = user
+        knowledge = _services(request).knowledge
+        if knowledge is None:
+            return SREResponse(success=True, data=[], trace_id=_trace_id(request))
+        target_dataset_id = _knowledge_resolved_dataset_id(request, knowledge=knowledge, dataset_id=dataset_id)
+
+        method = getattr(knowledge, "list_document_segments", None)
+        if method is None:
+            method = getattr(knowledge, "retrieve_chunks", None)
+        if not callable(method):
+            return SREResponse(
+                success=False,
+                error=SREError(code=ErrorCode.VALIDATION_ERROR, message="knowledge provider does not support document segments"),
+                trace_id=_trace_id(request),
+            )
+        try:
+            try:
+                segments = await _maybe_await(
+                    method(
+                        target_dataset_id,
+                        document_id,
+                        page=max(1, int(page)),
+                        limit=max(1, int(limit)),
+                        keyword=keyword,
+                        status=status,
+                    )
+                )
+            except TypeError:
+                try:
+                    segments = await _maybe_await(
+                        method(
+                            target_dataset_id,
+                            document_id,
+                            page=max(1, int(page)),
+                            limit=max(1, int(limit)),
+                            keyword=keyword,
+                        )
+                    )
+                except TypeError:
+                    try:
+                        segments = await _maybe_await(
+                            method(document_id, page=max(1, int(page)), limit=max(1, int(limit)), keyword=keyword, status=status)
+                        )
+                    except TypeError:
+                        segments = await _maybe_await(
+                            method(document_id, page=max(1, int(page)), limit=max(1, int(limit)), keyword=keyword)
+                        )
+        except Exception as exc:  # noqa: BLE001
+            return SREResponse(
+                success=False,
+                error=SREError(code=ErrorCode.VALIDATION_ERROR, message=f"knowledge segments query failed: {exc}"),
+                trace_id=_trace_id(request),
+            )
+        if not isinstance(segments, list):
+            segments = []
+
+        payload = [_normalize_knowledge_segment(item, index=idx, document_id=document_id) for idx, item in enumerate(segments)]
+        if status:
+            normalized_status = status.strip().lower()
+            payload = [item for item in payload if str(item.get("status", "")).strip().lower() == normalized_status]
+        return SREResponse(success=True, data=payload, trace_id=_trace_id(request))
+
+    @router.get("/knowledge/segments/search")
+    async def knowledge_segments_search(
+        query: str,
+        request: Request,
+        dataset_id: str | None = None,
+        top_k: int = 5,
+        user: CurrentUser = Depends(get_current_user),
+    ) -> SREResponse[list[dict[str, Any]]]:
+        _ = user
+        knowledge = _services(request).knowledge
+        if knowledge is None:
+            return SREResponse(success=True, data=[], trace_id=_trace_id(request))
+        if not hasattr(knowledge, "search"):
+            return SREResponse(
+                success=False,
+                error=SREError(code=ErrorCode.VALIDATION_ERROR, message="knowledge provider does not support search"),
+                trace_id=_trace_id(request),
+            )
+        target_dataset_id = _knowledge_resolved_dataset_id(request, knowledge=knowledge, dataset_id=dataset_id)
+        records: list[Any] = []
+        try:
+            search_resolved = False
+            retrieve_method = getattr(knowledge, "_retrieve", None)
+            map_method = getattr(knowledge, "_to_result_item", None)
+            if dataset_id and callable(retrieve_method) and callable(map_method):
+                raw_records = await _maybe_await(
+                    retrieve_method(dataset_id=target_dataset_id, query=query, top_k=max(1, int(top_k)))
+                )
+                if isinstance(raw_records, list):
+                    records = [
+                        map_method(item, dataset_id=target_dataset_id, dataset_name=None)
+                        if isinstance(item, dict)
+                        else item
+                        for item in raw_records
+                    ]
+                else:
+                    records = []
+                search_resolved = True
+            if not search_resolved:
+                search_attempts: list[Any]
+                if dataset_id:
+                    search_attempts = [
+                        lambda: knowledge.search(query=query, top_k=max(1, int(top_k)), dataset_id=target_dataset_id),
+                        lambda: knowledge.search(query=query, category=target_dataset_id, top_k=max(1, int(top_k))),
+                        lambda: knowledge.search(query=query, top_k=max(1, int(top_k))),
+                    ]
+                else:
+                    search_attempts = [lambda: knowledge.search(query=query, top_k=max(1, int(top_k)))]
+                for attempt in search_attempts:
+                    try:
+                        candidate = await _maybe_await(attempt())
+                        records = candidate if isinstance(candidate, list) else []
+                        search_resolved = True
+                        break
+                    except TypeError:
+                        continue
+                if not search_resolved:
+                    records = []
+        except Exception as exc:  # noqa: BLE001
+            return SREResponse(
+                success=False,
+                error=SREError(code=ErrorCode.VALIDATION_ERROR, message=f"knowledge segment search failed: {exc}"),
+                trace_id=_trace_id(request),
+            )
+        if not isinstance(records, list):
+            records = []
+        payload = [_normalize_knowledge_segment(item, index=idx) for idx, item in enumerate(records)]
         return SREResponse(success=True, data=payload, trace_id=_trace_id(request))
 
     @router.get("/skills")

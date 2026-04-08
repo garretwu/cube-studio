@@ -1,4 +1,4 @@
-﻿import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 
@@ -100,6 +100,10 @@ describe("App shell", () => {
     expect(appRoutes.some((route) => route.key === "chat")).toBe(false);
   });
 
+  it("does not expose the legacy alerts route in navigation", () => {
+    expect(appRoutes.some((route) => route.key === "alerts")).toBe(false);
+  });
+
   it("marks history as the active route when a historical session is opened", async () => {
     const { container } = render(
       <MemoryRouter initialEntries={["/history/sess-latency-001"]}>
@@ -130,6 +134,25 @@ describe("App shell", () => {
     expect(container.querySelectorAll(".nav-item__status--completed")).toHaveLength(completedCount);
   });
 
+  it("renders history alert names and severities in separate slots", async () => {
+    const { container } = render(
+      <MemoryRouter initialEntries={["/topology"]}>
+        <App />
+      </MemoryRouter>,
+    );
+
+    await waitFor(() => {
+      expect(container.querySelectorAll(".nav-item--history").length).toBeGreaterThan(0);
+    });
+
+    const firstHistoryItem = container.querySelector(".nav-item--history");
+    expect(firstHistoryItem?.querySelector(".nav-item__label")?.textContent).toBe(diagnosisHistorySessions[0]?.alert_name);
+    expect(firstHistoryItem?.querySelector(".nav-item__meta")?.textContent).toBe(
+      diagnosisHistorySessions[0]?.severity.toUpperCase(),
+    );
+  });
+
+
   it("exposes the modified alerts route as its own navigation entry", async () => {
     const modifiedAlertsLabel = appRoutes.find((route) => route.key === "alertsModified")?.label;
 
@@ -144,5 +167,18 @@ describe("App shell", () => {
     const modifiedAlertsButton = await screen.findByRole("button", { name: modifiedAlertsLabel! });
     expect(modifiedAlertsButton.className).toContain("nav-item--active");
   });
-});
 
+  it("redirects /alerts to /alerts-modified and keeps alerts navigation active", async () => {
+    const modifiedAlertsLabel = appRoutes.find((route) => route.key === "alertsModified")?.label;
+    expect(modifiedAlertsLabel).toBeTruthy();
+
+    render(
+      <MemoryRouter initialEntries={["/alerts"]}>
+        <App />
+      </MemoryRouter>,
+    );
+
+    const modifiedAlertsButton = await screen.findByRole("button", { name: modifiedAlertsLabel! });
+    expect(modifiedAlertsButton.className).toContain("nav-item--active");
+  });
+});

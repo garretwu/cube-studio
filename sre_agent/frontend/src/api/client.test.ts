@@ -46,6 +46,63 @@ describe("apiClient.getTopology", () => {
     expect(response.active_alerts).toBe(0);
   });
 
+  it("maps pod and service entities separately when falling back from /api/topology-explorer", async () => {
+    server.use(
+      http.get("/api/topology-explorer", async () => HttpResponse.json({ message: "not found" }, { status: 404 })),
+      http.get("/api/topology", async () =>
+        HttpResponse.json({
+          success: true,
+          data: {
+            nodes: [
+              {
+                id: "pod:default:demo",
+                entity_type: "k8s_pod",
+                name: "demo",
+                properties: { namespace: "default", cluster_id: "k8s:lab-cluster" },
+                status: "Running",
+                updated_at: "2026-03-25T00:00:00Z",
+              },
+              {
+                id: "svc:default:demo",
+                entity_type: "inference_service",
+                name: "demo",
+                properties: { namespace: "default", cluster_id: "k8s:lab-cluster" },
+                status: "online",
+                updated_at: "2026-03-25T00:00:00Z",
+              },
+            ],
+            edges: [
+              {
+                source_id: "pod:default:demo",
+                target_id: "node-a",
+                relation: "hosted_on",
+                properties: {},
+              },
+              {
+                source_id: "svc:default:demo",
+                target_id: "pod:default:demo",
+                relation: "serves",
+                properties: {},
+              },
+            ],
+            active_alerts: 0,
+            recent_events: [],
+            snapshot_id: "snapshot-1",
+            last_synced_at: "2026-03-25T00:00:00Z",
+            sync_state: "ready",
+          },
+          error: null,
+          trace_id: "trace-topology-explorer-fallback",
+          timestamp: "2026-03-25T00:00:00Z",
+        }),
+      ),
+    );
+
+    const response = await apiClient.getTopologyExplorer();
+    expect(response.nodes.find((node) => node.id === "pod:default:demo")?.type).toBe("pod");
+    expect(response.nodes.find((node) => node.id === "svc:default:demo")?.type).toBe("service");
+  });
+
   it("uses backend session contract and unwraps envelope", async () => {
     server.use(
       http.get("/api/sessions/sess-1", async () =>
@@ -173,6 +230,37 @@ describe("apiClient.getTopology", () => {
     expect(sessions[0]?.session_id).toBe("sess-2");
   });
 
+  it("normalizes nested session collections from /api/sessions", async () => {
+    server.use(
+      http.get("/api/sessions", async () =>
+        HttpResponse.json({
+          success: true,
+          data: {
+            sessions: [
+              {
+                session_id: "sess-nested",
+                status: "diagnosed",
+                alert_name: "VLLMInterTokenLatencyP95High",
+                severity: "warning",
+                fingerprint: "fp-nested",
+                outcome: null,
+                duration_seconds: 14,
+                updated_at: "2026-03-26T00:00:00Z",
+              },
+            ],
+          },
+          error: null,
+          trace_id: "trace-sessions-nested",
+          timestamp: "2026-03-26T00:00:00Z",
+        }),
+      ),
+    );
+
+    const sessions = await apiClient.getSessions();
+    expect(sessions).toHaveLength(1);
+    expect(sessions[0]?.session_id).toBe("sess-nested");
+  });
+
   it("filters blocked alerts from /api/alerts response", async () => {
     server.use(
       http.get("/api/alerts", async () =>
@@ -211,20 +299,35 @@ describe("apiClient.getTopology", () => {
     );
 
     const payload = await apiClient.getAlerts();
-    expect(payload.alerts).toHaveLength(1);
-    expect(payload.alerts[0]?.fingerprint).toBe("fp-allowed");
+    expect(payload.alerts).toHaveLength(2);
+    expect(payload.alerts.map((a) => a.fingerprint)).toEqual(
+      expect.arrayContaining(["fp-blocked", "fp-allowed"]),
+    );
     expect(payload.clusters).toHaveLength(1);
-    expect(payload.clusters[0]?.alerts).toEqual(["fp-allowed"]);
   });
 
-  it("blocks diagnose request when alert is filtered locally", async () => {
+  it("allows diagnose request for previously-filtered GPU alert", async () => {
     let called = false;
     server.use(
       http.post("/api/diagnose", async () => {
         called = true;
         return HttpResponse.json({
           success: true,
-          data: null,
+          data: {
+            session_id: "sess-gpu-diagnose",
+            alert: {
+              alert_name: "GPUUtilizationHigh",
+              severity: "warning",
+              labels: { alertname: "GPUUtilizationHigh" },
+              annotations: {},
+              starts_at: "2026-03-26T00:00:00Z",
+              fingerprint: "fp-blocked-2",
+              status: "firing",
+              source: "alertmanager",
+            },
+            status: "diagnosing",
+            duration_seconds: 0,
+          },
           error: null,
           trace_id: "trace-diagnose",
           timestamp: "2026-03-26T00:00:00Z",
@@ -232,22 +335,70 @@ describe("apiClient.getTopology", () => {
       }),
     );
 
-    await expect(
-      apiClient.diagnoseAlert({
-        alert_name: "GPUUtilizationHigh",
-        severity: "warning",
-        labels: { alertname: "GPUUtilizationHigh" },
-        annotations: {},
-        starts_at: "2026-03-26T00:00:00Z",
-        fingerprint: "fp-blocked-2",
-        status: "firing",
-      }),
-    ).rejects.toThrow("temporarily filtered");
-
-    expect(called).toBe(false);
+    const session = await apiClient.diagnoseAlert({
+      alert_name: "GPUUtilizationHigh",
+      severity: "warning",
+      labels: { alertname: "GPUUtilizationHigh" },
+      annotations: {},
+      starts_at: "2026-03-26T00:00:00Z",
+      fingerprint: "fp-blocked-2",
+      status: "firing",
+    });
+    expect(called).toBe(true);
+    expect(session.session_id).toBe("sess-gpu-diagnose");
   });
 
-  it("blocks handle request when alert is filtered locally", async () => {
+  it("falls back to /api/diagnose when /api/diagnose/start is unavailable", async () => {
+    let startCalled = false;
+    let diagnoseCalled = false;
+    server.use(
+      http.post("/api/diagnose/start", async () => {
+        startCalled = true;
+        return HttpResponse.json({ message: "not found" }, { status: 404 });
+      }),
+      http.post("/api/diagnose", async () => {
+        diagnoseCalled = true;
+        return HttpResponse.json({
+          success: true,
+          data: {
+            session_id: "sess-start-fallback",
+            alert: {
+              alert_name: "VLLMInterTokenLatencyP95High",
+              severity: "warning",
+              labels: {},
+              annotations: {},
+              starts_at: "2026-03-26T00:00:00Z",
+              fingerprint: "fp-fallback",
+              status: "firing",
+              source: "alertmanager",
+            },
+            status: "diagnosing",
+            duration_seconds: 0,
+          },
+          error: null,
+          trace_id: "trace-diagnose-fallback",
+          timestamp: "2026-03-26T00:00:00Z",
+        });
+      }),
+    );
+
+    const session = await apiClient.startDiagnoseAlert({
+      alert_name: "VLLMInterTokenLatencyP95High",
+      severity: "warning",
+      labels: {},
+      annotations: {},
+      starts_at: "2026-03-26T00:00:00Z",
+      fingerprint: "fp-fallback",
+      status: "firing",
+      source: "alertmanager",
+    });
+
+    expect(startCalled).toBe(true);
+    expect(diagnoseCalled).toBe(true);
+    expect(session.session_id).toBe("sess-start-fallback");
+  });
+
+  it("allows handle request for previously-filtered GPU alert", async () => {
     let called = false;
     server.use(
       http.post("/api/handle", async () => {
@@ -262,21 +413,43 @@ describe("apiClient.getTopology", () => {
       }),
     );
 
-    await expect(
-      apiClient.handleAlert({
-        alert_name: "GPU utilization is high",
-        severity: "warning",
-        labels: { alertname: "GPU utilization is high" },
-        annotations: {},
-        starts_at: "2026-03-26T00:00:00Z",
-        fingerprint: "fp-blocked-3",
-        status: "firing",
-      }),
-    ).rejects.toThrow("temporarily filtered");
+    const sessionId = await apiClient.handleAlert({
+      alert_name: "GPU utilization is high",
+      severity: "warning",
+      labels: { alertname: "GPU utilization is high" },
+      annotations: {},
+      starts_at: "2026-03-26T00:00:00Z",
+      fingerprint: "fp-blocked-3",
+      status: "firing",
+    });
 
-    expect(called).toBe(false);
+    expect(called).toBe(true);
+    expect(sessionId).toBe("sess-3");
   });
 
+  it("falls back to /api/diagnosis/sessions when /api/sessions fails", async () => {
+    server.use(
+      http.get("/api/sessions", async () => HttpResponse.json({ message: "boom" }, { status: 500 })),
+      http.get("/api/diagnosis/sessions", async () =>
+        HttpResponse.json([
+          {
+            session_id: "sess-fallback",
+            status: "diagnosed",
+            alert_name: "VLLMInterTokenLatencyP95High",
+            severity: "warning",
+            fingerprint: "fp-fallback",
+            outcome: null,
+            duration_seconds: 10,
+            updated_at: "2026-03-26T00:00:00Z",
+          },
+        ]),
+      ),
+    );
+
+    const sessions = await apiClient.getDiagnosisHistorySessions();
+    expect(sessions).toHaveLength(1);
+    expect(sessions[0]?.session_id).toBe("sess-fallback");
+  });
   it("loads chat history from /api/chat/history", async () => {
     server.use(
       http.get("/api/chat/history", async () =>
@@ -300,5 +473,71 @@ describe("apiClient.getTopology", () => {
     const history = await apiClient.getChatHistory();
     expect(history).toHaveLength(1);
     expect(history[0]?.id).toBe("chat-1");
+  });
+
+  it("loads knowledge datasets from /api/knowledge/datasets", async () => {
+    server.use(
+      http.get("/api/knowledge/datasets", async () =>
+        HttpResponse.json({
+          success: true,
+          data: [
+            { id: "dataset-default", name: "SRE Dataset", document_count: 3, status: "ready" },
+            { id: "dataset-network", name: "Network Dataset", document_count: 2, status: "ready" },
+          ],
+          error: null,
+          trace_id: "trace-knowledge-datasets",
+          timestamp: "2026-04-03T00:00:00Z",
+        }),
+      ),
+    );
+
+    const datasets = await apiClient.getKnowledgeDatasets();
+    expect(datasets).toHaveLength(2);
+    expect(datasets[0]?.id).toBe("dataset-default");
+  });
+
+  it("accepts raw array payload from /api/knowledge/documents", async () => {
+    server.use(
+      http.get("/api/knowledge/documents", async () =>
+        HttpResponse.json([
+          {
+            id: "kb-raw-1",
+            title: "Raw payload doc",
+            source: "docs/raw.md",
+            category: "runbook",
+            excerpt: "raw payload",
+            tags: [],
+            score: 0.8,
+          },
+        ]),
+      ),
+    );
+
+    const docs = await apiClient.getKnowledgeSources(undefined, 1, 20, "dataset-runbook");
+    expect(docs).toHaveLength(1);
+    expect(docs[0]?.id).toBe("kb-raw-1");
+  });
+
+  it("passes dataset_id when querying knowledge documents and segments", async () => {
+    let docsDatasetId = "";
+    let segmentsDatasetId = "";
+    server.use(
+      http.get("/api/knowledge/documents", async ({ request }) => {
+        const url = new URL(request.url);
+        docsDatasetId = url.searchParams.get("dataset_id") ?? "";
+        return HttpResponse.json([]);
+      }),
+      http.get("/api/knowledge/segments/search", async ({ request }) => {
+        const url = new URL(request.url);
+        segmentsDatasetId = url.searchParams.get("dataset_id") ?? "";
+        return HttpResponse.json([]);
+      }),
+    );
+
+    await apiClient.getKnowledgeSources(undefined, 1, 20, "dataset-network");
+    await apiClient.searchKnowledgeSegments("roce", 5, "dataset-network");
+
+    expect(docsDatasetId).toBe("dataset-network");
+    expect(segmentsDatasetId).toBe("dataset-network");
   });
 });

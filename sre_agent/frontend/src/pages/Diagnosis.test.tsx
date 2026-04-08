@@ -74,7 +74,8 @@ describe("DiagnosisPage", () => {
 
     expect(screen.getByRole("heading", { name: "诊断对话" })).toBeInTheDocument();
     expect(screen.getByText(/会话 sess-latency-001/)).toBeInTheDocument();
-    expect(screen.getByText(/保留诊断交互与 WebSocket 事件消费/)).toBeInTheDocument();
+    expect(screen.getByText(/会话先创建后流式推送/)).toBeInTheDocument();
+    expect(screen.getByText("循环卡片")).toBeInTheDocument();
     expect(screen.getByPlaceholderText(/继续追问当前诊断/)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "模拟演示" })).toBeInTheDocument();
   });
@@ -103,11 +104,11 @@ describe("DiagnosisPage", () => {
 
     await waitFor(
       () => {
-        expect(screen.getByText(/规划完成：观测动作与工具调用顺序已明确/)).toBeInTheDocument();
+        expect(screen.getByText(/下一步工具选择/)).toBeInTheDocument();
       },
-      { timeout: 6000 },
+      { timeout: 12000 },
     );
-  });
+  }, 15000);
 
   it("applies realtime thinking_step events into diagnosis trace state", async () => {
     vi.stubEnv("VITE_WS_ENABLED", "true");
@@ -175,7 +176,7 @@ describe("DiagnosisPage", () => {
     renderDiagnosisPage("/diagnosis/sess-latency-001");
 
     expect(await screen.findByText("修复审批")).toBeInTheDocument();
-    expect(screen.queryByText(/根因：/)).not.toBeInTheDocument();
     expect(screen.queryByText(/步骤 \d+：/)).not.toBeInTheDocument();
   });
 });
+

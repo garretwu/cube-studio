@@ -30,7 +30,7 @@ class GlobalConfig(BaseModel):
     cors_allow_headers: list[str] = Field(default_factory=lambda: ["Authorization", "Content-Type", "x-trace-id"])
     cors_expose_headers: list[str] = Field(default_factory=lambda: ["x-trace-id"])
     blocked_alert_names: list[str] = Field(
-        default_factory=lambda: ["GPU utilization is high", "GPUUtilizationHigh"]
+        default_factory=lambda: []
     )
 
 
@@ -87,7 +87,7 @@ class OntologyDiscoveryConfig(BaseModel):
     live_inventory_path: str = "fault_injector/fault-injector-test.yaml"
     live_fallback_to_static: bool = True
     k8s_cluster_name: str = "lab-cluster"
-    k8s_namespaces: list[str] = Field(default_factory=lambda: ["default"])
+    k8s_namespaces: list[str] = Field(default_factory=list)
     prometheus_targets: dict[str, str] = Field(default_factory=dict)
     switches: list[SwitchDiscoveryConfig] = Field(default_factory=list)
 
@@ -118,8 +118,16 @@ class KnowledgeSourceConfig(BaseModel):
 class KnowledgeConfig(BaseModel):
     model_config = ConfigDict(extra="allow")
 
+    provider: str = "local"
     persist_dir: str = "./data/knowledge_db"
     embedding_model: str = "text-embedding-3-small"
+    base_url: str | None = None
+    api_key: str | None = None
+    dataset_id: str | None = None
+    runbook_dataset_id: str | None = None
+    timeout: float = 15.0
+    retries: int = 2
+    api_prefix: str = "/v1"
     sources: list[KnowledgeSourceConfig] = Field(default_factory=list)
 
 

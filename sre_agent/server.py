@@ -18,6 +18,7 @@ import yaml
 from fastapi import FastAPI
 
 from lib.channels.alert import AlertChannel
+from lib.channels.knowledge import DifyKnowledgeStoreAdapter
 from sre_agent.agent import ConversationalAgent, run_diagnosis
 from sre_agent.alerts_filter import build_blocked_alert_name_set, filter_blocked_alerts
 from sre_agent.api import build_api_router, build_websocket_router, install_middlewares
@@ -33,7 +34,7 @@ from sre_agent.models.events import EventType, WSEvent
 from sre_agent.ontology.graph import OntologyGraph
 from sre_agent.remediation import ApprovalGate, IncidentHandler, LoopConfig, LoopOrchestrator, PlanValidator, RemediationEngine, RollbackJournal
 from sre_agent.runtime import bootstrap_tool_channels, register_remediation_channel
-from sre_agent.topology.discovery import discover_live_snapshot, discover_static_snapshot
+from sre_agent.topology.discovery import discover_hybrid_snapshot, discover_live_snapshot, discover_static_snapshot
 from sre_agent.tools import ToolExecutionContext, build_default_registry
 
 LOGGER = logging.getLogger(__name__)
@@ -212,36 +213,8 @@ class InMemoryAlertStore:
         self._alerts = ordered
 
     def snapshot(self) -> dict[str, Any]:
-        severity_rank = {
-            AlertSeverity.CRITICAL.value: 3,
-            AlertSeverity.WARNING.value: 2,
-            AlertSeverity.INFO.value: 1,
-        }
         alerts_payload = [alert.model_dump(mode="json") for alert in self._alerts]
-        clusters: list[dict[str, Any]] = []
-        buckets: dict[tuple[str, str], list[Alert]] = {}
-        for alert in self._alerts:
-            namespace = alert.labels.get("exported_namespace") or alert.labels.get("namespace") or ""
-            service = (
-                alert.labels.get("exported_container")
-                or alert.labels.get("service")
-                or alert.labels.get("job")
-                or alert.alert_name
-            )
-            key = (namespace, service)
-            buckets.setdefault(key, []).append(alert)
-        for idx, grouped in enumerate(buckets.values(), start=1):
-            summary = grouped[0].summary or grouped[0].alert_name
-            top = max(grouped, key=lambda item: severity_rank.get(item.severity.value, 0))
-            clusters.append(
-                {
-                    "cluster_id": f"cluster-{idx}",
-                    "summary": summary,
-                    "severity": top.severity.value,
-                    "alerts": [item.fingerprint for item in grouped],
-                }
-            )
-        return {"alerts": alerts_payload, "clusters": clusters}
+        return {"alerts": alerts_payload, "clusters": []}
 
 
 class AlertChannelProtocol(Protocol):
@@ -396,8 +369,13 @@ class TopologyDiscoveryService:
         self._last_error: str | None = None
         self._scanner_counts: dict[str, dict[str, int]] = {}
         self._sync_state: Literal["idle", "syncing", "ready", "degraded", "error"] = "idle"
-        mode = str(self._config.ontology.discovery.mode or "static").strip().lower()
-        self._mode = mode if mode in {"static", "live"} else "static"
+        configured_mode = str(self._config.ontology.discovery.mode or "static").strip().lower()
+        if configured_mode in {"hybrid", "mixed"}:
+            self._mode = "hybrid"
+        elif configured_mode in {"static", "live"}:
+            self._mode = configured_mode
+        else:
+            self._mode = "static"
 
     async def start(self) -> None:
         if not bool(self._config.ontology.discovery.auto_discovery):
@@ -531,6 +509,9 @@ class TopologyDiscoveryService:
         self,
     ) -> tuple[list[Any], list[Any], dict[str, dict[str, int]], str, str | None]:
         fallback_reason: str | None = None
+        if self._mode == "hybrid":
+            nodes, edges, scanner_counts, fallback_reason = await discover_hybrid_snapshot(self._config)
+            return nodes, edges, scanner_counts, "hybrid", fallback_reason
         if self._mode == "live":
             try:
                 nodes, edges, scanner_counts = await discover_live_snapshot(
@@ -716,12 +697,23 @@ class DefaultDiagnosisRunner:
         self,
         alert: Alert,
         trace_callback: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
+        extra_alerts: list[Alert] | None = None,
     ) -> DiagnosisSession:
         topology_context = _build_alert_blast_radius_context(self._ontology, alert)
         annotations = dict(alert.annotations)
         annotations["topology_blast_radius_summary"] = str(topology_context["summary"])
         enriched_alert = alert.model_copy(update={"annotations": annotations})
         query = f"{_build_default_query(enriched_alert)}\n{topology_context['summary']}"
+        if extra_alerts:
+            query += "\n\nAdditional correlated alerts from the same convergence group:"
+            for idx, extra in enumerate(extra_alerts, start=1):
+                query += (
+                    f"\n- Alert {idx + 1}: '{extra.alert_name}' severity={extra.severity.value}"
+                    f" entity={extra.labels.get('instance', extra.labels.get('node', 'unknown'))}"
+                    f" summary={extra.summary or 'n/a'}"
+                )
+            query += "\nConsider all above alerts as context when forming diagnosis hypotheses."
+        extra_alerts_payload = [a.model_dump(mode="json") for a in (extra_alerts or [])]
         result = await run_diagnosis(
             query=query,
             context=self._execution_context,
@@ -732,10 +724,14 @@ class DefaultDiagnosisRunner:
                 "annotations": enriched_alert.annotations,
                 "aidc_id": self._config.global_.aidc_id,
                 "topology_blast_radius": topology_context,
+                "extra_alerts": extra_alerts_payload,
             },
             tool_registry=self._tool_registry,
             checkpoint_dir=None,
             trace_callback=trace_callback,
+            alert_snapshot=enriched_alert.model_dump(mode="json"),
+            topology_context=topology_context,
+            extra_alerts=extra_alerts_payload,
         )
         return _diagnosis_session_from_state(alert=enriched_alert, state=result)
 
@@ -785,6 +781,8 @@ class DefaultReDiagnoseRunner:
             session_id=session.session_id,
             checkpoint_dir=None,
             trace_callback=trace_callback,
+            alert_snapshot=alert.model_dump(mode="json"),
+            topology_context=topology_context,
         )
         updated = _diagnosis_session_from_state(alert=alert, state=result)
         return updated.model_copy(update={"re_diagnosis_round": session.re_diagnosis_round + 1})
@@ -980,6 +978,36 @@ def _collect_llm_runtime_status() -> dict[str, Any]:
         "reason": None if api_key else "SRE_OPENAI_API_KEY or OPENAI_API_KEY is required",
     }
     return status
+
+
+def _build_knowledge_store(cfg: SREAgentConfig, explicit_knowledge: Any | None) -> tuple[Any, bool]:
+    if explicit_knowledge is not None:
+        return explicit_knowledge, False
+
+    provider = str(getattr(cfg.knowledge_base, "provider", "local") or "local").strip().lower()
+    if provider == "dify":
+        try:
+            base_url = str(getattr(cfg.knowledge_base, "base_url", "") or "").strip()
+            api_key = str(getattr(cfg.knowledge_base, "api_key", "") or "").strip()
+            dataset_id = str(getattr(cfg.knowledge_base, "dataset_id", "") or "").strip()
+            runbook_dataset_id = str(getattr(cfg.knowledge_base, "runbook_dataset_id", "") or "").strip() or dataset_id
+            timeout = float(getattr(cfg.knowledge_base, "timeout", 15.0) or 15.0)
+            retries = int(getattr(cfg.knowledge_base, "retries", 2) or 2)
+            api_prefix = str(getattr(cfg.knowledge_base, "api_prefix", "/v1") or "/v1")
+            store = DifyKnowledgeStoreAdapter(
+                base_url=base_url,
+                api_key=api_key,
+                default_dataset_id=dataset_id,
+                runbook_dataset_id=runbook_dataset_id,
+                timeout=timeout,
+                retries=retries,
+                api_prefix=api_prefix,
+            )
+            return store, True
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.warning("failed to initialize dify knowledge adapter, fallback to local store: %s", exc)
+
+    return KnowledgeStore(persist_dir=cfg.knowledge_base.persist_dir), True
 
 
 def _should_require_llm_runtime(
@@ -1234,7 +1262,7 @@ def create_app(
     created_ontology = ontology is None
     memory_store = memory or create_memory_store(aidc_id=cfg.global_.aidc_id, db_dir=cfg.memory.db_dir)
     created_memory = memory is None
-    knowledge_store = knowledge or KnowledgeStore(persist_dir=cfg.knowledge_base.persist_dir)
+    knowledge_store, created_knowledge = _build_knowledge_store(cfg, knowledge)
     registry = tool_registry or build_default_registry()
     context = execution_context or ToolExecutionContext()
     if "alert" not in context.channels:
@@ -1404,6 +1432,14 @@ def create_app(
                 await topology_discovery_service.stop()
             if alert_polling_service is not None:
                 await alert_polling_service.stop()
+            if created_knowledge:
+                close_method = getattr(knowledge_store, "aclose", None)
+                if callable(close_method):
+                    await close_method()
+                else:
+                    close_method = getattr(knowledge_store, "close", None)
+                    if callable(close_method):
+                        close_method()
             if created_memory and hasattr(memory_store, "close"):
                 await memory_store.close()
             if created_ontology:

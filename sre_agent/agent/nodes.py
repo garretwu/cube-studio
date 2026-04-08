@@ -57,6 +57,9 @@ def initialize_state(
     max_steps: int,
     checkpoint_dir: str | None = None,
     allowed_tool_names: list[str] | None = None,
+    alert_snapshot: dict[str, Any] | None = None,
+    topology_context: dict[str, Any] | None = None,
+    extra_alerts: list[dict[str, Any]] | None = None,
 ) -> SREAgentState:
     return {
         "query": query,
@@ -82,6 +85,9 @@ def initialize_state(
         "error": None,
         "checkpoint_dir": checkpoint_dir,
         "allowed_tool_names": allowed_tool_names,
+        "alert_snapshot": alert_snapshot,
+        "topology_context": topology_context,
+        "extra_alerts": extra_alerts,
     }
 
 
@@ -175,7 +181,7 @@ async def reason_node(
     skill_registry: SkillRegistry | None = None,
     skill_policy: SkillPolicy | None = None,
 ) -> SREAgentState:
-    if state.get("step_count", 0) >= state.get("max_steps", 6):
+    if state.get("step_count", 0) >= state.get("max_steps", 10):
         updated = {
             **state,
             "status": "timeout",
@@ -236,7 +242,7 @@ async def reason_node(
     invoked_messages = model_messages
     bound_tool_names: list[str] = []
     tool_choice = "auto"
-    final_turn = bool(state.get("tool_runs")) and state.get("step_count", 0) >= max(state.get("max_steps", 6) - 1, 1)
+    final_turn = bool(state.get("tool_runs")) and state.get("step_count", 0) >= max(state.get("max_steps", 10) - 1, 1)
     interaction_mode = "final_json" if final_turn else "tool_bound"
     if final_turn and hasattr(llm, "ainvoke"):
         final_messages = [
@@ -454,6 +460,7 @@ async def reason_node(
         raw_plan=parsed.remediation_plan,
         diagnosis=diagnosis,
         session_id=str(state.get("session_id", "")),
+        registry=registry,
     )
     if remediation_plan is not None:
         diagnosis = diagnosis.model_copy(update={"recommended_fix": remediation_plan})
@@ -1227,6 +1234,7 @@ def _normalize_remediation_plan_payload(
     raw_plan: dict[str, Any] | None,
     diagnosis: DiagnosisResult,
     session_id: str,
+    registry: ToolRegistry | None = None,
 ) -> RemediationPlan | None:
     if raw_plan is None:
         return None
@@ -1250,6 +1258,17 @@ def _normalize_remediation_plan_payload(
             )
             normalized_step.setdefault("params", {})
             _normalize_step_params_in_place(normalized_step)
+            if not normalized_step.get("command"):
+                tool_name = normalized_step.get("tool", "")
+                step_params = normalized_step.get("params", {})
+                if registry is not None:
+                    try:
+                        tool_def = registry.get_tool(tool_name)
+                        normalized_step["command"] = tool_def.build_command(step_params)
+                    except Exception:  # noqa: BLE001
+                        normalized_step["command"] = f"{tool_name} {json.dumps(step_params or {}, ensure_ascii=False, sort_keys=True)}"
+                else:
+                    normalized_step["command"] = f"{tool_name} {json.dumps(step_params or {}, ensure_ascii=False, sort_keys=True)}"
             if normalized_step.get("verification") is None:
                 normalized_step["verification"] = {
                     "method": "wait",

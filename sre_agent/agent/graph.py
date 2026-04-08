@@ -307,6 +307,9 @@ async def run_diagnosis(
     query: str,
     context: ToolExecutionContext | None,
     variables: dict[str, Any] | None = None,
+    alert_snapshot: dict[str, Any] | None = None,
+    topology_context: dict[str, Any] | None = None,
+    extra_alerts: list[dict[str, Any]] | None = None,
     llm: Any | None = None,
     guardrails: Any | None = None,
     tool_registry: ToolRegistry | None = None,
@@ -341,7 +344,27 @@ async def run_diagnosis(
         max_steps=max_steps,
         checkpoint_dir=checkpoint_dir,
         allowed_tool_names=allowed_tool_names,
+        alert_snapshot=alert_snapshot,
+        topology_context=topology_context,
+        extra_alerts=extra_alerts,
     )
+
+    # Emit diagnosis_started event so frontend can display alert/topology context immediately.
+    if trace_callback is not None and (alert_snapshot is not None or topology_context is not None):
+        await _safe_emit(
+            trace_callback,
+            {
+                "type": EventType.DIAGNOSIS_STARTED.value,
+                "session_id": active_session_id,
+                "data": {
+                    "alert": alert_snapshot,
+                    "topology": topology_context,
+                    "variables": variables or {},
+                    "extra_alerts": extra_alerts or [],
+                },
+            },
+        )
+
     try:
         result = await asyncio.wait_for(
             graph.ainvoke(

@@ -9,13 +9,20 @@ import type {
   ConfigBaseline,
   DiagnosisSession,
   DiagnosisSessionSummary,
+  KnowledgeDataset,
   IncidentRecord,
+  KnowledgeBaseDetail,
+  KnowledgeBaseSummary,
   KnowledgeDocument,
+  KnowledgeDocumentDetail,
+  KnowledgeSearchHit,
+  KnowledgeSegment,
   LearnedPattern,
   LoopResult,
   OntologyEdge,
   OntologyNode,
   RemediationOverview,
+  RemediationEvidence,
   RemediationPlan,
   RemediationResult,
   SREApiEnvelope,
@@ -39,7 +46,7 @@ const DIAGNOSE_REQUEST_TIMEOUT_MS = 120000;
 const CHAT_REQUEST_TIMEOUT_MS = 120000;
 const DIAGNOSE_SESSION_POLL_MS = 2000;
 const DIAGNOSE_SESSION_POLL_ATTEMPTS = 30;
-const BLOCKED_ALERT_NAMES = new Set(["gpu utilization is high", "gpuutilizationhigh"]);
+const BLOCKED_ALERT_NAMES = new Set<string>();
 
 let hasWarnedAboutDevFallback = false;
 
@@ -94,6 +101,26 @@ function unwrapPayload<T>(payload: SREApiEnvelope<T> | T): T {
     throw new Error(message);
   }
   return payload.data;
+}
+
+function normalizeSessionSummaryList(payload: unknown): SessionSummary[] {
+  if (Array.isArray(payload)) {
+    return payload.filter((item): item is SessionSummary => !!item && typeof item === "object");
+  }
+  if (!payload || typeof payload !== "object") {
+    return [];
+  }
+
+  const candidate = payload as {
+    data?: unknown;
+    sessions?: unknown;
+    items?: unknown;
+  };
+  const raw = candidate.data ?? candidate.sessions ?? candidate.items;
+  if (Array.isArray(raw)) {
+    return raw.filter((item): item is SessionSummary => !!item && typeof item === "object");
+  }
+  return [];
 }
 
 function normalizeAlertName(value: string | null | undefined): string {
@@ -180,7 +207,7 @@ function mapSummaryToDiagnosisSummary(item: SessionSummary): DiagnosisSessionSum
   };
 }
 
-function mapEntityTypeToExplorerType(entityType: string): "rack" | "node" | "gpu" | "switch" | "service" | "cluster" {
+function mapEntityTypeToExplorerType(entityType: string): "rack" | "node" | "gpu" | "switch" | "service" | "pod" | "cluster" {
   const value = entityType.toLowerCase();
   if (value.includes("gpu")) {
     return "gpu";
@@ -191,7 +218,10 @@ function mapEntityTypeToExplorerType(entityType: string): "rack" | "node" | "gpu
   if (value.includes("cluster")) {
     return "cluster";
   }
-  if (value.includes("service") || value.includes("pod") || value.includes("inference")) {
+  if (value.includes("pod")) {
+    return "pod";
+  }
+  if (value.includes("service") || value.includes("inference")) {
     return "service";
   }
   if (value.includes("rack")) {
@@ -221,6 +251,9 @@ function mapLayer(type: ReturnType<typeof mapEntityTypeToExplorerType>): Topolog
   if (type === "gpu" || type === "node") {
     return "compute";
   }
+  if (type === "pod") {
+    return "service";
+  }
   if (type === "cluster") {
     return "physical";
   }
@@ -234,6 +267,9 @@ function mapRelationType(relation: string): "contains" | "runs_on" | "connects_t
   }
   if (value.includes("hosted") || value.includes("runs_on") || value.includes("run_on")) {
     return "runs_on";
+  }
+  if (value.includes("serve")) {
+    return "depends_on";
   }
   if (value.includes("uplink")) {
     return "uplink_to";
@@ -251,9 +287,22 @@ function buildTopologyExplorerFromSnapshot(snapshot: TopologySnapshot): Topology
   const nodes = snapshot.nodes.map((node) => {
     const entityType = mapEntityTypeToExplorerType(node.entity_type);
     const attributes = typeof node.properties === "object" && node.properties ? node.properties : {};
+    const attrs = attributes as Record<string, unknown>;
     const region = String((attributes as Record<string, unknown>).region ?? "AIDC-CN");
     const zone = String((attributes as Record<string, unknown>).zone ?? "zone-a");
     const domain = String((attributes as Record<string, unknown>).domain ?? "aidc");
+    const podPhaseRaw = attrs.phase ?? node.status ?? "Unknown";
+    const podPhase = typeof podPhaseRaw === "string" ? podPhaseRaw : String(podPhaseRaw);
+    const podRestartRaw = attrs.restart_count ?? attrs.restartCount;
+    const podRestartNumeric = typeof podRestartRaw === "number" ? podRestartRaw : Number(podRestartRaw);
+    const podRestartCount = Number.isFinite(podRestartNumeric) ? podRestartNumeric : null;
+    const metrics: Record<string, string | number | null> | undefined =
+      entityType === "pod"
+        ? {
+            phase: podPhase,
+            restartCount: podRestartCount,
+          }
+        : undefined;
 
     return {
       id: node.id,
@@ -264,13 +313,15 @@ function buildTopologyExplorerFromSnapshot(snapshot: TopologySnapshot): Topology
       domain,
       region,
       zone,
-      cluster: String((attributes as Record<string, unknown>).cluster ?? "") || undefined,
+      cluster: String(attrs.cluster ?? attrs.cluster_id ?? "") || undefined,
       rack: String((attributes as Record<string, unknown>).rack ?? "") || undefined,
       slot: String((attributes as Record<string, unknown>).slot ?? "") || undefined,
       summary: `${node.name || node.id} (${node.entity_type})`,
-      tags: [],
+      tags: [String(attrs.namespace ?? ""), String(attrs.source ?? "")]
+        .map((item) => item.trim())
+        .filter(Boolean),
       updatedAt: node.updated_at,
-      metrics: undefined,
+      metrics,
       attributes,
     };
   });
@@ -405,12 +456,17 @@ export const apiClient = {
     throw new Error(payload.error?.message ?? "handle alert returned no session_id");
   },
 
-  diagnoseAlert: async (alert: Alert) => {
+  diagnoseAlert: async (alert: Alert, extraAlertFingerprints?: string[]) => {
     if (isBlockedAlert(alert)) {
       throw new Error(`Alert '${alert.alert_name}' is temporarily filtered and cannot be processed.`);
     }
+    const params: Record<string, string | string[]> = {};
+    if (extraAlertFingerprints && extraAlertFingerprints.length > 0) {
+      params.extra_alert_fingerprints = extraAlertFingerprints;
+    }
     try {
       const response = await api.post<SREApiEnvelope<DiagnosisSession> | DiagnosisSession>("/api/diagnose", alert, {
+        params,
         timeout: DIAGNOSE_REQUEST_TIMEOUT_MS,
       });
       const session = unwrapPayload(response.data);
@@ -432,7 +488,7 @@ export const apiClient = {
           const summariesResponse = await api.get<SREApiEnvelope<SessionSummary[]> | SessionSummary[]>("/api/sessions", {
             params: { limit: 50 },
           });
-          const summaries = unwrapPayload(summariesResponse.data);
+          const summaries = normalizeSessionSummaryList(unwrapPayload(summariesResponse.data));
           const matched = summaries.find((item) => item.fingerprint === alert.fingerprint);
           if (matched) {
             const detailResponse = await api.get<SREApiEnvelope<DiagnosisSession> | DiagnosisSession>(`/api/sessions/${matched.session_id}`);
@@ -452,9 +508,32 @@ export const apiClient = {
     }
   },
 
+  startDiagnoseAlert: async (alert: Alert, extraAlertFingerprints?: string[]) => {
+    if (isBlockedAlert(alert)) {
+      throw new Error(`Alert '${alert.alert_name}' is temporarily filtered and cannot be processed.`);
+    }
+    const params: Record<string, string | string[]> = {};
+    if (extraAlertFingerprints && extraAlertFingerprints.length > 0) {
+      params.extra_alert_fingerprints = extraAlertFingerprints;
+    }
+    const response = await api.post<SREApiEnvelope<DiagnosisSession> | DiagnosisSession>("/api/diagnose/start", alert, {
+      params,
+      validateStatus: () => true,
+    });
+    if (response.status === 404) {
+      return apiClient.diagnoseAlert(alert, extraAlertFingerprints);
+    }
+    if (response.status >= 400) {
+      throw new Error(`Request failed with status ${response.status}.`);
+    }
+    const session = unwrapPayload(response.data);
+    rememberSessionId(session.session_id);
+    return session;
+  },
+
   getSessions: async (limit = 50) => {
     const response = await api.get<SREApiEnvelope<SessionSummary[]> | SessionSummary[]>("/api/sessions", { params: { limit } });
-    return unwrapPayload(response.data);
+    return normalizeSessionSummaryList(unwrapPayload(response.data));
   },
 
   getDiagnosisSession: async (sessionId?: string) => {
@@ -487,8 +566,18 @@ export const apiClient = {
   },
 
   getDiagnosisHistorySessions: async () => {
-    const sessions = await apiClient.getSessions(50);
-    return sessions.map(mapSummaryToDiagnosisSummary);
+    try {
+      const sessions = await apiClient.getSessions(50);
+      return sessions.map(mapSummaryToDiagnosisSummary);
+    } catch (primaryError) {
+      try {
+        const response = await api.get<SREApiEnvelope<SessionSummary[]> | SessionSummary[]>('/api/diagnosis/sessions');
+        const sessions = normalizeSessionSummaryList(unwrapPayload(response.data));
+        return sessions.map(mapSummaryToDiagnosisSummary);
+      } catch {
+        throw primaryError;
+      }
+    }
   },
 
   getSessionLoop: async (sessionId?: string) => {
@@ -526,9 +615,9 @@ export const apiClient = {
     return unwrapPayload(response.data);
   },
 
-  getSessionEvents: async (sessionId: string, limit = 200) => {
+  getSessionEvents: async (sessionId: string, limit = 200, after?: string) => {
     const response = await api.get<SREApiEnvelope<SessionEvent[]> | SessionEvent[]>(`/api/sessions/${sessionId}/events`, {
-      params: { limit },
+      params: { limit, after },
     });
     return unwrapPayload(response.data);
   },
@@ -550,6 +639,13 @@ export const apiClient = {
       }
       const revisedEvents = events.filter((event) => event.type === "plan_revised");
       const latestRevision = revisedEvents.at(-1);
+      const latestObservation = [...events]
+        .reverse()
+        .find(
+          (event) =>
+            event.type === "remediation_progress" &&
+            String(event.data?.["stage"] ?? "").trim().toLowerCase() === "observation_result",
+        );
       const planVersionFromPlanId = Number(/-v(\d+)$/.exec(currentPlan.plan_id)?.[1] ?? 1);
       const planVersion = Number((latestRevision?.data?.["plan_version"] as number | undefined) ?? planVersionFromPlanId);
       const remediationEvents = events.filter((event) => event.type === "remediation_progress");
@@ -579,6 +675,24 @@ export const apiClient = {
                 : normalizedStatus === "rejected"
                   ? "rejected"
                   : "validating";
+
+      const derivedBaselineReview: RemediationEvidence | null =
+        session.remediation_evidence ??
+        (typeof latestObservation?.data?.["alert_cleared"] === "boolean" ||
+        typeof latestObservation?.data?.["metrics_improved"] === "boolean"
+          ? {
+              pre_check: (latestObservation?.data?.["pre_check"] as RemediationEvidence["pre_check"]) ?? null,
+              post_check: (latestObservation?.data?.["post_check"] as RemediationEvidence["post_check"]) ?? null,
+              alert_review: (latestObservation?.data?.["alert_review"] as RemediationEvidence["alert_review"]) ?? null,
+              metric_reviews: (latestObservation?.data?.["metric_reviews"] as RemediationEvidence["metric_reviews"]) ?? [],
+              alert_cleared: (latestObservation?.data?.["alert_cleared"] as boolean | null | undefined) ?? null,
+              metrics_improved: (latestObservation?.data?.["metrics_improved"] as boolean | null | undefined) ?? null,
+              collected_at:
+                (latestObservation?.data?.["collected_at"] as string | undefined) ??
+                latestObservation?.timestamp ??
+                new Date().toISOString(),
+            }
+          : null);
 
       return {
         session_id: resolved,
@@ -612,8 +726,17 @@ export const apiClient = {
         },
         timeline: events,
         approval_required: session.status === "approval_required",
+        baseline_review: derivedBaselineReview,
       } as RemediationOverview;
     } catch {
+      if (import.meta.env.DEV) {
+        const { getRemediationOverviewFallback } = await import("./devFallback");
+        const fallback = getRemediationOverviewFallback();
+        return {
+          ...fallback,
+          session_id: resolved,
+        } as RemediationOverview;
+      }
       const loop = await apiClient.getSessionLoop(resolved);
       return {
         session_id: loop.session_id,
@@ -702,6 +825,36 @@ export const apiClient = {
     return unwrapPayload(response.data);
   },
 
+  getKnowledgeBases: async () =>
+    withDevFallback(
+      async () => {
+        const response = await api.get<SREApiEnvelope<KnowledgeBaseSummary[]> | { items: KnowledgeBaseSummary[] }>("/api/knowledge/bases");
+        if (isEnvelope<KnowledgeBaseSummary[]>(response.data)) {
+          return unwrapPayload(response.data);
+        }
+        return response.data.items;
+      },
+      async () => {
+        const { getKnowledgeBasesFallback } = await import("./devFallback");
+        return getKnowledgeBasesFallback();
+      },
+      "getKnowledgeBases",
+    ),
+
+  getKnowledgeBaseDetail: async (knowledgeBaseId: string) =>
+    withDevFallback(
+      async () => {
+        const response = await api.get<SREApiEnvelope<KnowledgeBaseDetail> | KnowledgeBaseDetail>(
+          `/api/knowledge/bases/${encodeURIComponent(knowledgeBaseId)}`,
+        );
+        return unwrapPayload(response.data);
+      },
+      async () => {
+        const { getKnowledgeBaseDetailFallback } = await import("./devFallback");
+        return getKnowledgeBaseDetailFallback(knowledgeBaseId);
+      },
+      "getKnowledgeBaseDetail",
+    ),
   searchKnowledge: async (query: string, category?: string) =>
     withDevFallback(
       async () => {
@@ -720,14 +873,55 @@ export const apiClient = {
       "searchKnowledge",
     ),
 
-  getKnowledgeSources: async () =>
+  getKnowledgeDatasets: async (keyword?: string, page = 1, limit = 50) =>
     withDevFallback(
       async () => {
-        const response = await api.get<SREApiEnvelope<KnowledgeDocument[]> | { documents: KnowledgeDocument[] }>("/api/knowledge/documents");
+        const response = await api.get<SREApiEnvelope<KnowledgeDataset[]> | KnowledgeDataset[]>("/api/knowledge/datasets", {
+          params: { keyword, page, limit },
+        });
+        return unwrapPayload(response.data);
+      },
+      async () => {
+        const single = await apiClient.getKnowledgeDataset();
+        return single ? [single] : [];
+      },
+      "getKnowledgeDatasets",
+    ),
+
+  getKnowledgeDataset: async (datasetId?: string) =>
+    withDevFallback(
+      async () => {
+        const response = await api.get<SREApiEnvelope<KnowledgeDataset> | KnowledgeDataset>("/api/knowledge/dataset", {
+          params: datasetId ? { dataset_id: datasetId } : undefined,
+        });
+        return unwrapPayload(response.data);
+      },
+      async () => ({
+        id: "dataset-local",
+        name: "Local Knowledge Base",
+        description: "Fallback dataset for local development",
+        document_count: 0,
+        word_count: 0,
+        status: "ready",
+      }),
+      "getKnowledgeDataset",
+    ),
+
+  getKnowledgeSources: async (keyword?: string, page = 1, limit = 50, datasetId?: string) =>
+    withDevFallback(
+      async () => {
+        const response = await api.get<
+          SREApiEnvelope<KnowledgeDocument[]> | { documents: KnowledgeDocument[] } | KnowledgeDocument[]
+        >("/api/knowledge/documents", {
+          params: { keyword, page, limit, dataset_id: datasetId },
+        });
         if (isEnvelope<KnowledgeDocument[]>(response.data)) {
           return unwrapPayload(response.data);
         }
-        return response.data.documents;
+        if (Array.isArray(response.data)) {
+          return response.data;
+        }
+        return response.data.documents ?? [];
       },
       async () => {
         const { getKnowledgeSourcesFallback } = await import("./devFallback");
@@ -735,6 +929,42 @@ export const apiClient = {
       },
       "getKnowledgeSources",
     ),
+
+  getKnowledgeDocumentDetail: async (documentId: string, datasetId?: string) => {
+    const response = await api.get<SREApiEnvelope<KnowledgeDocumentDetail> | KnowledgeDocumentDetail>(
+      `/api/knowledge/documents/${encodeURIComponent(documentId)}`,
+      {
+        params: datasetId ? { dataset_id: datasetId } : undefined,
+      },
+    );
+    return unwrapPayload(response.data);
+  },
+
+  getKnowledgeDocumentSegments: async (
+    documentId: string,
+    options: { keyword?: string; status?: string; page?: number; limit?: number; datasetId?: string } = {},
+  ) => {
+    const response = await api.get<SREApiEnvelope<KnowledgeSegment[]> | KnowledgeSegment[]>(
+      `/api/knowledge/documents/${encodeURIComponent(documentId)}/segments`,
+      {
+        params: {
+          keyword: options.keyword,
+          status: options.status,
+          page: options.page ?? 1,
+          limit: options.limit ?? 50,
+          dataset_id: options.datasetId,
+        },
+      },
+    );
+    return unwrapPayload(response.data);
+  },
+
+  searchKnowledgeSegments: async (query: string, topK = 5, datasetId?: string) => {
+    const response = await api.get<SREApiEnvelope<KnowledgeSearchHit[]> | KnowledgeSearchHit[]>("/api/knowledge/segments/search", {
+      params: { query, top_k: topK, dataset_id: datasetId },
+    });
+    return unwrapPayload(response.data);
+  },
 
   getMemoryIncidents: async (last = 10) => {
     const response = await api.get<SREApiEnvelope<IncidentRecord[]> | IncidentRecord[]>("/api/memory/incidents", { params: { last } });
@@ -750,6 +980,33 @@ export const apiClient = {
     const response = await api.get<SREApiEnvelope<ConfigBaseline> | ConfigBaseline>("/api/memory/baseline");
     return unwrapPayload(response.data);
   },
+
+  getSkill: async (skillId: string) =>
+    withDevFallback(
+      async () => {
+        try {
+          const response = await api.get<SREApiEnvelope<SkillDescriptor> | SkillDescriptor>(
+            `/api/skills/${encodeURIComponent(skillId)}`,
+          );
+          return unwrapPayload(response.data);
+        } catch (error) {
+          if (axios.isAxiosError(error) && error.response?.status === 404) {
+            const skills = await apiClient.getSkills();
+            const matched = skills.find((skill) => skill.id === skillId);
+            if (matched) {
+              return matched;
+            }
+            throw new Error("未找到对应技能");
+          }
+          throw error;
+        }
+      },
+      async () => {
+        const { getSkillFallback } = await import("./devFallback");
+        return getSkillFallback(skillId);
+      },
+      "getSkill",
+    ),
 
   getSkills: async () =>
     withDevFallback(
@@ -776,3 +1033,4 @@ export const apiClient = {
 };
 
 export type ApiClient = typeof apiClient;
+

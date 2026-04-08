@@ -13,6 +13,12 @@ from sre_agent.models.diagnosis import (
     DiagnosisSession,
     Hypothesis,
     Observation,
+    RemediationAlertReview,
+    RemediationAlertSnapshot,
+    RemediationCheckSnapshot,
+    RemediationEvidence,
+    RemediationMetricReview,
+    RemediationMetricSnapshot,
     PropagationStep,
     RankedRootCause,
     ThinkingStep,
@@ -319,6 +325,57 @@ class TestModelsIntegration:
             diagnosis_result=diagnosis,
             trace=trace,
             re_diagnosis_round=0,
+            remediation_evidence=RemediationEvidence(
+                pre_check=RemediationCheckSnapshot(
+                    alert=RemediationAlertSnapshot(
+                        fingerprint=alert.fingerprint,
+                        alert_name=alert.alert_name,
+                        status="firing",
+                        is_firing=True,
+                    ),
+                    metrics=[
+                        RemediationMetricSnapshot(
+                            metric_key="vllm_p95_ms",
+                            query="vllm_request_latency_p95",
+                            value=650,
+                        )
+                    ],
+                ),
+                post_check=RemediationCheckSnapshot(
+                    alert=RemediationAlertSnapshot(
+                        fingerprint=alert.fingerprint,
+                        alert_name=alert.alert_name,
+                        status="resolved",
+                        is_firing=False,
+                    ),
+                    metrics=[
+                        RemediationMetricSnapshot(
+                            metric_key="vllm_p95_ms",
+                            query="vllm_request_latency_p95",
+                            value=320,
+                        )
+                    ],
+                ),
+                alert_review=RemediationAlertReview(
+                    fingerprint=alert.fingerprint,
+                    alert_name=alert.alert_name,
+                    before_status="firing",
+                    after_status="resolved",
+                    cleared=True,
+                ),
+                metric_reviews=[
+                    RemediationMetricReview(
+                        metric_key="vllm_p95_ms",
+                        query="vllm_request_latency_p95",
+                        before_value=650,
+                        after_value=320,
+                        improved=True,
+                        available=True,
+                    )
+                ],
+                alert_cleared=True,
+                metrics_improved=True,
+            ),
         )
         rem_result = RemediationResult(
             plan_id=plan.plan_id,
@@ -355,6 +412,9 @@ class TestModelsIntegration:
         assert restored.success is True
         assert restored.data is not None and restored.data.outcome == "resolved"
         assert restored_event.data["response"]["success"] is True
+        assert session.remediation_evidence is not None
+        assert session.remediation_evidence.alert_review is not None
+        assert session.remediation_evidence.alert_review.cleared is True
 
     def test_integration_compatibility_aliases_work_across_domains(self) -> None:
         plan = RemediationPlan.model_validate(

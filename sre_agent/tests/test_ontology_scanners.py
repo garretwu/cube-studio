@@ -53,6 +53,21 @@ class _FakeK8sChannel:
             }
         ]
 
+    async def list_services(self, namespace: str) -> list[dict[str, object]]:
+        assert namespace == "infer"
+        return [
+            {
+                "metadata": {"name": "vllm-service", "labels": {"app": "vllm"}},
+                "spec": {"selector": {"app": "vllm"}, "type": "ClusterIP", "clusterIP": "10.96.0.1"},
+                "status": {},
+            }
+        ]
+
+    async def resolve_pod_names_for_service(self, namespace: str, service_name: str) -> list[str]:
+        assert namespace == "infer"
+        assert service_name == "vllm-service"
+        return ["vllm-0"]
+
 
 class _FakePrometheusChannel:
     def __init__(self) -> None:
@@ -215,10 +230,14 @@ class TestOntologyScannersIntegration:
             }
         )
 
-        assert {node.entity_type for node in k8s_nodes} == {EntityType.K8S_POD, EntityType.K8S_CLUSTER}
+        assert {node.entity_type for node in k8s_nodes} == {
+            EntityType.K8S_POD,
+            EntityType.K8S_CLUSTER,
+            EntityType.INFERENCE_SERVICE,
+        }
         assert any(node.id == "k8s:lab-cluster" for node in k8s_nodes)
-        assert len(k8s_edges) == 3
-        assert {edge.relation for edge in k8s_edges} == {RelationType.HOSTED_ON, RelationType.PART_OF}
+        assert len(k8s_edges) == 6
+        assert {edge.relation for edge in k8s_edges} == {RelationType.HOSTED_ON, RelationType.PART_OF, RelationType.SERVES}
 
         assert len(prom_nodes) == 2
         assert all(node.entity_type == EntityType.METRIC_ENDPOINT for node in prom_nodes)
@@ -485,11 +504,11 @@ class TestOntologyScannersE2E:
         monitored_neighbors = graph.get_neighbors("node-a", relation=RelationType.MONITORS)
         pod_path = graph.get_path("pod:infer:vllm-0", "node-a")
 
-        assert summary["node_count"] == 9
-        assert summary["edge_count"] == 8
+        assert summary["node_count"] == 10
+        assert summary["edge_count"] == 11
         assert summary["entity_type_counts"] == {
             "bmc_endpoint": 1,
-            "inference_service": 1,
+            "inference_service": 2,
             "k8s_cluster": 1,
             "k8s_pod": 1,
             "metric_endpoint": 2,

@@ -573,7 +573,7 @@ export function buildTopologyTree(response: TopologyExplorerResponse | undefined
       objectId: cluster.id,
       objectType: cluster.type,
       children: response.nodes
-        .filter((node) => node.type === "service" && node.cluster === cluster.id)
+        .filter((node) => (node.type === "service" || node.type === "pod") && node.cluster === cluster.id)
         .map((service) => ({
           id: service.id,
           label: service.name,

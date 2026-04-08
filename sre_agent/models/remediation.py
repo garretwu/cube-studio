@@ -84,6 +84,7 @@ class RemediationAction(StrictFrozenModel):
     description: str = Field(min_length=1)
     tool: str = Field(min_length=1)
     params: dict[str, Any] = Field(default_factory=dict)
+    command: str | None = None
     rollback_tool: str | None = None
     rollback_params: dict[str, Any] | None = None
     verification: VerificationConfig

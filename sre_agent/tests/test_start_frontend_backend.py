@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import argparse
 from pathlib import Path
 
 import pytest
 
+import sre_agent.scripts.start_frontend_backend as launcher
 from sre_agent.scripts.start_frontend_backend import (
     DEFAULT_CONFIG_PATH,
     DEFAULT_LOCAL_LLM_BASE_URL,
@@ -11,6 +13,7 @@ from sre_agent.scripts.start_frontend_backend import (
     DEFAULT_KUBECONFIG_PATH,
     build_parser,
     build_runtime_env,
+    wait_backend_ready,
 )
 
 
@@ -146,3 +149,199 @@ def test_build_runtime_env_local_mode_probe_failure_blocks_startup(monkeypatch, 
             local_llm_base_url="http://10.11.4.13:18080/v1",
             local_model=DEFAULT_LOCAL_LLM_MODEL,
         )
+
+
+class _FakeProc:
+    def __init__(self, pid: int, poll_values: list[int | None]) -> None:
+        self.pid = pid
+        self._poll_values = list(poll_values)
+        self._last = self._poll_values[-1] if self._poll_values else None
+
+    def poll(self) -> int | None:
+        if self._poll_values:
+            self._last = self._poll_values.pop(0)
+        return self._last
+
+
+def _runtime_info_template() -> dict[str, str]:
+    return {
+        "backend_url": "http://127.0.0.1:8000",
+        "frontend_url": "http://127.0.0.1:8080",
+        "api_mode": "proxy",
+        "proxy_target": "http://127.0.0.1:8000",
+        "api_base_url": "",
+        "llm_api_key_configured": "true",
+        "llm_api_key_length": "8",
+        "llm_model": "MiniMax-M2.7",
+        "llm_base_url": "https://api.minimax.chat/v1",
+        "llm_mode": "minimax_api",
+        "llm_local_probe_passed": "false",
+        "llm_local_selected_model": "",
+        "llm_local_base_url": "",
+        "config_path": str((Path(__file__).resolve().parents[2] / "sre_agent" / "conf" / "config.yaml")),
+        "sre_kubeconfig": DEFAULT_KUBECONFIG_PATH,
+    }
+
+
+def test_wait_backend_ready_success_after_retries(monkeypatch, capsys: pytest.CaptureFixture[str]) -> None:
+    backend = _FakeProc(pid=1001, poll_values=[None, None, None])
+    probe_results = iter([False, False, True])
+
+    monkeypatch.setattr("sre_agent.scripts.start_frontend_backend._probe_backend_ready", lambda *args, **kwargs: next(probe_results))
+    monkeypatch.setattr("sre_agent.scripts.start_frontend_backend.time.sleep", lambda *_: None)
+
+    ready = wait_backend_ready(
+        backend=backend, readiness_url="http://127.0.0.1:8000/openapi.json", timeout_seconds=30, interval_seconds=0.1
+    )
+
+    output = capsys.readouterr().out
+    assert ready is True
+    assert "[wait] backend readiness probe" in output
+    assert "[ok] backend ready, starting frontend" in output
+
+
+def test_wait_backend_ready_fails_when_backend_exits(monkeypatch, capsys: pytest.CaptureFixture[str]) -> None:
+    backend = _FakeProc(pid=1002, poll_values=[None, 7])
+
+    monkeypatch.setattr("sre_agent.scripts.start_frontend_backend._probe_backend_ready", lambda *args, **kwargs: False)
+    monkeypatch.setattr("sre_agent.scripts.start_frontend_backend.time.sleep", lambda *_: None)
+
+    ready = wait_backend_ready(
+        backend=backend, readiness_url="http://127.0.0.1:8000/openapi.json", timeout_seconds=30, interval_seconds=0.1
+    )
+
+    output = capsys.readouterr().out
+    assert ready is False
+    assert "[error] backend exited before ready" in output
+
+
+def test_wait_backend_ready_times_out(monkeypatch, capsys: pytest.CaptureFixture[str]) -> None:
+    backend = _FakeProc(pid=1003, poll_values=[None, None, None, None, None])
+    monotonic_values = iter([0.0, 0.2, 0.6, 1.1])
+
+    monkeypatch.setattr("sre_agent.scripts.start_frontend_backend._probe_backend_ready", lambda *args, **kwargs: False)
+    monkeypatch.setattr("sre_agent.scripts.start_frontend_backend.time.sleep", lambda *_: None)
+    monkeypatch.setattr("sre_agent.scripts.start_frontend_backend.time.monotonic", lambda: next(monotonic_values))
+
+    ready = wait_backend_ready(
+        backend=backend, readiness_url="http://127.0.0.1:8000/openapi.json", timeout_seconds=1.0, interval_seconds=0.1
+    )
+
+    output = capsys.readouterr().out
+    assert ready is False
+    assert "[error] backend readiness timeout" in output
+
+
+def test_main_waits_for_backend_then_starts_frontend(monkeypatch) -> None:
+    call_order: list[str] = []
+
+    monkeypatch.setattr(
+        launcher,
+        "args",
+        argparse.Namespace(
+            config=DEFAULT_CONFIG_PATH,
+            backend_host="127.0.0.1",
+            backend_port=8000,
+            frontend_port=8080,
+            api_mode="proxy",
+            role="operator",
+            username="local-ui",
+            token_expire_seconds=3600,
+            llm_mode="minimax_api",
+            local_llm_base_url=DEFAULT_LOCAL_LLM_BASE_URL,
+            local_model=DEFAULT_LOCAL_LLM_MODEL,
+            runtime_info="sre_agent/temp/dev_runtime_info.json",
+        ),
+        raising=False,
+    )
+
+    monkeypatch.setattr("sre_agent.scripts.start_frontend_backend._next_free_port", lambda host, port, limit=30: port)
+    monkeypatch.setattr(
+        "sre_agent.scripts.start_frontend_backend.build_runtime_env",
+        lambda **kwargs: ({"PYTHONUNBUFFERED": "1"}, _runtime_info_template()),
+    )
+    monkeypatch.setattr("sre_agent.scripts.start_frontend_backend._resolve_config_path", lambda _: Path(DEFAULT_CONFIG_PATH))
+
+    backend_proc = _FakeProc(pid=1101, poll_values=[0])
+    frontend_proc = _FakeProc(pid=1102, poll_values=[None])
+
+    def _spawn_backend(*args, **kwargs):  # noqa: ANN002, ANN003
+        _ = (args, kwargs)
+        call_order.append("spawn_backend")
+        return backend_proc
+
+    def _wait_backend_ready(*args, **kwargs):  # noqa: ANN002, ANN003
+        _ = (args, kwargs)
+        call_order.append("wait_backend_ready")
+        return True
+
+    def _spawn_frontend(*args, **kwargs):  # noqa: ANN002, ANN003
+        _ = (args, kwargs)
+        call_order.append("spawn_frontend")
+        return frontend_proc
+
+    monkeypatch.setattr("sre_agent.scripts.start_frontend_backend.spawn_backend", _spawn_backend)
+    monkeypatch.setattr("sre_agent.scripts.start_frontend_backend.wait_backend_ready", _wait_backend_ready)
+    monkeypatch.setattr("sre_agent.scripts.start_frontend_backend.spawn_frontend", _spawn_frontend)
+    monkeypatch.setattr("sre_agent.scripts.start_frontend_backend.write_runtime_info", lambda *args, **kwargs: None)
+    monkeypatch.setattr("sre_agent.scripts.start_frontend_backend.terminate_process", lambda *args, **kwargs: None)
+    monkeypatch.setattr("sre_agent.scripts.start_frontend_backend.time.sleep", lambda *_: None)
+
+    exit_code = launcher.main()
+    assert exit_code == 0
+    assert call_order[:3] == ["spawn_backend", "wait_backend_ready", "spawn_frontend"]
+
+
+def test_main_does_not_start_frontend_when_backend_not_ready(monkeypatch) -> None:
+    frontend_started = False
+    stopped: list[str] = []
+
+    monkeypatch.setattr(
+        launcher,
+        "args",
+        argparse.Namespace(
+            config=DEFAULT_CONFIG_PATH,
+            backend_host="127.0.0.1",
+            backend_port=8000,
+            frontend_port=8080,
+            api_mode="proxy",
+            role="operator",
+            username="local-ui",
+            token_expire_seconds=3600,
+            llm_mode="minimax_api",
+            local_llm_base_url=DEFAULT_LOCAL_LLM_BASE_URL,
+            local_model=DEFAULT_LOCAL_LLM_MODEL,
+            runtime_info="sre_agent/temp/dev_runtime_info.json",
+        ),
+        raising=False,
+    )
+
+    monkeypatch.setattr("sre_agent.scripts.start_frontend_backend._next_free_port", lambda host, port, limit=30: port)
+    monkeypatch.setattr(
+        "sre_agent.scripts.start_frontend_backend.build_runtime_env",
+        lambda **kwargs: ({"PYTHONUNBUFFERED": "1"}, _runtime_info_template()),
+    )
+    monkeypatch.setattr("sre_agent.scripts.start_frontend_backend._resolve_config_path", lambda _: Path(DEFAULT_CONFIG_PATH))
+
+    backend_proc = _FakeProc(pid=1201, poll_values=[None])
+
+    monkeypatch.setattr("sre_agent.scripts.start_frontend_backend.spawn_backend", lambda *args, **kwargs: backend_proc)
+    monkeypatch.setattr("sre_agent.scripts.start_frontend_backend.wait_backend_ready", lambda *args, **kwargs: False)
+
+    def _spawn_frontend(*args, **kwargs):  # noqa: ANN002, ANN003
+        _ = (args, kwargs)
+        nonlocal frontend_started
+        frontend_started = True
+        return _FakeProc(pid=1202, poll_values=[None])
+
+    monkeypatch.setattr("sre_agent.scripts.start_frontend_backend.spawn_frontend", _spawn_frontend)
+    monkeypatch.setattr("sre_agent.scripts.start_frontend_backend.write_runtime_info", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        "sre_agent.scripts.start_frontend_backend.terminate_process",
+        lambda proc, name: stopped.append(name),
+    )
+
+    exit_code = launcher.main()
+    assert exit_code != 0
+    assert frontend_started is False
+    assert "backend" in stopped

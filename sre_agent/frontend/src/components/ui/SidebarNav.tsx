@@ -8,6 +8,8 @@ export type SidebarNavItem = {
   active?: boolean;
   kind?: "default" | "history";
   status?: "diagnosing" | "completed";
+  metaLabel?: string;
+  metaTone?: "critical" | "warning" | "info" | "neutral";
   disabled?: boolean;
   onClick: () => void;
 };
@@ -59,10 +61,10 @@ function SidebarNav({
         </div>
         {onToggleCollapsed ? (
           <button
-            aria-label={collapsed ? "展开侧边栏" : "收起侧边栏"}
+            aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
             className="shell-brand__collapse"
             onClick={onToggleCollapsed}
-            title={collapsed ? "展开侧边栏" : "收起侧边栏"}
+            title={collapsed ? "Expand sidebar" : "Collapse sidebar"}
             type="button"
           >
             <AppIcon name={collapsed ? "right" : "left"} size={14} />
@@ -105,13 +107,22 @@ function SidebarNav({
                     {!showIconOnly ? (
                       <span className={cn("nav-item__content", item.kind === "history" && "nav-item__content--history")}>
                         <span className="nav-item__label">{item.label}</span>
-                        {item.status ? (
-                          <span
-                            aria-hidden="true"
-                            className={cn("nav-item__status", `nav-item__status--${item.status}`)}
-                            title={item.status === "diagnosing" ? "诊断中" : "已完结"}
-                          >
-                            <AppIcon name={item.status === "diagnosing" ? "timeCircle" : "checkmarkCircle"} size={12} />
+                        {item.metaLabel || item.status ? (
+                          <span className="nav-item__aside">
+                            {item.metaLabel ? (
+                              <span className={cn("nav-item__meta", item.metaTone && `nav-item__meta--${item.metaTone}`)}>
+                                {item.metaLabel}
+                              </span>
+                            ) : null}
+                            {item.status ? (
+                              <span
+                                aria-hidden="true"
+                                className={cn("nav-item__status", `nav-item__status--${item.status}`)}
+                                title={item.status === "diagnosing" ? "Diagnosing" : "Completed"}
+                              >
+                                <AppIcon name={item.status === "diagnosing" ? "timeCircle" : "checkmarkCircle"} size={12} />
+                              </span>
+                            ) : null}
                           </span>
                         ) : null}
                       </span>

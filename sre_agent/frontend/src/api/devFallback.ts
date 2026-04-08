@@ -1,9 +1,11 @@
-import {
+﻿import {
   alertClusters,
   alerts,
   diagnosisHistorySessions,
   diagnosisSession,
   initialChatMessages,
+  knowledgeBaseDetails,
+  knowledgeBases,
   knowledgeDocuments,
   remediationOverview,
   skills,
@@ -17,6 +19,8 @@ import type {
   ChatMessage,
   DiagnosisSession,
   DiagnosisSessionSummary,
+  KnowledgeBaseDetail,
+  KnowledgeBaseSummary,
   KnowledgeDocument,
   OntologyEdge,
   OntologyNode,
@@ -90,6 +94,18 @@ export function postChatMessageFallback(sessionId: string, content: string): Cha
   };
 }
 
+export function getKnowledgeBasesFallback(): KnowledgeBaseSummary[] {
+  return knowledgeBases;
+}
+
+export function getKnowledgeBaseDetailFallback(knowledgeBaseId: string): KnowledgeBaseDetail {
+  const matched = knowledgeBaseDetails.find((item) => item.id === knowledgeBaseId);
+  if (!matched) {
+    throw new Error("未找到对应知识库");
+  }
+  return matched;
+}
+
 export function searchKnowledgeFallback(query: string, category?: string): KnowledgeDocument[] {
   const normalized = query.trim().toLowerCase();
   return knowledgeDocuments.filter((doc) => {
@@ -105,4 +121,12 @@ export function getKnowledgeSourcesFallback(): KnowledgeDocument[] {
 
 export function getSkillsFallback(): SkillDescriptor[] {
   return skills;
+}
+
+export function getSkillFallback(skillId: string): SkillDescriptor {
+  const matched = skills.find((skill) => skill.id === skillId);
+  if (!matched) {
+    throw new Error("未找到对应技能");
+  }
+  return matched;
 }
