@@ -47,7 +47,7 @@ const clusters: AlertCluster[] = [
 
 const activeSession: DiagnosisSession = {
   session_id: "sess-latency-001",
-  alert: alerts[0],
+  alert: alerts[0]!,
   status: "re_diagnosed",
   duration_seconds: 142,
 };
@@ -67,6 +67,6 @@ describe("buildAlertConvergenceView", () => {
     expect(view.results[0].alertCount).toBe(3);
     expect(view.results[0].fingerprintCount).toBe(2);
     expect(view.results[0].duplicateFoldedCount).toBe(1);
-    expect(view.results[0].route.label).toBe("并入已有 Session");
+    expect(view.results[0].route.label).toBe("并入已有诊断");
   });
 });
