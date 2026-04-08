@@ -459,6 +459,7 @@ def main() -> int:
         )
     print(f"[ok] config={info['config_path']} SRE_KUBECONFIG={info['sre_kubeconfig']}", flush=True)
     print(f"[ok] runtime info saved: {args.runtime_info}", flush=True)
+    print(f"[ok] LLM logs directory: ./data/llm_logs/ (one JSONL file per session)", flush=True)
     print("[hint] press Ctrl+C to stop both processes", flush=True)
 
     try:

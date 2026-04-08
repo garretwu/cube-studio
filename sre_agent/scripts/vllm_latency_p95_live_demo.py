@@ -317,20 +317,6 @@ def build_query(
     topology_context: dict[str, Any] | None = None,
 ) -> str:
     expected_process_prefixes = _expected_gpu_process_prefixes(service)
-    investigation_steps: list[str] = []
-    if "prometheus.query_instant" in available_tools:
-        investigation_steps.append(
-            f"Validate the triggering latency signal with prometheus.query_instant using: {latency_promql}"
-        )
-    if "gpu.get_metrics" in available_tools:
-        investigation_steps.append(f"Inspect GPU utilization and memory on node {node} with gpu.get_metrics")
-    if "gpu.get_processes" in available_tools:
-        investigation_steps.append(f"Inspect GPU-bound processes on node {node} with gpu.get_processes")
-    if "k8s.list_pods" in available_tools:
-        investigation_steps.append(f"Inspect workloads in namespace {namespace} with k8s.list_pods")
-    if "network.get_rdma_stats" in available_tools:
-        investigation_steps.append(f"Inspect RDMA and link health on node {node} with network.get_rdma_stats")
-
     return build_alert_diagnosis_prompt(
         alert_payload=normalize_alert_payload(alert),
         available_tool_names=available_tools,
@@ -338,12 +324,16 @@ def build_query(
             "Identify the most likely root cause of the alert, evaluate plausible alternatives, "
             "and explain which hypotheses are confirmed, eliminated, or still uncertain based on evidence."
         ),
-        investigation_steps=investigation_steps,
+        investigation_steps=[
+            "If a reusable diagnosis skill is a strong semantic match for this alert and topology context, prefer selecting that skill first.",
+            "Otherwise gather only the minimum read-only evidence needed to confirm or eliminate the leading hypotheses.",
+        ],
         context_hints={
             "node": node,
             "namespace": namespace,
             "service": service,
             "inter-token latency threshold ms": latency_threshold_ms,
+            "latency query": latency_promql,
             "expected GPU worker process prefixes": expected_process_prefixes,
         },
         extra_context={

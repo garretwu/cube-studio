@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from dataclasses import replace
 from typing import Iterable
 
@@ -10,7 +11,7 @@ class SkillPolicy:
     """Deterministic keyword/tag based skill matching policy."""
 
     def rank(self, query: str, skills: Iterable[SkillDescriptor], top_k: int = 5) -> list[SkillDescriptor]:
-        terms = [part.strip().lower() for part in query.split() if part.strip()]
+        terms = self._tokenize(query)
         ranked: list[SkillDescriptor] = []
         for skill in skills:
             score = self._score(skill, terms)
@@ -20,20 +21,39 @@ class SkillPolicy:
         return ranked[: max(1, int(top_k))]
 
     @staticmethod
+    def _tokenize(query: str) -> list[str]:
+        terms = [part.strip().lower() for part in re.split(r"[^a-zA-Z0-9_:-]+", query or "") if part.strip()]
+        return terms
+
+    @staticmethod
     def _score(skill: SkillDescriptor, terms: list[str]) -> float:
         if not terms:
             return 0.0
-        haystack = " ".join([skill.name, skill.summary, " ".join(skill.tags)]).lower()
+        name = skill.name.lower()
+        summary = skill.summary.lower()
+        tags = [tag.lower() for tag in skill.tags]
+        haystack = " ".join([name, summary, " ".join(tags)])
         total = 0.0
+        matched_tags = 0
         for term in terms:
-            if term in skill.tags:
+            if term in tags:
                 total += 2.0
-            elif term in skill.name.lower():
+                matched_tags += 1
+            elif term in name:
                 total += 1.5
-            elif term in skill.summary.lower():
+            elif term in summary:
                 total += 1.0
             elif term in haystack:
                 total += 0.5
+        # Reward skills whose tags align with multiple alert/query concepts,
+        # which helps alert-shaped queries prefer reusable diagnosis playbooks.
+        if matched_tags >= 2:
+            total += 2.0
+        if matched_tags >= 3:
+            total += 1.0
+        joined_terms = " ".join(terms)
+        if all(tag in joined_terms for tag in tags[:2]):
+            total += 1.0
         max_score = 2.0 * len(terms)
         if max_score <= 0:
             return 0.0

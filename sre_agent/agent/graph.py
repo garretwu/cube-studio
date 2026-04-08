@@ -21,7 +21,7 @@ from sre_agent.agent.nodes import (
     reason_node,
     route_after_decide,
     route_after_reason,
-    should_execute_selected_skill,
+    route_after_skill_selection,
 )
 from sre_agent.agent.state import SREAgentState
 from sre_agent.models.events import EventType
@@ -168,7 +168,13 @@ def create_sre_graph(
 
     async def _reason(state: SREAgentState) -> SREAgentState:
         try:
-            next_state = await reason_node(state, llm=wrapped_llm, registry=tools)
+            next_state = await reason_node(
+                state,
+                llm=wrapped_llm,
+                registry=tools,
+                skill_registry=registry,
+                skill_policy=policy,
+            )
             await _emit_incremental_trace_events(
                 trace_callback=trace_callback,
                 previous_state=state,
@@ -223,15 +229,38 @@ def create_sre_graph(
             tool_registry=tools,
         )
 
+    async def _select_skill(state: SREAgentState) -> SREAgentState:
+        try:
+            next_state = await load_and_select_skill_node(
+                state,
+                llm=wrapped_llm,
+                registry=registry,
+                policy=policy,
+                tool_registry=tools,
+            )
+            await _emit_incremental_trace_events(
+                trace_callback=trace_callback,
+                previous_state=state,
+                next_state=next_state,
+            )
+            return next_state
+        except asyncio.TimeoutError:
+            return {
+                **state,
+                "status": "timeout",
+                "summary": "skill selection step timed out",
+                "error": "skill selection step timed out",
+            }
+        except Exception as exc:  # noqa: BLE001
+            return {
+                **state,
+                "status": "failed",
+                "summary": f"skill selection step failed: {exc}",
+                "error": f"skill selection step failed: {exc}",
+            }
+
     graph = StateGraph(SREAgentState)
-    graph.add_node(
-        "load_and_select_skill",
-        lambda state: load_and_select_skill_node(
-            state,
-            registry=registry,
-            policy=policy,
-        ),
-    )
+    graph.add_node("load_and_select_skill", _select_skill)
     graph.add_node("reason", _reason)
     graph.add_node("act", _act)
     graph.add_node("observe", observe_node)
@@ -239,11 +268,21 @@ def create_sre_graph(
     graph.add_node("execute_selected_skill", _execute_selected_skill)
     graph.add_node("finalize", finalize_node)
 
-    graph.add_edge(START, "reason")
+    graph.add_edge(START, "load_and_select_skill")
+    graph.add_conditional_edges(
+        "load_and_select_skill",
+        route_after_skill_selection,
+        {
+            "execute_selected_skill": "execute_selected_skill",
+            "reason": "reason",
+            "finalize": "finalize",
+        },
+    )
     graph.add_conditional_edges(
         "reason",
         route_after_reason,
         {
+            "execute_selected_skill": "execute_selected_skill",
             "act": "act",
             "finalize": "finalize",
         },
@@ -258,17 +297,7 @@ def create_sre_graph(
             "finalize": "finalize",
         },
     )
-
-    graph.add_edge("load_and_select_skill", "execute_selected_skill")
-    graph.add_conditional_edges(
-        "load_and_select_skill",
-        should_execute_selected_skill,
-        {
-            "execute_selected_skill": "execute_selected_skill",
-            "finalize": "finalize",
-        },
-    )
-    graph.add_edge("execute_selected_skill", "finalize")
+    graph.add_edge("execute_selected_skill", "observe")
     graph.add_edge("finalize", END)
     return graph.compile(checkpointer=create_checkpointer())
 
@@ -284,10 +313,13 @@ async def run_diagnosis(
     llm: Any | None = None,
     guardrails: Any | None = None,
     tool_registry: ToolRegistry | None = None,
+    skill_registry: SkillRegistry | None = None,
+    skill_policy: SkillPolicy | None = None,
+    skill_executor: SkillExecutor | None = None,
     session_id: str | None = None,
     step_timeout_sec: float = 60.0,
     total_timeout_sec: float = 600.0,
-    max_steps: int = 10,
+    max_steps: int = 50,
     checkpoint_dir: str | None = "./data/checkpoints/sre_agent",
     allowed_tool_names: list[str] | None = None,
     trace_callback: TraceEventCallback | None = None,
@@ -296,6 +328,9 @@ async def run_diagnosis(
     graph = create_sre_graph(
         llm=llm,
         guardrails=guardrails,
+        skill_registry=skill_registry,
+        skill_policy=skill_policy,
+        skill_executor=skill_executor,
         tool_registry=tool_registry,
         tool_context=context,
         trace_callback=trace_callback,
