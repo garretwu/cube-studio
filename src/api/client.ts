@@ -163,6 +163,41 @@ function clearRememberedSessionId(): void {
   window.localStorage.removeItem("sre_session_id");
 }
 
+function getHttpStatusFromError(error: unknown): number | undefined {
+  if (axios.isAxiosError(error)) {
+    return error.response?.status;
+  }
+  if (!(error instanceof Error)) {
+    return undefined;
+  }
+  const matched = /status\s+(\d{3})/i.exec(error.message);
+  if (!matched) {
+    return undefined;
+  }
+  const status = Number(matched[1]);
+  return Number.isFinite(status) ? status : undefined;
+}
+
+function isHttpStatusError(error: unknown, status: number): boolean {
+  return getHttpStatusFromError(error) === status;
+}
+
+async function getDiagnosisSessionById(sessionId: string): Promise<DiagnosisSession> {
+  try {
+    const response = await api.get<SREApiEnvelope<DiagnosisSession> | DiagnosisSession>(`/api/sessions/${sessionId}`);
+    return unwrapPayload(response.data);
+  } catch (error) {
+    if (!isHttpStatusError(error, 404)) {
+      throw error;
+    }
+    // Compatibility fallback for backends that only expose the legacy session endpoint.
+    const legacyResponse = await api.get<SREApiEnvelope<DiagnosisSession> | DiagnosisSession>("/api/diagnosis/session/current", {
+      params: { session_id: sessionId },
+    });
+    return unwrapPayload(legacyResponse.data);
+  }
+}
+
 function extractDuplicateSessionId(payload: SREApiEnvelope<LoopResult>): string {
   const details = payload.error?.details;
   if (details && typeof details === "object") {
@@ -485,27 +520,34 @@ export const apiClient = {
     const resolved = explicit || remembered;
     if (resolved) {
       try {
-        const response = await api.get<SREApiEnvelope<DiagnosisSession> | DiagnosisSession>(`/api/sessions/${resolved}`);
-        const session = unwrapPayload(response.data);
+        const session = await getDiagnosisSessionById(resolved);
         rememberSessionId(session.session_id);
         return session;
       } catch (error) {
         if (explicit) {
+          if (isHttpStatusError(error, 404)) {
+            throw new Error("Diagnosis session was not found (404). Please select another history session or start a new diagnosis.");
+          }
           throw error;
         }
         clearRememberedSessionId();
       }
     }
 
-    const sessions = await apiClient.getSessions(1);
-    if (!sessions.length) {
-      return null;
+    const sessions = await apiClient.getSessions(50);
+    for (const candidate of sessions) {
+      try {
+        const session = await getDiagnosisSessionById(candidate.session_id);
+        rememberSessionId(session.session_id);
+        return session;
+      } catch (error) {
+        if (isHttpStatusError(error, 404)) {
+          continue;
+        }
+        throw error;
+      }
     }
-    const latest = sessions[0];
-    const response = await api.get<SREApiEnvelope<DiagnosisSession> | DiagnosisSession>(`/api/sessions/${latest.session_id}`);
-    const session = unwrapPayload(response.data);
-    rememberSessionId(session.session_id);
-    return session;
+    return null;
   },
 
   getDiagnosisHistorySessions: async () => {
@@ -794,7 +836,7 @@ export const apiClient = {
           );
           return unwrapPayload(response.data);
         } catch (error) {
-          if (axios.isAxiosError(error) && error.response?.status === 404) {
+          if (isHttpStatusError(error, 404)) {
             const skills = await apiClient.getSkills();
             const matched = skills.find((skill) => skill.id === skillId);
             if (matched) {

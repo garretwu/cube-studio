@@ -8,6 +8,7 @@ import { useDiagnosisStore } from "./diagnosisStore";
 
 describe("useDiagnosisStore", () => {
   beforeEach(() => {
+    window.localStorage.removeItem("sre_session_id");
     useDiagnosisStore.setState({
       session: undefined,
       activeSessionId: undefined,

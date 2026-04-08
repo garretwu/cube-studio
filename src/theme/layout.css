@@ -102,8 +102,8 @@
 }
 
 .shell-content {
-  width: min(100%, var(--content-max-width));
-  padding: 0 var(--space-7) var(--space-8);
+  width: min(100%, clamp(var(--content-max-width), 95%, 1920px));
+  padding: 0 clamp(var(--space-4), 1.6vw, var(--space-6)) var(--space-8);
   margin: 0 auto;
   position: relative;
   z-index: 1;
@@ -116,7 +116,7 @@
   gap: var(--space-6);
   width: 100%;
   min-height: 64px;
-  padding: var(--space-3) var(--space-7);
+  padding: var(--space-3) clamp(var(--space-4), 1.6vw, var(--space-6));
   margin: 0;
   box-sizing: border-box;
   border-bottom: 0;

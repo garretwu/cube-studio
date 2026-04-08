@@ -79,10 +79,96 @@ describe("apiClient.getTopology", () => {
   });
 
   it("returns null when no diagnosis sessions are available", async () => {
+    window.localStorage.removeItem("sre_session_id");
     server.use(http.get("/api/sessions", async () => HttpResponse.json([])));
 
     const session = await apiClient.getDiagnosisSession();
     expect(session).toBeNull();
+  });
+
+  it("falls back to /api/diagnosis/session/current when /api/sessions/:id returns 404", async () => {
+    window.localStorage.removeItem("sre_session_id");
+    let fallbackUsed = false;
+
+    server.use(
+      http.get("/api/sessions/sess-legacy", async () => HttpResponse.json({ message: "not found" }, { status: 404 })),
+      http.get("/api/diagnosis/session/current", async ({ request }) => {
+        const url = new URL(request.url);
+        fallbackUsed = url.searchParams.get("session_id") === "sess-legacy";
+        return HttpResponse.json({
+          session_id: "sess-legacy",
+          alert: {
+            alert_name: "VLLMInterTokenLatencyP95High",
+            severity: "warning",
+            labels: {},
+            annotations: {},
+            starts_at: "2026-03-26T00:00:00Z",
+            fingerprint: "fp-legacy",
+            status: "firing",
+            source: "alertmanager",
+          },
+          status: "running",
+          duration_seconds: 1,
+        });
+      }),
+    );
+
+    const session = await apiClient.getDiagnosisSession("sess-legacy");
+    expect(session?.session_id).toBe("sess-legacy");
+    expect(fallbackUsed).toBe(true);
+  });
+
+  it("skips stale session summaries when detail lookups return 404", async () => {
+    window.localStorage.removeItem("sre_session_id");
+
+    server.use(
+      http.get("/api/sessions", async () =>
+        HttpResponse.json([
+          {
+            session_id: "sess-stale",
+            status: "diagnosed",
+            alert_name: "Stale",
+            severity: "warning",
+            fingerprint: "fp-stale",
+            outcome: null,
+            duration_seconds: 1,
+            updated_at: "2026-03-26T00:00:00Z",
+          },
+          {
+            session_id: "sess-good",
+            status: "running",
+            alert_name: "Good",
+            severity: "warning",
+            fingerprint: "fp-good",
+            outcome: null,
+            duration_seconds: 1,
+            updated_at: "2026-03-26T00:00:01Z",
+          },
+        ]),
+      ),
+      http.get("/api/sessions/sess-stale", async () => HttpResponse.json({ message: "not found" }, { status: 404 })),
+      http.get("/api/diagnosis/session/current", async () => HttpResponse.json({ message: "not found" }, { status: 404 })),
+      http.get("/api/sessions/sess-good", async () =>
+        HttpResponse.json({
+          session_id: "sess-good",
+          alert: {
+            alert_name: "Good",
+            severity: "warning",
+            labels: {},
+            annotations: {},
+            starts_at: "2026-03-26T00:00:00Z",
+            fingerprint: "fp-good",
+            status: "firing",
+            source: "alertmanager",
+          },
+          status: "running",
+          duration_seconds: 2,
+        }),
+      ),
+    );
+
+    const session = await apiClient.getDiagnosisSession();
+    expect(session?.session_id).toBe("sess-good");
   });
 
   it("uses remediate approve route", async () => {
