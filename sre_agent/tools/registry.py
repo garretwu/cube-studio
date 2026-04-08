@@ -46,6 +46,64 @@ class ToolDefinition:
     params_schema: dict[str, Any] = field(default_factory=dict)
     tags: tuple[str, ...] = ()
     needs_approval: bool = False
+    command_template: str | None = None
+    command_template_alt: str | None = None
+
+    def build_command(self, params: dict[str, Any]) -> str:
+        """Render a human-readable command string from *params*.
+
+        If *command_template* is set, it is formatted via ``str.format_map``
+        with *params* (missing keys render as ``<key>``).  Falls back to
+        ``<tool_name> <params_json>``.
+        """
+        import json
+
+        explicit = params.get("command")
+        if isinstance(explicit, str) and explicit.strip():
+            return explicit.strip()
+
+        template = self._resolve_template(params)
+        if template:
+            safe_params = {k: v for k, v in params.items() if v is not None}
+            try:
+                return template.format_map(_SafeFormatDict(safe_params))
+            except Exception:  # noqa: BLE001
+                pass
+
+        compact = json.dumps(params or {}, ensure_ascii=False, sort_keys=True)
+        return f"{self.name} {compact}"
+
+    def _resolve_template(self, params: dict[str, Any]) -> str | None:
+        """Pick the best template based on *params* content."""
+        if not self.command_template:
+            return None
+        if not self.command_template_alt:
+            return self.command_template
+        # For tools with alt template (e.g. k8s.delete_pod), pick based on params.
+        # Primary template uses keys from itself; alt template uses different keys.
+        # Heuristic: if alt template's unique keys are present in params, prefer alt.
+        try:
+            primary_keys = set(_extract_format_keys(self.command_template))
+            alt_keys = set(_extract_format_keys(self.command_template_alt))
+            alt_only = alt_keys - primary_keys
+            if alt_only and any(k in params and params[k] for k in alt_only):
+                return self.command_template_alt
+        except Exception:  # noqa: BLE001
+            pass
+        return self.command_template
+
+
+def _extract_format_keys(template: str) -> list[str]:
+    """Extract ``{key}`` placeholders from a format string."""
+    import re
+    return re.findall(r"\{(\w+)\}", template)
+
+
+class _SafeFormatDict(dict):
+    """``str.format_map`` helper that keeps unresolved placeholders intact."""
+
+    def __missing__(self, key: str) -> str:
+        return f"<{key}>"
 
 
 @dataclass
@@ -585,6 +643,7 @@ def build_default_registry() -> ToolRegistry:
             params_schema={"type": "object", "required": ["manifest"]},
             tags=("k8s", "write"),
             needs_approval=True,
+            command_template="kubectl apply -n {namespace} -f - <<EOF\n{manifest}\nEOF",
         ),
         write_k8s.apply_manifest,
     )
@@ -596,6 +655,8 @@ def build_default_registry() -> ToolRegistry:
             params_schema={"type": "object", "required": ["namespace"]},
             tags=("k8s", "write"),
             needs_approval=True,
+            command_template="kubectl delete pod {pod_name} -n {namespace}",
+            command_template_alt="kubectl delete pod -l {label_selector} -n {namespace}",
         ),
         write_k8s.delete_pod,
     )
@@ -607,6 +668,7 @@ def build_default_registry() -> ToolRegistry:
             params_schema={"type": "object", "required": ["namespace", "name", "replicas"]},
             tags=("k8s", "write"),
             needs_approval=True,
+            command_template="kubectl scale deployment {name} -n {namespace} --replicas={replicas}",
         ),
         write_k8s.scale_deployment,
     )
@@ -618,6 +680,7 @@ def build_default_registry() -> ToolRegistry:
             params_schema={"type": "object", "required": ["node"]},
             tags=("k8s", "write"),
             needs_approval=True,
+            command_template="kubectl cordon {node}",
         ),
         write_k8s.cordon_node,
     )
@@ -629,6 +692,7 @@ def build_default_registry() -> ToolRegistry:
             params_schema={"type": "object", "required": ["node"]},
             tags=("k8s", "write"),
             needs_approval=True,
+            command_template="kubectl drain {node} --ignore-daemonsets --delete-emptydir-data",
         ),
         write_k8s.drain_node,
     )
@@ -642,6 +706,7 @@ def build_default_registry() -> ToolRegistry:
             params_schema={"type": "object", "required": ["node"]},
             tags=("remediation", "write", "ssh"),
             needs_approval=True,
+            command_template="ssh {node} sudo kill {pid}",
         ),
         write_remediation.kill_process,
     )
@@ -666,6 +731,7 @@ def build_default_registry() -> ToolRegistry:
             params_schema={"type": "object", "required": ["switch", "interface"]},
             tags=("network", "write"),
             needs_approval=True,
+            command_template="switchport enable --switch {switch} --interface {interface}",
         ),
         write_network.switch_port_enable,
     )
@@ -677,6 +743,7 @@ def build_default_registry() -> ToolRegistry:
             params_schema={"type": "object", "required": ["switch", "interface"]},
             tags=("network", "write"),
             needs_approval=True,
+            command_template="switchport disable --switch {switch} --interface {interface}",
         ),
         write_network.switch_port_disable,
     )
@@ -688,6 +755,7 @@ def build_default_registry() -> ToolRegistry:
             params_schema={"type": "object", "required": ["switch", "config_xml"]},
             tags=("network", "write"),
             needs_approval=True,
+            command_template="route update --switch {switch} --config <config_xml>",
         ),
         write_network.update_route,
     )
@@ -699,6 +767,7 @@ def build_default_registry() -> ToolRegistry:
             params_schema={"type": "object", "required": ["bmc_host", "vlan_id"]},
             tags=("network", "bmc", "write"),
             needs_approval=True,
+            command_template="redfish set-vlan --bmc {bmc_host} --vlan {vlan_id}",
         ),
         write_network.set_bmc_vlan,
     )
@@ -710,6 +779,7 @@ def build_default_registry() -> ToolRegistry:
             params_schema={"type": "object", "required": ["bmc_host", "mtu"]},
             tags=("network", "bmc", "write"),
             needs_approval=True,
+            command_template="redfish set-mtu --bmc {bmc_host} --mtu {mtu}",
         ),
         write_network.set_bmc_mtu,
     )

@@ -87,7 +87,7 @@ class OntologyDiscoveryConfig(BaseModel):
     live_inventory_path: str = "fault_injector/fault-injector-test.yaml"
     live_fallback_to_static: bool = True
     k8s_cluster_name: str = "lab-cluster"
-    k8s_namespaces: list[str] = Field(default_factory=lambda: ["default"])
+    k8s_namespaces: list[str] = Field(default_factory=list)
     prometheus_targets: dict[str, str] = Field(default_factory=dict)
     switches: list[SwitchDiscoveryConfig] = Field(default_factory=list)
 

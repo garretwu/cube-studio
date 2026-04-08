@@ -192,6 +192,12 @@ function getCurrentStepSummary(
   return `步骤 ${currentStep.step_id} · ${currentStep.description}`;
 }
 
+function formatEvidenceValue(value: unknown): string {
+  if (value === null || value === undefined) return "未采集";
+  if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") return String(value);
+  return formatResult(value);
+}
+
 
 export default function RemediationDetailDrawer({
   actionLoading,
@@ -235,6 +241,11 @@ export default function RemediationDetailDrawer({
   const canaryProgressSummary = drawerOverview?.plan.canary?.enabled
     ? `${canaryProgress ?? 0}% · ${canaryStrategy}`
     : "未启用灰度";
+  const baselineReview = drawerOverview?.baseline_review ?? null;
+  const preAlert = baselineReview?.pre_check?.alert ?? null;
+  const postAlert = baselineReview?.post_check?.alert ?? null;
+  const alertReview = baselineReview?.alert_review ?? null;
+  const metricReviews = baselineReview?.metric_reviews ?? [];
   const currentStepSummary = getCurrentStepSummary(detailSteps, completedSteps, drawerStatus);
   const activeStep =
     drawerOverview && detailSteps.length > 0 && activeStepSelection?.sessionId === drawerOverview.session_id
@@ -559,6 +570,14 @@ export default function RemediationDetailDrawer({
                           <p className="remediation-record-table__detail-label">执行参数</p>
                           <p className="remediation-record-table__detail-value remediation-code-block">{formatResult(activeStep.params)}</p>
                         </div>
+                        {activeStep.command ? (
+                          <div className="remediation-record-table__detail-field remediation-record-table__detail-field--wide">
+                            <p className="remediation-record-table__detail-label">执行命令</p>
+                            <p className="remediation-record-table__detail-value remediation-code-block">
+                              <code>{activeStep.command}</code>
+                            </p>
+                          </div>
+                        ) : null}
                         <div className="remediation-record-table__detail-field remediation-record-table__detail-field--wide">
                           <p className="remediation-record-table__detail-label">验证方式</p>
                           <p className="remediation-record-table__detail-value">{formatStepVerificationSummary(activeStep)}</p>
@@ -598,6 +617,91 @@ export default function RemediationDetailDrawer({
                 </div>
               )}
             </div>
+          </div>
+
+          <div className="remediation-record-table__subsection">
+            <div className="remediation-record-table__subsection-header">
+              <div>
+                <p className="remediation-record-table__subsection-title">基线与复查</p>
+                <p className="remediation-record-table__subsection-copy">对比修复前后的告警状态与 LLM 服务指标，确认是否真正恢复。</p>
+              </div>
+            </div>
+            {baselineReview ? (
+              <div className="remediation-plan-overview remediation-plan-overview--compact">
+                <div className="remediation-plan-overview__facts remediation-plan-overview__facts--detail">
+                  <div className="remediation-plan-overview__fact">
+                    <span className="remediation-plan-overview__fact-icon">
+                      <AppIcon name="notification" size={18} />
+                    </span>
+                    <div className="remediation-plan-overview__fact-body">
+                      <span className="remediation-plan-overview__fact-label">修复前告警</span>
+                      <p className="remediation-plan-overview__fact-value">{preAlert ? `${preAlert.alert_name} · ${preAlert.status}` : "未采集"}</p>
+                      <p className="remediation-plan-overview__fact-meta">{preAlert ? `firing=${String(preAlert.is_firing)}` : "未记录修复前告警状态"}</p>
+                    </div>
+                  </div>
+                  <div className="remediation-plan-overview__fact">
+                    <span className="remediation-plan-overview__fact-icon">
+                      <AppIcon name="notification" size={18} />
+                    </span>
+                    <div className="remediation-plan-overview__fact-body">
+                      <span className="remediation-plan-overview__fact-label">修复后告警</span>
+                      <p className="remediation-plan-overview__fact-value">{postAlert ? `${postAlert.alert_name} · ${postAlert.status}` : "未采集"}</p>
+                      <p className="remediation-plan-overview__fact-meta">
+                        {alertReview ? (alertReview.cleared ? "告警已清除" : "告警未清除，需人工介入") : "未记录复查结论"}
+                      </p>
+                    </div>
+                  </div>
+                  <div className="remediation-plan-overview__fact">
+                    <span className="remediation-plan-overview__fact-icon">
+                      <AppIcon name="chart" size={18} />
+                    </span>
+                    <div className="remediation-plan-overview__fact-body">
+                      <span className="remediation-plan-overview__fact-label">指标复查</span>
+                      <p className="remediation-plan-overview__fact-value">
+                        {baselineReview.metrics_improved === true ? "指标已改善" : baselineReview.metrics_improved === false ? "指标未达预期" : "未完成判断"}
+                      </p>
+                      <p className="remediation-plan-overview__fact-meta">{`共复查 ${metricReviews.length} 项指标`}</p>
+                    </div>
+                  </div>
+                  <div className="remediation-plan-overview__fact">
+                    <span className="remediation-plan-overview__fact-icon">
+                      <AppIcon name="documentCheck" size={18} />
+                    </span>
+                    <div className="remediation-plan-overview__fact-body">
+                      <span className="remediation-plan-overview__fact-label">最终结论</span>
+                      <p className="remediation-plan-overview__fact-value">
+                        {baselineReview.alert_cleared === true && baselineReview.metrics_improved === true ? "告警清除且指标恢复" : "仍需继续观察或人工介入"}
+                      </p>
+                    </div>
+                  </div>
+                </div>
+                <div className="remediation-plan-overview__history">
+                  {metricReviews.length > 0 ? (
+                    metricReviews.map((item) => (
+                      <div className="remediation-plan-overview__fact remediation-plan-overview__fact--wide" key={`${item.metric_key}-${item.query}`}>
+                        <span className="remediation-plan-overview__fact-icon">
+                          <AppIcon name="chart" size={18} />
+                        </span>
+                        <div className="remediation-plan-overview__fact-body">
+                          <span className="remediation-plan-overview__fact-label">{item.metric_key}</span>
+                          <p className="remediation-plan-overview__fact-value">{`${formatEvidenceValue(item.before_value)} -> ${formatEvidenceValue(item.after_value)}`}</p>
+                          <p className="remediation-plan-overview__fact-meta">
+                            {item.available ? (item.improved ? "已改善" : "未改善") : item.error || "指标暂不可用"}
+                          </p>
+                        </div>
+                      </div>
+                    ))
+                  ) : (
+                    <p className="data-list__copy">当前没有可展示的前后指标对比。</p>
+                  )}
+                </div>
+              </div>
+            ) : (
+              <div className="mini-card remediation-empty-state remediation-empty-state--compact remediation-record-table__embedded-card">
+                <p className="mini-card__title">尚未采集基线与复查数据</p>
+                <p className="mini-card__copy">当前会话还没有完整的修复前后证据，执行修复后会在这里展示对比结果。</p>
+              </div>
+            )}
           </div>
 
           <div className="remediation-record-table__subsection">

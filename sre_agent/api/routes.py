@@ -21,7 +21,15 @@ from sre_agent.auth.jwt import CurrentUser, get_current_user
 from sre_agent.auth.rbac import require_role
 from sre_agent.models.alert import Alert
 from sre_agent.models.common import ErrorCode, SREError, SREResponse
-from sre_agent.models.diagnosis import DiagnosisSession
+from sre_agent.models.diagnosis import (
+    DiagnosisSession,
+    RemediationAlertReview,
+    RemediationAlertSnapshot,
+    RemediationCheckSnapshot,
+    RemediationEvidence,
+    RemediationMetricReview,
+    RemediationMetricSnapshot,
+)
 from sre_agent.models.events import EventType, WSEvent
 from sre_agent.models.memory import ConfigBaseline, IncidentRecord, LearnedPattern
 from sre_agent.models.remediation import LoopResult, RemediationPlan, RemediationResult
@@ -855,12 +863,235 @@ def build_api_router() -> APIRouter:
             return actual_num != expected_num
         return False
 
+    def _update_session_evidence(
+        services: Any,
+        *,
+        session: DiagnosisSession,
+        evidence: RemediationEvidence,
+    ) -> DiagnosisSession:
+        updated = session.model_copy(update={"remediation_evidence": evidence})
+        services.session_store.put(updated)
+        return updated
+
+    def _normalize_metric_key(raw_key: str, *, fallback_index: int) -> str:
+        value = re.sub(r"[^a-zA-Z0-9_]+", "_", str(raw_key or "").strip()).strip("_").lower()
+        return value or f"metric_{fallback_index}"
+
+    def _default_llm_metric_specs(session: DiagnosisSession) -> list[dict[str, Any]]:
+        labels = session.alert.labels
+        service = str(labels.get("service") or labels.get("app") or "vllm").strip() or "vllm"
+        namespace = str(labels.get("namespace") or "service").strip() or "service"
+        specs = [
+            {
+                "metric_key": "llm_latency_p95",
+                "query": f'vllm_request_latency_p95{{service="{service}",namespace="{namespace}"}}',
+            },
+            {
+                "metric_key": "llm_ttft_p99",
+                "query": (
+                    'histogram_quantile(0.99, sum by (le) '
+                    f'(rate(vllm:time_to_first_token_seconds_bucket{{service="{service}",namespace="{namespace}"}}[5m])))'
+                ),
+            },
+            {
+                "metric_key": "llm_inter_token_latency_p95",
+                "query": f'vllm_inter_token_latency_p95{{service="{service}",namespace="{namespace}"}}',
+            },
+        ]
+        return specs
+
+    def _build_metric_specs(plan: RemediationPlan | None, session: DiagnosisSession) -> list[dict[str, Any]]:
+        specs: list[dict[str, Any]] = []
+        if plan is not None:
+            for index, step in enumerate(plan.steps, start=1):
+                verification = step.verification
+                if verification.method != "promql" or not str(verification.query or "").strip():
+                    continue
+                metric_key = _normalize_metric_key(
+                    step.description or verification.query or f"metric_{index}",
+                    fallback_index=index,
+                )
+                specs.append(
+                    {
+                        "metric_key": metric_key,
+                        "query": str(verification.query or "").strip(),
+                        "condition": verification.condition.model_dump(mode="json") if verification.condition is not None else None,
+                    }
+                )
+        if specs:
+            return specs
+        return _default_llm_metric_specs(session)
+
+    async def _capture_alert_snapshot(session: DiagnosisSession, services: Any) -> RemediationAlertSnapshot:
+        snapshot = services.alert_store.snapshot()
+        alerts = snapshot.get("alerts", [])
+        if not isinstance(alerts, list):
+            return RemediationAlertSnapshot(
+                fingerprint=session.alert.fingerprint,
+                alert_name=session.alert.alert_name,
+                status="unknown",
+                is_firing=False,
+                available=False,
+                error="alert snapshot unavailable",
+            )
+
+        for alert_item in alerts:
+            if not isinstance(alert_item, dict):
+                continue
+            if str(alert_item.get("fingerprint") or "").strip() != session.alert.fingerprint:
+                continue
+            status = str(alert_item.get("status") or "unknown").strip().lower() or "unknown"
+            return RemediationAlertSnapshot(
+                fingerprint=session.alert.fingerprint,
+                alert_name=str(alert_item.get("alert_name") or session.alert.alert_name).strip() or session.alert.alert_name,
+                status=status,
+                is_firing=status == "firing",
+            )
+
+        return RemediationAlertSnapshot(
+            fingerprint=session.alert.fingerprint,
+            alert_name=session.alert.alert_name,
+            status="resolved",
+            is_firing=False,
+        )
+
+    async def _capture_metric_snapshots(
+        *,
+        services: Any,
+        session: DiagnosisSession,
+        plan: RemediationPlan | None,
+    ) -> list[RemediationMetricSnapshot]:
+        specs = _build_metric_specs(plan, session)
+        prometheus = getattr(services.remediation_engine, "prometheus", None)
+        execution_mode = str(getattr(services.remediation_engine, "execution_mode", "real") or "real").strip().lower()
+        snapshots: list[RemediationMetricSnapshot] = []
+        for index, spec in enumerate(specs, start=1):
+            metric_key = str(spec.get("metric_key") or f"metric_{index}")
+            query = str(spec.get("query") or "").strip()
+            condition = spec.get("condition")
+            if not query:
+                snapshots.append(
+                    RemediationMetricSnapshot(
+                        metric_key=metric_key,
+                        query="<missing-query>",
+                        available=False,
+                        error="query missing",
+                        condition=condition if isinstance(condition, dict) else None,
+                    )
+                )
+                continue
+            if prometheus is None or not hasattr(prometheus, "query_instant"):
+                if execution_mode == "mock":
+                    snapshots.append(
+                        RemediationMetricSnapshot(
+                            metric_key=metric_key,
+                            query=query,
+                            value=0,
+                            condition=condition if isinstance(condition, dict) else None,
+                        )
+                    )
+                    continue
+                snapshots.append(
+                    RemediationMetricSnapshot(
+                        metric_key=metric_key,
+                        query=query,
+                        available=False,
+                        error="prometheus unavailable",
+                        condition=condition if isinstance(condition, dict) else None,
+                    )
+                )
+                continue
+            try:
+                value = await prometheus.query_instant(query)
+                snapshots.append(
+                    RemediationMetricSnapshot(
+                        metric_key=metric_key,
+                        query=query,
+                        value=value,
+                        condition=condition if isinstance(condition, dict) else None,
+                    )
+                )
+            except Exception as exc:  # noqa: BLE001
+                snapshots.append(
+                    RemediationMetricSnapshot(
+                        metric_key=metric_key,
+                        query=query,
+                        available=False,
+                        error=str(exc),
+                        condition=condition if isinstance(condition, dict) else None,
+                    )
+                )
+        return snapshots
+
+    async def _capture_check_snapshot(
+        services: Any,
+        *,
+        session: DiagnosisSession,
+        plan: RemediationPlan | None,
+    ) -> RemediationCheckSnapshot:
+        alert_snapshot = await _capture_alert_snapshot(session, services)
+        metric_snapshots = await _capture_metric_snapshots(services=services, session=session, plan=plan)
+        latest_collected_at = max(
+            [alert_snapshot.collected_at, *[item.collected_at for item in metric_snapshots]],
+            default=datetime.now(UTC),
+        )
+        return RemediationCheckSnapshot(alert=alert_snapshot, metrics=metric_snapshots, collected_at=latest_collected_at)
+
+    def _build_metric_reviews(
+        pre_check: RemediationCheckSnapshot | None,
+        post_check: RemediationCheckSnapshot | None,
+    ) -> tuple[list[RemediationMetricReview], bool]:
+        before_metrics = {
+            item.metric_key: item for item in (pre_check.metrics if pre_check is not None else [])
+        }
+        after_metrics = {
+            item.metric_key: item for item in (post_check.metrics if post_check is not None else [])
+        }
+        metric_keys = list(dict.fromkeys([*before_metrics.keys(), *after_metrics.keys()]))
+        reviews: list[RemediationMetricReview] = []
+        all_improved = True
+        for metric_key in metric_keys:
+            before = before_metrics.get(metric_key)
+            after = after_metrics.get(metric_key)
+            available = bool(before and before.available) and bool(after and after.available)
+            condition = (after.condition if after is not None else None) or (before.condition if before is not None else None)
+            improved = False
+            error: str | None = None
+            if not available:
+                all_improved = False
+                error = (after.error if after is not None else None) or (before.error if before is not None else None)
+            elif isinstance(condition, dict):
+                operator = str(condition.get("operator") or "").strip()
+                expected = condition.get("value")
+                improved = bool(operator) and _compare_scalar(after.value, operator, expected)
+                all_improved = all_improved and improved
+            else:
+                try:
+                    improved = float(after.value) <= float(before.value)
+                except (TypeError, ValueError):
+                    improved = False
+                all_improved = all_improved and improved
+            reviews.append(
+                RemediationMetricReview(
+                    metric_key=metric_key,
+                    query=(after.query if after is not None else before.query if before is not None else metric_key),
+                    before_value=before.value if before is not None else None,
+                    after_value=after.value if after is not None else None,
+                    condition=condition,
+                    improved=improved,
+                    available=available,
+                    error=error,
+                )
+            )
+        return reviews, all_improved
+
     async def _observe_post_remediation(
         services: Any,
         *,
         session: DiagnosisSession,
+        pre_check: RemediationCheckSnapshot | None,
         observation_seconds: int,
-    ) -> tuple[bool, dict[str, Any]]:
+    ) -> tuple[bool, dict[str, Any], RemediationEvidence]:
         await _publish_remediation_progress(
             services,
             session_id=session.session_id,
@@ -868,60 +1099,52 @@ def build_api_router() -> APIRouter:
             details={"seconds": observation_seconds},
         )
         await asyncio.sleep(max(0, int(observation_seconds)))
-
-        alert_cleared = False
-        snapshot = services.alert_store.snapshot()
-        alerts = snapshot.get("alerts", [])
-        if isinstance(alerts, list):
-            for alert_item in alerts:
-                if not isinstance(alert_item, dict):
-                    continue
-                if str(alert_item.get("fingerprint") or "").strip() != session.alert.fingerprint:
-                    continue
-                status = str(alert_item.get("status") or "").strip().lower()
-                alert_cleared = status != "firing"
-                break
-            else:
-                # alert not present in active snapshot is treated as cleared
-                alert_cleared = True
-
-        metrics_improved = True
-        metrics_checked = 0
         plan = services.remediation_engine.get_plan(session.session_id)
-        prometheus = getattr(services.remediation_engine, "prometheus", None)
-        if plan is not None:
-            for step in plan.steps:
-                verification = step.verification
-                if verification.method != "promql":
-                    continue
-                metrics_checked += 1
-                if prometheus is None or not hasattr(prometheus, "query_instant"):
-                    metrics_improved = False
-                    continue
-                try:
-                    value = await prometheus.query_instant(verification.query or "")
-                except Exception:
-                    metrics_improved = False
-                    continue
-                condition = verification.condition
-                if condition is None:
-                    metrics_improved = bool(value) and metrics_improved
-                    continue
-                if not _compare_scalar(value, condition.operator, condition.value):
-                    metrics_improved = False
+        post_check = await _capture_check_snapshot(services, session=session, plan=plan)
+        pre_alert = pre_check.alert if pre_check is not None else None
+        post_alert = post_check.alert
+        alert_cleared = bool(post_alert is not None and post_alert.available and not post_alert.is_firing)
+        alert_review = None
+        if pre_alert is not None and post_alert is not None:
+            alert_review = RemediationAlertReview(
+                fingerprint=post_alert.fingerprint,
+                alert_name=post_alert.alert_name,
+                before_status=pre_alert.status,
+                after_status=post_alert.status,
+                cleared=alert_cleared,
+            )
 
+        metric_reviews, metrics_improved = _build_metric_reviews(pre_check, post_check)
+        evidence = RemediationEvidence(
+            pre_check=pre_check,
+            post_check=post_check,
+            alert_review=alert_review,
+            metric_reviews=metric_reviews,
+            alert_cleared=alert_cleared,
+            metrics_improved=metrics_improved,
+        )
         details = {
             "alert_cleared": alert_cleared,
             "metrics_improved": metrics_improved,
-            "metrics_checked": metrics_checked,
+            "metrics_checked": len(metric_reviews),
+            "baseline_alert": pre_alert.model_dump(mode="json") if pre_alert is not None else None,
+            "baseline_metrics": [item.model_dump(mode="json") for item in (pre_check.metrics if pre_check is not None else [])],
+            "post_alert": post_alert.model_dump(mode="json") if post_alert is not None else None,
+            "post_metrics": [item.model_dump(mode="json") for item in post_check.metrics],
+            "pre_check": pre_check.model_dump(mode="json") if pre_check is not None else None,
+            "post_check": post_check.model_dump(mode="json"),
+            "alert_review": alert_review.model_dump(mode="json") if alert_review is not None else None,
+            "metric_reviews": [item.model_dump(mode="json") for item in metric_reviews],
+            "collected_at": evidence.collected_at.isoformat(),
         }
+        updated_session = _update_session_evidence(services, session=session, evidence=evidence)
         await _publish_remediation_progress(
             services,
-            session_id=session.session_id,
+            session_id=updated_session.session_id,
             stage="observation_result",
             details=details,
         )
-        return alert_cleared and metrics_improved, details
+        return alert_cleared and metrics_improved, details, evidence
 
     def _extract_step_results(result: RemediationResult) -> list[dict[str, Any]]:
         payload: list[dict[str, Any]] = []
@@ -1923,7 +2146,10 @@ def build_api_router() -> APIRouter:
         )
         execution_timeout_seconds = max(1, execution_timeout_seconds)
         is_test_runtime = bool(os.getenv("PYTEST_CURRENT_TEST") or "pytest" in sys.modules)
+        if is_test_runtime:
+            observation_seconds = 0
         workflow_started_at = time.monotonic()
+        pre_check: RemediationCheckSnapshot | None = None
 
         async def _timeout_response() -> SREResponse[RemediationResult]:
             _update_session_status(services, session=session, status="timeout", outcome="timeout")
@@ -1945,6 +2171,24 @@ def build_api_router() -> APIRouter:
                 ),
                 trace_id=trace_id,
             )
+
+        plan = services.remediation_engine.get_plan(session_id)
+        pre_check = await _capture_check_snapshot(services, session=session, plan=plan)
+        pre_evidence = RemediationEvidence(pre_check=pre_check)
+        session = _update_session_evidence(services, session=session, evidence=pre_evidence)
+        await _publish_remediation_progress(
+            services,
+            session_id=session_id,
+            stage="pre_remediation_baseline_collected",
+            details={
+                "plan_version": requested_plan_version,
+                "baseline_alert": pre_check.alert.model_dump(mode="json") if pre_check.alert is not None else None,
+                "baseline_metrics": [item.model_dump(mode="json") for item in pre_check.metrics],
+                "pre_check": pre_check.model_dump(mode="json"),
+                "collected_at": pre_evidence.collected_at.isoformat(),
+                "message": "已采集修复前基线",
+            },
+        )
 
         try:
             result = await asyncio.wait_for(
@@ -2007,21 +2251,22 @@ def build_api_router() -> APIRouter:
                 )
             observed_ok = True
             observation_details: dict[str, Any] = {}
-            if not is_test_runtime:
-                remaining_timeout = execution_timeout_seconds - (time.monotonic() - workflow_started_at)
-                if remaining_timeout <= 0:
-                    return await _timeout_response()
-                try:
-                    observed_ok, observation_details = await asyncio.wait_for(
-                        _observe_post_remediation(
-                            services,
-                            session=session,
-                            observation_seconds=observation_seconds,
-                        ),
-                        timeout=remaining_timeout,
-                    )
-                except TimeoutError:
-                    return await _timeout_response()
+            remaining_timeout = execution_timeout_seconds - (time.monotonic() - workflow_started_at)
+            if remaining_timeout <= 0:
+                return await _timeout_response()
+            try:
+                observed_ok, observation_details, evidence = await asyncio.wait_for(
+                    _observe_post_remediation(
+                        services,
+                        session=session,
+                        pre_check=pre_check,
+                        observation_seconds=observation_seconds,
+                    ),
+                    timeout=remaining_timeout,
+                )
+                session = _update_session_evidence(services, session=session, evidence=evidence)
+            except TimeoutError:
+                return await _timeout_response()
             if not observed_ok:
                 print("需要工程师介入")
                 _update_session_status(services, session=session, status="escalated", outcome="escalated")

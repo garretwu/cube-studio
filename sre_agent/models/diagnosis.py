@@ -18,6 +18,75 @@ TriagePriority = Literal["P0", "P1", "P2", "P3"]
 DiagnosisCertainty = Literal["confirmed", "probable", "ambiguous"]
 
 
+class RemediationAlertSnapshot(StrictFrozenModel):
+    """Alert snapshot captured before or after remediation."""
+
+    fingerprint: str = Field(min_length=1)
+    alert_name: str = Field(min_length=1)
+    status: str = Field(min_length=1)
+    is_firing: bool
+    collected_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    available: bool = True
+    error: str | None = None
+
+
+class RemediationMetricSnapshot(StrictFrozenModel):
+    """Metric sample captured for remediation verification."""
+
+    metric_key: str = Field(min_length=1)
+    query: str = Field(min_length=1)
+    value: float | int | str | bool | None = None
+    condition: dict[str, Any] | None = None
+    collected_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    available: bool = True
+    error: str | None = None
+
+
+class RemediationCheckSnapshot(StrictFrozenModel):
+    """Grouped alert + metric evidence at a specific remediation phase."""
+
+    alert: RemediationAlertSnapshot | None = None
+    metrics: list[RemediationMetricSnapshot] = Field(default_factory=list)
+    collected_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+class RemediationAlertReview(StrictFrozenModel):
+    """Comparison of alert status before and after remediation."""
+
+    fingerprint: str = Field(min_length=1)
+    alert_name: str = Field(min_length=1)
+    before_status: str = Field(min_length=1)
+    after_status: str = Field(min_length=1)
+    cleared: bool
+    reviewed_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+class RemediationMetricReview(StrictFrozenModel):
+    """Comparison of metric values before and after remediation."""
+
+    metric_key: str = Field(min_length=1)
+    query: str = Field(min_length=1)
+    before_value: float | int | str | bool | None = None
+    after_value: float | int | str | bool | None = None
+    condition: dict[str, Any] | None = None
+    improved: bool
+    available: bool
+    error: str | None = None
+    reviewed_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+class RemediationEvidence(StrictFrozenModel):
+    """Persistent before/after evidence for remediation audit and review."""
+
+    pre_check: RemediationCheckSnapshot | None = None
+    post_check: RemediationCheckSnapshot | None = None
+    alert_review: RemediationAlertReview | None = None
+    metric_reviews: list[RemediationMetricReview] = Field(default_factory=list)
+    alert_cleared: bool | None = None
+    metrics_improved: bool | None = None
+    collected_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
 class ThinkingStep(StrictFrozenModel):
     """Single thought/action step in the diagnosis trace."""
 
@@ -197,6 +266,7 @@ class DiagnosisSession(StrictFrozenModel):
     re_diagnosis_round: int = Field(default=0, ge=0)
     duration_seconds: int = Field(default=0, ge=0)
     outcome: str | None = None
+    remediation_evidence: RemediationEvidence | None = None
 
     @field_validator("session_id")
     @classmethod
@@ -237,4 +307,10 @@ __all__ = [
     "RankedRootCause",
     "DiagnosisResult",
     "DiagnosisSession",
+    "RemediationAlertSnapshot",
+    "RemediationMetricSnapshot",
+    "RemediationCheckSnapshot",
+    "RemediationAlertReview",
+    "RemediationMetricReview",
+    "RemediationEvidence",
 ]

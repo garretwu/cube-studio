@@ -224,6 +224,7 @@ export type DiagnosisSession = {
   re_diagnosis_round?: number;
   duration_seconds: number;
   outcome?: string | null;
+  remediation_evidence?: RemediationEvidence | null;
 };
 
 export type SessionEvent = {
@@ -329,6 +330,7 @@ export type RemediationAction = {
   description: string;
   tool: string;
   params: Record<string, unknown>;
+  command?: string | null;
   rollback_tool?: string | null;
   verification: VerificationConfig;
   timeout: number;
@@ -357,6 +359,63 @@ export type RemediationPlan = {
   safety_level?: string;
 };
 
+export type RemediationAlertSnapshot = {
+  fingerprint: string;
+  alert_name: string;
+  status: string;
+  is_firing: boolean;
+  collected_at: string;
+  available: boolean;
+  error?: string | null;
+};
+
+export type RemediationMetricSnapshot = {
+  metric_key: string;
+  query: string;
+  value?: string | number | boolean | null;
+  condition?: Record<string, unknown> | null;
+  collected_at: string;
+  available: boolean;
+  error?: string | null;
+};
+
+export type RemediationCheckSnapshot = {
+  alert?: RemediationAlertSnapshot | null;
+  metrics: RemediationMetricSnapshot[];
+  collected_at: string;
+};
+
+export type RemediationAlertReview = {
+  fingerprint: string;
+  alert_name: string;
+  before_status: string;
+  after_status: string;
+  cleared: boolean;
+  reviewed_at: string;
+};
+
+export type RemediationMetricReview = {
+  metric_key: string;
+  query: string;
+  before_value?: string | number | boolean | null;
+  after_value?: string | number | boolean | null;
+  condition?: Record<string, unknown> | null;
+  improved: boolean;
+  available: boolean;
+  error?: string | null;
+  reviewed_at: string;
+};
+
+export type RemediationEvidence = {
+  pre_check?: RemediationCheckSnapshot | null;
+  post_check?: RemediationCheckSnapshot | null;
+  alert_review?: RemediationAlertReview | null;
+  metric_reviews: RemediationMetricReview[];
+  alert_cleared?: boolean | null;
+  metrics_improved?: boolean | null;
+  collected_at: string;
+};
+
 export type RemediationOverview = {
   session_id: string;
   plan: RemediationPlan;
@@ -370,6 +429,7 @@ export type RemediationOverview = {
   };
   timeline?: SessionEvent[];
   approval_required: boolean;
+  baseline_review?: RemediationEvidence | null;
 };
 
 export type ChatMessage = {

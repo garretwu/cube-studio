@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+﻿import { useEffect, useMemo, useState } from "react";
 
 import type { SessionEvent } from "../api/types";
 import { formatTimestamp } from "../utils/format";
@@ -33,6 +33,7 @@ const STATUS_LABELS: Record<string, string> = {
   escalated: "已升级处理",
   execution_failed: "执行失败",
   execution_started: "开始修复",
+  pre_remediation_baseline_collected: "修复前基线已采集",
   execution_succeeded: "执行成功",
   execution_timeout: "执行超时",
   failed: "失败",

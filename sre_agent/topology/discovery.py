@@ -23,6 +23,9 @@ from sre_agent.ontology.discovery.switch_scanner import SwitchScanner
 
 LOGGER = logging.getLogger(__name__)
 
+_DISCOVER_ALL_K8S_NAMESPACE_TOKENS = frozenset({"*", "all"})
+_EXCLUDED_DYNAMIC_K8S_NAMESPACES = frozenset({"kube-system", "kube-public", "kube-node-lease"})
+
 
 def _summary_counts(nodes: list[OntologyNode], edges: list[OntologyEdge]) -> dict[str, int]:
     return {"nodes": len(nodes), "edges": len(edges)}
@@ -200,6 +203,26 @@ class _LiveK8sDiscoveryChannel:
     def __init__(self, kubeconfig: str = "~/.kube/config") -> None:
         self._kubeconfig = kubeconfig
 
+    async def list_namespaces(self) -> list[str]:
+        def _fetch() -> list[str]:
+            try:
+                from kubernetes import client as k8s_client
+                from kubernetes import config as k8s_config
+            except Exception as exc:  # noqa: BLE001
+                raise RuntimeError("python package 'kubernetes' is required for live K8s discovery") from exc
+
+            k8s_config.load_kube_config(config_file=self._kubeconfig)
+            api = k8s_client.CoreV1Api()
+            namespaces = api.list_namespace()
+            names: list[str] = []
+            for namespace in namespaces.items:
+                name = str(namespace.metadata.name or "").strip()
+                if name:
+                    names.append(name)
+            return names
+
+        return await asyncio.to_thread(_fetch)
+
     async def list_pods(self, namespace: str, label_selector: str | None = None) -> list[dict[str, Any]]:
         def _fetch() -> list[dict[str, Any]]:
             try:
@@ -257,6 +280,40 @@ class _LiveK8sDiscoveryChannel:
             return payloads
 
         return await asyncio.to_thread(_fetch)
+
+
+def _normalize_k8s_namespace_allowlist(k8s_namespaces: list[str] | None) -> list[str]:
+    if not k8s_namespaces:
+        return []
+    allowlist: list[str] = []
+    for item in k8s_namespaces:
+        namespace = str(item or "").strip()
+        if not namespace:
+            continue
+        if namespace.casefold() in _DISCOVER_ALL_K8S_NAMESPACE_TOKENS:
+            return []
+        if namespace not in allowlist:
+            allowlist.append(namespace)
+    return allowlist
+
+
+async def _resolve_k8s_namespaces(
+    channel: Any,
+    k8s_namespaces: list[str] | None,
+) -> list[str]:
+    allowlist = _normalize_k8s_namespace_allowlist(k8s_namespaces)
+    if allowlist:
+        return allowlist
+
+    discovered = await channel.list_namespaces()
+    filtered: list[str] = []
+    for item in discovered:
+        namespace = str(item or "").strip()
+        if not namespace or namespace in _EXCLUDED_DYNAMIC_K8S_NAMESPACES:
+            continue
+        if namespace not in filtered:
+            filtered.append(namespace)
+    return sorted(filtered)
 
 
 class _LivePrometheusQueryChannel:
@@ -401,10 +458,8 @@ async def scan_live_sources(
     bmc_nodes, bmc_edges = await BMCScanner(channel=object()).scan(bmc_payloads)
 
     effective_kubeconfig = kubeconfig or (os.getenv("SRE_KUBECONFIG", "").strip() or "~/.kube/config")
-    namespaces = [item.strip() for item in (k8s_namespaces or ["default"]) if item and item.strip()]
-    if not namespaces:
-        namespaces = ["default"]
     k8s_channel = _LiveK8sDiscoveryChannel(kubeconfig=effective_kubeconfig)
+    namespaces = await _resolve_k8s_namespaces(k8s_channel, k8s_namespaces)
     k8s_nodes: list[OntologyNode] = []
     k8s_edges: list[OntologyEdge] = []
     for namespace in namespaces:
@@ -531,12 +586,10 @@ async def discover_k8s_workload_snapshot(
 ) -> tuple[list[OntologyNode], list[OntologyEdge], dict[str, dict[str, int]]]:
     discovery_cfg = config.ontology.discovery
     effective_kubeconfig = os.getenv("SRE_KUBECONFIG", "").strip() or "~/.kube/config"
-    namespaces = [item.strip() for item in discovery_cfg.k8s_namespaces if item and item.strip()]
-    if not namespaces:
-        namespaces = ["default"]
     cluster_name = str(discovery_cfg.k8s_cluster_name).strip() or "lab-cluster"
 
     k8s_channel = _LiveK8sDiscoveryChannel(kubeconfig=effective_kubeconfig)
+    namespaces = await _resolve_k8s_namespaces(k8s_channel, discovery_cfg.k8s_namespaces)
     nodes: list[OntologyNode] = []
     edges: list[OntologyEdge] = []
     for namespace in namespaces:

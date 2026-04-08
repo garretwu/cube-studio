@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+﻿import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -60,6 +60,29 @@ function buildTimeline(stepDescription: string): SessionEvent[] {
       schema_version: "1.0",
       type: "remediation_progress",
       session_id: "sess-1",
+      timestamp: "2026-04-03T10:01:30Z",
+      data: {
+        stage: "pre_remediation_baseline_collected",
+        baseline_alert: { alert_name: "vllm_latency_high", status: "firing", is_firing: true },
+        baseline_metrics: [{ metric_key: "llm_latency_p95", value: 620 }],
+      },
+    },
+    {
+      schema_version: "1.0",
+      type: "remediation_progress",
+      session_id: "sess-1",
+      timestamp: "2026-04-03T10:01:45Z",
+      data: {
+        stage: "observation_result",
+        alert_cleared: true,
+        metrics_improved: true,
+        metric_reviews: [{ metric_key: "llm_latency_p95", before_value: 620, after_value: 210, improved: true, available: true }],
+      },
+    },
+    {
+      schema_version: "1.0",
+      type: "remediation_progress",
+      session_id: "sess-1",
       timestamp: "2026-04-03T10:02:00Z",
       data: {
         stage: "execution_succeeded",
@@ -97,6 +120,44 @@ function buildOverview(sessionId: string, stepDescription: string): RemediationO
       completed_steps: 1,
       total_steps: 1,
       batch_status: [{ batch: "一次性执行", progress: 100, status: "resolved" }],
+    },
+    baseline_review: {
+      pre_check: {
+        collected_at: "2026-04-03T10:01:30Z",
+        alert: {
+          fingerprint: "fp-1",
+          alert_name: "vllm_latency_high",
+          status: "firing",
+          is_firing: true,
+          collected_at: "2026-04-03T10:01:30Z",
+          available: true,
+        },
+        metrics: [{ metric_key: "llm_latency_p95", query: "vllm_request_latency_p95", value: 620, collected_at: "2026-04-03T10:01:30Z", available: true }],
+      },
+      post_check: {
+        collected_at: "2026-04-03T10:01:45Z",
+        alert: {
+          fingerprint: "fp-1",
+          alert_name: "vllm_latency_high",
+          status: "resolved",
+          is_firing: false,
+          collected_at: "2026-04-03T10:01:45Z",
+          available: true,
+        },
+        metrics: [{ metric_key: "llm_latency_p95", query: "vllm_request_latency_p95", value: 210, collected_at: "2026-04-03T10:01:45Z", available: true }],
+      },
+      alert_review: {
+        fingerprint: "fp-1",
+        alert_name: "vllm_latency_high",
+        before_status: "firing",
+        after_status: "resolved",
+        cleared: true,
+        reviewed_at: "2026-04-03T10:01:45Z",
+      },
+      metric_reviews: [{ metric_key: "llm_latency_p95", query: "vllm_request_latency_p95", before_value: 620, after_value: 210, improved: true, available: true, reviewed_at: "2026-04-03T10:01:45Z" }],
+      alert_cleared: true,
+      metrics_improved: true,
+      collected_at: "2026-04-03T10:01:45Z",
     },
     timeline: buildTimeline(stepDescription),
   };
@@ -173,6 +234,9 @@ describe("RemediationPage", () => {
     expect(screen.getByText("方案信息")).toBeInTheDocument();
     expect(screen.getByText("执行步骤")).toBeInTheDocument();
 
+    expect(screen.getByText("基线与复查")).toBeInTheDocument();
+    expect(screen.getByText("告警已清除")).toBeInTheDocument();
+    expect(screen.getByText("620 -> 210")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "查看步骤 1 详情" }));
     expect(screen.getByText("步骤 1 详情")).toBeInTheDocument();
     expect(screen.getAllByText("restart deployment").length).toBeGreaterThan(0);

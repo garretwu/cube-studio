@@ -173,7 +173,7 @@ class RemediationEngine:
         verification_results: list[dict[str, Any]] = []
         for step in plan.steps:
             await asyncio.sleep(0)
-            command = self._mock_command_for_step(step.tool, step.params)
+            command = step.command or self._render_step_command(step.tool, step.params)
             result_message = f"mock 已执行修复计划，步骤 {step.step_id} 已完成"
             verification_results.append(
                 {
@@ -337,13 +337,14 @@ class RemediationEngine:
                 found.add(int(match))
         return found
 
-    @staticmethod
-    def _mock_command_for_step(tool: str, params: dict[str, Any]) -> str:
-        command = params.get("command")
-        if isinstance(command, str) and command.strip():
-            return command.strip()
-        compact_params = json.dumps(params or {}, ensure_ascii=False, sort_keys=True)
-        return f"mock::{tool} {compact_params}"
+    def _render_step_command(self, tool: str, params: dict[str, Any]) -> str:
+        """Resolve command from tool registry; fallback to generic format."""
+        try:
+            tool_def = self.tools.get_tool(tool)
+            return tool_def.build_command(params)
+        except Exception:  # noqa: BLE001
+            compact = json.dumps(params or {}, ensure_ascii=False, sort_keys=True)
+            return f"{tool} {compact}"
 
 
 def _extract_field(payload: Any, path: str) -> Any:

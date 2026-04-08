@@ -1438,9 +1438,15 @@ class TestAPIE2E:
         remediation_events = [
             item for item in events_payload["data"] if item["type"] == EventType.REMEDIATION_PROGRESS.value
         ]
-        assert len(remediation_events) >= 3
+        assert len(remediation_events) >= 5
         assert remediation_events[0]["data"]["stage"] == "approval_accepted"
         assert remediation_events[1]["data"]["stage"] == "execution_started"
+        assert remediation_events[2]["data"]["stage"] == "pre_remediation_baseline_collected"
+        assert remediation_events[2]["data"]["baseline_alert"] is not None
+        assert isinstance(remediation_events[2]["data"]["baseline_metrics"], list)
+        assert remediation_events[-2]["data"]["stage"] == "observation_result"
+        assert "alert_review" in remediation_events[-2]["data"]
+        assert "metric_reviews" in remediation_events[-2]["data"]
         assert remediation_events[-1]["data"]["stage"] == "execution_succeeded"
         assert isinstance(remediation_events[-1]["data"].get("step_results"), list)
         assert remediation_events[-1]["data"]["step_results"]

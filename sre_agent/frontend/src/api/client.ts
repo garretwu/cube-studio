@@ -22,6 +22,7 @@ import type {
   OntologyEdge,
   OntologyNode,
   RemediationOverview,
+  RemediationEvidence,
   RemediationPlan,
   RemediationResult,
   SREApiEnvelope,
@@ -638,6 +639,13 @@ export const apiClient = {
       }
       const revisedEvents = events.filter((event) => event.type === "plan_revised");
       const latestRevision = revisedEvents.at(-1);
+      const latestObservation = [...events]
+        .reverse()
+        .find(
+          (event) =>
+            event.type === "remediation_progress" &&
+            String(event.data?.["stage"] ?? "").trim().toLowerCase() === "observation_result",
+        );
       const planVersionFromPlanId = Number(/-v(\d+)$/.exec(currentPlan.plan_id)?.[1] ?? 1);
       const planVersion = Number((latestRevision?.data?.["plan_version"] as number | undefined) ?? planVersionFromPlanId);
       const remediationEvents = events.filter((event) => event.type === "remediation_progress");
@@ -667,6 +675,24 @@ export const apiClient = {
                 : normalizedStatus === "rejected"
                   ? "rejected"
                   : "validating";
+
+      const derivedBaselineReview: RemediationEvidence | null =
+        session.remediation_evidence ??
+        (typeof latestObservation?.data?.["alert_cleared"] === "boolean" ||
+        typeof latestObservation?.data?.["metrics_improved"] === "boolean"
+          ? {
+              pre_check: (latestObservation?.data?.["pre_check"] as RemediationEvidence["pre_check"]) ?? null,
+              post_check: (latestObservation?.data?.["post_check"] as RemediationEvidence["post_check"]) ?? null,
+              alert_review: (latestObservation?.data?.["alert_review"] as RemediationEvidence["alert_review"]) ?? null,
+              metric_reviews: (latestObservation?.data?.["metric_reviews"] as RemediationEvidence["metric_reviews"]) ?? [],
+              alert_cleared: (latestObservation?.data?.["alert_cleared"] as boolean | null | undefined) ?? null,
+              metrics_improved: (latestObservation?.data?.["metrics_improved"] as boolean | null | undefined) ?? null,
+              collected_at:
+                (latestObservation?.data?.["collected_at"] as string | undefined) ??
+                latestObservation?.timestamp ??
+                new Date().toISOString(),
+            }
+          : null);
 
       return {
         session_id: resolved,
@@ -700,6 +726,7 @@ export const apiClient = {
         },
         timeline: events,
         approval_required: session.status === "approval_required",
+        baseline_review: derivedBaselineReview,
       } as RemediationOverview;
     } catch {
       if (import.meta.env.DEV) {

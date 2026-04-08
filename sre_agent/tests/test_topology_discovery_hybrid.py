@@ -79,3 +79,87 @@ async def test_discover_hybrid_snapshot_falls_back_to_static_on_k8s_error(monkey
     assert counts == {"switch": {"nodes": 1, "edges": 0}}
     assert isinstance(fallback_reason, str)
     assert "dynamic K8s workload discovery failed" in fallback_reason
+
+
+@pytest.mark.asyncio
+async def test_discover_k8s_workload_snapshot_discovers_all_non_system_namespaces_by_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen_namespaces: list[str] = []
+
+    class _FakeK8sChannel:
+        async def list_namespaces(self) -> list[str]:
+            return ["default", "kube-system", "inference", "default", "kube-public"]
+
+    class _FakeScanner:
+        def __init__(self, channel: object) -> None:
+            assert isinstance(channel, _FakeK8sChannel)
+
+        async def scan(
+            self,
+            *,
+            namespace: str,
+            label_selector: str | None = None,
+            cluster_name: str = "lab-cluster",
+        ) -> tuple[list[OntologyNode], list[OntologyEdge]]:
+            assert label_selector is None
+            assert cluster_name == "lab-cluster"
+            seen_namespaces.append(namespace)
+            return ([_node(f"pod:{namespace}:demo", EntityType.K8S_POD, source="k8s")], [])
+
+    monkeypatch.setattr(discovery_module, "_LiveK8sDiscoveryChannel", lambda kubeconfig: _FakeK8sChannel())
+    monkeypatch.setattr(discovery_module, "K8sScanner", _FakeScanner)
+
+    nodes, edges, counts = await discovery_module.discover_k8s_workload_snapshot(SREAgentConfig())
+
+    assert seen_namespaces == ["default", "inference"]
+    assert {node.id for node in nodes} == {"pod:default:demo", "pod:inference:demo"}
+    assert edges == []
+    assert counts["k8s_workload"] == {"nodes": 2, "edges": 0}
+
+
+@pytest.mark.asyncio
+async def test_discover_k8s_workload_snapshot_respects_explicit_namespace_allowlist(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen_namespaces: list[str] = []
+
+    class _FakeK8sChannel:
+        async def list_namespaces(self) -> list[str]:
+            raise AssertionError("explicit namespace allowlist should skip dynamic namespace discovery")
+
+    class _FakeScanner:
+        def __init__(self, channel: object) -> None:
+            assert isinstance(channel, _FakeK8sChannel)
+
+        async def scan(
+            self,
+            *,
+            namespace: str,
+            label_selector: str | None = None,
+            cluster_name: str = "lab-cluster",
+        ) -> tuple[list[OntologyNode], list[OntologyEdge]]:
+            assert label_selector is None
+            assert cluster_name == "lab-cluster"
+            seen_namespaces.append(namespace)
+            return ([_node(f"pod:{namespace}:demo", EntityType.K8S_POD, source="k8s")], [])
+
+    monkeypatch.setattr(discovery_module, "_LiveK8sDiscoveryChannel", lambda kubeconfig: _FakeK8sChannel())
+    monkeypatch.setattr(discovery_module, "K8sScanner", _FakeScanner)
+
+    config = SREAgentConfig.model_validate(
+        {
+            "ontology": {
+                "discovery": {
+                    "k8s_namespaces": ["inference", " default ", "inference"],
+                }
+            }
+        }
+    )
+
+    nodes, edges, counts = await discovery_module.discover_k8s_workload_snapshot(config)
+
+    assert seen_namespaces == ["inference", "default"]
+    assert {node.id for node in nodes} == {"pod:default:demo", "pod:inference:demo"}
+    assert edges == []
+    assert counts["k8s_workload"] == {"nodes": 2, "edges": 0}
