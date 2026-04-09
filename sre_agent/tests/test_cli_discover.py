@@ -162,6 +162,9 @@ def test_discover_live_mode_validates_inventory_schema(tmp_path: Path, monkeypat
                 "  aidc_id: test-aidc",
                 "ontology:",
                 f"  db_path: {db_path}",
+                "  discovery:",
+                "    k8s_cluster_name: aidc-lab",
+                "    k8s_namespaces: []",
             ]
         ),
         encoding="utf-8",
@@ -214,6 +217,9 @@ def test_discover_live_mode_persists_mocked_scanner_aggregation(
                 "  aidc_id: test-aidc",
                 "ontology:",
                 f"  db_path: {db_path}",
+                "  discovery:",
+                "    k8s_cluster_name: aidc-lab",
+                "    k8s_namespaces: []",
             ]
         ),
         encoding="utf-8",
@@ -264,7 +270,10 @@ def test_discover_live_mode_persists_mocked_scanner_aggregation(
         properties={},
     )
 
-    async def _fake_scan_live_sources(_: dict[str, object]):
+    async def _fake_scan_live_sources(config, inventory: dict[str, object]):
+        assert list(config.ontology.discovery.k8s_namespaces) == []
+        assert str(config.ontology.discovery.k8s_cluster_name) == "aidc-lab"
+        assert inventory["inventory"]["workers"][0]["name"] == "worker-01"
         return (
             [live_node, live_bmc],
             [live_edge],

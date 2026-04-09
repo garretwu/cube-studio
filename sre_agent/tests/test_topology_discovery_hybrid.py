@@ -27,6 +27,7 @@ async def test_discover_hybrid_snapshot_merges_static_and_dynamic(monkeypatch: p
     dynamic_nodes = [
         _node("node-a", EntityType.NODE, source="k8s"),  # must not override static node source
         _node("pod:default:demo", EntityType.K8S_POD, source="k8s"),
+        _node("svc:team-a:demo", EntityType.INFERENCE_SERVICE, source="k8s"),
     ]
     dynamic_edges = [
         OntologyEdge(
@@ -34,14 +35,20 @@ async def test_discover_hybrid_snapshot_merges_static_and_dynamic(monkeypatch: p
             target_id="node-a",
             relation=RelationType.HOSTED_ON,
             properties={"namespace": "default"},
-        )
+        ),
+        OntologyEdge(
+            source_id="svc:team-a:demo",
+            target_id="node-a",
+            relation=RelationType.HOSTED_ON,
+            properties={"namespace": "team-a"},
+        ),
     ]
 
     async def _fake_static(_: SREAgentConfig):
         return static_nodes, static_edges, {"switch": {"nodes": 1, "edges": 0}}
 
     async def _fake_k8s(_: SREAgentConfig):
-        return dynamic_nodes, dynamic_edges, {"k8s_workload": {"nodes": 2, "edges": 1}}
+        return dynamic_nodes, dynamic_edges, {"k8s_workload": {"nodes": 3, "edges": 2}}
 
     monkeypatch.setattr(discovery_module, "discover_static_snapshot", _fake_static)
     monkeypatch.setattr(discovery_module, "discover_k8s_workload_snapshot", _fake_k8s)
@@ -49,13 +56,13 @@ async def test_discover_hybrid_snapshot_merges_static_and_dynamic(monkeypatch: p
     nodes, edges, counts, fallback_reason = await discovery_module.discover_hybrid_snapshot(SREAgentConfig())
 
     assert fallback_reason is None
-    assert {node.id for node in nodes} == {"node-a", "pod:default:demo"}
+    assert {node.id for node in nodes} == {"node-a", "pod:default:demo", "svc:team-a:demo"}
     node_a = next(node for node in nodes if node.id == "node-a")
     assert node_a.properties.get("source") == "lab_seed"
-    assert len(edges) == 1
-    assert edges[0].relation == RelationType.HOSTED_ON
+    assert len(edges) == 2
+    assert {edge.relation for edge in edges} == {RelationType.HOSTED_ON}
     assert counts["switch"] == {"nodes": 1, "edges": 0}
-    assert counts["k8s_workload"] == {"nodes": 2, "edges": 1}
+    assert counts["k8s_workload"] == {"nodes": 3, "edges": 2}
 
 
 @pytest.mark.asyncio
@@ -89,7 +96,7 @@ async def test_discover_k8s_workload_snapshot_discovers_all_non_system_namespace
 
     class _FakeK8sChannel:
         async def list_namespaces(self) -> list[str]:
-            return ["default", "kube-system", "inference", "default", "kube-public"]
+            return ["default", "kube-system", "inference", "default", "kube-public", "kube-node-lease"]
 
     class _FakeScanner:
         def __init__(self, channel: object) -> None:
@@ -112,10 +119,15 @@ async def test_discover_k8s_workload_snapshot_discovers_all_non_system_namespace
 
     nodes, edges, counts = await discovery_module.discover_k8s_workload_snapshot(SREAgentConfig())
 
-    assert seen_namespaces == ["default", "inference"]
-    assert {node.id for node in nodes} == {"pod:default:demo", "pod:inference:demo"}
+    assert seen_namespaces == ["default", "inference", "kube-node-lease", "kube-public"]
+    assert {node.id for node in nodes} == {
+        "pod:default:demo",
+        "pod:inference:demo",
+        "pod:kube-node-lease:demo",
+        "pod:kube-public:demo",
+    }
     assert edges == []
-    assert counts["k8s_workload"] == {"nodes": 2, "edges": 0}
+    assert counts["k8s_workload"] == {"nodes": 4, "edges": 0}
 
 
 @pytest.mark.asyncio

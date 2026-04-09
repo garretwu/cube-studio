@@ -274,7 +274,14 @@ class _LokiHttpBackend:
 _DEFAULT_CHANNEL_TOOL_MAP: dict[str, list[str]] = {
     "alert": [],
     "ontology": ["ontology.query", "ontology.get_path", "ontology.get_blast_radius"],
-    "ssh": ["gpu.get_metrics", "gpu.get_processes", "network.get_rdma_stats"],
+    "ssh": [
+        "gpu.get_metrics",
+        "gpu.get_processes",
+        "network.get_rdma_stats",
+        "network.get_tc_qdisc",
+        "network.get_nic_link_state",
+        "network.get_nic_counters",
+    ],
     "k8s": [
         "k8s.list_pods",
         "k8s.describe_pod",

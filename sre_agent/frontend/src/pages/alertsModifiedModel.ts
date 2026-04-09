@@ -172,7 +172,11 @@ function buildPrimaryJudgment(cluster: AlertCluster | undefined, alerts: Alert[]
   return "系统判断这些信号足以形成单一处理入口，后续只需要围绕收敛结果推进。";
 }
 
-function buildRouteDecision(alerts: Alert[], activeSession?: DiagnosisSession) {
+function buildRouteDecision(
+  alerts: Alert[],
+  activeSession?: DiagnosisSession,
+  observeThresholdSeconds: number = 60,
+) {
   const focusFingerprint = encodeURIComponent(pickPrimaryFingerprint(alerts));
   if (activeSession && alerts.some((alert) => alert.fingerprint === activeSession.alert.fingerprint)) {
     return {
@@ -205,6 +209,36 @@ function buildRouteDecision(alerts: Alert[], activeSession?: DiagnosisSession) {
     };
   }
 
+  // Single non-critical firing alert: check observation threshold
+  const now = Date.now();
+  const earliestFiring = alerts
+    .filter((alert) => alert.status === "firing")
+    .reduce((earliest: number | null, alert) => {
+      const ts = new Date(alert.starts_at).getTime();
+      return earliest === null || ts < earliest ? ts : earliest;
+    }, null as number | null);
+
+  if (earliestFiring !== null) {
+    const elapsedSeconds = Math.max(0, (now - earliestFiring) / 1000);
+    if (elapsedSeconds >= observeThresholdSeconds) {
+      return {
+        label: "将创建诊断" as const,
+        tone: "warning" as const,
+        ctaLabel: "开始诊断",
+        path: "/diagnosis",
+        note: "已达观察阈值，可手动触发诊断",
+      };
+    }
+    const remaining = Math.ceil(observeThresholdSeconds - elapsedSeconds);
+    return {
+      label: "观察中" as const,
+      tone: "warning" as const,
+      ctaLabel: `继续观察 (${remaining}s)`,
+      path: `/alerts-modified?q=${focusFingerprint}`,
+      note: `${remaining} 秒后可手动触发诊断`,
+    };
+  }
+
   return {
     label: "观察中" as const,
     tone: "warning" as const,
@@ -231,8 +265,13 @@ function highestSeverity(alerts: Alert[]): Alert["severity"] {
   return "info";
 }
 
-function buildResult(cluster: AlertCluster | undefined, alerts: Alert[], activeSession?: DiagnosisSession): ConvergenceResult {
-  const route = buildRouteDecision(alerts, activeSession);
+function buildResult(
+  cluster: AlertCluster | undefined,
+  alerts: Alert[],
+  activeSession?: DiagnosisSession,
+  observeThresholdSeconds?: number,
+): ConvergenceResult {
+  const route = buildRouteDecision(alerts, activeSession, observeThresholdSeconds);
   const fingerprints = unique(alerts.map((alert) => alert.fingerprint));
 
   return {
@@ -289,6 +328,7 @@ export function buildAlertConvergenceView(
   alerts: Alert[],
   clusters: AlertCluster[],
   activeSession?: DiagnosisSession,
+  observeThresholdSeconds?: number,
 ): AlertConvergenceView {
   const alertsByFingerprint = new Map<string, Alert[]>();
   alerts.forEach((alert) => {
@@ -307,7 +347,7 @@ export function buildAlertConvergenceView(
       return;
     }
 
-    const result = buildResult(cluster, clusterAlerts, activeSession);
+    const result = buildResult(cluster, clusterAlerts, activeSession, observeThresholdSeconds);
     results.push(result);
 
     cluster.alerts.forEach((fingerprint) => {
@@ -325,7 +365,7 @@ export function buildAlertConvergenceView(
       return;
     }
 
-    const result = buildResult(undefined, groupAlerts, activeSession);
+    const result = buildResult(undefined, groupAlerts, activeSession, observeThresholdSeconds);
     results.push(result);
     resultByFingerprint.set(fingerprint, result);
   });

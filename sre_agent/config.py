@@ -30,8 +30,13 @@ class GlobalConfig(BaseModel):
     cors_allow_headers: list[str] = Field(default_factory=lambda: ["Authorization", "Content-Type", "x-trace-id"])
     cors_expose_headers: list[str] = Field(default_factory=lambda: ["x-trace-id"])
     blocked_alert_names: list[str] = Field(
-        default_factory=lambda: []
+        default_factory=lambda: ["KubeClientErrors"]
     )
+    auto_diagnose_alert_names: list[str] = Field(
+        default_factory=lambda: ["CubeStudioWebLatencyP95High", "NetworkLatencyHigh100ms"]
+    )
+    auto_diagnose_delay_seconds: float = 10.0
+    auto_diagnose_entity_correlation_count: int = 2
 
 
 class AuthConfig(BaseModel):
@@ -56,6 +61,13 @@ class AgentRuntimeConfig(BaseModel):
 
     guardrails_config_dir: str = "./sre_agent/guardrails"
     langgraph_checkpoint_db: str = "./data/checkpoints/sre_agent.db"
+    reasoning_context_strategy: str = "state_rebuilt"
+    reasoning_overflow_behavior: str = "fail"
+    reasoning_input_target_tokens: int = 180000
+    reasoning_model_family: str | None = None
+    reason_context_char_budget: int = 2400
+    tool_message_char_limit: int = 1200
+    reason_preserve_recent_messages: int = 6
 
 
 class SwitchPortDiscoveryConfig(BaseModel):

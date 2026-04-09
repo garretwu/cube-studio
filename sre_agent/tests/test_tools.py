@@ -366,6 +366,46 @@ class TestToolRegistryUnit(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(result.success)
         self.assertIn("ssh command failed", result.error)
 
+    async def test_unit_network_tc_qdisc_supports_optional_iface(self) -> None:
+        registry = build_default_registry()
+        ssh = _FakeSSHChannel()
+        context = ToolExecutionContext(channels={"ssh": ssh})
+
+        default_result = await registry.execute("network.get_tc_qdisc", {"node": "worker-01"}, context)
+        iface_result = await registry.execute(
+            "network.get_tc_qdisc",
+            {"node": "worker-01", "iface": "eth0"},
+            context,
+        )
+
+        self.assertTrue(default_result.success)
+        self.assertTrue(iface_result.success)
+        self.assertEqual(default_result.data["source"], "tc qdisc show")
+        self.assertEqual(ssh.calls[0]["command"], "tc qdisc show")
+        self.assertEqual(ssh.calls[1]["command"], "tc qdisc show dev eth0")
+
+    async def test_unit_network_nic_link_state_and_counters_use_ssh(self) -> None:
+        registry = build_default_registry()
+        ssh = _FakeSSHChannel()
+        context = ToolExecutionContext(channels={"ssh": ssh})
+
+        link_result = await registry.execute(
+            "network.get_nic_link_state",
+            {"node": "worker-01", "iface": "eth0"},
+            context,
+        )
+        counters_result = await registry.execute(
+            "network.get_nic_counters",
+            {"node": "worker-01"},
+            context,
+        )
+
+        self.assertTrue(link_result.success)
+        self.assertTrue(counters_result.success)
+        self.assertIn("ip -s link show dev eth0", ssh.calls[0]["command"])
+        self.assertIn("ethtool", ssh.calls[0]["command"])
+        self.assertIn("/sys/class/net", ssh.calls[1]["command"])
+
     async def test_unit_channel_failure_propagates_for_write_tool(self) -> None:
         registry = build_default_registry()
         context = ToolExecutionContext(

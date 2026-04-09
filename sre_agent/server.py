@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 import threading
 from collections import deque
 from contextlib import asynccontextmanager
@@ -20,7 +21,7 @@ from fastapi import FastAPI
 from lib.channels.alert import AlertChannel
 from lib.channels.knowledge import DifyKnowledgeStoreAdapter
 from sre_agent.agent import ConversationalAgent, run_diagnosis
-from sre_agent.alerts_filter import build_blocked_alert_name_set, filter_blocked_alerts
+from sre_agent.alerts_filter import build_blocked_alert_name_set, filter_blocked_alerts, normalize_alert_name
 from sre_agent.api import build_api_router, build_websocket_router, install_middlewares
 from sre_agent.api.routes import AuditLogger
 from sre_agent.auth.jwt import CurrentUser, JWTSettings, resolve_jwt_settings
@@ -32,6 +33,7 @@ from sre_agent.models.alert import Alert, AlertSeverity
 from sre_agent.models.diagnosis import DiagnosisSession
 from sre_agent.models.events import EventType, WSEvent
 from sre_agent.ontology.graph import OntologyGraph
+from sre_agent.diagnosis_start import DiagnosisStartCoordinator
 from sre_agent.remediation import ApprovalGate, IncidentHandler, LoopConfig, LoopOrchestrator, PlanValidator, RemediationEngine, RollbackJournal
 from sre_agent.runtime import bootstrap_tool_channels, register_remediation_channel
 from sre_agent.topology.discovery import discover_hybrid_snapshot, discover_live_snapshot, discover_static_snapshot
@@ -230,17 +232,30 @@ class AlertPollingService:
         channel: AlertChannelProtocol,
         alert_store: InMemoryAlertStore,
         trace_publisher: InMemoryTracePublisher,
+        diagnosis_start_coordinator: DiagnosisStartCoordinator | None = None,
         poll_interval_seconds: float = 5.0,
         blocked_alert_names: set[str] | None = None,
+        auto_diagnose_alert_names: set[str] | None = None,
+        auto_diagnose_delay_seconds: float = 10.0,
+        entity_correlation_count: int = 2,
     ) -> None:
         self._channel = channel
         self._alert_store = alert_store
         self._trace_publisher = trace_publisher
+        self._diagnosis_start_coordinator = diagnosis_start_coordinator
         self._poll_interval_seconds = max(0.2, float(poll_interval_seconds))
         self._blocked_alert_names = blocked_alert_names or set()
+        self._auto_diagnose_alert_names = {
+            normalize_alert_name(name) for name in (auto_diagnose_alert_names or set()) if normalize_alert_name(name)
+        }
+        self._auto_diagnose_delay_seconds = max(0.0, float(auto_diagnose_delay_seconds))
+        self._entity_correlation_count = max(1, int(entity_correlation_count))
         self._stop_event = asyncio.Event()
         self._task: asyncio.Task[None] | None = None
         self._last_versions: dict[str, str] = {}
+        self._pending_auto_triggers: dict[str, asyncio.Task[None]] = {}
+        self._triggered_fingerprints: set[str] = set()
+        self._diagnosis_tasks: set[asyncio.Task[None]] = set()
 
     async def start(self) -> None:
         if self._task is not None and not self._task.done():
@@ -251,6 +266,7 @@ class AlertPollingService:
     async def stop(self) -> None:
         self._stop_event.set()
         if self._task is None:
+            await self._cancel_auto_diagnose_tasks()
             return
         self._task.cancel()
         try:
@@ -258,6 +274,7 @@ class AlertPollingService:
         except asyncio.CancelledError:
             pass
         self._task = None
+        await self._cancel_auto_diagnose_tasks()
 
     async def _run(self) -> None:
         try:
@@ -271,6 +288,7 @@ class AlertPollingService:
                     alerts = filter_blocked_alerts(alerts, blocked_names=self._blocked_alert_names)
                     self._alert_store.replace(alerts)
                     await self._publish_changes(alerts)
+                    await self._sync_auto_diagnose(alerts)
                 except asyncio.CancelledError:
                     raise
                 except Exception as exc:  # noqa: BLE001
@@ -284,6 +302,7 @@ class AlertPollingService:
                 await self._channel.disconnect()
             except Exception as exc:  # noqa: BLE001
                 LOGGER.warning("alert poller disconnect failed: %s", exc)
+            await self._cancel_auto_diagnose_tasks()
 
     async def _publish_changes(self, alerts: list[Alert]) -> None:
         current_versions = {alert.fingerprint: self._version(alert) for alert in alerts}
@@ -324,6 +343,165 @@ class AlertPollingService:
     @staticmethod
     def _version(alert: Alert) -> str:
         return alert.model_dump_json()
+
+    async def _sync_auto_diagnose(self, alerts: list[Alert]) -> None:
+        if self._diagnosis_start_coordinator is None:
+            return
+
+        # Level A: whitelist-based auto-diagnose (existing logic)
+        candidates: dict[str, Alert] = {}
+        if self._auto_diagnose_alert_names:
+            candidates = {alert.fingerprint: alert for alert in alerts if self._should_auto_diagnose(alert)}
+
+        # Level C: entity correlation — same entity with multiple distinct alerts
+        correlated = self._find_entity_correlated_alerts(alerts)
+        for alert in correlated:
+            if alert.fingerprint in candidates or alert.fingerprint in self._triggered_fingerprints:
+                continue
+            if alert.fingerprint in self._pending_auto_triggers:
+                continue
+            candidates[alert.fingerprint] = alert
+
+        active_fingerprints = set(candidates)
+        known_fingerprints = set(self._pending_auto_triggers) | set(self._triggered_fingerprints)
+        disappeared_fingerprints = known_fingerprints - active_fingerprints
+
+        for fingerprint in disappeared_fingerprints:
+            pending = self._pending_auto_triggers.pop(fingerprint, None)
+            if pending is not None and not pending.done():
+                pending.cancel()
+            self._triggered_fingerprints.discard(fingerprint)
+
+        for fingerprint, alert in candidates.items():
+            if fingerprint in self._pending_auto_triggers or fingerprint in self._triggered_fingerprints:
+                continue
+            task = asyncio.create_task(
+                self._trigger_auto_diagnose_after_delay(alert),
+                name=f"sre-auto-diagnose-delay-{fingerprint}",
+            )
+            self._pending_auto_triggers[fingerprint] = task
+            task.add_done_callback(lambda done, fp=fingerprint: self._on_auto_trigger_done(fp, done))
+
+    def _on_auto_trigger_done(self, fingerprint: str, task: asyncio.Task[None]) -> None:
+        self._pending_auto_triggers.pop(fingerprint, None)
+        try:
+            task.result()
+        except asyncio.CancelledError:
+            return
+        except Exception as exc:  # noqa: BLE001
+            self._triggered_fingerprints.discard(fingerprint)
+            LOGGER.warning("auto diagnose trigger failed for %s: %s", fingerprint, exc)
+
+    async def _trigger_auto_diagnose_after_delay(self, alert: Alert) -> None:
+        if self._auto_diagnose_delay_seconds > 0:
+            try:
+                await asyncio.wait_for(self._stop_event.wait(), timeout=self._auto_diagnose_delay_seconds)
+                return
+            except TimeoutError:
+                pass
+        if self._stop_event.is_set():
+            return
+        if not self._is_alert_present(alert.fingerprint):
+            return
+        if self._diagnosis_start_coordinator is None:
+            return
+
+        await self._trace_publisher.publish(
+            {
+                "type": EventType.DIAGNOSIS_TRIGGERED.value,
+                "session_id": "alerts",
+                "data": {
+                    "fingerprint": alert.fingerprint,
+                    "alert_name": alert.alert_name,
+                    "severity": alert.severity.value,
+                    "trigger_reason": self._infer_trigger_reason(alert),
+                },
+            }
+        )
+
+        handle = self._diagnosis_start_coordinator.start(
+            alert=alert,
+            task_name_prefix="auto-diagnose",
+            propagate_failure=True,
+        )
+        self._triggered_fingerprints.add(alert.fingerprint)
+        self._diagnosis_tasks.add(handle.task)
+        handle.task.add_done_callback(lambda done, fp=alert.fingerprint: self._on_diagnosis_task_done(fp, done))
+
+    def _on_diagnosis_task_done(self, fingerprint: str, task: asyncio.Task[None]) -> None:
+        self._diagnosis_tasks.discard(task)
+        try:
+            task.result()
+        except asyncio.CancelledError:
+            return
+        except Exception as exc:  # noqa: BLE001
+            self._triggered_fingerprints.discard(fingerprint)
+            LOGGER.warning("auto diagnose run failed for %s: %s", fingerprint, exc)
+
+    def _is_alert_present(self, fingerprint: str) -> bool:
+        snapshot = self._alert_store.snapshot()
+        raw_alerts = snapshot.get("alerts", [])
+        if not isinstance(raw_alerts, list):
+            return False
+        for item in raw_alerts:
+            if not isinstance(item, dict):
+                continue
+            if str(item.get("fingerprint", "")).strip() == fingerprint:
+                return True
+        return False
+
+    def _should_auto_diagnose(self, alert: Alert) -> bool:
+        candidates = {
+            normalize_alert_name(alert.alert_name),
+            normalize_alert_name(alert.labels.get("alertname")),
+        }
+        return any(name in self._auto_diagnose_alert_names for name in candidates if name)
+
+    def _find_entity_correlated_alerts(self, alerts: list[Alert]) -> list[Alert]:
+        entity_alerts: dict[str, list[Alert]] = {}
+        for alert in alerts:
+            if alert.status.value != "firing":
+                continue
+            entity = self._alert_entity_key(alert)
+            if entity:
+                entity_alerts.setdefault(entity, []).append(alert)
+        correlated: list[Alert] = []
+        for entity, group in entity_alerts.items():
+            distinct_names = {alert.alert_name for alert in group}
+            if len(distinct_names) >= self._entity_correlation_count:
+                for alert in group:
+                    if alert not in correlated:
+                        correlated.append(alert)
+        return correlated
+
+    @staticmethod
+    def _alert_entity_key(alert: Alert) -> str:
+        for key in ("node", "instance", "service", "pod", "switch", "host"):
+            value = alert.labels.get(key)
+            if value and str(value).strip():
+                return f"{key}={str(value).strip()}"
+        return ""
+
+    def _infer_trigger_reason(self, alert: Alert) -> str:
+        if self._should_auto_diagnose(alert):
+            return "whitelist"
+        return "entity_correlation"
+
+    async def _cancel_auto_diagnose_tasks(self) -> None:
+        pending = [task for task in self._pending_auto_triggers.values() if not task.done()]
+        running_diagnosis = [task for task in self._diagnosis_tasks if not task.done()]
+        for task in pending + running_diagnosis:
+            task.cancel()
+        for task in pending + running_diagnosis:
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+            except Exception:  # noqa: BLE001
+                pass
+        self._pending_auto_triggers.clear()
+        self._diagnosis_tasks.clear()
+        self._triggered_fingerprints.clear()
 
 
 @dataclass(frozen=True)
@@ -714,19 +892,25 @@ class DefaultDiagnosisRunner:
                 )
             query += "\nConsider all above alerts as context when forming diagnosis hypotheses."
         extra_alerts_payload = [a.model_dump(mode="json") for a in (extra_alerts or [])]
+        runtime_variables = _build_runtime_diagnosis_variables(
+            alert=enriched_alert,
+            aidc_id=self._config.global_.aidc_id,
+            cfg=self._config,
+            topology_context=topology_context,
+            extra_alerts=extra_alerts_payload,
+        )
         result = await run_diagnosis(
             query=query,
             context=self._execution_context,
-            variables={
-                "alert_name": enriched_alert.alert_name,
-                "severity": enriched_alert.severity.value,
-                "labels": enriched_alert.labels,
-                "annotations": enriched_alert.annotations,
-                "aidc_id": self._config.global_.aidc_id,
-                "topology_blast_radius": topology_context,
-                "extra_alerts": extra_alerts_payload,
-            },
+            variables=runtime_variables,
             tool_registry=self._tool_registry,
+            reasoning_context_strategy=_resolve_reasoning_context_strategy(self._config),
+            reasoning_overflow_behavior=_resolve_reasoning_overflow_behavior(self._config),
+            reasoning_input_target_tokens=_resolve_reasoning_input_target_tokens(self._config),
+            reasoning_model_family=_resolve_reasoning_model_family(self._config),
+            reason_context_char_budget=_resolve_reason_context_char_budget(self._config),
+            tool_message_char_limit=_resolve_tool_message_char_limit(self._config),
+            reason_preserve_recent_messages=_resolve_reason_preserve_recent_messages(self._config),
             checkpoint_dir=None,
             trace_callback=trace_callback,
             alert_snapshot=enriched_alert.model_dump(mode="json"),
@@ -765,20 +949,27 @@ class DefaultReDiagnoseRunner:
             f"Re-diagnose and provide updated ranked candidates.\n"
             f"{topology_context['summary']}"
         )
+        runtime_variables = _build_runtime_diagnosis_variables(
+            alert=alert,
+            aidc_id=self._config.global_.aidc_id,
+            cfg=self._config,
+            topology_context=topology_context,
+            extra_alerts=[],
+        )
+        runtime_variables["re_diagnosis_context"] = context
         result = await run_diagnosis(
             query=query,
             context=self._execution_context,
-            variables={
-                "alert_name": alert.alert_name,
-                "severity": alert.severity.value,
-                "labels": alert.labels,
-                "annotations": alert.annotations,
-                "aidc_id": self._config.global_.aidc_id,
-                "re_diagnosis_context": context,
-                "topology_blast_radius": topology_context,
-            },
+            variables=runtime_variables,
             tool_registry=self._tool_registry,
             session_id=session.session_id,
+            reasoning_context_strategy=_resolve_reasoning_context_strategy(self._config),
+            reasoning_overflow_behavior=_resolve_reasoning_overflow_behavior(self._config),
+            reasoning_input_target_tokens=_resolve_reasoning_input_target_tokens(self._config),
+            reasoning_model_family=_resolve_reasoning_model_family(self._config),
+            reason_context_char_budget=_resolve_reason_context_char_budget(self._config),
+            tool_message_char_limit=_resolve_tool_message_char_limit(self._config),
+            reason_preserve_recent_messages=_resolve_reason_preserve_recent_messages(self._config),
             checkpoint_dir=None,
             trace_callback=trace_callback,
             alert_snapshot=alert.model_dump(mode="json"),
@@ -794,6 +985,116 @@ def _build_default_query(alert: Alert) -> str:
         f"Summary: {alert.summary or 'n/a'}. Description: {alert.description or 'n/a'}. "
         "Use available tools to identify root cause and produce ranked candidates."
     )
+
+
+def _build_runtime_diagnosis_variables(
+    *,
+    alert: Alert,
+    aidc_id: str,
+    cfg: SREAgentConfig,
+    topology_context: dict[str, Any],
+    extra_alerts: list[dict[str, Any]],
+) -> dict[str, Any]:
+    labels = dict(alert.labels or {})
+    annotations = dict(alert.annotations or {})
+    node = _resolve_inventory_node_for_alert(labels=labels, cfg=cfg)
+    namespace = str(labels.get("namespace") or "service").strip() or "service"
+    iface = str(labels.get("interface") or labels.get("device") or "").strip()
+    promql = _infer_default_promql(alert_name=alert.alert_name, labels=labels)
+    payload: dict[str, Any] = {
+        "alert_name": alert.alert_name,
+        "severity": alert.severity.value,
+        "labels": labels,
+        "annotations": annotations,
+        "aidc_id": aidc_id,
+        "topology_blast_radius": topology_context,
+        "extra_alerts": extra_alerts,
+        "namespace": namespace,
+        "promql": promql,
+    }
+    if node:
+        payload["node"] = node
+    if iface:
+        payload["iface"] = iface
+    return payload
+
+
+def _infer_default_promql(*, alert_name: str, labels: dict[str, Any]) -> str:
+    phase = str(labels.get("phase") or "").strip().lower()
+    alert_name_lower = str(alert_name or "").strip().lower()
+    instance = str(labels.get("instance") or "").strip()
+    if phase == "rtt" or "networklatencyhigh100ms" in alert_name_lower:
+        if instance:
+            return f'probe_icmp_duration_seconds{{instance="{instance}"}}'
+        return "probe_icmp_duration_seconds"
+    return "up"
+
+
+def _map_internal_to_external_ip(ip: str) -> str | None:
+    value = str(ip or "").strip()
+    matched = re.fullmatch(r"10\.11\.0\.(\d{1,3})", value)
+    if not matched:
+        return None
+    tail = int(matched.group(1))
+    if tail < 0 or tail > 255:
+        return None
+    return f"10.11.4.{tail}"
+
+
+def _load_inventory_workers(*, cfg: SREAgentConfig) -> list[dict[str, Any]]:
+    candidates: list[Path] = []
+    env_path = os.getenv("SRE_SSH_INVENTORY_PATH", "").strip()
+    if env_path:
+        candidates.append(Path(env_path))
+    discovery_path = str(cfg.ontology.discovery.live_inventory_path or "").strip()
+    if discovery_path:
+        candidates.append(Path(discovery_path))
+
+    for path in candidates:
+        if not path.exists():
+            continue
+        try:
+            payload = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        except Exception:  # noqa: BLE001
+            continue
+        if not isinstance(payload, dict):
+            continue
+        inventory = payload.get("inventory", {})
+        if not isinstance(inventory, dict):
+            continue
+        workers = inventory.get("workers", [])
+        if isinstance(workers, list):
+            return [item for item in workers if isinstance(item, dict)]
+    return []
+
+
+def _resolve_inventory_node_for_alert(*, labels: dict[str, Any], cfg: SREAgentConfig) -> str:
+    node_label = str(labels.get("node") or "").strip()
+    instance = str(labels.get("instance") or "").strip()
+    workers = _load_inventory_workers(cfg=cfg)
+    if not workers:
+        return node_label or instance
+
+    names: set[str] = set()
+    host_to_name: dict[str, str] = {}
+    for worker in workers:
+        name = str(worker.get("name") or "").strip()
+        ssh = worker.get("ssh")
+        ssh_host = str(ssh.get("host") or "").strip() if isinstance(ssh, dict) else ""
+        if name:
+            names.add(name)
+        if name and ssh_host:
+            host_to_name[ssh_host] = name
+
+    if node_label and node_label in names:
+        return node_label
+    if instance and instance in host_to_name:
+        return host_to_name[instance]
+
+    mapped = _map_internal_to_external_ip(instance)
+    if mapped and mapped in host_to_name:
+        return host_to_name[mapped]
+    return node_label
 
 
 def _diagnosis_session_from_state(*, alert: Alert, state: dict[str, Any]) -> DiagnosisSession:
@@ -916,6 +1217,7 @@ class AgentCServices:
     trace_publisher: InMemoryTracePublisher
     alert_store: InMemoryAlertStore
     audit_logger: AuditLogger
+    diagnosis_start_coordinator: DiagnosisStartCoordinator | None = None
     topology_discovery: TopologyDiscoveryService | None = None
     chat_handler: ChatHandlerProtocol | None = None
     tool_channel_status: dict[str, dict[str, Any]] = field(default_factory=dict)
@@ -935,6 +1237,95 @@ def _resolve_alert_poll_interval_seconds(cfg: SREAgentConfig) -> float:
     except (TypeError, ValueError):
         return default_value
     return value if value > 0 else default_value
+
+
+def _resolve_auto_diagnose_alert_names(cfg: SREAgentConfig) -> set[str]:
+    candidate = getattr(cfg.global_, "auto_diagnose_alert_names", None)
+    if candidate is None:
+        extras = getattr(cfg.global_, "model_extra", None)
+        if isinstance(extras, dict):
+            candidate = extras.get("auto_diagnose_alert_names")
+    if not isinstance(candidate, (list, tuple, set)):
+        return set()
+    normalized = {normalize_alert_name(str(item)) for item in candidate}
+    return {item for item in normalized if item}
+
+
+def _resolve_auto_diagnose_delay_seconds(cfg: SREAgentConfig) -> float:
+    default_value = 10.0
+    candidate = getattr(cfg.global_, "auto_diagnose_delay_seconds", None)
+    if candidate is None:
+        extras = getattr(cfg.global_, "model_extra", None)
+        if isinstance(extras, dict):
+            candidate = extras.get("auto_diagnose_delay_seconds")
+    try:
+        value = float(candidate)
+    except (TypeError, ValueError):
+        return default_value
+    return value if value >= 0 else default_value
+
+
+def _resolve_reason_context_char_budget(cfg: SREAgentConfig) -> int:
+    value = getattr(cfg.agent, "reason_context_char_budget", 2400)
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return 2400
+    return max(parsed, 600)
+
+
+def _resolve_reasoning_context_strategy(cfg: SREAgentConfig) -> str:
+    raw = str(getattr(cfg.agent, "reasoning_context_strategy", "state_rebuilt") or "").strip().lower()
+    if raw in {"state_rebuilt", "transcript_compact"}:
+        return raw
+    return "state_rebuilt" if _resolve_reasoning_model_family(cfg).lower() == "minimax-m2.7" else "transcript_compact"
+
+
+def _resolve_reasoning_overflow_behavior(cfg: SREAgentConfig) -> str:
+    raw = str(getattr(cfg.agent, "reasoning_overflow_behavior", "fail") or "").strip().lower()
+    if raw in {"fail", "compact"}:
+        return raw
+    return "fail" if _resolve_reasoning_model_family(cfg).lower() == "minimax-m2.7" else "compact"
+
+
+def _resolve_reasoning_input_target_tokens(cfg: SREAgentConfig) -> int:
+    value = getattr(cfg.agent, "reasoning_input_target_tokens", 180000)
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return 180000
+    return max(parsed, 1024)
+
+
+def _resolve_reasoning_model_family(cfg: SREAgentConfig) -> str:
+    explicit = str(getattr(cfg.agent, "reasoning_model_family", "") or "").strip()
+    if explicit:
+        return explicit
+    model = str(getattr(cfg.llm, "model", "") or "").strip()
+    if model:
+        return model
+    env_model = os.getenv("SRE_LLM_MODEL", "").strip() or os.getenv("OPENAI_MODEL", "").strip()
+    if env_model:
+        return env_model
+    return "MiniMax-M2.7"
+
+
+def _resolve_tool_message_char_limit(cfg: SREAgentConfig) -> int:
+    value = getattr(cfg.agent, "tool_message_char_limit", 1200)
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return 1200
+    return max(parsed, 200)
+
+
+def _resolve_reason_preserve_recent_messages(cfg: SREAgentConfig) -> int:
+    value = getattr(cfg.agent, "reason_preserve_recent_messages", 6)
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return 6
+    return max(parsed, 1)
 
 
 def _resolve_ws_max_events_per_session(cfg: SREAgentConfig) -> int:
@@ -1026,6 +1417,7 @@ def _build_alert_polling_service(
     execution_context: ToolExecutionContext,
     alert_store: InMemoryAlertStore,
     trace_publisher: InMemoryTracePublisher,
+    diagnosis_start_coordinator: DiagnosisStartCoordinator | None,
 ) -> AlertPollingService | None:
     channel = execution_context.channels.get("alert")
     if channel is None:
@@ -1041,13 +1433,19 @@ def _build_alert_polling_service(
         LOGGER.warning("alert poller disabled: alert channel does not implement required methods")
         return None
     interval = _resolve_alert_poll_interval_seconds(cfg)
+    auto_diagnose_alert_names = _resolve_auto_diagnose_alert_names(cfg)
+    auto_diagnose_delay_seconds = _resolve_auto_diagnose_delay_seconds(cfg)
     blocked_alert_names = build_blocked_alert_name_set(getattr(cfg.global_, "blocked_alert_names", None))
     return AlertPollingService(
         channel=channel,
         alert_store=alert_store,
         trace_publisher=trace_publisher,
+        diagnosis_start_coordinator=diagnosis_start_coordinator,
         poll_interval_seconds=interval,
         blocked_alert_names=blocked_alert_names,
+        auto_diagnose_alert_names=auto_diagnose_alert_names,
+        auto_diagnose_delay_seconds=auto_diagnose_delay_seconds,
+        entity_correlation_count=int(cfg.global_.auto_diagnose_entity_correlation_count),
     )
 
 
@@ -1369,6 +1767,12 @@ def create_app(
         trace_publisher=publisher,
         alert_store=alert_store,
     )
+    diagnosis_start_coordinator = DiagnosisStartCoordinator(
+        diagnosis_runner=final_diagnosis_runner,
+        remediation_engine=engine,
+        session_store=session_store,
+        trace_publisher=publisher,
+    )
     runtime_chat_handler = chat_handler
     if runtime_chat_handler is None:
         try:
@@ -1397,6 +1801,7 @@ def create_app(
         trace_publisher=publisher,
         alert_store=alert_store,
         audit_logger=AuditLogger(),
+        diagnosis_start_coordinator=diagnosis_start_coordinator,
         topology_discovery=topology_discovery_service,
         chat_handler=runtime_chat_handler,
         tool_channel_status={name: status.as_json() for name, status in bootstrap_result.statuses.items()},
@@ -1408,6 +1813,7 @@ def create_app(
         execution_context=context,
         alert_store=alert_store,
         trace_publisher=publisher,
+        diagnosis_start_coordinator=diagnosis_start_coordinator,
     )
 
     @asynccontextmanager

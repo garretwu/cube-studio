@@ -19,10 +19,22 @@ tags:
 
 ## Steps
 ```yaml
-- description: Query packet loss or latency metric.
+- description: Verify RTT/packet-loss signal via Prometheus.
   tool: prometheus.query_instant
   params:
     promql: "${promql}"
+- description: Inspect tc qdisc/netem rules on target interface.
+  tool: network.get_tc_qdisc
+  params:
+    node: "${node}"
+- description: Check NIC link state and negotiated speed/duplex.
+  tool: network.get_nic_link_state
+  params:
+    node: "${node}"
+- description: Check NIC error/drop counters for queue issues.
+  tool: network.get_nic_counters
+  params:
+    node: "${node}"
 - description: Check RDMA statistics on target node.
   tool: network.get_rdma_stats
   params:

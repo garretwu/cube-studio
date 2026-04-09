@@ -35,6 +35,7 @@ from sre_agent.models.memory import ConfigBaseline, IncidentRecord, LearnedPatte
 from sre_agent.models.remediation import LoopResult, RemediationPlan, RemediationResult
 from sre_agent.remediation.approval import ApprovalInput
 from sre_agent.remediation.engine import RollbackResult
+from sre_agent.runtime.token_estimation import estimate_token_count
 from sre_agent.concurrency.resource_lock import ResourceLockedError
 from sre_agent.skills import SkillRegistry
 
@@ -114,6 +115,75 @@ class TopologyStatusResponse(BaseModel):
     last_started_at: datetime | None = None
     last_error: str | None = None
     scanner_counts: dict[str, dict[str, int]] = Field(default_factory=dict)
+
+
+class TopologyExplorerSite(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    name: str
+    region: str
+    zone: str
+    domain: str
+    summary: str
+
+
+class TopologyExplorerObject(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    name: str
+    type: Literal["rack", "node", "gpu", "switch", "service", "pod", "cluster"]
+    status: Literal["healthy", "abnormal", "impacted", "maintenance"]
+    layer: Literal["physical", "network", "compute", "service"]
+    domain: str
+    region: str
+    zone: str
+    cluster: str | None = None
+    rack: str | None = None
+    slot: str | None = None
+    summary: str
+    tags: list[str] = Field(default_factory=list)
+    updatedAt: datetime
+    metrics: dict[str, str | int | float | bool | None] | None = None
+    attributes: dict[str, Any] = Field(default_factory=dict)
+
+
+class TopologyExplorerRelation(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    source: str
+    target: str
+    relationType: Literal["contains", "runs_on", "connects_to", "depends_on", "uplink_to", "aggregated"]
+    status: Literal["healthy", "abnormal", "impacted", "maintenance"]
+    isCritical: bool = False
+    impactLevel: Literal["low", "medium", "high"] = "low"
+    label: str | None = None
+    isAggregated: bool | None = None
+
+
+class TopologyExplorerPath(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    entryNodeId: str
+    rootCauseNodeId: str
+    affectedNodeIds: list[str] = Field(default_factory=list)
+    edgeIds: list[str] = Field(default_factory=list)
+    impactLevel: Literal["low", "medium", "high"] = "low"
+    status: Literal["active", "inactive"] = "inactive"
+    summary: str
+
+
+class TopologyExplorerResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    site: TopologyExplorerSite
+    nodes: list[TopologyExplorerObject] = Field(default_factory=list)
+    edges: list[TopologyExplorerRelation] = Field(default_factory=list)
+    paths: list[TopologyExplorerPath] = Field(default_factory=list)
+    lastUpdated: datetime
 
 
 class AlertSnapshotResponse(BaseModel):
@@ -279,6 +349,178 @@ def build_api_router() -> APIRouter:
             else:
                 normalized.append({"value": edge})
         return normalized
+
+    def _map_topology_entity_type(entity_type: str) -> Literal["rack", "node", "gpu", "switch", "service", "pod", "cluster"]:
+        value = str(entity_type or "").strip().lower()
+        if "gpu" in value:
+            return "gpu"
+        if "switch" in value or "port" in value or "network" in value:
+            return "switch"
+        if "cluster" in value:
+            return "cluster"
+        if "pod" in value:
+            return "pod"
+        if "service" in value or "inference" in value:
+            return "service"
+        if "rack" in value:
+            return "rack"
+        return "node"
+
+    def _map_topology_status(status: str | None) -> Literal["healthy", "abnormal", "impacted", "maintenance"]:
+        value = str(status or "").strip().lower()
+        if any(token in value for token in ("degraded", "warning", "error", "down")):
+            return "abnormal"
+        if "impact" in value:
+            return "impacted"
+        if "maint" in value:
+            return "maintenance"
+        return "healthy"
+
+    def _map_topology_layer(
+        entity_type: Literal["rack", "node", "gpu", "switch", "service", "pod", "cluster"],
+    ) -> Literal["physical", "network", "compute", "service"]:
+        if entity_type in {"switch", "rack"}:
+            return "network"
+        if entity_type in {"gpu", "node"}:
+            return "compute"
+        if entity_type == "cluster":
+            return "physical"
+        return "service"
+
+    def _map_topology_relation_type(
+        relation: str,
+    ) -> Literal["contains", "runs_on", "connects_to", "depends_on", "uplink_to", "aggregated"]:
+        value = str(relation or "").strip().lower()
+        if "contain" in value or "part_of" in value:
+            return "contains"
+        if "hosted" in value or "runs_on" in value or "run_on" in value:
+            return "runs_on"
+        if "serve" in value:
+            return "depends_on"
+        if "uplink" in value:
+            return "uplink_to"
+        if "connect" in value:
+            return "connects_to"
+        if "aggreg" in value:
+            return "aggregated"
+        return "depends_on"
+
+    def _topology_explorer_payload(services: Any) -> TopologyExplorerResponse:
+        status_payload = _topology_status_payload(services)
+        ontology_nodes = _normalize_ontology_entities(services.ontology.list_entities())
+        ontology_edges = _normalize_ontology_edges(services.ontology.list_edges())
+
+        def _parse_datetime(value: Any) -> datetime | None:
+            if isinstance(value, datetime):
+                return value
+            if not isinstance(value, str):
+                return None
+            text = value.strip()
+            if not text:
+                return None
+            if text.endswith("Z"):
+                text = text[:-1] + "+00:00"
+            try:
+                return datetime.fromisoformat(text)
+            except ValueError:
+                return None
+
+        explorer_nodes: list[TopologyExplorerObject] = []
+        for node in ontology_nodes:
+            attributes = node.get("properties")
+            if not isinstance(attributes, dict):
+                attributes = {}
+            attrs = attributes
+            entity_type = _map_topology_entity_type(str(node.get("entity_type", "")))
+            region = str(attrs.get("region") or "AIDC-CN")
+            zone = str(attrs.get("zone") or "zone-a")
+            domain = str(attrs.get("domain") or "aidc")
+            namespace = str(attrs.get("namespace") or "").strip()
+            cluster_id = str(attrs.get("cluster") or attrs.get("cluster_id") or "").strip()
+            raw_name = str(node.get("name") or node.get("id") or "")
+            display_name = raw_name
+            if entity_type in {"pod", "service"} and namespace:
+                display_name = f"{namespace}/{raw_name}"
+
+            pod_phase_raw = attrs.get("phase", node.get("status", "Unknown"))
+            pod_phase = str(pod_phase_raw)
+            pod_restart_raw = attrs.get("restart_count", attrs.get("restartCount"))
+            pod_restart_count: int | None = None
+            if pod_restart_raw is not None:
+                try:
+                    pod_restart_numeric = int(pod_restart_raw)
+                except (TypeError, ValueError):
+                    pod_restart_numeric = None
+                if pod_restart_numeric is not None:
+                    pod_restart_count = pod_restart_numeric
+            metrics: dict[str, str | int | float | bool | None] | None = None
+            if entity_type == "pod":
+                metrics = {
+                    "phase": pod_phase,
+                    "restartCount": pod_restart_count,
+                }
+
+            updated_at = _parse_datetime(node.get("updated_at")) or datetime.now(UTC)
+            explorer_nodes.append(
+                TopologyExplorerObject(
+                    id=str(node.get("id", "")),
+                    name=display_name,
+                    type=entity_type,
+                    status=_map_topology_status(node.get("status")),
+                    layer=_map_topology_layer(entity_type),
+                    domain=domain,
+                    region=region,
+                    zone=zone,
+                    cluster=cluster_id or None,
+                    rack=str(attrs.get("rack") or "") or None,
+                    slot=str(attrs.get("slot") or "") or None,
+                    summary=" ".join(
+                        item
+                        for item in [
+                            display_name,
+                            f"({node.get('entity_type', '')})",
+                            f"namespace={namespace}" if namespace else "",
+                            f"cluster={cluster_id}" if cluster_id else "",
+                        ]
+                        if item
+                    ),
+                    tags=[item for item in [namespace, str(attrs.get("source") or "").strip(), cluster_id] if item],
+                    updatedAt=updated_at,
+                    metrics=metrics,
+                    attributes=attrs,
+                )
+            )
+
+        explorer_edges = [
+            TopologyExplorerRelation(
+                id=f"edge-{index}-{edge.get('source_id', '')}-{edge.get('target_id', '')}",
+                source=str(edge.get("source_id", "")),
+                target=str(edge.get("target_id", "")),
+                relationType=_map_topology_relation_type(str(edge.get("relation", ""))),
+                status="healthy",
+                isCritical=False,
+                impactLevel="low",
+                label=str(edge.get("relation", "")) or None,
+                isAggregated=False,
+            )
+            for index, edge in enumerate(ontology_edges)
+        ]
+
+        last_updated = status_payload.last_synced_at or datetime.now(UTC)
+        return TopologyExplorerResponse(
+            site=TopologyExplorerSite(
+                id="aidc-site",
+                name="AIDC Site",
+                region="AIDC-CN",
+                zone="zone-a",
+                domain="aidc",
+                summary="Topology explorer snapshot mapped from /api/topology",
+            ),
+            nodes=explorer_nodes,
+            edges=explorer_edges,
+            paths=[],
+            lastUpdated=last_updated,
+        )
 
     def _compact_affected_entity(entity: Any) -> dict[str, Any]:
         if hasattr(entity, "model_dump"):
@@ -553,12 +795,6 @@ def build_api_router() -> APIRouter:
                 normalized.append(converted)
         return normalized
 
-    def _estimate_token_count(text: str) -> int:
-        compact = " ".join(str(text or "").split())
-        if not compact:
-            return 0
-        return max(1, len(compact) // 4)
-
     def _extract_trace_items(session_payload: dict[str, Any], *, limit: int) -> tuple[list[str], int]:
         trace = session_payload.get("trace")
         if not isinstance(trace, dict):
@@ -665,7 +901,7 @@ def build_api_router() -> APIRouter:
             "context_applied": bool(context_text),
             "session_id": scoped_session_id,
             "trace_steps_used": trace_used,
-            "context_tokens_estimate": _estimate_token_count(context_text),
+            "context_tokens_estimate": estimate_token_count(context_text),
         }
         if not context_text:
             return None, meta
@@ -1755,83 +1991,19 @@ def build_api_router() -> APIRouter:
             return _blocked_alert_response(request, alert.alert_name)
         if services.diagnosis_runner is None:
             raise HTTPException(status_code=500, detail="diagnosis runner is not configured")
+        coordinator = getattr(services, "diagnosis_start_coordinator", None)
+        if coordinator is None:
+            raise HTTPException(status_code=500, detail="diagnosis start coordinator is not configured")
 
         prepared_alert = _enrich_alert_with_topology_summary(services, alert)
         extra_alerts = _lookup_extra_alerts(services.alert_store, extra_alert_fingerprints) if extra_alert_fingerprints else []
-        initial_session = DiagnosisSession.create(prepared_alert)
-        services.session_store.put(initial_session)
-
-        async def _background_run() -> None:
-            live_event_count = 0
-            live_event_types: set[str] = set()
-
-            async def _trace_callback(event: dict[str, Any]) -> None:
-                nonlocal live_event_count
-                payload = dict(event) if isinstance(event, dict) else {}
-                payload["session_id"] = initial_session.session_id
-                event_type = str(payload.get("type", "")).strip().lower()
-                try:
-                    await services.trace_publisher.publish(payload)
-                    live_event_count += 1
-                    if event_type:
-                        live_event_types.add(event_type)
-                except Exception:  # noqa: BLE001
-                    return
-
-            try:
-                completed = await _run_diagnose_with_optional_trace_callback(
-                    services,
-                    alert=prepared_alert,
-                    trace_callback=_trace_callback,
-                    extra_alerts=extra_alerts,
-                )
-                completed = completed.model_copy(update={"session_id": initial_session.session_id})
-
-                if live_event_count == 0:
-                    await _replay_trace_and_diagnosis_events(services, session=completed)
-                    if completed.diagnosis_result is not None:
-                        live_event_types.add(EventType.DIAGNOSIS_RESULT.value)
-                elif (
-                    completed.diagnosis_result is not None
-                    and EventType.DIAGNOSIS_RESULT.value not in live_event_types
-                ):
-                    await services.trace_publisher.publish(
-                        {
-                            "type": EventType.DIAGNOSIS_RESULT.value,
-                            "session_id": completed.session_id,
-                            "data": completed.diagnosis_result.model_dump(mode="json"),
-                        }
-                    )
-
-                plan = _extract_recommended_fix(completed)
-                if plan is not None:
-                    services.remediation_engine.register_plan(completed.session_id, plan)
-                    completed = completed.model_copy(update={"status": "approval_required"})
-                elif completed.status == "diagnosing":
-                    completed = completed.model_copy(update={"status": "diagnosed"})
-                services.session_store.put(completed)
-
-                if plan is not None:
-                    plan_version = services.remediation_engine.get_latest_plan_version(completed.session_id)
-                    await _publish_session_event(
-                        services,
-                        event_type=EventType.APPROVAL_REQUIRED,
-                        session_id=completed.session_id,
-                        data={"plan_id": plan.plan_id, "plan_version": plan_version},
-                    )
-            except Exception as exc:  # noqa: BLE001
-                failed_session = initial_session.model_copy(update={"status": "failed", "outcome": "failed"})
-                services.session_store.put(failed_session)
-                await _publish_session_event(
-                    services,
-                    event_type=EventType.ERROR,
-                    session_id=initial_session.session_id,
-                    data={"message": str(exc)},
-                )
-
-        task = asyncio.create_task(_background_run(), name=f"diagnose-start-{initial_session.session_id}")
-        _track_background_task(request.app, task)
-        return SREResponse(success=True, data=initial_session, trace_id=_trace_id(request))
+        handle = coordinator.start(
+            alert=prepared_alert,
+            extra_alerts=extra_alerts,
+            task_name_prefix="diagnose-start",
+        )
+        _track_background_task(request.app, handle.task)
+        return SREResponse(success=True, data=handle.initial_session, trace_id=_trace_id(request))
 
     @router.post("/handle")
     async def handle_alert(
@@ -2190,9 +2362,16 @@ def build_api_router() -> APIRouter:
             },
         )
 
+        async def _engine_progress_callback(*, stage: str, details: dict[str, Any] | None = None) -> None:
+            await _publish_remediation_progress(services, session_id=session_id, stage=stage, details=details)
+
         try:
             result = await asyncio.wait_for(
-                services.remediation_engine.approve_and_execute(session_id, approval),
+                services.remediation_engine.approve_and_execute(
+                    session_id,
+                    approval,
+                    progress_callback=_engine_progress_callback,
+                ),
                 timeout=execution_timeout_seconds,
             )
         except KeyError:
@@ -2412,6 +2591,16 @@ def build_api_router() -> APIRouter:
         _ = user
         services = _services(request)
         payload = _topology_status_payload(services)
+        return SREResponse(success=True, data=payload, trace_id=_trace_id(request))
+
+    @router.get("/topology-explorer")
+    async def get_topology_explorer(
+        request: Request,
+        user: CurrentUser = Depends(get_current_user),
+    ) -> SREResponse[TopologyExplorerResponse]:
+        _ = user
+        services = _services(request)
+        payload = _topology_explorer_payload(services)
         return SREResponse(success=True, data=payload, trace_id=_trace_id(request))
 
     @router.post("/topology/discover")

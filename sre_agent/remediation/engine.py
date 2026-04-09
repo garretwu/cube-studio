@@ -66,10 +66,16 @@ class RemediationEngine:
         if latest.model_dump(mode="json") != plan.model_dump(mode="json"):
             versions.append(plan)
 
-    async def approve_and_execute(self, session_id: str, approval: ApprovalInput) -> RemediationResult:
+    async def approve_and_execute(
+        self,
+        session_id: str,
+        approval: ApprovalInput,
+        *,
+        progress_callback: Any | None = None,
+    ) -> RemediationResult:
         plan = self._plans_by_session[session_id]
         await self.approval.submit_decision(session_id, approval)
-        return await self.execute(plan, session_id=session_id)
+        return await self.execute(plan, session_id=session_id, progress_callback=progress_callback)
 
     def get_plan(self, session_id: str) -> RemediationPlan | None:
         return self._plans_by_session.get(session_id)
@@ -122,7 +128,13 @@ class RemediationEngine:
         except Exception as exc:  # noqa: BLE001
             return RollbackResult(session_id=session_id, success=False, error=str(exc))
 
-    async def execute(self, plan: RemediationPlan, session_id: str | None = None) -> RemediationResult:
+    async def execute(
+        self,
+        plan: RemediationPlan,
+        session_id: str | None = None,
+        *,
+        progress_callback: Any | None = None,
+    ) -> RemediationResult:
         errors = self.validator.validate(plan)
         if errors:
             raise PlanValidationError(errors)
@@ -152,9 +164,10 @@ class RemediationEngine:
                 return await self.canary.execute_with_canary(
                     plan,
                     targets,
-                    lambda _targets: self._execute_steps(plan),
+                    lambda _targets: self._execute_steps(plan, progress_callback=progress_callback),
+                    progress_callback=progress_callback,
                 )
-            result = await self._execute_steps(plan)
+            result = await self._execute_steps(plan, progress_callback=progress_callback)
             duration = int(time.monotonic() - start)
             return result.model_copy(update={"duration_seconds": duration})
         except Exception as exc:  # noqa: BLE001
@@ -195,7 +208,12 @@ class RemediationEngine:
             verification_results=verification_results,
         )
 
-    async def _execute_steps(self, plan: RemediationPlan) -> RemediationResult:
+    async def _execute_steps(
+        self,
+        plan: RemediationPlan,
+        *,
+        progress_callback: Any | None = None,
+    ) -> RemediationResult:
         completed = 0
         verification_results: list[dict[str, Any]] = []
         failed_step = None
@@ -207,6 +225,17 @@ class RemediationEngine:
                     step_id=step.step_id,
                     recover_action=step.rollback_tool,
                     recover_params=step.rollback_params or {},
+                )
+            if progress_callback is not None:
+                await progress_callback(
+                    stage="remediating",
+                    details={
+                        "step_id": step.step_id,
+                        "tool": step.tool,
+                        "steps_completed": completed,
+                        "steps_total": len(plan.steps),
+                        "message": f"正在执行步骤 {step.step_id}/{len(plan.steps)}: {step.description}",
+                    },
                 )
             result = await self.tools.execute(
                 step.tool,
@@ -224,6 +253,16 @@ class RemediationEngine:
                     failed_step=failed_step,
                     rolled_back=True,
                     error=result.error,
+                )
+            if progress_callback is not None:
+                await progress_callback(
+                    stage="validating",
+                    details={
+                        "step_id": step.step_id,
+                        "steps_completed": completed,
+                        "steps_total": len(plan.steps),
+                        "message": f"验证步骤 {step.step_id} 执行结果",
+                    },
                 )
             verified = await self._verify(step.verification)
             verification_results.append({"step_id": step.step_id, "verified": verified})

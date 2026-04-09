@@ -42,7 +42,7 @@ def build_default_llm_from_env() -> ChatOpenAI:
     if not api_key:
         raise RuntimeError("SRE_OPENAI_API_KEY or OPENAI_API_KEY is required")
     base_url = os.getenv("SRE_OPENAI_BASE_URL", "").strip() or None
-    model = os.getenv("SRE_LLM_MODEL", "").strip() or "MiniMax-M2.5"
+    model = os.getenv("SRE_LLM_MODEL", "").strip() or "MiniMax-M2.7"
     kwargs: dict[str, Any] = {
         "api_key": api_key,
         "model": model,
@@ -68,6 +68,24 @@ def _to_dict(value: Any) -> dict[str, Any]:
     if isinstance(value, dict):
         return dict(value)
     return {}
+
+
+def _is_context_window_exceeded_error(exc: Exception) -> bool:
+    message = str(exc).strip().lower()
+    if not message:
+        return False
+    signals = (
+        "context window exceeds limit",
+        "maximum context length",
+        "context length exceeded",
+        "prompt is too long",
+        "too many tokens",
+        "token limit",
+        "invalid params",
+    )
+    return any(signal in message for signal in signals) and (
+        "context" in message or "token" in message or "prompt" in message
+    )
 
 
 def _normalize_trace_item_event(*, session_id: str, item: dict[str, Any]) -> dict[str, Any] | None:
@@ -189,11 +207,37 @@ def create_sre_graph(
                 "error": "reason step timed out",
             }
         except Exception as exc:  # noqa: BLE001
+            error_text = str(exc).strip() or exc.__class__.__name__
+            if _is_context_window_exceeded_error(exc):
+                trace_items = list(state.get("trace_items", []))
+                trace_items.append(
+                    {
+                        "type": "thought",
+                        "step": state.get("step_count", 0) + 1,
+                        "content": (
+                            "Reasoning failed because the model context window limit was reached; "
+                            "try reducing prompt/tool output size."
+                        ),
+                        "action": "conclude",
+                        "confidence": None,
+                        "tool_params": {
+                            "kind": "reason_context_overflow",
+                            "error": error_text,
+                        },
+                    }
+                )
+                return {
+                    **state,
+                    "trace_items": trace_items,
+                    "status": "failed",
+                    "summary": f"reason step failed: context window limit reached: {error_text}",
+                    "error": f"reason step failed: context window limit reached: {error_text}",
+                }
             return {
                 **state,
                 "status": "failed",
-                "summary": f"reason step failed: {exc}",
-                "error": f"reason step failed: {exc}",
+                "summary": f"reason step failed: {error_text}",
+                "error": f"reason step failed: {error_text}",
             }
 
     async def _act(state: SREAgentState) -> SREAgentState:
@@ -320,6 +364,13 @@ async def run_diagnosis(
     step_timeout_sec: float = 60.0,
     total_timeout_sec: float = 600.0,
     max_steps: int = 50,
+    reasoning_context_strategy: str = "state_rebuilt",
+    reasoning_overflow_behavior: str = "fail",
+    reasoning_input_target_tokens: int = 180000,
+    reasoning_model_family: str | None = "MiniMax-M2.7",
+    reason_context_char_budget: int = 2400,
+    tool_message_char_limit: int = 1200,
+    reason_preserve_recent_messages: int = 6,
     checkpoint_dir: str | None = "./data/checkpoints/sre_agent",
     allowed_tool_names: list[str] | None = None,
     trace_callback: TraceEventCallback | None = None,
@@ -342,6 +393,13 @@ async def run_diagnosis(
         step_timeout_sec=step_timeout_sec,
         total_timeout_sec=total_timeout_sec,
         max_steps=max_steps,
+        reasoning_context_strategy=reasoning_context_strategy,
+        reasoning_overflow_behavior=reasoning_overflow_behavior,
+        reasoning_input_target_tokens=reasoning_input_target_tokens,
+        reasoning_model_family=reasoning_model_family,
+        reason_context_char_budget=reason_context_char_budget,
+        tool_message_char_limit=tool_message_char_limit,
+        reason_preserve_recent_messages=reason_preserve_recent_messages,
         checkpoint_dir=checkpoint_dir,
         allowed_tool_names=allowed_tool_names,
         alert_snapshot=alert_snapshot,

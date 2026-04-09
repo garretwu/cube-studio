@@ -24,16 +24,20 @@ type RemediationDetailDrawerProps = {
 };
 
 const STATUS_LABELS: Record<string, string> = {
+  approval_accepted: "审批已接受",
   approval_required: "等待审批",
   approval_rejected: "审批已拒绝",
   approved: "已批准",
   awaiting_approval: "等待审批",
   escalated: "已升级处理",
   execution_failed: "执行失败",
+  execution_mocked: "模拟执行完成",
   execution_started: "开始修复",
   execution_succeeded: "执行成功",
   execution_timeout: "执行超时",
   failed: "失败",
+  observation_result: "观察结果已采集",
+  observation_started: "开始观察",
   partially_resolved: "部分恢复",
   pending: "待开始",
   plan_revised: "方案已修订",

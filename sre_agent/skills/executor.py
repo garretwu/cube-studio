@@ -33,6 +33,9 @@ class SkillExecutor:
         "k8s.list_pods",
         "gpu.get_metrics",
         "network.get_rdma_stats",
+        "network.get_tc_qdisc",
+        "network.get_nic_link_state",
+        "network.get_nic_counters",
     }
 
     async def execute(

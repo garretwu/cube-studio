@@ -453,6 +453,36 @@ def build_default_registry() -> ToolRegistry:
     )
     registry.register(
         ToolDefinition(
+            name="network.get_tc_qdisc",
+            description="Inspect tc qdisc/netem rules on node interface.",
+            safety_level=SafetyLevel.READ_ONLY,
+            params_schema={"type": "object", "required": ["node"]},
+            tags=("network", "readonly"),
+        ),
+        network.get_tc_qdisc,
+    )
+    registry.register(
+        ToolDefinition(
+            name="network.get_nic_link_state",
+            description="Inspect NIC link and interface state on node.",
+            safety_level=SafetyLevel.READ_ONLY,
+            params_schema={"type": "object", "required": ["node"]},
+            tags=("network", "readonly"),
+        ),
+        network.get_nic_link_state,
+    )
+    registry.register(
+        ToolDefinition(
+            name="network.get_nic_counters",
+            description="Inspect NIC error/drop counters on node.",
+            safety_level=SafetyLevel.READ_ONLY,
+            params_schema={"type": "object", "required": ["node"]},
+            tags=("network", "readonly"),
+        ),
+        network.get_nic_counters,
+    )
+    registry.register(
+        ToolDefinition(
             name="network.get_switch_port_counters",
             description="Read switch port counters/status.",
             safety_level=SafetyLevel.READ_ONLY,

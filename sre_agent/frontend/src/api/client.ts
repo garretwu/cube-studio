@@ -291,6 +291,11 @@ function buildTopologyExplorerFromSnapshot(snapshot: TopologySnapshot): Topology
     const region = String((attributes as Record<string, unknown>).region ?? "AIDC-CN");
     const zone = String((attributes as Record<string, unknown>).zone ?? "zone-a");
     const domain = String((attributes as Record<string, unknown>).domain ?? "aidc");
+    const namespace = String(attrs.namespace ?? "").trim();
+    const clusterId = String(attrs.cluster ?? attrs.cluster_id ?? "").trim();
+    const rawName = node.name || node.id;
+    const displayName =
+      (entityType === "pod" || entityType === "service") && namespace ? `${namespace}/${rawName}` : rawName;
     const podPhaseRaw = attrs.phase ?? node.status ?? "Unknown";
     const podPhase = typeof podPhaseRaw === "string" ? podPhaseRaw : String(podPhaseRaw);
     const podRestartRaw = attrs.restart_count ?? attrs.restartCount;
@@ -306,18 +311,20 @@ function buildTopologyExplorerFromSnapshot(snapshot: TopologySnapshot): Topology
 
     return {
       id: node.id,
-      name: node.name || node.id,
+      name: displayName,
       type: entityType,
       status: mapNodeStatus(node.status),
       layer: mapLayer(entityType),
       domain,
       region,
       zone,
-      cluster: String(attrs.cluster ?? attrs.cluster_id ?? "") || undefined,
+      cluster: clusterId || undefined,
       rack: String((attributes as Record<string, unknown>).rack ?? "") || undefined,
       slot: String((attributes as Record<string, unknown>).slot ?? "") || undefined,
-      summary: `${node.name || node.id} (${node.entity_type})`,
-      tags: [String(attrs.namespace ?? ""), String(attrs.source ?? "")]
+      summary: [displayName, `(${node.entity_type})`, namespace ? `namespace=${namespace}` : "", clusterId ? `cluster=${clusterId}` : ""]
+        .filter(Boolean)
+        .join(" "),
+      tags: [namespace, String(attrs.source ?? ""), clusterId]
         .map((item) => item.trim())
         .filter(Boolean),
       updatedAt: node.updated_at,
@@ -694,6 +701,65 @@ export const apiClient = {
             }
           : null);
 
+      // Build batch_status from canary progress events when available
+      const canaryBatchEvents = remediationEvents.filter(
+        (event) => typeof event.data?.["batch"] === "string" && String(event.data["batch"]).startsWith("canary-"),
+      );
+      const batchStatus: Array<{ batch: string; progress: number; status: string }> =
+        canaryBatchEvents.length > 0
+          ? (() => {
+              const batchMap = new Map<string, { batch: string; index: number; total: number }>();
+              for (const event of canaryBatchEvents) {
+                const batch = String(event.data?.["batch"] ?? "");
+                const index = Number(event.data?.["batch_index"] ?? 0);
+                const total = Number(event.data?.["batch_total"] ?? 0);
+                if (!batchMap.has(batch)) {
+                  batchMap.set(batch, { batch, index, total });
+                }
+              }
+              const canaryTotal = batchMap.size;
+              let completedBatches = 0;
+              const entries = [...batchMap.values()].sort((a, b) => a.index - b.index);
+              for (const entry of entries) {
+                const lastEventForBatch = [...canaryBatchEvents]
+                  .reverse()
+                  .find((e) => String(e.data?.["batch"]) === entry.batch);
+                const stage = String(lastEventForBatch?.data?.["stage"] ?? "").toLowerCase();
+                if (stage === "validating" || stage === "remediating") {
+                  completedBatches = entry.index;
+                } else {
+                  completedBatches = entry.index;
+                }
+              }
+              const lastCanaryEvent = canaryBatchEvents.at(-1);
+              const lastStage = String(lastCanaryEvent?.data?.["stage"] ?? "").toLowerCase();
+              const canaryStatus =
+                oneShotStatus === "resolved"
+                  ? "resolved"
+                  : oneShotStatus === "failed"
+                    ? "failed"
+                    : lastStage === "validating"
+                      ? "validating"
+                      : "remediating";
+              return [
+                {
+                  batch: `canary (${canaryTotal} batches)`,
+                  progress: Math.max(0, Math.min(100, Math.round((completedBatches / Math.max(canaryTotal, 1)) * 100))),
+                  status: canaryStatus,
+                },
+              ];
+            })()
+          : [
+              {
+                batch: "一次性执行",
+                progress:
+                  oneShotStatus === "resolved"
+                    ? 100
+                    : Math.max(0, Math.min(100, batchProgress)),
+                status: oneShotStatus,
+              },
+            ];
+
       return {
         session_id: resolved,
         plan: currentPlan,
@@ -708,21 +774,7 @@ export const apiClient = {
           status: progressStatus,
           completed_steps: normalizedCompletedSteps,
           total_steps: totalSteps,
-          batch_status: [
-            {
-              batch: "一次性执行",
-              progress:
-                oneShotStatus === "resolved"
-                  ? 100
-                  : oneShotStatus === "failed" ||
-                      oneShotStatus === "timeout" ||
-                      oneShotStatus === "escalated" ||
-                      oneShotStatus === "rejected"
-                    ? Math.max(0, Math.min(100, batchProgress))
-                    : Math.max(0, Math.min(100, batchProgress)),
-              status: oneShotStatus,
-            },
-          ],
+          batch_status: batchStatus,
         },
         timeline: events,
         approval_required: session.status === "approval_required",
