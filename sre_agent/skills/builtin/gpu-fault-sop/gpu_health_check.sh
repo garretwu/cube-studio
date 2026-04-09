@@ -13,10 +13,8 @@
 set -euo pipefail
 
 EXPECTED_GPUS=4  # 每节点4张RTX 5090，按实际修改
-# TEMP_WARN=80     # 温度预警阈值(°C)
-# TEMP_CRIT=85     # 温度严重阈值(°C)
-TEMP_WARN=35     # 温度预警阈值(°C)
-TEMP_CRIT=40     # 温度严重阈值(°C)
+TEMP_WARN=80     # 温度预警阈值(°C)
+TEMP_CRIT=85     # 温度严重阈值(°C)
 PCIE_EXPECTED_SPEED="32GT/s"   # PCIe 5.0
 PCIE_EXPECTED_WIDTH="x16"
 
