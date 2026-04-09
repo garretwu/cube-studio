@@ -44,7 +44,7 @@ const alerts: Alert[] = [
 const clusters: AlertCluster[] = [
   {
     cluster_id: "cluster-01",
-    summary: "延迟突增与单个推理节点热压异常高度相关",
+    summary: "延迟突增与单个推理节点的热压异常高度相关",
     severity: "critical",
     alerts: ["fp-001", "fp-002"],
   },
@@ -52,7 +52,7 @@ const clusters: AlertCluster[] = [
 
 const session: DiagnosisSession = {
   session_id: "sess-latency-001",
-  alert: alerts[0],
+  alert: alerts[0]!,
   status: "re_diagnosed",
   duration_seconds: 142,
 };
@@ -99,7 +99,9 @@ describe("AlertsModifiedPage", () => {
     expect(await screen.findByRole("heading", { name: "告警收敛" })).toBeInTheDocument();
     expect(screen.getAllByText("2 个 fingerprint").length).toBeGreaterThan(0);
     expect(screen.getByText("2 次事件")).toBeInTheDocument();
+    expect(screen.getByText("收敛结果")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "查看诊断" })).toBeInTheDocument();
+    expect(screen.getAllByText("并入已有诊断").length).toBeGreaterThan(0);
     expect(screen.getByText("第 2 次重试事件")).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "切换 fp-001 事件流" }));

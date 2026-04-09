@@ -47,7 +47,7 @@ const clusters: AlertCluster[] = [
 
 const activeSession: DiagnosisSession = {
   session_id: "sess-latency-001",
-  alert: alerts[0],
+  alert: alerts[0]!,
   status: "re_diagnosed",
   duration_seconds: 142,
 };
