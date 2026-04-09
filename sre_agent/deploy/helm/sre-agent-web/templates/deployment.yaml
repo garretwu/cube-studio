@@ -1,0 +1,48 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "sre-agent-web.fullname" . }}
+  labels:
+    {{- include "sre-agent-web.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "sre-agent-web.name" . }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ include "sre-agent-web.name" . }}
+        app.kubernetes.io/instance: {{ .Release.Name }}
+    spec:
+      containers:
+        - name: sre-agent-web
+          image: "{{ .Values.image.repository }}:{{ required "image.tag is required" .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          envFrom:
+            - configMapRef:
+                name: {{ include "sre-agent-web.fullname" . }}-config
+            - secretRef:
+                name: {{ default (printf "%s-secrets" (include "sre-agent-web.fullname" .)) .Values.secret.name }}
+          ports:
+            - name: backend
+              containerPort: {{ .Values.service.backendTargetPort }}
+            - name: frontend
+              containerPort: {{ .Values.service.frontendTargetPort }}
+          readinessProbe:
+            httpGet:
+              path: /
+              port: frontend
+            initialDelaySeconds: {{ .Values.readinessProbe.initialDelaySeconds }}
+            periodSeconds: {{ .Values.readinessProbe.periodSeconds }}
+            timeoutSeconds: {{ .Values.readinessProbe.timeoutSeconds }}
+          livenessProbe:
+            httpGet:
+              path: /
+              port: frontend
+            initialDelaySeconds: {{ .Values.livenessProbe.initialDelaySeconds }}
+            periodSeconds: {{ .Values.livenessProbe.periodSeconds }}
+            timeoutSeconds: {{ .Values.livenessProbe.timeoutSeconds }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}

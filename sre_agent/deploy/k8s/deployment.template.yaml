@@ -1,0 +1,49 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sre-agent-web
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: sre-agent-web
+  template:
+    metadata:
+      labels:
+        app: sre-agent-web
+    spec:
+      containers:
+        - name: sre-agent-web
+          image: ${IMAGE_REF}
+          imagePullPolicy: IfNotPresent
+          envFrom:
+            - configMapRef:
+                name: sre-agent-web-config
+            - secretRef:
+                name: sre-agent-web-secrets
+          ports:
+            - name: backend
+              containerPort: 8000
+            - name: frontend
+              containerPort: 8080
+          readinessProbe:
+            httpGet:
+              path: /
+              port: frontend
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            timeoutSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /
+              port: frontend
+            initialDelaySeconds: 45
+            periodSeconds: 20
+            timeoutSeconds: 5
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              cpu: "1"
+              memory: 2Gi

@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: sre-agent-web-config
+data:
+  BACKEND_PORT: "8000"
+  FRONTEND_PORT: "8080"
+  STARTUP_CONFIG_PATH: /app/sre_agent/conf/config.yaml
+  STARTUP_BACKEND_HOST: 0.0.0.0
+  STARTUP_BACKEND_URL_HOST: 127.0.0.1
+  SRE_KUBECONFIG: /app/sre_agent/conf/kube.conf

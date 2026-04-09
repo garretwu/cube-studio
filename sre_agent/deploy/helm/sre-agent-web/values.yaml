@@ -1,0 +1,44 @@
+replicaCount: 1
+
+image:
+  repository: cube-studio/sre-agent-web
+  tag: ""
+  pullPolicy: IfNotPresent
+
+service:
+  type: ClusterIP
+  frontendPort: 80
+  backendPort: 8000
+  frontendTargetPort: 8080
+  backendTargetPort: 8000
+
+config:
+  backendPort: "8000"
+  frontendPort: "8080"
+  startupConfigPath: /app/sre_agent/conf/config.yaml
+  startupBackendHost: 0.0.0.0
+  startupBackendUrlHost: 127.0.0.1
+  sreKubeconfig: /app/sre_agent/conf/kube.conf
+
+secret:
+  create: false
+  name: ""
+  sreOpenaiApiKey: ""
+
+resources:
+  requests:
+    cpu: 250m
+    memory: 512Mi
+  limits:
+    cpu: "1"
+    memory: 2Gi
+
+livenessProbe:
+  initialDelaySeconds: 45
+  periodSeconds: 20
+  timeoutSeconds: 5
+
+readinessProbe:
+  initialDelaySeconds: 15
+  periodSeconds: 10
+  timeoutSeconds: 5

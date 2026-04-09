@@ -1,0 +1,7 @@
+-r ../fault_injector/requirements.txt
+PyJWT>=2.8
+fastapi
+uvicorn
+langchain_core
+langchain_openai
+langgraph

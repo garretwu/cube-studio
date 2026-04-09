@@ -1,0 +1,18 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "sre-agent-web.fullname" . }}
+  labels:
+    {{- include "sre-agent-web.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.service.type }}
+  selector:
+    app.kubernetes.io/name: {{ include "sre-agent-web.name" . }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+  ports:
+    - name: http-frontend
+      port: {{ .Values.service.frontendPort }}
+      targetPort: frontend
+    - name: http-backend
+      port: {{ .Values.service.backendPort }}
+      targetPort: backend

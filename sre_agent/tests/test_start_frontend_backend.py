@@ -256,6 +256,7 @@ def test_main_waits_for_backend_then_starts_frontend(monkeypatch) -> None:
     )
 
     monkeypatch.setattr("sre_agent.scripts.start_frontend_backend._next_free_port", lambda host, port, limit=30: port)
+    monkeypatch.setattr("sre_agent.scripts.start_frontend_backend.ensure_frontend_dependencies", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(
         "sre_agent.scripts.start_frontend_backend.build_runtime_env",
         lambda **kwargs: ({"PYTHONUNBUFFERED": "1"}, _runtime_info_template()),
@@ -317,6 +318,7 @@ def test_main_does_not_start_frontend_when_backend_not_ready(monkeypatch) -> Non
     )
 
     monkeypatch.setattr("sre_agent.scripts.start_frontend_backend._next_free_port", lambda host, port, limit=30: port)
+    monkeypatch.setattr("sre_agent.scripts.start_frontend_backend.ensure_frontend_dependencies", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(
         "sre_agent.scripts.start_frontend_backend.build_runtime_env",
         lambda **kwargs: ({"PYTHONUNBUFFERED": "1"}, _runtime_info_template()),
@@ -345,3 +347,45 @@ def test_main_does_not_start_frontend_when_backend_not_ready(monkeypatch) -> Non
     assert exit_code != 0
     assert frontend_started is False
     assert "backend" in stopped
+
+
+def test_main_fails_fast_when_frontend_dependencies_are_missing(monkeypatch) -> None:
+    monkeypatch.setattr(
+        launcher,
+        "args",
+        argparse.Namespace(
+            config=DEFAULT_CONFIG_PATH,
+            backend_host="127.0.0.1",
+            backend_port=8000,
+            frontend_port=8080,
+            api_mode="proxy",
+            role="operator",
+            username="local-ui",
+            token_expire_seconds=3600,
+            llm_mode="minimax_api",
+            local_llm_base_url=DEFAULT_LOCAL_LLM_BASE_URL,
+            local_model=DEFAULT_LOCAL_LLM_MODEL,
+            runtime_info="sre_agent/temp/dev_runtime_info.json",
+        ),
+        raising=False,
+    )
+
+    spawn_backend_called = False
+
+    monkeypatch.setattr(
+        "sre_agent.scripts.start_frontend_backend.ensure_frontend_dependencies",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(SystemExit("frontend dependencies are missing")),
+    )
+
+    def _spawn_backend(*args, **kwargs):  # noqa: ANN002, ANN003
+        _ = (args, kwargs)
+        nonlocal spawn_backend_called
+        spawn_backend_called = True
+        return _FakeProc(pid=1301, poll_values=[None])
+
+    monkeypatch.setattr("sre_agent.scripts.start_frontend_backend.spawn_backend", _spawn_backend)
+
+    with pytest.raises(SystemExit, match="frontend dependencies are missing"):
+        launcher.main()
+
+    assert spawn_backend_called is False
