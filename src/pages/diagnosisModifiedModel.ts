@@ -1,4 +1,5 @@
-import type { ChatMessage, DiagnosisResult, DiagnosisSession, Observation, ThinkingStep } from "../api/types";
+import type { ChatMessage, DiagnosisLocalAuditRecord, DiagnosisResult, DiagnosisSession, Observation, SessionEvent, ThinkingStep } from "../api/types";
+import { formatDateTime, formatDateTimeParts } from "../utils/format";
 
 type ChipTone = "neutral" | "accent" | "success" | "warning" | "danger" | "info";
 
@@ -8,6 +9,18 @@ type TimelineSortItem = {
   order: number;
   timestamp: string;
   item: DiagnosisModifiedTimelineItem;
+};
+
+export type DiagnosisModifiedSystemEventView = {
+  id: string;
+  kind: "system";
+  eventKind: "approval_result" | "execution_progress";
+  summary: string;
+  details: string[];
+  timestamp: string;
+  statusTone: ChipTone;
+  source: "optimistic" | "event" | "local_audit";
+  dedupeKey: string;
 };
 
 export type DiagnosisModifiedTimelineItem =
@@ -29,6 +42,7 @@ export type DiagnosisModifiedTimelineItem =
       status: "thinking" | "completed";
       thoughtDurationSec?: number;
     }
+  | DiagnosisModifiedSystemEventView
   | {
       id: string;
       kind: "tool";
@@ -87,6 +101,8 @@ export type DiagnosisModifiedSummaryView = {
   confidenceRawLabel?: string;
   priorityLabel?: string;
   sessionLabel?: string;
+  updatedTimeLabel?: string;
+  updatedDateTimeLabel?: string;
   affectedServices: string[];
   impactSummary: string;
   rootCause?: string;
@@ -162,13 +178,109 @@ function isThinkingStep(entry: ThinkingStep | Observation): entry is ThinkingSte
   return "thought" in entry;
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function parsePlanVersionFromPlanId(planId: string | undefined): number | null {
+  if (!planId) {
+    return null;
+  }
+  const matched = /-v(\d+)$/.exec(planId.trim());
+  if (!matched) {
+    return null;
+  }
+  const version = Number(matched[1]);
+  return Number.isFinite(version) && version > 0 ? version : null;
+}
+
+function normalizePlanVersion(value: unknown): number | null {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+}
+
+const UNICODE_ESCAPE_PATTERN = /\\u[0-9a-fA-F]{4}/;
+const LATIN_MOJIBAKE_PATTERN = /[\u00C0-\u00FF]/;
+const CJK_PATTERN = /[\u3400-\u9FFF]/g;
+const REPLACEMENT_CHAR_PATTERN = /\uFFFD/g;
+
+function countMatches(text: string, pattern: RegExp) {
+  const matched = text.match(pattern);
+  return matched ? matched.length : 0;
+}
+
+function getTextQualityScore(text: string) {
+  const cjkCount = countMatches(text, CJK_PATTERN);
+  const replacementCount = countMatches(text, REPLACEMENT_CHAR_PATTERN);
+  const latinSupplementCount = countMatches(text, /[\u00C0-\u00FF]/g);
+
+  return cjkCount * 4 - replacementCount * 8 - latinSupplementCount * 2;
+}
+
+function decodeUnicodeEscapes(text: string) {
+  if (!UNICODE_ESCAPE_PATTERN.test(text)) {
+    return text;
+  }
+
+  try {
+    const escaped = text
+      .replace(/\\/g, "\\\\")
+      .replace(/\\\\u/g, "\\u")
+      .replace(/"/g, '\\"')
+      .replace(/\r/g, "\\r")
+      .replace(/\n/g, "\\n");
+    return JSON.parse(`"${escaped}"`) as string;
+  } catch {
+    return text;
+  }
+}
+
+function repairUtf8Mojibake(text: string) {
+  if (!LATIN_MOJIBAKE_PATTERN.test(text)) {
+    return text;
+  }
+
+  const chars = Array.from(text);
+  const bytes = chars.map((char) => char.charCodeAt(0));
+  if (bytes.some((code) => code > 0xff)) {
+    return text;
+  }
+
+  try {
+    const repaired = new TextDecoder("utf-8").decode(Uint8Array.from(bytes));
+    return getTextQualityScore(repaired) > getTextQualityScore(text) ? repaired : text;
+  } catch {
+    return text;
+  }
+}
+
+export function normalizeDiagnosisDisplayText(text: string) {
+  let current = text;
+
+  for (let index = 0; index < 3; index += 1) {
+    const decodedUnicode = decodeUnicodeEscapes(current);
+    const repairedMojibake = repairUtf8Mojibake(decodedUnicode);
+    if (repairedMojibake === current) {
+      break;
+    }
+    current = repairedMojibake;
+  }
+
+  return current;
+}
+
+function normalizeStringList(values: string[] | undefined) {
+  return (values ?? []).map((value) => normalizeDiagnosisDisplayText(value));
+}
+
 function formatValue(value: unknown): string {
   if (value == null) {
     return "-";
   }
 
   if (typeof value === "string") {
-    return value.length > 72 ? `${value.slice(0, 69)}...` : value;
+    const normalized = normalizeDiagnosisDisplayText(value);
+    return normalized.length > 72 ? `${normalized.slice(0, 69)}...` : normalized;
   }
 
   if (typeof value === "number" || typeof value === "boolean") {
@@ -207,6 +319,49 @@ function getConfidenceRawLabel(value: number | undefined) {
   return normalizeConfidence(value).toFixed(2);
 }
 
+function getUpdatedLabelParts(timestamp: string | undefined) {
+  if (!timestamp) {
+    return {
+      updatedTimeLabel: "--",
+      updatedDateTimeLabel: "--",
+    };
+  }
+
+  const { date, time } = formatDateTimeParts(timestamp);
+  const safeDate = date || "--";
+  const safeTime = time || safeDate;
+
+  return {
+    updatedTimeLabel: safeTime,
+    updatedDateTimeLabel: time ? `${safeDate} ${time}` : safeDate,
+  };
+}
+
+function getLatestTraceTimestamp(session: DiagnosisSession | undefined) {
+  const traceSteps = session?.trace?.steps ?? [];
+  for (let index = traceSteps.length - 1; index >= 0; index -= 1) {
+    const step = traceSteps[index];
+    if (step?.timestamp) {
+      return step.timestamp;
+    }
+  }
+  return undefined;
+}
+
+function resolveSummaryTimestamp(
+  summary: DiagnosisModifiedSummaryView | undefined,
+  timestamp: string | undefined,
+): DiagnosisModifiedSummaryView | undefined {
+  if (!summary) {
+    return summary;
+  }
+
+  return {
+    ...summary,
+    ...getUpdatedLabelParts(timestamp),
+  };
+}
+
 function getLayerLabel(value: string | undefined) {
   switch (value) {
     case "hardware":
@@ -242,9 +397,9 @@ function getCertaintyLabel(value: DiagnosisResult["diagnosis_certainty"] | undef
     case "confirmed":
       return "\u5df2\u786e\u8ba4";
     case "probable":
-      return "\u8f83\u5927\u6982\u7387";
+      return "\u9ad8\u6982\u7387";
     case "ambiguous":
-      return "\u8bc1\u636e\u4e0d\u8db3";
+      return "\u5f85\u786e\u8ba4";
     default:
       return "\u5f85\u786e\u8ba4";
   }
@@ -285,10 +440,11 @@ function formatParamsSummary(params: Record<string, unknown>) {
 
 function buildSummary(session: DiagnosisSession | undefined): DiagnosisModifiedSummaryView | undefined {
   const result = session?.diagnosis_result;
+  const updatedLabels = getUpdatedLabelParts(getLatestTraceTimestamp(session));
   if (!result) {
     return session
       ? {
-          title: "\u6682\u65e0\u7ed3\u8bba",
+          title: "\u6839\u56e0\u8bca\u65ad",
           subtitle: "\u5f53\u524d\u4f1a\u8bdd\u5c1a\u672a\u5f62\u6210\u6700\u7ec8\u8bca\u65ad\u7ed3\u8bba\u3002",
           certaintyLabel: "\u5206\u6790\u4e2d",
           certaintyTone: "info",
@@ -296,6 +452,8 @@ function buildSummary(session: DiagnosisSession | undefined): DiagnosisModifiedS
           confidenceRawLabel: "--",
           priorityLabel: undefined,
           sessionLabel: session.session_id,
+          updatedTimeLabel: updatedLabels.updatedTimeLabel,
+          updatedDateTimeLabel: updatedLabels.updatedDateTimeLabel,
           affectedServices: [],
           impactSummary: "\u7b49\u5f85\u63a8\u7406\u601d\u8003\u8f68\u8ff9\u4e0e\u5de5\u5177\u89c2\u5bdf\u7ed3\u679c\u3002",
           rootCause: undefined,
@@ -307,7 +465,7 @@ function buildSummary(session: DiagnosisSession | undefined): DiagnosisModifiedS
   }
 
   return {
-    title: "\u8bca\u65ad\u7ed3\u8bba",
+    title: "\u6839\u56e0\u8bca\u65ad",
     subtitle: "\u57fa\u4e8e\u73b0\u6709\u8bc1\u636e\u6574\u7406\u51fa\u7684\u5f53\u524d\u7ed3\u8bba\u3002",
     certaintyLabel: getCertaintyLabel(result.diagnosis_certainty),
     certaintyTone: getCertaintyTone(result.diagnosis_certainty),
@@ -315,12 +473,14 @@ function buildSummary(session: DiagnosisSession | undefined): DiagnosisModifiedS
     confidenceRawLabel: getConfidenceRawLabel(result.confidence),
     priorityLabel: result.triage_priority,
     sessionLabel: session?.session_id,
-    affectedServices: result.affected_services ?? [],
-    impactSummary: result.impact_summary,
-    rootCause: result.root_cause,
+    updatedTimeLabel: updatedLabels.updatedTimeLabel,
+    updatedDateTimeLabel: updatedLabels.updatedDateTimeLabel,
+    affectedServices: normalizeStringList(result.affected_services),
+    impactSummary: normalizeDiagnosisDisplayText(result.impact_summary),
+    rootCause: normalizeDiagnosisDisplayText(result.root_cause),
     rootCauseLayer: result.root_cause_layer,
     rootCauseLayerLabel: getLayerLabel(result.root_cause_layer),
-    rootCauseEntities: result.root_cause_entities ?? [],
+    rootCauseEntities: normalizeStringList(result.root_cause_entities),
   };
 }
 
@@ -342,8 +502,8 @@ function buildCandidates(session: DiagnosisSession | undefined): DiagnosisModifi
 
       return {
         id: `ranked-${candidate.rank}-${candidate.root_cause}`,
-        title: candidate.root_cause,
-        summary: candidate.evidence_summary,
+        title: normalizeDiagnosisDisplayText(candidate.root_cause),
+        summary: normalizeDiagnosisDisplayText(candidate.evidence_summary),
         confidence: candidate.confidence,
         confidenceLabel: getConfidenceLabel(candidate.confidence),
         statusLabel: isPrimary
@@ -356,20 +516,22 @@ function buildCandidates(session: DiagnosisSession | undefined): DiagnosisModifi
           : matchedHypothesis
             ? getHypothesisTone(matchedHypothesis.status)
             : "neutral",
-        evidenceFor: matchedHypothesis?.evidence_for?.slice(0, 3) ?? [candidate.evidence_summary],
-        evidenceAgainst: matchedHypothesis?.evidence_against?.slice(0, 2) ?? [],
+        evidenceFor: normalizeStringList(matchedHypothesis?.evidence_for?.slice(0, 3) ?? [candidate.evidence_summary]),
+        evidenceAgainst: normalizeStringList(matchedHypothesis?.evidence_against?.slice(0, 2) ?? []),
         layer: candidate.root_cause_layer,
-        entities: candidate.root_cause_entities ?? [],
+        entities: normalizeStringList(candidate.root_cause_entities),
         rank: candidate.rank,
-        evidenceSummary: candidate.evidence_summary,
-        distinguishingVerification: candidate.distinguishing_verification,
+        evidenceSummary: normalizeDiagnosisDisplayText(candidate.evidence_summary),
+        distinguishingVerification: candidate.distinguishing_verification
+          ? normalizeDiagnosisDisplayText(candidate.distinguishing_verification)
+          : candidate.distinguishing_verification,
         isPrimary,
       };
     });
   }
 
   const items: DiagnosisModifiedCandidateView[] = [];
-  const normalizedRootCause = result.root_cause.trim();
+  const normalizedRootCause = normalizeDiagnosisDisplayText(result.root_cause).trim();
 
   if (normalizedRootCause) {
     items.push({
@@ -380,36 +542,37 @@ function buildCandidates(session: DiagnosisSession | undefined): DiagnosisModifi
       confidenceLabel: getConfidenceLabel(result.confidence),
       statusLabel: getCertaintyLabel(result.diagnosis_certainty),
       statusTone: getCertaintyTone(result.diagnosis_certainty),
-      evidenceFor: hypotheses[0]?.evidence_for?.slice(0, 3) ?? [result.impact_summary],
-      evidenceAgainst: hypotheses[0]?.evidence_against?.slice(0, 2) ?? [],
+      evidenceFor: normalizeStringList(hypotheses[0]?.evidence_for?.slice(0, 3) ?? [result.impact_summary]),
+      evidenceAgainst: normalizeStringList(hypotheses[0]?.evidence_against?.slice(0, 2) ?? []),
       layer: result.root_cause_layer,
-      entities: result.root_cause_entities ?? [],
+      entities: normalizeStringList(result.root_cause_entities),
       rank: 1,
-      evidenceSummary: hypotheses[0]?.evidence_for?.[0] ?? result.impact_summary,
+      evidenceSummary: normalizeDiagnosisDisplayText(hypotheses[0]?.evidence_for?.[0] ?? result.impact_summary),
       distinguishingVerification: null,
       isPrimary: true,
     });
   }
 
   hypotheses.forEach((hypothesis, index) => {
-    if (hypothesis.description.trim() === normalizedRootCause) {
+    const normalizedHypothesisDescription = normalizeDiagnosisDisplayText(hypothesis.description).trim();
+    if (normalizedHypothesisDescription === normalizedRootCause) {
       return;
     }
 
     items.push({
       id: `hypothesis-${index + 1}`,
-      title: hypothesis.description,
+      title: normalizedHypothesisDescription,
       summary: hypothesis.status === "eliminated" ? "\u5f53\u524d\u8bc1\u636e\u4e0d\u652f\u6301\u8be5\u8def\u5f84\u3002" : "\u8be5\u8def\u5f84\u4ecd\u5728\u5019\u9009\u8303\u56f4\u5185\u3002",
       confidence: hypothesis.confidence,
       confidenceLabel: getConfidenceLabel(hypothesis.confidence),
       statusLabel: getHypothesisLabel(hypothesis.status),
       statusTone: getHypothesisTone(hypothesis.status),
-      evidenceFor: hypothesis.evidence_for.slice(0, 3),
-      evidenceAgainst: hypothesis.evidence_against.slice(0, 2),
+      evidenceFor: normalizeStringList(hypothesis.evidence_for.slice(0, 3)),
+      evidenceAgainst: normalizeStringList(hypothesis.evidence_against.slice(0, 2)),
       layer: index === 0 ? result.root_cause_layer : undefined,
-      entities: index === 0 ? result.root_cause_entities ?? [] : [],
+      entities: index === 0 ? normalizeStringList(result.root_cause_entities) : [],
       rank: index + 2,
-      evidenceSummary: hypothesis.evidence_for[0] ?? "\u8bc1\u636e\u6458\u8981",
+      evidenceSummary: normalizeDiagnosisDisplayText(hypothesis.evidence_for[0] ?? "\u8bc1\u636e\u6458\u8981"),
       distinguishingVerification: null,
       isPrimary: false,
     });
@@ -422,7 +585,7 @@ function buildHypotheses(session: DiagnosisSession | undefined): DiagnosisModifi
   const hypotheses = session?.diagnosis_result?.hypotheses ?? [];
   return hypotheses.map((item, index) => ({
     id: `hypothesis-view-${index + 1}-${item.description}`,
-    description: item.description,
+    description: normalizeDiagnosisDisplayText(item.description),
     statusLabel: getHypothesisLabel(item.status),
     statusTone: getHypothesisTone(item.status),
     evidenceForCount: item.evidence_for.length,
@@ -435,12 +598,12 @@ function buildPropagationChain(session: DiagnosisSession | undefined): Diagnosis
   const steps = session?.diagnosis_result?.propagation_chain ?? [];
   return steps.map((step, index) => ({
     id: `propagation-${index + 1}-${step.entity_id}`,
-    entityId: step.entity_id,
-    entityType: step.entity_type,
-    metric: step.metric,
+    entityId: normalizeDiagnosisDisplayText(step.entity_id),
+    entityType: normalizeDiagnosisDisplayText(step.entity_type),
+    metric: normalizeDiagnosisDisplayText(step.metric),
     valueBefore: step.value_before,
     valueAfter: step.value_after,
-    description: step.description,
+    description: normalizeDiagnosisDisplayText(step.description),
   }));
 }
 
@@ -453,8 +616,8 @@ function buildPlan(session: DiagnosisSession | undefined): DiagnosisModifiedPlan
   const isResolved = ["resolved", "closed"].includes(session?.status ?? "");
 
   return {
-    title: plan.root_cause,
-    description: plan.description,
+    title: normalizeDiagnosisDisplayText(plan.root_cause),
+    description: normalizeDiagnosisDisplayText(plan.description),
     priorityLabel: plan.priority,
     confidenceLabel: getConfidenceLabel(plan.confidence),
     safetyLabel: plan.safety_level,
@@ -462,7 +625,7 @@ function buildPlan(session: DiagnosisSession | undefined): DiagnosisModifiedPlan
       plan.canary?.enabled ? `\u91d1\u4e1d\u96c0 ${plan.canary.target_percentage}% | \u89c2\u6d4b ${plan.canary.monitor_duration}m` : undefined,
     steps: plan.steps.map((step, index) => ({
       id: `${plan.plan_id}-${step.step_id}-${index}`,
-      title: step.description,
+      title: normalizeDiagnosisDisplayText(step.description),
       detail: `${step.tool} | \u8017\u65f6 ${step.timeout}s | \u6821\u9a8c ${step.verification.method}`,
       toolName: step.tool,
       paramsSummary: Object.keys(step.params).length > 0 ? formatParamsSummary(step.params) : undefined,
@@ -471,29 +634,225 @@ function buildPlan(session: DiagnosisSession | undefined): DiagnosisModifiedPlan
   };
 }
 
+function buildTraceNextAction(entry: ThinkingStep) {
+  if (entry.action_type === "tool_call" && entry.tool_name) {
+    const serviceHint =
+      typeof entry.tool_params?.service === "string" && entry.tool_params.service.trim().length > 0
+        ? ` for ${entry.tool_params.service}`
+        : "";
+    return `Next action: call ${entry.tool_name}${serviceHint} to validate this hypothesis.`;
+  }
+
+  if (entry.action_type === "conclude") {
+    return "Next action: synthesize the current evidence and provide the root-cause conclusion.";
+  }
+
+  return "Next action: continue gathering discriminative evidence to narrow the root cause.";
+}
+
+function isSyntheticRemediationMessage(message: ChatMessage) {
+  const eventType = String(message.metadata?.["event_type"] ?? "").trim().toLowerCase();
+  return [
+    "approval_required",
+    "plan_revised",
+    "remediation_progress",
+    "execution_started",
+    "execution_succeeded",
+    "execution_failed",
+    "execution_timeout",
+  ].includes(eventType);
+}
+
+function buildPlanStepDetailLines(plan: DiagnosisSession["diagnosis_result"] | undefined) {
+  const steps = plan?.recommended_fix?.steps ?? [];
+  if (steps.length === 0) {
+    return ["执行步骤：--"];
+  }
+
+  return steps.map((step, index) => `步骤 ${index + 1}：${normalizeDiagnosisDisplayText(step.description)}`);
+}
+
+function getSystemRecordPriority(source: DiagnosisLocalAuditRecord["source"]) {
+  switch (source) {
+    case "event":
+      return 3;
+    case "local_audit":
+      return 2;
+    case "optimistic":
+    default:
+      return 1;
+  }
+}
+
+function resolveRecordUser(data: Record<string, unknown>) {
+  const approver = typeof data.approver === "string" ? data.approver.trim() : "";
+  if (approver) {
+    return approver;
+  }
+
+  const user = typeof data.user === "string" ? data.user.trim() : "";
+  return user || "alice";
+}
+
+function buildApprovalResultFromExecutionEvent(
+  event: SessionEvent,
+  session: DiagnosisSession | undefined,
+): DiagnosisLocalAuditRecord | null {
+  if (event.type !== "remediation_progress") {
+    return null;
+  }
+
+  const data = isRecord(event.data) ? event.data : {};
+  const stage = String(data.stage ?? "").trim().toLowerCase();
+  if (stage !== "execution_started") {
+    return null;
+  }
+
+  const plan = session?.diagnosis_result?.recommended_fix;
+  const planVersion = normalizePlanVersion(data.plan_version) ?? parsePlanVersionFromPlanId(plan?.plan_id) ?? null;
+  const versionLabel = planVersion ? `v${planVersion}` : "v?";
+  const approver = resolveRecordUser(data);
+  const details = [
+    `审批时间：${formatDateTime(event.timestamp)}`,
+    `方案版本：${planVersion ? `v${planVersion}` : "--"}`,
+    `方案 ID：${plan?.plan_id ?? "--"}`,
+    `审批人：${approver}`,
+    "审批动作：同意，通过执行",
+    `方案标题：${plan ? normalizeDiagnosisDisplayText(plan.root_cause) : "--"}`,
+    ...buildPlanStepDetailLines(session?.diagnosis_result),
+  ];
+
+  return {
+    id: `event-approval-approved-${event.timestamp}`,
+    sessionId: event.session_id,
+    eventKind: "approval_result",
+    source: "event",
+    dedupeKey: `approval-result-approved-${versionLabel}`,
+    timestamp: event.timestamp,
+    summary: `[系统] 已审批，通过执行（${versionLabel}，审批人 ${approver}）`,
+    details,
+    statusTone: "success",
+  };
+}
+
+function getExecutionStageLabel(stage: string) {
+  switch (stage) {
+    case "execution_started":
+      return "开始执行";
+    case "execution_succeeded":
+      return "执行成功";
+    case "execution_failed":
+      return "执行失败";
+    case "execution_timeout":
+      return "执行超时";
+    default:
+      return stage || "执行进度";
+  }
+}
+
+function getExecutionStageTone(stage: string): ChipTone {
+  switch (stage) {
+    case "execution_started":
+      return "warning";
+    case "execution_succeeded":
+      return "success";
+    case "execution_failed":
+    case "execution_timeout":
+      return "danger";
+    default:
+      return "info";
+  }
+}
+
+function buildExecutionProgressRecord(event: SessionEvent): DiagnosisLocalAuditRecord | null {
+  if (event.type !== "remediation_progress") {
+    return null;
+  }
+
+  const data = isRecord(event.data) ? event.data : {};
+  const stage = String(data.stage ?? "").trim().toLowerCase();
+  if (!["execution_started", "execution_succeeded", "execution_failed", "execution_timeout"].includes(stage)) {
+    return null;
+  }
+
+  const stageLabel = getExecutionStageLabel(stage);
+  const message = typeof data.message === "string" && data.message.trim()
+    ? normalizeDiagnosisDisplayText(data.message)
+    : "";
+  const operator = resolveRecordUser(data);
+  const details = [
+    `状态时间：${formatDateTime(event.timestamp)}`,
+    `执行阶段：${stageLabel}`,
+    `执行人：${operator}`,
+  ];
+
+  if (message) {
+    details.push(`执行说明：${message}`);
+  }
+
+  const timeoutSeconds = Number(data.timeout_seconds ?? 0);
+  if (Number.isFinite(timeoutSeconds) && timeoutSeconds > 0) {
+    details.push(`超时上限：${timeoutSeconds}s`);
+  }
+
+  const stepResults = Array.isArray(data.step_results) ? data.step_results : [];
+  stepResults.slice(0, 3).forEach((step, index) => {
+    if (!isRecord(step)) {
+      return;
+    }
+    const tool = typeof step.tool === "string" ? step.tool : "step";
+    const command = typeof step.command === "string" ? step.command : "";
+    details.push(`细节 ${index + 1}：${tool}${command ? ` | ${normalizeDiagnosisDisplayText(command)}` : ""}`);
+  });
+
+  return {
+    id: `event-${stage}-${event.timestamp}`,
+    sessionId: event.session_id,
+    eventKind: "execution_progress",
+    source: "event",
+    dedupeKey: `execution-progress-${stage}-${event.timestamp}`,
+    timestamp: event.timestamp,
+    summary: message ? `[系统] ${stageLabel}：${message}` : `[系统] ${stageLabel}`,
+    details,
+    statusTone: getExecutionStageTone(stage),
+  };
+}
+
+function buildSystemRecords(
+  session: DiagnosisSession | undefined,
+  events: SessionEvent[],
+  localAuditRecords: DiagnosisLocalAuditRecord[],
+) {
+  const eventDerived = events.flatMap((event) => {
+    const items = [
+      buildApprovalResultFromExecutionEvent(event, session),
+      buildExecutionProgressRecord(event),
+    ].filter((item): item is DiagnosisLocalAuditRecord => Boolean(item));
+    return items;
+  });
+
+  const deduped = new Map<string, DiagnosisLocalAuditRecord>();
+  [...localAuditRecords, ...eventDerived].forEach((record) => {
+    const existing = deduped.get(record.dedupeKey);
+    if (!existing || getSystemRecordPriority(record.source) >= getSystemRecordPriority(existing.source)) {
+      deduped.set(record.dedupeKey, record);
+    }
+  });
+
+  return [...deduped.values()].sort((left, right) => {
+    return new Date(left.timestamp).getTime() - new Date(right.timestamp).getTime();
+  });
+}
+
 export function buildDiagnosisModifiedLiveView(
   session: DiagnosisSession | undefined,
   messages: ChatMessage[],
+  events: SessionEvent[] = [],
+  localAuditRecords: DiagnosisLocalAuditRecord[] = [],
 ): DiagnosisModifiedLiveView {
   const timelineItems: TimelineSortItem[] = [];
   const traceEntries = session?.trace?.steps ?? [];
   const pendingTools: Array<Extract<DiagnosisModifiedTimelineItem, { kind: "tool" }>> = [];
-
-  const buildTraceNextAction = (entry: ThinkingStep) => {
-    if (entry.action_type === "tool_call" && entry.tool_name) {
-      const serviceHint =
-        typeof entry.tool_params?.service === "string" && entry.tool_params.service.trim().length > 0
-          ? ` for ${entry.tool_params.service}`
-          : "";
-      return `Next action: call ${entry.tool_name}${serviceHint} to validate this hypothesis.`;
-    }
-
-    if (entry.action_type === "conclude") {
-      return "Next action: synthesize the current evidence and provide the root-cause conclusion.";
-    }
-
-    return "Next action: continue gathering discriminative evidence to narrow the root cause.";
-  };
 
   for (let index = 0; index < traceEntries.length; index += 1) {
     const entry = traceEntries[index];
@@ -589,6 +948,10 @@ export function buildDiagnosisModifiedLiveView(
   }
 
   messages.forEach((message, index) => {
+    if (isSyntheticRemediationMessage(message)) {
+      return;
+    }
+
     if (message.role === "assistant" && message.display?.thinking_raw) {
       timelineItems.push({
         order: timelineItems.length,
@@ -635,6 +998,24 @@ export function buildDiagnosisModifiedLiveView(
     });
   });
 
+  buildSystemRecords(session, events, localAuditRecords).forEach((record, index) => {
+    timelineItems.push({
+      order: timelineItems.length + index,
+      timestamp: record.timestamp,
+      item: {
+        id: record.id,
+        kind: "system",
+        eventKind: record.eventKind,
+        summary: normalizeDiagnosisDisplayText(record.summary),
+        details: record.details.map((detail) => normalizeDiagnosisDisplayText(detail)),
+        timestamp: record.timestamp,
+        statusTone: record.statusTone,
+        source: record.source,
+        dedupeKey: record.dedupeKey,
+      },
+    });
+  });
+
   const sortedTimeline = [...timelineItems]
     .sort((left, right) => {
       const timeGap = new Date(left.timestamp).getTime() - new Date(right.timestamp).getTime();
@@ -645,12 +1026,14 @@ export function buildDiagnosisModifiedLiveView(
     })
     .map((entry) => entry.item);
 
+  const latestTimelineTimestamp = sortedTimeline[sortedTimeline.length - 1]?.timestamp ?? getLatestTraceTimestamp(session);
+
   return {
     timeline: sortedTimeline,
     candidates: buildCandidates(session),
     hypotheses: buildHypotheses(session),
     propagationChain: buildPropagationChain(session),
-    summary: buildSummary(session),
+    summary: resolveSummaryTimestamp(buildSummary(session), latestTimelineTimestamp),
     plan: buildPlan(session),
   };
 }
@@ -818,11 +1201,14 @@ export function buildDiagnosisModifiedDemoScenario(prompt: string): DiagnosisMod
   const summary =
     buildSummary(demoSession) ??
     ({
-      title: "\u8bca\u65ad\u7ed3\u8bba",
+      title: "\u6839\u56e0\u8bca\u65ad",
       subtitle: "\u57fa\u4e8e\u73b0\u6709\u8bc1\u636e\u6574\u7406\u51fa\u7684\u5f53\u524d\u7ed3\u8bba\u3002",
       certaintyLabel: "\u5206\u6790\u4e2d",
       certaintyTone: "info",
       confidenceLabel: "--",
+      confidenceRawLabel: "--",
+      updatedTimeLabel: "--",
+      updatedDateTimeLabel: "--",
       affectedServices: [],
       impactSummary: "\u7b49\u5f85\u63a8\u7406\u601d\u8003\u8f68\u8ff9\u4e0e\u5de5\u5177\u89c2\u5bdf\u7ed3\u679c\u3002",
     } satisfies DiagnosisModifiedSummaryView);
@@ -841,8 +1227,7 @@ export function buildDiagnosisModifiedDemoScenario(prompt: string): DiagnosisMod
       steps: [],
     } satisfies DiagnosisModifiedPlanView);
 
-  return {
-    initialTimeline: [
+  const initialTimeline: DiagnosisModifiedTimelineItem[] = [
       {
         id: `demo-user-${now}`,
         kind: "message",
@@ -851,8 +1236,9 @@ export function buildDiagnosisModifiedDemoScenario(prompt: string): DiagnosisMod
         timestamp: new Date(now).toISOString(),
         label: "\u7528\u6237\u8f93\u5165",
       },
-    ],
-    events: [
+    ];
+
+  const events: DiagnosisModifiedDemoEvent[] = [
       {
         delayMs: 240,
         type: "append",
@@ -1034,11 +1420,20 @@ export function buildDiagnosisModifiedDemoScenario(prompt: string): DiagnosisMod
         delayMs: 3860,
         type: "complete",
       },
-    ],
+    ];
+
+  const appendEventTimestamps = events
+    .filter((event): event is Extract<DiagnosisModifiedDemoEvent, { type: "append" }> => event.type === "append")
+    .map((event) => event.item.timestamp);
+  const latestDemoTimestamp = [...initialTimeline.map((item) => item.timestamp), ...appendEventTimestamps].at(-1);
+
+  return {
+    initialTimeline,
+    events,
     candidates,
     hypotheses,
     propagationChain,
-    summary,
+    summary: resolveSummaryTimestamp(summary, latestDemoTimestamp) ?? summary,
     plan,
   };
 }

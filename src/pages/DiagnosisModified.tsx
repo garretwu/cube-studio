@@ -1,11 +1,20 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type KeyboardEvent,
+  type ReactNode,
+} from "react";
 import { useParams } from "react-router-dom";
 
 import { buildBackendWsUrl } from "../api/ws";
-import { AppIcon, SectionHeader } from "../components/ui";
+import { AppIcon } from "../components/ui";
 import { useWebSocket } from "../hooks/useWebSocket";
 import { useDiagnosisStore } from "../store/diagnosisStore";
-import { formatDateTimeParts, formatTimestamp } from "../utils/format";
+import { formatSeverity, formatWorkflowStatus } from "../utils/display";
+import { formatTimestamp } from "../utils/format";
 import {
   buildDiagnosisModifiedDemoScenario,
   buildDiagnosisModifiedLiveView,
@@ -18,9 +27,13 @@ import {
   type DiagnosisModifiedTimelineItem,
 } from "./diagnosisModifiedModel";
 
-type BadgeTone = "neutral" | "accent" | "success" | "warning" | "danger" | "info";
-type ApprovalState = "pending" | "modifying" | "updating" | "approved" | "rejected";
-
+type BadgeTone =
+  | "neutral"
+  | "accent"
+  | "success"
+  | "warning"
+  | "danger"
+  | "info";
 const DEMO_TEXT_SPEED_MS = 40;
 const DEMO_THINKING_COLLAPSE_DELAY_MS = 800;
 const DEMO_EVENT_SLOWDOWN = 4.5;
@@ -42,7 +55,10 @@ function formatThoughtDurationLabel(durationSec?: number) {
   return `Thought for ${safeDuration} second${safeDuration === 1 ? "" : "s"}`;
 }
 
-function splitThinkingAndConclusion(content: string): { thinking: string | null; conclusion: string } {
+function splitThinkingAndConclusion(content: string): {
+  thinking: string | null;
+  conclusion: string;
+} {
   const matched = THINK_TAG_BLOCK_PATTERN.exec(content);
   if (!matched) {
     return { thinking: null, conclusion: content.trim() };
@@ -56,8 +72,9 @@ function splitThinkingAndConclusion(content: string): { thinking: string | null;
   };
 }
 
-
-function resolveInlineError(error?: string): { tone: "error" | "warning"; message: string } | null {
+function resolveInlineError(
+  error?: string,
+): { tone: "error" | "warning"; message: string } | null {
   if (!error) {
     return null;
   }
@@ -69,6 +86,46 @@ function resolveInlineError(error?: string): { tone: "error" | "warning"; messag
     };
   }
   return { tone: "error", message: error };
+}
+
+function getDiagnosisStatusBadgeTone(status?: string): BadgeTone {
+  switch (status) {
+    case "resolved":
+    case "closed":
+      return "success";
+    case "error":
+    case "failed":
+    case "escalated":
+      return "danger";
+    case "diagnosing":
+    case "remediating":
+    case "validating":
+    case "testing":
+      return "warning";
+    case "awaiting_approval":
+    case "approval_required":
+      return "info";
+    case "diagnosed":
+    case "approved":
+    case "re_diagnosed":
+    case "proposed_fix_ready":
+      return "accent";
+    default:
+      return "neutral";
+  }
+}
+
+function getSeverityBadgeTone(severity?: string): BadgeTone {
+  switch (severity) {
+    case "critical":
+      return "danger";
+    case "warning":
+      return "warning";
+    case "info":
+      return "info";
+    default:
+      return "neutral";
+  }
 }
 
 function useProgressiveText(
@@ -83,7 +140,6 @@ function useProgressiveText(
   useEffect(() => {
     onCompleteRef.current = onComplete;
   }, [onComplete]);
-
 
   useEffect(() => {
     if (!animate) {
@@ -121,8 +177,23 @@ function useProgressiveText(
   return displayedText;
 }
 
-function ToneBadge({ children, tone = "neutral" }: { children: ReactNode; tone?: BadgeTone }) {
-  return <span className={cn("diagnosis-modified-badge", `diagnosis-modified-badge--${tone}`)}>{children}</span>;
+function ToneBadge({
+  children,
+  tone = "neutral",
+}: {
+  children: ReactNode;
+  tone?: BadgeTone;
+}) {
+  return (
+    <span
+      className={cn(
+        "diagnosis-modified-badge",
+        `diagnosis-modified-badge--${tone}`,
+      )}
+    >
+      {children}
+    </span>
+  );
 }
 
 function StreamingText({
@@ -136,13 +207,20 @@ function StreamingText({
   className?: string;
   onComplete?: () => void;
 }) {
-  const displayedText = useProgressiveText(text, animate, DEMO_TEXT_SPEED_MS, onComplete);
+  const displayedText = useProgressiveText(
+    text,
+    animate,
+    DEMO_TEXT_SPEED_MS,
+    onComplete,
+  );
   const showCaret = animate && displayedText.length < text.length;
 
   return (
     <span className={className}>
       {displayedText}
-      {showCaret ? <span className="diagnosis-modified-caret" aria-hidden="true" /> : null}
+      {showCaret ? (
+        <span className="diagnosis-modified-caret" aria-hidden="true" />
+      ) : null}
     </span>
   );
 }
@@ -160,9 +238,18 @@ function MessageRow({
   const hoverTime = formatTimestamp(item.timestamp);
 
   return (
-    <article className={cn("diagnosis-modified-message-row", isUser && "diagnosis-modified-message-row--user")} title={hoverTime}>
+    <article
+      className={cn(
+        "diagnosis-modified-message-row",
+        isUser && "diagnosis-modified-message-row--user",
+      )}
+      title={hoverTime}
+    >
       <div className="diagnosis-modified-message-row__body">
-        <span className="diagnosis-modified-message-row__hover-time" aria-hidden="true">
+        <span
+          className="diagnosis-modified-message-row__hover-time"
+          aria-hidden="true"
+        >
           {hoverTime}
         </span>
         <p className="diagnosis-modified-message-row__text">
@@ -194,7 +281,10 @@ function ThinkingBlock({
       return;
     }
 
-    const timer = window.setTimeout(() => setIsExpanded(false), DEMO_THINKING_COLLAPSE_DELAY_MS);
+    const timer = window.setTimeout(
+      () => setIsExpanded(false),
+      DEMO_THINKING_COLLAPSE_DELAY_MS,
+    );
     return () => window.clearTimeout(timer);
   }, [isThinking, item.id]);
 
@@ -202,7 +292,10 @@ function ThinkingBlock({
     <article className="diagnosis-modified-process-row">
       <div className="diagnosis-modified-process-row__body">
         <button
-          className={cn("diagnosis-modified-thinking__toggle", !isThinking && "diagnosis-modified-thinking__toggle--interactive")}
+          className={cn(
+            "diagnosis-modified-thinking__toggle",
+            !isThinking && "diagnosis-modified-thinking__toggle--interactive",
+          )}
           onClick={() => {
             if (!isThinking) {
               setIsExpanded((current) => !current);
@@ -210,27 +303,63 @@ function ThinkingBlock({
           }}
           type="button"
         >
-          <span className="diagnosis-modified-thinking__icon" aria-hidden="true">
-            {isThinking ? <span className="diagnosis-modified-thinking__pulse" /> : <span className={cn("diagnosis-modified-thinking__chevron", isExpanded && "diagnosis-modified-thinking__chevron--expanded")} />}
+          <span
+            className="diagnosis-modified-thinking__icon"
+            aria-hidden="true"
+          >
+            {isThinking ? (
+              <span className="diagnosis-modified-thinking__pulse" />
+            ) : (
+              <span
+                className={cn(
+                  "diagnosis-modified-thinking__chevron",
+                  isExpanded &&
+                    "diagnosis-modified-thinking__chevron--expanded",
+                )}
+              />
+            )}
           </span>
           <span className="diagnosis-modified-thinking__label-wrap">
             {isThinking ? (
-              <span className="diagnosis-modified-thinking__label-tag" aria-hidden="true">
+              <span
+                className="diagnosis-modified-thinking__label-tag"
+                aria-hidden="true"
+              >
                 <AppIcon name="spark" size={11} />
               </span>
             ) : null}
-            <span className={cn("diagnosis-modified-thinking__label", isThinking && "diagnosis-modified-thinking__label--thinking")}>
-              {isThinking ? "Thinking..." : formatThoughtDurationLabel(item.thoughtDurationSec ?? estimateThoughtDurationSecFromContent(item.content))}
+            <span
+              className={cn(
+                "diagnosis-modified-thinking__label",
+                isThinking && "diagnosis-modified-thinking__label--thinking",
+              )}
+            >
+              {isThinking
+                ? "Thinking..."
+                : formatThoughtDurationLabel(
+                    item.thoughtDurationSec ??
+                      estimateThoughtDurationSecFromContent(item.content),
+                  )}
             </span>
           </span>
-          {item.toolName ? <span className="diagnosis-modified-thinking__tool">{item.toolName}</span> : null}
+          {item.toolName ? (
+            <span className="diagnosis-modified-thinking__tool">
+              {item.toolName}
+            </span>
+          ) : null}
         </button>
 
         {isExpanded ? (
           <div className="diagnosis-modified-thinking__panel">
             <div className="diagnosis-modified-thinking__content">
               <p>
-                <StreamingText animate={animate && isThinking} onComplete={animate && isThinking ? onStreamComplete : undefined} text={item.content} />
+                <StreamingText
+                  animate={animate && isThinking}
+                  onComplete={
+                    animate && isThinking ? onStreamComplete : undefined
+                  }
+                  text={item.content}
+                />
               </p>
             </div>
           </div>
@@ -240,9 +369,14 @@ function ThinkingBlock({
   );
 }
 
-function ToolCard({ item }: { item: Extract<DiagnosisModifiedTimelineItem, { kind: "tool" }> }) {
+function ToolCard({
+  item,
+}: {
+  item: Extract<DiagnosisModifiedTimelineItem, { kind: "tool" }>;
+}) {
   const [isExpanded, setIsExpanded] = useState(item.status === "loading");
-  const hasDetails = Object.keys(item.params).length > 0 || item.summaryLines.length > 0;
+  const hasDetails =
+    Object.keys(item.params).length > 0 || item.summaryLines.length > 0;
 
   useEffect(() => {
     if (item.status === "loading") {
@@ -260,7 +394,9 @@ function ToolCard({ item }: { item: Extract<DiagnosisModifiedTimelineItem, { kin
           className={cn(
             "diagnosis-modified-tool-card",
             `diagnosis-modified-tool-card--${item.status}`,
-            hasDetails && item.status !== "loading" && "diagnosis-modified-tool-card--interactive",
+            hasDetails &&
+              item.status !== "loading" &&
+              "diagnosis-modified-tool-card--interactive",
           )}
           onClick={() => {
             if (hasDetails && item.status !== "loading") {
@@ -270,14 +406,26 @@ function ToolCard({ item }: { item: Extract<DiagnosisModifiedTimelineItem, { kin
           type="button"
         >
           <div className="diagnosis-modified-tool-card__header">
-            <div className="diagnosis-modified-tool-card__status-icon" aria-hidden="true">
-              <span className={cn("diagnosis-modified-tool-card__status-indicator", `diagnosis-modified-tool-card__status-indicator--${item.status}`)} />
+            <div
+              className="diagnosis-modified-tool-card__status-icon"
+              aria-hidden="true"
+            >
+              <span
+                className={cn(
+                  "diagnosis-modified-tool-card__status-indicator",
+                  `diagnosis-modified-tool-card__status-indicator--${item.status}`,
+                )}
+              />
             </div>
             <div className="diagnosis-modified-tool-card__header-copy">
               <strong>{item.toolName}</strong>
-              {Object.keys(item.params).length > 0 ? <span>{JSON.stringify(item.params)}</span> : null}
+              {Object.keys(item.params).length > 0 ? (
+                <span>{JSON.stringify(item.params)}</span>
+              ) : null}
             </div>
-            <span className="diagnosis-modified-tool-card__status-label">{item.status}</span>
+            <span className="diagnosis-modified-tool-card__status-label">
+              {item.status}
+            </span>
           </div>
 
           {isExpanded ? (
@@ -296,7 +444,9 @@ function ToolCard({ item }: { item: Extract<DiagnosisModifiedTimelineItem, { kin
               ) : (
                 <div className="diagnosis-modified-tool-card__details">
                   {Object.keys(item.params).length > 0 ? (
-                    <pre className="diagnosis-modified-tool-card__params">{JSON.stringify(item.params, null, 2)}</pre>
+                    <pre className="diagnosis-modified-tool-card__params">
+                      {JSON.stringify(item.params, null, 2)}
+                    </pre>
                   ) : null}
                   {item.summaryLines.length > 0 ? (
                     <div className="diagnosis-modified-tool-card__results">
@@ -320,267 +470,413 @@ function RCAReportCard({
   candidates,
   hypotheses,
   propagationChain,
-  timeline,
 }: {
   summary: DiagnosisModifiedSummaryView;
   candidates: DiagnosisModifiedCandidateView[];
   hypotheses?: DiagnosisModifiedHypothesisView[];
   propagationChain?: DiagnosisModifiedPropagationStepView[];
-  timeline: DiagnosisModifiedTimelineItem[];
 }) {
   const primaryCandidate = candidates[0];
-  const lastTimestamp = timeline[timeline.length - 1]?.timestamp;
-  const lastParts = formatDateTimeParts(lastTimestamp);
   const hypothesisRows = hypotheses ?? [];
   const chainRows = propagationChain ?? [];
+  const rootCauseEntities =
+    summary.rootCauseEntities && summary.rootCauseEntities.length > 0
+      ? summary.rootCauseEntities
+      : (primaryCandidate?.entities ?? []);
 
   return (
     <section className="diagnosis-modified-report-card">
       <header className="diagnosis-modified-report-card__header">
         <div>
           <div className="diagnosis-modified-report-card__eyebrow">
-            <ToneBadge tone="neutral">\u6839\u56e0\u8bca\u65ad</ToneBadge>
-            {summary.priorityLabel ? <ToneBadge tone="warning">{summary.priorityLabel}</ToneBadge> : null}
-            <ToneBadge tone={summary.certaintyTone}>{summary.certaintyLabel}</ToneBadge>
+            <ToneBadge tone="neutral">{"\u6839\u56e0\u8bca\u65ad"}</ToneBadge>
+            {summary.priorityLabel ? (
+              <ToneBadge tone="warning">{summary.priorityLabel}</ToneBadge>
+            ) : null}
+            <ToneBadge tone={summary.certaintyTone}>
+              {summary.certaintyLabel}
+            </ToneBadge>
           </div>
-          <h3 className="diagnosis-modified-report-card__title">{summary.title}</h3>
+          <h3 className="diagnosis-modified-report-card__title">
+            {summary.title}
+          </h3>
+          <p className="diagnosis-modified-report-card__subtitle">
+            {summary.subtitle}
+          </p>
         </div>
         <div className="diagnosis-modified-report-card__meta">
           {summary.sessionLabel ? <span>{summary.sessionLabel}</span> : null}
-          {lastTimestamp ? <span>{`${lastParts.date} ${lastParts.time}`}</span> : null}
+          <span>{summary.updatedDateTimeLabel ?? "--"}</span>
         </div>
       </header>
 
       <div className="diagnosis-modified-report-card__grid">
         <div>
-          <span>\u786e\u5b9a\u6027</span>
+          <span>{"\u786e\u5b9a\u6027"}</span>
           <strong>{summary.certaintyLabel}</strong>
         </div>
         <div>
-          <span>\u7f6e\u4fe1\u5ea6</span>
-          <strong>{summary.confidenceRawLabel ?? summary.confidenceLabel}</strong>
+          <span>{"\u7f6e\u4fe1\u5ea6"}</span>
+          <strong>
+            {summary.confidenceRawLabel ?? summary.confidenceLabel}
+          </strong>
         </div>
         <div>
-          <span>\u4f18\u5148\u7ea7</span>
+          <span>{"\u4f18\u5148\u7ea7"}</span>
           <strong>{summary.priorityLabel ?? "--"}</strong>
         </div>
         <div>
-          <span>\u66f4\u65b0\u65f6\u95f4</span>
-          <strong>{lastTimestamp ? lastParts.time : "--"}</strong>
+          <span>{"\u66f4\u65b0\u65f6\u95f4"}</span>
+          <strong>{summary.updatedTimeLabel ?? "--"}</strong>
         </div>
       </div>
 
       <div className="diagnosis-modified-report-card__sections">
-        <div>
-          <p className="diagnosis-modified-report-card__section-label">\u5f53\u524d\u7ed3\u8bba</p>
+        <section className="diagnosis-modified-report-card__section">
+          <p className="diagnosis-modified-report-card__section-label">
+            {"\u5f53\u524d\u7ed3\u8bba"}
+          </p>
           <div className="diagnosis-modified-report-card__facts">
-            <p>
-              <span>\u6839\u56e0\uff1a</span>
-              {summary.rootCause ?? primaryCandidate?.title ?? "--"}
-            </p>
-            <p>
-              <span>\u5c42\u7ea7\uff1a</span>
-              {summary.rootCauseLayerLabel ?? summary.rootCauseLayer ?? primaryCandidate?.layer ?? "--"}
-            </p>
-            <p>
-              <span>\u5b9e\u4f53\uff1a</span>
-              {summary.rootCauseEntities && summary.rootCauseEntities.length > 0
-                ? summary.rootCauseEntities.join("\uff0c")
-                : primaryCandidate?.entities?.join("\uff0c") || "--"}
-            </p>
-            <p>
-              <span>\u5f71\u54cd\uff1a</span>
-              {summary.impactSummary}
-            </p>
-            <p>
-              <span>\u53d7\u5f71\u54cd\u670d\u52a1\uff1a</span>
-              {summary.affectedServices.length > 0 ? summary.affectedServices.join("\uff0c") : "--"}
-            </p>
+            <div className="diagnosis-modified-report-card__fact-row">
+              <span className="diagnosis-modified-report-card__fact-label">
+                {"\u6839\u56e0"}
+              </span>
+              <strong className="diagnosis-modified-report-card__fact-value">
+                {summary.rootCause ?? primaryCandidate?.title ?? "--"}
+              </strong>
+            </div>
+            <div className="diagnosis-modified-report-card__fact-row">
+              <span className="diagnosis-modified-report-card__fact-label">
+                {"\u5c42\u7ea7"}
+              </span>
+              <span className="diagnosis-modified-report-card__fact-value">
+                {summary.rootCauseLayerLabel ??
+                  summary.rootCauseLayer ??
+                  primaryCandidate?.layer ??
+                  "--"}
+              </span>
+            </div>
+            <div className="diagnosis-modified-report-card__fact-row">
+              <span className="diagnosis-modified-report-card__fact-label">
+                {"\u5b9e\u4f53"}
+              </span>
+              <span className="diagnosis-modified-report-card__fact-value">
+                {rootCauseEntities.length > 0
+                  ? rootCauseEntities.join("\uFF0C")
+                  : "--"}
+              </span>
+            </div>
+            <div className="diagnosis-modified-report-card__fact-row">
+              <span className="diagnosis-modified-report-card__fact-label">
+                {"\u5f71\u54cd"}
+              </span>
+              <span className="diagnosis-modified-report-card__fact-value">
+                {summary.impactSummary}
+              </span>
+            </div>
+            <div className="diagnosis-modified-report-card__fact-row">
+              <span className="diagnosis-modified-report-card__fact-label">
+                {"\u53d7\u5f71\u54cd\u670d\u52a1"}
+              </span>
+              <span className="diagnosis-modified-report-card__fact-value">
+                {summary.affectedServices.length > 0
+                  ? summary.affectedServices.join("\uFF0C")
+                  : "--"}
+              </span>
+            </div>
           </div>
-        </div>
+        </section>
 
-        <div>
-          <p className="diagnosis-modified-report-card__section-label">\u5019\u9009\u6839\u56e0\uff08{candidates.length}\uff09</p>
+        <section className="diagnosis-modified-report-card__section">
+          <p className="diagnosis-modified-report-card__section-label">
+            {"\u5019\u9009\u6839\u56e0\uff08" + candidates.length + "\uff09"}
+          </p>
           <div className="diagnosis-modified-report-card__candidates">
             {candidates.length > 0 ? (
               candidates.map((candidate, index) => (
-                <div key={candidate.id} className="diagnosis-modified-report-card__candidate-item">
-                  <p>
-                    #{candidate.rank ?? index + 1} {candidate.title} ({candidate.confidence.toFixed(2)}) \u8bc1\u636e\u6458\u8981\uff1a
-                    {candidate.evidenceSummary ?? candidate.summary}
+                <article
+                  key={candidate.id}
+                  className="diagnosis-modified-report-card__candidate-item"
+                >
+                  <div className="diagnosis-modified-report-card__candidate-header">
+                    <strong>
+                      {"#" +
+                        (candidate.rank ?? index + 1) +
+                        " " +
+                        candidate.title}
+                    </strong>
+                    <span>
+                      {"\u7f6e\u4fe1\u5ea6 " + candidate.confidence.toFixed(2)}
+                    </span>
+                  </div>
+                  <p className="diagnosis-modified-report-card__candidate-copy">
+                    {"\u8bc1\u636e\u6458\u8981\uff1a" +
+                      (candidate.evidenceSummary ?? candidate.summary)}
                   </p>
-                  {candidate.distinguishingVerification ? <p>\u533a\u5206\u9a8c\u8bc1\uff1a{candidate.distinguishingVerification}</p> : null}
-                </div>
+                  {candidate.distinguishingVerification ? (
+                    <p className="diagnosis-modified-report-card__candidate-copy diagnosis-modified-report-card__candidate-copy--muted">
+                      {"\u533a\u5206\u9a8c\u8bc1\uff1a" +
+                        candidate.distinguishingVerification}
+                    </p>
+                  ) : null}
+                </article>
               ))
             ) : (
-              <p className="diagnosis-modified-report-card__section-copy">\u6682\u65e0\u5019\u9009\u6839\u56e0\u3002</p>
+              <p className="diagnosis-modified-report-card__section-copy">
+                {"\u6682\u65e0\u5019\u9009\u6839\u56e0\u3002"}
+              </p>
             )}
           </div>
-        </div>
+        </section>
 
-        <div>
-          <p className="diagnosis-modified-report-card__section-label">\u5047\u8bbe\u4e0e\u8bc1\u636e</p>
+        <section className="diagnosis-modified-report-card__section">
+          <p className="diagnosis-modified-report-card__section-label">
+            {"\u5047\u8bbe\u4e0e\u8bc1\u636e"}
+          </p>
           <div className="diagnosis-modified-report-card__hypotheses">
             {hypothesisRows.length > 0 ? (
               hypothesisRows.map((item, index) => (
-                <p key={item.id}>
-                  {String.fromCharCode(65 + index)}. {item.description} [{item.statusLabel}] \u652f\u6301\u8bc1\u636e({item.evidenceForCount}) \u53cd\u8bc1({item.evidenceAgainstCount})
-                </p>
+                <article
+                  key={item.id}
+                  className="diagnosis-modified-report-card__hypothesis-item"
+                >
+                  <div className="diagnosis-modified-report-card__hypothesis-header">
+                    <strong>
+                      {String.fromCharCode(65 + index) +
+                        ". " +
+                        item.description}
+                    </strong>
+                    <ToneBadge tone={item.statusTone}>
+                      {item.statusLabel}
+                    </ToneBadge>
+                  </div>
+                  <p className="diagnosis-modified-report-card__section-copy">
+                    {"\u652f\u6301\u8bc1\u636e " +
+                      item.evidenceForCount +
+                      " \u6761 | \u53cd\u8bc1 " +
+                      item.evidenceAgainstCount +
+                      " \u6761 | \u7f6e\u4fe1\u5ea6 " +
+                      item.confidence.toFixed(2)}
+                  </p>
+                </article>
               ))
             ) : (
-              <p className="diagnosis-modified-report-card__section-copy">\u6682\u65e0\u5047\u8bbe\u8bc1\u636e\u6570\u636e\u3002</p>
+              <p className="diagnosis-modified-report-card__section-copy">
+                {"\u6682\u65e0\u5047\u8bbe\u8bc1\u636e\u6570\u636e\u3002"}
+              </p>
             )}
           </div>
-        </div>
+        </section>
 
-        <div>
-          <details className="diagnosis-modified-report-card__propagation">
-            <summary className="diagnosis-modified-report-card__section-label">\u4f20\u64ad\u94fe\u8def\uff08\u6298\u53e0\uff09</summary>
-            <div className="diagnosis-modified-report-card__propagation-body">
-              {chainRows.length > 0 ? (
-                chainRows.map((step) => (
-                  <p key={step.id}>
-                    {step.entityId} -&gt; {step.metric} -&gt; {step.valueBefore} -&gt; {step.valueAfter} -&gt; {step.description}
+        <details className="diagnosis-modified-report-card__propagation">
+          <summary className="diagnosis-modified-report-card__section-label">
+            {"\u4f20\u64ad\u94fe\u8def\uff08\u6298\u53e0\uff09"}
+          </summary>
+          <div className="diagnosis-modified-report-card__propagation-body">
+            {chainRows.length > 0 ? (
+              chainRows.map((step) => (
+                <article
+                  key={step.id}
+                  className="diagnosis-modified-report-card__propagation-item"
+                >
+                  <p>
+                    {step.entityId +
+                      " -> " +
+                      step.metric +
+                      " -> " +
+                      step.valueBefore +
+                      " -> " +
+                      step.valueAfter +
+                      " -> " +
+                      step.description}
                   </p>
-                ))
-              ) : (
-                <p className="diagnosis-modified-report-card__section-copy">\u6682\u65e0\u4f20\u64ad\u94fe\u8def\u6570\u636e\u3002</p>
-              )}
-            </div>
-          </details>
-        </div>
+                </article>
+              ))
+            ) : (
+              <p className="diagnosis-modified-report-card__section-copy">
+                {"\u6682\u65e0\u4f20\u64ad\u94fe\u8def\u6570\u636e\u3002"}
+              </p>
+            )}
+          </div>
+        </details>
       </div>
     </section>
   );
 }
-function ApprovalPlanCard({ plan }: { plan: DiagnosisModifiedPlanView }) {
-  const [status, setStatus] = useState<ApprovalState>("pending");
-  const [modifyInput, setModifyInput] = useState("");
-  const [actions, setActions] = useState(plan.steps.map((step) => step.title));
-
-  useEffect(() => {
-    setStatus("pending");
-    setModifyInput("");
-    setActions(plan.steps.map((step) => step.title));
-  }, [plan]);
-
-  const handleSubmitModify = useCallback(() => {
-    if (!modifyInput.trim()) {
-      return;
-    }
-
-    setStatus("updating");
-    window.setTimeout(() => {
-      setActions((current) =>
-        current.map((action, index) => {
-          if (index === 1) {
-            return "Only roll out to canary instances first, then observe Redis timeouts and error rate for 15 minutes before expanding scope.";
-          }
-          if (index === 2) {
-            return "Before moving to full rollout, add one more verification pass for database wait queue and cache hit ratio.";
-          }
-          return action;
-        }),
-      );
-      setModifyInput("");
-      setStatus("pending");
-    }, 1600);
-  }, [modifyInput]);
+function SystemEventBlock({
+  item,
+}: {
+  item: Extract<DiagnosisModifiedTimelineItem, { kind: "system" }>;
+}) {
+  const [isExpanded, setIsExpanded] = useState(false);
+  const hoverTime = formatTimestamp(item.timestamp);
+  const categoryLabel =
+    item.eventKind === "approval_result"
+      ? "Approval Audit"
+      : "Execution Progress";
 
   return (
-    <section
-      className={cn(
-        "diagnosis-modified-approval-card",
-        status === "approved" && "diagnosis-modified-approval-card--approved",
-        status === "rejected" && "diagnosis-modified-approval-card--rejected",
-      )}
+    <article
+      className="diagnosis-modified-process-row diagnosis-modified-process-row--system"
+      title={hoverTime}
     >
-      <header className="diagnosis-modified-approval-card__header">
-        <div>
-          <div className="diagnosis-modified-approval-card__eyebrow">
-            <ToneBadge tone="neutral">Execution Plan</ToneBadge>
-            {status === "approved" ? (
-              <ToneBadge tone="success">Approved</ToneBadge>
-            ) : status === "rejected" ? (
-              <ToneBadge tone="danger">Rejected</ToneBadge>
-            ) : (
-              <ToneBadge tone="accent">Requires Approval</ToneBadge>
-            )}
-          </div>
-          <h3 className="diagnosis-modified-approval-card__title">{plan.title}</h3>
-          <p className="diagnosis-modified-approval-card__description">{plan.description}</p>
-        </div>
-      </header>
+      <div className="diagnosis-modified-process-row__body">
+        <button
+          className="diagnosis-modified-system-event__toggle"
+          onClick={() => setIsExpanded((current) => !current)}
+          type="button"
+        >
+          <span className="diagnosis-modified-thinking__icon" aria-hidden="true">
+            <span
+              className={cn(
+                "diagnosis-modified-thinking__chevron",
+                isExpanded && "diagnosis-modified-thinking__chevron--expanded",
+              )}
+            />
+          </span>
+          <span className="diagnosis-modified-system-event__label-wrap">
+            <ToneBadge tone={item.statusTone}>{categoryLabel}</ToneBadge>
+            <span className="diagnosis-modified-system-event__summary">
+              {item.summary}
+            </span>
+          </span>
+          <span className="diagnosis-modified-system-event__time">
+            {hoverTime}
+          </span>
+        </button>
 
-      <div className="diagnosis-modified-approval-card__body">
-        <div className="diagnosis-modified-approval-card__meta-row">
-          <ToneBadge tone="warning">{plan.priorityLabel}</ToneBadge>
-          <ToneBadge tone="neutral">{`AI Confidence ${plan.confidenceLabel}`}</ToneBadge>
-          {plan.safetyLabel ? <ToneBadge tone="info">{plan.safetyLabel}</ToneBadge> : null}
-          {plan.canaryLabel ? <ToneBadge tone="neutral">{plan.canaryLabel}</ToneBadge> : null}
-        </div>
-
-        <div className="diagnosis-modified-approval-card__actions-wrap">
-          {status === "updating" ? <div className="diagnosis-modified-approval-card__updating">Updating plan...</div> : null}
-          <ol className="diagnosis-modified-approval-card__actions">
-            {actions.map((action, index) => (
-              <li key={`${action}-${index}`}>
-                <span>{index + 1}</span>
-                <div>
-                  <strong>{action}</strong>
-                  {plan.steps[index]?.detail ? <p>{plan.steps[index]?.detail}</p> : null}
-                  {plan.steps[index]?.paramsSummary ? <code>{plan.steps[index]?.paramsSummary}</code> : null}
-                </div>
-              </li>
-            ))}
-          </ol>
-        </div>
-
-        {status === "pending" ? (
-          <div className="diagnosis-modified-approval-card__footer">
-            <button className="diagnosis-modified-action-btn diagnosis-modified-action-btn--primary" onClick={() => setStatus("approved")} type="button">
-              Approve & Execute
-            </button>
-            <button className="diagnosis-modified-action-btn" onClick={() => setStatus("rejected")} type="button">
-              Reject
-            </button>
-            <button className="diagnosis-modified-action-btn" onClick={() => setStatus("modifying")} type="button">
-              Modify Plan
-            </button>
-          </div>
-        ) : null}
-
-        {status === "modifying" ? (
-          <div className="diagnosis-modified-approval-card__editor">
-            <p>Provide feedback to agent</p>
-            <div className="diagnosis-modified-approval-card__editor-row">
-              <textarea
-                onChange={(event) => setModifyInput(event.target.value)}
-                placeholder="Example: avoid a full rollout at once; start with canary verification first."
-                value={modifyInput}
-              />
-              <div>
-                <button
-                  className="diagnosis-modified-action-btn diagnosis-modified-action-btn--primary"
-                  disabled={!modifyInput.trim()}
-                  onClick={handleSubmitModify}
-                  type="button"
-                >
-                  Update Plan
-                </button>
-                <button className="diagnosis-modified-action-btn" onClick={() => setStatus("pending")} type="button">
-                  Cancel
-                </button>
-              </div>
+        {isExpanded ? (
+          <div className="diagnosis-modified-system-event__panel">
+            <div className="diagnosis-modified-system-event__content">
+              {item.details.map((detail, index) => (
+                <p key={`${item.id}-${index}`}>{detail}</p>
+              ))}
             </div>
           </div>
         ) : null}
+      </div>
+    </article>
+  );
+}
 
-        {(status === "approved" || status === "rejected") ? (
-          <div className="diagnosis-modified-approval-card__resolved">
-            <p>{status === "approved" ? "Plan approved. The agent will now execute the actions." : "Plan rejected. The agent will await further instructions."}</p>
+function ApprovalOverlay({
+  open,
+  plan,
+  planVersion,
+  rejectReason,
+  canApprove,
+  approvalBlockReason,
+  isSubmitting,
+  onRejectReasonChange,
+  onApprove,
+  onReject,
+}: {
+  open: boolean;
+  plan?: DiagnosisModifiedPlanView;
+  planVersion: number | null;
+  rejectReason: string;
+  canApprove: boolean;
+  approvalBlockReason?: string;
+  isSubmitting: boolean;
+  onRejectReasonChange: (value: string) => void;
+  onApprove: () => void;
+  onReject: () => void;
+}) {
+  if (!open || !plan) {
+    return null;
+  }
+
+  return (
+    <section
+      aria-live="polite"
+      className="diagnosis-modified-approval-overlay"
+      data-testid="diagnosis-approval-overlay"
+    >
+      <header className="diagnosis-modified-approval-overlay__header">
+        <div>
+          <div className="diagnosis-modified-approval-overlay__eyebrow">
+            <ToneBadge tone="accent">{"\u5f85\u5ba1\u6279"}</ToneBadge>
+            {planVersion ? (
+              <ToneBadge tone="neutral">{`v${planVersion}`}</ToneBadge>
+            ) : null}
+            <ToneBadge tone="warning">{plan.priorityLabel}</ToneBadge>
+            <ToneBadge tone="neutral">{plan.confidenceLabel}</ToneBadge>
           </div>
-        ) : null}
+          <h3 className="diagnosis-modified-approval-overlay__title">
+            {plan.title}
+          </h3>
+          <p className="diagnosis-modified-approval-overlay__description">
+            {plan.description}
+          </p>
+        </div>
+      </header>
+
+      <div className="diagnosis-modified-approval-overlay__body">
+        <div className="diagnosis-modified-approval-overlay__meta-row">
+          {plan.safetyLabel ? (
+            <ToneBadge tone="info">{plan.safetyLabel}</ToneBadge>
+          ) : null}
+          {plan.canaryLabel ? (
+            <ToneBadge tone="neutral">{plan.canaryLabel}</ToneBadge>
+          ) : null}
+        </div>
+
+        <ol className="diagnosis-modified-approval-overlay__actions">
+          {plan.steps.map((step, index) => (
+            <li key={step.id}>
+              <span>{index + 1}</span>
+              <div>
+                <strong>{step.title}</strong>
+                <p>{step.detail}</p>
+                {step.paramsSummary ? <code>{step.paramsSummary}</code> : null}
+              </div>
+            </li>
+          ))}
+        </ol>
+
+        <div className="diagnosis-modified-approval-overlay__reject">
+          <label htmlFor="diagnosis-approval-reason">
+            {"\u62d2\u7edd\u539f\u56e0\uff08\u62d2\u7edd\u65f6\u5fc5\u586b\uff09"}
+          </label>
+          <textarea
+            data-testid="diagnosis-approval-reason"
+            id="diagnosis-approval-reason"
+            onChange={(event) => onRejectReasonChange(event.target.value)}
+            placeholder={"\u8bf7\u8bf4\u660e\u4e3a\u4ec0\u4e48\u4e0d\u540c\u610f\u6267\u884c\u8be5\u4fee\u590d\u65b9\u6848"}
+            rows={3}
+            value={rejectReason}
+          />
+          {approvalBlockReason ? (
+            <p className="diagnosis-modified-approval-overlay__note diagnosis-modified-approval-overlay__note--warning">
+              {approvalBlockReason}
+            </p>
+          ) : (
+            <p className="diagnosis-modified-approval-overlay__note">
+              {"\u540c\u610f\u540e\u6d88\u606f\u6d41\u4f1a\u843d\u4e0b\u5ba1\u6279\u7ed3\u679c\uff0c\u5e76\u7ee7\u7eed\u8ffd\u52a0\u6267\u884c\u8fdb\u5ea6\u3002"}
+            </p>
+          )}
+        </div>
+
+        <div className="diagnosis-modified-approval-overlay__footer">
+          <button
+            className="diagnosis-modified-action-btn"
+            data-testid="diagnosis-reject-button"
+            disabled={isSubmitting || !canApprove || !rejectReason.trim()}
+            onClick={onReject}
+            type="button"
+          >
+            {isSubmitting ? "Submitting..." : "\u62d2\u7edd"}
+          </button>
+          <button
+            className="diagnosis-modified-action-btn diagnosis-modified-action-btn--primary"
+            data-testid="diagnosis-approve-button"
+            disabled={isSubmitting || !canApprove}
+            onClick={onApprove}
+            type="button"
+          >
+            {isSubmitting ? "Submitting..." : "\u540c\u610f\u6267\u884c"}
+          </button>
+        </div>
       </div>
     </section>
   );
@@ -591,16 +887,35 @@ function DiagnosisModifiedPage() {
   const routeSessionId = (params.sessionId ?? "").trim();
   const shouldBootstrapLiveSession = routeSessionId.length > 0;
   const [draft, setDraft] = useState("");
-  const [demoTimeline, setDemoTimeline] = useState<DiagnosisModifiedTimelineItem[]>([]);
-  const [demoCandidates, setDemoCandidates] = useState<DiagnosisModifiedCandidateView[]>([]);
-  const [demoSummary, setDemoSummary] = useState<DiagnosisModifiedSummaryView | undefined>();
-  const [demoPlan, setDemoPlan] = useState<DiagnosisModifiedPlanView | undefined>();
-  const [demoHypotheses, setDemoHypotheses] = useState<DiagnosisModifiedHypothesisView[]>([]);
-  const [demoPropagationChain, setDemoPropagationChain] = useState<DiagnosisModifiedPropagationStepView[]>([]);
-  const [demoState, setDemoState] = useState<"idle" | "running" | "complete">("idle");
+  const [demoTimeline, setDemoTimeline] = useState<
+    DiagnosisModifiedTimelineItem[]
+  >([]);
+  const [demoCandidates, setDemoCandidates] = useState<
+    DiagnosisModifiedCandidateView[]
+  >([]);
+  const [demoSummary, setDemoSummary] = useState<
+    DiagnosisModifiedSummaryView | undefined
+  >();
+  const [demoPlan, setDemoPlan] = useState<
+    DiagnosisModifiedPlanView | undefined
+  >();
+  const [demoHypotheses, setDemoHypotheses] = useState<
+    DiagnosisModifiedHypothesisView[]
+  >([]);
+  const [demoPropagationChain, setDemoPropagationChain] = useState<
+    DiagnosisModifiedPropagationStepView[]
+  >([]);
+  const [demoState, setDemoState] = useState<"idle" | "running" | "complete">(
+    "idle",
+  );
   const [lastDemoPrompt, setLastDemoPrompt] = useState("");
-  const [activeStreamingMessageId, setActiveStreamingMessageId] = useState<string | null>(null);
-  const [liveTimeline, setLiveTimeline] = useState<DiagnosisModifiedTimelineItem[]>([]);
+  const [approvalReason, setApprovalReason] = useState("");
+  const [activeStreamingMessageId, setActiveStreamingMessageId] = useState<
+    string | null
+  >(null);
+  const [liveTimeline, setLiveTimeline] = useState<
+    DiagnosisModifiedTimelineItem[]
+  >([]);
 
   const bottomRef = useRef<HTMLDivElement | null>(null);
   const demoTimerRef = useRef<number[]>([]);
@@ -610,7 +925,9 @@ function DiagnosisModifiedPage() {
   const messageStreamFallbackTimersRef = useRef<Map<string, number>>(new Map());
 
   const thinkingStreamResolversRef = useRef<Map<string, () => void>>(new Map());
-  const thinkingStreamFallbackTimersRef = useRef<Map<string, number>>(new Map());
+  const thinkingStreamFallbackTimersRef = useRef<Map<string, number>>(
+    new Map(),
+  );
   const demoThinkingStartedAtRef = useRef<Map<string, number>>(new Map());
   const demoToolLoadingStartedAtRef = useRef<Map<string, number>>(new Map());
 
@@ -623,28 +940,44 @@ function DiagnosisModifiedPage() {
   const liveDisplayedIdsRef = useRef<Set<string>>(new Set());
   const liveQueueProcessingRef = useRef(false);
   const liveQueueTokenRef = useRef(0);
-  const latestLiveSourceByIdRef = useRef<Map<string, DiagnosisModifiedTimelineItem>>(new Map());
+  const latestLiveSourceByIdRef = useRef<
+    Map<string, DiagnosisModifiedTimelineItem>
+  >(new Map());
   const initializedLiveSessionIdRef = useRef<string | null>(null);
 
   const {
     session,
     activeSessionId,
     messages,
+    events,
+    localAuditRecords,
     bootstrapStatus,
     traceStatus,
     isLoadingSession,
     isSendingMessage,
     connectionState,
     error,
+    isApprovingPlan,
+    approvalOverlayOpen,
+    latestPlanVersion,
+    canApprove,
+    approvalBlockReason,
     bootstrapSession,
     sendMessage,
+    approvePlan,
     applyEvent,
     setConnectionState,
   } = useDiagnosisStore();
 
-  const liveView = useMemo(() => buildDiagnosisModifiedLiveView(session, messages), [messages, session]);
+  const liveView = useMemo(
+    () => buildDiagnosisModifiedLiveView(session, messages, events, localAuditRecords),
+    [events, localAuditRecords, messages, session],
+  );
   const hasLiveSession =
-    shouldBootstrapLiveSession && bootstrapStatus === "ready" && Boolean(session) && Boolean(activeSessionId);
+    shouldBootstrapLiveSession &&
+    bootstrapStatus === "ready" &&
+    Boolean(session) &&
+    Boolean(activeSessionId);
 
   useEffect(() => {
     if (!shouldBootstrapLiveSession) {
@@ -652,6 +985,33 @@ function DiagnosisModifiedPage() {
     }
     void bootstrapSession(routeSessionId);
   }, [bootstrapSession, routeSessionId, shouldBootstrapLiveSession]);
+
+  useEffect(() => {
+    setApprovalReason("");
+  }, [activeSessionId, latestPlanVersion]);
+
+  const handleApprovePlan = useCallback(async () => {
+    try {
+      await approvePlan({ approved: true });
+      setApprovalReason("");
+    } catch {
+      // Store error state handles UI recovery.
+    }
+  }, [approvePlan]);
+
+  const handleRejectPlan = useCallback(async () => {
+    const reason = approvalReason.trim();
+    if (!reason) {
+      return;
+    }
+
+    try {
+      await approvePlan({ approved: false, reason });
+      setApprovalReason("");
+    } catch {
+      // Store error state handles UI recovery.
+    }
+  }, [approvalReason, approvePlan]);
 
   const clearDemoTimers = useCallback(() => {
     demoTimerRef.current.forEach((timerId) => window.clearTimeout(timerId));
@@ -707,7 +1067,13 @@ function DiagnosisModifiedPage() {
       clearDemoToolLoadingStates();
       clearLiveToolWaiters();
     },
-    [clearDemoTimers, clearDemoToolLoadingStates, clearLiveToolWaiters, clearPendingMessageStreams, clearPendingThinkingStreams],
+    [
+      clearDemoTimers,
+      clearDemoToolLoadingStates,
+      clearLiveToolWaiters,
+      clearPendingMessageStreams,
+      clearPendingThinkingStreams,
+    ],
   );
 
   const resolveMessageStream = useCallback((messageId: string) => {
@@ -715,91 +1081,111 @@ function DiagnosisModifiedPage() {
     resolver?.();
   }, []);
 
-  const waitForMessageStream = useCallback((messageId: string, content: string) => {
-    if (!content.length) {
-      return Promise.resolve();
-    }
+  const waitForMessageStream = useCallback(
+    (messageId: string, content: string) => {
+      if (!content.length) {
+        return Promise.resolve();
+      }
 
-    return new Promise<void>((resolve) => {
-      let settled = false;
-      const settle = () => {
-        if (settled) {
-          return;
-        }
-        settled = true;
+      return new Promise<void>((resolve) => {
+        let settled = false;
+        const settle = () => {
+          if (settled) {
+            return;
+          }
+          settled = true;
 
-        const fallbackTimerId = messageStreamFallbackTimersRef.current.get(messageId);
-        if (fallbackTimerId) {
-          window.clearTimeout(fallbackTimerId);
-          messageStreamFallbackTimersRef.current.delete(messageId);
-        }
+          const fallbackTimerId =
+            messageStreamFallbackTimersRef.current.get(messageId);
+          if (fallbackTimerId) {
+            window.clearTimeout(fallbackTimerId);
+            messageStreamFallbackTimersRef.current.delete(messageId);
+          }
 
-        messageStreamResolversRef.current.delete(messageId);
-        setActiveStreamingMessageId((current) => (current === messageId ? null : current));
-        resolve();
-      };
+          messageStreamResolversRef.current.delete(messageId);
+          setActiveStreamingMessageId((current) =>
+            current === messageId ? null : current,
+          );
+          resolve();
+        };
 
-      messageStreamResolversRef.current.set(messageId, settle);
-      setActiveStreamingMessageId(messageId);
+        messageStreamResolversRef.current.set(messageId, settle);
+        setActiveStreamingMessageId(messageId);
 
-      const fallbackDelay = Math.max(
-        STREAM_COMPLETION_BUFFER_MS,
-        content.length * DEMO_TEXT_SPEED_MS + STREAM_COMPLETION_BUFFER_MS,
-      );
-      const fallbackTimerId = window.setTimeout(settle, fallbackDelay);
-      messageStreamFallbackTimersRef.current.set(messageId, fallbackTimerId);
-    });
-  }, []);
+        const fallbackDelay = Math.max(
+          STREAM_COMPLETION_BUFFER_MS,
+          content.length * DEMO_TEXT_SPEED_MS + STREAM_COMPLETION_BUFFER_MS,
+        );
+        const fallbackTimerId = window.setTimeout(settle, fallbackDelay);
+        messageStreamFallbackTimersRef.current.set(messageId, fallbackTimerId);
+      });
+    },
+    [],
+  );
 
   const resolveThinkingStream = useCallback((thinkingId: string) => {
     const resolver = thinkingStreamResolversRef.current.get(thinkingId);
     resolver?.();
   }, []);
 
-  const waitForThinkingStream = useCallback((thinkingId: string, content: string) => {
-    if (!content.length) {
-      return Promise.resolve();
-    }
-
-    return new Promise<void>((resolve) => {
-      let settled = false;
-      const settle = () => {
-        if (settled) {
-          return;
-        }
-        settled = true;
-
-        const fallbackTimerId = thinkingStreamFallbackTimersRef.current.get(thinkingId);
-        if (fallbackTimerId) {
-          window.clearTimeout(fallbackTimerId);
-          thinkingStreamFallbackTimersRef.current.delete(thinkingId);
-        }
-
-        thinkingStreamResolversRef.current.delete(thinkingId);
-        resolve();
-      };
-
-      thinkingStreamResolversRef.current.set(thinkingId, settle);
-      const fallbackDelay = Math.max(
-        STREAM_COMPLETION_BUFFER_MS,
-        content.length * DEMO_TEXT_SPEED_MS + STREAM_COMPLETION_BUFFER_MS,
-      );
-      const fallbackTimerId = window.setTimeout(settle, fallbackDelay);
-      thinkingStreamFallbackTimersRef.current.set(thinkingId, fallbackTimerId);
-    });
-  }, []);
-
-  const resolveLiveToolWaitersIfReady = useCallback((timelineItems: DiagnosisModifiedTimelineItem[]) => {
-    for (const [toolId, resolver] of [...liveToolWaiterResolversRef.current.entries()]) {
-      const toolItem = timelineItems.find(
-        (item): item is Extract<DiagnosisModifiedTimelineItem, { kind: "tool" }> =>
-          item.kind === "tool" && item.id === toolId,
-      );
-      if (toolItem && toolItem.status !== "loading") {
-        resolver();
+  const waitForThinkingStream = useCallback(
+    (thinkingId: string, content: string) => {
+      if (!content.length) {
+        return Promise.resolve();
       }
-    }
-  }, []);
+
+      return new Promise<void>((resolve) => {
+        let settled = false;
+        const settle = () => {
+          if (settled) {
+            return;
+          }
+          settled = true;
+
+          const fallbackTimerId =
+            thinkingStreamFallbackTimersRef.current.get(thinkingId);
+          if (fallbackTimerId) {
+            window.clearTimeout(fallbackTimerId);
+            thinkingStreamFallbackTimersRef.current.delete(thinkingId);
+          }
+
+          thinkingStreamResolversRef.current.delete(thinkingId);
+          resolve();
+        };
+
+        thinkingStreamResolversRef.current.set(thinkingId, settle);
+        const fallbackDelay = Math.max(
+          STREAM_COMPLETION_BUFFER_MS,
+          content.length * DEMO_TEXT_SPEED_MS + STREAM_COMPLETION_BUFFER_MS,
+        );
+        const fallbackTimerId = window.setTimeout(settle, fallbackDelay);
+        thinkingStreamFallbackTimersRef.current.set(
+          thinkingId,
+          fallbackTimerId,
+        );
+      });
+    },
+    [],
+  );
+
+  const resolveLiveToolWaitersIfReady = useCallback(
+    (timelineItems: DiagnosisModifiedTimelineItem[]) => {
+      for (const [toolId, resolver] of [
+        ...liveToolWaiterResolversRef.current.entries(),
+      ]) {
+        const toolItem = timelineItems.find(
+          (
+            item,
+          ): item is Extract<DiagnosisModifiedTimelineItem, { kind: "tool" }> =>
+            item.kind === "tool" && item.id === toolId,
+        );
+        if (toolItem && toolItem.status !== "loading") {
+          resolver();
+        }
+      }
+    },
+    [],
+  );
 
   useEffect(() => {
     liveTimelineRef.current = liveTimeline;
@@ -809,7 +1195,9 @@ function DiagnosisModifiedPage() {
   const waitForLiveToolTerminal = useCallback((toolId: string) => {
     return new Promise<void>((resolve) => {
       const existingTool = liveTimelineRef.current.find(
-        (item): item is Extract<DiagnosisModifiedTimelineItem, { kind: "tool" }> =>
+        (
+          item,
+        ): item is Extract<DiagnosisModifiedTimelineItem, { kind: "tool" }> =>
           item.kind === "tool" && item.id === toolId,
       );
       if (existingTool && existingTool.status !== "loading") {
@@ -835,11 +1223,16 @@ function DiagnosisModifiedPage() {
         if (timedOut) {
           setLiveTimeline((current) =>
             current.map((item) => {
-              if (item.kind !== "tool" || item.id !== toolId || item.status !== "loading") {
+              if (
+                item.kind !== "tool" ||
+                item.id !== toolId ||
+                item.status !== "loading"
+              ) {
                 return item;
               }
 
-              const timeoutSummary = "Timed out after 15s waiting for tool_result.";
+              const timeoutSummary =
+                "Timed out after 15s waiting for tool_result.";
               return {
                 ...item,
                 status: "timeout",
@@ -855,7 +1248,10 @@ function DiagnosisModifiedPage() {
       };
 
       liveToolWaiterResolversRef.current.set(toolId, () => settle(false));
-      const timeoutTimerId = window.setTimeout(() => settle(true), TOOL_RESULT_TIMEOUT_MS);
+      const timeoutTimerId = window.setTimeout(
+        () => settle(true),
+        TOOL_RESULT_TIMEOUT_MS,
+      );
       liveToolTimeoutTimersRef.current.set(toolId, timeoutTimerId);
     });
   }, []);
@@ -869,14 +1265,18 @@ function DiagnosisModifiedPage() {
     liveQueueProcessingRef.current = true;
 
     try {
-      while (liveQueuedItemsRef.current.length > 0 && queueToken === liveQueueTokenRef.current) {
+      while (
+        liveQueuedItemsRef.current.length > 0 &&
+        queueToken === liveQueueTokenRef.current
+      ) {
         const queuedItem = liveQueuedItemsRef.current.shift();
         if (!queuedItem) {
           continue;
         }
 
         liveQueuedIdsRef.current.delete(queuedItem.id);
-        const nextItem = latestLiveSourceByIdRef.current.get(queuedItem.id) ?? queuedItem;
+        const nextItem =
+          latestLiveSourceByIdRef.current.get(queuedItem.id) ?? queuedItem;
 
         liveDisplayedIdsRef.current.add(nextItem.id);
         setLiveTimeline((current) => [...current, nextItem]);
@@ -908,7 +1308,8 @@ function DiagnosisModifiedPage() {
       return;
     }
 
-    const currentSessionId = activeSessionId ?? session?.session_id ?? routeSessionId;
+    const currentSessionId =
+      activeSessionId ?? session?.session_id ?? routeSessionId;
     const sourceTimeline = liveView.timeline;
     const sourceById = new Map(sourceTimeline.map((item) => [item.id, item]));
     latestLiveSourceByIdRef.current = sourceById;
@@ -918,7 +1319,9 @@ function DiagnosisModifiedPage() {
       liveQueueTokenRef.current += 1;
       liveQueuedItemsRef.current = [];
       liveQueuedIdsRef.current = new Set();
-      liveDisplayedIdsRef.current = new Set(sourceTimeline.map((item) => item.id));
+      liveDisplayedIdsRef.current = new Set(
+        sourceTimeline.map((item) => item.id),
+      );
       clearLiveToolWaiters();
       setLiveTimeline(sourceTimeline);
       return;
@@ -945,7 +1348,9 @@ function DiagnosisModifiedPage() {
     );
 
     const queuedItems = sourceTimeline.filter(
-      (item) => !liveDisplayedIdsRef.current.has(item.id) && !liveQueuedIdsRef.current.has(item.id),
+      (item) =>
+        !liveDisplayedIdsRef.current.has(item.id) &&
+        !liveQueuedIdsRef.current.has(item.id),
     );
 
     if (queuedItems.length > 0) {
@@ -1014,11 +1419,17 @@ function DiagnosisModifiedPage() {
 
         const canProcessDemoEvent = (event: DiagnosisModifiedDemoEvent) => {
           if (activeDemoThinkingIds.size > 0) {
-            return event.type === "update_thinking" && activeDemoThinkingIds.has(event.targetId);
+            return (
+              event.type === "update_thinking" &&
+              activeDemoThinkingIds.has(event.targetId)
+            );
           }
 
           if (activeDemoToolIds.size > 0) {
-            return event.type === "update_tool" && activeDemoToolIds.has(event.targetId);
+            return (
+              event.type === "update_tool" &&
+              activeDemoToolIds.has(event.targetId)
+            );
           }
 
           if (event.type === "update_thinking") {
@@ -1032,9 +1443,14 @@ function DiagnosisModifiedPage() {
           return true;
         };
 
-        const applyDemoEvent = async (event: DiagnosisModifiedDemoEvent): Promise<boolean> => {
+        const applyDemoEvent = async (
+          event: DiagnosisModifiedDemoEvent,
+        ): Promise<boolean> => {
           if (event.type === "append") {
-            if (event.item.kind === "thinking" && event.item.status === "thinking") {
+            if (
+              event.item.kind === "thinking" &&
+              event.item.status === "thinking"
+            ) {
               knownDemoThinkingIds.add(event.item.id);
               activeDemoThinkingIds.add(event.item.id);
               demoThinkingStartedAtRef.current.set(event.item.id, Date.now());
@@ -1042,7 +1458,9 @@ function DiagnosisModifiedPage() {
 
               await waitForThinkingStream(event.item.id, event.item.content);
 
-              const startedAt = demoThinkingStartedAtRef.current.get(event.item.id);
+              const startedAt = demoThinkingStartedAtRef.current.get(
+                event.item.id,
+              );
               const elapsedSec = startedAt
                 ? Math.max(1, Math.round((Date.now() - startedAt) / 1000))
                 : estimateThoughtDurationSecFromContent(event.item.content);
@@ -1065,8 +1483,13 @@ function DiagnosisModifiedPage() {
               return true;
             }
 
-            if (event.item.kind === "message" && event.item.role === "assistant") {
-              const { thinking, conclusion } = splitThinkingAndConclusion(event.item.content);
+            if (
+              event.item.kind === "message" &&
+              event.item.role === "assistant"
+            ) {
+              const { thinking, conclusion } = splitThinkingAndConclusion(
+                event.item.content,
+              );
 
               if (thinking) {
                 const thoughtId = `${event.item.id}-thought`;
@@ -1088,7 +1511,8 @@ function DiagnosisModifiedPage() {
 
                 await waitForThinkingStream(thoughtId, thinking);
 
-                const startedAt = demoThinkingStartedAtRef.current.get(thoughtId);
+                const startedAt =
+                  demoThinkingStartedAtRef.current.get(thoughtId);
                 const elapsedSec = startedAt
                   ? Math.max(1, Math.round((Date.now() - startedAt) / 1000))
                   : estimateThoughtDurationSecFromContent(thinking);
@@ -1113,11 +1537,18 @@ function DiagnosisModifiedPage() {
               if (conclusion.length > 0) {
                 const conclusionItem =
                   thinking !== null
-                    ? { ...event.item, id: `${event.item.id}-answer`, content: conclusion }
+                    ? {
+                        ...event.item,
+                        id: `${event.item.id}-answer`,
+                        content: conclusion,
+                      }
                     : { ...event.item, content: conclusion };
 
                 setDemoTimeline((current) => [...current, conclusionItem]);
-                await waitForMessageStream(conclusionItem.id, conclusionItem.content);
+                await waitForMessageStream(
+                  conclusionItem.id,
+                  conclusionItem.content,
+                );
               }
               return true;
             }
@@ -1137,7 +1568,10 @@ function DiagnosisModifiedPage() {
               knownDemoToolIds.add(event.item.id);
               if (event.item.status === "loading") {
                 activeDemoToolIds.add(event.item.id);
-                demoToolLoadingStartedAtRef.current.set(event.item.id, Date.now());
+                demoToolLoadingStartedAtRef.current.set(
+                  event.item.id,
+                  Date.now(),
+                );
               } else {
                 activeDemoToolIds.delete(event.item.id);
                 demoToolLoadingStartedAtRef.current.delete(event.item.id);
@@ -1151,10 +1585,14 @@ function DiagnosisModifiedPage() {
               return false;
             }
 
-            const toolLoadingStartedAt = demoToolLoadingStartedAtRef.current.get(event.targetId);
+            const toolLoadingStartedAt =
+              demoToolLoadingStartedAtRef.current.get(event.targetId);
             if (typeof toolLoadingStartedAt === "number") {
               const elapsedMs = Date.now() - toolLoadingStartedAt;
-              const remainingMs = Math.max(0, DEMO_MIN_TOOL_LOADING_DWELL_MS - elapsedMs);
+              const remainingMs = Math.max(
+                0,
+                DEMO_MIN_TOOL_LOADING_DWELL_MS - elapsedMs,
+              );
               await waitForDemoDelay(remainingMs, runToken);
 
               if (runToken !== demoRunTokenRef.current) {
@@ -1186,7 +1624,9 @@ function DiagnosisModifiedPage() {
               return false;
             }
 
-            const startedAt = demoThinkingStartedAtRef.current.get(event.targetId);
+            const startedAt = demoThinkingStartedAtRef.current.get(
+              event.targetId,
+            );
             const elapsedSec = startedAt
               ? Math.max(1, Math.round((Date.now() - startedAt) / 1000))
               : undefined;
@@ -1202,10 +1642,10 @@ function DiagnosisModifiedPage() {
                   status: event.status,
                   thoughtDurationSec:
                     event.status === "completed"
-                      ? event.thoughtDurationSec ??
+                      ? (event.thoughtDurationSec ??
                         elapsedSec ??
                         item.thoughtDurationSec ??
-                        estimateThoughtDurationSecFromContent(item.content)
+                        estimateThoughtDurationSecFromContent(item.content))
                       : item.thoughtDurationSec,
                 };
               }),
@@ -1257,7 +1697,10 @@ function DiagnosisModifiedPage() {
 
           const deltaMs = Math.max(0, event.delayMs - previousDelay);
           previousDelay = event.delayMs;
-          await waitForDemoDelay(Math.round(deltaMs * DEMO_EVENT_SLOWDOWN), runToken);
+          await waitForDemoDelay(
+            Math.round(deltaMs * DEMO_EVENT_SLOWDOWN),
+            runToken,
+          );
 
           if (runToken !== demoRunTokenRef.current) {
             return;
@@ -1280,7 +1723,15 @@ function DiagnosisModifiedPage() {
         await flushDeferredDemoEventsIfUnblocked();
       })();
     },
-    [clearDemoTimers, clearDemoToolLoadingStates, clearPendingMessageStreams, clearPendingThinkingStreams, waitForDemoDelay, waitForMessageStream, waitForThinkingStream],
+    [
+      clearDemoTimers,
+      clearDemoToolLoadingStates,
+      clearPendingMessageStreams,
+      clearPendingThinkingStreams,
+      waitForDemoDelay,
+      waitForMessageStream,
+      waitForThinkingStream,
+    ],
   );
 
   const handleSubmit = useCallback(() => {
@@ -1316,7 +1767,9 @@ function DiagnosisModifiedPage() {
   );
 
   const websocketEnabled =
-    shouldBootstrapLiveSession && import.meta.env.VITE_WS_ENABLED === "true" && Boolean(activeSessionId);
+    shouldBootstrapLiveSession &&
+    import.meta.env.VITE_WS_ENABLED === "true" &&
+    Boolean(activeSessionId);
   const websocketUrl = useMemo(
     () =>
       buildBackendWsUrl(`/ws/thinking-trace/${activeSessionId ?? "pending"}`, {
@@ -1334,9 +1787,15 @@ function DiagnosisModifiedPage() {
   }, [setConnectionState, ws.state]);
 
   const activeTimeline = hasLiveSession ? liveTimeline : demoTimeline;
-  const activeCandidates = hasLiveSession ? liveView.candidates : demoCandidates;
-  const activeHypotheses = hasLiveSession ? liveView.hypotheses ?? [] : demoHypotheses;
-  const activePropagationChain = hasLiveSession ? liveView.propagationChain ?? [] : demoPropagationChain;
+  const activeCandidates = hasLiveSession
+    ? liveView.candidates
+    : demoCandidates;
+  const activeHypotheses = hasLiveSession
+    ? (liveView.hypotheses ?? [])
+    : demoHypotheses;
+  const activePropagationChain = hasLiveSession
+    ? (liveView.propagationChain ?? [])
+    : demoPropagationChain;
   const activeSummary = hasLiveSession ? liveView.summary : demoSummary;
   const activePlan = hasLiveSession ? liveView.plan : demoPlan;
 
@@ -1350,149 +1809,216 @@ function DiagnosisModifiedPage() {
   );
 
   const composerDisabled =
-    (shouldBootstrapLiveSession ? isLoadingSession : false) || isSendingMessage || demoState === "running";
+    (shouldBootstrapLiveSession ? isLoadingSession : false) ||
+    isSendingMessage ||
+    demoState === "running";
   const introCopy = hasLiveSession
-    ? "当前页面正在消费真实诊断会话，并按统一流程呈现思考、工具调用、根因分析与审批执行。"
+    ? "\u5f53\u524d\u9875\u9762\u6b63\u5728\u6d88\u8d39\u771f\u5b9e\u8bca\u65ad\u4f1a\u8bdd\uff0c\u5e76\u6309\u7edf\u4e00\u6d41\u7a0b\u5448\u73b0\u601d\u8003\u3001\u5de5\u5177\u8c03\u7528\u3001\u6839\u56e0\u5206\u6790\u4e0e\u5ba1\u6279\u6267\u884c\u3002"
     : demoState === "idle"
-      ? "输入诊断问题后，页面会按较慢节奏回放完整诊断过程，方便逐步查看每一次思考与工具调用。"
-      : "当前正在按慢速回放诊断流程。";
+      ? "\u8f93\u5165\u8bca\u65ad\u95ee\u9898\u540e\uff0c\u9875\u9762\u4f1a\u6309\u8f83\u6162\u8282\u594f\u56de\u653e\u5b8c\u6574\u8bca\u65ad\u8fc7\u7a0b\uff0c\u65b9\u4fbf\u9010\u6b65\u67e5\u770b\u6bcf\u4e00\u6b21\u601d\u8003\u4e0e\u5de5\u5177\u8c03\u7528\u3002"
+      : "\u5f53\u524d\u6b63\u5728\u6309\u6162\u901f\u56de\u653e\u8bca\u65ad\u6d41\u7a0b\u3002";
 
   return (
     <div className="page-grid diagnosis-modified-page">
-      <div className="page-intro">
-        <SectionHeader
-          title="诊断（修改）"
-          description={introCopy}
-          actions={
-            <div className="diagnosis-modified-shell__header-actions">
-              <div className="diagnosis-modified-shell__badges">
-                <ToneBadge tone={hasLiveSession ? "success" : "accent"}>{hasLiveSession ? "实时会话" : "演示模式"}</ToneBadge>
-                {hasLiveSession && activeSessionId ? <ToneBadge tone="neutral">{activeSessionId}</ToneBadge> : null}
-                {hasLiveSession ? <ToneBadge tone={connectionState === "open" ? "success" : "warning"}>{`实时链路 ${connectionState}`}</ToneBadge> : null}
-              </div>
+      <section className="page-stage diagnosis-modified-stage">
+        <div className="page-stage__panel diagnosis-modified-shell">
+          <div className="diagnosis-modified-shell__statusbar">
+            <div className="diagnosis-modified-shell__badges">
+              {hasLiveSession && session ? (
+                <>
+                  <ToneBadge tone="accent">{session.alert.alert_name}</ToneBadge>
+                  <ToneBadge tone={getDiagnosisStatusBadgeTone(session.status)}>
+                    {formatWorkflowStatus(session.status)}
+                  </ToneBadge>
+                  <ToneBadge
+                    tone={getSeverityBadgeTone(session.alert.severity)}
+                  >
+                    {formatSeverity(session.alert.severity)}
+                  </ToneBadge>
+                </>
+              ) : (
+                <>
+                  <ToneBadge tone={hasLiveSession ? "success" : "accent"}>
+                    {hasLiveSession
+                      ? "\u5b9e\u65f6\u4f1a\u8bdd"
+                      : "\u6f14\u793a\u6a21\u5f0f"}
+                  </ToneBadge>
+                  {hasLiveSession && activeSessionId ? (
+                    <ToneBadge tone="neutral">{activeSessionId}</ToneBadge>
+                  ) : null}
+                  {hasLiveSession ? (
+                    <ToneBadge
+                      tone={connectionState === "open" ? "success" : "warning"}
+                    >{`\u5b9e\u65f6\u94fe\u8def ${connectionState}`}</ToneBadge>
+                  ) : null}
+                </>
+              )}
             </div>
-          }
-        />
-      </div>
+          </div>
 
-      <section className="diagnosis-modified-shell">
-        <div className="diagnosis-modified-shell__body">
-          <div className="diagnosis-modified-feed">
-            {activeTimeline.length === 0 ? (
-              <div className="diagnosis-modified-empty-state">
-                <div className="diagnosis-modified-empty-state__icon">
-                  <AppIcon name="aiChat" size={18} />
+          <div className="diagnosis-modified-shell__body">
+            <div className="diagnosis-modified-feed">
+              {activeTimeline.length === 0 ? (
+                <div className="diagnosis-modified-empty-state">
+                  <div className="diagnosis-modified-empty-state__icon">
+                    <AppIcon name="aiChat" size={18} />
+                  </div>
+                  <h2>Welcome to the RCA Agent</h2>
+                  <p>
+                    Type your request below to trigger the ReAct diagnostic
+                    process, or use the pre-filled example.
+                  </p>
                 </div>
-                <h2>Welcome to the RCA Agent</h2>
-                <p>Type your request below to trigger the ReAct diagnostic process, or use the pre-filled example.</p>
-              </div>
-            ) : (
-              activeTimeline.map((item) => {
-                if (item.kind === "message") {
-                  const shouldAnimateAssistantMessage =
-                    item.role === "assistant" && activeStreamingMessageId === item.id;
+              ) : (
+                activeTimeline.map((item) => {
+                  if (item.kind === "message") {
+                    const shouldAnimateAssistantMessage =
+                      item.role === "assistant" &&
+                      activeStreamingMessageId === item.id;
 
-                  return (
-                    <MessageRow
-                      animate={shouldAnimateAssistantMessage}
-                      item={item}
-                      key={item.id}
-                      onStreamComplete={
-                        shouldAnimateAssistantMessage
-                          ? () => {
-                              resolveMessageStream(item.id);
-                            }
-                          : undefined
-                      }
-                    />
-                  );
-                }
+                    return (
+                      <MessageRow
+                        animate={shouldAnimateAssistantMessage}
+                        item={item}
+                        key={item.id}
+                        onStreamComplete={
+                          shouldAnimateAssistantMessage
+                            ? () => {
+                                resolveMessageStream(item.id);
+                              }
+                            : undefined
+                        }
+                      />
+                    );
+                  }
 
-                if (item.kind === "thinking") {
-                  const shouldAnimateThinking = !hasLiveSession && item.status === "thinking";
-                  return (
-                    <ThinkingBlock
-                      animate={shouldAnimateThinking}
-                      item={item}
-                      key={item.id}
-                      onStreamComplete={
-                        shouldAnimateThinking
-                          ? () => {
-                              resolveThinkingStream(item.id);
-                            }
-                          : undefined
-                      }
-                    />
-                  );
-                }
+                  if (item.kind === "thinking") {
+                    const shouldAnimateThinking =
+                      !hasLiveSession && item.status === "thinking";
+                    return (
+                      <ThinkingBlock
+                        animate={shouldAnimateThinking}
+                        item={item}
+                        key={item.id}
+                        onStreamComplete={
+                          shouldAnimateThinking
+                            ? () => {
+                                resolveThinkingStream(item.id);
+                              }
+                            : undefined
+                        }
+                      />
+                    );
+                  }
 
-                return <ToolCard item={item} key={item.id} />;
-              })
-            )}
+                  if (item.kind === "system") {
+                    return <SystemEventBlock item={item} key={item.id} />;
+                  }
 
-            {hasLiveSession && traceStatus === "empty" ? (
-              <div className="diagnosis-modified-inline-note">
-                The live session has not produced trace entries yet. The input remains available while waiting for incremental diagnosis events.
-              </div>
-            ) : null}
+                  return <ToolCard item={item} key={item.id} />;
+                })
+              )}
 
-            {inlineError ? (
-              <div
-                className={cn(
-                  "diagnosis-modified-inline-note",
-                  inlineError.tone === "error" ? "diagnosis-modified-inline-note--error" : "diagnosis-modified-inline-note--warning",
-                )}
-              >
-                {inlineError.message}
-              </div>
-            ) : null}
+              {hasLiveSession && traceStatus === "empty" ? (
+                <div className="diagnosis-modified-inline-note">
+                  The live session has not produced trace entries yet. The input
+                  remains available while waiting for incremental diagnosis
+                  events.
+                </div>
+              ) : null}
 
-            {activeSummary ? <RCAReportCard candidates={activeCandidates} hypotheses={activeHypotheses} propagationChain={activePropagationChain} summary={activeSummary} timeline={activeTimeline} /> : null}
-            {activePlan ? <ApprovalPlanCard plan={activePlan} /> : null}
-            <div ref={bottomRef} />
-          </div>
-        </div>
-
-        <footer className="diagnosis-modified-shell__footer">
-          <div className="diagnosis-modified-composer">
-            <textarea
-              className="diagnosis-modified-composer__input"
-              disabled={composerDisabled}
-              onChange={(event) => setDraft(event.target.value)}
-              onKeyDown={handleInputKeyDown}
-              placeholder={
-                hasLiveSession
-                  ? "Continue the current diagnosis session, for example: explain why these root-cause candidates were selected."
-                  : "Ask the agent to diagnose an issue... (Press Enter to start)"
-              }
-              rows={1}
-              value={draft}
-            />
-            <div className="diagnosis-modified-composer__actions">
-              <p className="diagnosis-modified-composer__hint">
-                {hasLiveSession
-                  ? "The live data stream is preserved and rendered with Toolcall pacing and hierarchy."
-                  : "Without an active session, local demo mode runs and replays a slower Toolcall-style diagnosis flow."}
-              </p>
-              <div className="diagnosis-modified-composer__buttons">
-                {!hasLiveSession && demoTimeline.length > 0 ? (
-                  <button className="diagnosis-modified-send-btn diagnosis-modified-send-btn--secondary" onClick={() => startDemo(lastDemoPrompt || draft || "Analyze auth-svc latency and error-rate spike in the past hour")} type="button">
-                    Replay
-                  </button>
-                ) : null}
-                <button
-                  className="diagnosis-modified-send-btn"
-                  disabled={composerDisabled || !draft.trim()}
-                  onClick={handleSubmit}
-                  type="button"
+              {inlineError ? (
+                <div
+                  className={cn(
+                    "diagnosis-modified-inline-note",
+                    inlineError.tone === "error"
+                      ? "diagnosis-modified-inline-note--error"
+                      : "diagnosis-modified-inline-note--warning",
+                  )}
                 >
-                  <AppIcon name="send" size={14} />
-                </button>
-              </div>
+                  {inlineError.message}
+                </div>
+              ) : null}
+
+              {activeSummary ? (
+                <RCAReportCard
+                  candidates={activeCandidates}
+                  hypotheses={activeHypotheses}
+                  propagationChain={activePropagationChain}
+                  summary={activeSummary}
+                />
+              ) : null}
+              <div ref={bottomRef} />
             </div>
           </div>
-          <p className="diagnosis-modified-shell__footer-note">Agent can make mistakes. Consider verifying important information.</p>
-        </footer>
+
+          <footer className="diagnosis-modified-shell__footer">
+            <div className="diagnosis-modified-composer-anchor">
+              <ApprovalOverlay
+                approvalBlockReason={approvalBlockReason}
+                canApprove={canApprove}
+                isSubmitting={isApprovingPlan}
+                onApprove={() => void handleApprovePlan()}
+                onReject={() => void handleRejectPlan()}
+                onRejectReasonChange={setApprovalReason}
+                open={hasLiveSession && approvalOverlayOpen}
+                plan={activePlan}
+                planVersion={latestPlanVersion}
+                rejectReason={approvalReason}
+              />
+              <div className="diagnosis-modified-composer">
+                <textarea
+                  className="diagnosis-modified-composer__input"
+                  disabled={composerDisabled}
+                  onChange={(event) => setDraft(event.target.value)}
+                  onKeyDown={handleInputKeyDown}
+                  placeholder={
+                    hasLiveSession
+                      ? "Continue the current diagnosis session, for example: explain why these root-cause candidates were selected."
+                      : "Ask the agent to diagnose an issue... (Press Enter to start)"
+                  }
+                  rows={1}
+                  value={draft}
+                />
+                <div className="diagnosis-modified-composer__actions">
+                  <p className="diagnosis-modified-composer__hint">
+                    {hasLiveSession
+                      ? "The live data stream is preserved and rendered with Toolcall pacing and hierarchy."
+                      : "Without an active session, local demo mode runs and replays a slower Toolcall-style diagnosis flow."}
+                  </p>
+                  <div className="diagnosis-modified-composer__buttons">
+                    {!hasLiveSession && demoTimeline.length > 0 ? (
+                      <button
+                        className="diagnosis-modified-send-btn diagnosis-modified-send-btn--secondary"
+                        onClick={() =>
+                          startDemo(
+                            lastDemoPrompt ||
+                              draft ||
+                              "Analyze auth-svc latency and error-rate spike in the past hour",
+                          )
+                        }
+                        type="button"
+                      >
+                        Replay
+                      </button>
+                    ) : null}
+                    <button
+                      className="diagnosis-modified-send-btn"
+                      disabled={composerDisabled || !draft.trim()}
+                      onClick={handleSubmit}
+                      type="button"
+                    >
+                      <AppIcon name="send" size={14} />
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <p className="diagnosis-modified-shell__footer-note">
+              Agent can make mistakes. Consider verifying important information.
+            </p>
+          </footer>
+        </div>
       </section>
     </div>
   );

@@ -4,8 +4,10 @@ import type { Alert, DiagnosisSession } from "../api/types";
 import {
   buildDiagnosisModifiedDemoScenario,
   buildDiagnosisModifiedLiveView,
+  normalizeDiagnosisDisplayText,
   type DiagnosisModifiedTimelineItem,
 } from "./diagnosisModifiedModel";
+import { formatDateTimeParts } from "../utils/format";
 
 const baseAlert: Alert = {
   alert_name: "Latency spike",
@@ -227,5 +229,221 @@ describe("buildDiagnosisModifiedDemoScenario ReAct cadence", () => {
         expect(nextItem.content.trim().length).toBeGreaterThan(0);
       }
     }
+  });
+});
+
+
+describe("diagnosis display text normalization", () => {
+  it("decodes literal unicode escapes and mojibake in diagnosis summary fields", () => {
+    const mojibakeImpact = String.fromCharCode(0xe4, 0xb8, 0xbb, 0xe8, 0xa6, 0x81, 0xe5, 0xbd, 0xb1, 0xe5, 0x93, 0x8d);
+
+    expect(normalizeDiagnosisDisplayText(String.raw`\u6839\u56e0\uff1aworker-03`)).toBe("\u6839\u56e0\uff1aworker-03");
+    expect(normalizeDiagnosisDisplayText(mojibakeImpact)).toBe("\u4e3b\u8981\u5f71\u54cd");
+
+    const session: DiagnosisSession = {
+      session_id: "sess-garbled-1",
+      alert: baseAlert,
+      status: "diagnosing",
+      duration_seconds: 0,
+      diagnosis_result: {
+        root_cause: String.raw`\u5f53\u524d\u7ed3\u8bba\u4e3a worker-03 \u8282\u70b9 GPU \u4e89\u7528`,
+        root_cause_layer: "platform",
+        root_cause_entities: ["node:worker-03", "gpu:0"],
+        confidence: 0.91,
+        hypotheses: [
+          {
+            description: String.raw`GPU \u4e89\u7528`,
+            status: "confirmed",
+            evidence_for: [String.raw`GPU util \u6301\u7eed 99%`],
+            evidence_against: [],
+            confidence: 0.91,
+          },
+        ],
+        impact_summary: String.fromCharCode(
+          0x76, 0x4c, 0x4c, 0x4d, 0x20, 0x70, 0x39, 0x35, 0x20,
+          0xe5, 0xbb, 0xb6, 0xe8, 0xbf, 0x9f, 0xe6, 0x8c, 0x81, 0xe7, 0xbb, 0xad,
+          0xe8, 0xb5, 0xb0, 0xe9, 0xab, 0x98, 0xef, 0xbc, 0x8c,
+          0xe6, 0x8e, 0xa8, 0xe7, 0x90, 0x86, 0xe5, 0x90, 0x9e, 0xe5, 0x90, 0x90,
+          0xe5, 0x87, 0xba, 0xe7, 0x8e, 0xb0, 0xe6, 0x98, 0x8e, 0xe6, 0x98, 0xbe,
+          0xe4, 0xb8, 0x8b, 0xe9, 0x99, 0x8d, 0xe3, 0x80, 0x82,
+        ),
+        affected_services: ["inference-gateway", "vllm-serving"],
+        triage_priority: "P1",
+        diagnosis_certainty: "confirmed",
+        ranked_candidates: [
+          {
+            rank: 1,
+            root_cause: String.raw`GPU \u4e89\u7528`,
+            root_cause_layer: "platform",
+            root_cause_entities: ["node:worker-03", "gpu:0"],
+            confidence: 0.91,
+            evidence_summary: String.raw`GPU util \u6301\u7eed 99%\uff0c\u8bf7\u6c42\u6392\u961f\u65f6\u957f\u4e0e\u8d85\u65f6\u544a\u8b66\u540c\u6b65\u51fa\u73b0\u3002`,
+            distinguishing_verification: String.raw`\u786e\u8ba4 worker-03 \u7684 GPU \u5f02\u5e38\u5360\u7528`,
+          },
+        ],
+      },
+    };
+
+    const view = buildDiagnosisModifiedLiveView(session, []);
+
+    expect(view.summary?.rootCause).toBe("\u5f53\u524d\u7ed3\u8bba\u4e3a worker-03 \u8282\u70b9 GPU \u4e89\u7528");
+    expect(view.summary?.impactSummary).toBe("vLLM p95 \u5ef6\u8fdf\u6301\u7eed\u8d70\u9ad8\uff0c\u63a8\u7406\u541e\u5410\u51fa\u73b0\u660e\u663e\u4e0b\u964d\u3002");
+    expect(view.candidates[0]?.title).toBe("GPU \u4e89\u7528");
+    expect(view.candidates[0]?.evidenceSummary).toBe("GPU util \u6301\u7eed 99%\uff0c\u8bf7\u6c42\u6392\u961f\u65f6\u957f\u4e0e\u8d85\u65f6\u544a\u8b66\u540c\u6b65\u51fa\u73b0\u3002");
+  });
+});
+
+
+describe("diagnosis summary metadata", () => {
+  it("prefers the latest timeline timestamp when deriving the updated time labels", () => {
+    const session: DiagnosisSession = {
+      session_id: "sess-summary-1",
+      alert: baseAlert,
+      status: "diagnosing",
+      duration_seconds: 0,
+      trace: {
+        steps: [
+          {
+            step: 1,
+            timestamp: "2026-04-08T10:00:00.000Z",
+            thought: "Call metrics",
+            action_type: "tool_call",
+            tool_name: "query_metrics",
+            tool_params: { service: "auth-svc" },
+          },
+        ],
+      },
+      diagnosis_result: {
+        root_cause: "GPU \u4e89\u7528",
+        root_cause_layer: "platform",
+        root_cause_entities: ["node:worker-03", "gpu:0"],
+        confidence: 0.91,
+        hypotheses: [],
+        impact_summary: "impact",
+        affected_services: ["inference-gateway"],
+        triage_priority: "P1",
+        diagnosis_certainty: "confirmed",
+      },
+    };
+
+    const view = buildDiagnosisModifiedLiveView(session, [
+      {
+        id: "assistant-latest",
+        role: "assistant",
+        content: "latest answer",
+        created_at: "2026-04-08T11:32:06.000Z",
+      },
+    ]);
+
+    const expected = formatDateTimeParts("2026-04-08T11:32:06.000Z");
+
+    expect(view.summary?.updatedTimeLabel).toBe(expected.time);
+    expect(view.summary?.updatedDateTimeLabel).toBe(expected.date + " " + expected.time);
+  });
+
+  it("uses localized certainty labels and populates demo summary timestamps", () => {
+    const scenario = buildDiagnosisModifiedDemoScenario("Analyze inference-gateway latency spike");
+
+    expect(scenario.summary.certaintyLabel).toBe("\u5df2\u786e\u8ba4");
+    expect(scenario.summary.updatedTimeLabel).not.toBe("--");
+    expect(scenario.summary.updatedDateTimeLabel).not.toBe("--");
+    expect(scenario.summary.title).toBe("\u6839\u56e0\u8bca\u65ad");
+  });
+});
+
+
+describe("diagnosis remediation audit timeline", () => {
+  it("builds a single approval result plus execution progress system events", () => {
+    const session: DiagnosisSession = {
+      session_id: "sess-audit-1",
+      alert: baseAlert,
+      status: "remediating",
+      duration_seconds: 0,
+      diagnosis_result: {
+        root_cause: "GPU contention",
+        root_cause_layer: "platform",
+        root_cause_entities: ["node:worker-03"],
+        confidence: 0.82,
+        hypotheses: [],
+        impact_summary: "impact",
+        affected_services: ["auth-svc"],
+        triage_priority: "P1",
+        diagnosis_certainty: "probable",
+        recommended_fix: {
+          plan_id: "plan-gpu-v3",
+          root_cause: "GPU contention",
+          description: "Drain canary shards first",
+          steps: [
+            {
+              step_id: 1,
+              description: "Drain worker-03 canary",
+              tool: "kubectl",
+              params: { node: "worker-03" },
+              verification: { method: "wait", wait_seconds: 60 },
+              timeout: 120,
+            },
+          ],
+          estimated_impact: "low",
+          confidence: 0.82,
+          priority: "P1",
+        },
+      },
+    };
+
+    const localAuditRecords = [
+      {
+        id: "local-approval-1",
+        sessionId: "sess-audit-1",
+        eventKind: "approval_result" as const,
+        source: "optimistic" as const,
+        dedupeKey: "approval-result-approved-v3",
+        timestamp: "2026-04-08T11:00:00.000Z",
+        summary: "[系统] 已审批，通过执行（v3，审批人 alice）",
+        details: ["审批时间：2026/04/08 19:00:00"],
+        statusTone: "success" as const,
+      },
+    ];
+
+    const events = [
+      {
+        schema_version: "1",
+        type: "remediation_progress" as const,
+        session_id: "sess-audit-1",
+        timestamp: "2026-04-08T11:00:05.000Z",
+        data: {
+          stage: "execution_started",
+          approver: "alice",
+          plan_version: 3,
+          message: "开始执行步骤 1",
+        },
+      },
+      {
+        schema_version: "1",
+        type: "remediation_progress" as const,
+        session_id: "sess-audit-1",
+        timestamp: "2026-04-08T11:00:20.000Z",
+        data: {
+          stage: "execution_succeeded",
+          user: "system",
+          message: "金丝雀批次验证通过",
+        },
+      },
+    ];
+
+    const view = buildDiagnosisModifiedLiveView(session, [], events, localAuditRecords);
+    const systemItems = view.timeline.filter((item) => item.kind === "system");
+
+    expect(systemItems).toHaveLength(3);
+    const approvalItems = systemItems.filter(
+      (item) => item.kind === "system" && item.eventKind === "approval_result",
+    );
+    expect(approvalItems).toHaveLength(1);
+    expect(approvalItems[0]?.summary).toContain("审批人 alice");
+    expect(systemItems.map((item) => item.summary)).toEqual(
+      expect.arrayContaining([
+        "[系统] 开始执行：开始执行步骤 1",
+        "[系统] 执行成功：金丝雀批次验证通过",
+      ]),
+    );
   });
 });

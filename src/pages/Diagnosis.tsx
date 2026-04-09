@@ -2,12 +2,19 @@ import { Bubble, Sender, Think } from "@ant-design/x";
 import type { BubbleItemType, BubbleListProps } from "@ant-design/x";
 import { Button, Collapse, Dropdown } from "antd";
 import type { MenuProps } from "antd";
-import { isValidElement, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  isValidElement,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { useParams } from "react-router-dom";
 
 import type { RemediationPlan, WSEvent } from "../api/types";
 import { buildBackendWsUrl } from "../api/ws";
-import { AppIcon, SectionHeader, StatusChip, SurfaceCard } from "../components/ui";
+import { AppIcon, StatusChip, SurfaceCard } from "../components/ui";
 import { useWebSocket } from "../hooks/useWebSocket";
 import { useDiagnosisStore } from "../store/diagnosisStore";
 import { formatTimestamp } from "../utils/format";
@@ -54,7 +61,6 @@ type ThinkingPlanPayload = {
   items: ThinkingPlanItem[];
 };
 
-
 type RankedCandidateItem = {
   rank: number;
   rootCause: string;
@@ -72,7 +78,6 @@ type RootCauseCandidatesPayload = {
   summary: string;
   candidates: RankedCandidateItem[];
 };
-
 
 type ApprovalPlanPriority = "P0" | "P1" | "P2";
 type ApprovalPlanSafetyLevel = "low" | "medium" | "high";
@@ -180,7 +185,8 @@ const STEP6_APPROVAL_PLAN: ApprovalPlanPayload = {
       rollbackTool: null,
     },
   ],
-  rollbackSummary: "步骤 1 支持自动回滚（k8s_uncordon: node-gpu-01）；步骤 2 无自动回滚，保留人工兜底。",
+  rollbackSummary:
+    "步骤 1 支持自动回滚（k8s_uncordon: node-gpu-01）；步骤 2 无自动回滚，保留人工兜底。",
 };
 
 function getDemoStepDisplayLabel(index: number) {
@@ -201,25 +207,45 @@ function renderBubbleMeta(meta?: BubbleMeta) {
 }
 
 function isToolEventPayload(value: unknown): value is ToolEventPayload {
-  return typeof value === "object" && value !== null && (value as ToolEventPayload).kind === "tool_event";
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    (value as ToolEventPayload).kind === "tool_event"
+  );
 }
 
 function isThinkingPlanPayload(value: unknown): value is ThinkingPlanPayload {
-  return typeof value === "object" && value !== null && (value as ThinkingPlanPayload).kind === "thinking_plan";
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    (value as ThinkingPlanPayload).kind === "thinking_plan"
+  );
 }
 
-
-function isRootCauseCandidatesPayload(value: unknown): value is RootCauseCandidatesPayload {
-  return typeof value === "object" && value !== null && (value as RootCauseCandidatesPayload).kind === "ranked_candidates";
+function isRootCauseCandidatesPayload(
+  value: unknown,
+): value is RootCauseCandidatesPayload {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    (value as RootCauseCandidatesPayload).kind === "ranked_candidates"
+  );
 }
-
 
 function isApprovalPlanPayload(value: unknown): value is ApprovalPlanPayload {
-  return typeof value === "object" && value !== null && (value as ApprovalPlanPayload).kind === "approval_plan";
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    (value as ApprovalPlanPayload).kind === "approval_plan"
+  );
 }
 
 function isChatAnswerPayload(value: unknown): value is ChatAnswerPayload {
-  return typeof value === "object" && value !== null && (value as ChatAnswerPayload).kind === "chat_answer";
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    (value as ChatAnswerPayload).kind === "chat_answer"
+  );
 }
 
 function renderChatAnswerCard(payload: ChatAnswerPayload) {
@@ -240,28 +266,44 @@ function renderPlanDetails(plan: RemediationPlan) {
   return (
     <div className="diagnosis-plan-details">
       <p className="diagnosis-chat-state-card__copy">
-        根因：{plan.root_cause} | 优先级：{plan.priority} | 置信度：{Math.round((plan.confidence ?? 0) * 100)}%
+        根因：{plan.root_cause} | 优先级：{plan.priority} | 置信度：
+        {Math.round((plan.confidence ?? 0) * 100)}%
       </p>
-      <p className="diagnosis-chat-state-card__copy">方案说明：{plan.description}</p>
-      <p className="diagnosis-chat-state-card__copy">预估影响：{plan.estimated_impact}</p>
+      <p className="diagnosis-chat-state-card__copy">
+        方案说明：{plan.description}
+      </p>
+      <p className="diagnosis-chat-state-card__copy">
+        预估影响：{plan.estimated_impact}
+      </p>
       {plan.steps.length ? (
         <div className="diagnosis-plan-steps">
           {plan.steps.map((step) => (
-            <div className="diagnosis-plan-step" key={`${plan.plan_id}-${step.step_id}`}>
+            <div
+              className="diagnosis-plan-step"
+              key={`${plan.plan_id}-${step.step_id}`}
+            >
               <p className="diagnosis-chat-state-card__copy">
                 步骤 {step.step_id}：{step.description}
               </p>
-              <p className="diagnosis-chat-state-card__copy">工具：{step.tool}</p>
+              <p className="diagnosis-chat-state-card__copy">
+                工具：{step.tool}
+              </p>
               <p className="diagnosis-chat-state-card__copy">
                 验证：{step.verification.method}
-                {step.verification.query ? ` | query: ${step.verification.query}` : ""}
-                {step.verification.tool ? ` | tool: ${step.verification.tool}` : ""}
+                {step.verification.query
+                  ? ` | query: ${step.verification.query}`
+                  : ""}
+                {step.verification.tool
+                  ? ` | tool: ${step.verification.tool}`
+                  : ""}
               </p>
             </div>
           ))}
         </div>
       ) : (
-        <p className="diagnosis-chat-state-card__copy">当前计划暂无执行步骤。</p>
+        <p className="diagnosis-chat-state-card__copy">
+          当前计划暂无执行步骤。
+        </p>
       )}
     </div>
   );
@@ -283,7 +325,9 @@ function getRootCauseLayerLabel(layer: RankedCandidateItem["rootCauseLayer"]) {
   }
 }
 
-function getCertaintyLabel(certainty: RootCauseCandidatesPayload["diagnosisCertainty"]) {
+function getCertaintyLabel(
+  certainty: RootCauseCandidatesPayload["diagnosisCertainty"],
+) {
   switch (certainty) {
     case "confirmed":
       return "已确认";
@@ -294,7 +338,6 @@ function getCertaintyLabel(certainty: RootCauseCandidatesPayload["diagnosisCerta
       return "存在歧义";
   }
 }
-
 
 function getPriorityLabel(priority: ApprovalPlanPriority) {
   switch (priority) {
@@ -333,7 +376,9 @@ function renderToolEventCard(payload: ToolEventPayload) {
   return (
     <div className="diagnosis-tool-event">
       <div className="diagnosis-tool-event__header">
-        <span className={`diagnosis-tool-event__name${isLoading ? " diagnosis-tool-event__name--loading" : ""}`}>
+        <span
+          className={`diagnosis-tool-event__name${isLoading ? " diagnosis-tool-event__name--loading" : ""}`}
+        >
           {payload.toolName}
         </span>
         <span
@@ -355,7 +400,11 @@ function renderToolEventCard(payload: ToolEventPayload) {
           {
             key: "params",
             label: "查看 tool_params",
-            children: <pre className="diagnosis-tool-event__params">{JSON.stringify(payload.toolParams ?? {}, null, 2)}</pre>,
+            children: (
+              <pre className="diagnosis-tool-event__params">
+                {JSON.stringify(payload.toolParams ?? {}, null, 2)}
+              </pre>
+            ),
           },
         ]}
         size="small"
@@ -385,8 +434,15 @@ type StreamingBlockProps = {
   onComplete?: () => void;
 };
 
-function StreamingBlock({ text, speed = 6, mode, onComplete }: StreamingBlockProps) {
-  const [visibleLength, setVisibleLength] = useState(mode === "complete" ? text.length : 0);
+function StreamingBlock({
+  text,
+  speed = 6,
+  mode,
+  onComplete,
+}: StreamingBlockProps) {
+  const [visibleLength, setVisibleLength] = useState(
+    mode === "complete" ? text.length : 0,
+  );
 
   useEffect(() => {
     if (mode === "hidden") {
@@ -425,7 +481,9 @@ function StreamingBlock({ text, speed = 6, mode, onComplete }: StreamingBlockPro
   return (
     <pre className="diagnosis-thinking-plan__stream">
       {renderedText}
-      {showCursor ? <span className="diagnosis-thinking-plan__cursor" aria-hidden="true" /> : null}
+      {showCursor ? (
+        <span className="diagnosis-thinking-plan__cursor" aria-hidden="true" />
+      ) : null}
     </pre>
   );
 }
@@ -452,7 +510,12 @@ function ThinkingPlanCard({ payload }: { payload: ThinkingPlanPayload }) {
       setThinkingExpanded(false);
     }
     setLastStage(currentStage);
-  }, [lastStage, payload.thinkTitle, payload.thinkingText, payload.typingStage]);
+  }, [
+    lastStage,
+    payload.thinkTitle,
+    payload.thinkingText,
+    payload.typingStage,
+  ]);
 
   return (
     <div className="diagnosis-thinking-plan">
@@ -471,7 +534,9 @@ function ThinkingPlanCard({ payload }: { payload: ThinkingPlanPayload }) {
                   <AppIcon name="algorithm" size={16} />
                 </span>
                 <div className="diagnosis-thinking-plan__section-copy">
-                  <p className="diagnosis-thinking-plan__section-title">Thinking</p>
+                  <p className="diagnosis-thinking-plan__section-title">
+                    Thinking
+                  </p>
                 </div>
                 <div className="status-row diagnosis-thinking-plan__section-state">
                   <StatusChip tone={isThinkingStage ? "info" : "neutral"}>
@@ -488,9 +553,15 @@ function ThinkingPlanCard({ payload }: { payload: ThinkingPlanPayload }) {
                 </div>
               </div>
               {thinkingExpanded ? (
-                <StreamingBlock text={payload.thinkingText} mode={isThinkingStage ? "streaming" : "complete"} speed={streamSpeed} />
+                <StreamingBlock
+                  text={payload.thinkingText}
+                  mode={isThinkingStage ? "streaming" : "complete"}
+                  speed={streamSpeed}
+                />
               ) : (
-                <p className="diagnosis-thinking-plan__collapsed-hint">推理已收起</p>
+                <p className="diagnosis-thinking-plan__collapsed-hint">
+                  推理已收起
+                </p>
               )}
             </div>
 
@@ -501,13 +572,21 @@ function ThinkingPlanCard({ payload }: { payload: ThinkingPlanPayload }) {
                     <AppIcon name="documentCheck" size={16} />
                   </span>
                   <div className="diagnosis-thinking-plan__section-copy">
-                    <p className="diagnosis-thinking-plan__section-title">结论</p>
+                    <p className="diagnosis-thinking-plan__section-title">
+                      结论
+                    </p>
                   </div>
-                  <StatusChip tone={typingStage === "conclusion" ? "info" : "success"}>
+                  <StatusChip
+                    tone={typingStage === "conclusion" ? "info" : "success"}
+                  >
                     {typingStage === "conclusion" ? "流式中" : "已完成"}
                   </StatusChip>
                 </div>
-                <StreamingBlock text={payload.conclusionText} mode={typingStage === "conclusion" ? "streaming" : "complete"} speed={streamSpeed} />
+                <StreamingBlock
+                  text={payload.conclusionText}
+                  mode={typingStage === "conclusion" ? "streaming" : "complete"}
+                  speed={streamSpeed}
+                />
 
                 {showToolCall ? (
                   <div className="diagnosis-thinking-plan__tool-call diagnosis-thinking-plan__section diagnosis-thinking-plan__section--tool">
@@ -516,17 +595,25 @@ function ThinkingPlanCard({ payload }: { payload: ThinkingPlanPayload }) {
                         <AppIcon name="clipboardTasks" size={16} />
                       </span>
                       <div className="diagnosis-thinking-plan__section-copy">
-                        <p className="diagnosis-thinking-plan__section-title">工具调用</p>
+                        <p className="diagnosis-thinking-plan__section-title">
+                          工具调用
+                        </p>
                       </div>
                       <div className="status-row diagnosis-thinking-plan__tool-chips">
                         <StatusChip tone="info">计划调用</StatusChip>
                         <StatusChip tone="warning">未执行</StatusChip>
-                        <StatusChip tone={typingStage === "tool" ? "info" : "neutral"}>
+                        <StatusChip
+                          tone={typingStage === "tool" ? "info" : "neutral"}
+                        >
                           {typingStage === "tool" ? "流式中" : "已完成"}
                         </StatusChip>
                       </div>
                     </div>
-                    <StreamingBlock text={toolCallText} mode={typingStage === "tool" ? "streaming" : "complete"} speed={streamSpeed} />
+                    <StreamingBlock
+                      text={toolCallText}
+                      mode={typingStage === "tool" ? "streaming" : "complete"}
+                      speed={streamSpeed}
+                    />
                     <Collapse
                       bordered={false}
                       className="diagnosis-thinking-plan__collapse"
@@ -536,7 +623,9 @@ function ThinkingPlanCard({ payload }: { payload: ThinkingPlanPayload }) {
                           key: "params",
                           label: "查看结构化参数",
                           children: (
-                            <pre className="diagnosis-thinking-plan__params">{JSON.stringify(payload.toolParams, null, 2)}</pre>
+                            <pre className="diagnosis-thinking-plan__params">
+                              {JSON.stringify(payload.toolParams, null, 2)}
+                            </pre>
                           ),
                         },
                       ]}
@@ -558,13 +647,17 @@ function renderThinkingPlanCard(payload: ThinkingPlanPayload) {
 }
 
 function renderRootCauseCandidatesCard(payload: RootCauseCandidatesPayload) {
-  const defaultActiveKey = payload.candidates.length ? [String(payload.candidates[0].rank)] : [];
+  const defaultActiveKey = payload.candidates.length
+    ? [String(payload.candidates[0].rank)]
+    : [];
 
   return (
     <div className="diagnosis-rootcause">
       <div className="diagnosis-rootcause__header">
         <p className="diagnosis-rootcause__title">候选根因</p>
-        <span className={`diagnosis-rootcause__certainty diagnosis-rootcause__certainty--${payload.diagnosisCertainty}`}>
+        <span
+          className={`diagnosis-rootcause__certainty diagnosis-rootcause__certainty--${payload.diagnosisCertainty}`}
+        >
           诊断确定性：{getCertaintyLabel(payload.diagnosisCertainty)}
         </span>
       </div>
@@ -603,7 +696,9 @@ function renderRootCauseCandidatesCard(payload: RootCauseCandidatesPayload) {
               ) : null}
               <p>
                 <span>方案状态：</span>
-                {candidate.hasRecommendedFix ? "可生成待审批方案" : "暂无推荐方案"}
+                {candidate.hasRecommendedFix
+                  ? "可生成待审批方案"
+                  : "暂无推荐方案"}
               </p>
             </div>
           ),
@@ -613,23 +708,28 @@ function renderRootCauseCandidatesCard(payload: RootCauseCandidatesPayload) {
   );
 }
 
-
 function renderApprovalPlanCard(payload: ApprovalPlanPayload) {
-  const defaultActiveKey = payload.steps.length ? [String(payload.steps[0].stepId)] : [];
+  const defaultActiveKey = payload.steps.length
+    ? [String(payload.steps[0].stepId)]
+    : [];
 
   return (
     <div className="diagnosis-approval-plan">
       <div className="diagnosis-approval-plan__header">
         <p className="diagnosis-approval-plan__title">待审批方案</p>
         <div className="diagnosis-approval-plan__chips">
-          <span className="diagnosis-approval-plan__chip">候选根因 #{payload.candidateRank}</span>
+          <span className="diagnosis-approval-plan__chip">
+            候选根因 #{payload.candidateRank}
+          </span>
           <span className="diagnosis-approval-plan__chip diagnosis-approval-plan__chip--certainty">
             诊断确定性：{getCertaintyLabel(payload.diagnosisCertainty)}
           </span>
         </div>
       </div>
 
-      <p className="diagnosis-approval-plan__summary">已基于优先级最高的候选根因生成待审批修复方案，请在审批前确认风险边界。</p>
+      <p className="diagnosis-approval-plan__summary">
+        已基于优先级最高的候选根因生成待审批修复方案，请在审批前确认风险边界。
+      </p>
 
       <div className="diagnosis-approval-plan__facts">
         <p>
@@ -669,7 +769,8 @@ function renderApprovalPlanCard(payload: ApprovalPlanPayload) {
       <div className="diagnosis-approval-plan__canary">
         <p className="diagnosis-approval-plan__canary-title">金丝雀边界</p>
         <p className="diagnosis-approval-plan__canary-meta">
-          目标流量 {formatRatio(payload.canary.targetPercentage)} · 观察 {payload.canary.monitorDuration} 秒 · 判定模式
+          目标流量 {formatRatio(payload.canary.targetPercentage)} · 观察{" "}
+          {payload.canary.monitorDuration} 秒 · 判定模式
           {payload.canary.criteriaMode === "all" ? " 全部满足" : " 任一满足"}
         </p>
         <ul className="diagnosis-approval-plan__canary-list">
@@ -710,7 +811,9 @@ function renderApprovalPlanCard(payload: ApprovalPlanPayload) {
         }))}
       />
 
-      <p className="diagnosis-approval-plan__rollback">回滚摘要：{payload.rollbackSummary}</p>
+      <p className="diagnosis-approval-plan__rollback">
+        回滚摘要：{payload.rollbackSummary}
+      </p>
     </div>
   );
 }
@@ -766,7 +869,8 @@ function DiagnosisPage() {
     [],
   );
 
-  const websocketEnabled = import.meta.env.VITE_WS_ENABLED === "true" && Boolean(activeSessionId);
+  const websocketEnabled =
+    import.meta.env.VITE_WS_ENABLED === "true" && Boolean(activeSessionId);
 
   const websocketUrl = useMemo(
     () =>
@@ -844,7 +948,10 @@ function DiagnosisPage() {
     demoStepTimerRef.current = window.setTimeout(() => {
       setDemoMessages((prev) =>
         prev.map((message) => {
-          if (message.id !== toolMessageId || !isToolEventPayload(message.content)) {
+          if (
+            message.id !== toolMessageId ||
+            !isToolEventPayload(message.content)
+          ) {
             return message;
           }
 
@@ -870,7 +977,7 @@ function DiagnosisPage() {
     }, 250);
   }, [isExecutingDemoStep]);
 
-    const runStepTwoThinkingPlan = useCallback(() => {
+  const runStepTwoThinkingPlan = useCallback(() => {
     if (isExecutingDemoStep) {
       return;
     }
@@ -952,10 +1059,15 @@ sources in parallel to identify the affected pods and their conditions.`;
       },
     ]);
 
-    const updateThinkingPlan = (updater: (payload: ThinkingPlanPayload) => ThinkingPlanPayload) => {
+    const updateThinkingPlan = (
+      updater: (payload: ThinkingPlanPayload) => ThinkingPlanPayload,
+    ) => {
       setDemoMessages((prev) =>
         prev.map((message) => {
-          if (message.id !== thinkingMessageId || !isThinkingPlanPayload(message.content)) {
+          if (
+            message.id !== thinkingMessageId ||
+            !isThinkingPlanPayload(message.content)
+          ) {
             return message;
           }
 
@@ -1005,7 +1117,8 @@ sources in parallel to identify the affected pods and their conditions.`;
         demoStepTimerRef.current = window.setTimeout(() => {
           updateThinkingPlan((payload) => ({
             ...payload,
-            summary: "规划完成：观测动作与工具调用顺序已明确，thinking 与结论输出均已结束。",
+            summary:
+              "规划完成：观测动作与工具调用顺序已明确，thinking 与结论输出均已结束。",
             typingStage: "complete",
             blink: false,
             items: payload.items.map((item) => ({
@@ -1015,7 +1128,9 @@ sources in parallel to identify the affected pods and their conditions.`;
             })),
           }));
 
-          setDemoActiveStep((prev) => Math.min(prev + 1, DEMO_STEP_LABELS.length));
+          setDemoActiveStep((prev) =>
+            Math.min(prev + 1, DEMO_STEP_LABELS.length),
+          );
           setIsExecutingDemoStep(false);
           demoStepTimerRef.current = undefined;
         }, toolDuration);
@@ -1048,8 +1163,10 @@ sources in parallel to identify the affected pods and their conditions.`;
               rootCauseLayer: "hardware",
               confidence: 0.62,
               rootCauseEntities: ["gpu-01", "node-gpu-01"],
-              evidenceSummary: "GPU 利用率持续高位，影响集中在单节点，且已有异常 GPU 进程线索。",
-              distinguishingVerification: "检查 node-gpu-01 的 GPU 进程列表，并观察终止异常进程后 p95 延迟是否回落。",
+              evidenceSummary:
+                "GPU 利用率持续高位，影响集中在单节点，且已有异常 GPU 进程线索。",
+              distinguishingVerification:
+                "检查 node-gpu-01 的 GPU 进程列表，并观察终止异常进程后 p95 延迟是否回落。",
               hasRecommendedFix: true,
             },
             {
@@ -1058,8 +1175,10 @@ sources in parallel to identify the affected pods and their conditions.`;
               rootCauseLayer: "service",
               confidence: 0.54,
               rootCauseEntities: ["svc-vllm", "node-gpu-01"],
-              evidenceSummary: "单节点长期承压，但暂缺直接证明是调度策略或分片权重异常。",
-              distinguishingVerification: "核查分片权重、实例负载分布以及最近变更记录。",
+              evidenceSummary:
+                "单节点长期承压，但暂缺直接证明是调度策略或分片权重异常。",
+              distinguishingVerification:
+                "核查分片权重、实例负载分布以及最近变更记录。",
               hasRecommendedFix: false,
             },
             {
@@ -1068,8 +1187,10 @@ sources in parallel to identify the affected pods and their conditions.`;
               rootCauseLayer: "network",
               confidence: 0.33,
               rootCauseEntities: ["sw-01", "node-gpu-01"],
-              evidenceSummary: "网络路径不能完全排除，但当前证据不足以成为首要根因。",
-              distinguishingVerification: "查看交换机队列深度、ECN 与链路丢包摘要。",
+              evidenceSummary:
+                "网络路径不能完全排除，但当前证据不足以成为首要根因。",
+              distinguishingVerification:
+                "查看交换机队列深度、ECN 与链路丢包摘要。",
               hasRecommendedFix: false,
             },
           ],
@@ -1094,7 +1215,8 @@ sources in parallel to identify the affected pods and their conditions.`;
         id: `demo-step6-assistant-${baseId}`,
         role: "assistant",
         createdAt: now.toISOString(),
-        content: "已基于候选根因 #1 生成待审批方案，建议先确认影响范围与回滚边界，再进入人工审批。",
+        content:
+          "已基于候选根因 #1 生成待审批方案，建议先确认影响范围与回滚边界，再进入人工审批。",
       },
       {
         id: `demo-step6-approval-plan-${baseId}`,
@@ -1106,15 +1228,18 @@ sources in parallel to identify the affected pods and their conditions.`;
 
     setDemoActiveStep((prev) => Math.min(prev + 1, DEMO_STEP_LABELS.length));
   }, [isExecutingDemoStep]);
-  const timelineMessages = useMemo<DisplayMessage[]>(
-    () => {
-      const traceMessages: DisplayMessage[] = (session?.trace?.steps ?? []).map((entry, index) => {
+  const timelineMessages = useMemo<DisplayMessage[]>(() => {
+    const traceMessages: DisplayMessage[] = (session?.trace?.steps ?? []).map(
+      (entry, index) => {
         const fallbackTs = new Date().toISOString();
         if ("thought" in entry) {
           const step = entry.step ?? index + 1;
           const thought = entry.thought?.trim() || `Step ${step} reasoning`;
           const toolName = entry.tool_name ?? undefined;
-          const params = entry.tool_params && Object.keys(entry.tool_params).length ? `\n参数: ${JSON.stringify(entry.tool_params)}` : "";
+          const params =
+            entry.tool_params && Object.keys(entry.tool_params).length
+              ? `\n参数: ${JSON.stringify(entry.tool_params)}`
+              : "";
           return {
             id: `trace-thinking-${step}-${entry.timestamp}`,
             role: "assistant",
@@ -1125,7 +1250,10 @@ sources in parallel to identify the affected pods and their conditions.`;
         }
 
         const toolName = entry.tool || "tool_result";
-        const resultSummary = typeof entry.result === "object" && entry.result !== null ? Object.keys(entry.result).slice(0, 3).join(", ") : "";
+        const resultSummary =
+          typeof entry.result === "object" && entry.result !== null
+            ? Object.keys(entry.result).slice(0, 3).join(", ")
+            : "";
         return {
           id: `trace-tool-${index + 1}-${entry.timestamp}`,
           role: "tool",
@@ -1135,32 +1263,33 @@ sources in parallel to identify the affected pods and their conditions.`;
             status: "success",
             stepLabel: `Step ${index + 1}`,
             toolParams: entry.params,
-            summaryLines: [resultSummary ? `返回字段: ${resultSummary}` : "工具执行完成。"],
+            summaryLines: [
+              resultSummary ? `返回字段: ${resultSummary}` : "工具执行完成。",
+            ],
           },
           createdAt: entry.timestamp || fallbackTs,
           toolName,
         };
-      });
+      },
+    );
 
-      const chatMessages: DisplayMessage[] = messages.map((message) => ({
-        id: message.id,
-        role: message.role,
-        content:
-          message.role === "assistant" && message.display?.answer
-            ? {
-                kind: "chat_answer",
-                answer: message.display.answer,
-                thinkingRaw: message.display.thinking_raw ?? undefined,
-              }
-            : message.content,
-        createdAt: message.created_at,
-        toolName: message.tool_name,
-      }));
+    const chatMessages: DisplayMessage[] = messages.map((message) => ({
+      id: message.id,
+      role: message.role,
+      content:
+        message.role === "assistant" && message.display?.answer
+          ? {
+              kind: "chat_answer",
+              answer: message.display.answer,
+              thinkingRaw: message.display.thinking_raw ?? undefined,
+            }
+          : message.content,
+      createdAt: message.created_at,
+      toolName: message.tool_name,
+    }));
 
-      return [...traceMessages, ...chatMessages, ...demoMessages];
-    },
-    [session?.trace?.steps, messages, demoMessages],
-  );
+    return [...traceMessages, ...chatMessages, ...demoMessages];
+  }, [session?.trace?.steps, messages, demoMessages]);
 
   const bubbleItems = useMemo<BubbleItemType[]>(
     () =>
@@ -1201,9 +1330,14 @@ sources in parallel to identify the affected pods and their conditions.`;
           if (isValidElement(content)) {
             return content;
           }
-          return <div className="diagnosis-bubble__content">{String(content ?? "")}</div>;
+          return (
+            <div className="diagnosis-bubble__content">
+              {String(content ?? "")}
+            </div>
+          );
         },
-        footer: (_, info) => renderBubbleMeta(info?.extraInfo as BubbleMeta | undefined),
+        footer: (_, info) =>
+          renderBubbleMeta(info?.extraInfo as BubbleMeta | undefined),
       },
       user: {
         placement: "end",
@@ -1228,9 +1362,14 @@ sources in parallel to identify the affected pods and their conditions.`;
           if (isValidElement(content)) {
             return content;
           }
-          return <div className="diagnosis-bubble__content">{String(content ?? "")}</div>;
+          return (
+            <div className="diagnosis-bubble__content">
+              {String(content ?? "")}
+            </div>
+          );
         },
-        footer: (_, info) => renderBubbleMeta(info?.extraInfo as BubbleMeta | undefined),
+        footer: (_, info) =>
+          renderBubbleMeta(info?.extraInfo as BubbleMeta | undefined),
       },
       tool: {
         placement: "start",
@@ -1253,9 +1392,14 @@ sources in parallel to identify the affected pods and their conditions.`;
           if (isValidElement(content)) {
             return content;
           }
-          return <pre className="diagnosis-bubble__content diagnosis-bubble__content--tool">{String(content ?? "")}</pre>;
+          return (
+            <pre className="diagnosis-bubble__content diagnosis-bubble__content--tool">
+              {String(content ?? "")}
+            </pre>
+          );
         },
-        footer: (_, info) => renderBubbleMeta(info?.extraInfo as BubbleMeta | undefined),
+        footer: (_, info) =>
+          renderBubbleMeta(info?.extraInfo as BubbleMeta | undefined),
       },
     }),
     [],
@@ -1267,7 +1411,11 @@ sources in parallel to identify the affected pods and their conditions.`;
   const handleDemoStepClick = useCallback<NonNullable<MenuProps["onClick"]>>(
     ({ key }) => {
       const clickedStep = Number(key) - 1;
-      if (!Number.isInteger(clickedStep) || clickedStep !== demoActiveStep || isExecutingDemoStep) {
+      if (
+        !Number.isInteger(clickedStep) ||
+        clickedStep !== demoActiveStep ||
+        isExecutingDemoStep
+      ) {
         return;
       }
 
@@ -1282,7 +1430,9 @@ sources in parallel to identify the affected pods and their conditions.`;
       }
 
       if (clickedStep === 2) {
-        setDemoActiveStep((prev) => Math.min(prev + 2, DEMO_STEP_LABELS.length));
+        setDemoActiveStep((prev) =>
+          Math.min(prev + 2, DEMO_STEP_LABELS.length),
+        );
         return;
       }
 
@@ -1315,13 +1465,21 @@ sources in parallel to identify the affected pods and their conditions.`;
         const isActive = index === demoActiveStep;
         const isActiveAndBusy = isActive && isExecutingDemoStep;
         const stateClassName = isDone ? "done" : isActive ? "active" : "locked";
-        const stateText = isDone ? "已完成" : isActiveAndBusy ? "执行中..." : isActive ? "点击推进" : "未解锁";
+        const stateText = isDone
+          ? "已完成"
+          : isActiveAndBusy
+            ? "执行中..."
+            : isActive
+              ? "点击推进"
+              : "未解锁";
 
         return {
           key: String(index + 1),
           disabled: !isActive || isActiveAndBusy,
           label: (
-            <div className={`diagnosis-demo-menu__item diagnosis-demo-menu__item--${stateClassName}`}>
+            <div
+              className={`diagnosis-demo-menu__item diagnosis-demo-menu__item--${stateClassName}`}
+            >
               <strong>{`${getDemoStepDisplayLabel(index)}、${step.title}`}</strong>
               <span>{stateText}</span>
             </div>
@@ -1340,188 +1498,226 @@ sources in parallel to identify the affected pods and their conditions.`;
   );
 
   return (
-    <div className="diagnosis-chat-page">
-      <div className="diagnosis-chat-page__content">
-        <div className="page-intro diagnosis-chat-page__intro">
-          <SectionHeader
-            title="诊断对话"
-            description="保留诊断交互与 WebSocket 事件消费，使用简洁对话框作为当前实现基线。"
-          />
-          <div className="status-row">
-            <StatusChip tone={connectionState === "open" ? "success" : "info"}>WebSocket {connectionState}</StatusChip>
-            {activeSessionId ? <StatusChip tone="neutral">会话 {activeSessionId}</StatusChip> : null}
+    <div className="page-grid diagnosis-chat-page">
+      <h1 className="visually-hidden">{"\u8bca\u65ad\u5bf9\u8bdd"}</h1>
+      <section className="page-stage diagnosis-chat-stage">
+        <div className="page-stage__content diagnosis-chat-page__content">
+          <div className="status-row diagnosis-chat-page__statusbar">
+            <StatusChip tone={connectionState === "open" ? "success" : "info"}>
+              WebSocket {connectionState}
+            </StatusChip>
+            {activeSessionId ? (
+              <StatusChip tone="neutral">
+                {"\u4f1a\u8bdd "}
+                {activeSessionId}
+              </StatusChip>
+            ) : null}
             {activeSessionId ? (
               <StatusChip tone={chatContextApplied ? "success" : "info"}>
-                上下文 {chatContextApplied ? "已加载" : "待加载"}
+                {"\u4e0a\u4e0b\u6587 "}
+                {chatContextApplied
+                  ? "\u5df2\u52a0\u8f7d"
+                  : "\u5f85\u52a0\u8f7d"}
               </StatusChip>
             ) : null}
           </div>
-        </div>
 
-        <div className="diagnosis-chat-workspace">
-          <SurfaceCard bodyClassName="diagnosis-chat-shell__body" className="diagnosis-chat-shell">
-            {isLoadingSession ? (
-              <div className="diagnosis-chat-state-card">
-                <p className="diagnosis-chat-state-card__title">正在加载会话</p>
-                <p className="diagnosis-chat-state-card__copy">正在同步当前诊断会话与消息历史。</p>
-              </div>
-            ) : null}
-
-            {bootstrapStatus === "error" && error ? (
-              <div className="diagnosis-chat-state-card diagnosis-chat-state-card--error">
-                <p className="diagnosis-chat-state-card__title">诊断请求失败</p>
-                <p className="diagnosis-chat-state-card__copy">{error}</p>
-              </div>
-            ) : null}
-
-            {bootstrapStatus === "ready" && error ? (
-              <div className="diagnosis-chat-state-card diagnosis-chat-state-card--error">
-                <p className="diagnosis-chat-state-card__title">追问发送失败</p>
-                <p className="diagnosis-chat-state-card__copy">{error}</p>
-              </div>
-            ) : null}
-
-            {bootstrapStatus === "empty" ? (
-              <div className="diagnosis-chat-state-card">
-                <p className="diagnosis-chat-state-card__title">暂无诊断会话</p>
-                <p className="diagnosis-chat-state-card__copy">请前往告警页面选择一条告警并发起诊断。</p>
-              </div>
-            ) : null}
-
-            {bootstrapStatus === "ready" && traceStatus === "empty" ? (
-              <div className="diagnosis-chat-state-card">
-                <p className="diagnosis-chat-state-card__title">会话已创建，等待推理轨迹</p>
-                <p className="diagnosis-chat-state-card__copy">当前会话尚未产出 Thinking Trace，可稍后刷新或从告警页重新触发诊断。</p>
-              </div>
-            ) : null}
-
-            {bootstrapStatus === "ready" && !isLoadingSession && !bubbleItems.length ? (
-              <div className="diagnosis-chat-state-card">
-                <p className="diagnosis-chat-state-card__title">暂无消息</p>
-                <p className="diagnosis-chat-state-card__copy">当前会话还没有可展示的对话内容。</p>
-              </div>
-            ) : null}
-
-              <Bubble.List autoScroll className="diagnosis-bubble-list" items={bubbleItems} role={bubbleRoles} />
-
-            <div className="diagnosis-chat-state-card">
-              <p className="diagnosis-chat-state-card__title">修复审批</p>
-              <p className="diagnosis-chat-state-card__copy">可直接点击“修改方案”，未输入时将使用默认优化指令。</p>
-              <p className="diagnosis-chat-state-card__copy">
-                当前状态：{session?.status ?? "unknown"}，当前版本：v{currentPlanVersion ?? "-"}，最新版本：v
-                {latestPlanVersion ?? "-"}，已审批版本：v{approvedPlanVersion ?? "-"}。
-              </p>
-              {approvalBlockReason ? <p className="diagnosis-chat-state-card__copy">{approvalBlockReason}</p> : null}
-              {hasPlan && session?.diagnosis_result?.recommended_fix
-                ? renderPlanDetails(session.diagnosis_result.recommended_fix)
-                : <p className="diagnosis-chat-state-card__copy">{planMissingReason}</p>}
-              <textarea
-                className="diagnosis-plan-instruction"
-                disabled={isRevisingPlan || isApprovingPlan}
-                onChange={(event) => setPlanInstruction(event.target.value)}
-                placeholder="例如：把第2步改为先观察再执行，观察窗口30秒。"
-                rows={3}
-                value={planInstruction}
-              />
-              <div className="diagnosis-sender-actions">
-                <Button
-                  disabled={isRevisingPlan || isApprovingPlan}
-                  loading={isRevisingPlan}
-                  onClick={() => {
-                    const text = planInstruction.trim();
-                    setPlanInstruction("");
-                    void revisePlan(text);
-                  }}
-                >
-                  修改方案
-                </Button>
-                <Button
-                  danger
-                  disabled={!canApprove || isApprovingPlan || isRevisingPlan}
-                  onClick={() => {
-                    void approvePlan(false);
-                  }}
-                >
-                  拒绝
-                </Button>
-                <Button
-                  disabled={!canApprove || isApprovingPlan || isRevisingPlan}
-                  loading={isApprovingPlan}
-                  onClick={() => {
-                    void approvePlan(true);
-                  }}
-                  type="primary"
-                >
-                  审批通过
-                </Button>
-              </div>
-              {!planInstruction.trim() ? (
-                <p className="diagnosis-chat-state-card__copy">
-                  未填写指令时，将使用默认优化指令：
-                  {effectiveReviseInstruction ?? "请优化当前修复方案，补充更稳妥步骤与验证"}
-                </p>
+          <div className="diagnosis-chat-workspace">
+            <SurfaceCard
+              bodyClassName="diagnosis-chat-shell__body"
+              className="page-stage__panel diagnosis-chat-shell"
+              variant="panel"
+            >
+              {isLoadingSession ? (
+                <div className="diagnosis-chat-state-card">
+                  <p className="diagnosis-chat-state-card__title">
+                    正在加载会话
+                  </p>
+                  <p className="diagnosis-chat-state-card__copy">
+                    正在同步当前诊断会话与消息历史。
+                  </p>
+                </div>
               ) : null}
-            </div>
-
-            <div className="diagnosis-chat-composer">
-              <Sender
-                autoSize={{ minRows: 2, maxRows: 6 }}
-                className="diagnosis-sender"
-                disabled={senderDisabled}
-                footer={
-                  <div className="diagnosis-sender-footer">
-                    <p className="diagnosis-chat-composer__hint">
-                      按 Enter 发送追问。实时事件会继续通过 WebSocket 被消费。
-                      {chatContextApplied
-                        ? ` 当前会话上下文已注入（trace片段 ${String(traceStepsUsed)} 条）。`
-                        : " 尚未注入会话上下文，请确认会话有效后重试。"}
-                    </p>
-                  </div>
-                }
-                loading={isSendingMessage}
-                onChange={(value) => setDraft(value)}
-                onSubmit={handleSubmit}
-                placeholder={activeSessionId ? "继续追问当前诊断" : "请先选择一个诊断会话"}
-                submitType="enter"
-                suffix={
-                  <div className="diagnosis-sender-actions">
-                    <Dropdown menu={demoMenu} placement="topRight" trigger={["click"]}>
-                      <Button className="diagnosis-demo-trigger">模拟演示</Button>
-                    </Dropdown>
-                    <Button
-                      className="diagnosis-send-trigger"
-                      disabled={senderDisabled || !draft.trim() || isSendingMessage}
-                      onClick={() => handleSubmit(draft)}
-                      type="primary"
-                    >
-                      发送
-                    </Button>
-                  </div>
-                }
-                value={draft}
+              {bootstrapStatus === "error" && error ? (
+                <div className="diagnosis-chat-state-card diagnosis-chat-state-card--error">
+                  <p className="diagnosis-chat-state-card__title">
+                    诊断请求失败
+                  </p>
+                  <p className="diagnosis-chat-state-card__copy">{error}</p>
+                </div>
+              ) : null}
+              {bootstrapStatus === "ready" && error ? (
+                <div className="diagnosis-chat-state-card diagnosis-chat-state-card--error">
+                  <p className="diagnosis-chat-state-card__title">
+                    追问发送失败
+                  </p>
+                  <p className="diagnosis-chat-state-card__copy">{error}</p>
+                </div>
+              ) : null}
+              {bootstrapStatus === "empty" ? (
+                <div className="diagnosis-chat-state-card">
+                  <p className="diagnosis-chat-state-card__title">
+                    暂无诊断会话
+                  </p>
+                  <p className="diagnosis-chat-state-card__copy">
+                    请前往告警页面选择一条告警并发起诊断。
+                  </p>
+                </div>
+              ) : null}
+              {bootstrapStatus === "ready" && traceStatus === "empty" ? (
+                <div className="diagnosis-chat-state-card">
+                  <p className="diagnosis-chat-state-card__title">
+                    会话已创建，等待推理轨迹
+                  </p>
+                  <p className="diagnosis-chat-state-card__copy">
+                    当前会话尚未产出 Thinking
+                    Trace，可稍后刷新或从告警页重新触发诊断。
+                  </p>
+                </div>
+              ) : null}
+              {bootstrapStatus === "ready" &&
+              !isLoadingSession &&
+              !bubbleItems.length ? (
+                <div className="diagnosis-chat-state-card">
+                  <p className="diagnosis-chat-state-card__title">暂无消息</p>
+                  <p className="diagnosis-chat-state-card__copy">
+                    当前会话还没有可展示的对话内容。
+                  </p>
+                </div>
+              ) : null}
+              <Bubble.List
+                autoScroll
+                className="diagnosis-bubble-list"
+                items={bubbleItems}
+                role={bubbleRoles}
               />
-            </div>
-          </SurfaceCard>
+              <div className="diagnosis-chat-state-card">
+                <p className="diagnosis-chat-state-card__title">修复审批</p>
+                <p className="diagnosis-chat-state-card__copy">
+                  可直接点击“修改方案”，未输入时将使用默认优化指令。
+                </p>
+                <p className="diagnosis-chat-state-card__copy">
+                  当前状态：{session?.status ?? "unknown"}，当前版本：v
+                  {currentPlanVersion ?? "-"}，最新版本：v
+                  {latestPlanVersion ?? "-"}，已审批版本：v
+                  {approvedPlanVersion ?? "-"}。
+                </p>
+                {approvalBlockReason ? (
+                  <p className="diagnosis-chat-state-card__copy">
+                    {approvalBlockReason}
+                  </p>
+                ) : null}
+                {hasPlan && session?.diagnosis_result?.recommended_fix ? (
+                  renderPlanDetails(session.diagnosis_result.recommended_fix)
+                ) : (
+                  <p className="diagnosis-chat-state-card__copy">
+                    {planMissingReason}
+                  </p>
+                )}
+                <textarea
+                  className="diagnosis-plan-instruction"
+                  disabled={isRevisingPlan || isApprovingPlan}
+                  onChange={(event) => setPlanInstruction(event.target.value)}
+                  placeholder="例如：把第2步改为先观察再执行，观察窗口30秒。"
+                  rows={3}
+                  value={planInstruction}
+                />
+                <div className="diagnosis-sender-actions">
+                  <Button
+                    disabled={isRevisingPlan || isApprovingPlan}
+                    loading={isRevisingPlan}
+                    onClick={() => {
+                      const text = planInstruction.trim();
+                      setPlanInstruction("");
+                      void revisePlan(text);
+                    }}
+                  >
+                    修改方案
+                  </Button>
+                  <Button
+                    danger
+                    disabled={!canApprove || isApprovingPlan || isRevisingPlan}
+                    onClick={() => {
+                      void approvePlan({ approved: false, reason: "Legacy diagnosis page rejection" });
+                    }}
+                  >
+                    拒绝
+                  </Button>
+                  <Button
+                    disabled={!canApprove || isApprovingPlan || isRevisingPlan}
+                    loading={isApprovingPlan}
+                    onClick={() => {
+                      void approvePlan({ approved: true });
+                    }}
+                    type="primary"
+                  >
+                    审批通过
+                  </Button>
+                </div>
+                {!planInstruction.trim() ? (
+                  <p className="diagnosis-chat-state-card__copy">
+                    未填写指令时，将使用默认优化指令：
+                    {effectiveReviseInstruction ??
+                      "请优化当前修复方案，补充更稳妥步骤与验证"}
+                  </p>
+                ) : null}
+              </div>
+              <div className="diagnosis-chat-composer">
+                <Sender
+                  autoSize={{ minRows: 2, maxRows: 6 }}
+                  className="diagnosis-sender"
+                  disabled={senderDisabled}
+                  footer={
+                    <div className="diagnosis-sender-footer">
+                      <p className="diagnosis-chat-composer__hint">
+                        按 Enter 发送追问。实时事件会继续通过 WebSocket 被消费。
+                        {chatContextApplied
+                          ? ` 当前会话上下文已注入（trace片段 ${String(traceStepsUsed)} 条）。`
+                          : " 尚未注入会话上下文，请确认会话有效后重试。"}
+                      </p>
+                    </div>
+                  }
+                  loading={isSendingMessage}
+                  onChange={(value) => setDraft(value)}
+                  onSubmit={handleSubmit}
+                  placeholder={
+                    activeSessionId
+                      ? "继续追问当前诊断"
+                      : "请先选择一个诊断会话"
+                  }
+                  submitType="enter"
+                  suffix={
+                    <div className="diagnosis-sender-actions">
+                      <Dropdown
+                        menu={demoMenu}
+                        placement="topRight"
+                        trigger={["click"]}
+                      >
+                        <Button className="diagnosis-demo-trigger">
+                          模拟演示
+                        </Button>
+                      </Dropdown>
+                      <Button
+                        className="diagnosis-send-trigger"
+                        disabled={
+                          senderDisabled || !draft.trim() || isSendingMessage
+                        }
+                        onClick={() => handleSubmit(draft)}
+                        type="primary"
+                      >
+                        发送
+                      </Button>
+                    </div>
+                  }
+                  value={draft}
+                />
+              </div>{" "}
+            </SurfaceCard>
+          </div>
         </div>
-      </div>
+      </section>
     </div>
   );
 }
 
 export default DiagnosisPage;
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-

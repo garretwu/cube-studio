@@ -1,8 +1,8 @@
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { DiagnosisSession } from "../api/types";
+import type { DiagnosisLocalAuditRecord, DiagnosisSession } from "../api/types";
 import { useDiagnosisStore } from "../store/diagnosisStore";
 import DiagnosisModifiedPage from "./DiagnosisModified";
 import * as diagnosisModifiedModel from "./diagnosisModifiedModel";
@@ -22,7 +22,7 @@ vi.mock("./diagnosisModifiedModel", async () => {
 });
 
 const baseSummary: DiagnosisModifiedDemoScenario["summary"] = {
-  title: "Demo RCA",
+  title: "\u6839\u56e0\u8bca\u65ad",
   subtitle: "Demo subtitle",
   certaintyLabel: "Likely",
   certaintyTone: "accent",
@@ -57,6 +57,42 @@ function createLiveSession(sessionId: string): DiagnosisSession {
   };
 }
 
+function createApprovalSession(sessionId: string): DiagnosisSession {
+  return {
+    ...createLiveSession(sessionId),
+    status: "approval_required",
+    diagnosis_result: {
+      root_cause: "GPU contention",
+      root_cause_layer: "platform",
+      root_cause_entities: ["node:worker-03"],
+      confidence: 0.82,
+      hypotheses: [],
+      impact_summary: "impact",
+      affected_services: ["auth-svc"],
+      triage_priority: "P1",
+      diagnosis_certainty: "probable",
+      recommended_fix: {
+        plan_id: "plan-gpu-v3",
+        root_cause: "GPU contention",
+        description: "Drain canary shards before broadening the rollout.",
+        steps: [
+          {
+            step_id: 1,
+            description: "Drain the hot node canary first",
+            tool: "kubectl",
+            params: { node: "worker-03" },
+            verification: { method: "wait", wait_seconds: 60 },
+            timeout: 120,
+          },
+        ],
+        estimated_impact: "low",
+        confidence: 0.82,
+        priority: "P1",
+      },
+    },
+  };
+}
+
 function resetDiagnosisStore(overrides: Partial<ReturnType<typeof useDiagnosisStore.getState>> = {}) {
   const current = useDiagnosisStore.getState();
   useDiagnosisStore.setState({
@@ -65,6 +101,7 @@ function resetDiagnosisStore(overrides: Partial<ReturnType<typeof useDiagnosisSt
     activeSessionId: undefined,
     messages: [],
     events: [],
+    localAuditRecords: [],
     chatContextApplied: false,
     chatContextMeta: undefined,
     isLoadingSession: false,
@@ -75,6 +112,7 @@ function resetDiagnosisStore(overrides: Partial<ReturnType<typeof useDiagnosisSt
     error: undefined,
     isRevisingPlan: false,
     isApprovingPlan: false,
+    approvalOverlayOpen: false,
     currentPlanVersion: null,
     latestPlanVersion: null,
     approvedPlanVersion: null,
@@ -602,3 +640,346 @@ describe("DiagnosisModifiedPage sequential playback", () => {
 
 
 
+
+
+describe("DiagnosisModifiedPage approval overlay", () => {
+  const mockedBuildLiveView = vi.mocked(diagnosisModifiedModel.buildDiagnosisModifiedLiveView);
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("shows the approval overlay above the composer for approval_required sessions", () => {
+    mockedBuildLiveView.mockReturnValue({
+      timeline: [],
+      candidates: [],
+      summary: undefined,
+      plan: {
+        ...basePlan,
+        steps: [
+          {
+            id: "step-1",
+            title: "Drain canary first",
+            detail: "kubectl | wait 120s | verify wait",
+            status: "pending",
+          },
+        ],
+      },
+    });
+
+    resetDiagnosisStore({
+      session: createApprovalSession("sess-live-approval"),
+      activeSessionId: "sess-live-approval",
+      bootstrapStatus: "ready",
+      traceStatus: "ready",
+      approvalOverlayOpen: true,
+      latestPlanVersion: 3,
+      canApprove: true,
+      bootstrapSession: vi.fn().mockResolvedValue(undefined),
+    });
+
+    const { container } = renderLivePage("/diagnosis-modified/sess-live-approval");
+
+    expect(screen.getByTestId("diagnosis-approval-overlay")).toBeInTheDocument();
+    expect(container.querySelector(".diagnosis-modified-approval-card")).toBeNull();
+  });
+
+  it("requires a reject reason and appends a system audit item after rejection", async () => {
+    mockedBuildLiveView.mockImplementation((_, __, ___, localAuditRecords = []) => ({
+      timeline: (localAuditRecords as DiagnosisLocalAuditRecord[]).map((record) => ({
+        id: record.id,
+        kind: "system" as const,
+        eventKind: record.eventKind,
+        summary: record.summary,
+        details: record.details,
+        timestamp: record.timestamp,
+        statusTone: record.statusTone,
+        source: record.source,
+        dedupeKey: record.dedupeKey,
+      })),
+      candidates: [],
+      summary: undefined,
+      plan: {
+        ...basePlan,
+        steps: [
+          {
+            id: "step-1",
+            title: "Drain canary first",
+            detail: "kubectl | wait 120s | verify wait",
+            status: "pending",
+          },
+        ],
+      },
+    }));
+
+    const approvePlan = vi.fn().mockImplementation(
+      async ({ approved, reason }: { approved: boolean; reason?: string }) => {
+        const state = useDiagnosisStore.getState();
+        useDiagnosisStore.setState({
+          ...state,
+          approvalOverlayOpen: false,
+          isApprovingPlan: false,
+          session: state.session
+            ? { ...state.session, status: approved ? "remediating" : "rejected" }
+            : state.session,
+          localAuditRecords: [
+            {
+              id: "audit-reject-1",
+              sessionId: "sess-live-reject",
+              eventKind: "approval_result",
+              source: "local_audit",
+              dedupeKey: "approval-result-rejected-v3",
+              timestamp: "2026-04-08T12:00:00.000Z",
+              summary:
+                `[系统] 已审批，拒绝执行（原因：${reason}）`,
+              details: [
+                "审批时间：2026/04/08 20:00:00",
+                `拒绝原因：${reason}`,
+              ],
+              statusTone: "danger",
+            },
+          ],
+        });
+      },
+    );
+
+    resetDiagnosisStore({
+      session: createApprovalSession("sess-live-reject"),
+      activeSessionId: "sess-live-reject",
+      bootstrapStatus: "ready",
+      traceStatus: "ready",
+      approvalOverlayOpen: true,
+      latestPlanVersion: 3,
+      canApprove: true,
+      approvePlan,
+      bootstrapSession: vi.fn().mockResolvedValue(undefined),
+    });
+
+    renderLivePage("/diagnosis-modified/sess-live-reject");
+
+    const rejectButton = screen.getByTestId("diagnosis-reject-button");
+    expect(rejectButton).toBeDisabled();
+
+    fireEvent.change(screen.getByTestId("diagnosis-approval-reason"), {
+      target: { value: "\u9700\u8981\u4eba\u5de5\u590d\u6838\u53d8\u66f4\u7a97\u53e3" },
+    });
+
+    expect(screen.getByTestId("diagnosis-reject-button")).toBeEnabled();
+    fireEvent.click(screen.getByTestId("diagnosis-reject-button"));
+
+    await waitFor(() => {
+      expect(approvePlan).toHaveBeenCalledWith({
+        approved: false,
+        reason: "\u9700\u8981\u4eba\u5de5\u590d\u6838\u53d8\u66f4\u7a97\u53e3",
+      });
+    });
+
+    await waitFor(() => {
+      expect(screen.queryByTestId("diagnosis-approval-overlay")).not.toBeInTheDocument();
+      expect(screen.getByText("[\u7cfb\u7edf] \u5df2\u5ba1\u6279\uff0c\u62d2\u7edd\u6267\u884c\uff08\u539f\u56e0\uff1a\u9700\u8981\u4eba\u5de5\u590d\u6838\u53d8\u66f4\u7a97\u53e3\uff09")).toBeInTheDocument();
+    });
+  });
+});
+
+
+describe("DiagnosisModifiedPage status badges", () => {
+  const mockedBuildLiveView = vi.mocked(diagnosisModifiedModel.buildDiagnosisModifiedLiveView);
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockedBuildLiveView.mockReturnValue({
+      timeline: [],
+      candidates: [],
+      summary: undefined,
+      plan: undefined,
+    });
+  });
+
+  it("renders business badges for a ready live session", () => {
+    resetDiagnosisStore({
+      session: createLiveSession("sess-live-badges"),
+      activeSessionId: "sess-live-badges",
+      bootstrapStatus: "ready",
+      traceStatus: "ready",
+      messages: [],
+      bootstrapSession: vi.fn().mockResolvedValue(undefined),
+    });
+
+    renderLivePage("/diagnosis-modified/sess-live-badges");
+
+    expect(screen.getByText("Latency spike")).toBeInTheDocument();
+    expect(screen.getByText("\u8bca\u65ad\u4e2d")).toBeInTheDocument();
+    expect(screen.getByText("\u4e25\u91cd")).toBeInTheDocument();
+    expect(screen.queryByText("\u5b9e\u65f6\u4f1a\u8bdd")).not.toBeInTheDocument();
+    expect(screen.queryByText("sess-live-badges")).not.toBeInTheDocument();
+    expect(screen.queryByText(/\u5b9e\u65f6\u94fe\u8def/u)).not.toBeInTheDocument();
+  });
+
+  it("keeps the demo badge without live business fields", () => {
+    resetDiagnosisStore();
+
+    renderDemoPage();
+
+    expect(screen.getByText("\u6f14\u793a\u6a21\u5f0f")).toBeInTheDocument();
+    expect(screen.queryByText("Latency spike")).not.toBeInTheDocument();
+    expect(screen.queryByText("\u8bca\u65ad\u4e2d")).not.toBeInTheDocument();
+    expect(screen.queryByText("\u4e25\u91cd")).not.toBeInTheDocument();
+  });
+
+  it("keeps the fallback status bar before a live session is ready", () => {
+    resetDiagnosisStore({
+      session: undefined,
+      activeSessionId: undefined,
+      bootstrapStatus: "loading",
+      traceStatus: "unknown",
+      messages: [],
+      bootstrapSession: vi.fn().mockResolvedValue(undefined),
+    });
+
+    renderLivePage("/diagnosis-modified/sess-live-pending");
+
+    expect(screen.getByText("\u6f14\u793a\u6a21\u5f0f")).toBeInTheDocument();
+    expect(screen.queryByText("Latency spike")).not.toBeInTheDocument();
+    expect(screen.queryByText("\u8bca\u65ad\u4e2d")).not.toBeInTheDocument();
+    expect(screen.queryByText("\u4e25\u91cd")).not.toBeInTheDocument();
+  });
+});
+
+describe("DiagnosisModifiedPage RCA report card", () => {
+  const mockedBuildLiveView = vi.mocked(diagnosisModifiedModel.buildDiagnosisModifiedLiveView);
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    resetDiagnosisStore({
+      session: createLiveSession("sess-live-rca"),
+      activeSessionId: "sess-live-rca",
+      bootstrapStatus: "ready",
+      traceStatus: "ready",
+      messages: [],
+      bootstrapSession: vi.fn().mockResolvedValue(undefined),
+    });
+  });
+
+  it("renders the restructured RCA card sections with localized labels", () => {
+    mockedBuildLiveView.mockReturnValue({
+      timeline: [],
+      candidates: [
+        {
+          id: "candidate-1",
+          title: "GPU \u4e89\u7528",
+          summary: "GPU util \u6301\u7eed 99%",
+          confidence: 0.91,
+          confidenceLabel: "91%",
+          statusLabel: "\u5df2\u786e\u8ba4",
+          statusTone: "success",
+          evidenceFor: ["GPU util \u6301\u7eed 99%"],
+          evidenceAgainst: [],
+          layer: "\u5e73\u53f0",
+          entities: ["node:worker-03", "gpu:0"],
+          rank: 1,
+          evidenceSummary: "GPU util \u6301\u7eed 99%\uff0c\u8bf7\u6c42\u6392\u961f\u65f6\u957f\u540c\u6b65\u62ac\u5347\u3002",
+          distinguishingVerification: "\u68c0\u67e5 worker-03 GPU \u8fdb\u7a0b\u662f\u5426\u5f02\u5e38\u5360\u7528\u3002",
+          isPrimary: true,
+        },
+      ],
+      hypotheses: [
+        {
+          id: "hyp-1",
+          description: "GPU \u4e89\u7528",
+          statusLabel: "\u5df2\u786e\u8ba4",
+          statusTone: "success",
+          evidenceForCount: 2,
+          evidenceAgainstCount: 0,
+          confidence: 0.91,
+        },
+      ],
+      propagationChain: [
+        {
+          id: "chain-1",
+          entityId: "node:worker-03",
+          entityType: "node",
+          metric: "gpu_util",
+          valueBefore: "82%",
+          valueAfter: "99%",
+          description: "\u5ef6\u8fdf\u5347\u9ad8",
+        },
+      ],
+      summary: {
+        title: "\u6839\u56e0\u8bca\u65ad",
+        subtitle: "\u57fa\u4e8e\u73b0\u6709\u8bc1\u636e\u6574\u7406\u51fa\u7684\u5f53\u524d\u7ed3\u8bba\u3002",
+        certaintyLabel: "\u5df2\u786e\u8ba4",
+        certaintyTone: "success",
+        confidenceLabel: "91%",
+        confidenceRawLabel: "0.91",
+        priorityLabel: "P1",
+        sessionLabel: "sess-live-rca",
+        updatedTimeLabel: "11:32:06",
+        updatedDateTimeLabel: "2026/04/08 11:32:06",
+        affectedServices: ["inference-gateway", "vllm-serving"],
+        impactSummary: "vLLM p95 \u5ef6\u8fdf\u6301\u7eed\u8d70\u9ad8\uff0c\u63a8\u7406\u541e\u5410\u51fa\u73b0\u660e\u663e\u4e0b\u964d\u3002",
+        rootCause: "worker-03 \u8282\u70b9 GPU \u4e89\u7528",
+        rootCauseLayer: "platform",
+        rootCauseLayerLabel: "\u5e73\u53f0",
+        rootCauseEntities: ["node:worker-03", "gpu:0"],
+      },
+      plan: undefined,
+    });
+
+    renderLivePage("/diagnosis-modified/sess-live-rca");
+
+    expect(screen.getAllByText("\u6839\u56e0\u8bca\u65ad").length).toBeGreaterThan(0);
+    expect(screen.getByText("\u5f53\u524d\u7ed3\u8bba")).toBeInTheDocument();
+    expect(screen.getByText("\u5019\u9009\u6839\u56e0\uff081\uff09")).toBeInTheDocument();
+    expect(screen.getByText("\u5047\u8bbe\u4e0e\u8bc1\u636e")).toBeInTheDocument();
+    expect(screen.getByText("\u4f20\u64ad\u94fe\u8def\uff08\u6298\u53e0\uff09")).toBeInTheDocument();
+    expect(screen.getByText("worker-03 \u8282\u70b9 GPU \u4e89\u7528")).toBeInTheDocument();
+    expect(screen.getByText(/GPU util \u6301\u7eed 99%\uff0c\u8bf7\u6c42\u6392\u961f\u65f6\u957f\u540c\u6b65\u62ac\u5347\u3002/u)).toBeInTheDocument();
+    expect(screen.getByText(/\u533a\u5206\u9a8c\u8bc1\uff1a.*worker-03 GPU \u8fdb\u7a0b/u)).toBeInTheDocument();
+  });
+
+  it("omits optional distinguishing verification and shows empty propagation copy", () => {
+    mockedBuildLiveView.mockReturnValue({
+      timeline: [],
+      candidates: [
+        {
+          id: "candidate-2",
+          title: "ECN \u914d\u7f6e\u4e0d\u4e00\u81f4",
+          summary: "ECN \u95f4\u6b47\u6027\u6ce2\u52a8",
+          confidence: 0.62,
+          confidenceLabel: "62%",
+          statusLabel: "\u9a8c\u8bc1\u4e2d",
+          statusTone: "warning",
+          evidenceFor: [],
+          evidenceAgainst: [],
+          entities: ["switch:tor-07"],
+          rank: 1,
+          evidenceSummary: "ECN \u6ce2\u52a8\u5b58\u5728\u95f4\u6b47\u6027\u5f02\u5e38\u3002",
+          distinguishingVerification: null,
+          isPrimary: true,
+        },
+      ],
+      hypotheses: [],
+      propagationChain: [],
+      summary: {
+        title: "\u6839\u56e0\u8bca\u65ad",
+        subtitle: "demo",
+        certaintyLabel: "\u5f85\u786e\u8ba4",
+        certaintyTone: "warning",
+        confidenceLabel: "62%",
+        confidenceRawLabel: "0.62",
+        priorityLabel: "P2",
+        updatedTimeLabel: "11:40:00",
+        updatedDateTimeLabel: "2026/04/08 11:40:00",
+        affectedServices: [],
+        impactSummary: "impact",
+        rootCause: "ECN \u914d\u7f6e\u4e0d\u4e00\u81f4",
+      },
+      plan: undefined,
+    });
+
+    renderLivePage("/diagnosis-modified/sess-live-rca");
+
+    expect(screen.queryByText(/\u533a\u5206\u9a8c\u8bc1/u)).not.toBeInTheDocument();
+    expect(screen.getByText("\u6682\u65e0\u4f20\u64ad\u94fe\u8def\u6570\u636e\u3002")).toBeInTheDocument();
+  });
+});
