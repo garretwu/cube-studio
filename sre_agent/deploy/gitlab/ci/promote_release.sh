@@ -51,9 +51,7 @@ echo "${release_web_pull}"
 cat > "${REPO_ROOT}/dist/release.env" <<EOF
 RELEASE_TAG=${release_tag}
 RELEASE_BASE_IMAGE_REF=${release_base_image_ref}
-RELEASE_BASE_PULL=${release_base_pull}
 RELEASE_WEB_IMAGE_REF=${release_image_ref}
-RELEASE_WEB_PULL=${release_web_pull}
 EOF
 
 log "promoted release image ${release_image_ref}"

@@ -47,6 +47,17 @@ job_url="${CI_JOB_URL:-}"
 short_sha="${CI_COMMIT_SHORT_SHA:-unknown}"
 commit_title="${CI_COMMIT_TITLE:-}"
 user_name="${GITLAB_USER_NAME:-system}"
+preview_image_pull="docker pull ${PREVIEW_IMAGE_REF:-${WEB_IMAGE_REF:-N/A}}"
+published_web_pull_cmd="docker pull ${PUBLISHED_WEB_IMAGE_REF:-${WEB_IMAGE_REF:-N/A}}"
+published_base_pull_cmd="N/A"
+if [ -n "${PUBLISHED_BASE_IMAGE_REF:-}" ]; then
+  published_base_pull_cmd="docker pull ${PUBLISHED_BASE_IMAGE_REF}"
+fi
+release_web_pull_cmd="docker pull ${RELEASE_WEB_IMAGE_REF:-N/A}"
+release_base_pull_cmd="N/A"
+if [ -n "${RELEASE_BASE_IMAGE_REF:-}" ]; then
+  release_base_pull_cmd="docker pull ${RELEASE_BASE_IMAGE_REF}"
+fi
 
 send_card() {
   local payload="$1"
@@ -342,7 +353,7 @@ ${PREVIEW_FRONTEND_URL:-N/A}
 ${PREVIEW_BACKEND_URL:-N/A}
 
 **Image Pull**
-${PREVIEW_IMAGE_PULL:-docker pull ${WEB_IMAGE_REF:-N/A}}
+${preview_image_pull}
 
 **Preview Kind**
 ${PREVIEW_KIND:-preview}
@@ -397,10 +408,10 @@ ${PUBLISHED_LANE:-${PUBLISH_LANE:-preview}}
 ${PREVIEW_FRONTEND_URL:-N/A}
 
 **Web Pull**
-${PUBLISHED_WEB_PULL:-docker pull ${PUBLISHED_WEB_IMAGE_REF:-${WEB_IMAGE_REF:-N/A}}}
+${published_web_pull_cmd}
 
 **Base Pull**
-${PUBLISHED_BASE_PULL:-N/A}
+${published_base_pull_cmd}
 EOF
       )
       actions_json="$(
@@ -444,10 +455,10 @@ PY
 ${RELEASE_TAG:-N/A}
 
 **Web Pull**
-${RELEASE_WEB_PULL:-docker pull ${RELEASE_WEB_IMAGE_REF:-N/A}}
+${release_web_pull_cmd}
 
 **Base Pull**
-${RELEASE_BASE_PULL:-N/A}
+${release_base_pull_cmd}
 EOF
       )
       actions_json="$(

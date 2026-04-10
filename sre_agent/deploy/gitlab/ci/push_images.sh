@@ -45,9 +45,7 @@ echo "${published_web_pull}"
 cat > "${REPO_ROOT}/dist/publish.env" <<EOF
 PUBLISHED_LANE=${PUBLISH_LANE}
 PUBLISHED_BASE_IMAGE_REF=${BASE_IMAGE_REF:-}
-PUBLISHED_BASE_PULL=${published_base_pull}
 PUBLISHED_WEB_IMAGE_REF=${WEB_IMAGE_REF}
-PUBLISHED_WEB_PULL=${published_web_pull}
 EOF
 
 echo

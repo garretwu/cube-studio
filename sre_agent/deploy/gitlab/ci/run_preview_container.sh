@@ -176,7 +176,6 @@ PREVIEW_BACKEND_URL=http://${preview_host}:${backend_host_port}
 PREVIEW_FRONTEND_URL=http://${preview_host}:${frontend_host_port}
 PREVIEW_EXPIRES_AT_EPOCH=${expires_at_epoch}
 PREVIEW_IMAGE_REF=${WEB_IMAGE_REF}
-PREVIEW_IMAGE_PULL=docker pull ${WEB_IMAGE_REF}
 PREVIEW_KIND=${preview_kind_label}
 EOF
 
