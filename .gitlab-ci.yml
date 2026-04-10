@@ -301,7 +301,7 @@ validate_sre_agent_business:
     - if: '$CI_COMMIT_BRANCH == $SRE_CI_BRANCH && $CI_PIPELINE_SOURCE == "schedule" && $PIPELINE_KIND == "weekly_build"'
     - if: '$CI_COMMIT_BRANCH == $SRE_CI_BRANCH && $CI_PIPELINE_SOURCE == "schedule" && $PIPELINE_KIND == "base_refresh"'
 
-publish_sre_agent_snapshot:
+publish_preview_snapshot:
   extends:
     - .sre_agent_docker_job
     - .sre_agent_notify_on_failure

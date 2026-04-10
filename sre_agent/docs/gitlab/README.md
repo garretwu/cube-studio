@@ -100,7 +100,7 @@
 
 当前流水线把“快照发布”和“正式发版”拆成两层：
 
-- `publish_sre_agent_snapshot`：在 preview 成功后自动把 commit 或 weekly 镜像推送到 Nexus，供内部测试和联调共享。
+- `publish_preview_snapshot`：在 preview 成功后自动把 commit 或 weekly 镜像推送到 Nexus，供内部测试和联调共享。
 - `promote_sre_agent_release`：手动执行，把已验证通过的业务镜像重新打成 `VERSION-YYYYMMDDHHMM`。
 - 如果手动触发时没有提供 `RELEASE_VERSION`，就读取 `sre_agent/VERSION` 里的默认版本。
 

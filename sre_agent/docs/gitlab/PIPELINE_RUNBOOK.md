@@ -85,7 +85,7 @@ Preview 规则：
 | --- | --- | --- |
 | `validate_sre_agent_runtime` | 验证环境可用性，包括容器启动、后端接口和前端页面。 | 普通提交、`weekly_build`、`base_refresh` |
 | `validate_sre_agent_business` | 验证后端和故障注入模块的核心业务行为。 | 普通提交、`weekly_build`、`base_refresh` |
-| `publish_sre_agent_snapshot` | 在 preview 成功后自动将快照镜像推送到 Nexus，并输出 `docker pull` 地址。 | preview 成功后 |
+| `publish_preview_snapshot` | 在 preview 成功后自动将快照镜像推送到 Nexus，并输出 `docker pull` 地址。 | preview 成功后 |
 | `promote_sre_agent_release` | 手动提升为正式 release 镜像。 | 手动触发 |
 
 当前 release 门禁拆成两层：
@@ -281,7 +281,7 @@ FORCE_FULL_PIPELINE=1
 
 说明：
 
-- 普通提交场景下，`publish_sre_agent_snapshot` 会在 preview 成功后自动执行
+- 普通提交场景下，`publish_preview_snapshot` 会在 preview 成功后自动执行
 - `validate_sre_agent_runtime`、`validate_sre_agent_business`、`promote_sre_agent_release` 仍然保留为手动触发
 - 也就是说，开发提交流水线会自动生成 preview 并上传候选镜像，但正式 release 仍需人工确认
 
@@ -335,7 +335,7 @@ docker pull 10.11.4.5:5000/sre_agent/sre-agent-web:weekly-<yyyymmddhhmm>
 1. 打开 `feature/sre-c-core-infra` 上一条 preview 成功的 pipeline
 2. 先手动执行 `validate_sre_agent_runtime`
 3. 再手动执行 `validate_sre_agent_business`
-4. 如果这次只需要候选镜像，preview 成功并自动完成 `publish_sre_agent_snapshot` 后即可结束
+4. 如果这次只需要候选镜像，preview 成功并自动完成 `publish_preview_snapshot` 后即可结束
 5. 如果这次要做正式发版，再最后手动执行 `promote_sre_agent_release`
 6. 如需指定正式版本号，在手动执行 `promote_sre_agent_release` 时传入 `RELEASE_VERSION`
 7. 如果不传，CI 会读取 [sre_agent/VERSION](/home/kevin/project/cube-studio/sre_agent/VERSION)
@@ -372,7 +372,7 @@ docker pull 10.11.4.5:5000/sre_agent/sre-agent-web:<version-yyyymmddhhmm>
 
 建议理解方式：
 
-- `publish_sre_agent_snapshot`：在 preview 成功后自动发布候选镜像
+- `publish_preview_snapshot`：在 preview 成功后自动发布候选镜像
 - `promote_sre_agent_release`：发布正式版本
 
 ### 8.6 夜间或值班场景建议
@@ -383,7 +383,7 @@ docker pull 10.11.4.5:5000/sre_agent/sre-agent-web:<version-yyyymmddhhmm>
 2. 执行 `validate_sre_agent_runtime`
 3. 执行 `validate_sre_agent_business`
 4. 确认两类验收都通过
-5. 执行 `publish_sre_agent_snapshot`
+5. 执行 `publish_preview_snapshot`
 6. 如果需要正式发版，再执行 `promote_sre_agent_release`
 7. 记录最终的 `docker pull` 地址、版本 tag 和 pipeline 链接
 
@@ -405,7 +405,7 @@ docker pull 10.11.4.5:5000/sre_agent/sre-agent-web:<version-yyyymmddhhmm>
 - 如果 preview 不要求在 job 结束后继续访问，可以不配置 `PREVIEW_DOCKER_HOST`
 - 如果 preview 要供团队共享，建议同时配置 `PREVIEW_DOCKER_HOST` 和 `PREVIEW_PUBLIC_HOST`
 - 如果基础依赖变化频繁，优先继续使用“依赖变化触发重建”，`base_refresh` 作为周期兜底
-- 如果后续发布策略继续演进，建议在 `publish_sre_agent_snapshot` 之后追加环境部署 job，而不是把部署逻辑混进 build job
+- 如果后续发布策略继续演进，建议在 `publish_preview_snapshot` 之后追加环境部署 job，而不是把部署逻辑混进 build job
 
 ## 11. 相关文件索引
 
