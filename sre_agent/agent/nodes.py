@@ -18,6 +18,7 @@ from sre_agent.agent.prompts import build_system_prompt
 from sre_agent.agent.state import SREAgentState
 from sre_agent.models.diagnosis import DiagnosisResult, Observation, ThinkingStep, ThinkingTrace
 from sre_agent.models.remediation import RemediationPlan
+from sre_agent.runtime.token_estimation import estimate_token_count
 from sre_agent.tools import ToolExecutionContext, ToolRegistry, ToolResult
 
 # LLM 交互日志记录器
@@ -201,7 +202,7 @@ async def reason_node(
     final_turn = bool(state.get("tool_runs")) and state.get("step_count", 0) >= max(state.get("max_steps", 10) - 1, 1)
     interaction_mode = "final_json" if final_turn else "tool_bound"
     if final_turn and hasattr(llm, "ainvoke"):
-        invoked_messages, prompt_metadata, overflow_failed = _prepare_reason_prompt_messages(
+        invoked_messages, prompt_metadata, overflow_failed = _prepare_reason_prompt_messages_for_invocation(
             system_prompt=system_prompt,
             state=state,
             final_turn=True,
@@ -219,6 +220,21 @@ async def reason_node(
         tool_choice = "none"
         response = await asyncio.wait_for(llm.ainvoke(invoked_messages), timeout=state["step_timeout_sec"])
     else:
+        invoked_messages, prompt_metadata, overflow_failed = _prepare_reason_prompt_messages_for_invocation(
+            system_prompt=system_prompt,
+            state=state,
+            final_turn=False,
+            tool_binding_fallback=False,
+        )
+        prompt_fallback_used = bool(prompt_metadata.get("prompt_fallback_used"))
+        if overflow_failed:
+            return _build_reason_overflow_failure_state(
+                state,
+                prompt_messages=invoked_messages,
+                prompt_metadata=prompt_metadata,
+                interaction_mode=interaction_mode,
+                tool_choice=tool_choice,
+            )
         bound_tools = registry.get_langchain_tools(
             tool_names=state.get("allowed_tool_names"),
         )
@@ -231,13 +247,44 @@ async def reason_node(
             )
             response = await asyncio.wait_for(call_model.ainvoke(invoked_messages), timeout=state["step_timeout_sec"])
         except Exception as exc:  # noqa: BLE001
-            if not hasattr(llm, "ainvoke") or not _is_tool_binding_incompatible_error(exc):
+            if hasattr(llm, "ainvoke") and _is_reason_prompt_empty_error(exc):
+                invoked_messages, prompt_metadata, overflow_failed = _prepare_reason_prompt_messages_for_invocation(
+                    system_prompt=system_prompt,
+                    state=state,
+                    final_turn=False,
+                    tool_binding_fallback=False,
+                )
+                prompt_metadata = {
+                    **prompt_metadata,
+                    "retry_after_empty_messages_error": True,
+                    "retry_error": _normalized_exception_message(exc),
+                }
+                prompt_fallback_used = bool(prompt_metadata.get("prompt_fallback_used"))
+                if overflow_failed:
+                    return _build_reason_overflow_failure_state(
+                        state,
+                        prompt_messages=invoked_messages,
+                        prompt_metadata=prompt_metadata,
+                        interaction_mode=interaction_mode,
+                        tool_choice=tool_choice,
+                    )
+                try:
+                    call_model = llm.bind_tools(
+                        bound_tools,
+                        tool_choice=tool_choice,
+                    )
+                    response = await asyncio.wait_for(call_model.ainvoke(invoked_messages), timeout=state["step_timeout_sec"])
+                except Exception as retry_exc:  # noqa: BLE001
+                    exc = retry_exc
+            if not hasattr(llm, "ainvoke") or not (
+                _is_tool_binding_incompatible_error(exc) or _is_reason_prompt_empty_error(exc)
+            ):
                 raise
             # Provider compatibility fallback: continue diagnosis without tool-binding,
             # otherwise the whole session fails before any trace is generated.
             interaction_mode = "tool_binding_fallback"
             tool_choice = "none"
-            invoked_messages, prompt_metadata, overflow_failed = _prepare_reason_prompt_messages(
+            invoked_messages, prompt_metadata, overflow_failed = _prepare_reason_prompt_messages_for_invocation(
                 system_prompt=system_prompt,
                 state=state,
                 final_turn=False,
@@ -383,6 +430,16 @@ def _is_tool_binding_incompatible_error(exc: Exception) -> bool:
         "tool_calls",
         "tool binding",
         "function call",
+    )
+    return any(signal in message for signal in signals)
+
+
+def _is_reason_prompt_empty_error(exc: Exception) -> bool:
+    message = _normalized_exception_message(exc).lower()
+    signals = (
+        "messages is empty",
+        "invalid params, messages is empty",
+        "(2013)",
     )
     return any(signal in message for signal in signals)
 
@@ -1264,6 +1321,36 @@ def _prepare_reason_prompt_messages(
     return compact_messages, compact_meta, False
 
 
+def _prepare_reason_prompt_messages_for_invocation(
+    *,
+    system_prompt: str,
+    state: SREAgentState,
+    final_turn: bool,
+    tool_binding_fallback: bool,
+) -> tuple[list[Any], dict[str, Any], bool]:
+    messages, metadata, overflow_failed = _prepare_reason_prompt_messages(
+        system_prompt=system_prompt,
+        state=state,
+        final_turn=final_turn,
+        tool_binding_fallback=tool_binding_fallback,
+    )
+    if overflow_failed:
+        return messages, metadata, overflow_failed
+    if messages and _has_non_system_prompt_text(messages):
+        return messages, metadata, overflow_failed
+    minimal_messages = [
+        SystemMessage(content=system_prompt),
+        HumanMessage(content=str(state.get("query", "") or "Continue diagnosis using available evidence.")),
+    ]
+    prompt_fallback_used = bool(metadata.get("prompt_fallback_used"))
+    return minimal_messages, {
+        **metadata,
+        "prompt_mode": "minimal_safe",
+        "prompt_fallback_used": True,
+        "prompt_empty_guard_triggered": True,
+    }, False
+
+
 def _build_reason_overflow_failure_state(
     state: SREAgentState,
     *,
@@ -1695,6 +1782,31 @@ def _build_fallback_reasoning_output(*, query: str, content: str) -> ReasoningEn
         diagnosis=fallback.diagnosis,
         remediation_plan=fallback.remediation_plan,
     )
+
+
+def _canonicalize_tool_run(
+    payload: dict[str, Any],
+    *,
+    session_id: str,
+    source: str,
+) -> dict[str, Any]:
+    step = _normalize_positive_int(payload.get("step"), default=1, minimum=1)
+    tool = str(payload.get("tool", "") or "").strip() or "unknown"
+    params = _safe_jsonable(payload.get("params", {}))
+    if not isinstance(params, dict):
+        params = {}
+    success = bool(payload.get("success", False))
+    return {
+        "step": step,
+        "tool": tool,
+        "params": params,
+        "success": success,
+        "data": _safe_jsonable(payload.get("data")),
+        "error": str(payload.get("error", "") or "").strip() or None,
+        "session_id": str(session_id or "").strip(),
+        "source": str(source or "").strip() or "tool",
+        "timestamp": datetime.now(UTC).isoformat(),
+    }
 
 
 async def act_node(

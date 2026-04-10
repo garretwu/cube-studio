@@ -69,6 +69,26 @@ class _FakeBoundLLM:
         return response
 
 
+class _RetryOnEmptyMessagesBoundLLM(_FakeBoundLLM):
+    async def ainvoke(self, messages: list[Any]) -> AIMessage:
+        self._parent.calls.append(
+            {
+                "messages": messages,
+                "tools": self._tools,
+                "tool_choice": self._tool_choice,
+            }
+        )
+        if self._parent.fail_first_with_empty_messages_error:
+            self._parent.fail_first_with_empty_messages_error = False
+            raise RuntimeError(
+                "Error code: 400 - {'type': 'error', 'error': {'type': 'bad_request_error', "
+                "'message': 'invalid params, messages is empty (2013)', 'http_code': '400'}}"
+            )
+        response = self._parent.responses[self._parent.index]
+        self._parent.index += 1
+        return response
+
+
 class _FakeLLM:
     def __init__(self, responses: list[AIMessage]) -> None:
         self.responses = responses
@@ -85,6 +105,15 @@ class _FakeLLM:
         return _FakeBoundLLM(self, tools, tool_choice)
 
 
+class _RetryOnEmptyMessagesLLM(_FakeLLM):
+    def __init__(self, responses: list[AIMessage]) -> None:
+        super().__init__(responses)
+        self.fail_first_with_empty_messages_error = True
+
+    def bind_tools(self, tools: list[Any], tool_choice: str = "auto") -> _RetryOnEmptyMessagesBoundLLM:
+        return _RetryOnEmptyMessagesBoundLLM(self, tools, tool_choice)
+
+
 class _SlowLLM:
     def bind_tools(self, tools: list[Any], tool_choice: str = "auto") -> "_SlowLLM":
         _ = tools, tool_choice
@@ -99,6 +128,56 @@ class _SlowLLM:
 
 
 class TestGraphUnit(unittest.IsolatedAsyncioTestCase):
+    async def test_react_rebuilds_prompt_when_provider_returns_empty_messages_error(self) -> None:
+        llm = _RetryOnEmptyMessagesLLM(
+            [
+                AIMessage(
+                    content="Collect Prometheus evidence first.",
+                    tool_calls=[
+                        {
+                            "name": "prometheus.query_instant",
+                            "args": {"promql": "up"},
+                            "id": "call-1",
+                            "type": "tool_call",
+                        }
+                    ],
+                ),
+                AIMessage(
+                    content=json.dumps(
+                        {
+                            "thought": "Prometheus evidence is stable after retry.",
+                            "diagnosis": {
+                                "root_cause": "No active platform issue detected",
+                                "root_cause_layer": "platform",
+                                "root_cause_entities": ["cluster:default"],
+                                "confidence": 0.9,
+                                "impact_summary": "Current health checks do not show an active issue.",
+                                "affected_services": ["platform"],
+                                "triage_priority": "P3",
+                                "diagnosis_certainty": "confirmed",
+                            },
+                            "remediation_plan": None,
+                        }
+                    )
+                ),
+            ]
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            result = await run_diagnosis(
+                query="Investigate platform health without changing anything.",
+                context=_happy_context(),
+                variables={"promql": "up"},
+                llm=llm,
+                step_timeout_sec=5.0,
+                total_timeout_sec=10.0,
+                checkpoint_dir=tmpdir,
+                allowed_tool_names=["prometheus.query_instant"],
+            )
+            self.assertEqual(result["status"], "diagnosed")
+            self.assertGreaterEqual(len(llm.calls), 3)
+            self.assertTrue(llm.calls[0]["messages"])
+            self.assertTrue(llm.calls[1]["messages"])
+
     async def test_react_can_use_fixed_skill_tools_before_concluding(self) -> None:
         llm = _FakeLLM(
             [
