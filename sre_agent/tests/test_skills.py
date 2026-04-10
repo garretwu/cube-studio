@@ -22,6 +22,7 @@ class TestSkillsUnit(unittest.IsolatedAsyncioTestCase):
         ids = {skill.id for skill in skills}
         self.assertIn("builtin-vllm-diagnosis", ids)
         self.assertIn("gpu-fault-sop", ids)
+        self.assertIn("builtin-gpu-thermal-diagnosis", ids)
         gpu_fault = registry.get("gpu-fault-sop")
         self.assertIn("gpu_health_check.sh", gpu_fault.scripts)
 

@@ -38,9 +38,9 @@
   - `fanMode = 1`
   - 全部风扇 `fanPWM = 80`
 - 启动了 4 卡 `gpu_burn`
-- 选中的 skill：`gpu-fault-sop`
+- 选中的 skill：`builtin-gpu-thermal-diagnosis`
 - 这次没有执行 skill 脚本
-- 而是先用普通 GPU / BMC 工具采证，再通过 `skills.load_skill` 读取 SOP 知识来收敛结论
+- 而是先用普通 GPU / BMC 工具采证，再通过 `skills.load_skill` 读取温度专项 skill 来收敛结论
 - 本轮关键工具：
   - `gpu.get_metrics`
   - `gpu.get_processes`
@@ -62,7 +62,7 @@
 - 注入链路、诊断链路、清理链路都跑通了
 - Agent 在统一 ReAct 主链中通过固定 `skills.*` tools 自主使用 skill
 - thermal 场景下，模型已经不依赖 demo 强提示，也能主动去查 `bmc.get_fan_status`
-- 这次是“先采证，再 load skill 读取 SOP” 的路径，不是先跑 skill 脚本
+- 这次是“先采证，再 load skill 读取温度专项 skill” 的路径，不是先跑 skill 脚本
 - 最终结论不是“单纯高温”，而是“风扇被锁死在 Manual 80，遇到 4 卡 `gpu_burn` 压力时失去动态调速能力”
 - `bmc.get_fan_status` 的语义化摘要字段
   - `mode_name = Manual`
@@ -89,7 +89,7 @@
 [Step 1] ── Observe ──
            返回 skill catalog。
            模型识别出：
-           - gpu-fault-sop
+           - builtin-gpu-thermal-diagnosis
            - 与 GPU / thermal / fault 场景强相关
 
 [Step 2] ── Act ──
@@ -124,13 +124,12 @@
            - 风扇控制不是自动调速，而是被锁在固定 Manual 80
 
 [Step 5] ── Act ──
-           → skills.load_skill(skill_id="gpu-fault-sop")
+           → skills.load_skill(skill_id="builtin-gpu-thermal-diagnosis")
 
 [Step 5] ── Observe ──
-           返回 SOP 正文。
+           返回温度专项 skill 正文。
            模型从 skill 中读到：
-           - `2E: 温度异常 -> Step 2`
-           - `fanMode = 1` 表示 `Manual`
+           - 应检查 `bmc.get_fan_status`
            - 若风扇被锁到 `Manual` 且 PWM 固定，则把“风扇控制策略异常”视为强根因候选
 
 [Step 6] ── Conclude ──
@@ -179,7 +178,7 @@
 
 - skill 不是图里的专用子分支
 - Agent 在统一 ReAct 中自己发现并使用 skill
-- 这次不是“先跑 skill 脚本”，而是“先采证，再读取 skill 里的 SOP 知识做收敛”
+- 这次不是“先跑 skill 脚本”，而是“先采证，再读取 thermal skill 知识做收敛”
 
 ## 每一步关键结果摘录
 
@@ -191,8 +190,8 @@
 
 输出摘录：
 
-- `gpu-fault-sop`
-- `scripts = [gpu_benchmark.sh, gpu_health_check.sh]`
+- `builtin-gpu-thermal-diagnosis`
+- `scripts = []`
 
 ### Step 2: `gpu.get_metrics`
 
@@ -260,18 +259,18 @@
 
 输入：
 
-- `skill_id = "gpu-fault-sop"`
+- `skill_id = "builtin-gpu-thermal-diagnosis"`
 
 输出摘录：
 
-- skill 文本中 `2E: 温度异常 -> Step 2` 明确写了：
-  - `fanMode = 1` 表示 `Manual`
+- skill 文本中明确写了：
+  - 应检查 `bmc.get_fan_status`
   - 若风扇被锁到 `Manual` 且 PWM 固定，则把“风扇控制策略异常”视为强根因候选
 
 结论：
 
 - 这次模型不需要靠 demo query 强提示
-- 而是通过 `skills.load_skill` 读取 SOP 本身，完成了对 fan 证据的正确解释
+- 而是通过 `skills.load_skill` 读取温度专项 skill，完成了对 fan 证据的正确解释
 
 ## Fault Injection 与 Cleanup
 
@@ -307,9 +306,8 @@
   - `is_fixed_pwm = true`
   - `fixed_pwm = 80`
 
-再加上 `gpu-fault-sop` 在 `2E: 温度异常 -> Step 2` 里已经明确写了：
+再加上 `builtin-gpu-thermal-diagnosis` 已经明确写了：
 
-- `fanMode = 1` 表示 `Manual`
 - `Manual + 固定 PWM` 是强根因候选
 
 所以现在这条结论已经主要由：

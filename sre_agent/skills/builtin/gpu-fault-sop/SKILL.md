@@ -9,10 +9,6 @@ description: >
   也适用于：GPU健康检查、GPU集群巡检、GPU故障预防性维护、GPU故障根因分析(RCA)。
   即使用户只是模糊地提到"卡挂了"、"任务跑不动"、"显存报错"、"推理变慢"等，也应触发。
   支持NVIDIA GeForce RTX 5090/4090及其他消费级GPU用于数据中心推理/微调场景。
-permissions:
-  - read:gpu
-  - read:k8s
-  - read:network
 tags:
   - gpu
   - xid
@@ -392,7 +388,6 @@ GPU温度 > 83°C 或 频繁降频
   ├─ Step 2: 判断是单卡还是全局问题
   │     ├─ 单卡高温，其他正常
   │     │     ├─ 检查风扇转速: fan.speed = 0% → 风扇故障
-  │     │     ├─ 如果环境中可用 `bmc.get_fan_status`，检查 `fanMode` 和 `fanPWM`；其中 `fanMode = 1` 表示 `Manual`。若风扇被人为锁到 `Manual` 且 PWM 固定，则把“风扇控制策略异常”视为强根因候选
   │     │     ├─ 风扇正常但温度高 → 散热器/导热垫问题
   │     │     └─ 检查是否有GPU进程异常占用
   │     ├─ 全部GPU高温
