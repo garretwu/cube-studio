@@ -10,16 +10,35 @@ source "${REPO_ROOT}/dist/pipeline.env"
 # shellcheck disable=SC1091
 source "${REPO_ROOT}/dist/build-web.env"
 
-if [ -n "${PREVIEW_DOCKER_HOST:-}" ]; then
-  export DOCKER_HOST="${PREVIEW_DOCKER_HOST}"
-fi
-
 if ! docker image inspect "${WEB_IMAGE_REF}" >/dev/null 2>&1; then
   log "web image ${WEB_IMAGE_REF} is not available locally, rebuilding it on this runner for preview"
   "${SCRIPT_DIR}/build_web_image.sh"
 fi
 
 require_local_docker_image "${WEB_IMAGE_REF}"
+
+preview_docker_host="${PREVIEW_DOCKER_HOST:-}"
+preview_target="local"
+preview_host="${PREVIEW_PUBLIC_HOST:-}"
+
+if [ -n "${preview_docker_host}" ]; then
+  if DOCKER_HOST="${preview_docker_host}" docker info >/dev/null 2>&1; then
+    if DOCKER_HOST="${preview_docker_host}" docker image inspect "${WEB_IMAGE_REF}" >/dev/null 2>&1; then
+      export DOCKER_HOST="${preview_docker_host}"
+      preview_target="remote"
+    else
+      log "preview docker host ${preview_docker_host} is reachable but does not have ${WEB_IMAGE_REF}, falling back to local docker host"
+    fi
+  else
+    log "preview docker host ${preview_docker_host} is unreachable, falling back to local docker host"
+  fi
+fi
+
+if [ "${preview_target}" = "local" ]; then
+  unset DOCKER_HOST
+  unset DOCKER_TLS_CERTDIR
+  preview_host="127.0.0.1"
+fi
 
 mkdir -p "${REPO_ROOT}/dist"
 
@@ -101,13 +120,12 @@ if [ "${status}" != "healthy" ]; then
   exit 1
 fi
 
-preview_host="${PREVIEW_PUBLIC_HOST:-}"
 if [ -z "${preview_host}" ]; then
-  if [ -n "${PREVIEW_DOCKER_HOST:-}" ]; then
-    preview_host="$(echo "${PREVIEW_DOCKER_HOST}" | sed -E 's#^[a-z]+://([^:/]+).*$#\1#')"
+  if [ "${preview_target}" = "remote" ]; then
+    preview_host="$(echo "${preview_docker_host}" | sed -E 's#^[a-z]+://([^:/]+).*$#\1#')"
   else
     preview_host="127.0.0.1"
-    log "PREVIEW_DOCKER_HOST is not set, preview container lives on the job Docker daemon and may not be externally reachable after the job finishes"
+    log "preview container lives on the local job docker daemon and may not be externally reachable after the job finishes"
   fi
 fi
 

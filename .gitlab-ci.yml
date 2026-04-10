@@ -259,11 +259,12 @@ validate_sre_agent_runtime:
       artifacts: true
       optional: true
     - job: preview_sre_agent_web
-      optional: true
+      optional: false
   script:
     - sre_agent/deploy/gitlab/ci/validate_runtime_smoke.sh
   rules:
     - if: '$CI_COMMIT_BRANCH == $SRE_CI_BRANCH && $CI_PIPELINE_SOURCE != "schedule"'
+      when: manual
     - if: '$CI_COMMIT_BRANCH == $SRE_CI_BRANCH && $CI_PIPELINE_SOURCE == "schedule" && $PIPELINE_KIND == "weekly_build"'
     - if: '$CI_COMMIT_BRANCH == $SRE_CI_BRANCH && $CI_PIPELINE_SOURCE == "schedule" && $PIPELINE_KIND == "base_refresh"'
 
@@ -287,10 +288,13 @@ validate_sre_agent_business:
     - job: build_sre_agent_base
       artifacts: true
       optional: true
+    - job: preview_sre_agent_web
+      optional: false
   script:
     - sre_agent/deploy/gitlab/ci/validate_business_suite.sh
   rules:
     - if: '$CI_COMMIT_BRANCH == $SRE_CI_BRANCH && $CI_PIPELINE_SOURCE != "schedule"'
+      when: manual
     - if: '$CI_COMMIT_BRANCH == $SRE_CI_BRANCH && $CI_PIPELINE_SOURCE == "schedule" && $PIPELINE_KIND == "weekly_build"'
     - if: '$CI_COMMIT_BRANCH == $SRE_CI_BRANCH && $CI_PIPELINE_SOURCE == "schedule" && $PIPELINE_KIND == "base_refresh"'
 
@@ -312,12 +316,15 @@ publish_sre_agent_snapshot:
     - job: build_sre_agent_base
       artifacts: true
       optional: true
+    - job: preview_sre_agent_web
+      optional: false
     - job: validate_sre_agent_runtime
     - job: validate_sre_agent_business
   script:
     - sre_agent/deploy/gitlab/ci/push_images.sh
   rules:
     - if: '$CI_COMMIT_BRANCH == $SRE_CI_BRANCH && $CI_PIPELINE_SOURCE != "schedule"'
+      when: manual
     - if: '$CI_COMMIT_BRANCH == $SRE_CI_BRANCH && $CI_PIPELINE_SOURCE == "schedule" && $PIPELINE_KIND == "weekly_build"'
     - if: '$CI_COMMIT_BRANCH == $SRE_CI_BRANCH && $CI_PIPELINE_SOURCE == "schedule" && $PIPELINE_KIND == "base_refresh"'
 
@@ -336,6 +343,8 @@ promote_sre_agent_release:
     - job: refresh_build_sre_agent_web
       artifacts: true
       optional: true
+    - job: preview_sre_agent_web
+      optional: false
     - job: validate_sre_agent_runtime
     - job: validate_sre_agent_business
   script:
