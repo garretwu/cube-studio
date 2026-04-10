@@ -1,61 +1,61 @@
-﻿import type { Alert, AlertCluster, AlertStatus, DiagnosisSession } from "../api/types";
+﻿import type { Alert, AlertCluster, DiagnosisSession, DiagnosisSessionSummary } from "../api/types";
+import { formatWorkflowStatus } from "../utils/display";
 
-type ChipTone = "neutral" | "accent" | "success" | "warning" | "danger" | "info";
+export type ChipTone = "neutral" | "accent" | "success" | "warning" | "danger" | "info";
 
-type RouteDecision = {
-  label: "并入已有诊断" | "将创建诊断" | "观察中";
-  tone: ChipTone;
-  ctaLabel: string;
+export type AlertDashboardStatusKey =
+  | "pending_diagnosis"
+  | "diagnosing"
+  | "pending_remediation"
+  | "resolved"
+  | "attention";
+
+export type AlertDashboardAction = {
+  kind: "diagnose" | "diagnosis" | "remediation";
+  label: string;
   path: string;
-  note: string;
 };
 
-export type ConvergenceResult = {
+export type AlertDashboardItem = {
   id: string;
   title: string;
   summary: string;
   severity: Alert["severity"];
-  alertCount: number;
-  fingerprintCount: number;
-  duplicateFoldedCount: number;
-  impactScope: string;
-  primaryJudgment: string;
-  route: RouteDecision;
-  fingerprints: string[];
-  alertNames: string[];
-  primaryFingerprint: string;
-};
+  statusKey: AlertDashboardStatusKey;
+  statusLabel: string;
+  statusTone: ChipTone;
+  statusTimestamp: string;
+  sessionId?: string;
 
-export type AlertFlowEvent = {
-  id: string;
-  alertName: string;
-  severity: Alert["severity"];
-  entity: string;
-  startsAt: string;
-  status: AlertStatus;
-  summary: string;
-};
-
-export type AlertFlowGroup = {
-  fingerprint: string;
-  alertName: string;
-  severity: Alert["severity"];
-  entity: string;
   latestStartsAt: string;
-  eventCount: number;
-  fingerprintRole: string;
-  fingerprintTone: ChipTone;
-  compressionLabel: string;
-  compressionTone: ChipTone;
-  convergenceTarget: string;
-  routeLabel: RouteDecision["label"];
-  routeTone: ChipTone;
-  events: AlertFlowEvent[];
+  primaryFingerprint: string;
+  rootEntity: string;
+  impactScope: string;
+  alertNames: string[];
+  analysisSummary?: string | null;
+  confidence?: number | null;
+  planSummary?: string | null;
+  hasSession: boolean;
+  isSessionDetailLoaded: boolean;
+  action: AlertDashboardAction;
 };
 
-export type AlertConvergenceView = {
-  results: ConvergenceResult[];
-  flow: AlertFlowGroup[];
+export type AlertDashboardMetrics = {
+  totalItems: number;
+  diagnosingCount: number;
+  pendingActionCount: number;
+  resolvedTodayCount: number;
+};
+
+export type AlertDashboardView = {
+  items: AlertDashboardItem[];
+  metrics: AlertDashboardMetrics;
+};
+
+type SessionDescriptor = {
+  key: AlertDashboardStatusKey;
+  label: string;
+  tone: ChipTone;
 };
 
 const severityRank: Record<Alert["severity"], number> = {
@@ -64,27 +64,44 @@ const severityRank: Record<Alert["severity"], number> = {
   info: 2,
 };
 
-const routeRank: Record<RouteDecision["label"], number> = {
-  "并入已有诊断": 0,
-  "将创建诊断": 1,
-  "观察中": 2,
+const statusRank: Record<AlertDashboardStatusKey, number> = {
+  pending_remediation: 0,
+  diagnosing: 1,
+  pending_diagnosis: 2,
+  attention: 3,
+  resolved: 4,
 };
+
+const approvalStates = new Set(["approval_required", "awaiting_approval", "proposed_fix_ready"]);
+const diagnosingStates = new Set(["diagnosing", "diagnosed", "approved", "remediating", "validating", "re_diagnosed"]);
+const resolvedStates = new Set(["resolved"]);
+const attentionStates = new Set(["closed", "escalated", "failed", "timeout", "rejected"]);
 
 function unique(values: Array<string | null | undefined>) {
   return [...new Set(values.filter((value): value is string => Boolean(value)))];
 }
 
-function sortByStartsAtDesc(left: Alert, right: Alert) {
-  return new Date(right.starts_at).getTime() - new Date(left.starts_at).getTime();
+function normalizeSentence(value: string) {
+  return value.trim().replace(/[。；;，,\s]+$/u, "");
 }
 
-function sortBySeverityThenTime(left: Alert, right: Alert) {
+function normalizeStatusValue(value?: string | null) {
+  return String(value ?? "").trim().toLowerCase();
+}
+
+function sortAlertsForPriority(left: Alert, right: Alert) {
+  const leftFiring = left.status === "firing" ? 1 : 0;
+  const rightFiring = right.status === "firing" ? 1 : 0;
+  if (rightFiring !== leftFiring) {
+    return rightFiring - leftFiring;
+  }
+
   const severityGap = severityRank[left.severity] - severityRank[right.severity];
   if (severityGap !== 0) {
     return severityGap;
   }
 
-  return new Date(left.starts_at).getTime() - new Date(right.starts_at).getTime();
+  return new Date(right.starts_at).getTime() - new Date(left.starts_at).getTime();
 }
 
 function getAlertEntity(alert: Alert) {
@@ -96,127 +113,6 @@ function getAlertEntity(alert: Alert) {
     alert.labels.aidc ??
     "未知实体"
   );
-}
-
-function normalizeSentence(value: string) {
-  return value.replace(/[。；;，,\s]+$/u, "");
-}
-
-function buildConvergenceTitle(cluster: AlertCluster | undefined, alerts: Alert[]) {
-  if (cluster?.summary) {
-    return normalizeSentence(cluster.summary);
-  }
-
-  const services = unique(alerts.map((alert) => alert.labels.service));
-  if (services.length > 0) {
-    return `${services[0]} 告警收敛结果`;
-  }
-
-  return alerts[0]?.alert_name ?? "未命名收敛结果";
-}
-
-function buildSummary(alerts: Alert[]) {
-  if (alerts.length === 1) {
-    return "当前只有单条原始事件命中该处理入口。";
-  }
-
-  const fingerprintCount = unique(alerts.map((alert) => alert.fingerprint)).length;
-  return `系统已将 ${alerts.length} 条事件压缩为 ${fingerprintCount} 个 fingerprint 入口。`;
-}
-
-function buildImpactScope(alerts: Alert[]) {
-  const services = unique(alerts.map((alert) => alert.labels.service));
-  const entities = unique(alerts.map((alert) => getAlertEntity(alert)));
-  const nodes = unique(alerts.map((alert) => alert.labels.node));
-  const parts: string[] = [];
-
-  if (services.length > 0) {
-    parts.push(`服务 ${services.slice(0, 2).join("、")}`);
-  }
-
-  if (entities.length > 0) {
-    parts.push(`实体 ${entities.slice(0, 3).join("、")}`);
-  }
-
-  if (nodes.length > 0) {
-    parts.push(`节点 ${nodes.slice(0, 2).join("、")}`);
-  }
-
-  return parts.join(" · ") || "影响范围仍在持续观察";
-}
-
-function buildPrimaryJudgment(cluster: AlertCluster | undefined, alerts: Alert[]) {
-  const haystack = alerts
-    .flatMap((alert) => [alert.alert_name, alert.annotations.summary ?? "", getAlertEntity(alert)])
-    .join(" ")
-    .toLowerCase();
-
-  if (
-    (haystack.includes("latency") || haystack.includes("延迟") || haystack.includes("时延")) &&
-    (haystack.includes("gpu") || haystack.includes("温度") || haystack.includes("热"))
-  ) {
-    return "时延抬升与 GPU 热压同步出现，系统优先按同一资源争用面推进诊断。";
-  }
-
-  if (
-    (haystack.includes("packet loss") || haystack.includes("丢包") || haystack.includes("rdma")) &&
-    (haystack.includes("交换机") || haystack.includes("网络") || haystack.includes("roce"))
-  ) {
-    return "多条信号都落在网络层同一影响面，建议按链路拥塞或配置漂移统一排查。";
-  }
-
-  if (cluster?.summary) {
-    return `当前主判断：${normalizeSentence(cluster.summary)}。`;
-  }
-
-  return "系统判断这些信号足以形成单一处理入口，后续只需要围绕收敛结果推进。";
-}
-
-function buildRouteDecision(alerts: Alert[], activeSession?: DiagnosisSession) {
-  const focusFingerprint = encodeURIComponent(pickPrimaryFingerprint(alerts));
-  if (activeSession && alerts.some((alert) => alert.fingerprint === activeSession.alert.fingerprint)) {
-    return {
-      label: "并入已有诊断" as const,
-      tone: "accent" as const,
-      ctaLabel: "查看诊断",
-      path: `/diagnosis/${activeSession.session_id}`,
-      note: `已命中诊断 ${activeSession.session_id}`,
-    };
-  }
-
-  const allQuiet = alerts.every((alert) => alert.status !== "firing");
-  if (allQuiet) {
-    return {
-      label: "观察中" as const,
-      tone: "neutral" as const,
-      ctaLabel: "回看原始告警",
-      path: `/alerts?q=${focusFingerprint}`,
-      note: "当前不新建诊断会话",
-    };
-  }
-
-  if (alerts.length > 1 || alerts.some((alert) => alert.severity === "critical")) {
-    return {
-      label: "将创建诊断" as const,
-      tone: "danger" as const,
-      ctaLabel: "进入诊断",
-      path: "/diagnosis",
-      note: "系统将按收敛结果统一创建诊断",
-    };
-  }
-
-  return {
-    label: "观察中" as const,
-    tone: "warning" as const,
-    ctaLabel: "继续观察",
-    path: `/alerts?q=${focusFingerprint}`,
-    note: "先保留在观察队列",
-  };
-}
-
-function pickPrimaryFingerprint(alerts: Alert[]) {
-  const ranked = [...alerts].sort(sortBySeverityThenTime);
-  return ranked[0]?.fingerprint ?? alerts[0]?.fingerprint ?? "unknown";
 }
 
 function highestSeverity(alerts: Alert[]): Alert["severity"] {
@@ -231,65 +127,221 @@ function highestSeverity(alerts: Alert[]): Alert["severity"] {
   return "info";
 }
 
-function buildResult(cluster: AlertCluster | undefined, alerts: Alert[], activeSession?: DiagnosisSession): ConvergenceResult {
-  const route = buildRouteDecision(alerts, activeSession);
-  const fingerprints = unique(alerts.map((alert) => alert.fingerprint));
+function pickPrimaryAlert(alerts: Alert[]) {
+  return [...alerts].sort(sortAlertsForPriority)[0] ?? alerts[0];
+}
+
+function getLatestStartsAt(alerts: Alert[]) {
+  return [...alerts]
+    .sort((left, right) => new Date(right.starts_at).getTime() - new Date(left.starts_at).getTime())[0]?.starts_at ?? alerts[0]?.starts_at ?? new Date(0).toISOString();
+}
+
+function buildTitle(cluster: AlertCluster | undefined, alerts: Alert[]) {
+  const fallbackTitle = normalizeSentence(cluster?.summary ?? "");
+  return pickPrimaryAlert(alerts)?.alert_name ?? (fallbackTitle || "未命名告警");
+}
+
+function buildSummary(cluster: AlertCluster | undefined, alerts: Alert[]) {
+  if (cluster?.summary?.trim()) {
+    return `${normalizeSentence(cluster.summary)}。`;
+  }
+
+  const primaryAlert = pickPrimaryAlert(alerts);
+  const primarySummary = primaryAlert?.annotations.summary?.trim();
+  if (primarySummary) {
+    return `${normalizeSentence(primarySummary)}。`;
+  }
+
+  const services = unique(alerts.map((alert) => alert.labels.service));
+  if (services.length > 0) {
+    return `当前主要影响服务：${services.slice(0, 2).join("、")}。`;
+  }
+
+  const entities = unique(alerts.map((alert) => getAlertEntity(alert)));
+  if (entities.length > 0) {
+    return `当前主要影响对象：${entities.slice(0, 2).join("、")}。`;
+  }
+
+  return "当前告警需要进一步诊断。";
+}
+
+function buildRootEntity(alerts: Alert[], session?: DiagnosisSession) {
+  const rootCauseEntities = session?.diagnosis_result?.root_cause_entities?.filter(Boolean) ?? [];
+  if (rootCauseEntities.length > 0) {
+    return rootCauseEntities.length > 1
+      ? `${rootCauseEntities[0]} 等 ${rootCauseEntities.length} 个对象`
+      : rootCauseEntities[0] ?? "未知实体";
+  }
+
+  return getAlertEntity(pickPrimaryAlert(alerts) ?? alerts[0]);
+}
+
+function buildImpactScope(alerts: Alert[], session?: DiagnosisSession) {
+  const impactSummary = session?.diagnosis_result?.impact_summary?.trim();
+  if (impactSummary) {
+    return impactSummary;
+  }
+
+  const services = unique([
+    ...(session?.diagnosis_result?.affected_services ?? []),
+    ...alerts.map((alert) => alert.labels.service),
+  ]);
+  const entities = unique([
+    ...(session?.diagnosis_result?.root_cause_entities ?? []),
+    ...alerts.map((alert) => getAlertEntity(alert)),
+  ]);
+  const parts: string[] = [];
+
+  if (services.length > 0) {
+    parts.push(`服务 ${services.slice(0, 2).join("、")}`);
+  }
+
+  if (entities.length > 0) {
+    parts.push(`对象 ${entities.slice(0, 3).join("、")}`);
+  }
+
+  return parts.join(" · ") || "影响范围仍在持续观察";
+}
+
+function resolveSessionDescriptor(summary?: DiagnosisSessionSummary, session?: DiagnosisSession): SessionDescriptor {
+  if (!summary) {
+    return {
+      key: "pending_diagnosis",
+      label: "待诊断",
+      tone: "warning",
+    };
+  }
+
+  const outcome = normalizeStatusValue(summary.outcome);
+  const status = normalizeStatusValue(session?.status ?? summary.status);
+  const displayValue = approvalStates.has(status)
+    ? status
+    : approvalStates.has(outcome)
+      ? outcome
+      : outcome || status;
+
+  if (approvalStates.has(status) || approvalStates.has(outcome)) {
+    return {
+      key: "pending_remediation",
+      label: formatWorkflowStatus(displayValue || "awaiting_approval", "待审批/待执行"),
+      tone: status === "approval_required" || status === "awaiting_approval" ? "info" : "accent",
+    };
+  }
+
+  if (resolvedStates.has(status) || resolvedStates.has(outcome)) {
+    return {
+      key: "resolved",
+      label: formatWorkflowStatus(displayValue || "resolved", "已恢复"),
+      tone: "success",
+    };
+  }
+
+  if (attentionStates.has(status) || attentionStates.has(outcome)) {
+    return {
+      key: "attention",
+      label: formatWorkflowStatus(displayValue || status || outcome, "需关注"),
+      tone: "danger",
+    };
+  }
+
+  if (diagnosingStates.has(status) || diagnosingStates.has(outcome)) {
+    return {
+      key: "diagnosing",
+      label: formatWorkflowStatus(displayValue || status || "diagnosing", "诊断中"),
+      tone: status === "approved" ? "accent" : "info",
+    };
+  }
 
   return {
-    id: cluster?.cluster_id ?? alerts[0]?.fingerprint ?? "orphan-result",
-    title: buildConvergenceTitle(cluster, alerts),
-    summary: buildSummary(alerts),
-    severity: highestSeverity(alerts),
-    alertCount: alerts.length,
-    fingerprintCount: fingerprints.length,
-    duplicateFoldedCount: Math.max(alerts.length - fingerprints.length, 0),
-    impactScope: buildImpactScope(alerts),
-    primaryJudgment: buildPrimaryJudgment(cluster, alerts),
-    route,
-    fingerprints,
-    alertNames: unique(alerts.map((alert) => alert.alert_name)),
-    primaryFingerprint: pickPrimaryFingerprint(alerts),
+    key: "pending_diagnosis",
+    label: "待诊断",
+    tone: "warning",
   };
 }
 
-function buildFlowGroup(fingerprint: string, alerts: Alert[], result: ConvergenceResult): AlertFlowGroup {
-  const events = [...alerts]
-    .sort(sortByStartsAtDesc)
-    .map((alert, index) => ({
-      id: `${fingerprint}-${index}-${alert.starts_at}`,
-      alertName: alert.alert_name,
-      severity: alert.severity,
-      entity: getAlertEntity(alert),
-      startsAt: alert.starts_at,
-      status: alert.status,
-      summary: alert.annotations.summary ?? "无额外摘要",
-    }));
-  const latest = events[0];
-  const isPrimary = result.primaryFingerprint === fingerprint;
+function buildAction(summary: DiagnosisSessionSummary | undefined, descriptor: SessionDescriptor): AlertDashboardAction {
+  if (!summary?.session_id) {
+    return {
+      kind: "diagnose",
+      label: "进入诊断",
+      path: "/diagnosis",
+    };
+  }
+
+  if (descriptor.key === "pending_remediation") {
+    const normalizedStatus = normalizeStatusValue(summary.status);
+    return {
+      kind: "remediation",
+      label: normalizedStatus === "approval_required" || normalizedStatus === "awaiting_approval" ? "审批修复" : "查看修复",
+      path: `/remediation?sessionId=${encodeURIComponent(summary.session_id)}`,
+    };
+  }
 
   return {
-    fingerprint,
-    alertName: latest?.alertName ?? alerts[0]?.alert_name ?? "未命名告警",
-    severity: highestSeverity(alerts),
-    entity: latest?.entity ?? getAlertEntity(alerts[0]),
-    latestStartsAt: latest?.startsAt ?? alerts[0]?.starts_at ?? new Date(0).toISOString(),
-    eventCount: alerts.length,
-    fingerprintRole: isPrimary ? "主指纹" : "参与收敛",
-    fingerprintTone: isPrimary ? "accent" : "neutral",
-    compressionLabel: alerts.length > 1 ? `${alerts.length} 次事件` : "1 次事件",
-    compressionTone: alerts.length > 1 ? "accent" : "success",
-    convergenceTarget: result.title,
-    routeLabel: result.route.label,
-    routeTone: result.route.tone,
-    events,
+    kind: "diagnosis",
+    label: "查看诊断",
+    path: `/diagnosis/${encodeURIComponent(summary.session_id)}`,
   };
 }
 
-export function buildAlertConvergenceView(
+function getSummaryTimestamp(summary?: DiagnosisSessionSummary, session?: DiagnosisSession) {
+  return summary?.updated_at ?? session?.alert.starts_at ?? new Date(0).toISOString();
+}
+
+function isSameCalendarDay(left: string, right: Date) {
+  const date = new Date(left);
+  if (Number.isNaN(date.getTime())) {
+    return false;
+  }
+
+  return (
+    date.getFullYear() === right.getFullYear() &&
+    date.getMonth() === right.getMonth() &&
+    date.getDate() === right.getDate()
+  );
+}
+
+function buildSearchText(item: AlertDashboardItem) {
+  return [
+    item.title,
+    item.summary,
+    item.rootEntity,
+    item.impactScope,
+    item.statusLabel,
+    item.sessionId,
+    item.analysisSummary,
+    item.planSummary,
+    ...item.alertNames,
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+}
+
+export function getAlertDashboardSearchText(item: AlertDashboardItem) {
+  return buildSearchText(item);
+}
+
+function chooseBestSummary(candidates: DiagnosisSessionSummary[], details: Record<string, DiagnosisSession | undefined>) {
+  return [...candidates].sort((left, right) => {
+    const leftDescriptor = resolveSessionDescriptor(left, details[left.session_id]);
+    const rightDescriptor = resolveSessionDescriptor(right, details[right.session_id]);
+    const statusGap = statusRank[leftDescriptor.key] - statusRank[rightDescriptor.key];
+    if (statusGap !== 0) {
+      return statusGap;
+    }
+
+    return right.updated_at.localeCompare(left.updated_at);
+  })[0];
+}
+
+export function buildAlertDashboardView(
   alerts: Alert[],
   clusters: AlertCluster[],
-  activeSession?: DiagnosisSession,
-): AlertConvergenceView {
+  sessionSummaries: DiagnosisSessionSummary[],
+  sessionDetails: Record<string, DiagnosisSession | undefined>,
+  now = new Date(),
+): AlertDashboardView {
   const alertsByFingerprint = new Map<string, Alert[]>();
   alerts.forEach((alert) => {
     const bucket = alertsByFingerprint.get(alert.fingerprint) ?? [];
@@ -297,27 +349,23 @@ export function buildAlertConvergenceView(
     alertsByFingerprint.set(alert.fingerprint, bucket);
   });
 
-  const results: ConvergenceResult[] = [];
-  const resultByFingerprint = new Map<string, ConvergenceResult>();
+  const groups: Array<{ id: string; cluster?: AlertCluster; alerts: Alert[]; fingerprints: string[] }> = [];
   const consumedFingerprints = new Set<string>();
 
   clusters.forEach((cluster) => {
-    const clusterAlerts = cluster.alerts.flatMap((fingerprint) => alertsByFingerprint.get(fingerprint) ?? []);
-    if (clusterAlerts.length === 0) {
+    const groupAlerts = cluster.alerts.flatMap((fingerprint) => alertsByFingerprint.get(fingerprint) ?? []);
+    if (groupAlerts.length === 0) {
       return;
     }
 
-    const result = buildResult(cluster, clusterAlerts, activeSession);
-    results.push(result);
-
-    cluster.alerts.forEach((fingerprint) => {
-      if (!alertsByFingerprint.has(fingerprint)) {
-        return;
-      }
-
-      consumedFingerprints.add(fingerprint);
-      resultByFingerprint.set(fingerprint, result);
+    groups.push({
+      id: cluster.cluster_id,
+      cluster,
+      alerts: groupAlerts,
+      fingerprints: unique(groupAlerts.map((alert) => alert.fingerprint)),
     });
+
+    cluster.alerts.forEach((fingerprint) => consumedFingerprints.add(fingerprint));
   });
 
   alertsByFingerprint.forEach((groupAlerts, fingerprint) => {
@@ -325,44 +373,76 @@ export function buildAlertConvergenceView(
       return;
     }
 
-    const result = buildResult(undefined, groupAlerts, activeSession);
-    results.push(result);
-    resultByFingerprint.set(fingerprint, result);
+    groups.push({
+      id: fingerprint,
+      alerts: groupAlerts,
+      fingerprints: [fingerprint],
+    });
   });
 
-  const flow = [...alertsByFingerprint.entries()]
-    .map(([fingerprint, groupAlerts]) => {
-      const result = resultByFingerprint.get(fingerprint);
-      if (!result) {
-        return null;
-      }
+  const items = groups.map((group) => {
+    const primaryAlert = pickPrimaryAlert(group.alerts) ?? group.alerts[0];
+    const fingerprints = unique(group.fingerprints);
+    const matchingSummaries = sessionSummaries.filter(
+      (summary) => summary.fingerprint && fingerprints.includes(summary.fingerprint),
+    );
+    const matchedSummary = chooseBestSummary(matchingSummaries, sessionDetails);
+    const matchedSession = matchedSummary ? sessionDetails[matchedSummary.session_id] : undefined;
+    const descriptor = resolveSessionDescriptor(matchedSummary, matchedSession);
+    const action = buildAction(matchedSummary, descriptor);
+    const alertNames = unique(group.alerts.map((alert) => alert.alert_name));
+    const latestStartsAt = getLatestStartsAt(group.alerts);
+    const analysisSummary = matchedSession?.diagnosis_result?.root_cause ?? null;
+    const planSummary = matchedSession?.diagnosis_result?.recommended_fix?.description ?? null;
 
-      return buildFlowGroup(fingerprint, groupAlerts, result);
-    })
-    .filter((group): group is AlertFlowGroup => Boolean(group))
-    .sort((left, right) => {
-      const timeGap = new Date(right.latestStartsAt).getTime() - new Date(left.latestStartsAt).getTime();
-      if (timeGap !== 0) {
-        return timeGap;
-      }
+    return {
+      id: group.id,
+      title: buildTitle(group.cluster, group.alerts),
+      summary: buildSummary(group.cluster, group.alerts),
+      severity: highestSeverity(group.alerts),
+      statusKey: descriptor.key,
+      statusLabel: descriptor.label,
+      statusTone: descriptor.tone,
+      statusTimestamp: getSummaryTimestamp(matchedSummary, matchedSession),
+      sessionId: matchedSummary?.session_id,
+      latestStartsAt,
+      primaryFingerprint: primaryAlert?.fingerprint ?? fingerprints[0] ?? "unknown",
+      rootEntity: buildRootEntity(group.alerts, matchedSession),
+      impactScope: buildImpactScope(group.alerts, matchedSession),
+      alertNames,
+      analysisSummary,
+      confidence: matchedSession?.diagnosis_result?.confidence ?? null,
+      planSummary,
+      hasSession: Boolean(matchedSummary?.session_id),
+      isSessionDetailLoaded: Boolean(matchedSession),
+      action,
+    } satisfies AlertDashboardItem;
+  });
 
-      return severityRank[left.severity] - severityRank[right.severity];
-    });
-
-  results.sort((left, right) => {
-    const routeGap = routeRank[left.route.label] - routeRank[right.route.label];
-    if (routeGap !== 0) {
-      return routeGap;
-    }
-
+  items.sort((left, right) => {
     const severityGap = severityRank[left.severity] - severityRank[right.severity];
     if (severityGap !== 0) {
       return severityGap;
     }
 
-    return right.alertCount - left.alertCount;
+    const statusGap = statusRank[left.statusKey] - statusRank[right.statusKey];
+    if (statusGap !== 0) {
+      return statusGap;
+    }
+
+    return new Date(right.latestStartsAt).getTime() - new Date(left.latestStartsAt).getTime();
   });
 
-  return { results, flow };
+  return {
+    items,
+    metrics: {
+      totalItems: items.length,
+      diagnosingCount: items.filter((item) => item.statusKey === "diagnosing").length,
+      pendingActionCount: items.filter((item) => item.statusKey === "pending_remediation").length,
+      resolvedTodayCount: items.filter((item) => item.statusKey === "resolved" && isSameCalendarDay(item.statusTimestamp, now)).length,
+    },
+  };
 }
+
+
 

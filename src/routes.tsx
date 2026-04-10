@@ -1,9 +1,8 @@
-﻿import React from "react";
+import React from "react";
 
 import type { AppIconName } from "./components/ui";
 import AlertsModifiedPage from "./pages/AlertsModified";
 import DesignTokensPage from "./pages/DesignTokens";
-import DiagnosisModifiedPage from "./pages/DiagnosisModified";
 import DiagnosisPage from "./pages/Diagnosis";
 import KnowledgePage from "./pages/Knowledge";
 import RemediationPage from "./pages/Remediation";
@@ -43,14 +42,6 @@ export const appRoutes: AppRoute[] = [
     section: "operations",
     icon: "diagnosis",
     element: <DiagnosisPage />,
-  },
-  {
-    key: "diagnosisModified",
-    path: "/diagnosis-modified",
-    label: "诊断（修改）",
-    section: "operations",
-    icon: "diagnosis",
-    element: <DiagnosisModifiedPage />,
   },
   {
     key: "remediation",

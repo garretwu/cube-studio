@@ -8,10 +8,10 @@ type TimelineToolStatus = "loading" | "success" | "error" | "timeout";
 type TimelineSortItem = {
   order: number;
   timestamp: string;
-  item: DiagnosisModifiedTimelineItem;
+  item: DiagnosisTimelineItem;
 };
 
-export type DiagnosisModifiedSystemEventView = {
+export type DiagnosisSystemEventView = {
   id: string;
   kind: "system";
   eventKind: "approval_result" | "execution_progress";
@@ -23,7 +23,7 @@ export type DiagnosisModifiedSystemEventView = {
   dedupeKey: string;
 };
 
-export type DiagnosisModifiedTimelineItem =
+export type DiagnosisTimelineItem =
   | {
       id: string;
       kind: "message";
@@ -42,7 +42,7 @@ export type DiagnosisModifiedTimelineItem =
       status: "thinking" | "completed";
       thoughtDurationSec?: number;
     }
-  | DiagnosisModifiedSystemEventView
+  | DiagnosisSystemEventView
   | {
       id: string;
       kind: "tool";
@@ -54,7 +54,7 @@ export type DiagnosisModifiedTimelineItem =
       rawResult?: Record<string, unknown> | null;
     };
 
-export type DiagnosisModifiedCandidateView = {
+export type DiagnosisCandidateView = {
   id: string;
   title: string;
   summary: string;
@@ -72,7 +72,7 @@ export type DiagnosisModifiedCandidateView = {
   isPrimary: boolean;
 };
 
-export type DiagnosisModifiedHypothesisView = {
+export type DiagnosisHypothesisView = {
   id: string;
   description: string;
   statusLabel: string;
@@ -82,7 +82,7 @@ export type DiagnosisModifiedHypothesisView = {
   confidence: number;
 };
 
-export type DiagnosisModifiedPropagationStepView = {
+export type DiagnosisPropagationStepView = {
   id: string;
   entityId: string;
   entityType: string;
@@ -92,7 +92,7 @@ export type DiagnosisModifiedPropagationStepView = {
   description: string;
 };
 
-export type DiagnosisModifiedSummaryView = {
+export type DiagnosisSummaryView = {
   title: string;
   subtitle: string;
   certaintyLabel: string;
@@ -111,7 +111,7 @@ export type DiagnosisModifiedSummaryView = {
   rootCauseEntities?: string[];
 };
 
-export type DiagnosisModifiedPlanStepView = {
+export type DiagnosisPlanStepView = {
   id: string;
   title: string;
   detail: string;
@@ -120,30 +120,30 @@ export type DiagnosisModifiedPlanStepView = {
   status: "done" | "pending";
 };
 
-export type DiagnosisModifiedPlanView = {
+export type DiagnosisPlanView = {
   title: string;
   description: string;
   priorityLabel: string;
   confidenceLabel: string;
   safetyLabel?: string;
   canaryLabel?: string;
-  steps: DiagnosisModifiedPlanStepView[];
+  steps: DiagnosisPlanStepView[];
 };
 
-export type DiagnosisModifiedLiveView = {
-  timeline: DiagnosisModifiedTimelineItem[];
-  candidates: DiagnosisModifiedCandidateView[];
-  hypotheses?: DiagnosisModifiedHypothesisView[];
-  propagationChain?: DiagnosisModifiedPropagationStepView[];
-  summary?: DiagnosisModifiedSummaryView;
-  plan?: DiagnosisModifiedPlanView;
+export type DiagnosisLiveView = {
+  timeline: DiagnosisTimelineItem[];
+  candidates: DiagnosisCandidateView[];
+  hypotheses?: DiagnosisHypothesisView[];
+  propagationChain?: DiagnosisPropagationStepView[];
+  summary?: DiagnosisSummaryView;
+  plan?: DiagnosisPlanView;
 };
 
-export type DiagnosisModifiedDemoEvent =
+export type DiagnosisDemoEvent =
   | {
       delayMs: number;
       type: "append";
-      item: DiagnosisModifiedTimelineItem;
+      item: DiagnosisTimelineItem;
     }
   | {
       delayMs: number;
@@ -164,14 +164,14 @@ export type DiagnosisModifiedDemoEvent =
       type: "complete";
     };
 
-export type DiagnosisModifiedDemoScenario = {
-  initialTimeline: DiagnosisModifiedTimelineItem[];
-  events: DiagnosisModifiedDemoEvent[];
-  candidates: DiagnosisModifiedCandidateView[];
-  hypotheses?: DiagnosisModifiedHypothesisView[];
-  propagationChain?: DiagnosisModifiedPropagationStepView[];
-  summary: DiagnosisModifiedSummaryView;
-  plan: DiagnosisModifiedPlanView;
+export type DiagnosisDemoScenario = {
+  initialTimeline: DiagnosisTimelineItem[];
+  events: DiagnosisDemoEvent[];
+  candidates: DiagnosisCandidateView[];
+  hypotheses?: DiagnosisHypothesisView[];
+  propagationChain?: DiagnosisPropagationStepView[];
+  summary: DiagnosisSummaryView;
+  plan: DiagnosisPlanView;
 };
 
 function isThinkingStep(entry: ThinkingStep | Observation): entry is ThinkingStep {
@@ -349,9 +349,9 @@ function getLatestTraceTimestamp(session: DiagnosisSession | undefined) {
 }
 
 function resolveSummaryTimestamp(
-  summary: DiagnosisModifiedSummaryView | undefined,
+  summary: DiagnosisSummaryView | undefined,
   timestamp: string | undefined,
-): DiagnosisModifiedSummaryView | undefined {
+): DiagnosisSummaryView | undefined {
   if (!summary) {
     return summary;
   }
@@ -438,7 +438,7 @@ function formatParamsSummary(params: Record<string, unknown>) {
   return parts.join(" | ");
 }
 
-function buildSummary(session: DiagnosisSession | undefined): DiagnosisModifiedSummaryView | undefined {
+function buildSummary(session: DiagnosisSession | undefined): DiagnosisSummaryView | undefined {
   const result = session?.diagnosis_result;
   const updatedLabels = getUpdatedLabelParts(getLatestTraceTimestamp(session));
   if (!result) {
@@ -484,7 +484,7 @@ function buildSummary(session: DiagnosisSession | undefined): DiagnosisModifiedS
   };
 }
 
-function buildCandidates(session: DiagnosisSession | undefined): DiagnosisModifiedCandidateView[] {
+function buildCandidates(session: DiagnosisSession | undefined): DiagnosisCandidateView[] {
   const result = session?.diagnosis_result;
   if (!result) {
     return [];
@@ -530,7 +530,7 @@ function buildCandidates(session: DiagnosisSession | undefined): DiagnosisModifi
     });
   }
 
-  const items: DiagnosisModifiedCandidateView[] = [];
+  const items: DiagnosisCandidateView[] = [];
   const normalizedRootCause = normalizeDiagnosisDisplayText(result.root_cause).trim();
 
   if (normalizedRootCause) {
@@ -581,7 +581,7 @@ function buildCandidates(session: DiagnosisSession | undefined): DiagnosisModifi
   return items;
 }
 
-function buildHypotheses(session: DiagnosisSession | undefined): DiagnosisModifiedHypothesisView[] {
+function buildHypotheses(session: DiagnosisSession | undefined): DiagnosisHypothesisView[] {
   const hypotheses = session?.diagnosis_result?.hypotheses ?? [];
   return hypotheses.map((item, index) => ({
     id: `hypothesis-view-${index + 1}-${item.description}`,
@@ -594,7 +594,7 @@ function buildHypotheses(session: DiagnosisSession | undefined): DiagnosisModifi
   }));
 }
 
-function buildPropagationChain(session: DiagnosisSession | undefined): DiagnosisModifiedPropagationStepView[] {
+function buildPropagationChain(session: DiagnosisSession | undefined): DiagnosisPropagationStepView[] {
   const steps = session?.diagnosis_result?.propagation_chain ?? [];
   return steps.map((step, index) => ({
     id: `propagation-${index + 1}-${step.entity_id}`,
@@ -607,7 +607,7 @@ function buildPropagationChain(session: DiagnosisSession | undefined): Diagnosis
   }));
 }
 
-function buildPlan(session: DiagnosisSession | undefined): DiagnosisModifiedPlanView | undefined {
+function buildPlan(session: DiagnosisSession | undefined): DiagnosisPlanView | undefined {
   const plan = session?.diagnosis_result?.recommended_fix;
   if (!plan) {
     return undefined;
@@ -844,15 +844,15 @@ function buildSystemRecords(
   });
 }
 
-export function buildDiagnosisModifiedLiveView(
+export function buildDiagnosisLiveView(
   session: DiagnosisSession | undefined,
   messages: ChatMessage[],
   events: SessionEvent[] = [],
   localAuditRecords: DiagnosisLocalAuditRecord[] = [],
-): DiagnosisModifiedLiveView {
+): DiagnosisLiveView {
   const timelineItems: TimelineSortItem[] = [];
   const traceEntries = session?.trace?.steps ?? [];
-  const pendingTools: Array<Extract<DiagnosisModifiedTimelineItem, { kind: "tool" }>> = [];
+  const pendingTools: Array<Extract<DiagnosisTimelineItem, { kind: "tool" }>> = [];
 
   for (let index = 0; index < traceEntries.length; index += 1) {
     const entry = traceEntries[index];
@@ -894,7 +894,7 @@ export function buildDiagnosisModifiedLiveView(
       });
 
       if (entry.action_type === "tool_call" && entry.tool_name) {
-        const toolItem: Extract<DiagnosisModifiedTimelineItem, { kind: "tool" }> = {
+        const toolItem: Extract<DiagnosisTimelineItem, { kind: "tool" }> = {
           id: `trace-tool-${index + 1}-${entry.timestamp}`,
           kind: "tool",
           toolName: entry.tool_name,
@@ -1043,7 +1043,7 @@ function extractServiceName(prompt: string) {
   return matched?.[1] ?? "auth-svc";
 }
 
-export function buildDiagnosisModifiedDemoScenario(prompt: string): DiagnosisModifiedDemoScenario {
+export function buildDiagnosisDemoScenario(prompt: string): DiagnosisDemoScenario {
   const now = Date.now();
   const serviceName = extractServiceName(prompt);
   const thinkingOneId = `demo-thinking-1-${now}`;
@@ -1211,7 +1211,7 @@ export function buildDiagnosisModifiedDemoScenario(prompt: string): DiagnosisMod
       updatedDateTimeLabel: "--",
       affectedServices: [],
       impactSummary: "\u7b49\u5f85\u63a8\u7406\u601d\u8003\u8f68\u8ff9\u4e0e\u5de5\u5177\u89c2\u5bdf\u7ed3\u679c\u3002",
-    } satisfies DiagnosisModifiedSummaryView);
+    } satisfies DiagnosisSummaryView);
 
   const candidates = buildCandidates(demoSession);
   const hypotheses = buildHypotheses(demoSession);
@@ -1225,9 +1225,9 @@ export function buildDiagnosisModifiedDemoScenario(prompt: string): DiagnosisMod
       priorityLabel: diagnosisResult.triage_priority,
       confidenceLabel: getConfidenceLabel(diagnosisResult.confidence),
       steps: [],
-    } satisfies DiagnosisModifiedPlanView);
+    } satisfies DiagnosisPlanView);
 
-  const initialTimeline: DiagnosisModifiedTimelineItem[] = [
+  const initialTimeline: DiagnosisTimelineItem[] = [
       {
         id: `demo-user-${now}`,
         kind: "message",
@@ -1238,7 +1238,7 @@ export function buildDiagnosisModifiedDemoScenario(prompt: string): DiagnosisMod
       },
     ];
 
-  const events: DiagnosisModifiedDemoEvent[] = [
+  const events: DiagnosisDemoEvent[] = [
       {
         delayMs: 240,
         type: "append",
@@ -1423,7 +1423,7 @@ export function buildDiagnosisModifiedDemoScenario(prompt: string): DiagnosisMod
     ];
 
   const appendEventTimestamps = events
-    .filter((event): event is Extract<DiagnosisModifiedDemoEvent, { type: "append" }> => event.type === "append")
+    .filter((event): event is Extract<DiagnosisDemoEvent, { type: "append" }> => event.type === "append")
     .map((event) => event.item.timestamp);
   const latestDemoTimestamp = [...initialTimeline.map((item) => item.timestamp), ...appendEventTimestamps].at(-1);
 

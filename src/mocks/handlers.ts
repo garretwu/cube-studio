@@ -1,4 +1,4 @@
-﻿import { delay, http, HttpResponse } from "msw";
+import { delay, http, HttpResponse } from "msw";
 
 import {
   alertClusters,
@@ -12,7 +12,7 @@ import {
   remediationTimeline,
   skills,
   topologyEdges,
-  topologyExplorerMock,
+  topologyExplorerOnlineMock,
   topologyNodes,
 } from "./data";
 
@@ -95,7 +95,7 @@ export const handlers = [
   }),
   http.get("/api/topology-explorer", async () => {
     await delay(80);
-    return HttpResponse.json(topologyExplorerMock);
+    return HttpResponse.json(topologyExplorerOnlineMock);
   }),
 
   http.get("/api/alerts", async () => {
@@ -284,4 +284,5 @@ export const handlers = [
     });
   }),
 ];
+
 

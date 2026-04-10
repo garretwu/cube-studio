@@ -1,8 +1,8 @@
-﻿import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 
 import { apiClient } from "../api/client";
-import { AppButton, AppIcon, AppInput, MetricTile, SectionHeader, StatusChip, SurfaceCard } from "../components/ui";
+import { AppButton, AppIcon, AppInput, MetricTile, StatusChip, SurfaceCard } from "../components/ui";
 import {
   formatSkillLifecycleLabel,
   formatSkillScopeLabel,
@@ -79,26 +79,18 @@ function SkillsPage() {
 
   return (
     <div className="page-grid skills-manage-page">
-      <div className="page-intro">
-        <SectionHeader
-          title="技能管理"
-          description="按统一视图查看技能元数据、生命周期和可用状态，快速筛选并进入详情。"
-          actions={
-            <AppButton iconLeft="refresh" loading={isRefreshing} onClick={() => void loadSkills(true)} variant="secondary">
-              刷新数据
-            </AppButton>
-          }
-        />
-      </div>
+      <h1 className="visually-hidden">{"\u6280\u80fd\u7ba1\u7406"}</h1>
+      <section className="page-stage skills-manage-stage">
+        <div className="page-stage__summary">
+          <div className="card-grid--metrics skills-manage-metrics">
+                  <MetricTile hint="已同步到平台的技能总量" label="技能总数" value={skills.length} />
+                  <MetricTile hint="当前可直接使用的技能" label="已发布" value={publishedCount} />
+                  <MetricTile hint="团队维护的自定义技能" label="自定义" value={customCount} />
+                </div>
+        </div>
 
-      <div className="card-grid--metrics skills-manage-metrics">
-        <MetricTile hint="已同步到平台的技能总量" label="技能总数" value={skills.length} />
-        <MetricTile hint="当前可直接使用的技能" label="已发布" value={publishedCount} />
-        <MetricTile hint="团队维护的自定义技能" label="自定义" value={customCount} />
-      </div>
-
-      <SurfaceCard className="skills-manage-workbench" description="按生命周期、范围和关键词快速定位技能。" title="筛选条件" variant="panel">
-        <div className="skills-manage-workbench__filters">
+        <SurfaceCard actions={<AppButton iconLeft="refresh" loading={isRefreshing} onClick={() => void loadSkills(true)} variant="secondary">{"\u5237\u65b0\u6570\u636e"}</AppButton>} className="page-stage__panel skills-manage-workbench" description={"\u6309\u751f\u547d\u5468\u671f\u3001\u8303\u56f4\u548c\u5173\u952e\u8bcd\u5feb\u901f\u5b9a\u4f4d\u6280\u80fd\u3002"} title={"\u7b5b\u9009\u6761\u4ef6"} variant="panel">
+        <div className="page-stage__toolbar skills-manage-workbench__filters">
           <AppInput
             className="skills-manage-toolbar__search"
             onChange={setQuery}
@@ -142,7 +134,7 @@ function SkillsPage() {
         ) : null}
 
         {!errorMessage && !isLoading && filteredSkills.length > 0 ? (
-          <div className="skills-manage-table-shell">
+          <div className="page-stage__table-shell skills-manage-table-shell">
             <table className="skills-manage-table">
               <colgroup>
                 <col className="skills-manage-table__column skills-manage-table__column--skill" />
@@ -216,7 +208,8 @@ function SkillsPage() {
             </table>
           </div>
         ) : null}
-      </SurfaceCard>
+        </SurfaceCard>
+      </section>
     </div>
   );
 }

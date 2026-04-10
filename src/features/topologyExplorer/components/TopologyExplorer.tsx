@@ -1,21 +1,26 @@
-import { Select, Spin } from "antd";
-import { useState, type KeyboardEvent, type Ref } from "react";
+﻿import { Select, Spin } from "antd";
+import { useMemo, useState, type KeyboardEvent, type Ref } from "react";
 
-import type { TopologyObject, TopologyPath, TopologyRelation } from "../../../api/types";
-import { AppButton, AppInput, StatusChip, SurfaceCard } from "../../../components/ui";
+import type { TopologyObject, TopologyRelation } from "../../../api/types";
+import { AppButton, AppInput, StatusChip } from "../../../components/ui";
 import { AppIcon } from "../../../components/ui/AppIcon";
-import type { TopologySummaryMetrics, TopologyTreeNode } from "../selectors";
+import {
+  formatTopologyStatus,
+  formatTopologyType,
+  getLocationLabel,
+  getStatusTone,
+} from "../formatters";
+import type { TopologyTreeNode } from "../selectors";
 import type {
   ExplorerLayerFilter,
   ExplorerLayoutPreset,
-  ExplorerStatusFilter,
-  ExplorerSummaryFilter,
   ExplorerViewMode,
-  InspectorTabKey,
   SearchFeedback,
 } from "../types";
-import ObjectInspector from "./ObjectInspector";
-import TopologyCanvas, { type TopologyCanvasHandle } from "./TopologyCanvas";
+import TopologyCanvas, {
+  type TopologyCanvasHandle,
+  type TopologyCanvasNodeAction,
+} from "./TopologyCanvas";
 import TopologyLegend from "./TopologyLegend";
 import TopologyTreeView from "./TopologyTreeView";
 
@@ -25,15 +30,12 @@ type TopologyExplorerProps = {
   hasSourceData: boolean;
   searchQuery: string;
   searchFeedback: SearchFeedback;
-  matchedCount: number;
-  statusFilter: ExplorerStatusFilter;
+  searchResultNodes: TopologyObject[];
   layerFilter: ExplorerLayerFilter;
-  summaryFilter: ExplorerSummaryFilter;
   viewMode: ExplorerViewMode;
   layoutPreset: ExplorerLayoutPreset;
   legendOpen: boolean;
-  inspectorOpen: boolean;
-  summaryMetrics: TopologySummaryMetrics;
+  filterPanelOpen: boolean;
   graphNodes: TopologyObject[];
   graphEdges: TopologyRelation[];
   tree: TopologyTreeNode | null;
@@ -42,18 +44,11 @@ type TopologyExplorerProps = {
   hoveredNodeId?: string;
   matchedNodeIds: string[];
   neighborDepths: Map<string, number>;
-  inspectorTab: InspectorTabKey;
-  upstream: TopologyObject[];
-  downstream: TopologyObject[];
-  neighbors: TopologyObject[];
-  paths: TopologyPath[];
-  affectedObjects: TopologyObject[];
   canvasRef: Ref<TopologyCanvasHandle>;
   onSearchQueryChange: (value: string) => void;
   onSearchSubmit: () => void;
-  onStatusFilterChange: (value: ExplorerStatusFilter) => void;
+  onSearchResultSelect: (nodeId: string) => void;
   onLayerFilterChange: (value: ExplorerLayerFilter) => void;
-  onSummarySelect: (value: ExplorerSummaryFilter) => void;
   onViewModeChange: (value: ExplorerViewMode) => void;
   onResetView: () => void;
   onToggleLegend: () => void;
@@ -64,9 +59,8 @@ type TopologyExplorerProps = {
   onRecenter: () => void;
   onSelectNode: (nodeId: string) => void;
   onHoverNode: (nodeId?: string) => void;
-  onInspectorOpenChange: (open: boolean) => void;
-  onInspectorTabChange: (key: InspectorTabKey) => void;
-  onHighlightInGraph: () => void;
+  onFilterPanelOpenChange: (open: boolean) => void;
+  onOpenObjectTopology: (nodeId: string, mode: "default" | "isolate") => void;
 };
 
 const layerOptions = [
@@ -77,20 +71,9 @@ const layerOptions = [
   { value: "service", label: "服务层" },
 ] satisfies Array<{ value: ExplorerLayerFilter; label: string }>;
 
-const summaryPills = [
-  { key: "all" as const, label: "总实体", tone: "neutral", getValue: (metrics: TopologySummaryMetrics) => metrics.totalEntities },
-  { key: "abnormal" as const, label: "异常", tone: "danger", getValue: (metrics: TopologySummaryMetrics) => metrics.abnormalEntities },
-  { key: "impacted" as const, label: "受影响", tone: "warning", getValue: (metrics: TopologySummaryMetrics) => metrics.impactedEntities },
-] satisfies Array<{
-  key: ExplorerSummaryFilter;
-  label: string;
-  tone: "neutral" | "danger" | "warning" | "info";
-  getValue: (metrics: TopologySummaryMetrics) => number;
-}>;
-
 const canvasViews = [
   { key: "graph" as const, label: "关系图" },
-  { key: "tree" as const, label: "属性图" },
+  { key: "tree" as const, label: "树视图" },
 ];
 
 function EmptyState({ children }: { children: string }) {
@@ -103,15 +86,12 @@ function TopologyExplorer({
   hasSourceData,
   searchQuery,
   searchFeedback,
-  matchedCount,
-  statusFilter,
+  searchResultNodes,
   layerFilter,
-  summaryFilter,
   viewMode,
   layoutPreset,
   legendOpen,
-  inspectorOpen,
-  summaryMetrics,
+  filterPanelOpen,
   graphNodes,
   graphEdges,
   tree,
@@ -120,18 +100,11 @@ function TopologyExplorer({
   hoveredNodeId,
   matchedNodeIds,
   neighborDepths,
-  inspectorTab,
-  upstream,
-  downstream,
-  neighbors,
-  paths,
-  affectedObjects,
   canvasRef,
   onSearchQueryChange,
   onSearchSubmit,
-  onStatusFilterChange,
+  onSearchResultSelect,
   onLayerFilterChange,
-  onSummarySelect,
   onViewModeChange,
   onResetView,
   onToggleLegend,
@@ -142,200 +115,285 @@ function TopologyExplorer({
   onRecenter,
   onSelectNode,
   onHoverNode,
-  onInspectorOpenChange,
-  onInspectorTabChange,
-  onHighlightInGraph,
+  onFilterPanelOpenChange,
+  onOpenObjectTopology,
 }: TopologyExplorerProps) {
   const [zoomPercent, setZoomPercent] = useState(100);
+  const [nodeActions, setNodeActions] = useState<TopologyCanvasNodeAction | null>(null);
   const isTreeView = viewMode === "tree";
   const isGraphEmpty = !isTreeView && graphNodes.length === 0;
   const isTreeEmpty = isTreeView && !tree;
   const canRenderOverlay = !isLoading && !error && hasSourceData;
 
-  const handleKeyDown = (event: KeyboardEvent<HTMLInputElement | HTMLTextAreaElement>) => {
+  const searchStatus =
+    searchFeedback === "not_found"
+      ? { tone: "warning" as const, label: "未找到匹配对象" }
+      : searchQuery.trim() && searchResultNodes.length > 0
+        ? { tone: "accent" as const, label: `命中 ${searchResultNodes.length}` }
+        : null;
+
+  const actionNode = nodeActions?.node;
+  const actionPosition = useMemo(
+    () =>
+      nodeActions
+        ? {
+            left: Math.min(nodeActions.clientX + 16, window.innerWidth - 360),
+            top: Math.max(nodeActions.clientY - 24, 92),
+          }
+        : null,
+    [nodeActions],
+  );
+
+  const handleKeyDown = (
+    event: KeyboardEvent<HTMLInputElement | HTMLTextAreaElement>,
+  ) => {
     if (event.key === "Enter") {
       event.preventDefault();
       onSearchSubmit();
     }
   };
 
-  const searchStatus =
-    searchFeedback === "not_found"
-      ? { tone: "warning" as const, label: "未找到结果" }
-      : searchQuery.trim() && matchedCount > 0
-        ? { tone: "accent" as const, label: `命中 ${matchedCount}` }
-        : null;
+  const handleResultSelect = (nodeId: string) => {
+    setNodeActions(null);
+    onSearchResultSelect(nodeId);
+  };
+
+  const handleCanvasSelect = (nodeId: string) => {
+    onSelectNode(nodeId);
+  };
 
   return (
-    <SurfaceCard className="topology-modified-explorer">
-      <div className="topology-modified-explorer__shell">
-        <div className="topology-modified-explorer__summary-strip" role="group" aria-label="拓扑摘要筛选">
-          {summaryPills.map((pill) => (
-            <button
-              key={pill.key}
-              className={`topology-modified-explorer__summary-pill topology-modified-explorer__summary-pill--${pill.tone} ${summaryFilter === pill.key ? "topology-modified-explorer__summary-pill--active" : ""}`}
-              onClick={() => onSummarySelect(pill.key)}
-              type="button"
-            >
-              <span className="topology-modified-explorer__summary-label">{pill.label}</span>
-              <strong className="topology-modified-explorer__summary-value">{pill.getValue(summaryMetrics)}</strong>
-            </button>
-          ))}
-        </div>
-
-        <div className="topology-modified-explorer__controls" data-testid="topology-explorer-toolbar">
-          <div className="topology-modified-explorer__search-row">
-            <div className="topology-modified-explorer__search-field">
-              <AppInput
-                className="topology-modified-explorer__search-input"
-                onChange={onSearchQueryChange}
-                onKeyDown={handleKeyDown}
-                placeholder="搜索机柜 / 节点 / GPU / 服务 / 交换机"
-                prefix={<AppIcon name="search" size={16} />}
-                value={searchQuery}
-              />
-              <AppButton size="sm" variant="primary" onClick={onSearchSubmit}>
-                定位对象
-              </AppButton>
-              {searchStatus ? <StatusChip tone={searchStatus.tone}>{searchStatus.label}</StatusChip> : null}
+    <div className="topology-stage-workplane" data-testid="topology-stage-workplane">
+      <div className="topology-stage-shell" data-testid="topology-explorer-stage">
+        {canRenderOverlay ? (
+          <>
+            <div className="topology-stage-dock topology-stage-dock--secondary">
+              {canvasViews.map((view) => (
+                <button
+                  key={view.key}
+                  className={`topology-stage-dock__button ${viewMode === view.key ? "topology-stage-dock__button--active" : ""}`}
+                  onClick={() => {
+                    setNodeActions(null);
+                    onViewModeChange(view.key);
+                  }}
+                  type="button"
+                >
+                  {view.label}
+                </button>
+              ))}
+              <button
+                className={`topology-stage-dock__button ${legendOpen ? "topology-stage-dock__button--active" : ""}`}
+                onClick={onToggleLegend}
+                type="button"
+              >
+                图例
+              </button>
             </div>
-          </div>
 
-          <div className="topology-modified-explorer__segmented topology-modified-explorer__segmented--status" role="group" aria-label="状态筛选">
-            <button
-              className={`topology-modified-toggle ${statusFilter === "all" ? "topology-modified-toggle--active" : ""}`}
-              onClick={() => onStatusFilterChange("all")}
-              type="button"
-            >
-              全部对象
-            </button>
-            <button
-              className={`topology-modified-toggle ${statusFilter === "abnormal" ? "topology-modified-toggle--active" : ""}`}
-              onClick={() => onStatusFilterChange(statusFilter === "abnormal" ? "all" : "abnormal")}
-              type="button"
-            >
-              仅异常
-            </button>
-          </div>
+            <div className="topology-stage-dock topology-stage-dock--primary" data-testid="topology-filter-dock">
+              <button
+                className={`topology-stage-dock__button ${filterPanelOpen ? "topology-stage-dock__button--active" : ""}`}
+                onClick={() => {
+                  setNodeActions(null);
+                  onFilterPanelOpenChange(!filterPanelOpen);
+                }}
+                type="button"
+              >
+                筛选
+              </button>
+              <button className="topology-stage-dock__button" onClick={onFitCanvas} type="button">
+                适配
+              </button>
+              <button className="topology-stage-dock__button" onClick={onResetView} type="button">
+                重置
+              </button>
+            </div>
 
-          <Select
-            className="app-select topology-modified-explorer__select"
-            onChange={(value) => onLayerFilterChange(value)}
-            options={layerOptions}
-            value={layerFilter}
-          />
-
-          <div className="topology-modified-explorer__control-actions">
-            <AppButton size="sm" variant="secondary" onClick={onCycleLayoutPreset}>
-              {layoutPreset === "layered" ? "切换域布局" : "切换层级布局"}
-            </AppButton>
-            <AppButton size="sm" variant="secondary" onClick={onFitCanvas}>
-              适配
-            </AppButton>
-            <AppButton size="sm" variant="secondary" onClick={onResetView}>
-              重置
-            </AppButton>
-          </div>
-        </div>
-
-        <div className="topology-modified-explorer__stage" data-testid="topology-explorer-stage">
-          <div className={`topology-modified-explorer__stage-shell ${inspectorOpen ? "topology-modified-explorer__stage-shell--panel-open" : ""}`}>
-            <div className="topology-modified-explorer__canvas-region">
-              {canRenderOverlay ? (
-                <>
-                  <div className="topology-modified-canvas-dock topology-modified-canvas-dock--views">
-                    {canvasViews.map((view) => (
-                      <button
-                        key={view.key}
-                        className={`topology-modified-canvas-dock__button ${viewMode === view.key ? "topology-modified-canvas-dock__button--active" : ""}`}
-                        onClick={() => onViewModeChange(view.key)}
-                        type="button"
-                      >
-                        {view.label}
-                      </button>
-                    ))}
-                    <button
-                      className={`topology-modified-canvas-dock__button ${legendOpen ? "topology-modified-canvas-dock__button--active" : ""}`}
-                      onClick={onToggleLegend}
-                      type="button"
-                    >
-                      图例
-                    </button>
+            {filterPanelOpen ? (
+              <section className="topology-stage-filter-panel" data-testid="topology-filter-panel">
+                <div className="topology-stage-filter-panel__header">
+                  <div>
+                    <p className="topology-stage-filter-panel__eyebrow">拓扑筛选</p>
+                    <h3 className="topology-stage-filter-panel__title">搜索与收敛视图</h3>
                   </div>
-
-                  <div className="topology-modified-canvas-dock topology-modified-canvas-dock--panel">
-                    <button className="topology-modified-canvas-dock__button" onClick={() => onInspectorOpenChange(!inspectorOpen)} type="button">
-                      {inspectorOpen ? "隐藏检查器" : "显示检查器"}
-                    </button>
-                  </div>
-
-                  <div className="topology-modified-canvas-dock topology-modified-canvas-dock--zoom">
-                    <span className="topology-modified-canvas-dock__zoom-label">{zoomPercent}%</span>
-                    <button className="topology-modified-canvas-dock__button topology-modified-canvas-dock__button--icon" onClick={onZoomOut} type="button">
-                      -
-                    </button>
-                    <button className="topology-modified-canvas-dock__button topology-modified-canvas-dock__button--icon" onClick={onZoomIn} type="button">
-                      +
-                    </button>
-                    <button className="topology-modified-canvas-dock__button" onClick={onRecenter} type="button">
-                      重置
-                    </button>
-                  </div>
-
-                  {!isTreeView ? <TopologyLegend open={legendOpen} /> : null}
-                </>
-              ) : null}
-
-              {isLoading ? (
-                <div className="state-block">
-                  <Spin />
+                  <button
+                    className="topology-stage-filter-panel__close"
+                    onClick={() => onFilterPanelOpenChange(false)}
+                    type="button"
+                    aria-label="关闭筛选"
+                  >
+                    ×
+                  </button>
                 </div>
-              ) : error ? (
-                <EmptyState>{error}</EmptyState>
-              ) : !hasSourceData ? (
-                <EmptyState>当前无拓扑数据，请重新加载后再试。</EmptyState>
-              ) : isGraphEmpty ? (
-                <EmptyState>当前筛选条件下没有可展示对象，建议重置视图或切换层级。</EmptyState>
-              ) : isTreeEmpty ? (
-                <EmptyState>当前无可渲染属性图，请返回关系图检查数据。</EmptyState>
-              ) : isTreeView ? (
-                <TopologyTreeView onSelectNode={onSelectNode} selectedNodeId={selectedNodeId} tree={tree} />
-              ) : (
-                <TopologyCanvas
-                  ref={canvasRef}
-                  edges={graphEdges}
-                  forceEdgeLabels={false}
-                  hoveredNodeId={hoveredNodeId}
-                  layoutPreset={layoutPreset}
-                  matchedNodeIds={matchedNodeIds}
-                  neighborDepths={neighborDepths}
-                  nodes={graphNodes}
-                  onHoverNode={onHoverNode}
-                  onSelectNode={onSelectNode}
-                  onZoomChange={setZoomPercent}
-                  selectedNodeId={selectedNodeId}
-                />
-              )}
+
+                <div className="topology-stage-filter-panel__controls">
+                  <AppInput
+                    className="topology-stage-filter-panel__search"
+                    onChange={onSearchQueryChange}
+                    onKeyDown={handleKeyDown}
+                    placeholder="搜索机柜 / 节点 / GPU / 服务 / 交换机"
+                    prefix={<AppIcon name="search" size={16} />}
+                    value={searchQuery}
+                  />
+                  <Select
+                    className="app-select topology-stage-filter-panel__select"
+                    onChange={(value) => onLayerFilterChange(value)}
+                    options={layerOptions}
+                    value={layerFilter}
+                  />
+                  <div className="topology-stage-filter-panel__action-row">
+                    <AppButton size="sm" variant="secondary" onClick={onCycleLayoutPreset}>
+                      {layoutPreset === "layered" ? "切换域布局" : "切换层级布局"}
+                    </AppButton>
+                    {searchQuery.trim() ? (
+                      <AppButton size="sm" variant="secondary" onClick={onSearchSubmit}>
+                        聚焦首个结果
+                      </AppButton>
+                    ) : null}
+                  </div>
+                </div>
+
+                {searchStatus ? (
+                  <div className="topology-stage-filter-panel__status">
+                    <StatusChip tone={searchStatus.tone}>{searchStatus.label}</StatusChip>
+                  </div>
+                ) : null}
+
+                <div className="topology-stage-filter-panel__results">
+                  <div className="topology-stage-filter-panel__results-header">
+                    <span>结果列表</span>
+                    <span>{searchResultNodes.length}</span>
+                  </div>
+                  {searchQuery.trim() ? (
+                    searchResultNodes.length > 0 ? (
+                      <div className="topology-stage-result-list">
+                        {searchResultNodes.map((node) => (
+                          <button
+                            key={node.id}
+                            className={`topology-stage-result ${selectedNodeId === node.id ? "topology-stage-result--active" : ""}`}
+                            onClick={() => handleResultSelect(node.id)}
+                            type="button"
+                          >
+                            <span className="topology-stage-result__title">{node.name}</span>
+                            <span className="topology-stage-result__meta">
+                              {formatTopologyType(node.type)} · {formatTopologyStatus(node.status)}
+                            </span>
+                          </button>
+                        ))}
+                      </div>
+                    ) : (
+                      <p className="topology-stage-filter-panel__empty">当前筛选条件下没有匹配对象。</p>
+                    )
+                  ) : (
+                    <p className="topology-stage-filter-panel__empty">输入对象名称后，画布会收敛到命中对象及其直接关联对象。</p>
+                  )}
+                </div>
+              </section>
+            ) : null}
+
+            <div className="topology-stage-dock topology-stage-dock--zoom">
+              <span className="topology-stage-dock__zoom-label">{zoomPercent}%</span>
+              <button className="topology-stage-dock__button topology-stage-dock__button--icon" onClick={onZoomOut} type="button">
+                -
+              </button>
+              <button className="topology-stage-dock__button topology-stage-dock__button--icon" onClick={onZoomIn} type="button">
+                +
+              </button>
+              <button className="topology-stage-dock__button" onClick={onRecenter} type="button">
+                居中
+              </button>
             </div>
 
-            <ObjectInspector
-              affectedObjects={affectedObjects}
-              downstream={downstream}
-              inspectorTab={inspectorTab}
-              neighbors={neighbors}
-              node={selectedNode}
-              onHighlightInGraph={onHighlightInGraph}
-              onOpenChange={onInspectorOpenChange}
-              onSelectNode={onSelectNode}
-              onTabChange={onInspectorTabChange}
-              open={inspectorOpen}
-              paths={paths}
-              upstream={upstream}
-            />
+            {!isTreeView ? <TopologyLegend open={legendOpen} /> : null}
+          </>
+        ) : null}
+
+        {isLoading ? (
+          <div className="state-block">
+            <Spin />
           </div>
-        </div>
+        ) : error ? (
+          <EmptyState>{error}</EmptyState>
+        ) : !hasSourceData ? (
+          <EmptyState>当前没有拓扑数据，请稍后重试。</EmptyState>
+        ) : isGraphEmpty ? (
+          <EmptyState>当前筛选条件下没有可展示对象，请调整筛选或重置视图。</EmptyState>
+        ) : isTreeEmpty ? (
+          <EmptyState>当前没有可展示的树视图数据，请切回关系图查看。</EmptyState>
+        ) : isTreeView ? (
+          <TopologyTreeView
+            onSelectNode={handleResultSelect}
+            selectedNodeId={selectedNodeId}
+            tree={tree}
+          />
+        ) : (
+          <TopologyCanvas
+            ref={canvasRef}
+            edges={graphEdges}
+            forceEdgeLabels={false}
+            hoveredNodeId={hoveredNodeId}
+            layoutPreset={layoutPreset}
+            matchedNodeIds={matchedNodeIds}
+            neighborDepths={neighborDepths}
+            nodes={graphNodes}
+            onCanvasInteraction={() => setNodeActions(null)}
+            onHoverNode={onHoverNode}
+            onOpenNodeActions={(payload) => {
+              onFilterPanelOpenChange(false);
+              setNodeActions(payload);
+            }}
+            onSelectNode={handleCanvasSelect}
+            onZoomChange={setZoomPercent}
+            selectedNodeId={selectedNodeId}
+          />
+        )}
       </div>
-    </SurfaceCard>
+
+      {actionNode && actionPosition ? (
+        <aside
+          className="topology-node-menu"
+          data-testid="topology-node-popover"
+          style={actionPosition}
+        >
+          <div className="topology-node-menu__header">
+            <div>
+              <p className="topology-node-menu__eyebrow">{formatTopologyType(actionNode.type)}</p>
+              <h3 className="topology-node-menu__title">{actionNode.name}</h3>
+            </div>
+            <StatusChip tone={getStatusTone(actionNode.status)}>{formatTopologyStatus(actionNode.status)}</StatusChip>
+          </div>
+          <dl className="topology-node-menu__facts">
+            <div>
+              <dt>位置</dt>
+              <dd>{getLocationLabel(actionNode) || "未提供"}</dd>
+            </div>
+            <div>
+              <dt>摘要</dt>
+              <dd>{actionNode.summary}</dd>
+            </div>
+          </dl>
+          <div className="topology-node-menu__actions">
+            <AppButton
+              size="sm"
+              variant="secondary"
+              onClick={() => onOpenObjectTopology(actionNode.id, "isolate")}
+            >
+              Isolate
+            </AppButton>
+            <AppButton
+              size="sm"
+              variant="primary"
+              onClick={() => onOpenObjectTopology(actionNode.id, "default")}
+            >
+              View topology
+            </AppButton>
+          </div>
+          {selectedNode && selectedNode.id === actionNode.id ? (
+            <p className="topology-node-menu__hint">当前对象已被选中，右键外空白区域可关闭此浮层。</p>
+          ) : null}
+        </aside>
+      ) : null}
+    </div>
   );
 }
 

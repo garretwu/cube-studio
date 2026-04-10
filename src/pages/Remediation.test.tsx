@@ -15,7 +15,7 @@ describe("RemediationPage", () => {
       expect(container.querySelector(".remediation-record-table__row")).toBeTruthy();
     });
 
-    expect(queryByText(/淇璁板綍鍔犺浇澶辫触/)).toBeNull();
+    expect(queryByText(/修复记录加载失败/)).toBeNull();
   });
 
   it("opens the selected record in a right-side drawer and closes it", async () => {
@@ -55,6 +55,19 @@ describe("RemediationPage", () => {
       expect(container.querySelector(".remediation-drawer__panel")).toBeFalsy();
     });
   });
-});
 
+  it("preselects the session from the query string on first load", async () => {
+    window.history.pushState({}, "", "/remediation?sessionId=sess-latency-001");
+    const { container } = render(<RemediationPage />);
+
+    const drawer = await waitFor(() => {
+      const panel = container.querySelector<HTMLElement>(".remediation-drawer__panel");
+      expect(panel).toBeTruthy();
+      return panel;
+    });
+
+    expect(within(drawer!).getByText("VLLM 延迟过高 · CRITICAL")).toBeInTheDocument();
+    window.history.pushState({}, "", "/");
+  });
+});
 

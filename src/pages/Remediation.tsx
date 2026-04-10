@@ -1,10 +1,10 @@
-﻿import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
+﻿import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { apiClient } from "../api/client";
 import type { DiagnosisSessionSummary, RemediationOverview, SessionEvent } from "../api/types";
 import ApprovalDialog from "../components/ApprovalDialog";
 import RemediationDetailDrawer from "../components/RemediationDetailDrawer";
-import { AppIcon, AppInput, MetricTile, SectionHeader, StatusChip, SurfaceCard } from "../components/ui";
+import { AppIcon, AppInput, MetricTile, StatusChip, SurfaceCard } from "../components/ui";
 import { useRemediationStore } from "../store/remediationStore";
 import { formatPercent, formatTimestamp } from "../utils/format";
 
@@ -169,6 +169,7 @@ function RemediationPage() {
   const [query, setQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
   const [actionLoading, setActionLoading] = useState(false);
+  const initialRequestedSessionIdRef = useRef(new URLSearchParams(window.location.search).get("sessionId")?.trim() ?? "");
 
   const loadRecords = useCallback(async (preferredSessionId?: string) => {
     setRecordsLoading(true);
@@ -202,7 +203,9 @@ function RemediationPage() {
   }, []);
 
   useEffect(() => {
-    void loadRecords();
+    const preferredSessionId = initialRequestedSessionIdRef.current || undefined;
+    initialRequestedSessionIdRef.current = "";
+    void loadRecords(preferredSessionId);
   }, [loadRecords]);
 
   useEffect(() => {
@@ -258,21 +261,21 @@ function RemediationPage() {
 
   return (
     <div className="page-grid remediation-page">
-      <div className="page-intro">
-        <SectionHeader title="修复与执行" description="按修复记录查看审批、版本、金丝雀策略和执行结果。" />
-        <div className="card-grid--metrics remediation-page__metrics">
-          <MetricTile hint="已识别到修复流程的诊断会话" label="修复记录" value={records.length} />
-          <MetricTile hint="等待人工批准后进入执行" label="待审批" value={pendingApprovalCount} />
-          <MetricTile hint="正在执行或观察验证中" label="执行中" value={runningCount} />
-          <MetricTile hint="已配置灰度或金丝雀策略" label="金丝雀方案" value={canaryEnabledCount} />
+      <section className="page-stage remediation-page__stage">
+        <div className="page-stage__summary">
+          <div className="card-grid--metrics remediation-page__metrics">
+                  <MetricTile hint="已识别到修复流程的诊断会话" label="修复记录" value={records.length} />
+                  <MetricTile hint="等待人工批准后进入执行" label="待审批" value={pendingApprovalCount} />
+                  <MetricTile hint="正在执行或观察验证中" label="执行中" value={runningCount} />
+                  <MetricTile hint="已配置灰度或金丝雀策略" label="金丝雀方案" value={canaryEnabledCount} />
+                </div>
         </div>
-      </div>
 
-      <div className="remediation-layout">
+        <div className="remediation-layout">
         <aside className="remediation-sidebar">
-          <SurfaceCard title="修复记录" description="按状态和关键词快速定位会话，点击行后在右侧查看详情。">
+          <SurfaceCard className="page-stage__panel" title="修复记录" description="按状态和关键词快速定位会话，点击行后在右侧查看详情。" variant="panel">
             <div className="page-stack remediation-sidebar__body">
-              <div className="remediation-toolbar">
+              <div className="page-stage__toolbar remediation-toolbar">
                 <AppInput
                   value={query}
                   onChange={setQuery}
@@ -308,7 +311,7 @@ function RemediationPage() {
                 </div>
               ) : null}
 
-              <div className="remediation-record-table-shell">
+              <div className="page-stage__table-shell remediation-record-table-shell">
                 <table className="remediation-record-table">
                   <thead>
                     <tr>
@@ -390,6 +393,7 @@ function RemediationPage() {
           </SurfaceCard>
         </aside>
       </div>
+      </section>
 
       <RemediationDetailDrawer
         actionLoading={actionLoading}
@@ -415,3 +419,7 @@ function RemediationPage() {
 }
 
 export default RemediationPage;
+
+
+
+

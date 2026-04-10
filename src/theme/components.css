@@ -243,7 +243,7 @@
 .nav-item__aside {
   display: inline-flex;
   align-items: center;
-  justify-content: flex-end;
+  justify-content: flex-start;
   gap: 8px;
   min-width: max-content;
 }
@@ -531,6 +531,10 @@
 }
 
 .metric-tile {
+  --metric-tile-accent: var(--color-text);
+  --metric-tile-accent-soft: var(--color-surface-soft);
+  --metric-tile-accent-border: var(--color-border-subtle);
+  --metric-tile-value-color: var(--color-text);
   display: grid;
   gap: var(--space-2);
   min-height: var(--component-metric-tile-min-height);
@@ -539,6 +543,16 @@
   border: 1px solid var(--component-metric-tile-border);
   background: var(--component-metric-tile-background);
   box-shadow: var(--component-metric-tile-shadow);
+  transition:
+    border-color var(--transition-fast),
+    background-color var(--transition-fast);
+}
+
+.metric-tile__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-3);
 }
 
 .metric-tile__label {
@@ -551,6 +565,19 @@
   text-transform: uppercase;
 }
 
+.metric-tile__icon {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: 1px solid var(--metric-tile-accent-border);
+  border-radius: 8px;
+  background: var(--metric-tile-accent-soft);
+  color: var(--metric-tile-accent);
+}
+
 .metric-tile__value {
   margin: 0;
   font-family: var(--font-display);
@@ -558,6 +585,7 @@
   line-height: 1;
   font-weight: 700;
   letter-spacing: -0.04em;
+  color: var(--metric-tile-value-color);
 }
 
 .metric-tile__hint {
@@ -565,6 +593,46 @@
   color: var(--color-text-secondary);
   font-size: 13px;
   line-height: 20px;
+}
+
+.metric-tile--accent {
+  --metric-tile-accent: var(--color-brand-600);
+  --metric-tile-accent-soft: rgba(80, 61, 255, 0.08);
+  --metric-tile-accent-border: rgba(80, 61, 255, 0.14);
+  --metric-tile-value-color: var(--color-brand-700);
+  border-color: rgba(80, 61, 255, 0.14);
+}
+
+.metric-tile--info {
+  --metric-tile-accent: var(--color-info-600);
+  --metric-tile-accent-soft: rgba(90, 134, 168, 0.1);
+  --metric-tile-accent-border: rgba(90, 134, 168, 0.16);
+  --metric-tile-value-color: var(--color-info-600);
+  border-color: rgba(90, 134, 168, 0.14);
+}
+
+.metric-tile--warning {
+  --metric-tile-accent: var(--color-warning-600);
+  --metric-tile-accent-soft: rgba(184, 130, 48, 0.1);
+  --metric-tile-accent-border: rgba(184, 130, 48, 0.18);
+  --metric-tile-value-color: var(--color-warning-600);
+  border-color: rgba(184, 130, 48, 0.16);
+}
+
+.metric-tile--success {
+  --metric-tile-accent: var(--color-success-600);
+  --metric-tile-accent-soft: rgba(79, 143, 114, 0.1);
+  --metric-tile-accent-border: rgba(79, 143, 114, 0.18);
+  --metric-tile-value-color: var(--color-success-600);
+  border-color: rgba(79, 143, 114, 0.15);
+}
+
+.metric-tile--danger {
+  --metric-tile-accent: var(--color-danger-600);
+  --metric-tile-accent-soft: rgba(200, 86, 86, 0.1);
+  --metric-tile-accent-border: rgba(200, 86, 86, 0.18);
+  --metric-tile-value-color: var(--color-danger-600);
+  border-color: rgba(200, 86, 86, 0.15);
 }
 
 .topology-page {
@@ -8340,38 +8408,51 @@
     grid-template-columns: minmax(0, 1fr);
   }
 }
-.diagnosis-modified-page {
+.diagnosis-workspace-page {
+  display: grid;
+  grid-template-rows: minmax(0, 1fr);
   gap: var(--space-6);
+  height: 100%;
   padding: clamp(var(--space-4), 1.2vw, var(--space-5));
+  overflow: hidden;
+  align-content: stretch;
+  min-height: 0;
 }
 
-.diagnosis-modified-shell {
+.diagnosis-workspace-shell {
   width: 100%;
-  min-height: calc(100vh - 120px);
   display: grid;
-  grid-template-rows: minmax(0, 1fr) auto;
+  grid-template-rows: auto minmax(0, 1fr) auto;
   background: rgba(255, 255, 255, 0.98);
   border: 1px solid rgba(15, 23, 42, 0.08);
   border-radius: 20px;
   box-shadow: 0 24px 60px rgba(15, 23, 42, 0.05);
   overflow: hidden;
+  min-height: 0;
 }
 
-.diagnosis-modified-shell__header-actions {
+.diagnosis-workspace-stage {
+  display: grid;
+  grid-template-rows: minmax(0, 1fr);
+  height: 100%;
+  overflow: hidden;
+}
+
+.diagnosis-workspace-shell__header-actions {
   display: grid;
   gap: 12px;
   justify-items: end;
   align-content: start;
 }
 
-.diagnosis-modified-shell__badges {
+.diagnosis-workspace-shell__badges {
   display: flex;
   gap: 8px;
   flex-wrap: wrap;
   justify-content: flex-end;
 }
 
-.diagnosis-modified-badge {
+.diagnosis-workspace-badge {
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -8387,39 +8468,39 @@
   text-transform: uppercase;
 }
 
-.diagnosis-modified-badge--accent {
+.diagnosis-workspace-badge--accent {
   border-color: rgba(59, 130, 246, 0.18);
   background: rgba(239, 246, 255, 0.96);
   color: rgba(29, 78, 216, 0.82);
 }
 
-.diagnosis-modified-badge--success {
+.diagnosis-workspace-badge--success {
   border-color: rgba(34, 197, 94, 0.18);
   background: rgba(240, 253, 244, 0.96);
   color: rgba(22, 101, 52, 0.82);
 }
 
-.diagnosis-modified-badge--warning {
+.diagnosis-workspace-badge--warning {
   border-color: rgba(245, 158, 11, 0.18);
   background: rgba(255, 251, 235, 0.96);
   color: rgba(146, 64, 14, 0.84);
 }
 
-.diagnosis-modified-badge--danger {
+.diagnosis-workspace-badge--danger {
   border-color: rgba(248, 113, 113, 0.22);
   background: rgba(254, 242, 242, 0.96);
   color: rgba(153, 27, 27, 0.84);
 }
 
-.diagnosis-modified-badge--info {
+.diagnosis-workspace-badge--info {
   border-color: rgba(14, 165, 233, 0.18);
   background: rgba(240, 249, 255, 0.96);
   color: rgba(3, 105, 161, 0.84);
 }
 
-.diagnosis-modified-toolbar-btn,
-.diagnosis-modified-action-btn,
-.diagnosis-modified-send-btn {
+.diagnosis-workspace-toolbar-btn,
+.diagnosis-workspace-action-btn,
+.diagnosis-workspace-send-btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -8439,39 +8520,39 @@
     transform var(--transition-fast);
 }
 
-.diagnosis-modified-toolbar-btn:hover,
-.diagnosis-modified-action-btn:hover,
-.diagnosis-modified-send-btn:hover {
+.diagnosis-workspace-toolbar-btn:hover,
+.diagnosis-workspace-action-btn:hover,
+.diagnosis-workspace-send-btn:hover {
   border-color: rgba(15, 23, 42, 0.18);
   background: rgba(248, 250, 252, 0.98);
 }
 
-.diagnosis-modified-toolbar-btn:active,
-.diagnosis-modified-action-btn:active,
-.diagnosis-modified-send-btn:active {
+.diagnosis-workspace-toolbar-btn:active,
+.diagnosis-workspace-action-btn:active,
+.diagnosis-workspace-send-btn:active {
   transform: translateY(1px);
 }
 
-.diagnosis-modified-action-btn--primary,
-.diagnosis-modified-send-btn {
+.diagnosis-workspace-action-btn--primary,
+.diagnosis-workspace-send-btn {
   border-color: rgba(15, 23, 42, 0.96);
   background: rgba(15, 23, 42, 0.98);
   color: rgba(255, 255, 255, 0.98);
 }
 
-.diagnosis-modified-action-btn--primary:hover,
-.diagnosis-modified-send-btn:hover {
+.diagnosis-workspace-action-btn--primary:hover,
+.diagnosis-workspace-send-btn:hover {
   border-color: rgba(30, 41, 59, 0.96);
   background: rgba(30, 41, 59, 0.98);
 }
 
-.diagnosis-modified-send-btn {
+.diagnosis-workspace-send-btn {
   width: 40px;
   min-width: 40px;
   padding: 0;
 }
 
-.diagnosis-modified-send-btn--secondary {
+.diagnosis-workspace-send-btn--secondary {
   width: auto;
   min-width: 0;
   padding: 0 12px;
@@ -8480,28 +8561,37 @@
   color: rgba(51, 65, 85, 0.92);
 }
 
-.diagnosis-modified-toolbar-btn:disabled,
-.diagnosis-modified-action-btn:disabled,
-.diagnosis-modified-send-btn:disabled {
+.diagnosis-workspace-toolbar-btn:disabled,
+.diagnosis-workspace-action-btn:disabled,
+.diagnosis-workspace-send-btn:disabled {
   cursor: not-allowed;
   opacity: 0.45;
 }
 
-.diagnosis-modified-shell__body {
+.diagnosis-workspace-shell__body {
+  display: flex;
+  flex: 1 1 auto;
   min-height: 0;
   overflow: hidden;
 }
 
-.diagnosis-modified-feed {
-  height: 100%;
-  display: flex;
-  flex-direction: column;
-  gap: 22px;
+.diagnosis-workspace-feed {
+  flex: 1 1 auto;
+  min-height: 0;
   overflow-y: auto;
+  overscroll-behavior: contain;
   padding: 24px clamp(16px, 1.1vw, 22px) 20px;
 }
 
-.diagnosis-modified-empty-state {
+.diagnosis-workspace-feed__content {
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-start;
+  gap: 22px;
+  min-height: 100%;
+}
+
+.diagnosis-workspace-empty-state {
   display: grid;
   justify-items: center;
   align-content: center;
@@ -8511,7 +8601,7 @@
   color: rgba(100, 116, 139, 0.86);
 }
 
-.diagnosis-modified-empty-state__icon {
+.diagnosis-workspace-empty-state__icon {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -8523,38 +8613,38 @@
   color: rgba(100, 116, 139, 0.82);
 }
 
-.diagnosis-modified-empty-state h2,
-.diagnosis-modified-empty-state p {
+.diagnosis-workspace-empty-state h2,
+.diagnosis-workspace-empty-state p {
   margin: 0;
 }
 
-.diagnosis-modified-empty-state h2 {
+.diagnosis-workspace-empty-state h2 {
   color: rgba(51, 65, 85, 0.9);
   font-size: 15px;
   line-height: 22px;
 }
 
-.diagnosis-modified-empty-state p {
+.diagnosis-workspace-empty-state p {
   max-width: 360px;
   font-size: 12px;
   line-height: 20px;
 }
 
-.diagnosis-modified-message-row {
+.diagnosis-workspace-message-row {
   display: flex;
   justify-content: flex-start;
 }
 
-.diagnosis-modified-message-row--user {
+.diagnosis-workspace-message-row--user {
   justify-content: flex-end;
 }
 
-.diagnosis-modified-process-row {
+.diagnosis-workspace-process-row {
   display: flex;
   justify-content: flex-start;
 }
 
-.diagnosis-modified-message-row__body {
+.diagnosis-workspace-message-row__body {
   min-width: 0;
   max-width: min(78%, 880px);
   position: relative;
@@ -8562,16 +8652,16 @@
   gap: 6px;
 }
 
-.diagnosis-modified-message-row--user .diagnosis-modified-message-row__body {
+.diagnosis-workspace-message-row--user .diagnosis-workspace-message-row__body {
   align-items: end;
 }
 
-.diagnosis-modified-process-row__body {
+.diagnosis-workspace-process-row__body {
   min-width: 0;
   max-width: min(88%, 980px);
 }
 
-.diagnosis-modified-message-row__hover-time {
+.diagnosis-workspace-message-row__hover-time {
   position: absolute;
   inset-block-start: -16px;
   inset-inline-start: 0;
@@ -8587,21 +8677,21 @@
     transform 0.18s ease;
 }
 
-.diagnosis-modified-message-row--user
-  .diagnosis-modified-message-row__hover-time {
+.diagnosis-workspace-message-row--user
+  .diagnosis-workspace-message-row__hover-time {
   inset-inline-start: auto;
   inset-inline-end: 0;
 }
 
-.diagnosis-modified-message-row:hover
-  .diagnosis-modified-message-row__hover-time,
-.diagnosis-modified-message-row:focus-within
-  .diagnosis-modified-message-row__hover-time {
+.diagnosis-workspace-message-row:hover
+  .diagnosis-workspace-message-row__hover-time,
+.diagnosis-workspace-message-row:focus-within
+  .diagnosis-workspace-message-row__hover-time {
   opacity: 1;
   transform: translateY(0);
 }
 
-.diagnosis-modified-message-row__text {
+.diagnosis-workspace-message-row__text {
   margin: 0;
   padding: 10px 14px;
   border-radius: 14px;
@@ -8611,20 +8701,20 @@
   white-space: pre-wrap;
 }
 
-.diagnosis-modified-message-row--user .diagnosis-modified-message-row__text {
+.diagnosis-workspace-message-row--user .diagnosis-workspace-message-row__text {
   background: rgba(226, 232, 240, 0.82);
   border: 1px solid rgba(203, 213, 225, 0.82);
 }
 
-.diagnosis-modified-message-row:not(.diagnosis-modified-message-row--user)
-  .diagnosis-modified-message-row__text {
+.diagnosis-workspace-message-row:not(.diagnosis-workspace-message-row--user)
+  .diagnosis-workspace-message-row__text {
   padding: 0;
   background: transparent;
   border: 0;
   border-radius: 0;
 }
 
-.diagnosis-modified-caret {
+.diagnosis-workspace-caret {
   display: inline-block;
   width: 1px;
   height: 14px;
@@ -8632,10 +8722,10 @@
   background: currentColor;
   opacity: 0.6;
   vertical-align: middle;
-  animation: diagnosis-modified-blink 1s ease-in-out infinite;
+  animation: diagnosis-workspace-blink 1s ease-in-out infinite;
 }
 
-.diagnosis-modified-thinking__toggle {
+.diagnosis-workspace-thinking__toggle {
   display: flex;
   align-items: center;
   gap: 10px;
@@ -8649,15 +8739,15 @@
   line-height: 20px;
 }
 
-.diagnosis-modified-thinking__toggle--interactive {
+.diagnosis-workspace-thinking__toggle--interactive {
   cursor: pointer;
 }
 
-.diagnosis-modified-thinking__toggle--interactive:hover {
+.diagnosis-workspace-thinking__toggle--interactive:hover {
   color: rgba(51, 65, 85, 0.92);
 }
 
-.diagnosis-modified-thinking__icon {
+.diagnosis-workspace-thinking__icon {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -8666,15 +8756,15 @@
   flex-shrink: 0;
 }
 
-.diagnosis-modified-thinking__pulse {
+.diagnosis-workspace-thinking__pulse {
   width: 10px;
   height: 10px;
   border-radius: 999px;
   background: rgba(100, 116, 139, 0.86);
-  animation: diagnosis-modified-pulse 1.8s ease-in-out infinite;
+  animation: diagnosis-workspace-pulse 1.8s ease-in-out infinite;
 }
 
-.diagnosis-modified-thinking__chevron {
+.diagnosis-workspace-thinking__chevron {
   width: 8px;
   height: 8px;
   border-right: 1.5px solid currentColor;
@@ -8683,17 +8773,17 @@
   transition: transform var(--transition-base);
 }
 
-.diagnosis-modified-thinking__chevron--expanded {
+.diagnosis-workspace-thinking__chevron--expanded {
   transform: rotate(45deg);
 }
 
-.diagnosis-modified-thinking__label-wrap {
+.diagnosis-workspace-thinking__label-wrap {
   display: inline-flex;
   align-items: center;
   gap: 6px;
 }
 
-.diagnosis-modified-thinking__label-tag {
+.diagnosis-workspace-thinking__label-tag {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -8704,16 +8794,16 @@
   background: rgba(203, 213, 225, 0.52);
 }
 
-.diagnosis-modified-thinking__label {
+.diagnosis-workspace-thinking__label {
   color: rgba(100, 116, 139, 0.92);
 }
 
-.diagnosis-modified-thinking__label--thinking {
-  animation: diagnosis-modified-thinking-sweep 2s ease-in-out infinite;
+.diagnosis-workspace-thinking__label--thinking {
+  animation: diagnosis-workspace-thinking-sweep 2s ease-in-out infinite;
 }
 
 @supports ((-webkit-background-clip: text) or (background-clip: text)) {
-  .diagnosis-modified-thinking__label--thinking {
+  .diagnosis-workspace-thinking__label--thinking {
     background-image: linear-gradient(
       90deg,
       rgba(100, 116, 139, 0.9) 0%,
@@ -8731,23 +8821,23 @@
   }
 }
 
-.diagnosis-modified-thinking__tool {
+.diagnosis-workspace-thinking__tool {
   color: rgba(148, 163, 184, 0.9);
   font-size: 11px;
   line-height: 16px;
 }
 
-.diagnosis-modified-thinking__panel {
+.diagnosis-workspace-thinking__panel {
   overflow: hidden;
 }
 
-.diagnosis-modified-thinking__content {
+.diagnosis-workspace-thinking__content {
   margin: 2px 0 8px 7px;
   padding: 2px 0 2px 20px;
   border-left: 2px solid rgba(226, 232, 240, 0.9);
 }
 
-.diagnosis-modified-thinking__content p {
+.diagnosis-workspace-thinking__content p {
   margin: 0;
   color: rgba(100, 116, 139, 0.92);
   font-size: 14px;
@@ -8755,7 +8845,7 @@
   white-space: pre-wrap;
 }
 
-.diagnosis-modified-tool-card {
+.diagnosis-workspace-tool-card {
   width: fit-content;
   min-width: min(440px, 100%);
   max-width: 100%;
@@ -8770,25 +8860,25 @@
     box-shadow var(--transition-base);
 }
 
-.diagnosis-modified-tool-card--loading {
+.diagnosis-workspace-tool-card--loading {
   background: rgba(248, 250, 252, 0.8);
 }
 
-.diagnosis-modified-tool-card--timeout {
+.diagnosis-workspace-tool-card--timeout {
   border-color: rgba(100, 116, 139, 0.28);
   background: rgba(248, 250, 252, 0.94);
 }
 
-.diagnosis-modified-tool-card--interactive {
+.diagnosis-workspace-tool-card--interactive {
   cursor: pointer;
 }
 
-.diagnosis-modified-tool-card--interactive:hover {
+.diagnosis-workspace-tool-card--interactive:hover {
   border-color: rgba(15, 23, 42, 0.18);
   box-shadow: 0 10px 20px rgba(15, 23, 42, 0.04);
 }
 
-.diagnosis-modified-tool-card__header {
+.diagnosis-workspace-tool-card__header {
   display: grid;
   grid-template-columns: 18px minmax(0, 1fr) auto;
   gap: 10px;
@@ -8796,28 +8886,28 @@
   padding: 10px 12px;
 }
 
-.diagnosis-modified-tool-card__header-copy {
+.diagnosis-workspace-tool-card__header-copy {
   display: grid;
   gap: 2px;
   min-width: 0;
 }
 
-.diagnosis-modified-tool-card__header-copy strong,
-.diagnosis-modified-tool-card__header-copy span,
-.diagnosis-modified-tool-card__status-label,
-.diagnosis-modified-report-card__evidence,
-.diagnosis-modified-approval-card__actions code {
+.diagnosis-workspace-tool-card__header-copy strong,
+.diagnosis-workspace-tool-card__header-copy span,
+.diagnosis-workspace-tool-card__status-label,
+.diagnosis-workspace-report-card__evidence,
+.diagnosis-workspace-approval-card__actions code {
   font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
 }
 
-.diagnosis-modified-tool-card__header-copy strong {
+.diagnosis-workspace-tool-card__header-copy strong {
   color: rgba(30, 41, 59, 0.94);
   font-size: 12px;
   line-height: 18px;
   font-weight: 600;
 }
 
-.diagnosis-modified-tool-card__header-copy span {
+.diagnosis-workspace-tool-card__header-copy span {
   color: rgba(148, 163, 184, 0.9);
   font-size: 11px;
   line-height: 16px;
@@ -8826,13 +8916,13 @@
   text-overflow: ellipsis;
 }
 
-.diagnosis-modified-tool-card__status-icon {
+.diagnosis-workspace-tool-card__status-icon {
   display: inline-flex;
   align-items: center;
   justify-content: center;
 }
 
-.diagnosis-modified-tool-card__status-indicator {
+.diagnosis-workspace-tool-card__status-indicator {
   position: relative;
   width: 14px;
   height: 14px;
@@ -8842,14 +8932,14 @@
   box-sizing: border-box;
 }
 
-.diagnosis-modified-tool-card__status-indicator--loading {
+.diagnosis-workspace-tool-card__status-indicator--loading {
   border: 2px solid rgba(148, 163, 184, 0.36);
   border-top-color: rgba(51, 65, 85, 0.95);
   border-radius: 999px;
-  animation: diagnosis-modified-spin 0.95s linear infinite;
+  animation: diagnosis-workspace-spin 0.95s linear infinite;
 }
 
-.diagnosis-modified-tool-card__status-indicator--success::before {
+.diagnosis-workspace-tool-card__status-indicator--success::before {
   content: "";
   width: 7px;
   height: 4px;
@@ -8859,8 +8949,8 @@
   transform-origin: center;
 }
 
-.diagnosis-modified-tool-card__status-indicator--error::before,
-.diagnosis-modified-tool-card__status-indicator--error::after {
+.diagnosis-workspace-tool-card__status-indicator--error::before,
+.diagnosis-workspace-tool-card__status-indicator--error::after {
   content: "";
   position: absolute;
   width: 10px;
@@ -8869,20 +8959,20 @@
   background: rgba(220, 38, 38, 0.9);
 }
 
-.diagnosis-modified-tool-card__status-indicator--error::before {
+.diagnosis-workspace-tool-card__status-indicator--error::before {
   transform: rotate(45deg);
 }
 
-.diagnosis-modified-tool-card__status-indicator--error::after {
+.diagnosis-workspace-tool-card__status-indicator--error::after {
   transform: rotate(-45deg);
 }
 
-.diagnosis-modified-tool-card__status-indicator--timeout {
+.diagnosis-workspace-tool-card__status-indicator--timeout {
   border: 2px solid rgba(148, 163, 184, 0.8);
   border-radius: 999px;
 }
 
-.diagnosis-modified-tool-card__status-indicator--timeout::before {
+.diagnosis-workspace-tool-card__status-indicator--timeout::before {
   content: "";
   position: absolute;
   width: 2px;
@@ -8892,7 +8982,7 @@
   transform: translateY(-1px);
 }
 
-.diagnosis-modified-tool-card__status-label {
+.diagnosis-workspace-tool-card__status-label {
   color: rgba(148, 163, 184, 0.9);
   font-size: 10px;
   line-height: 14px;
@@ -8900,19 +8990,19 @@
   letter-spacing: 0.12em;
 }
 
-.diagnosis-modified-tool-card__body {
+.diagnosis-workspace-tool-card__body {
   border-top: 1px solid rgba(226, 232, 240, 0.9);
   background: rgba(248, 250, 252, 0.84);
 }
 
-.diagnosis-modified-tool-card__loading,
-.diagnosis-modified-tool-card__details {
+.diagnosis-workspace-tool-card__loading,
+.diagnosis-workspace-tool-card__details {
   display: grid;
   gap: 8px;
   padding: 12px;
 }
 
-.diagnosis-modified-tool-card__loading > div {
+.diagnosis-workspace-tool-card__loading > div {
   display: flex;
   gap: 8px;
   align-items: center;
@@ -8921,16 +9011,16 @@
   line-height: 16px;
 }
 
-.diagnosis-modified-tool-card__loading-indicator {
+.diagnosis-workspace-tool-card__loading-indicator {
   width: 10px;
   height: 10px;
   border: 1.5px solid rgba(148, 163, 184, 0.35);
   border-top-color: rgba(71, 85, 105, 0.95);
   border-radius: 999px;
-  animation: diagnosis-modified-spin 0.9s linear infinite;
+  animation: diagnosis-workspace-spin 0.9s linear infinite;
 }
 
-.diagnosis-modified-tool-card__params {
+.diagnosis-workspace-tool-card__params {
   margin: 0;
   padding: 10px 12px;
   border-radius: 6px;
@@ -8942,19 +9032,19 @@
   overflow-wrap: anywhere;
 }
 
-.diagnosis-modified-tool-card__results {
+.diagnosis-workspace-tool-card__results {
   display: grid;
   gap: 6px;
 }
 
-.diagnosis-modified-tool-card__results p {
+.diagnosis-workspace-tool-card__results p {
   margin: 0;
   color: rgba(71, 85, 105, 0.92);
   font-size: 12px;
   line-height: 18px;
 }
 
-.diagnosis-modified-inline-note {
+.diagnosis-workspace-inline-note {
   padding: 12px 14px;
   border: 1px solid rgba(148, 163, 184, 0.18);
   border-radius: 10px;
@@ -8964,20 +9054,20 @@
   line-height: 22px;
 }
 
-.diagnosis-modified-inline-note--error {
+.diagnosis-workspace-inline-note--error {
   border-color: rgba(248, 113, 113, 0.24);
   background: rgba(254, 242, 242, 0.92);
   color: rgba(153, 27, 27, 0.88);
 }
 
-.diagnosis-modified-inline-note--warning {
+.diagnosis-workspace-inline-note--warning {
   border-color: rgba(245, 158, 11, 0.24);
   background: rgba(255, 251, 235, 0.92);
   color: rgba(146, 64, 14, 0.9);
 }
 
-.diagnosis-modified-report-card,
-.diagnosis-modified-approval-card {
+.diagnosis-workspace-report-card,
+.diagnosis-workspace-approval-card {
   max-width: min(100%, 1280px);
   border: 1px solid rgba(15, 23, 42, 0.1);
   border-radius: 10px;
@@ -8986,8 +9076,8 @@
   overflow: hidden;
 }
 
-.diagnosis-modified-report-card__header,
-.diagnosis-modified-approval-card__header {
+.diagnosis-workspace-report-card__header,
+.diagnosis-workspace-approval-card__header {
   display: flex;
   justify-content: space-between;
   gap: 16px;
@@ -8995,16 +9085,16 @@
   border-bottom: 1px solid rgba(15, 23, 42, 0.08);
 }
 
-.diagnosis-modified-report-card__eyebrow,
-.diagnosis-modified-approval-card__eyebrow,
-.diagnosis-modified-approval-card__meta-row {
+.diagnosis-workspace-report-card__eyebrow,
+.diagnosis-workspace-approval-card__eyebrow,
+.diagnosis-workspace-approval-card__meta-row {
   display: flex;
   gap: 8px;
   flex-wrap: wrap;
 }
 
-.diagnosis-modified-report-card__title,
-.diagnosis-modified-approval-card__title {
+.diagnosis-workspace-report-card__title,
+.diagnosis-workspace-approval-card__title {
   margin: 10px 0 0;
   color: rgba(15, 23, 42, 0.98);
   font-size: 18px;
@@ -9013,7 +9103,7 @@
   letter-spacing: -0.02em;
 }
 
-.diagnosis-modified-report-card__meta {
+.diagnosis-workspace-report-card__meta {
   display: grid;
   justify-items: end;
   align-content: start;
@@ -9025,25 +9115,25 @@
   letter-spacing: 0.08em;
 }
 
-.diagnosis-modified-report-card__grid {
+.diagnosis-workspace-report-card__grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
   border-bottom: 1px solid rgba(15, 23, 42, 0.08);
   background: rgba(248, 250, 252, 0.72);
 }
 
-.diagnosis-modified-report-card__grid > div {
+.diagnosis-workspace-report-card__grid > div {
   padding: 12px 14px;
   border-right: 1px solid rgba(15, 23, 42, 0.08);
 }
 
-.diagnosis-modified-report-card__grid > div:last-child {
+.diagnosis-workspace-report-card__grid > div:last-child {
   border-right: 0;
 }
 
-.diagnosis-modified-report-card__grid span,
-.diagnosis-modified-report-card__section-label,
-.diagnosis-modified-approval-card__editor > p {
+.diagnosis-workspace-report-card__grid span,
+.diagnosis-workspace-report-card__section-label,
+.diagnosis-workspace-approval-card__editor > p {
   display: block;
   margin: 0 0 6px;
   color: rgba(148, 163, 184, 0.92);
@@ -9053,73 +9143,73 @@
   letter-spacing: 0.08em;
 }
 
-.diagnosis-modified-report-card__grid strong {
+.diagnosis-workspace-report-card__grid strong {
   color: rgba(30, 41, 59, 0.94);
   font-size: 11px;
   line-height: 17px;
   font-weight: 600;
 }
 
-.diagnosis-modified-report-card__sections,
-.diagnosis-modified-approval-card__body {
+.diagnosis-workspace-report-card__sections,
+.diagnosis-workspace-approval-card__body {
   display: grid;
   gap: 16px;
   padding: 18px;
 }
 
-.diagnosis-modified-report-card__section-copy,
-.diagnosis-modified-approval-card__description,
-.diagnosis-modified-approval-card__resolved p {
+.diagnosis-workspace-report-card__section-copy,
+.diagnosis-workspace-approval-card__description,
+.diagnosis-workspace-approval-card__resolved p {
   margin: 0;
   color: rgba(51, 65, 85, 0.92);
   font-size: 13px;
   line-height: 22px;
 }
-.diagnosis-modified-report-card__facts,
-.diagnosis-modified-report-card__candidates,
-.diagnosis-modified-report-card__hypotheses,
-.diagnosis-modified-report-card__propagation-body {
+.diagnosis-workspace-report-card__facts,
+.diagnosis-workspace-report-card__candidates,
+.diagnosis-workspace-report-card__hypotheses,
+.diagnosis-workspace-report-card__propagation-body {
   display: grid;
   gap: 8px;
 }
 
-.diagnosis-modified-report-card__facts p,
-.diagnosis-modified-report-card__candidate-item p,
-.diagnosis-modified-report-card__hypotheses p,
-.diagnosis-modified-report-card__propagation-body p {
+.diagnosis-workspace-report-card__facts p,
+.diagnosis-workspace-report-card__candidate-item p,
+.diagnosis-workspace-report-card__hypotheses p,
+.diagnosis-workspace-report-card__propagation-body p {
   margin: 0;
   color: rgba(51, 65, 85, 0.92);
   font-size: 13px;
   line-height: 22px;
 }
 
-.diagnosis-modified-report-card__facts p > span {
+.diagnosis-workspace-report-card__facts p > span {
   color: rgba(15, 23, 42, 0.9);
   font-weight: 500;
 }
 
-.diagnosis-modified-report-card__candidate-item p + p {
+.diagnosis-workspace-report-card__candidate-item p + p {
   color: rgba(100, 116, 139, 0.94);
 }
 
-.diagnosis-modified-report-card__propagation {
+.diagnosis-workspace-report-card__propagation {
   padding: 12px;
   border-radius: 8px;
   border: 1px solid rgba(15, 23, 42, 0.08);
   background: rgba(248, 250, 252, 0.78);
 }
 
-.diagnosis-modified-report-card__propagation > summary {
+.diagnosis-workspace-report-card__propagation > summary {
   margin: 0;
   cursor: pointer;
   list-style: none;
 }
 
-.diagnosis-modified-report-card__propagation > summary::-webkit-details-marker {
+.diagnosis-workspace-report-card__propagation > summary::-webkit-details-marker {
   display: none;
 }
 
-.diagnosis-modified-report-card__propagation > summary::after {
+.diagnosis-workspace-report-card__propagation > summary::after {
   content: "\u5c55\u5f00";
   margin-left: 8px;
   color: rgba(148, 163, 184, 0.9);
@@ -9129,67 +9219,67 @@
   letter-spacing: 0.08em;
 }
 
-.diagnosis-modified-report-card__propagation[open] > summary::after {
+.diagnosis-workspace-report-card__propagation[open] > summary::after {
   content: "\u6536\u8d77";
 }
 
-.diagnosis-modified-report-card__propagation-body {
+.diagnosis-workspace-report-card__propagation-body {
   margin-top: 10px;
   padding-top: 10px;
   border-top: 1px solid rgba(15, 23, 42, 0.08);
 }
 
-.diagnosis-modified-report-card__subtitle {
+.diagnosis-workspace-report-card__subtitle {
   margin: 8px 0 0;
   color: rgba(100, 116, 139, 0.92);
   font-size: 13px;
   line-height: 21px;
 }
 
-.diagnosis-modified-report-card__section {
+.diagnosis-workspace-report-card__section {
   display: grid;
   gap: 10px;
 }
 
-.diagnosis-modified-report-card__facts,
-.diagnosis-modified-report-card__candidates,
-.diagnosis-modified-report-card__hypotheses,
-.diagnosis-modified-report-card__propagation-body {
+.diagnosis-workspace-report-card__facts,
+.diagnosis-workspace-report-card__candidates,
+.diagnosis-workspace-report-card__hypotheses,
+.diagnosis-workspace-report-card__propagation-body {
   gap: 10px;
 }
 
-.diagnosis-modified-report-card__fact-row,
-.diagnosis-modified-report-card__candidate-item,
-.diagnosis-modified-report-card__hypothesis-item,
-.diagnosis-modified-report-card__propagation-item {
+.diagnosis-workspace-report-card__fact-row,
+.diagnosis-workspace-report-card__candidate-item,
+.diagnosis-workspace-report-card__hypothesis-item,
+.diagnosis-workspace-report-card__propagation-item {
   border: 1px solid rgba(15, 23, 42, 0.08);
   border-radius: 10px;
   background: rgba(248, 250, 252, 0.78);
   padding: 12px 14px;
 }
 
-.diagnosis-modified-report-card__fact-row {
+.diagnosis-workspace-report-card__fact-row {
   display: grid;
   grid-template-columns: 88px minmax(0, 1fr);
   gap: 12px;
   align-items: start;
 }
 
-.diagnosis-modified-report-card__fact-label {
+.diagnosis-workspace-report-card__fact-label {
   color: rgba(100, 116, 139, 0.9);
   font-size: 12px;
   line-height: 20px;
 }
 
-.diagnosis-modified-report-card__fact-value {
+.diagnosis-workspace-report-card__fact-value {
   color: rgba(15, 23, 42, 0.96);
   font-size: 13px;
   line-height: 22px;
   font-weight: 500;
 }
 
-.diagnosis-modified-report-card__candidate-header,
-.diagnosis-modified-report-card__hypothesis-header {
+.diagnosis-workspace-report-card__candidate-header,
+.diagnosis-workspace-report-card__hypothesis-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -9197,37 +9287,37 @@
   flex-wrap: wrap;
 }
 
-.diagnosis-modified-report-card__candidate-header strong,
-.diagnosis-modified-report-card__hypothesis-header strong {
+.diagnosis-workspace-report-card__candidate-header strong,
+.diagnosis-workspace-report-card__hypothesis-header strong {
   color: rgba(15, 23, 42, 0.96);
   font-size: 13px;
   line-height: 21px;
   font-weight: 600;
 }
 
-.diagnosis-modified-report-card__candidate-header span {
+.diagnosis-workspace-report-card__candidate-header span {
   color: rgba(100, 116, 139, 0.9);
   font-size: 11px;
   line-height: 18px;
 }
 
-.diagnosis-modified-report-card__candidate-copy {
+.diagnosis-workspace-report-card__candidate-copy {
   margin: 6px 0 0;
   color: rgba(51, 65, 85, 0.92);
   font-size: 13px;
   line-height: 22px;
 }
 
-.diagnosis-modified-report-card__candidate-copy--muted {
+.diagnosis-workspace-report-card__candidate-copy--muted {
   color: rgba(100, 116, 139, 0.92);
 }
 
-.diagnosis-modified-report-card__section-copy--strong {
+.diagnosis-workspace-report-card__section-copy--strong {
   color: rgba(15, 23, 42, 0.96);
   font-weight: 500;
 }
 
-.diagnosis-modified-report-card__evidence {
+.diagnosis-workspace-report-card__evidence {
   display: grid;
   gap: 8px;
   padding: 12px;
@@ -9239,14 +9329,14 @@
   color: rgba(71, 85, 105, 0.92);
 }
 
-.diagnosis-modified-report-card__evidence-row {
+.diagnosis-workspace-report-card__evidence-row {
   display: grid;
   grid-template-columns: auto 1fr;
   gap: 10px;
 }
 
-.diagnosis-modified-report-card__actions,
-.diagnosis-modified-approval-card__actions {
+.diagnosis-workspace-report-card__actions,
+.diagnosis-workspace-approval-card__actions {
   list-style: none;
   margin: 0;
   padding: 0;
@@ -9254,14 +9344,14 @@
   gap: 12px;
 }
 
-.diagnosis-modified-report-card__actions li,
-.diagnosis-modified-approval-card__actions li {
+.diagnosis-workspace-report-card__actions li,
+.diagnosis-workspace-approval-card__actions li {
   display: flex;
   gap: 12px;
   align-items: flex-start;
 }
 
-.diagnosis-modified-report-card__action-marker {
+.diagnosis-workspace-report-card__action-marker {
   width: 12px;
   height: 12px;
   margin-top: 4px;
@@ -9271,23 +9361,23 @@
   flex-shrink: 0;
 }
 
-.diagnosis-modified-report-card__action-marker--done {
+.diagnosis-workspace-report-card__action-marker--done {
   background: rgba(15, 23, 42, 0.94);
   border-color: rgba(15, 23, 42, 0.94);
 }
 
-.diagnosis-modified-report-card__action-text {
+.diagnosis-workspace-report-card__action-text {
   color: rgba(30, 41, 59, 0.94);
   font-size: 13px;
   line-height: 22px;
 }
 
-.diagnosis-modified-report-card__action-text--done {
+.diagnosis-workspace-report-card__action-text--done {
   text-decoration: line-through;
   opacity: 0.68;
 }
 
-.diagnosis-modified-report-card__action-state {
+.diagnosis-workspace-report-card__action-state {
   display: inline-flex;
   align-items: center;
   margin-left: 8px;
@@ -9298,25 +9388,25 @@
   letter-spacing: 0.08em;
 }
 
-.diagnosis-modified-approval-card--approved {
+.diagnosis-workspace-approval-card--approved {
   border-color: rgba(34, 197, 94, 0.24);
   background: rgba(240, 253, 244, 0.32);
 }
 
-.diagnosis-modified-approval-card--rejected {
+.diagnosis-workspace-approval-card--rejected {
   border-color: rgba(248, 113, 113, 0.24);
   background: rgba(254, 242, 242, 0.36);
 }
 
-.diagnosis-modified-approval-card__description {
+.diagnosis-workspace-approval-card__description {
   margin-top: 10px;
 }
 
-.diagnosis-modified-approval-card__actions-wrap {
+.diagnosis-workspace-approval-card__actions-wrap {
   position: relative;
 }
 
-.diagnosis-modified-approval-card__actions li > span {
+.diagnosis-workspace-approval-card__actions li > span {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -9331,7 +9421,7 @@
   flex-shrink: 0;
 }
 
-.diagnosis-modified-approval-card__actions li strong {
+.diagnosis-workspace-approval-card__actions li strong {
   display: block;
   color: rgba(30, 41, 59, 0.96);
   font-size: 13px;
@@ -9339,25 +9429,25 @@
   font-weight: 500;
 }
 
-.diagnosis-modified-approval-card__actions li p,
-.diagnosis-modified-approval-card__actions li code {
+.diagnosis-workspace-approval-card__actions li p,
+.diagnosis-workspace-approval-card__actions li code {
   display: block;
   margin: 4px 0 0;
 }
 
-.diagnosis-modified-approval-card__actions li p {
+.diagnosis-workspace-approval-card__actions li p {
   color: rgba(100, 116, 139, 0.9);
   font-size: 12px;
   line-height: 18px;
 }
 
-.diagnosis-modified-approval-card__actions li code {
+.diagnosis-workspace-approval-card__actions li code {
   color: rgba(71, 85, 105, 0.92);
   font-size: 11px;
   line-height: 18px;
 }
 
-.diagnosis-modified-approval-card__footer {
+.diagnosis-workspace-approval-card__footer {
   display: flex;
   gap: 10px;
   flex-wrap: wrap;
@@ -9365,21 +9455,21 @@
   border-top: 1px solid rgba(226, 232, 240, 0.9);
 }
 
-.diagnosis-modified-approval-card__editor {
+.diagnosis-workspace-approval-card__editor {
   display: grid;
   gap: 10px;
   padding-top: 4px;
   border-top: 1px solid rgba(226, 232, 240, 0.9);
 }
 
-.diagnosis-modified-approval-card__editor-row {
+.diagnosis-workspace-approval-card__editor-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 10px;
 }
 
-.diagnosis-modified-approval-card__editor-row textarea,
-.diagnosis-modified-composer__input {
+.diagnosis-workspace-approval-card__editor-row textarea,
+.diagnosis-workspace-composer__input {
   width: 100%;
   border: 1px solid rgba(148, 163, 184, 0.24);
   border-radius: 8px;
@@ -9394,26 +9484,26 @@
     box-shadow var(--transition-base);
 }
 
-.diagnosis-modified-approval-card__editor-row textarea {
+.diagnosis-workspace-approval-card__editor-row textarea {
   min-height: 72px;
   padding: 10px 12px;
 }
 
-.diagnosis-modified-approval-card__editor-row textarea:focus,
-.diagnosis-modified-composer__input:focus {
+.diagnosis-workspace-approval-card__editor-row textarea:focus,
+.diagnosis-workspace-composer__input:focus {
   outline: none;
   border-color: rgba(15, 23, 42, 0.22);
   background: rgba(255, 255, 255, 0.98);
   box-shadow: 0 0 0 4px rgba(15, 23, 42, 0.04);
 }
 
-.diagnosis-modified-approval-card__editor-row > div {
+.diagnosis-workspace-approval-card__editor-row > div {
   display: grid;
   gap: 8px;
   align-content: start;
 }
 
-.diagnosis-modified-approval-card__updating {
+.diagnosis-workspace-approval-card__updating {
   position: absolute;
   inset: 0;
   display: flex;
@@ -9428,7 +9518,7 @@
   letter-spacing: 0.08em;
 }
 
-.diagnosis-modified-approval-card__resolved {
+.diagnosis-workspace-approval-card__resolved {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   gap: 0;
@@ -9437,7 +9527,7 @@
   border-top: 1px solid rgba(226, 232, 240, 0.9);
 }
 
-.diagnosis-modified-shell__footer {
+.diagnosis-workspace-shell__footer {
   display: grid;
   gap: 10px;
   padding: 14px clamp(16px, 1.1vw, 22px) 16px;
@@ -9445,11 +9535,11 @@
   background: rgba(248, 250, 252, 0.72);
 }
 
-.diagnosis-modified-process-row--system .diagnosis-modified-process-row__body {
+.diagnosis-workspace-process-row--system .diagnosis-workspace-process-row__body {
   max-width: min(100%, 840px);
 }
 
-.diagnosis-modified-system-event__toggle {
+.diagnosis-workspace-system-event__toggle {
   width: 100%;
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;
@@ -9468,38 +9558,38 @@
     transform var(--transition-base);
 }
 
-.diagnosis-modified-system-event__toggle:hover {
+.diagnosis-workspace-system-event__toggle:hover {
   border-color: rgba(15, 23, 42, 0.16);
   background: rgba(255, 255, 255, 0.98);
   box-shadow: 0 10px 22px rgba(15, 23, 42, 0.06);
   transform: translateY(-1px);
 }
 
-.diagnosis-modified-system-event__label-wrap {
+.diagnosis-workspace-system-event__label-wrap {
   display: grid;
   gap: 8px;
   min-width: 0;
 }
 
-.diagnosis-modified-system-event__summary {
+.diagnosis-workspace-system-event__summary {
   color: rgba(15, 23, 42, 0.96);
   font-size: 13px;
   line-height: 21px;
   font-weight: 500;
 }
 
-.diagnosis-modified-system-event__time {
+.diagnosis-workspace-system-event__time {
   color: rgba(148, 163, 184, 0.9);
   font-size: 11px;
   line-height: 18px;
   white-space: nowrap;
 }
 
-.diagnosis-modified-system-event__panel {
+.diagnosis-workspace-system-event__panel {
   padding: 12px 16px 0;
 }
 
-.diagnosis-modified-system-event__content {
+.diagnosis-workspace-system-event__content {
   display: grid;
   gap: 8px;
   padding: 14px 16px;
@@ -9508,18 +9598,18 @@
   background: rgba(255, 255, 255, 0.96);
 }
 
-.diagnosis-modified-system-event__content p {
+.diagnosis-workspace-system-event__content p {
   margin: 0;
   color: rgba(71, 85, 105, 0.94);
   font-size: 12px;
   line-height: 20px;
 }
 
-.diagnosis-modified-composer-anchor {
+.diagnosis-workspace-composer-anchor {
   position: relative;
 }
 
-.diagnosis-modified-approval-overlay {
+.diagnosis-workspace-approval-overlay {
   position: absolute;
   left: 0;
   right: 0;
@@ -9535,20 +9625,20 @@
   backdrop-filter: blur(16px);
 }
 
-.diagnosis-modified-approval-overlay__header,
-.diagnosis-modified-approval-overlay__body {
+.diagnosis-workspace-approval-overlay__header,
+.diagnosis-workspace-approval-overlay__body {
   display: grid;
   gap: 14px;
 }
 
-.diagnosis-modified-approval-overlay__eyebrow,
-.diagnosis-modified-approval-overlay__meta-row {
+.diagnosis-workspace-approval-overlay__eyebrow,
+.diagnosis-workspace-approval-overlay__meta-row {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
 }
 
-.diagnosis-modified-approval-overlay__title {
+.diagnosis-workspace-approval-overlay__title {
   margin: 10px 0 0;
   color: rgba(15, 23, 42, 0.98);
   font-size: 18px;
@@ -9556,14 +9646,14 @@
   font-weight: 600;
 }
 
-.diagnosis-modified-approval-overlay__description {
+.diagnosis-workspace-approval-overlay__description {
   margin: 8px 0 0;
   color: rgba(71, 85, 105, 0.94);
   font-size: 13px;
   line-height: 22px;
 }
 
-.diagnosis-modified-approval-overlay__actions {
+.diagnosis-workspace-approval-overlay__actions {
   list-style: none;
   margin: 0;
   padding: 0;
@@ -9571,7 +9661,7 @@
   gap: 12px;
 }
 
-.diagnosis-modified-approval-overlay__actions li {
+.diagnosis-workspace-approval-overlay__actions li {
   display: flex;
   gap: 12px;
   align-items: flex-start;
@@ -9581,7 +9671,7 @@
   background: rgba(248, 250, 252, 0.86);
 }
 
-.diagnosis-modified-approval-overlay__actions li > span {
+.diagnosis-workspace-approval-overlay__actions li > span {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -9596,37 +9686,37 @@
   flex-shrink: 0;
 }
 
-.diagnosis-modified-approval-overlay__actions li strong {
+.diagnosis-workspace-approval-overlay__actions li strong {
   display: block;
   color: rgba(15, 23, 42, 0.96);
   font-size: 13px;
   line-height: 21px;
 }
 
-.diagnosis-modified-approval-overlay__actions li p,
-.diagnosis-modified-approval-overlay__actions li code {
+.diagnosis-workspace-approval-overlay__actions li p,
+.diagnosis-workspace-approval-overlay__actions li code {
   display: block;
   margin: 4px 0 0;
 }
 
-.diagnosis-modified-approval-overlay__actions li p {
+.diagnosis-workspace-approval-overlay__actions li p {
   color: rgba(100, 116, 139, 0.94);
   font-size: 12px;
   line-height: 18px;
 }
 
-.diagnosis-modified-approval-overlay__actions li code {
+.diagnosis-workspace-approval-overlay__actions li code {
   color: rgba(71, 85, 105, 0.94);
   font-size: 11px;
   line-height: 18px;
 }
 
-.diagnosis-modified-approval-overlay__reject {
+.diagnosis-workspace-approval-overlay__reject {
   display: grid;
   gap: 8px;
 }
 
-.diagnosis-modified-approval-overlay__reject label {
+.diagnosis-workspace-approval-overlay__reject label {
   color: rgba(100, 116, 139, 0.94);
   font-size: 11px;
   line-height: 18px;
@@ -9634,7 +9724,7 @@
   letter-spacing: 0.08em;
 }
 
-.diagnosis-modified-approval-overlay__reject textarea {
+.diagnosis-workspace-approval-overlay__reject textarea {
   width: 100%;
   min-height: 84px;
   padding: 12px 14px;
@@ -9647,32 +9737,32 @@
   resize: vertical;
 }
 
-.diagnosis-modified-approval-overlay__reject textarea:focus {
+.diagnosis-workspace-approval-overlay__reject textarea:focus {
   outline: none;
   border-color: rgba(15, 23, 42, 0.22);
   background: rgba(255, 255, 255, 0.98);
   box-shadow: 0 0 0 4px rgba(15, 23, 42, 0.04);
 }
 
-.diagnosis-modified-approval-overlay__note {
+.diagnosis-workspace-approval-overlay__note {
   margin: 0;
   color: rgba(100, 116, 139, 0.94);
   font-size: 12px;
   line-height: 20px;
 }
 
-.diagnosis-modified-approval-overlay__note--warning {
+.diagnosis-workspace-approval-overlay__note--warning {
   color: rgba(180, 83, 9, 0.96);
 }
 
-.diagnosis-modified-approval-overlay__footer {
+.diagnosis-workspace-approval-overlay__footer {
   display: flex;
   justify-content: flex-end;
   gap: 10px;
   flex-wrap: wrap;
 }
 
-.diagnosis-modified-composer {
+.diagnosis-workspace-composer {
   display: grid;
   gap: 12px;
   padding: 10px;
@@ -9682,7 +9772,7 @@
   box-shadow: 0 6px 18px rgba(15, 23, 42, 0.04);
 }
 
-.diagnosis-modified-composer__input {
+.diagnosis-workspace-composer__input {
   min-height: 48px;
   max-height: 136px;
   padding: 12px;
@@ -9690,38 +9780,38 @@
   background: transparent;
 }
 
-.diagnosis-modified-composer__input:focus {
+.diagnosis-workspace-composer__input:focus {
   box-shadow: none;
 }
 
-.diagnosis-modified-composer__actions {
+.diagnosis-workspace-composer__actions {
   display: flex;
   justify-content: space-between;
   gap: 12px;
   align-items: center;
 }
 
-.diagnosis-modified-composer__hint,
-.diagnosis-modified-shell__footer-note {
+.diagnosis-workspace-composer__hint,
+.diagnosis-workspace-shell__footer-note {
   margin: 0;
   color: rgba(148, 163, 184, 0.92);
   font-size: 11px;
   line-height: 18px;
 }
 
-.diagnosis-modified-composer__buttons {
+.diagnosis-workspace-composer__buttons {
   display: flex;
   gap: 8px;
   align-items: center;
 }
 
-@keyframes diagnosis-modified-spin {
+@keyframes diagnosis-workspace-spin {
   to {
     transform: rotate(360deg);
   }
 }
 
-@keyframes diagnosis-modified-pulse {
+@keyframes diagnosis-workspace-pulse {
   0%,
   100% {
     opacity: 0.35;
@@ -9734,7 +9824,7 @@
   }
 }
 
-@keyframes diagnosis-modified-thinking-sweep {
+@keyframes diagnosis-workspace-thinking-sweep {
   0% {
     background-position: -120% 50%;
   }
@@ -9744,7 +9834,7 @@
   }
 }
 
-@keyframes diagnosis-modified-blink {
+@keyframes diagnosis-workspace-blink {
   0%,
   100% {
     opacity: 0;
@@ -9756,107 +9846,103 @@
 }
 
 @media (max-width: 900px) {
-  .diagnosis-modified-page {
+  .diagnosis-workspace-page {
     padding: var(--space-4);
   }
 
-  .diagnosis-modified-shell {
-    min-height: calc(100vh - 96px);
-  }
-
-  .diagnosis-modified-shell__header,
-  .diagnosis-modified-shell__footer,
-  .diagnosis-modified-feed {
+  .diagnosis-workspace-shell__header,
+  .diagnosis-workspace-shell__footer,
+  .diagnosis-workspace-feed {
     padding-left: 16px;
     padding-right: 16px;
   }
 
-  .diagnosis-modified-shell__header {
+  .diagnosis-workspace-shell__header {
     display: grid;
   }
 
-  .diagnosis-modified-shell__header-actions {
+  .diagnosis-workspace-shell__header-actions {
     justify-items: start;
   }
 
-  .diagnosis-modified-shell__badges {
+  .diagnosis-workspace-shell__badges {
     justify-content: flex-start;
   }
 
-  .diagnosis-modified-report-card__grid {
+  .diagnosis-workspace-report-card__grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
-  .diagnosis-modified-approval-card__editor-row,
-  .diagnosis-modified-composer__actions {
+  .diagnosis-workspace-approval-card__editor-row,
+  .diagnosis-workspace-composer__actions {
     grid-template-columns: minmax(0, 1fr);
     display: grid;
   }
 
-  .diagnosis-modified-approval-overlay {
+  .diagnosis-workspace-approval-overlay {
     position: static;
     margin-bottom: 12px;
   }
 
-  .diagnosis-modified-composer__buttons {
+  .diagnosis-workspace-composer__buttons {
     justify-content: flex-end;
   }
 }
 
 @media (max-width: 640px) {
-  .diagnosis-modified-report-card__fact-row {
+  .diagnosis-workspace-report-card__fact-row {
     grid-template-columns: minmax(0, 1fr);
     gap: 4px;
   }
 
-  .diagnosis-modified-report-card__candidate-header,
-  .diagnosis-modified-report-card__hypothesis-header {
+  .diagnosis-workspace-report-card__candidate-header,
+  .diagnosis-workspace-report-card__hypothesis-header {
     align-items: flex-start;
   }
 
-  .diagnosis-modified-message-row__body {
+  .diagnosis-workspace-message-row__body {
     max-width: 92%;
   }
 
-  .diagnosis-modified-process-row__body,
-  .diagnosis-modified-approval-card__resolved {
+  .diagnosis-workspace-process-row__body,
+  .diagnosis-workspace-approval-card__resolved {
     max-width: 100%;
   }
 
-  .diagnosis-modified-system-event__toggle {
+  .diagnosis-workspace-system-event__toggle {
     grid-template-columns: auto minmax(0, 1fr);
   }
 
-  .diagnosis-modified-system-event__time {
+  .diagnosis-workspace-system-event__time {
     display: none;
   }
 
-  .diagnosis-modified-tool-card,
-  .diagnosis-modified-report-card,
-  .diagnosis-modified-approval-card {
+  .diagnosis-workspace-tool-card,
+  .diagnosis-workspace-report-card,
+  .diagnosis-workspace-approval-card {
     max-width: 100%;
     min-width: 0;
   }
 
-  .diagnosis-modified-report-card__header,
-  .diagnosis-modified-approval-card__header {
+  .diagnosis-workspace-report-card__header,
+  .diagnosis-workspace-approval-card__header {
     display: grid;
   }
 
-  .diagnosis-modified-report-card__meta {
+  .diagnosis-workspace-report-card__meta {
     justify-items: start;
   }
 
-  .diagnosis-modified-report-card__grid {
+  .diagnosis-workspace-report-card__grid {
     grid-template-columns: minmax(0, 1fr);
   }
 
-  .diagnosis-modified-report-card__grid > div {
+  .diagnosis-workspace-report-card__grid > div {
     border-right: 0;
     border-bottom: 1px solid rgba(15, 23, 42, 0.08);
   }
 
-  .diagnosis-modified-report-card__grid > div:last-child {
+  .diagnosis-workspace-report-card__grid > div:last-child {
     border-bottom: 0;
   }
 }
@@ -10344,29 +10430,29 @@
 }
 
 .diagnosis-chat-state-card--error,
-.diagnosis-modified-inline-note--error {
+.diagnosis-workspace-inline-note--error {
   border-color: rgba(200, 86, 86, 0.28);
   background: rgba(251, 236, 236, 0.72);
 }
 
-.diagnosis-modified-inline-note--warning {
+.diagnosis-workspace-inline-note--warning {
   border-color: rgba(184, 130, 48, 0.26);
   background: rgba(253, 244, 231, 0.68);
 }
 
-.diagnosis-modified-tool-card__body,
-.diagnosis-modified-report-card__grid > div,
-.diagnosis-modified-report-card__candidate-item,
-.diagnosis-modified-report-card__propagation-body,
-.diagnosis-modified-approval-card__actions li,
-.diagnosis-modified-approval-card__editor,
-.diagnosis-modified-approval-card__resolved {
+.diagnosis-workspace-tool-card__body,
+.diagnosis-workspace-report-card__grid > div,
+.diagnosis-workspace-report-card__candidate-item,
+.diagnosis-workspace-report-card__propagation-body,
+.diagnosis-workspace-approval-card__actions li,
+.diagnosis-workspace-approval-card__editor,
+.diagnosis-workspace-approval-card__resolved {
   background: var(--color-surface-muted);
   box-shadow: none;
 }
 
-.diagnosis-modified-shell__body,
-.diagnosis-modified-feed {
+.diagnosis-workspace-shell__body,
+.diagnosis-workspace-feed {
   min-height: 0;
 }
 .diagnosis-chat-page__statusbar {
@@ -10374,12 +10460,12 @@
   gap: 8px;
 }
 
-.shell-content--compact-page-chrome > .diagnosis-modified-page {
+.shell-content--compact-page-chrome > .diagnosis-workspace-page {
   gap: 16px;
   padding-top: 0;
 }
 
-.diagnosis-modified-shell__statusbar {
+.diagnosis-workspace-shell__statusbar {
   display: flex;
   justify-content: flex-end;
   padding: 12px clamp(16px, 1.1vw, 22px);
@@ -10573,18 +10659,18 @@
 }
 
 .diagnosis-chat-shell,
-.diagnosis-modified-shell {
+.diagnosis-workspace-shell {
   border: 1px solid var(--color-border);
   background: var(--color-surface-stage);
   box-shadow: none;
 }
 
 .diagnosis-chat-state-card,
-.diagnosis-modified-thinking__panel,
-.diagnosis-modified-tool-card,
-.diagnosis-modified-report-card,
-.diagnosis-modified-approval-card,
-.diagnosis-modified-inline-note {
+.diagnosis-workspace-thinking__panel,
+.diagnosis-workspace-tool-card,
+.diagnosis-workspace-report-card,
+.diagnosis-workspace-approval-card,
+.diagnosis-workspace-inline-note {
   border: 1px solid var(--color-border);
   background: var(--color-surface-panel);
   box-shadow: none;
@@ -10595,18 +10681,18 @@
 }
 
 .diagnosis-chat-composer,
-.diagnosis-modified-shell__footer {
+.diagnosis-workspace-shell__footer {
   border-top: 1px solid var(--color-border);
   background: var(--color-surface-muted);
 }
 
-.diagnosis-modified-composer {
+.diagnosis-workspace-composer {
   border: 1px solid var(--color-border);
   border-radius: var(--radius-md);
   background: var(--color-surface-panel);
 }
 
-.diagnosis-modified-shell__statusbar {
+.diagnosis-workspace-shell__statusbar {
   border-bottom-color: var(--color-border);
   background: var(--color-surface-muted);
 }
@@ -10625,7 +10711,7 @@
 .surface-card--stage,
 .topology-modified-explorer,
 .diagnosis-chat-shell,
-.diagnosis-modified-shell {
+.diagnosis-workspace-shell {
   border-color: transparent;
   box-shadow: none;
 }
@@ -10662,7 +10748,7 @@
 }
 
 .diagnosis-chat-shell,
-.diagnosis-modified-shell {
+.diagnosis-workspace-shell {
   background: var(--color-surface-stage);
 }
 
@@ -10673,14 +10759,14 @@
 }
 
 .shell-content--compact-page-chrome > .diagnosis-chat-page,
-.shell-content--compact-page-chrome > .diagnosis-modified-page,
+.shell-content--compact-page-chrome > .diagnosis-workspace-page,
 .shell-content--compact-page-chrome > .topology-modified-page {
   gap: var(--space-5);
   padding-top: 0;
 }
 
 .diagnosis-chat-page,
-.diagnosis-modified-page,
+.diagnosis-workspace-page,
 .topology-modified-page,
 .knowledge-page,
 .knowledge-detail-page,
@@ -10693,7 +10779,7 @@
 }
 
 .diagnosis-chat-stage,
-.diagnosis-modified-stage,
+.diagnosis-workspace-stage,
 .topology-modified-stage,
 .knowledge-page__stage,
 .knowledge-detail-page__stage,
@@ -10706,13 +10792,17 @@
 }
 
 .diagnosis-chat-page__content,
-.diagnosis-modified-shell__body,
+.diagnosis-workspace-shell__body,
 .topology-modified-explorer__shell {
   gap: var(--space-5);
 }
 
+.diagnosis-workspace-stage {
+  min-height: 0;
+}
+
 .diagnosis-chat-shell,
-.diagnosis-modified-shell,
+.diagnosis-workspace-shell,
 .topology-modified-explorer {
   width: 100%;
   min-width: 0;
@@ -10723,26 +10813,33 @@
 }
 
 .diagnosis-chat-shell__body,
-.diagnosis-modified-shell__body,
+.diagnosis-workspace-shell__body,
 .topology-modified-explorer .surface-card__body {
   padding: clamp(18px, 1.3vw, 22px);
 }
 
 .diagnosis-chat-page__statusbar,
-.diagnosis-modified-shell__statusbar {
+.diagnosis-workspace-shell__statusbar {
   padding: 0;
   border: 0;
   background: transparent;
 }
 
 .diagnosis-chat-workspace,
-.diagnosis-modified-shell,
+.diagnosis-workspace-shell,
 .topology-modified-explorer {
   min-width: 0;
 }
 
+.shell-content--workspace-page > .diagnosis-workspace-page,
+.shell-content--workspace-page > .diagnosis-workspace-page > .diagnosis-workspace-stage,
+.shell-content--workspace-page > .diagnosis-workspace-page .diagnosis-workspace-shell {
+  height: 100%;
+  min-height: 0;
+}
+
 .diagnosis-chat-composer,
-.diagnosis-modified-shell__footer {
+.diagnosis-workspace-shell__footer {
   border-top: 1px solid var(--color-border);
   background: var(--color-surface-muted);
 }
@@ -10750,7 +10847,7 @@
 /* Global border audit pass */
 .page-stage__summary,
 .diagnosis-chat-composer,
-.diagnosis-modified-shell__footer,
+.diagnosis-workspace-shell__footer,
 .convergence-result-card__footer {
   border-color: var(--color-border-subtle);
 }
@@ -10769,11 +10866,11 @@
 .state-block,
 .alerts-stream-group,
 .diagnosis-chat-state-card,
-.diagnosis-modified-thinking__panel,
-.diagnosis-modified-tool-card,
-.diagnosis-modified-report-card,
-.diagnosis-modified-approval-card,
-.diagnosis-modified-inline-note,
+.diagnosis-workspace-thinking__panel,
+.diagnosis-workspace-tool-card,
+.diagnosis-workspace-report-card,
+.diagnosis-workspace-approval-card,
+.diagnosis-workspace-inline-note,
 .page-stage__table-shell,
 .knowledge-table-shell,
 .knowledge-document-table-shell,
@@ -10803,14 +10900,14 @@
 .mini-card,
 .state-block,
 .diagnosis-chat-state-card,
-.diagnosis-modified-thinking__panel,
-.diagnosis-modified-tool-card__body,
-.diagnosis-modified-report-card__grid > div,
-.diagnosis-modified-report-card__candidate-item,
-.diagnosis-modified-report-card__propagation-body,
-.diagnosis-modified-approval-card__actions li,
-.diagnosis-modified-approval-card__editor,
-.diagnosis-modified-approval-card__resolved,
+.diagnosis-workspace-thinking__panel,
+.diagnosis-workspace-tool-card__body,
+.diagnosis-workspace-report-card__grid > div,
+.diagnosis-workspace-report-card__candidate-item,
+.diagnosis-workspace-report-card__propagation-body,
+.diagnosis-workspace-approval-card__actions li,
+.diagnosis-workspace-approval-card__editor,
+.diagnosis-workspace-approval-card__resolved,
 .convergence-result-card__fact,
 .convergence-result-card__insight {
   background: var(--color-surface-muted);
@@ -10833,7 +10930,18 @@
   gap: var(--space-3);
 }
 
-.alerts-dashboard-toolbar-card__body {
+.alerts-dashboard-workbench .surface-card__header {
+  align-items: flex-start;
+}
+
+.alerts-dashboard-workbench__actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--space-2);
+}
+
+.alerts-dashboard-workbench__body {
   display: flex;
   flex-direction: column;
   gap: var(--space-4);
@@ -10841,7 +10949,7 @@
 
 .alerts-dashboard-toolbar {
   display: grid;
-  grid-template-columns: minmax(0, 1.8fr) 180px 220px auto;
+  grid-template-columns: minmax(0, 1.8fr) 180px 220px;
   gap: var(--space-3);
   align-items: center;
 }
@@ -10855,9 +10963,40 @@
   min-width: 0;
 }
 
-.alerts-dashboard-toolbar-card__error,
+.alerts-dashboard-workbench__error,
 .alerts-dashboard-empty {
   margin-top: 0;
+}
+
+.alerts-dashboard-metrics .metric-tile--accent,
+.alerts-dashboard-metrics .metric-tile--info,
+.alerts-dashboard-metrics .metric-tile--warning,
+.alerts-dashboard-metrics .metric-tile--success {
+  border-color: transparent;
+  background: var(--color-surface-muted);
+}
+
+.alerts-dashboard-metrics .metric-tile--accent .metric-tile__value {
+  color: var(--color-brand-700);
+}
+
+.alerts-dashboard-metrics .metric-tile--info .metric-tile__value {
+  color: color-mix(in srgb, var(--color-info-600) 82%, var(--color-text) 18%);
+}
+
+.alerts-dashboard-metrics .metric-tile--warning .metric-tile__value {
+  color: color-mix(in srgb, var(--color-warning-600) 88%, #6f4d12 12%);
+}
+
+.alerts-dashboard-metrics .metric-tile--success .metric-tile__value {
+  color: color-mix(in srgb, var(--color-success-600) 86%, #294b3c 14%);
+}
+
+.alerts-dashboard-metrics .metric-tile--accent .metric-tile__label,
+.alerts-dashboard-metrics .metric-tile--info .metric-tile__label,
+.alerts-dashboard-metrics .metric-tile--warning .metric-tile__label,
+.alerts-dashboard-metrics .metric-tile--success .metric-tile__label {
+  color: var(--color-text-secondary);
 }
 
 .alerts-dashboard-table-shell {
@@ -10986,5 +11125,277 @@
 @media (max-width: 860px) {
   .alerts-dashboard-toolbar {
     grid-template-columns: 1fr;
+  }
+}
+
+
+
+
+
+
+
+@keyframes diagnosis-approval-surface-enter {
+  from {
+    opacity: 0;
+    transform: translateY(10px) scale(0.98);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.diagnosis-workspace-composer-anchor {
+  position: relative;
+}
+
+.diagnosis-workspace-composer-anchor--with-approval {
+  display: block;
+}
+
+.diagnosis-workspace-composer-anchor--with-approval .diagnosis-workspace-composer {
+  min-width: 0;
+  width: min(100%, 360px);
+  margin-left: auto;
+}
+
+.diagnosis-workspace-approval-surface {
+  position: relative;
+  width: 100%;
+  max-width: 368px;
+  display: grid;
+  gap: 14px;
+  align-self: end;
+  padding: 18px;
+  border: 1px solid rgba(15, 23, 42, 0.12);
+  border-radius: 20px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.99), rgba(248, 250, 252, 0.96)),
+    rgba(255, 255, 255, 0.98);
+  box-shadow: 0 24px 48px rgba(15, 23, 42, 0.14);
+  backdrop-filter: blur(16px);
+  animation: diagnosis-approval-surface-enter 220ms ease-out;
+}
+
+.diagnosis-workspace-approval-surface--floating {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 14px);
+  z-index: 6;
+  width: min(100%, 368px);
+}
+
+.diagnosis-workspace-approval-surface--approved {
+  border-color: rgba(34, 197, 94, 0.24);
+  background: linear-gradient(180deg, rgba(240, 253, 244, 0.96), rgba(255, 255, 255, 0.98));
+}
+
+.diagnosis-workspace-approval-surface--rejected {
+  border-color: rgba(248, 113, 113, 0.24);
+  background: linear-gradient(180deg, rgba(254, 242, 242, 0.96), rgba(255, 255, 255, 0.98));
+}
+
+.diagnosis-workspace-approval-surface__header,
+.diagnosis-workspace-approval-surface__body {
+  display: grid;
+  gap: 14px;
+}
+
+.diagnosis-workspace-approval-surface__eyebrow,
+.diagnosis-workspace-approval-surface__meta-row,
+.diagnosis-workspace-approval-surface__footer {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.diagnosis-workspace-approval-surface__title {
+  margin: 10px 0 0;
+  color: rgba(15, 23, 42, 0.98);
+  font-size: 18px;
+  line-height: 26px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+
+.diagnosis-workspace-approval-surface__description,
+.diagnosis-workspace-approval-surface__impact p,
+.diagnosis-workspace-approval-surface__resolved p,
+.diagnosis-workspace-approval-surface__details-item p {
+  margin: 0;
+  color: rgba(51, 65, 85, 0.94);
+  font-size: 13px;
+  line-height: 21px;
+}
+
+.diagnosis-workspace-approval-surface__meta-item {
+  display: inline-flex;
+  align-items: center;
+  color: rgba(100, 116, 139, 0.94);
+  font-size: 11px;
+  line-height: 18px;
+  white-space: nowrap;
+}
+
+.diagnosis-workspace-approval-surface__meta-item + .diagnosis-workspace-approval-surface__meta-item::before {
+  content: "\00B7";
+  margin-right: 8px;
+  color: rgba(148, 163, 184, 0.92);
+}
+
+.diagnosis-workspace-approval-surface__impact,
+.diagnosis-workspace-approval-surface__steps,
+.diagnosis-workspace-approval-surface__details,
+.diagnosis-workspace-approval-surface__editor,
+.diagnosis-workspace-approval-surface__resolved {
+  display: grid;
+  gap: 10px;
+  padding: 12px 14px;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  border-radius: 14px;
+  background: rgba(248, 250, 252, 0.82);
+}
+
+.diagnosis-workspace-approval-surface__section-label,
+.diagnosis-workspace-approval-surface__editor label {
+  display: block;
+  margin: 0;
+  color: rgba(100, 116, 139, 0.9);
+  font-size: 10px;
+  line-height: 15px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.diagnosis-workspace-approval-surface__actions {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 10px;
+}
+
+.diagnosis-workspace-approval-surface__actions li {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  padding: 12px 14px;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.9);
+}
+
+.diagnosis-workspace-approval-surface__actions li > span {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 999px;
+  background: rgba(15, 23, 42, 0.08);
+  color: rgba(30, 41, 59, 0.92);
+  font-size: 11px;
+  line-height: 16px;
+  font-weight: 600;
+  flex-shrink: 0;
+}
+
+.diagnosis-workspace-approval-surface__actions li strong,
+.diagnosis-workspace-approval-surface__details-item strong {
+  display: block;
+  color: rgba(15, 23, 42, 0.96);
+  font-size: 13px;
+  line-height: 21px;
+  font-weight: 600;
+}
+
+.diagnosis-workspace-approval-surface__details-toggle {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: rgba(37, 99, 235, 0.92);
+  font-size: 12px;
+  line-height: 18px;
+  font-weight: 500;
+  text-align: left;
+}
+
+.diagnosis-workspace-approval-surface__details-body {
+  display: grid;
+  gap: 10px;
+  padding-top: 10px;
+  border-top: 1px solid rgba(15, 23, 42, 0.08);
+}
+
+.diagnosis-workspace-approval-surface__details-item {
+  display: grid;
+  gap: 6px;
+}
+
+.diagnosis-workspace-approval-surface__editor textarea {
+  width: 100%;
+  min-height: 84px;
+  padding: 12px 14px;
+  border: 1px solid rgba(148, 163, 184, 0.24);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.9);
+  color: rgba(15, 23, 42, 0.96);
+  font-size: 13px;
+  line-height: 21px;
+  resize: vertical;
+  transition:
+    border-color var(--transition-base),
+    background var(--transition-base),
+    box-shadow var(--transition-base);
+}
+
+.diagnosis-workspace-approval-surface__editor textarea:focus {
+  outline: none;
+  border-color: rgba(15, 23, 42, 0.22);
+  background: rgba(255, 255, 255, 0.98);
+  box-shadow: 0 0 0 4px rgba(15, 23, 42, 0.04);
+}
+
+.diagnosis-workspace-approval-surface__note {
+  margin: 0;
+  color: rgba(100, 116, 139, 0.94);
+  font-size: 12px;
+  line-height: 20px;
+}
+
+.diagnosis-workspace-approval-surface__note--warning {
+  color: rgba(180, 83, 9, 0.96);
+}
+
+.diagnosis-workspace-approval-surface__footer {
+  justify-content: flex-end;
+  padding-top: 2px;
+}
+
+.diagnosis-workspace-approval-surface__updating {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 20px;
+  background: rgba(255, 255, 255, 0.72);
+  backdrop-filter: blur(4px);
+  color: rgba(71, 85, 105, 0.94);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+@media (max-width: 1100px) {
+  .diagnosis-workspace-composer-anchor--with-approval .diagnosis-workspace-composer {
+    width: 100%;
+  }
+
+  .diagnosis-workspace-approval-surface--floating {
+    position: static;
+    width: 100%;
+    max-width: none;
+    margin-bottom: 12px;
   }
 }

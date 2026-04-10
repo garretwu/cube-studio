@@ -1,4 +1,4 @@
-﻿import {
+import {
   alertClusters,
   alerts,
   diagnosisHistorySessions,
@@ -10,7 +10,7 @@
   remediationOverview,
   skills,
   topologyEdges,
-  topologyExplorerMock,
+  topologyExplorerOnlineMock,
   topologyNodes,
 } from "../mocks/data";
 import type {
@@ -52,7 +52,7 @@ export function getTopologyFallback(): TopologyFallbackResponse {
 }
 
 export function getTopologyExplorerFallback(): TopologyExplorerResponse {
-  return topologyExplorerMock;
+  return topologyExplorerOnlineMock;
 }
 
 export function getAlertsFallback(): { alerts: Alert[]; clusters: AlertCluster[] } {
@@ -130,3 +130,4 @@ export function getSkillFallback(skillId: string): SkillDescriptor {
   }
   return matched;
 }
+

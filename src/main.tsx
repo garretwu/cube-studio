@@ -1,5 +1,3 @@
-﻿import { XProvider } from "@ant-design/x";
-import xZhCN from "@ant-design/x/locale/zh_CN";
 import { App as AntApp, ConfigProvider } from "antd";
 import antdZhCN from "antd/locale/zh_CN";
 import React from "react";
@@ -10,11 +8,6 @@ import App from "./App";
 import "./styles.css";
 import { appTheme } from "./theme/antdTheme";
 import { ensureThemeVariables } from "./theme/tokens";
-
-const xLocale = {
-  ...antdZhCN,
-  ...xZhCN,
-};
 
 async function enableMocks() {
   if (import.meta.env.DEV && import.meta.env.VITE_USE_MSW !== "false") {
@@ -39,11 +32,9 @@ function renderApp() {
     <React.StrictMode>
       <ConfigProvider locale={antdZhCN} theme={appTheme}>
         <AntApp>
-          <XProvider locale={xLocale} theme={appTheme}>
-            <BrowserRouter>
-              <App />
-            </BrowserRouter>
-          </XProvider>
+          <BrowserRouter>
+            <App />
+          </BrowserRouter>
         </AntApp>
       </ConfigProvider>
     </React.StrictMode>,

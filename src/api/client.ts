@@ -229,6 +229,7 @@ function mapSummaryToDiagnosisSummary(item: SessionSummary): DiagnosisSessionSum
     status: item.status,
     severity: normalizeSeverity(item.severity),
     alert_name: item.alert_name,
+    fingerprint: item.fingerprint,
     duration_seconds: item.duration_seconds,
     outcome: item.outcome ?? null,
     triage_priority: null,
@@ -879,4 +880,5 @@ export const apiClient = {
 };
 
 export type ApiClient = typeof apiClient;
+
 

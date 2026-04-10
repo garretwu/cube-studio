@@ -2,11 +2,11 @@ import { describe, expect, it } from "vitest";
 
 import type { Alert, DiagnosisSession } from "../api/types";
 import {
-  buildDiagnosisModifiedDemoScenario,
-  buildDiagnosisModifiedLiveView,
+  buildDiagnosisDemoScenario,
+  buildDiagnosisLiveView,
   normalizeDiagnosisDisplayText,
-  type DiagnosisModifiedTimelineItem,
-} from "./diagnosisModifiedModel";
+  type DiagnosisTimelineItem,
+} from "./diagnosisModel";
 import { formatDateTimeParts } from "../utils/format";
 
 const baseAlert: Alert = {
@@ -32,7 +32,7 @@ function createSession(traceSteps: NonNullable<DiagnosisSession["trace"]>["steps
   };
 }
 
-describe("buildDiagnosisModifiedLiveView tool matching", () => {
+describe("buildDiagnosisLiveView tool matching", () => {
   it("matches non-adjacent observations by tool name and resolves into single cards", () => {
     const session = createSession([
       {
@@ -65,7 +65,7 @@ describe("buildDiagnosisModifiedLiveView tool matching", () => {
       },
     ]);
 
-    const view = buildDiagnosisModifiedLiveView(session, []);
+    const view = buildDiagnosisLiveView(session, []);
     const toolItems = view.timeline.filter((item) => item.kind === "tool");
 
     expect(toolItems).toHaveLength(2);
@@ -102,9 +102,9 @@ describe("buildDiagnosisModifiedLiveView tool matching", () => {
       },
     ]);
 
-    const view = buildDiagnosisModifiedLiveView(session, []);
+    const view = buildDiagnosisLiveView(session, []);
     const deploymentTools = view.timeline
-      .filter((item): item is Extract<DiagnosisModifiedTimelineItem, { kind: "tool" }> => item.kind === "tool")
+      .filter((item): item is Extract<DiagnosisTimelineItem, { kind: "tool" }> => item.kind === "tool")
       .filter((item) => item.toolName === "get_recent_deployments");
 
     expect(deploymentTools).toHaveLength(1);
@@ -122,7 +122,7 @@ describe("buildDiagnosisModifiedLiveView tool matching", () => {
       },
     ]);
 
-    const view = buildDiagnosisModifiedLiveView(session, []);
+    const view = buildDiagnosisLiveView(session, []);
     const toolItems = view.timeline.filter((item) => item.kind === "tool");
 
     expect(toolItems).toHaveLength(1);
@@ -142,7 +142,7 @@ describe("buildDiagnosisModifiedLiveView tool matching", () => {
       },
     ]);
 
-    const view = buildDiagnosisModifiedLiveView(session, []);
+    const view = buildDiagnosisLiveView(session, []);
     const toolItems = view.timeline.filter((item) => item.kind === "tool");
 
     expect(toolItems).toHaveLength(1);
@@ -151,7 +151,7 @@ describe("buildDiagnosisModifiedLiveView tool matching", () => {
   });
 });
 
-describe("buildDiagnosisModifiedLiveView next-action narration", () => {
+describe("buildDiagnosisLiveView next-action narration", () => {
   it("injects a next-action assistant message right after tool-call thinking", () => {
     const session = createSession([
       {
@@ -170,7 +170,7 @@ describe("buildDiagnosisModifiedLiveView next-action narration", () => {
       },
     ]);
 
-    const view = buildDiagnosisModifiedLiveView(session, []);
+    const view = buildDiagnosisLiveView(session, []);
 
     expect(view.timeline[0]?.kind).toBe("thinking");
     expect(view.timeline[1]?.kind).toBe("message");
@@ -194,7 +194,7 @@ describe("buildDiagnosisModifiedLiveView next-action narration", () => {
       },
     ]);
 
-    const view = buildDiagnosisModifiedLiveView(session, []);
+    const view = buildDiagnosisLiveView(session, []);
 
     expect(view.timeline).toHaveLength(2);
     expect(view.timeline[0]?.kind).toBe("thinking");
@@ -207,9 +207,9 @@ describe("buildDiagnosisModifiedLiveView next-action narration", () => {
       expect(nextAction.content).toContain("root-cause conclusion");
     }  });
 });
-describe("buildDiagnosisModifiedDemoScenario ReAct cadence", () => {
+describe("buildDiagnosisDemoScenario ReAct cadence", () => {
   it("ensures every thinking append is followed by an assistant conclusion append", () => {
-    const scenario = buildDiagnosisModifiedDemoScenario("Analyze auth-svc latency and error-rate spike");
+    const scenario = buildDiagnosisDemoScenario("Analyze auth-svc latency and error-rate spike");
     const appendItems = scenario.events
       .filter((event): event is Extract<(typeof scenario.events)[number], { type: "append" }> => event.type === "append")
       .map((event) => event.item);
@@ -284,7 +284,7 @@ describe("diagnosis display text normalization", () => {
       },
     };
 
-    const view = buildDiagnosisModifiedLiveView(session, []);
+    const view = buildDiagnosisLiveView(session, []);
 
     expect(view.summary?.rootCause).toBe("\u5f53\u524d\u7ed3\u8bba\u4e3a worker-03 \u8282\u70b9 GPU \u4e89\u7528");
     expect(view.summary?.impactSummary).toBe("vLLM p95 \u5ef6\u8fdf\u6301\u7eed\u8d70\u9ad8\uff0c\u63a8\u7406\u541e\u5410\u51fa\u73b0\u660e\u663e\u4e0b\u964d\u3002");
@@ -326,7 +326,7 @@ describe("diagnosis summary metadata", () => {
       },
     };
 
-    const view = buildDiagnosisModifiedLiveView(session, [
+    const view = buildDiagnosisLiveView(session, [
       {
         id: "assistant-latest",
         role: "assistant",
@@ -342,7 +342,7 @@ describe("diagnosis summary metadata", () => {
   });
 
   it("uses localized certainty labels and populates demo summary timestamps", () => {
-    const scenario = buildDiagnosisModifiedDemoScenario("Analyze inference-gateway latency spike");
+    const scenario = buildDiagnosisDemoScenario("Analyze inference-gateway latency spike");
 
     expect(scenario.summary.certaintyLabel).toBe("\u5df2\u786e\u8ba4");
     expect(scenario.summary.updatedTimeLabel).not.toBe("--");
@@ -430,7 +430,7 @@ describe("diagnosis remediation audit timeline", () => {
       },
     ];
 
-    const view = buildDiagnosisModifiedLiveView(session, [], events, localAuditRecords);
+    const view = buildDiagnosisLiveView(session, [], events, localAuditRecords);
     const systemItems = view.timeline.filter((item) => item.kind === "system");
 
     expect(systemItems).toHaveLength(3);

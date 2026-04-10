@@ -1,4 +1,4 @@
-import { http, HttpResponse } from "msw";
+﻿import { http, HttpResponse } from "msw";
 import { describe, expect, it } from "vitest";
 
 import { apiClient } from "./client";
@@ -416,6 +416,7 @@ describe("apiClient.getTopology", () => {
     const sessions = await apiClient.getDiagnosisHistorySessions();
     expect(sessions).toHaveLength(1);
     expect(sessions[0]?.session_id).toBe("sess-fallback");
+    expect(sessions[0]?.fingerprint).toBe("fp-fallback");
   });
   it("loads chat history from /api/chat/history", async () => {
     server.use(
@@ -442,3 +443,7 @@ describe("apiClient.getTopology", () => {
     expect(history[0]?.id).toBe("chat-1");
   });
 });
+
+
+
+

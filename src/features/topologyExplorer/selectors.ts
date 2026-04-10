@@ -5,7 +5,12 @@ import type {
   TopologyPath,
   TopologyRelation,
 } from "../../api/types";
-import type { ExplorerLayerFilter, ExplorerSummaryFilter, ExplorerStatusFilter, TopologyExplorerFilters } from "./types";
+import type {
+  ExplorerLayerFilter,
+  ExplorerSummaryFilter,
+  ExplorerStatusFilter,
+  TopologyExplorerFilters,
+} from "./types";
 
 export type TopologySummaryMetrics = {
   totalEntities: number;
@@ -33,6 +38,41 @@ export type ImpactTopology = {
   affectedNodes: TopologyObject[];
   blastRadiusCount: number;
 };
+
+export const GLOBAL_TOPOLOGY_SERVICE_NODE_LIMIT = 20;
+
+function isGlobalTopologyCappedNode(node: TopologyObject) {
+  return node.layer === "service";
+}
+
+export function getGlobalTopologyDisplayData(
+  response: TopologyExplorerResponse | undefined,
+) {
+  if (!response) {
+    return undefined;
+  }
+
+  const visibleServiceNodeIds = new Set(
+    response.nodes
+      .filter((node) => isGlobalTopologyCappedNode(node))
+      .slice(0, GLOBAL_TOPOLOGY_SERVICE_NODE_LIMIT)
+      .map((node) => node.id),
+  );
+  const nodes = response.nodes.filter(
+    (node) =>
+      !isGlobalTopologyCappedNode(node) || visibleServiceNodeIds.has(node.id),
+  );
+  const visibleNodeIds = new Set(nodes.map((node) => node.id));
+  const edges = response.edges.filter(
+    (edge) => visibleNodeIds.has(edge.source) && visibleNodeIds.has(edge.target),
+  );
+
+  return {
+    ...response,
+    nodes,
+    edges,
+  };
+}
 
 function toLookupMap<T extends { id: string }>(items: T[]) {
   return new Map(items.map((item) => [item.id, item]));
@@ -69,17 +109,20 @@ function pathStatusRank(status: TopologyPath["status"]) {
 
 function sortImpactPaths(paths: TopologyPath[]) {
   return [...paths].sort((left, right) => {
-    const statusDelta = pathStatusRank(right.status) - pathStatusRank(left.status);
+    const statusDelta =
+      pathStatusRank(right.status) - pathStatusRank(left.status);
     if (statusDelta !== 0) {
       return statusDelta;
     }
 
-    const impactDelta = impactRank(right.impactLevel) - impactRank(left.impactLevel);
+    const impactDelta =
+      impactRank(right.impactLevel) - impactRank(left.impactLevel);
     if (impactDelta !== 0) {
       return impactDelta;
     }
 
-    const affectedDelta = right.affectedNodeIds.length - left.affectedNodeIds.length;
+    const affectedDelta =
+      right.affectedNodeIds.length - left.affectedNodeIds.length;
     if (affectedDelta !== 0) {
       return affectedDelta;
     }
@@ -186,7 +229,9 @@ export function searchTopologyObjects(nodes: TopologyObject[], query: string) {
   });
 }
 
-export function getSummaryMetrics(response?: TopologyExplorerResponse): TopologySummaryMetrics {
+export function getSummaryMetrics(
+  response?: TopologyExplorerResponse,
+): TopologySummaryMetrics {
   if (!response) {
     return {
       totalEntities: 0,
@@ -198,9 +243,14 @@ export function getSummaryMetrics(response?: TopologyExplorerResponse): Topology
 
   return {
     totalEntities: response.nodes.length,
-    abnormalEntities: response.nodes.filter((node) => node.status === "abnormal").length,
-    impactedEntities: response.nodes.filter((node) => node.status === "impacted").length,
-    activePaths: response.paths.filter((path) => path.status === "active").length,
+    abnormalEntities: response.nodes.filter(
+      (node) => node.status === "abnormal",
+    ).length,
+    impactedEntities: response.nodes.filter(
+      (node) => node.status === "impacted",
+    ).length,
+    activePaths: response.paths.filter((path) => path.status === "active")
+      .length,
   };
 }
 
@@ -229,14 +279,20 @@ export function getImpactPathIdForNode(paths: TopologyPath[], nodeId?: string) {
   )?.id;
 }
 
-export function getNeighborDepths(edges: TopologyRelation[], nodeId?: string, maxDepth = 2) {
+export function getNeighborDepths(
+  edges: TopologyRelation[],
+  nodeId?: string,
+  maxDepth = 2,
+) {
   if (!nodeId) {
     return new Map<string, number>();
   }
 
   const undirected = getUndirected(edges);
   const visited = new Map<string, number>([[nodeId, 0]]);
-  const queue: Array<{ id: string; depth: number }> = [{ id: nodeId, depth: 0 }];
+  const queue: Array<{ id: string; depth: number }> = [
+    { id: nodeId, depth: 0 },
+  ];
 
   while (queue.length > 0) {
     const current = queue.shift();
@@ -266,9 +322,20 @@ function getFilterContextIds(
   summaryFilter: ExplorerSummaryFilter,
 ) {
   let contextIds = new Set(response.nodes.map((node) => node.id));
-  const abnormalIds = new Set(response.nodes.filter((node) => node.status === "abnormal").map((node) => node.id));
-  const impactedIds = new Set(response.nodes.filter((node) => node.status === "impacted").map((node) => node.id));
-  const activePathIds = collectPathContext(response, (path) => path.status === "active");
+  const abnormalIds = new Set(
+    response.nodes
+      .filter((node) => node.status === "abnormal")
+      .map((node) => node.id),
+  );
+  const impactedIds = new Set(
+    response.nodes
+      .filter((node) => node.status === "impacted")
+      .map((node) => node.id),
+  );
+  const activePathIds = collectPathContext(
+    response,
+    (path) => path.status === "active",
+  );
   const abnormalContext = collectPathContext(
     response,
     (path) =>
@@ -281,7 +348,8 @@ function getFilterContextIds(
     response,
     (path) =>
       path.status === "active" &&
-      (impactedIds.has(path.entryNodeId) || path.affectedNodeIds.some((id) => impactedIds.has(id))),
+      (impactedIds.has(path.entryNodeId) ||
+        path.affectedNodeIds.some((id) => impactedIds.has(id))),
   );
 
   abnormalIds.forEach((id) => abnormalContext.add(id));
@@ -302,7 +370,10 @@ function getFilterContextIds(
   return contextIds;
 }
 
-function filterByLayer(nodes: TopologyObject[], layerFilter: ExplorerLayerFilter) {
+function filterByLayer(
+  nodes: TopologyObject[],
+  layerFilter: ExplorerLayerFilter,
+) {
   if (layerFilter === "all") {
     return nodes;
   }
@@ -315,17 +386,26 @@ function buildAggregatedEdges(
   visibleNodeIds: Set<string>,
   contextIds: Set<string>,
 ) {
-  const outgoing = getOutgoing(response.edges.filter((edge) => contextIds.has(edge.source) && contextIds.has(edge.target)));
+  const outgoing = getOutgoing(
+    response.edges.filter(
+      (edge) => contextIds.has(edge.source) && contextIds.has(edge.target),
+    ),
+  );
   const nodeMap = toLookupMap(response.nodes);
   const directKeys = new Set(
     response.edges
-      .filter((edge) => visibleNodeIds.has(edge.source) && visibleNodeIds.has(edge.target))
+      .filter(
+        (edge) =>
+          visibleNodeIds.has(edge.source) && visibleNodeIds.has(edge.target),
+      )
       .map((edge) => `${edge.source}:${edge.target}`),
   );
   const aggregated = new Map<string, TopologyRelation>();
 
   visibleNodeIds.forEach((sourceId) => {
-    const initialEdges = (outgoing.get(sourceId) ?? []).filter((edge) => !visibleNodeIds.has(edge.target));
+    const initialEdges = (outgoing.get(sourceId) ?? []).filter(
+      (edge) => !visibleNodeIds.has(edge.target),
+    );
     const queue = initialEdges.map((edge) => ({
       currentId: edge.target,
       traversedEdges: [edge],
@@ -351,18 +431,28 @@ function buildAggregatedEdges(
             return;
           }
 
-          const pathStatus = traversedEdges.reduce<TopologyObjectStatus>((winner, edge) => {
-            return statusRank(edge.status) > statusRank(winner) ? edge.status : winner;
-          }, "healthy");
+          const pathStatus = traversedEdges.reduce<TopologyObjectStatus>(
+            (winner, edge) => {
+              return statusRank(edge.status) > statusRank(winner)
+                ? edge.status
+                : winner;
+            },
+            "healthy",
+          );
           const withNodeStatus = [sourceId, nextEdge.target]
             .map((id) => nodeMap.get(id)?.status)
             .filter((status): status is TopologyObjectStatus => Boolean(status))
             .reduce<TopologyObjectStatus>(
-              (winner, status) => (statusRank(status) > statusRank(winner) ? status : winner),
+              (winner, status) =>
+                statusRank(status) > statusRank(winner) ? status : winner,
               pathStatus,
             );
-          const impactLevel = traversedEdges.reduce<TopologyRelation["impactLevel"]>((winner, edge) => {
-            return impactRank(edge.impactLevel) > impactRank(winner) ? edge.impactLevel : winner;
+          const impactLevel = traversedEdges.reduce<
+            TopologyRelation["impactLevel"]
+          >((winner, edge) => {
+            return impactRank(edge.impactLevel) > impactRank(winner)
+              ? edge.impactLevel
+              : winner;
           }, "low");
 
           aggregated.set(aggregateKey, {
@@ -373,7 +463,7 @@ function buildAggregatedEdges(
             status: withNodeStatus,
             isCritical: traversedEdges.some((edge) => edge.isCritical),
             impactLevel,
-            label: "跨层聚合",
+            label: "鐠恒劌鐪伴懕姘値",
             isAggregated: true,
           });
           return;
@@ -386,7 +476,9 @@ function buildAggregatedEdges(
         queue.push({
           currentId: nextEdge.target,
           traversedEdges,
-          visitedHiddenIds: new Set(current.visitedHiddenIds).add(nextEdge.target),
+          visitedHiddenIds: new Set(current.visitedHiddenIds).add(
+            nextEdge.target,
+          ),
         });
       });
     }
@@ -408,15 +500,24 @@ export function getVisibleTopology(
     };
   }
 
-  const contextIds = getFilterContextIds(response, filters.statusFilter, filters.summaryFilter);
+  const contextIds = getFilterContextIds(
+    response,
+    filters.statusFilter,
+    filters.summaryFilter,
+  );
   const visibleNodes = filterByLayer(
     response.nodes.filter((node) => contextIds.has(node.id)),
     filters.layerFilter,
   );
   const visibleNodeIds = new Set(visibleNodes.map((node) => node.id));
-  const directEdges = response.edges.filter((edge) => visibleNodeIds.has(edge.source) && visibleNodeIds.has(edge.target));
+  const directEdges = response.edges.filter(
+    (edge) =>
+      visibleNodeIds.has(edge.source) && visibleNodeIds.has(edge.target),
+  );
   const aggregatedEdges =
-    filters.layerFilter === "all" ? [] : buildAggregatedEdges(response, visibleNodeIds, contextIds);
+    filters.layerFilter === "all"
+      ? []
+      : buildAggregatedEdges(response, visibleNodeIds, contextIds);
 
   return {
     nodes: visibleNodes,
@@ -439,7 +540,10 @@ export function getPathsForNode(paths: TopologyPath[], nodeId?: string) {
   );
 }
 
-export function getImpactTopology(response: TopologyExplorerResponse | undefined, pathId?: string): ImpactTopology | null {
+export function getImpactTopology(
+  response: TopologyExplorerResponse | undefined,
+  pathId?: string,
+): ImpactTopology | null {
   if (!response || !pathId) {
     return null;
   }
@@ -452,7 +556,10 @@ export function getImpactTopology(response: TopologyExplorerResponse | undefined
 
   const edgeMap = getEdgeMap(response.edges);
   const nodeMap = toLookupMap(response.nodes);
-  const nodeIds = collectPathContext(response, (path) => path.id === activePath.id);
+  const nodeIds = collectPathContext(
+    response,
+    (path) => path.id === activePath.id,
+  );
   const edges = unique(activePath.edgeIds)
     .map((edgeId) => edgeMap.get(edgeId))
     .filter((edge): edge is TopologyRelation => Boolean(edge));
@@ -472,9 +579,16 @@ export function getImpactTopology(response: TopologyExplorerResponse | undefined
   };
 }
 
-export function getRelationsForNode(response: TopologyExplorerResponse | undefined, nodeId?: string) {
+export function getRelationsForNode(
+  response: TopologyExplorerResponse | undefined,
+  nodeId?: string,
+) {
   if (!response || !nodeId) {
-    return { upstream: [] as TopologyObject[], downstream: [] as TopologyObject[], neighbors: [] as TopologyObject[] };
+    return {
+      upstream: [] as TopologyObject[],
+      downstream: [] as TopologyObject[],
+      neighbors: [] as TopologyObject[],
+    };
   }
 
   const nodeMap = toLookupMap(response.nodes);
@@ -491,7 +605,10 @@ export function getRelationsForNode(response: TopologyExplorerResponse | undefin
   return { upstream, downstream, neighbors };
 }
 
-export function getAffectedObjectsForNode(response: TopologyExplorerResponse | undefined, nodeId?: string) {
+export function getAffectedObjectsForNode(
+  response: TopologyExplorerResponse | undefined,
+  nodeId?: string,
+) {
   if (!response || !nodeId) {
     return [];
   }
@@ -505,15 +622,21 @@ export function getAffectedObjectsForNode(response: TopologyExplorerResponse | u
   );
 }
 
-export function buildTopologyTree(response: TopologyExplorerResponse | undefined): TopologyTreeNode | null {
+export function buildTopologyTree(
+  response: TopologyExplorerResponse | undefined,
+): TopologyTreeNode | null {
   if (!response) {
     return null;
   }
 
   const racks = response.nodes.filter((node) => node.type === "rack");
   const nodeMap = toLookupMap(response.nodes);
-  const containsEdges = response.edges.filter((edge) => edge.relationType === "contains");
-  const serviceEdges = response.edges.filter((edge) => edge.relationType === "runs_on");
+  const containsEdges = response.edges.filter(
+    (edge) => edge.relationType === "contains",
+  );
+  const serviceEdges = response.edges.filter(
+    (edge) => edge.relationType === "runs_on",
+  );
 
   const rackNodes = racks.map<TopologyTreeNode>((rack) => {
     const computeNodes = containsEdges
@@ -573,7 +696,9 @@ export function buildTopologyTree(response: TopologyExplorerResponse | undefined
       objectId: cluster.id,
       objectType: cluster.type,
       children: response.nodes
-        .filter((node) => node.type === "service" && node.cluster === cluster.id)
+        .filter(
+          (node) => node.type === "service" && node.cluster === cluster.id,
+        )
         .map((service) => ({
           id: service.id,
           label: service.name,
@@ -606,16 +731,159 @@ export function buildTopologyTree(response: TopologyExplorerResponse | undefined
       },
       {
         id: `${response.site.id}-cluster`,
-        label: "集群与服务",
+        label: "Clusters / Services",
         type: "group",
         children: clusterNodes,
       },
       {
         id: `${response.site.id}-network`,
-        label: "网络设施",
+        label: "缂冩垹绮剁拋鐐煢",
         type: "group",
         children: switchNodes,
       },
     ],
+  };
+}
+
+export type TopologyStageFilters = {
+  layerFilter: ExplorerLayerFilter;
+  searchQuery: string;
+  searchResultIds?: string[];
+};
+
+export type ObjectTopologyDetail = {
+  focalNode?: TopologyObject;
+  nodes: TopologyObject[];
+  edges: TopologyRelation[];
+  upstream: TopologyObject[];
+  downstream: TopologyObject[];
+  neighbors: TopologyObject[];
+  paths: TopologyPath[];
+  affectedObjects: TopologyObject[];
+  notFound: boolean;
+};
+
+function getDirectNeighborContextIds(
+  response: TopologyExplorerResponse,
+  focalNodeIds: Set<string>,
+) {
+  const contextIds = new Set(focalNodeIds);
+
+  response.edges.forEach((edge) => {
+    if (focalNodeIds.has(edge.source) || focalNodeIds.has(edge.target)) {
+      contextIds.add(edge.source);
+      contextIds.add(edge.target);
+    }
+  });
+
+  return contextIds;
+}
+
+export function getStageTopology(
+  response: TopologyExplorerResponse | undefined,
+  filters: TopologyStageFilters,
+) {
+  const scopedResponse = getGlobalTopologyDisplayData(response);
+
+  if (!scopedResponse) {
+    return {
+      nodes: [] as TopologyObject[],
+      edges: [] as TopologyRelation[],
+      contextIds: new Set<string>(),
+      visibleNodeIds: new Set<string>(),
+      searchResultIds: [] as string[],
+    };
+  }
+
+  const searchResultIds =
+    filters.searchResultIds ??
+    searchTopologyObjects(
+      filters.layerFilter === "all"
+        ? scopedResponse.nodes
+        : scopedResponse.nodes.filter((node) => node.layer === filters.layerFilter),
+      filters.searchQuery,
+    ).map((node) => node.id);
+  const contextIds = filters.searchQuery.trim()
+    ? getDirectNeighborContextIds(scopedResponse, new Set(searchResultIds))
+    : new Set(scopedResponse.nodes.map((node) => node.id));
+  const visibleNodes = filterByLayer(
+    scopedResponse.nodes.filter((node) => contextIds.has(node.id)),
+    filters.layerFilter,
+  );
+  const visibleNodeIds = new Set(visibleNodes.map((node) => node.id));
+  const directEdges = scopedResponse.edges.filter(
+    (edge) =>
+      visibleNodeIds.has(edge.source) && visibleNodeIds.has(edge.target),
+  );
+  const aggregatedEdges =
+    filters.layerFilter === "all"
+      ? []
+      : buildAggregatedEdges(scopedResponse, visibleNodeIds, contextIds);
+
+  return {
+    nodes: visibleNodes,
+    edges: [...directEdges, ...aggregatedEdges],
+    contextIds,
+    visibleNodeIds,
+    searchResultIds,
+  };
+}
+
+export function getObjectTopologyDetail(
+  response: TopologyExplorerResponse | undefined,
+  nodeId?: string,
+): ObjectTopologyDetail {
+  if (!response || !nodeId) {
+    return {
+      focalNode: undefined,
+      nodes: [],
+      edges: [],
+      upstream: [],
+      downstream: [],
+      neighbors: [],
+      paths: [],
+      affectedObjects: [],
+      notFound: false,
+    };
+  }
+
+  const nodeMap = toLookupMap(response.nodes);
+  const focalNode = nodeMap.get(nodeId);
+  if (!focalNode) {
+    return {
+      focalNode: undefined,
+      nodes: [],
+      edges: [],
+      upstream: [],
+      downstream: [],
+      neighbors: [],
+      paths: [],
+      affectedObjects: [],
+      notFound: true,
+    };
+  }
+
+  const { upstream, downstream, neighbors } = getRelationsForNode(
+    response,
+    nodeId,
+  );
+  const contextIds = new Set<string>([
+    nodeId,
+    ...upstream.map((node) => node.id),
+    ...downstream.map((node) => node.id),
+  ]);
+
+  return {
+    focalNode,
+    nodes: response.nodes.filter((node) => contextIds.has(node.id)),
+    edges: response.edges.filter(
+      (edge) => edge.source === nodeId || edge.target === nodeId,
+    ),
+    upstream,
+    downstream,
+    neighbors,
+    paths: getPathsForNode(response.paths, nodeId),
+    affectedObjects: getAffectedObjectsForNode(response, nodeId),
+    notFound: false,
   };
 }

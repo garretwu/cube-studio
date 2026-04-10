@@ -1,16 +1,24 @@
-﻿import { useEffect, useMemo, useState } from "react";
+﻿import { useEffect, useMemo, useRef, useState } from "react";
 import { Select } from "antd";
 import { useNavigate } from "react-router-dom";
 
 import { apiClient } from "../api/client";
-import type { AlertStatus, DiagnosisSession, Severity } from "../api/types";
-import { AppButton, AppIcon, AppInput, SectionHeader, StatusChip, SurfaceCard } from "../components/ui";
+import type { AlertStatus, DiagnosisSession, DiagnosisSessionSummary, Severity } from "../api/types";
+import { AppButton, AppIcon, AppInput, MetricTile, StatusChip, SurfaceCard } from "../components/ui";
 import { useAlertStore } from "../store/alertStore";
 import { formatSeverity } from "../utils/display";
-import { formatTimestamp } from "../utils/format";
-import { buildAlertConvergenceView } from "./alertsModifiedModel";
+import { formatPercent, formatTimestamp } from "../utils/format";
+import {
+  buildAlertDashboardView,
+  getAlertDashboardSearchText,
+  type AlertDashboardItem,
+  type AlertDashboardStatusKey,
+  type ChipTone,
+} from "./alertsModifiedModel";
 
-function severityTone(severity: Severity) {
+type DashboardStatusFilter = "all" | AlertDashboardStatusKey;
+
+function severityTone(severity: Severity): ChipTone {
   switch (severity) {
     case "critical":
       return "danger";
@@ -21,356 +29,403 @@ function severityTone(severity: Severity) {
   }
 }
 
-function alertStatusTone(status: AlertStatus) {
-  switch (status) {
-    case "firing":
-      return "danger";
+function statusFilterLabel(value: DashboardStatusFilter) {
+  switch (value) {
+    case "pending_diagnosis":
+      return "待诊断";
+    case "diagnosing":
+      return "诊断中/执行中";
+    case "pending_remediation":
+      return "待审批/待执行";
     case "resolved":
-      return "success";
+      return "已恢复";
+    case "attention":
+      return "已转人工/异常结束";
     default:
-      return "neutral";
+      return "全部状态";
   }
 }
 
-function formatAlertStatus(status: AlertStatus) {
-  switch (status) {
-    case "firing":
-      return "持续告警";
-    case "resolved":
-      return "已恢复";
-    default:
-      return "已静默";
-  }
+function actionVariant(item: AlertDashboardItem): "primary" | "secondary" {
+  return item.action.kind === "diagnose" || item.action.kind === "remediation" ? "primary" : "secondary";
 }
 
 function AlertsModifiedPage() {
   const navigate = useNavigate();
-  const { alerts, clusters, fetchAlerts, isLoading } = useAlertStore();
+  const { alerts, clusters, fetchAlerts, isLoading, error: alertsError } = useAlertStore();
   const [query, setQuery] = useState("");
   const [severityFilter, setSeverityFilter] = useState<Severity | "all">("all");
-  const [activeSession, setActiveSession] = useState<DiagnosisSession | undefined>();
-  const [diagnosingResultId, setDiagnosingResultId] = useState<string | null>(null);
+  const [statusFilter, setStatusFilter] = useState<DashboardStatusFilter>("all");
+  const [historySummaries, setHistorySummaries] = useState<DiagnosisSessionSummary[]>([]);
+  const [sessionDetails, setSessionDetails] = useState<Record<string, DiagnosisSession | undefined>>({});
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyError, setHistoryError] = useState<string | null>(null);
+  const [diagnosingItemId, setDiagnosingItemId] = useState<string | null>(null);
   const [diagnosisError, setDiagnosisError] = useState<string | null>(null);
-  const [expandedFingerprint, setExpandedFingerprint] = useState<string | null>(null);
+  const attemptedSessionIdsRef = useRef(new Set<string>());
+
+  useEffect(() => {
+    void fetchAlerts();
+  }, [fetchAlerts]);
 
   useEffect(() => {
     let cancelled = false;
+    setHistoryLoading(true);
+    setHistoryError(null);
 
-    void fetchAlerts();
     void apiClient
-      .getDiagnosisSession()
-      .then((session) => {
-        if (!cancelled) {
-          setActiveSession(session ?? undefined);
+      .getDiagnosisHistorySessions()
+      .then((summaries) => {
+        if (cancelled) {
+          return;
         }
+        setHistorySummaries(summaries);
       })
-      .catch(() => {
+      .catch((error) => {
+        if (cancelled) {
+          return;
+        }
+        setHistorySummaries([]);
+        setHistoryError(error instanceof Error ? error.message : "诊断会话同步失败");
+      })
+      .finally(() => {
         if (!cancelled) {
-          setActiveSession(undefined);
+          setHistoryLoading(false);
         }
       });
 
     return () => {
       cancelled = true;
     };
-  }, [fetchAlerts]);
+  }, []);
 
-  const filteredAlerts = useMemo(
-    () =>
-      alerts.filter((alert) => {
-        const matchesSeverity = severityFilter === "all" || alert.severity === severityFilter;
-        const haystack = [
-          alert.alert_name,
-          alert.annotations.summary,
-          alert.annotations.entity,
-          alert.labels.instance,
-          alert.labels.node,
-          alert.labels.service,
-          alert.fingerprint,
-        ]
-          .filter(Boolean)
-          .join(" ")
-          .toLowerCase();
-
-        const matchesQuery = !query.trim() || haystack.includes(query.trim().toLowerCase());
-        return matchesSeverity && matchesQuery;
-      }),
-    [alerts, query, severityFilter],
-  );
-
-  const { results, flow } = useMemo(
-    () => buildAlertConvergenceView(filteredAlerts, clusters, activeSession),
-    [activeSession, clusters, filteredAlerts],
-  );
+  const matchingSummaries = useMemo(() => {
+    const activeFingerprints = new Set(alerts.map((alert) => alert.fingerprint));
+    return historySummaries.filter((summary) => summary.fingerprint && activeFingerprints.has(summary.fingerprint));
+  }, [alerts, historySummaries]);
 
   useEffect(() => {
-    setExpandedFingerprint((current) => {
-      if (flow.length === 0) {
-        return null;
+    const pendingSummaries = matchingSummaries.filter((summary) => {
+      if (!summary.session_id) {
+        return false;
       }
 
-      if (current && flow.some((group) => group.fingerprint === current)) {
-        return current;
+      if (Object.prototype.hasOwnProperty.call(sessionDetails, summary.session_id)) {
+        return false;
       }
 
-      return flow[0].fingerprint;
+      if (attemptedSessionIdsRef.current.has(summary.session_id)) {
+        return false;
+      }
+
+      return true;
     });
-  }, [flow]);
-  const fingerprintCount = flow.length;
 
-  const startDiagnosisFromResult = async (resultId: string, fingerprint: string) => {
-    const candidates = filteredAlerts.filter((item) => item.fingerprint === fingerprint);
-    if (!candidates.length) {
+    if (pendingSummaries.length === 0) {
+      return;
+    }
+
+    pendingSummaries.forEach((summary) => attemptedSessionIdsRef.current.add(summary.session_id));
+    let cancelled = false;
+
+    void Promise.allSettled(
+      pendingSummaries.map(async (summary) => ({
+        sessionId: summary.session_id,
+        session: await apiClient.getDiagnosisSession(summary.session_id),
+      })),
+    ).then((results) => {
+      if (cancelled) {
+        return;
+      }
+
+      const nextDetails: Record<string, DiagnosisSession | undefined> = {};
+      results.forEach((result, index) => {
+        const sessionId = pendingSummaries[index]?.session_id;
+        if (!sessionId) {
+          return;
+        }
+
+        if (result.status === "fulfilled") {
+          nextDetails[sessionId] = result.value.session ?? undefined;
+          return;
+        }
+
+        nextDetails[sessionId] = undefined;
+      });
+
+      setSessionDetails((current) => ({ ...current, ...nextDetails }));
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [matchingSummaries, sessionDetails]);
+
+  const view = useMemo(
+    () => buildAlertDashboardView(alerts, clusters, historySummaries, sessionDetails),
+    [alerts, clusters, historySummaries, sessionDetails],
+  );
+
+  const filteredItems = useMemo(() => {
+    const normalizedQuery = query.trim().toLowerCase();
+
+    return view.items.filter((item) => {
+      const matchesSeverity = severityFilter === "all" || item.severity === severityFilter;
+      const matchesStatus = statusFilter === "all" || item.statusKey === statusFilter;
+      const matchesQuery = !normalizedQuery || getAlertDashboardSearchText(item).includes(normalizedQuery);
+      return matchesSeverity && matchesStatus && matchesQuery;
+    });
+  }, [query, severityFilter, statusFilter, view.items]);
+
+  const detailLoading = matchingSummaries.some(
+    (summary) => summary.session_id && !Object.prototype.hasOwnProperty.call(sessionDetails, summary.session_id),
+  );
+
+  const syncTone: ChipTone = isLoading ? "warning" : historyLoading || detailLoading ? "info" : "success";
+  const syncLabel = isLoading
+    ? "告警同步中"
+    : historyLoading
+      ? "会话同步中"
+      : detailLoading
+        ? "诊断补充中"
+        : "已同步";
+  const visibleError = diagnosisError ?? alertsError ?? historyError;
+
+  const startDiagnosis = async (item: AlertDashboardItem) => {
+    const candidates = alerts.filter((alert) => alert.fingerprint === item.primaryFingerprint);
+    if (candidates.length === 0) {
       setDiagnosisError("未找到可用于诊断的告警事件，请先刷新告警数据。");
       return;
     }
+
     const sorted = [...candidates].sort((left, right) => {
-      const severityRank = { critical: 3, warning: 2, info: 1 } as const;
-      const statusRank = (status: AlertStatus) => (status === "firing" ? 2 : status === "resolved" ? 1 : 0);
-      const statusGap = statusRank(right.status) - statusRank(left.status);
+      const severityPriority = { critical: 3, warning: 2, info: 1 } as const;
+      const statusPriority = (status: AlertStatus) => (status === "firing" ? 2 : status === "resolved" ? 1 : 0);
+      const statusGap = statusPriority(right.status) - statusPriority(left.status);
       if (statusGap !== 0) {
         return statusGap;
       }
-      const severityGap = severityRank[right.severity] - severityRank[left.severity];
+
+      const severityGap = severityPriority[right.severity] - severityPriority[left.severity];
       if (severityGap !== 0) {
         return severityGap;
       }
+
       return new Date(right.starts_at).getTime() - new Date(left.starts_at).getTime();
     });
+
     const selected = sorted[0];
     if (!selected) {
       setDiagnosisError("未找到可用于诊断的告警事件，请先刷新告警数据。");
       return;
     }
+
     setDiagnosisError(null);
-    setDiagnosingResultId(resultId);
+    setDiagnosingItemId(item.id);
     try {
       const session = await apiClient.diagnoseAlert(selected);
-      setActiveSession(session);
       navigate(`/diagnosis/${session.session_id}`);
     } catch (error) {
-      const message = error instanceof Error ? error.message : "发起诊断失败";
-      setDiagnosisError(message);
+      setDiagnosisError(error instanceof Error ? error.message : "发起诊断失败");
     } finally {
-      setDiagnosingResultId(null);
+      setDiagnosingItemId(null);
     }
   };
 
+  const handleItemAction = (item: AlertDashboardItem) => {
+    if (item.action.kind === "diagnose") {
+      void startDiagnosis(item);
+      return;
+    }
+
+    navigate(item.action.path);
+  };
+
   return (
-    <div className="page-grid alerts-convergence-page">
-      <SectionHeader
-        description="聚合原始告警并收敛到统一处理入口，帮助值班快速完成分诊与诊断发起。"
-        title="告警收敛"
-      />
-
-      <SurfaceCard bodyClassName="alerts-convergence-toolbar-card__body" className="alerts-convergence-toolbar-card">
-        <div className="input-row alerts-convergence-toolbar">
-          <Select
-            className="app-select"
-            onChange={(value) => setSeverityFilter(value as Severity | "all")}
-            options={[
-              { value: "all", label: formatSeverity("all") },
-              { value: "critical", label: formatSeverity("critical") },
-              { value: "warning", label: formatSeverity("warning") },
-              { value: "info", label: formatSeverity("info") },
-            ]}
-            value={severityFilter}
-          />
-          <AppInput
-            onChange={setQuery}
-            placeholder="按告警名、实体、服务或 fingerprint 过滤"
-            prefix={<AppIcon name="search" size={16} />}
-            value={query}
-          />
-          <StatusChip tone={isLoading ? "warning" : "success"}>{isLoading ? "同步中" : "已同步"}</StatusChip>
-        </div>
-        {diagnosisError ? (
-          <div className="state-block">
-            <p className="data-list__copy">{diagnosisError}</p>
+    <div className="page-grid alerts-dashboard-page">
+      <h1 className="visually-hidden">告警诊断</h1>
+      <section className="page-stage alerts-dashboard-stage">
+        <div className="page-stage__summary">
+          <div className="card-grid--metrics alerts-dashboard-metrics">
+            <MetricTile
+              hint="当前告警快照中的诊断工作项"
+              icon="notification"
+              label="告警工作项"
+              tone="accent"
+              value={view.metrics.totalItems}
+            />
+            <MetricTile
+              hint="已命中诊断或正在执行中的工作项"
+              icon="chart"
+              label="诊断中"
+              tone="info"
+              value={view.metrics.diagnosingCount}
+            />
+            <MetricTile
+              hint="等待审批或待进入修复流程"
+              icon="clipboardTasks"
+              label="待审批/待执行"
+              tone="warning"
+              value={view.metrics.pendingActionCount}
+            />
+            <MetricTile
+              hint="按当前快照口径统计今日已恢复项"
+              icon="checkmarkCircle"
+              label="今日自动恢复"
+              tone="success"
+              value={view.metrics.resolvedTodayCount}
+            />
           </div>
-        ) : null}
-      </SurfaceCard>
+        </div>
 
-      <div className="alerts-convergence-layout">
         <SurfaceCard
-          actions={<StatusChip tone="neutral">{`${fingerprintCount} 个 fingerprint`}</StatusChip>}
-          className="alerts-convergence-panel alerts-convergence-side"
-          title="原始告警流"
+          actions={
+            <div className="alerts-dashboard-workbench__actions">
+              <StatusChip tone={syncTone}>{syncLabel}</StatusChip>
+              <StatusChip tone="neutral">{`${filteredItems.length} / ${view.items.length} 项`}</StatusChip>
+            </div>
+          }
+          bodyClassName="alerts-dashboard-workbench__body"
+          className="page-stage__panel alerts-dashboard-workbench"
+          description="筛选与浏览当前告警诊断工作项。"
+          title="告警诊断"
+          variant="panel"
         >
-          {flow.length > 0 ? (
-            <div className="alerts-stream-list">
-              {flow.map((group) => {
-                const isExpanded = expandedFingerprint === group.fingerprint;
+          <div className="page-stage__toolbar alerts-dashboard-toolbar">
+            <AppInput
+              className="alerts-dashboard-toolbar__search"
+              onChange={setQuery}
+              placeholder="搜索告警名、实体、根因、服务或 session ID"
+              prefix={<AppIcon name="search" size={16} />}
+              value={query}
+            />
+            <Select
+              className="app-select alerts-dashboard-toolbar__select"
+              onChange={(value) => setSeverityFilter(value as Severity | "all")}
+              options={[
+                { value: "all", label: formatSeverity("all") },
+                { value: "critical", label: formatSeverity("critical") },
+                { value: "warning", label: formatSeverity("warning") },
+                { value: "info", label: formatSeverity("info") },
+              ]}
+              value={severityFilter}
+            />
+            <Select
+              className="app-select alerts-dashboard-toolbar__select"
+              onChange={(value) => setStatusFilter(value as DashboardStatusFilter)}
+              options={[
+                { value: "all", label: statusFilterLabel("all") },
+                { value: "pending_diagnosis", label: statusFilterLabel("pending_diagnosis") },
+                { value: "diagnosing", label: statusFilterLabel("diagnosing") },
+                { value: "pending_remediation", label: statusFilterLabel("pending_remediation") },
+                { value: "resolved", label: statusFilterLabel("resolved") },
+                { value: "attention", label: statusFilterLabel("attention") },
+              ]}
+              value={statusFilter}
+            />
+          </div>
+          {visibleError ? (
+            <div className="state-block alerts-dashboard-workbench__error">
+              <p className="data-list__copy">{visibleError}</p>
+            </div>
+          ) : null}
+          {filteredItems.length > 0 ? (
+            <div className="page-stage__table-shell alerts-dashboard-table-shell">
+              <table className="alerts-dashboard-table">
+                <thead>
+                  <tr>
+                    <th>告警簇 / 级别</th>
+                    <th>根节点 / 影响对象</th>
+                    <th>Auto-SRE 状态</th>
+                    <th>AI 根因分析 & 修复计划</th>
+                    <th>操作</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {filteredItems.map((item) => {
+                    const showLoadingAnalysis = item.hasSession && !item.isSessionDetailLoaded;
 
-                return (
-                  <article key={group.fingerprint} className="alerts-stream-group">
-                    <button
-                      aria-expanded={isExpanded}
-                      aria-label={`切换 ${group.fingerprint} 事件流`}
-                      className="alerts-stream-group__toggle"
-                      onClick={() => setExpandedFingerprint(isExpanded ? null : group.fingerprint)}
-                      type="button"
-                    >
-                      <div className="alerts-stream-group__header">
-                        <div className="status-row alerts-stream-group__chips">
-                          <StatusChip tone={severityTone(group.severity)}>{formatSeverity(group.severity)}</StatusChip>
-                          <StatusChip tone={group.compressionTone}>{group.compressionLabel}</StatusChip>
-                          <StatusChip tone={group.fingerprintTone}>{group.fingerprintRole}</StatusChip>
-                        </div>
-                        <span className="alerts-stream-group__expand">
-                          {isExpanded ? "收起" : "展开"}
-                          <AppIcon name="chevronDown" size={14} />
-                        </span>
-                      </div>
-
-                      <div className="alerts-stream-group__main">
-                        <div className="alerts-stream-group__titleblock">
-                          <p className="alerts-stream-group__title">{group.alertName}</p>
-                          <div className="alerts-stream-group__meta">
-                            <span>
-                              实体 <strong>{group.entity}</strong>
-                            </span>
-                            <span>
-                              最新 <strong>{formatTimestamp(group.latestStartsAt)}</strong>
-                            </span>
-                            <span>
-                              收敛到 <strong>{group.convergenceTarget}</strong>
-                            </span>
-                            <span>
-                              指纹 <code className="alerts-stream-group__fingerprint">{group.fingerprint}</code>
-                            </span>
+                    return (
+                      <tr key={item.id} className="alerts-dashboard-table__row">
+                        <td className="alerts-dashboard-table__cell alerts-dashboard-table__cell--title">
+                          <div className="status-row alerts-dashboard-table__chips">
+                            <StatusChip tone={severityTone(item.severity)}>{formatSeverity(item.severity)}</StatusChip>
                           </div>
-                        </div>
-                        <StatusChip className="alerts-stream-group__route" tone={group.routeTone}>
-                          {group.routeLabel}
-                        </StatusChip>
-                      </div>
-                    </button>
-
-                    {isExpanded ? (
-                      <div className="alerts-stream-group__events">
-                        {group.events.map((event) => (
-                          <div key={event.id} className="alerts-stream-event">
-                            <div className="alerts-stream-event__head">
-                              <div className="status-row alerts-stream-event__chips">
-                                <StatusChip tone={severityTone(event.severity)}>{formatSeverity(event.severity)}</StatusChip>
-                                <StatusChip tone={alertStatusTone(event.status)}>{formatAlertStatus(event.status)}</StatusChip>
-                              </div>
-                              <time className="alerts-stream-event__time">{formatTimestamp(event.startsAt)}</time>
+                          <p className="alerts-dashboard-table__title">{item.title}</p>
+                          <p className="alerts-dashboard-table__summary">{item.summary}</p>
+                          <div className="alerts-dashboard-table__meta">
+                            <span>{`最新告警 ${formatTimestamp(item.latestStartsAt)}`}</span>
+                          </div>
+                        </td>
+                        <td className="alerts-dashboard-table__cell alerts-dashboard-table__cell--entity">
+                          <p className="alerts-dashboard-table__entity">{item.rootEntity}</p>
+                          <p className="alerts-dashboard-table__impact">{item.impactScope}</p>
+                        </td>
+                        <td className="alerts-dashboard-table__cell alerts-dashboard-table__cell--status">
+                          <div className="alerts-dashboard-table__status-block">
+                            <StatusChip tone={item.statusTone}>{item.statusLabel}</StatusChip>
+                            <p className="alerts-dashboard-table__status-copy">
+                              {item.sessionId ? `会话 ${item.sessionId}` : "尚未创建诊断会话"}
+                            </p>
+                            <p className="alerts-dashboard-table__status-copy">
+                              {item.sessionId
+                                ? `状态更新时间 ${formatTimestamp(item.statusTimestamp)}`
+                                : `告警时间 ${formatTimestamp(item.latestStartsAt)}`}
+                            </p>
+                          </div>
+                        </td>
+                        <td className="alerts-dashboard-table__cell alerts-dashboard-table__cell--analysis">
+                          {item.analysisSummary ? (
+                            <div className="alerts-dashboard-analysis">
+                              <p className="alerts-dashboard-analysis__line">
+                                <span className="alerts-dashboard-analysis__label">根因</span>
+                                <span>{item.analysisSummary}</span>
+                              </p>
+                              {typeof item.confidence === "number" ? (
+                                <StatusChip tone="neutral">{`置信度 ${formatPercent(item.confidence)}`}</StatusChip>
+                              ) : null}
+                              {item.planSummary ? (
+                                <p className="alerts-dashboard-analysis__line">
+                                  <span className="alerts-dashboard-analysis__label">计划</span>
+                                  <span>{item.planSummary}</span>
+                                </p>
+                              ) : null}
                             </div>
-                            <p className="alerts-stream-event__title">{event.alertName}</p>
-                            <p className="alerts-stream-event__summary">{event.summary}</p>
-                          </div>
-                        ))}
-                      </div>
-                    ) : null}
-                  </article>
-                );
-              })}
+                          ) : showLoadingAnalysis ? (
+                            <p className="alerts-dashboard-analysis__empty">诊断详情同步中...</p>
+                          ) : (
+                            <p className="alerts-dashboard-analysis__empty">尚未生成诊断结论</p>
+                          )}
+                        </td>
+                        <td className="alerts-dashboard-table__cell alerts-dashboard-table__cell--action">
+                          <AppButton
+                            disabled={diagnosingItemId !== null && item.action.kind === "diagnose"}
+                            onClick={() => handleItemAction(item)}
+                            size="sm"
+                            variant={actionVariant(item)}
+                          >
+                            {diagnosingItemId === item.id ? "诊断发起中..." : item.action.label}
+                          </AppButton>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
             </div>
           ) : (
-            <div className="state-block">
-              <p className="data-list__copy">当前筛选条件下没有匹配到原始告警。</p>
+            <div className="state-block alerts-dashboard-empty">
+              <p className="mini-card__title">当前没有可展示的告警工作项</p>
+              <p className="mini-card__copy">可以尝试放宽筛选条件，或等待新的告警快照同步完成。</p>
             </div>
           )}
         </SurfaceCard>
-
-        <SurfaceCard
-          actions={<StatusChip tone="accent">{`${results.length} 个最终结果`}</StatusChip>}
-          className="alerts-convergence-panel alerts-convergence-main"
-          title="收敛结果"
-        >
-          {results.length > 0 ? (
-            <div className="convergence-result-list">
-              {results.map((result) => {
-                const visibleAlertNames = result.alertNames.slice(0, 2);
-                const hiddenAlertNameCount = result.alertNames.length - visibleAlertNames.length;
-
-                return (
-                  <article key={result.id} className="convergence-result-card">
-                    <div className="convergence-result-card__header">
-                      <div className="convergence-result-card__headline">
-                        <div className="status-row">
-                          <StatusChip tone={severityTone(result.severity)}>{formatSeverity(result.severity)}</StatusChip>
-                          <StatusChip tone={result.route.tone}>{result.route.label}</StatusChip>
-                          <StatusChip tone="neutral">{`${result.alertCount} 条事件`}</StatusChip>
-                          <StatusChip tone="neutral">{`${result.fingerprintCount} 个 fingerprint`}</StatusChip>
-                        </div>
-                        <h3 className="convergence-result-card__title">{result.title}</h3>
-                        <p className="convergence-result-card__summary">{result.summary}</p>
-                      </div>
-                      <AppButton
-                        iconRight="arrowRight"
-                        onClick={() => {
-                          if (result.route.label === "将创建诊断") {
-                            void startDiagnosisFromResult(result.id, result.primaryFingerprint);
-                            return;
-                          }
-                          navigate(result.route.path);
-                        }}
-                        size="sm"
-                        variant="primary"
-                        disabled={diagnosingResultId !== null}
-                      >
-                        {diagnosingResultId === result.id ? "诊断发起中..." : result.route.ctaLabel}
-                      </AppButton>
-                    </div>
-
-                    <div className="convergence-result-card__facts">
-                      <div className="convergence-result-card__fact">
-                        <span className="convergence-result-card__fact-label">事件数</span>
-                        <strong className="convergence-result-card__fact-value">{result.alertCount}</strong>
-                      </div>
-                      <div className="convergence-result-card__fact">
-                        <span className="convergence-result-card__fact-label">指纹数</span>
-                        <strong className="convergence-result-card__fact-value">{result.fingerprintCount}</strong>
-                      </div>
-                      <div className="convergence-result-card__fact">
-                        <span className="convergence-result-card__fact-label">重复折叠</span>
-                        <strong className="convergence-result-card__fact-value">{result.duplicateFoldedCount}</strong>
-                      </div>
-                      <div className="convergence-result-card__fact convergence-result-card__fact--wide">
-                        <span className="convergence-result-card__fact-label">影响范围</span>
-                        <strong className="convergence-result-card__fact-copy">{result.impactScope}</strong>
-                      </div>
-                    </div>
-
-                    <div className="convergence-result-card__insights">
-                      <div className="convergence-result-card__insight">
-                        <span className="convergence-result-card__fact-label">主判断</span>
-                        <p className="convergence-result-card__insight-copy">{result.primaryJudgment}</p>
-                      </div>
-                      <div className="convergence-result-card__insight">
-                        <span className="convergence-result-card__fact-label">路由结果</span>
-                        <p className="convergence-result-card__insight-copy">{result.route.note}</p>
-                      </div>
-                    </div>
-
-                    <div className="convergence-result-card__footer">
-                      <div className="status-row">
-                        {visibleAlertNames.map((name) => (
-                          <StatusChip key={name} tone="info">
-                            {name}
-                          </StatusChip>
-                        ))}
-                        {hiddenAlertNameCount > 0 ? <StatusChip tone="neutral">{`+${hiddenAlertNameCount}`}</StatusChip> : null}
-                      </div>
-                    </div>
-                  </article>
-                );
-              })}
-            </div>
-          ) : (
-            <div className="state-block">
-              <p className="data-list__copy">当前筛选条件下没有可展示的收敛结果。</p>
-            </div>
-          )}
-        </SurfaceCard>
-      </div>
+      </section>
     </div>
   );
 }
 
 export default AlertsModifiedPage;
+
 
 
