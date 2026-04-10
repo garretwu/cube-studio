@@ -159,6 +159,7 @@ Preview 规则：
 
 - 只有 `SRE_OPENAI_API_KEY` 支持在未显式声明时，从 [config.yaml](/home/kevin/project/cube-studio/sre_agent/conf/config.yaml) 的 `llm.api_key` fallback
 - `NEXUS_USERNAME`、`NEXUS_PASSWORD`、`FEISHU_WEBHOOK_URL` 等 CI/CD 凭证必须始终显式配置在 GitLab Variables 中
+- 如果已配置 `PREVIEW_PUBLIC_HOST`，即使 preview 因 `PREVIEW_DOCKER_HOST` 不可达而回退到 runner 本地 Docker，流水线日志也会优先输出 `PREVIEW_PUBLIC_HOST:随机端口` 作为浏览器访问地址
 
 ### 5.2 Runner 要求
 

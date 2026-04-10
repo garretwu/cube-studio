@@ -15,10 +15,6 @@ if [ -f "${REPO_ROOT}/dist/build-base.env" ]; then
   source "${REPO_ROOT}/dist/build-base.env"
 fi
 
-if [ -f "${REPO_ROOT}/dist/base-image.tar" ]; then
-  docker load -i "${REPO_ROOT}/dist/base-image.tar"
-fi
-
 if ! docker image inspect "${BASE_IMAGE_REF}" >/dev/null 2>&1; then
   if latest_base_tag="$("${SCRIPT_DIR}/resolve_latest_base_tag.sh" 2>/dev/null)"; then
     BASE_IMAGE_TAG="${latest_base_tag}"
@@ -43,8 +39,6 @@ docker build \
   -t "${WEB_IMAGE_REF}" \
   "${REPO_ROOT}"
 
-docker save -o "${REPO_ROOT}/dist/web-image.tar" "${WEB_IMAGE_REF}"
-
 cat > "${REPO_ROOT}/dist/build-web.env" <<EOF
 WEB_IMAGE_BUILT=1
 WEB_IMAGE_REF=${WEB_IMAGE_REF}
@@ -52,4 +46,4 @@ WEB_IMAGE_TAG=${WEB_IMAGE_TAG}
 BASE_IMAGE_REF=${BASE_IMAGE_REF}
 EOF
 
-log "built web image ${WEB_IMAGE_REF}"
+log "built web image ${WEB_IMAGE_REF} on local docker host"

@@ -1,5 +1,44 @@
 # SRE Agent Release Notes
 
+2026-04-10 14:10
+
+**Scope**
+
+- GitLab CI 联调阶段继续收敛 `shell runner` 行为，移除镜像 `tar` artifacts，改为优先复用本机 Docker image，并在 cache miss 时原地重建
+- 调整 `preview` 与 `release` 的阶段关系，普通提交场景下改为先自动 `preview`，再由人工确认后手动触发后续验证与发布
+- 优化 `preview` 成功提示，在 job 日志末尾直接输出 `Frontend URL`、`Backend URL`、容器名和 TTL，方便测试同学直接打开浏览器验证
+- 修复 `PREVIEW_PUBLIC_HOST` 输出逻辑，即使 preview 因 `PREVIEW_DOCKER_HOST` 不可达而回退到 runner 本地 Docker，仍优先输出配置的公网或内网可达主机地址，而不是固定回落到 `127.0.0.1`
+- 修复 GitLab CI helper 脚本变更未触发流水线的问题，后续 `sre_agent/deploy/gitlab/ci/**` 下的改动也会自动触发这条分支流水线
+
+**Code**
+
+GitLab CI:
+
+- [/.gitlab-ci.yml](/home/kevin/project/cube-studio/.gitlab-ci.yml)
+- [sre_agent/deploy/gitlab/ci/common.sh](/home/kevin/project/cube-studio/sre_agent/deploy/gitlab/ci/common.sh)
+- [sre_agent/deploy/gitlab/ci/build_base_image.sh](/home/kevin/project/cube-studio/sre_agent/deploy/gitlab/ci/build_base_image.sh)
+- [sre_agent/deploy/gitlab/ci/build_web_image.sh](/home/kevin/project/cube-studio/sre_agent/deploy/gitlab/ci/build_web_image.sh)
+- [sre_agent/deploy/gitlab/ci/run_preview_container.sh](/home/kevin/project/cube-studio/sre_agent/deploy/gitlab/ci/run_preview_container.sh)
+- [sre_agent/deploy/gitlab/ci/validate_runtime_smoke.sh](/home/kevin/project/cube-studio/sre_agent/deploy/gitlab/ci/validate_runtime_smoke.sh)
+- [sre_agent/deploy/gitlab/ci/validate_business_suite.sh](/home/kevin/project/cube-studio/sre_agent/deploy/gitlab/ci/validate_business_suite.sh)
+- [sre_agent/deploy/gitlab/ci/push_images.sh](/home/kevin/project/cube-studio/sre_agent/deploy/gitlab/ci/push_images.sh)
+- [sre_agent/deploy/gitlab/ci/promote_release.sh](/home/kevin/project/cube-studio/sre_agent/deploy/gitlab/ci/promote_release.sh)
+
+Docs:
+
+- [sre_agent/docs/gitlab/README.md](/home/kevin/project/cube-studio/sre_agent/docs/gitlab/README.md)
+- [sre_agent/docs/gitlab/PIPELINE_RUNBOOK.md](/home/kevin/project/cube-studio/sre_agent/docs/gitlab/PIPELINE_RUNBOOK.md)
+- [sre_agent/docs/RELEASE_NOTES.md](/home/kevin/project/cube-studio/sre_agent/docs/RELEASE_NOTES.md)
+
+**Runtime**
+
+Preview behavior:
+
+- 优先复用 shell runner 本机 Docker image，不再上传镜像 `tar` artifacts
+- preview 成功后在 job 日志末尾打印可访问地址摘要
+- 若配置了 `PREVIEW_PUBLIC_HOST`，日志优先输出该主机地址加动态端口
+- 普通提交场景下，`release` 相关 job 改为人工确认 preview 后手动触发
+
 2026-04-10 10:30
 
 **Scope**

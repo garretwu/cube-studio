@@ -18,6 +18,7 @@ RUN apt-get update \
         bash \
         build-essential \
         ca-certificates \
+        jq \
         libffi-dev \
         python3.11-dev \
     && rm -rf /var/lib/apt/lists/*

@@ -5,6 +5,57 @@ log() {
   echo "[ci] $*"
 }
 
+python_cmd() {
+  if command -v python3 >/dev/null 2>&1; then
+    echo "python3"
+    return 0
+  fi
+  if command -v python >/dev/null 2>&1; then
+    echo "python"
+    return 0
+  fi
+  echo "python3 or python is required but was not found" >&2
+  return 1
+}
+
+ensure_ci_tooling() {
+  if command -v apk >/dev/null 2>&1; then
+    apk add --no-cache bash curl coreutils python3 >/dev/null
+  fi
+
+  local missing=()
+  local cmd=""
+  for cmd in bash curl docker; do
+    if ! command -v "${cmd}" >/dev/null 2>&1; then
+      missing+=("${cmd}")
+    fi
+  done
+
+  python_cmd >/dev/null
+
+  if [ "${#missing[@]}" -gt 0 ]; then
+    echo "required commands are missing: ${missing[*]}" >&2
+    exit 1
+  fi
+}
+
+ensure_docker_access() {
+  if docker info >/dev/null 2>&1; then
+    return 0
+  fi
+
+  if [ -n "${DOCKER_HOST:-}" ]; then
+    log "docker is not reachable via DOCKER_HOST=${DOCKER_HOST}, retrying local docker daemon"
+    unset DOCKER_HOST
+    unset DOCKER_TLS_CERTDIR
+  fi
+
+  docker info >/dev/null 2>&1 || {
+    echo "docker daemon is not reachable from this runner" >&2
+    exit 1
+  }
+}
+
 require_env() {
   local name="$1"
   if [ -z "${!name:-}" ]; then
@@ -76,4 +127,14 @@ read_default_release_version() {
     return 0
   fi
   echo "0.1.0"
+}
+
+require_local_docker_image() {
+  local image_ref="$1"
+  if docker image inspect "${image_ref}" >/dev/null 2>&1; then
+    return 0
+  fi
+  echo "required local docker image was not found on this runner: ${image_ref}" >&2
+  echo "this pipeline expects shell runner jobs to reuse the same Docker host without tar artifacts" >&2
+  return 1
 }

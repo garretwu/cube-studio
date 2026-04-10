@@ -16,16 +16,21 @@ fi
 # shellcheck disable=SC1091
 source "${REPO_ROOT}/dist/build-web.env"
 
+if ! docker image inspect "${WEB_IMAGE_REF}" >/dev/null 2>&1; then
+  log "web image ${WEB_IMAGE_REF} is not available locally, rebuilding it on this runner before push"
+  "${SCRIPT_DIR}/build_web_image.sh"
+fi
+
 docker_registry_login
 
-if [ -f "${REPO_ROOT}/dist/base-image.tar" ]; then
-  docker load -i "${REPO_ROOT}/dist/base-image.tar"
+if [ -f "${REPO_ROOT}/dist/build-base.env" ]; then
+  require_local_docker_image "${BASE_IMAGE_REF}"
   log "pushing base image ${BASE_IMAGE_REF}"
   docker push "${BASE_IMAGE_REF}"
   echo "docker pull ${BASE_IMAGE_REF}"
 fi
 
-docker load -i "${REPO_ROOT}/dist/web-image.tar"
+require_local_docker_image "${WEB_IMAGE_REF}"
 log "pushing web image ${WEB_IMAGE_REF}"
 docker push "${WEB_IMAGE_REF}"
 echo "docker pull ${WEB_IMAGE_REF}"
