@@ -30,7 +30,7 @@ PY
 )"
 
 if [ -z "${latest_tag}" ]; then
-  echo "no published base image tag found under ${IMAGE_NAMESPACE}/${BASE_NAME}" >&2
+  echo "no published base image tag found under ${IMAGE_NAMESPACE}/${BASE_IMAGE_NAME}" >&2
   exit 1
 fi
 

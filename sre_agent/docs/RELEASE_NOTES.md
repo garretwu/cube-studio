@@ -1,5 +1,33 @@
 # SRE Agent Release Notes
 
+2026-04-10 17:05
+
+**Scope**
+
+- 修复 `weekly_build` 下 `validate_sre_agent_business` 在测试通过后仍误报失败的问题
+- 将 `fault_injector list-scenarios` 的输出统一重定向到检查文件，避免 Rich 表格写入 `stderr` 时造成场景校验误判
+- 修正 base 镜像回退拉取时的旧变量引用，确保按当前 lane 拆分后的镜像名正确解析与提示
+
+**Code**
+
+GitLab CI:
+
+- [sre_agent/deploy/gitlab/ci/validate_business_suite.sh](/home/kevin/project/cube-studio/sre_agent/deploy/gitlab/ci/validate_business_suite.sh)
+- [sre_agent/deploy/gitlab/ci/resolve_latest_base_tag.sh](/home/kevin/project/cube-studio/sre_agent/deploy/gitlab/ci/resolve_latest_base_tag.sh)
+
+Docs:
+
+- [sre_agent/docs/RELEASE_NOTES.md](/home/kevin/project/cube-studio/sre_agent/docs/RELEASE_NOTES.md)
+
+**Runtime**
+
+Weekly validation behavior:
+
+- `validate_sre_agent_business` 现在会稳定校验 `rdma_link_flap` 场景是否出现在 CLI 输出中
+- `weekly_build` 与 `base_refresh` 的业务验收 job 不再出现“日志看起来通过但 job 最终失败”的假阴性
+- base 镜像不存在时，回退拉取逻辑会使用当前 lane 对应的镜像名
+
+
 2026-04-10 14:10
 
 **Scope**
