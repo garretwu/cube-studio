@@ -2,6 +2,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/../../../.." && pwd)"
 # shellcheck disable=SC1091
 source "${SCRIPT_DIR}/common.sh"
 
@@ -12,97 +13,55 @@ if [ -z "${FEISHU_WEBHOOK_URL:-}" ]; then
   exit 0
 fi
 
+if [ -f "${REPO_ROOT}/dist/pipeline.env" ]; then
+  # shellcheck disable=SC1091
+  source "${REPO_ROOT}/dist/pipeline.env"
+fi
+
+if [ -f "${REPO_ROOT}/dist/preview.env" ]; then
+  # shellcheck disable=SC1091
+  source "${REPO_ROOT}/dist/preview.env"
+fi
+
+if [ -f "${REPO_ROOT}/dist/publish.env" ]; then
+  # shellcheck disable=SC1091
+  source "${REPO_ROOT}/dist/publish.env"
+fi
+
+if [ -f "${REPO_ROOT}/dist/release.env" ]; then
+  # shellcheck disable=SC1091
+  source "${REPO_ROOT}/dist/release.env"
+fi
+
 job_status="${CI_JOB_STATUS:-unknown}"
-if [ "${job_status}" != "failed" ]; then
-  log "job status is ${job_status}, skipping Feishu failure notification"
-  exit 0
-fi
-
 pipeline_kind="${PIPELINE_KIND:-commit}"
+job_name="${CI_JOB_NAME:-unknown}"
+stage_name="${CI_JOB_STAGE:-unknown}"
 notify_commit_failures="${FEISHU_NOTIFY_ON_COMMIT_FAILURE:-0}"
-
-if [ "${pipeline_kind}" = "commit" ] && [ "${notify_commit_failures}" != "1" ]; then
-  log "commit failure notifications are disabled, skipping Feishu notification"
-  exit 0
-fi
-
+notify_success="${FEISHU_NOTIFY_ON_SUCCESS:-1}"
 timestamp_human="$(TZ="${IMAGE_TAG_TIMEZONE:-Asia/Shanghai}" date '+%Y-%m-%d %H:%M:%S %Z')"
 project_path="${CI_PROJECT_PATH:-cube-studio/sre_agent}"
 branch_name="${CI_COMMIT_REF_NAME:-unknown}"
-job_name="${CI_JOB_NAME:-unknown}"
-stage_name="${CI_JOB_STAGE:-unknown}"
 pipeline_url="${CI_PIPELINE_URL:-}"
 job_url="${CI_JOB_URL:-}"
 short_sha="${CI_COMMIT_SHORT_SHA:-unknown}"
 commit_title="${CI_COMMIT_TITLE:-}"
 user_name="${GITLAB_USER_NAME:-system}"
-pipeline_link_markdown="${pipeline_url:-N/A}"
-job_link_markdown="${job_url:-N/A}"
-card_title="SRE Agent Pipeline Failure"
-card_template="red"
-pipeline_button_label="Open Pipeline"
-job_button_label="Open Job"
-next_action="Review the failed job log and pipeline context."
 
-if [ -n "${pipeline_url}" ]; then
-  pipeline_link_markdown="[Open Pipeline](${pipeline_url})"
-fi
+send_card() {
+  local payload="$1"
+  curl -fsS -X POST "${FEISHU_WEBHOOK_URL}" \
+    -H "Content-Type: application/json" \
+    -d "${payload}" >/dev/null
+}
 
-if [ -n "${job_url}" ]; then
-  job_link_markdown="[Open Job](${job_url})"
-fi
+failure_payload() {
+  local card_title="$1"
+  local card_template="$2"
+  local pipeline_button_label="$3"
+  local job_button_label="$4"
+  local next_action="$5"
 
-case "${stage_name}" in
-  build)
-    card_title="SRE Agent Build Failure"
-    card_template="red"
-    job_button_label="Inspect Build Job"
-    next_action="Check Docker build logs, base-image resolution, and dependency changes."
-    ;;
-  cleanup)
-    card_title="SRE Agent Cleanup Failure"
-    card_template="grey"
-    job_button_label="Inspect Cleanup Job"
-    next_action="Check Docker daemon access, cleanup retention logic, and stale resource state."
-    ;;
-  release)
-    if [[ "${job_name}" == validate_* ]]; then
-      card_title="SRE Agent Validation Failure"
-      card_template="orange"
-      job_button_label="Inspect Validation Job"
-      next_action="Check health probes, /openapi.json, frontend readiness, and selected test cases."
-    elif [[ "${job_name}" == publish_* || "${job_name}" == promote_* ]]; then
-      card_title="SRE Agent Release Failure"
-      card_template="red"
-      job_button_label="Inspect Release Job"
-      next_action="Check Nexus login, target image tags, push permissions, and release inputs."
-    else
-      card_title="SRE Agent Release Stage Failure"
-      card_template="red"
-      job_button_label="Inspect Release Job"
-      next_action="Check release-stage job logs and dependent validation artifacts."
-    fi
-    ;;
-  preview)
-    card_title="SRE Agent Preview Failure"
-    card_template="orange"
-    job_button_label="Inspect Preview Job"
-    next_action="Check preview Docker host reachability, port allocation, and container health."
-    ;;
-esac
-
-if [ "${pipeline_kind}" = "weekly_build" ]; then
-  card_title="Weekly Build: ${card_title}"
-  pipeline_button_label="Open Weekly Pipeline"
-elif [ "${pipeline_kind}" = "base_refresh" ]; then
-  card_title="Base Refresh: ${card_title}"
-  pipeline_button_label="Open Refresh Pipeline"
-elif [ "${pipeline_kind}" = "cleanup" ]; then
-  card_title="Scheduled Cleanup: ${card_title}"
-  pipeline_button_label="Open Cleanup Pipeline"
-fi
-
-payload="$(
   PROJECT_PATH="${project_path}" \
   BRANCH_NAME="${branch_name}" \
   PIPELINE_KIND="${pipeline_kind}" \
@@ -113,8 +72,8 @@ payload="$(
   USER_NAME="${user_name}" \
   TIMESTAMP_HUMAN="${timestamp_human}" \
   COMMIT_TITLE="${commit_title:-N/A}" \
-  PIPELINE_LINK="${pipeline_link_markdown}" \
-  JOB_LINK="${job_link_markdown}" \
+  PIPELINE_URL="${pipeline_url:-}" \
+  JOB_URL="${job_url:-}" \
   CARD_TITLE="${card_title}" \
   CARD_TEMPLATE="${card_template}" \
   PIPELINE_BUTTON_LABEL="${pipeline_button_label}" \
@@ -123,6 +82,17 @@ payload="$(
   "${PYTHON_BIN}" - <<'PY'
 import json
 import os
+
+def button(label: str, url: str, primary: bool = False):
+    item = {
+        "tag": "button",
+        "text": {"tag": "plain_text", "content": label},
+    }
+    if primary:
+        item["type"] = "primary"
+    if url:
+        item["url"] = url
+    return item
 
 payload = {
     "msg_type": "interactive",
@@ -164,17 +134,8 @@ payload = {
             {
                 "tag": "action",
                 "actions": [
-                    {
-                        "tag": "button",
-                        "text": {"tag": "plain_text", "content": os.environ["PIPELINE_BUTTON_LABEL"]},
-                        "type": "primary",
-                        "url": os.environ["PIPELINE_LINK"],
-                    },
-                    {
-                        "tag": "button",
-                        "text": {"tag": "plain_text", "content": os.environ["JOB_BUTTON_LABEL"]},
-                        "url": os.environ["JOB_LINK"],
-                    },
+                    button(os.environ["PIPELINE_BUTTON_LABEL"], os.environ["PIPELINE_URL"], primary=True),
+                    button(os.environ["JOB_BUTTON_LABEL"], os.environ["JOB_URL"]),
                 ],
             },
         ],
@@ -183,10 +144,303 @@ payload = {
 
 print(json.dumps(payload, ensure_ascii=False))
 PY
-)"
+}
 
-curl -fsS -X POST "${FEISHU_WEBHOOK_URL}" \
-  -H "Content-Type: application/json" \
-  -d "${payload}" >/dev/null
+success_payload() {
+  local card_title="$1"
+  local card_template="$2"
+  local summary_md="$3"
+  local actions_json="$4"
 
-log "Feishu card notification sent for ${job_name}"
+  PROJECT_PATH="${project_path}" \
+  BRANCH_NAME="${branch_name}" \
+  PIPELINE_KIND="${pipeline_kind}" \
+  JOB_NAME="${job_name}" \
+  SHORT_SHA="${short_sha}" \
+  USER_NAME="${user_name}" \
+  TIMESTAMP_HUMAN="${timestamp_human}" \
+  COMMIT_TITLE="${commit_title:-N/A}" \
+  CARD_TITLE="${card_title}" \
+  CARD_TEMPLATE="${card_template}" \
+  SUMMARY_MD="${summary_md}" \
+  ACTIONS_JSON="${actions_json}" \
+  "${PYTHON_BIN}" - <<'PY'
+import json
+import os
+
+payload = {
+    "msg_type": "interactive",
+    "card": {
+        "schema": "2.0",
+        "config": {"wide_screen_mode": True},
+        "header": {
+            "template": os.environ["CARD_TEMPLATE"],
+            "title": {"tag": "plain_text", "content": os.environ["CARD_TITLE"]},
+        },
+        "elements": [
+            {
+                "tag": "div",
+                "text": {
+                    "tag": "lark_md",
+                    "content": (
+                        f"**Project**: {os.environ['PROJECT_PATH']}\n"
+                        f"**Branch**: {os.environ['BRANCH_NAME']}\n"
+                        f"**Pipeline Kind**: {os.environ['PIPELINE_KIND']}\n"
+                        f"**Job**: {os.environ['JOB_NAME']}"
+                    ),
+                },
+            },
+            {
+                "tag": "div",
+                "fields": [
+                    {"is_short": True, "text": {"tag": "lark_md", "content": f"**Commit**\n{os.environ['SHORT_SHA']}"}},
+                    {"is_short": True, "text": {"tag": "lark_md", "content": f"**User**\n{os.environ['USER_NAME']}"}},
+                    {"is_short": True, "text": {"tag": "lark_md", "content": f"**Time**\n{os.environ['TIMESTAMP_HUMAN']}"}},
+                    {"is_short": True, "text": {"tag": "lark_md", "content": f"**Commit Title**\n{os.environ['COMMIT_TITLE']}"}},
+                ],
+            },
+            {
+                "tag": "div",
+                "text": {"tag": "lark_md", "content": os.environ["SUMMARY_MD"]},
+            },
+            {
+                "tag": "action",
+                "actions": json.loads(os.environ["ACTIONS_JSON"]),
+            },
+        ],
+    },
+}
+
+print(json.dumps(payload, ensure_ascii=False))
+PY
+}
+
+notify_failure() {
+  local card_title="SRE Agent Pipeline Failure"
+  local card_template="red"
+  local pipeline_button_label="Open Pipeline"
+  local job_button_label="Open Job"
+  local next_action="Review the failed job log and pipeline context."
+
+  case "${stage_name}" in
+    build)
+      card_title="SRE Agent Build Failure"
+      job_button_label="Inspect Build Job"
+      next_action="Check Docker build logs, base-image resolution, and dependency changes."
+      ;;
+    cleanup)
+      card_title="SRE Agent Cleanup Failure"
+      card_template="grey"
+      job_button_label="Inspect Cleanup Job"
+      next_action="Check Docker daemon access, cleanup retention logic, and stale resource state."
+      ;;
+    release)
+      if [[ "${job_name}" == validate_* ]]; then
+        card_title="SRE Agent Validation Failure"
+        card_template="orange"
+        job_button_label="Inspect Validation Job"
+        next_action="Check health probes, /openapi.json, frontend readiness, and selected test cases."
+      elif [[ "${job_name}" == publish_* || "${job_name}" == promote_* ]]; then
+        card_title="SRE Agent Release Failure"
+        job_button_label="Inspect Release Job"
+        next_action="Check Nexus login, target image tags, push permissions, and release inputs."
+      fi
+      ;;
+    preview)
+      card_title="SRE Agent Preview Failure"
+      card_template="orange"
+      job_button_label="Inspect Preview Job"
+      next_action="Check preview Docker host reachability, port allocation, and container health."
+      ;;
+  esac
+
+  if [ "${pipeline_kind}" = "weekly_build" ]; then
+    card_title="Weekly Build: ${card_title}"
+    pipeline_button_label="Open Weekly Pipeline"
+  elif [ "${pipeline_kind}" = "base_refresh" ]; then
+    card_title="Base Refresh: ${card_title}"
+    pipeline_button_label="Open Refresh Pipeline"
+  elif [ "${pipeline_kind}" = "cleanup" ]; then
+    card_title="Scheduled Cleanup: ${card_title}"
+    pipeline_button_label="Open Cleanup Pipeline"
+  fi
+
+  if [ "${pipeline_kind}" = "commit" ] && [ "${notify_commit_failures}" != "1" ]; then
+    log "commit failure notifications are disabled, skipping Feishu notification"
+    return 0
+  fi
+
+  send_card "$(failure_payload "${card_title}" "${card_template}" "${pipeline_button_label}" "${job_button_label}" "${next_action}")"
+  log "Feishu card notification sent for ${job_name}"
+}
+
+notify_success() {
+  local card_title=""
+  local summary_md=""
+  local actions_json=""
+  local card_template="green"
+
+  case "${job_name}" in
+    preview_sre_agent_web|weekly_preview_sre_agent_web)
+      card_title="SRE Agent Preview Ready"
+      if [ "${job_name}" = "weekly_preview_sre_agent_web" ]; then
+        card_title="SRE Agent Weekly Preview Ready"
+      fi
+      summary_md=$(
+        cat <<EOF
+**Frontend URL**
+${PREVIEW_FRONTEND_URL:-N/A}
+
+**Backend URL**
+${PREVIEW_BACKEND_URL:-N/A}
+
+**Image Pull**
+${PREVIEW_IMAGE_PULL:-docker pull ${WEB_IMAGE_REF:-N/A}}
+
+**Preview Kind**
+${PREVIEW_KIND:-preview}
+EOF
+      )
+      actions_json="$(
+        PIPELINE_URL="${pipeline_url:-}" \
+        JOB_URL="${job_url:-}" \
+        FRONTEND_URL="${PREVIEW_FRONTEND_URL:-}" \
+        "${PYTHON_BIN}" - <<'PY'
+import json, os
+actions = []
+if os.environ.get("FRONTEND_URL"):
+    actions.append({
+        "tag": "button",
+        "text": {"tag": "plain_text", "content": "Open Preview"},
+        "type": "primary",
+        "url": os.environ["FRONTEND_URL"],
+    })
+if os.environ.get("PIPELINE_URL"):
+    actions.append({
+        "tag": "button",
+        "text": {"tag": "plain_text", "content": "Open Pipeline"},
+        "url": os.environ["PIPELINE_URL"],
+    })
+if os.environ.get("JOB_URL"):
+    actions.append({
+        "tag": "button",
+        "text": {"tag": "plain_text", "content": "Open Job"},
+        "url": os.environ["JOB_URL"],
+    })
+print(json.dumps(actions, ensure_ascii=False))
+PY
+      )"
+      ;;
+    publish_preview_snapshot)
+      card_title="SRE Agent Snapshot Published"
+      if [ "${PUBLISHED_LANE:-preview}" = "weekly" ]; then
+        card_title="SRE Agent Weekly Snapshot Published"
+      fi
+      summary_md=$(
+        cat <<EOF
+**Publish Lane**
+${PUBLISHED_LANE:-${PUBLISH_LANE:-preview}}
+
+**Preview URL**
+${PREVIEW_FRONTEND_URL:-N/A}
+
+**Web Pull**
+${PUBLISHED_WEB_PULL:-docker pull ${PUBLISHED_WEB_IMAGE_REF:-${WEB_IMAGE_REF:-N/A}}}
+
+**Base Pull**
+${PUBLISHED_BASE_PULL:-N/A}
+EOF
+      )
+      actions_json="$(
+        PIPELINE_URL="${pipeline_url:-}" \
+        JOB_URL="${job_url:-}" \
+        FRONTEND_URL="${PREVIEW_FRONTEND_URL:-}" \
+        "${PYTHON_BIN}" - <<'PY'
+import json, os
+actions = []
+if os.environ.get("FRONTEND_URL"):
+    actions.append({
+        "tag": "button",
+        "text": {"tag": "plain_text", "content": "Open Preview"},
+        "type": "primary",
+        "url": os.environ["FRONTEND_URL"],
+    })
+if os.environ.get("PIPELINE_URL"):
+    actions.append({
+        "tag": "button",
+        "text": {"tag": "plain_text", "content": "Open Pipeline"},
+        "url": os.environ["PIPELINE_URL"],
+    })
+if os.environ.get("JOB_URL"):
+    actions.append({
+        "tag": "button",
+        "text": {"tag": "plain_text", "content": "Open Job"},
+        "url": os.environ["JOB_URL"],
+    })
+print(json.dumps(actions, ensure_ascii=False))
+PY
+      )"
+      ;;
+    promote_sre_agent_release)
+      card_title="SRE Agent Release Published"
+      summary_md=$(
+        cat <<EOF
+**Release Tag**
+${RELEASE_TAG:-N/A}
+
+**Web Pull**
+${RELEASE_WEB_PULL:-docker pull ${RELEASE_WEB_IMAGE_REF:-N/A}}
+
+**Base Pull**
+${RELEASE_BASE_PULL:-N/A}
+EOF
+      )
+      actions_json="$(
+        PIPELINE_URL="${pipeline_url:-}" \
+        JOB_URL="${job_url:-}" \
+        "${PYTHON_BIN}" - <<'PY'
+import json, os
+actions = []
+if os.environ.get("PIPELINE_URL"):
+    actions.append({
+        "tag": "button",
+        "text": {"tag": "plain_text", "content": "Open Pipeline"},
+        "type": "primary",
+        "url": os.environ["PIPELINE_URL"],
+    })
+if os.environ.get("JOB_URL"):
+    actions.append({
+        "tag": "button",
+        "text": {"tag": "plain_text", "content": "Open Job"},
+        "url": os.environ["JOB_URL"],
+    })
+print(json.dumps(actions, ensure_ascii=False))
+PY
+      )"
+      ;;
+    *)
+      log "job ${job_name} is not configured for Feishu success notification, skipping"
+      return 0
+      ;;
+  esac
+
+  if [ "${notify_success}" != "1" ]; then
+    log "success notifications are disabled, skipping Feishu notification"
+    return 0
+  fi
+
+  send_card "$(success_payload "${card_title}" "${card_template}" "${summary_md}" "${actions_json}")"
+  log "Feishu success card sent for ${job_name}"
+}
+
+case "${job_status}" in
+  failed)
+    notify_failure
+    ;;
+  success)
+    notify_success
+    ;;
+  *)
+    log "job status is ${job_status}, skipping Feishu notification"
+    ;;
+esac

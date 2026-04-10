@@ -1,5 +1,37 @@
 # SRE Agent Release Notes
 
+2026-04-10 19:20
+
+**Scope**
+
+- 基于现有飞书失败告警链路，新增 preview、snapshot、release 成功后的飞书卡片通知
+- 成功卡片直接带出页面访问地址、镜像拉取命令和 release tag，降低团队反复翻流水线日志的成本
+- 保留原有流水线日志摘要，同时让飞书成为更直接的“发布与预览入口”
+- 为飞书成功通知补充可控开关 `FEISHU_NOTIFY_ON_SUCCESS`，默认开启，可按需关闭
+
+**Code**
+
+GitLab CI:
+
+- [/.gitlab-ci.yml](/home/kevin/project/cube-studio/.gitlab-ci.yml)
+- [sre_agent/deploy/gitlab/ci/notify_feishu.sh](/home/kevin/project/cube-studio/sre_agent/deploy/gitlab/ci/notify_feishu.sh)
+- [sre_agent/deploy/gitlab/ci/push_images.sh](/home/kevin/project/cube-studio/sre_agent/deploy/gitlab/ci/push_images.sh)
+- [sre_agent/deploy/gitlab/ci/promote_release.sh](/home/kevin/project/cube-studio/sre_agent/deploy/gitlab/ci/promote_release.sh)
+
+Docs:
+
+- [sre_agent/docs/gitlab/README.md](/home/kevin/project/cube-studio/sre_agent/docs/gitlab/README.md)
+- [sre_agent/docs/gitlab/PIPELINE_RUNBOOK.md](/home/kevin/project/cube-studio/sre_agent/docs/gitlab/PIPELINE_RUNBOOK.md)
+- [sre_agent/docs/RELEASE_NOTES.md](/home/kevin/project/cube-studio/sre_agent/docs/RELEASE_NOTES.md)
+
+**Runtime**
+
+Feishu success cards:
+
+- `preview` 卡片包含 `Frontend URL`、`Backend URL`、`Image Pull`
+- `snapshot` 卡片包含候选镜像拉取地址，并尽量附带 preview 访问地址
+- `release` 卡片包含 `Release Tag`、`Web Pull`、`Base Pull`
+
 2026-04-10 18:40
 
 **Scope**

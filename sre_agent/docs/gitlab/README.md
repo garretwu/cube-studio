@@ -69,6 +69,7 @@
 | `RELEASE_VERSION` | `Visible` | 可选，手动发版时指定版本号，例如 `1.0.1`；未指定时读取 `sre_agent/VERSION`。 |
 | `FEISHU_WEBHOOK_URL` | `Masked and hidden` | 可选，飞书群机器人 webhook 地址。 |
 | `FEISHU_NOTIFY_ON_COMMIT_FAILURE` | `Visible` | 可选，设为 `1` 时普通 commit 流水线失败也通知飞书；默认只通知非 commit 流程。 |
+| `FEISHU_NOTIFY_ON_SUCCESS` | `Visible` | 可选，设为 `1` 时对 `preview`、`snapshot`、`release` 成功发送飞书卡片；默认开启。 |
 
 补充说明：
 
@@ -126,6 +127,10 @@
 - 正式 release 镜像：查看 `promote_sre_agent_release` job 日志末尾的发布 summary，其中会直接输出 `Base Pull` 和 `Web Pull`
 - `weekly_build` 对应镜像：同样查看 `publish_preview_snapshot` job 日志，其中会输出 `weekly` 目录下的 `docker pull ...`
 - `weekly preview` 页面地址：查看 `weekly_preview_sre_agent_web` job 日志末尾的 `Frontend URL`
+- 如果已配置 `FEISHU_WEBHOOK_URL`，成功时也会自动发送飞书卡片：
+  - `preview_sre_agent_web` / `weekly_preview_sre_agent_web`：包含页面 URL 和镜像拉取命令
+  - `publish_preview_snapshot`：包含候选镜像拉取命令，并尽量附带 preview 地址
+  - `promote_sre_agent_release`：包含正式 release 的 `Web Pull` / `Base Pull`
 
 ## 验证范围
 

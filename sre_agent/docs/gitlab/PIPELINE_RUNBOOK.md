@@ -162,6 +162,7 @@ Preview 规则：
 | `RELEASE_VERSION` | 可选 | 手动输入 | `Visible` | 手动 release promotion 时使用 |
 | `FEISHU_WEBHOOK_URL` | 推荐 | 真实 webhook 地址 | `Masked and hidden` | 飞书群机器人 webhook 地址 |
 | `FEISHU_NOTIFY_ON_COMMIT_FAILURE` | 可选 | `0` | `Visible` | 设为 `1` 时普通提交失败也发飞书通知 |
+| `FEISHU_NOTIFY_ON_SUCCESS` | 可选 | `1` | `Visible` | 设为 `1` 时对 preview、snapshot、release 成功发送飞书卡片；设为 `0` 可关闭成功通知 |
 
 安全建议：
 
@@ -223,6 +224,18 @@ Preview 规则：
 - `weekly_build` 失败时通知
 - `base_refresh` 失败时通知
 - `cleanup` 失败时通知
+
+成功通知：
+
+- `preview_sre_agent_web` 成功时发送 preview ready 卡片，包含 `Frontend URL`、`Backend URL` 和镜像拉取命令
+- `weekly_preview_sre_agent_web` 成功时发送 weekly preview ready 卡片，便于团队直接打开周版本页面
+- `publish_preview_snapshot` 成功时发送候选镜像发布卡片，包含 `docker pull ...`
+- `promote_sre_agent_release` 成功时发送正式发布卡片，包含 `Release Tag`、`Web Pull`、`Base Pull`
+
+说明：
+
+- 成功卡片用于“直接看地址和镜像”，日志里的 summary 仍然保留，便于回查
+- 如果不希望发送成功通知，可将 `FEISHU_NOTIFY_ON_SUCCESS` 设置为 `0`
 - release 阶段里的验证失败、快照发布失败、手动发版失败都通知
 - 普通 commit 流水线默认不通知，除非设置 `FEISHU_NOTIFY_ON_COMMIT_FAILURE=1`
 

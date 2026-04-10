@@ -23,17 +23,33 @@ fi
 
 docker_registry_login
 
+mkdir -p "${REPO_ROOT}/dist"
+
+published_base_pull=""
+published_web_pull=""
+
 if [ -f "${REPO_ROOT}/dist/build-base.env" ]; then
   require_local_docker_image "${BASE_IMAGE_REF}"
   log "pushing base image ${BASE_IMAGE_REF}"
   docker push "${BASE_IMAGE_REF}"
-  echo "docker pull ${BASE_IMAGE_REF}"
+  published_base_pull="docker pull ${BASE_IMAGE_REF}"
+  echo "${published_base_pull}"
 fi
 
 require_local_docker_image "${WEB_IMAGE_REF}"
 log "pushing web image ${WEB_IMAGE_REF}"
 docker push "${WEB_IMAGE_REF}"
-echo "docker pull ${WEB_IMAGE_REF}"
+published_web_pull="docker pull ${WEB_IMAGE_REF}"
+echo "${published_web_pull}"
+
+cat > "${REPO_ROOT}/dist/publish.env" <<EOF
+PUBLISHED_LANE=${PUBLISH_LANE}
+PUBLISHED_BASE_IMAGE_REF=${BASE_IMAGE_REF:-}
+PUBLISHED_BASE_PULL=${published_base_pull}
+PUBLISHED_WEB_IMAGE_REF=${WEB_IMAGE_REF}
+PUBLISHED_WEB_PULL=${published_web_pull}
+EOF
+
 echo
 echo "========== 候选镜像已发布 =========="
 echo "Publish Lane : ${PUBLISH_LANE}"

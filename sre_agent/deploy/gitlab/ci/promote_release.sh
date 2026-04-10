@@ -18,6 +18,8 @@ fi
 docker_registry_login
 require_local_docker_image "${WEB_IMAGE_REF}"
 
+mkdir -p "${REPO_ROOT}/dist"
+
 release_version="${RELEASE_VERSION:-$(read_default_release_version)}"
 release_timestamp="${RELEASE_TIMESTAMP:-${IMAGE_TIMESTAMP:-$(timestamp_now)}}"
 release_tag="${release_version}-${release_timestamp}"
@@ -29,6 +31,7 @@ docker tag "${WEB_IMAGE_REF}" "${release_image_ref}"
 docker push "${release_image_ref}"
 
 release_base_image_ref=""
+release_base_pull=""
 if [ -n "${BASE_IMAGE_REF:-}" ]; then
   if ! docker image inspect "${BASE_IMAGE_REF}" >/dev/null 2>&1; then
     docker pull "${BASE_IMAGE_REF}" >/dev/null 2>&1 || true
@@ -37,11 +40,22 @@ if [ -n "${BASE_IMAGE_REF:-}" ]; then
     release_base_image_ref="$(registry_image_ref "${release_base_image_name}" "${release_tag}")"
     docker tag "${BASE_IMAGE_REF}" "${release_base_image_ref}"
     docker push "${release_base_image_ref}"
-    echo "docker pull ${release_base_image_ref}"
+    release_base_pull="docker pull ${release_base_image_ref}"
+    echo "${release_base_pull}"
   fi
 fi
 
-echo "docker pull ${release_image_ref}"
+release_web_pull="docker pull ${release_image_ref}"
+echo "${release_web_pull}"
+
+cat > "${REPO_ROOT}/dist/release.env" <<EOF
+RELEASE_TAG=${release_tag}
+RELEASE_BASE_IMAGE_REF=${release_base_image_ref}
+RELEASE_BASE_PULL=${release_base_pull}
+RELEASE_WEB_IMAGE_REF=${release_image_ref}
+RELEASE_WEB_PULL=${release_web_pull}
+EOF
+
 log "promoted release image ${release_image_ref}"
 echo
 echo "========== 正式发布已完成 =========="

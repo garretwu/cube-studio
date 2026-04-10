@@ -282,8 +282,10 @@ validate_sre_agent_runtime:
       artifacts: true
       optional: true
     - job: preview_sre_agent_web
+      artifacts: true
       optional: true
     - job: weekly_preview_sre_agent_web
+      artifacts: true
       optional: true
   script:
     - sre_agent/deploy/gitlab/ci/validate_runtime_smoke.sh
@@ -314,8 +316,10 @@ validate_sre_agent_business:
       artifacts: true
       optional: true
     - job: preview_sre_agent_web
+      artifacts: true
       optional: true
     - job: weekly_preview_sre_agent_web
+      artifacts: true
       optional: true
   script:
     - sre_agent/deploy/gitlab/ci/validate_business_suite.sh
@@ -344,8 +348,10 @@ publish_preview_snapshot:
       artifacts: true
       optional: true
     - job: preview_sre_agent_web
+      artifacts: true
       optional: true
     - job: weekly_preview_sre_agent_web
+      artifacts: true
       optional: true
   script:
     - sre_agent/deploy/gitlab/ci/push_images.sh
@@ -370,8 +376,10 @@ promote_sre_agent_release:
       artifacts: true
       optional: true
     - job: preview_sre_agent_web
+      artifacts: true
       optional: true
     - job: weekly_preview_sre_agent_web
+      artifacts: true
       optional: true
     - job: validate_sre_agent_runtime
     - job: validate_sre_agent_business
