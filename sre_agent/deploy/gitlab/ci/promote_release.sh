@@ -28,3 +28,9 @@ docker push "${release_image_ref}"
 
 echo "docker pull ${release_image_ref}"
 log "promoted release image ${release_image_ref}"
+echo
+echo "========== 正式发布已完成 =========="
+echo "Release Tag  : ${release_tag}"
+echo "Release Image: ${release_image_ref}"
+echo "Image Pull   : docker pull ${release_image_ref}"
+echo "===================================="

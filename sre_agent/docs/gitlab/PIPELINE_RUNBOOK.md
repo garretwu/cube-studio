@@ -352,6 +352,11 @@ docker pull 10.11.4.5:5000/sre_agent/sre-agent-web:weekly-<yyyymmddhhmm>
 docker pull 10.11.4.5:5000/sre_agent/sre-agent-web:<version-yyyymmddhhmm>
 ```
 
+正式 release 获取方式：
+
+- 手动执行 `promote_sre_agent_release` 成功后，job 日志末尾会输出正式发布 summary
+- 其中 `Image Pull` 一行就是可直接复制的镜像获取命令
+
 ### 8.5 `snapshot` 与正式 `release` 的区别
 
 `snapshot` 用于候选版本验证，正式 `release` 用于确定版本交付。
@@ -396,7 +401,7 @@ docker pull 10.11.4.5:5000/sre_agent/sre-agent-web:<version-yyyymmddhhmm>
 - 验证通过日志
 - 发布后的 `docker pull` 地址
 
-如果手动 release promotion 成功，还应该看到正式 release 镜像的拉取命令。
+如果手动 release promotion 成功，还应该看到正式发布 summary，包括 `Release Tag`、`Release Image` 和 `Image Pull`。
 
 如果启用了飞书通知，且被监控的 job 失败，对应飞书卡片里还应该带有 pipeline 和 job 的跳转链接。
 

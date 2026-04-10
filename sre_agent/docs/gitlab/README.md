@@ -104,6 +104,11 @@
 - `promote_sre_agent_release`：手动执行，把已验证通过的业务镜像重新打成 `VERSION-YYYYMMDDHHMM`。
 - 如果手动触发时没有提供 `RELEASE_VERSION`，就读取 `sre_agent/VERSION` 里的默认版本。
 
+镜像获取说明：
+
+- 预览对应的候选镜像：查看 `publish_preview_snapshot` job 日志中的 `docker pull ...`
+- 正式 release 镜像：查看 `promote_sre_agent_release` job 日志末尾的发布 summary，其中会直接输出 `Image Pull`
+
 ## 验证范围
 
 release 门禁目前拆成两类 job：
