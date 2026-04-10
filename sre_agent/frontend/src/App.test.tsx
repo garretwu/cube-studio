@@ -2,7 +2,7 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 
-import App from "./App";
+import App, { resolvePageChrome } from "./App";
 import { diagnosisHistorySessions } from "./mocks/data";
 import { appRoutes } from "./routes";
 
@@ -27,6 +27,8 @@ describe("App shell", () => {
     });
 
     expect(container.querySelectorAll(".nav-section")).toHaveLength(2);
+    expect(container.querySelector("main.shell-content--workspace-page")).toBeTruthy();
+    expect(container.querySelector(".topology-modified-stage--canvas-only")).toBeTruthy();
     expect(screen.getByRole("button", { name: topologyLabel! })).toBeInTheDocument();
   });
 
@@ -40,11 +42,12 @@ describe("App shell", () => {
       </MemoryRouter>,
     );
 
-    await screen.findByRole("heading", { name: "诊断对话" });
+    const textboxes = await screen.findAllByRole("textbox");
+    expect(textboxes.length).toBeGreaterThan(0);
 
     expect(screen.getByText("QinClaw")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: diagnosisLabel! }).className).toContain("nav-item--active");
-    expect(screen.getByText(/会话 sess-latency-001/)).toBeInTheDocument();
+    expect(document.querySelector(".diagnosis-workspace-page")).toBeTruthy();
   });
 
   it("collapses the sidebar into icon-only main navigation and expands again after selecting a feature", async () => {
@@ -94,6 +97,65 @@ describe("App shell", () => {
 
     const topologyButton = await screen.findByRole("button", { name: topologyLabel! });
     expect(topologyButton.className).toContain("nav-item--active");
+  });
+
+  it("keeps topology active when an object topology detail route is opened", async () => {
+    const topologyLabel = appRoutes.find((route) => route.key === "topology")?.label;
+
+    expect(topologyLabel).toBeTruthy();
+
+    render(
+      <MemoryRouter initialEntries={["/topology/object/gpu-03"]}>
+        <App />
+      </MemoryRouter>,
+    );
+
+    const topologyButton = await screen.findByRole("button", { name: topologyLabel! });
+    expect(topologyButton.className).toContain("nav-item--active");
+  });
+  it("shows subtitles on first-level module pages only", async () => {
+    const topologyChrome = resolvePageChrome("/topology");
+    const topologyDetailChrome = resolvePageChrome("/topology/object/gpu-03");
+    const knowledgeChrome = resolvePageChrome("/knowledge");
+    const knowledgeDetailChrome = resolvePageChrome("/knowledge/builtin-kb");
+
+    const topologyRoot = render(
+      <MemoryRouter initialEntries={["/topology"]}>
+        <App />
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByText(topologyChrome.subtitle!)).toBeInTheDocument();
+    topologyRoot.unmount();
+
+    const topologyDetail = render(
+      <MemoryRouter initialEntries={["/topology/object/gpu-03"]}>
+        <App />
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByRole("heading", { level: 2, name: topologyDetailChrome.title! })).toBeInTheDocument();
+    expect(screen.queryByText(topologyChrome.subtitle!)).not.toBeInTheDocument();
+    topologyDetail.unmount();
+
+    const knowledgeRoot = render(
+      <MemoryRouter initialEntries={["/knowledge"]}>
+        <App />
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByText(knowledgeChrome.subtitle!)).toBeInTheDocument();
+    knowledgeRoot.unmount();
+
+    const knowledgeDetail = render(
+      <MemoryRouter initialEntries={["/knowledge/builtin-kb"]}>
+        <App />
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByRole("heading", { level: 2, name: knowledgeDetailChrome.title! })).toBeInTheDocument();
+    expect(screen.queryByText(knowledgeChrome.subtitle!)).not.toBeInTheDocument();
+    knowledgeDetail.unmount();
   });
 
   it("does not expose a standalone chat route anymore", () => {
@@ -149,18 +211,20 @@ describe("App shell", () => {
   });
 
 
-  it("exposes the modified alerts route as its own navigation entry", async () => {
-    const modifiedAlertsLabel = appRoutes.find((route) => route.key === "alertsModified")?.label;
+  it("exposes the alerts route as its own navigation entry", async () => {
+    const alertsLabel = appRoutes.find((route) => route.key === "alertsModified")?.label;
 
-    expect(modifiedAlertsLabel).toBeTruthy();
+    expect(alertsLabel).toBeTruthy();
+    expect(appRoutes.some((route) => route.key === "alerts")).toBe(false);
 
     render(
-      <MemoryRouter initialEntries={["/alerts-modified"]}>
+      <MemoryRouter initialEntries={["/alerts"]}>
         <App />
       </MemoryRouter>,
     );
 
-    const modifiedAlertsButton = await screen.findByRole("button", { name: modifiedAlertsLabel! });
+    const modifiedAlertsButton = await screen.findByRole("button", { name: alertsLabel! });
     expect(modifiedAlertsButton.className).toContain("nav-item--active");
   });
 });
+

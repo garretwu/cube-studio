@@ -1,0 +1,8 @@
+node_modules/
+dist/
+__pycache__/
+*.log
+*.stderr.log
+*.stdout.log
+*.tsbuildinfo
+*.pyc

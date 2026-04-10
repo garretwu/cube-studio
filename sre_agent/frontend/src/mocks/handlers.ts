@@ -1,4 +1,4 @@
-﻿import { delay, http, HttpResponse } from "msw";
+import { delay, http, HttpResponse } from "msw";
 
 import {
   alertClusters,
@@ -9,9 +9,10 @@ import {
   knowledgeBaseDetails,
   knowledgeBases,
   knowledgeDocuments,
+  remediationTimeline,
   skills,
   topologyEdges,
-  topologyExplorerMock,
+  topologyExplorerOnlineMock,
   topologyNodes,
 } from "./data";
 
@@ -94,7 +95,7 @@ export const handlers = [
   }),
   http.get("/api/topology-explorer", async () => {
     await delay(80);
-    return HttpResponse.json(topologyExplorerMock);
+    return HttpResponse.json(topologyExplorerOnlineMock);
   }),
 
   http.get("/api/alerts", async () => {
@@ -148,9 +149,10 @@ export const handlers = [
       session_id: sessionId || diagnosisSession.session_id,
     });
   }),
-  http.get("/api/sessions/:sessionId/events", async () => {
+  http.get("/api/sessions/:sessionId/events", async ({ params }) => {
     await delay(40);
-    return HttpResponse.json([]);
+    const sessionId = String(params.sessionId ?? "");
+    return HttpResponse.json(sessionId === diagnosisSession.session_id ? remediationTimeline : []);
   }),
 
   http.get("/api/diagnosis/session/current", async () => {
@@ -282,4 +284,5 @@ export const handlers = [
     });
   }),
 ];
+
 

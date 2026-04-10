@@ -15,6 +15,8 @@ type AppShellProps = {
   title?: string;
   eyebrow?: string;
   subtitle?: string;
+  contentSpacing?: "default" | "compact";
+  contentMode?: "default" | "workspace";
   brandSubtitle?: string;
   onBrandClick?: () => void;
 };
@@ -30,6 +32,8 @@ function AppShell({
   title,
   eyebrow,
   subtitle,
+  contentSpacing = "default",
+  contentMode = "default",
   brandSubtitle,
   onBrandClick,
 }: AppShellProps) {
@@ -53,7 +57,8 @@ function AppShell({
         />
       </aside>
 
-      <div className="shell-main">
+      {/* Workspace pages keep their own scroll container inside the shell. */}
+      <div className={cn("shell-main", contentMode === "workspace" && "shell-main--workspace")}>
         <Topbar
           adminLabel={adminLabel}
           eyebrow={eyebrow}
@@ -64,7 +69,15 @@ function AppShell({
           userMeta={userMeta}
           userName={userName}
         />
-        <main className="shell-content">{children}</main>
+        <main
+          className={cn(
+            "shell-content",
+            contentSpacing === "compact" && "shell-content--compact-page-chrome",
+            contentMode === "workspace" && "shell-content--workspace-page",
+          )}
+        >
+          {children}
+        </main>
       </div>
     </div>
   );

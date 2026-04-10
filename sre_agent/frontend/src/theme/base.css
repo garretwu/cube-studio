@@ -19,20 +19,7 @@ body {
   min-width: 320px;
   font-family: var(--font-sans);
   color: var(--color-text);
-  background:
-    radial-gradient(
-      ellipse 1640px 840px at 50% -340px,
-      color-mix(in srgb, var(--color-background-ambient-brand) 16%, var(--color-background-page-alt)) 0%,
-      color-mix(in srgb, var(--color-background-ambient-brand) 7%, transparent) 40%,
-      transparent 72%
-    ),
-    linear-gradient(
-      180deg,
-      var(--color-background-page-alt) 0%,
-      var(--color-background-page-base) 56%,
-      var(--color-background-page-depth) 100%
-    );
-  background-repeat: no-repeat;
+  background: var(--color-background-page-base);
 }
 
 body,

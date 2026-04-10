@@ -1,4 +1,4 @@
-﻿import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
@@ -47,7 +47,7 @@ const testKnowledgeBases: KnowledgeBaseSummary[] = [
 ];
 
 describe("KnowledgePage", () => {
-  it("renders tabs, metrics, and knowledge rows for the selected scope", async () => {
+  it("renders a unified list with scope tags and aggregate metrics", async () => {
     server.use(http.get("/api/knowledge/bases", async () => HttpResponse.json({ items: testKnowledgeBases })));
 
     render(
@@ -57,11 +57,13 @@ describe("KnowledgePage", () => {
     );
 
     expect(await screen.findByRole("heading", { name: "知识库" })).toBeInTheDocument();
-    expect(screen.getByRole("tab", { name: "公共知识库" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByText("知识库总数")).toBeInTheDocument();
     expect(screen.getByText("文档总数")).toBeInTheDocument();
     expect(await screen.findByText("工业通用知识库")).toBeInTheDocument();
     expect(screen.getByText("研发设计规范库")).toBeInTheDocument();
-    expect(screen.queryByText("团队值班手册库")).not.toBeInTheDocument();
+    expect(screen.getByText("团队值班手册库")).toBeInTheDocument();
+    expect(screen.getAllByText("公共知识库")).toHaveLength(2);
+    expect(screen.getByText("私有知识库")).toBeInTheDocument();
   });
 
   it("filters by query and resets to the default result set", async () => {
@@ -84,11 +86,13 @@ describe("KnowledgePage", () => {
     });
 
     expect(screen.getByText("研发设计规范库")).toBeInTheDocument();
+    expect(screen.queryByText("团队值班手册库")).not.toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "重置" }));
 
     expect(await screen.findByText("工业通用知识库")).toBeInTheDocument();
     expect(screen.getByText("研发设计规范库")).toBeInTheDocument();
+    expect(screen.getByText("团队值班手册库")).toBeInTheDocument();
   });
 
   it("navigates to the detail route when the detail button is clicked", async () => {

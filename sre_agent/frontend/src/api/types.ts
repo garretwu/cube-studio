@@ -264,6 +264,7 @@ export type DiagnosisSessionSummary = {
   status: string;
   severity: Severity;
   alert_name: string;
+  fingerprint?: string | null;
   duration_seconds: number;
   outcome?: string | null;
   triage_priority?: DiagnosisResult["triage_priority"] | null;
@@ -381,6 +382,35 @@ export type ChatDisplayPayload = {
   answer: string;
   thinking_raw?: string | null;
   has_thinking?: boolean;
+};
+
+export type DiagnosisAuditEventKind =
+  | "approval_result"
+  | "execution_progress";
+
+export type DiagnosisAuditSource =
+  | "optimistic"
+  | "event"
+  | "local_audit";
+
+export type DiagnosisAuditTone =
+  | "neutral"
+  | "accent"
+  | "success"
+  | "warning"
+  | "danger"
+  | "info";
+
+export type DiagnosisLocalAuditRecord = {
+  id: string;
+  sessionId: string;
+  eventKind: DiagnosisAuditEventKind;
+  source: DiagnosisAuditSource;
+  dedupeKey: string;
+  timestamp: string;
+  summary: string;
+  details: string[];
+  statusTone: DiagnosisAuditTone;
 };
 
 export type KnowledgeDocument = {

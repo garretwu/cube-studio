@@ -1,4 +1,4 @@
-﻿import type {
+import type {
   KnowledgeBaseDetail,
   KnowledgeBaseDocument,
   KnowledgeBaseScope,
@@ -174,9 +174,6 @@ export function buildKnowledgeMetrics(bases: KnowledgeBaseSummary[]): KnowledgeM
   );
 }
 
-export function getKnowledgeBasesByScope(bases: KnowledgeBaseSummary[], scope: KnowledgeBaseScope) {
-  return bases.filter((item) => item.scope === scope);
-}
 
 export function buildKnowledgeDetailSummary(detail: KnowledgeBaseDetail) {
   return [

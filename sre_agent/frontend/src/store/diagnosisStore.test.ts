@@ -8,17 +8,20 @@ import { useDiagnosisStore } from "./diagnosisStore";
 
 describe("useDiagnosisStore", () => {
   beforeEach(() => {
+    window.localStorage.removeItem("sre_session_id");
     useDiagnosisStore.setState({
       session: undefined,
       activeSessionId: undefined,
       messages: [],
       events: [],
+      localAuditRecords: [],
       isLoadingSession: false,
       bootstrapStatus: "idle",
       traceStatus: "unknown",
       isSendingMessage: false,
       isRevisingPlan: false,
       isApprovingPlan: false,
+      approvalOverlayOpen: false,
       currentPlanVersion: null,
       latestPlanVersion: null,
       approvedPlanVersion: null,
@@ -147,5 +150,31 @@ describe("useDiagnosisStore", () => {
     await useDiagnosisStore.getState().revisePlan("");
 
     expect(capturedInstruction).toBe("请优化当前修复方案，补充更稳妥步骤与验证");
+  });
+
+  it("restores session-scoped local audit records during bootstrap", async () => {
+    window.localStorage.setItem(
+      "sre_diagnosis_local_audit_v1",
+      JSON.stringify({
+        [diagnosisSession.session_id]: [
+          {
+            id: "audit-local-1",
+            sessionId: diagnosisSession.session_id,
+            eventKind: "approval_result",
+            source: "local_audit",
+            dedupeKey: "approval-result-rejected-v3",
+            timestamp: "2026-04-08T11:30:00.000Z",
+            summary: "[系统] 已审批，拒绝执行（原因：需要人工复核）",
+            details: ["拒绝原因：需要人工复核"],
+            statusTone: "danger",
+          },
+        ],
+      }),
+    );
+
+    await useDiagnosisStore.getState().bootstrapSession(diagnosisSession.session_id);
+
+    expect(useDiagnosisStore.getState().localAuditRecords).toHaveLength(1);
+    expect(useDiagnosisStore.getState().localAuditRecords[0]?.summary).toContain("拒绝执行");
   });
 });
