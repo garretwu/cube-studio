@@ -37,7 +37,6 @@ fi
 if [ "${preview_target}" = "local" ]; then
   unset DOCKER_HOST
   unset DOCKER_TLS_CERTDIR
-  preview_host="127.0.0.1"
 fi
 
 mkdir -p "${REPO_ROOT}/dist"
@@ -141,16 +140,16 @@ log "preview frontend: http://${preview_host}:${frontend_host_port}"
 log "preview ttl hours: ${preview_ttl_hours}"
 
 echo
-echo "========== Preview Ready =========="
+echo "========== 预览环境已就绪 =========="
 echo "Frontend URL : http://${preview_host}:${frontend_host_port}"
 echo "Backend URL  : http://${preview_host}:${backend_host_port}"
 echo "Container    : ${container_name}"
 echo "TTL Hours    : ${preview_ttl_hours}"
 if [ "${preview_target}" = "remote" ]; then
-  echo "Access Hint  : Open the Frontend URL in your browser."
+  echo "访问说明      : 请在浏览器中打开 Frontend URL。"
 else
-  echo "Access Hint  : Preview is running on the local shell runner host."
-  echo "Access Hint  : Open the URL only if ${preview_host} is reachable from your machine."
-  echo "Access Hint  : For team sharing, configure PREVIEW_DOCKER_HOST and PREVIEW_PUBLIC_HOST."
+  echo "访问说明      : 当前 preview 运行在本地 shell runner 主机上。"
+  echo "访问说明      : 只有当 ${preview_host} 对你的机器可达时，浏览器才能直接访问。"
+  echo "访问说明      : 如果要给团队共享，请配置 PREVIEW_DOCKER_HOST 和 PREVIEW_PUBLIC_HOST。"
 fi
 echo "==================================="
