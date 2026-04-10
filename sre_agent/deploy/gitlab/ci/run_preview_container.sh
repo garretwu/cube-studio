@@ -14,7 +14,7 @@ if [ -n "${PREVIEW_DOCKER_HOST:-}" ]; then
   export DOCKER_HOST="${PREVIEW_DOCKER_HOST}"
 fi
 
-docker load -i "${REPO_ROOT}/dist/web-image.tar"
+require_local_docker_image "${WEB_IMAGE_REF}"
 
 mkdir -p "${REPO_ROOT}/dist"
 

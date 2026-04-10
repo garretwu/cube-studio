@@ -19,12 +19,10 @@ docker build \
   -t "${BASE_IMAGE_REF}" \
   "${REPO_ROOT}"
 
-docker save -o "${REPO_ROOT}/dist/base-image.tar" "${BASE_IMAGE_REF}"
-
 cat > "${REPO_ROOT}/dist/build-base.env" <<EOF
 BASE_IMAGE_BUILT=1
 BASE_IMAGE_REF=${BASE_IMAGE_REF}
 BASE_IMAGE_TAG=${BASE_IMAGE_TAG}
 EOF
 
-log "built base image ${BASE_IMAGE_REF}"
+log "built base image ${BASE_IMAGE_REF} on local docker host"

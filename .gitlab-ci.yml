@@ -148,7 +148,6 @@ build_sre_agent_base:
   artifacts:
     paths:
       - dist/pipeline.env
-      - dist/base-image.tar
       - dist/build-base.env
   rules:
     - if: '$CI_COMMIT_BRANCH == $SRE_CI_BRANCH && $FORCE_BASE_BUILD == "1"'
@@ -174,9 +173,7 @@ build_sre_agent_web:
   artifacts:
     paths:
       - dist/pipeline.env
-      - dist/base-image.tar
       - dist/build-base.env
-      - dist/web-image.tar
       - dist/build-web.env
   extends:
     - .sre_agent_docker_job
@@ -196,9 +193,7 @@ weekly_build_sre_agent_web:
   artifacts:
     paths:
       - dist/pipeline.env
-      - dist/base-image.tar
       - dist/build-base.env
-      - dist/web-image.tar
       - dist/build-web.env
   variables:
     PIPELINE_KIND: "weekly_build"
@@ -220,9 +215,7 @@ refresh_build_sre_agent_web:
   artifacts:
     paths:
       - dist/pipeline.env
-      - dist/base-image.tar
       - dist/build-base.env
-      - dist/web-image.tar
       - dist/build-web.env
   extends:
     - .sre_agent_docker_job

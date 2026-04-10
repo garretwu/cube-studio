@@ -128,3 +128,13 @@ read_default_release_version() {
   fi
   echo "0.1.0"
 }
+
+require_local_docker_image() {
+  local image_ref="$1"
+  if docker image inspect "${image_ref}" >/dev/null 2>&1; then
+    return 0
+  fi
+  echo "required local docker image was not found on this runner: ${image_ref}" >&2
+  echo "this pipeline expects shell runner jobs to reuse the same Docker host without tar artifacts" >&2
+  return 1
+}

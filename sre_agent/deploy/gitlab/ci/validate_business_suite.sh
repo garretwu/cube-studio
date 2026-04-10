@@ -13,10 +13,6 @@ if [ -f "${REPO_ROOT}/dist/build-base.env" ]; then
   source "${REPO_ROOT}/dist/build-base.env"
 fi
 
-if [ -f "${REPO_ROOT}/dist/base-image.tar" ]; then
-  docker load -i "${REPO_ROOT}/dist/base-image.tar"
-fi
-
 if ! docker image inspect "${BASE_IMAGE_REF}" >/dev/null 2>&1; then
   latest_base_tag="$("${SCRIPT_DIR}/resolve_latest_base_tag.sh")"
   BASE_IMAGE_TAG="${latest_base_tag}"

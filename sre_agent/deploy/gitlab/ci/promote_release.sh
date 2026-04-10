@@ -11,7 +11,7 @@ source "${REPO_ROOT}/dist/pipeline.env"
 source "${REPO_ROOT}/dist/build-web.env"
 
 docker_registry_login
-docker load -i "${REPO_ROOT}/dist/web-image.tar"
+require_local_docker_image "${WEB_IMAGE_REF}"
 
 release_version="${RELEASE_VERSION:-$(read_default_release_version)}"
 release_timestamp="${RELEASE_TIMESTAMP:-${IMAGE_TIMESTAMP:-$(timestamp_now)}}"
