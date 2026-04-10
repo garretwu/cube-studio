@@ -139,3 +139,18 @@ EOF
 log "preview backend: http://${preview_host}:${backend_host_port}"
 log "preview frontend: http://${preview_host}:${frontend_host_port}"
 log "preview ttl hours: ${preview_ttl_hours}"
+
+echo
+echo "========== Preview Ready =========="
+echo "Frontend URL : http://${preview_host}:${frontend_host_port}"
+echo "Backend URL  : http://${preview_host}:${backend_host_port}"
+echo "Container    : ${container_name}"
+echo "TTL Hours    : ${preview_ttl_hours}"
+if [ "${preview_target}" = "remote" ]; then
+  echo "Access Hint  : Open the Frontend URL in your browser."
+else
+  echo "Access Hint  : Preview is running on the local shell runner host."
+  echo "Access Hint  : Open the URL only if ${preview_host} is reachable from your machine."
+  echo "Access Hint  : For team sharing, configure PREVIEW_DOCKER_HOST and PREVIEW_PUBLIC_HOST."
+fi
+echo "==================================="
