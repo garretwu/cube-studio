@@ -4,6 +4,8 @@
 
 **Scope**
 
+- 修复 `weekly_build` / `base_refresh` 因依赖不存在的 `preview_sre_agent_web` 而导致 `yaml invalid` 的问题，确保 schedule 流程可以正常创建和执行
+- 优化 preview 容器生命周期管理，每次创建新 preview 前会先清理当前分支历史 preview 容器，定时 `cleanup` 任务也只保留最新的 preview 容器，避免历史容器长期堆积并造成排障误判
 - 调整分支流水线发布策略，`preview` 成功后自动上传 `snapshot` 镜像，便于内部测试和调试共享
 - 保留正式 `release` 为手动 promotion，继续作为人工确认后的正式交付动作
 - 镜像默认命名空间从 `cube-studio` 统一调整为 `sre_agent`

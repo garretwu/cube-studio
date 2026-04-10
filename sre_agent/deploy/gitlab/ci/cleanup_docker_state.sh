@@ -14,6 +14,22 @@ fi
 cutoff_epoch="$(( $(date +%s) - 7 * 24 * 3600 ))"
 managed_label="com.cube_studio.sre_agent.ci.managed=true"
 branch_label="com.cube_studio.sre_agent.ci.branch=${SRE_CI_BRANCH:-feature/sre-c-core-infra}"
+latest_preview_container_id="$(
+  docker ps -a \
+    --filter "label=${managed_label}" \
+    --filter "label=com.cube_studio.sre_agent.ci.kind=preview" \
+    --filter "label=${branch_label}" \
+    --format '{{.ID}} {{.CreatedAt}}' \
+    | while read -r container_id created_at_1 created_at_2 created_at_3 created_at_4 created_at_5; do
+        [ -n "${container_id}" ] || continue
+        created_epoch="$(date -d "${created_at_1} ${created_at_2} ${created_at_3} ${created_at_4} ${created_at_5}" +%s 2>/dev/null || true)"
+        [ -n "${created_epoch}" ] || continue
+        echo "${created_epoch} ${container_id}"
+      done \
+    | sort -nr \
+    | head -n 1 \
+    | awk '{print $2}'
+)"
 
 while read -r container_id; do
   [ -n "${container_id}" ] || continue
@@ -27,10 +43,12 @@ while read -r container_id; do
     docker rm -f "${container_id}" >/dev/null 2>&1 || true
     continue
   fi
-  if [ "${created_epoch}" -lt "${cutoff_epoch}" ]; then
-    log "removing preview container ${container_id}"
-    docker rm -f "${container_id}" >/dev/null 2>&1 || true
+  if [ -n "${latest_preview_container_id}" ] && [ "${container_id}" = "${latest_preview_container_id}" ]; then
+    log "preserving latest preview container ${container_id}"
+    continue
   fi
+  log "removing non-latest preview container ${container_id}"
+  docker rm -f "${container_id}" >/dev/null 2>&1 || true
 done < <(
   docker ps -a \
     --filter "label=${managed_label}" \

@@ -60,6 +60,22 @@ cleanup_existing() {
   docker rm -f "${container_name}" >/dev/null 2>&1 || true
 }
 
+cleanup_previous_previews() {
+  local previous_container_id=""
+  while read -r previous_container_id; do
+    [ -n "${previous_container_id}" ] || continue
+    log "removing previous preview container ${previous_container_id}"
+    docker rm -f "${previous_container_id}" >/dev/null 2>&1 || true
+  done < <(
+    docker ps -a \
+      --filter "label=com.cube_studio.sre_agent.ci.managed=true" \
+      --filter "label=com.cube_studio.sre_agent.ci.kind=preview" \
+      --filter "label=com.cube_studio.sre_agent.ci.branch=${CI_COMMIT_REF_NAME:-manual}" \
+      --format '{{.ID}}'
+  )
+}
+
+cleanup_previous_previews
 cleanup_existing
 
 run_attempts=0
