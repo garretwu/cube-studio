@@ -8,6 +8,7 @@ workflow:
         - .dockerignore
         - fault_injector/**/*
         - lib/**/*
+        - sre_agent/deploy/gitlab/ci/**/*
         - sre_agent/VERSION
         - sre_agent/conf/**/*
         - sre_agent/docker/**/*
@@ -70,6 +71,7 @@ variables:
         - .dockerignore
         - fault_injector/**/*
         - lib/**/*
+        - sre_agent/deploy/gitlab/ci/**/*
         - sre_agent/VERSION
         - sre_agent/conf/**/*
         - sre_agent/docker/**/*
@@ -115,6 +117,7 @@ prepare_sre_agent_metadata:
         - .dockerignore
         - fault_injector/**/*
         - lib/**/*
+        - sre_agent/deploy/gitlab/ci/**/*
         - sre_agent/VERSION
         - sre_agent/conf/**/*
         - sre_agent/docker/**/*
