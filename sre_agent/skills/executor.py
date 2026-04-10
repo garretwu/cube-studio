@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -46,10 +47,12 @@ class SkillExecutor:
         context: ToolExecutionContext,
         variables: dict[str, Any] | None = None,
         allowed_tools: set[str] | None = None,
+        step_timeout_sec: float | None = None,
     ) -> SkillExecutionResult:
         vars_payload = variables or {}
         whitelist = allowed_tools or self.DEFAULT_ALLOWED_TOOLS
         runs: list[ToolRunResult] = []
+        failed_steps: list[int] = []
 
         for idx, step in enumerate(skill.steps, start=1):
             if step.tool not in whitelist:
@@ -63,12 +66,8 @@ class SkillExecutor:
                         error=reason,
                     )
                 )
-                return SkillExecutionResult(
-                    skill_id=skill.id,
-                    status="failed",
-                    summary=f"failed@step{idx}: {reason}",
-                    tool_runs=runs,
-                )
+                failed_steps.append(idx)
+                continue
 
             try:
                 resolved_params = self._resolve_params(step.params, vars_payload)
@@ -83,13 +82,30 @@ class SkillExecutor:
                         error=reason,
                     )
                 )
-                return SkillExecutionResult(
-                    skill_id=skill.id,
-                    status="failed",
-                    summary=f"failed@step{idx}: {reason}",
-                    tool_runs=runs,
+                failed_steps.append(idx)
+                continue
+
+            try:
+                if step_timeout_sec is not None:
+                    result = await asyncio.wait_for(
+                        registry.execute(step.tool, resolved_params, context),
+                        timeout=step_timeout_sec,
+                    )
+                else:
+                    result = await registry.execute(step.tool, resolved_params, context)
+            except asyncio.TimeoutError:
+                runs.append(
+                    ToolRunResult(
+                        step=idx,
+                        tool=step.tool,
+                        params=resolved_params,
+                        success=False,
+                        error=f"tool timed out after {step_timeout_sec}s",
+                    )
                 )
-            result = await registry.execute(step.tool, resolved_params, context)
+                failed_steps.append(idx)
+                continue
+
             run = ToolRunResult(
                 step=idx,
                 tool=step.tool,
@@ -100,12 +116,18 @@ class SkillExecutor:
             )
             runs.append(run)
             if not result.success:
-                return SkillExecutionResult(
-                    skill_id=skill.id,
-                    status="failed",
-                    summary=f"failed@step{idx}: {result.error}",
-                    tool_runs=runs,
-                )
+                failed_steps.append(idx)
+
+        if failed_steps:
+            status = "partial" if len(failed_steps) < len(skill.steps) else "failed"
+            succeeded = len(runs) - len(failed_steps)
+            first_error = next((r.error for r in runs if not r.success), "")
+            return SkillExecutionResult(
+                skill_id=skill.id,
+                status=status,
+                summary=f"completed {succeeded}/{len(runs)} steps; failed at steps {failed_steps}: {first_error}",
+                tool_runs=runs,
+            )
 
         return SkillExecutionResult(
             skill_id=skill.id,

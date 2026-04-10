@@ -126,7 +126,7 @@ class TestSkillsUnit(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(result.tool_runs), 3)
         self.assertTrue(all(run.success for run in result.tool_runs))
 
-    async def test_executor_fails_fast_on_step_error(self) -> None:
+    async def test_executor_continues_on_step_error(self) -> None:
         skill_registry = SkillRegistry()
         skill_registry.discover()
         skill = skill_registry.get("builtin-vllm-diagnosis")
@@ -147,8 +147,8 @@ class TestSkillsUnit(unittest.IsolatedAsyncioTestCase):
             variables={"namespace": "default", "promql": "up", "node": "worker-01"},
         )
 
-        self.assertEqual(result.status, "failed")
-        self.assertGreaterEqual(len(result.tool_runs), 1)
+        self.assertIn(result.status, {"failed", "partial"})
+        self.assertEqual(len(result.tool_runs), len(skill.steps))
         self.assertFalse(result.tool_runs[0].success)
 
     async def test_executor_enforces_v1_tool_whitelist(self) -> None:

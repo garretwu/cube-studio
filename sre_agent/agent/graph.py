@@ -201,10 +201,22 @@ def create_sre_graph(
             )
             return next_state
         except asyncio.TimeoutError:
+            trace_items = list(state.get("trace_items", []))
+            trace_items.append(
+                {
+                    "type": "thought",
+                    "step": state.get("step_count", 0) + 1,
+                    "content": "reason step timed out; concluding with evidence collected so far",
+                    "action": "conclude",
+                    "confidence": None,
+                    "tool_params": {"kind": "reason_timeout"},
+                }
+            )
             return {
                 **state,
-                "status": "timeout",
-                "summary": "reason step timed out",
+                "trace_items": trace_items,
+                "status": "step_timeout",
+                "summary": "reason step timed out; partial diagnosis from collected evidence",
                 "error": "reason step timed out",
             }
         except Exception as exc:  # noqa: BLE001
@@ -251,10 +263,22 @@ def create_sre_graph(
             )
             return next_state
         except asyncio.TimeoutError:
+            trace_items = list(state.get("trace_items", []))
+            trace_items.append(
+                {
+                    "type": "thought",
+                    "step": state.get("step_count", 0) + 1,
+                    "content": "act step timed out; concluding with evidence collected so far",
+                    "action": "conclude",
+                    "confidence": None,
+                    "tool_params": {"kind": "act_timeout"},
+                }
+            )
             return {
                 **state,
-                "status": "timeout",
-                "summary": "act step timed out",
+                "trace_items": trace_items,
+                "status": "step_timeout",
+                "summary": "act step timed out; partial diagnosis from collected evidence",
                 "error": "act step timed out",
             }
         except Exception as exc:  # noqa: BLE001
@@ -290,10 +314,22 @@ def create_sre_graph(
             )
             return next_state
         except asyncio.TimeoutError:
+            trace_items = list(state.get("trace_items", []))
+            trace_items.append(
+                {
+                    "type": "thought",
+                    "step": state.get("step_count", 0) + 1,
+                    "content": "skill selection step timed out; concluding with evidence collected so far",
+                    "action": "conclude",
+                    "confidence": None,
+                    "tool_params": {"kind": "skill_selection_timeout"},
+                }
+            )
             return {
                 **state,
-                "status": "timeout",
-                "summary": "skill selection step timed out",
+                "trace_items": trace_items,
+                "status": "step_timeout",
+                "summary": "skill selection step timed out; partial diagnosis from collected evidence",
                 "error": "skill selection step timed out",
             }
         except Exception as exc:  # noqa: BLE001
@@ -362,7 +398,7 @@ async def run_diagnosis(
     skill_policy: SkillPolicy | None = None,
     skill_executor: SkillExecutor | None = None,
     session_id: str | None = None,
-    step_timeout_sec: float = 60.0,
+    step_timeout_sec: float = 120.0,
     total_timeout_sec: float = 600.0,
     max_steps: int = 50,
     reasoning_context_strategy: str = "state_rebuilt",
@@ -462,7 +498,7 @@ async def run_diagnosis_stream(
     skill_policy: SkillPolicy | None = None,
     skill_executor: SkillExecutor | None = None,
     session_id: str | None = None,
-    step_timeout_sec: float = 60.0,
+    step_timeout_sec: float = 120.0,
     total_timeout_sec: float = 600.0,
     max_steps: int = 50,
     reasoning_context_strategy: str = "state_rebuilt",

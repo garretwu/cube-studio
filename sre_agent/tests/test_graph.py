@@ -2230,7 +2230,7 @@ tags:
             allowed_tool_names=["prometheus.query_instant"],
             checkpoint_dir=None,
         )
-        self.assertEqual(result["status"], "timeout")
+        self.assertEqual(result["status"], "step_timeout")
         self.assertIn("timed out", result["summary"])
 
     async def test_session_timeout_returns_timeout_state(self) -> None:

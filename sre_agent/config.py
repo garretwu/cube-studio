@@ -70,6 +70,8 @@ class AgentRuntimeConfig(BaseModel):
     reason_context_char_budget: int = 2400
     tool_message_char_limit: int = 1200
     reason_preserve_recent_messages: int = 6
+    step_timeout_sec: float = 120.0
+    total_timeout_sec: float = 600.0
 
 
 class SwitchPortDiscoveryConfig(BaseModel):

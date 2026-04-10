@@ -21,7 +21,7 @@ from sre_agent.models.diagnosis import DiagnosisResult, Observation, ThinkingSte
 from sre_agent.models.remediation import RemediationPlan
 from sre_agent.runtime.token_estimation import estimate_token_count
 from sre_agent.skills import SkillExecutor, SkillPolicy, SkillRegistry
-from sre_agent.tools import ToolExecutionContext, ToolRegistry, build_default_registry
+from sre_agent.tools import ToolExecutionContext, ToolRegistry, ToolResult, build_default_registry
 
 try:
     import yaml
@@ -1903,10 +1903,13 @@ async def act_node(
             tool_args=raw_tool_args if isinstance(raw_tool_args, dict) else {},
             variables=variables,
         )
-        result = await asyncio.wait_for(
-            registry.execute(tool_name, tool_args, context),
-            timeout=state["step_timeout_sec"],
-        )
+        try:
+            result = await asyncio.wait_for(
+                registry.execute(tool_name, tool_args, context),
+                timeout=state["step_timeout_sec"],
+            )
+        except asyncio.TimeoutError:
+            result = ToolResult(tool=tool_name, success=False, data=None, error=f"tool timed out after {state['step_timeout_sec']}s")
         serialized = _canonicalize_tool_run(
             {
                 "step": len(tool_runs) + 1,
@@ -2020,12 +2023,45 @@ def finalize_node(state: SREAgentState) -> SREAgentState:
         "trace_items": serialized_trace,
         "summary": summary,
     }
+    # 当步骤超时且没有诊断结果时，从已收集的证据合成部分诊断
+    if updated.get("status") == "step_timeout" and updated.get("diagnosis_result") is None:
+        tool_runs = updated.get("tool_runs", [])
+        skill_runs = updated.get("skill_runs", [])
+        evidence_parts: list[str] = []
+        for tr in tool_runs:
+            if tr.get("success"):
+                tool_name = tr.get("tool", "unknown")
+                data = tr.get("data")
+                if data:
+                    evidence_parts.append(f"{tool_name}: {_safe_jsonable(data)}")
+        evidence_summary = "; ".join(evidence_parts)[:500] if evidence_parts else "no tool evidence collected"
+        partial_diagnosis = {
+            "root_cause": "Diagnosis timed out during analysis; partial evidence collected",
+            "root_cause_layer": "service",
+            "root_cause_entities": [],
+            "confidence": 0.45,
+            "impact_summary": f"Diagnosis incomplete due to timeout. Evidence: {evidence_summary}",
+            "affected_services": [],
+            "triage_priority": "P2",
+            "diagnosis_certainty": "ambiguous",
+            "hypotheses": [
+                {
+                    "description": "Diagnosis was interrupted by step timeout",
+                    "status": "testing",
+                    "evidence_for": [evidence_summary] if evidence_parts else [],
+                    "evidence_against": [],
+                    "confidence": 0.45,
+                },
+            ],
+        }
+        updated["diagnosis_result"] = partial_diagnosis
+        updated["summary"] = f"Diagnosis timed out; partial evidence: {evidence_summary[:200]}"
     persist_state_snapshot(updated.get("checkpoint_dir"), updated["session_id"], "finalize", updated)
     return updated
 
 
 def route_after_reason(state: SREAgentState) -> str:
-    if state.get("status") in {"failed", "timeout"}:
+    if state.get("status") in {"failed", "timeout", "step_timeout"}:
         return "finalize"
     if state.get("selected_skill_id"):
         return "execute_selected_skill"
@@ -2037,7 +2073,7 @@ def route_after_reason(state: SREAgentState) -> str:
 
 
 def route_after_skill_selection(state: SREAgentState) -> str:
-    if state.get("status") in {"failed", "timeout"}:
+    if state.get("status") in {"failed", "timeout", "step_timeout"}:
         return "finalize"
     if state.get("selected_skill_id"):
         return "execute_selected_skill"
@@ -2045,7 +2081,7 @@ def route_after_skill_selection(state: SREAgentState) -> str:
 
 
 def route_after_decide(state: SREAgentState) -> str:
-    if state.get("status") in {"failed", "timeout"}:
+    if state.get("status") in {"failed", "timeout", "step_timeout"}:
         return "finalize"
     if state.get("diagnosis_result") is not None:
         return "finalize"
@@ -2239,6 +2275,7 @@ async def execute_selected_skill_node(
         registry=resolved_registry,
         context=context,
         variables=state.get("variables", {}),
+        step_timeout_sec=state.get("step_timeout_sec"),
     )
     serialized_runs = [
         _canonicalize_tool_run(
@@ -2320,6 +2357,7 @@ async def execute_selected_skill_node(
                 },
             }
         )
+    is_recoverable = result.status in {"success", "partial"} or is_missing_var_failure
     return {
         **state,
         "messages": messages,
@@ -2329,13 +2367,13 @@ async def execute_selected_skill_node(
         "skill_runs": [*existing_skill_runs, skill_run_entry],
         "selected_skill_id": None,
         "skill_selection_reason": None,
-        "status": "running" if result.status == "success" or is_missing_var_failure else "failed",
+        "status": "running" if is_recoverable else "failed",
         "summary": (
             state.get("summary")
-            if result.status == "success" or is_missing_var_failure
+            if is_recoverable
             else result.summary
         ),
-        "error": None if result.status == "success" or is_missing_var_failure else result.summary,
+        "error": None if is_recoverable else result.summary,
     }
 
 
