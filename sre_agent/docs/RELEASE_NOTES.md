@@ -8,6 +8,8 @@
 - 保留正式 `release` 为手动 promotion，继续作为人工确认后的正式交付动作
 - 镜像默认命名空间从 `cube-studio` 统一调整为 `sre_agent`
 - 预览镜像发布 job 命名收敛为 `publish_preview_snapshot`，减少 UI 中的冗余项目前缀
+- 在 `sre_agent` 命名空间下按用途拆分镜像目录，分别落到 `preview`、`weekly`、`release` 目录，避免与日常提交或正式发版镜像混在一起
+- `publish_preview_snapshot` 和 `promote_sre_agent_release` 的日志 summary 均补充镜像获取地址，便于团队直接复制 `docker pull` 命令
 - GitLab CI 联调阶段继续收敛 `shell runner` 行为，移除镜像 `tar` artifacts，改为优先复用本机 Docker image，并在 cache miss 时原地重建
 - 调整 `preview` 与 `release` 的阶段关系，普通提交场景下改为先自动 `preview`，再由人工确认后手动触发后续验证与发布
 - 优化 `preview` 成功提示，在 job 日志末尾直接输出 `Frontend URL`、`Backend URL`、容器名和 TTL，方便测试同学直接打开浏览器验证

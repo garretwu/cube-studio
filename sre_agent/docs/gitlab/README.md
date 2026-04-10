@@ -56,26 +56,40 @@
 
 ## 必要 CI 变量
 
-| 变量 | 用途 |
-| --- | --- |
-| `NEXUS_REGISTRY` | Nexus Docker 仓库地址，例如 `10.11.4.5:5000`。 |
-| `NEXUS_USERNAME` | Docker 登录和 tag 查询 API 使用的用户名，建议作为受保护变量维护。 |
-| `NEXUS_PASSWORD` | Docker 登录和 tag 查询 API 使用的密码或 token，建议作为 masked + protected 变量维护。 |
-| `PREVIEW_DOCKER_HOST` | 可选，用于承载 preview 容器的远端 Docker 主机，例如 `tcp://10.10.10.20:2375`。 |
-| `PREVIEW_PUBLIC_HOST` | 可选，用于在日志中输出对外可访问的 preview 地址。 |
-| `SRE_OPENAI_API_KEY` | 可选，preview 运行时使用的 LLM key；未显式配置时允许从 `sre_agent/conf/config.yaml` 的 `llm.api_key` fallback。 |
-| `FORCE_BASE_BUILD` | 可选，设为 `1` 时即使依赖未变化也强制重建基础镜像。 |
-| `FORCE_FULL_PIPELINE` | 可选，设为 `1` 时即使当前改动不在业务相关路径中，也强制创建并执行完整流水线。 |
-| `RELEASE_VERSION` | 可选，手动发版时指定版本号，例如 `1.0.1`；未指定时读取 `sre_agent/VERSION`。 |
-| `FEISHU_WEBHOOK_URL` | 可选，飞书群机器人 webhook 地址，建议作为 masked + protected 变量维护。 |
-| `FEISHU_NOTIFY_ON_COMMIT_FAILURE` | 可选，设为 `1` 时普通 commit 流水线失败也通知飞书；默认只通知非 commit 流程。 |
+| 变量 | Visibility | 用途 |
+| --- | --- | --- |
+| `NEXUS_REGISTRY` | `Visible` | Nexus Docker 仓库地址，例如 `10.11.4.5:5000`。 |
+| `NEXUS_USERNAME` | `Visible` | Docker 登录和 tag 查询 API 使用的用户名。 |
+| `NEXUS_PASSWORD` | `Masked and hidden` | Docker 登录和 tag 查询 API 使用的密码或 token。 |
+| `PREVIEW_DOCKER_HOST` | `Visible` | 可选，用于承载 preview 容器的远端 Docker 主机，例如 `tcp://10.10.10.20:2375`。 |
+| `PREVIEW_PUBLIC_HOST` | `Visible` | 可选，用于在日志中输出对外可访问的 preview 地址。 |
+| `SRE_OPENAI_API_KEY` | `Masked and hidden` | 可选，preview 运行时使用的 LLM key；未显式配置时允许从 `sre_agent/conf/config.yaml` 的 `llm.api_key` fallback。 |
+| `FORCE_BASE_BUILD` | `Visible` | 可选，设为 `1` 时即使依赖未变化也强制重建基础镜像。 |
+| `FORCE_FULL_PIPELINE` | `Visible` | 可选，设为 `1` 时即使当前改动不在业务相关路径中，也强制创建并执行完整流水线。 |
+| `RELEASE_VERSION` | `Visible` | 可选，手动发版时指定版本号，例如 `1.0.1`；未指定时读取 `sre_agent/VERSION`。 |
+| `FEISHU_WEBHOOK_URL` | `Masked and hidden` | 可选，飞书群机器人 webhook 地址。 |
+| `FEISHU_NOTIFY_ON_COMMIT_FAILURE` | `Visible` | 可选，设为 `1` 时普通 commit 流水线失败也通知飞书；默认只通知非 commit 流程。 |
 
 补充说明：
 
 - 只有 `SRE_OPENAI_API_KEY` 支持在未显式声明时 fallback 到 [config.yaml](/home/kevin/project/cube-studio/sre_agent/conf/config.yaml) 中的 `llm.api_key`
 - `NEXUS_USERNAME`、`NEXUS_PASSWORD`、`FEISHU_WEBHOOK_URL` 这类 CI/CD 凭证仍然必须显式配置在 GitLab Variables 中
 - 如果设置了 `PREVIEW_PUBLIC_HOST`，即使 preview 因 `PREVIEW_DOCKER_HOST` 不可达而回退到 runner 本地 Docker，日志中仍优先输出 `PREVIEW_PUBLIC_HOST:随机端口` 作为浏览器访问地址
-- 默认镜像命名空间为 `sre_agent`，例如 `10.11.4.5:5000/sre_agent/sre-agent-web:<tag>`
+- 默认镜像命名空间为 `sre_agent`，并按用途分目录：
+  - preview：`10.11.4.5:5000/sre_agent/sre-agent-web-preview:<tag>`
+  - weekly：`10.11.4.5:5000/sre_agent/sre-agent-web-weekly:<tag>`
+  - release：`10.11.4.5:5000/sre_agent/sre-agent-web-release:<tag>`
+  - 对应基础镜像同理，分别使用 `sre-agent-base-preview`、`sre-agent-base-weekly`、`sre-agent-base-release`
+
+变量填写说明：
+
+- `NEXUS_REGISTRY`：填写仓库地址本身，例如 `10.11.4.5:5000`
+- `NEXUS_USERNAME`：填写真实仓库用户名，例如 `kevin`
+- `NEXUS_PASSWORD`：填写真实仓库密码或 token 明文值
+- `PREVIEW_PUBLIC_HOST`：填写浏览器可访问的主机 IP 或域名，例如 `10.11.4.5`
+- `PREVIEW_DOCKER_HOST`：仅在需要通过远端 Docker API 起 preview 容器时填写，例如 `tcp://10.11.4.5:2375`
+- `SRE_OPENAI_API_KEY`：填写真实 LLM `API key` 明文值，不是字段名，不是路径，也不是 `config.yaml` 中的键名
+- `RELEASE_VERSION`：手动正式发版时填写版本号，例如 `1.0.1`
 
 ## Schedule 变量
 
@@ -107,7 +121,8 @@
 镜像获取说明：
 
 - 预览对应的候选镜像：查看 `publish_preview_snapshot` job 日志中的 `docker pull ...`
-- 正式 release 镜像：查看 `promote_sre_agent_release` job 日志末尾的发布 summary，其中会直接输出 `Image Pull`
+- 正式 release 镜像：查看 `promote_sre_agent_release` job 日志末尾的发布 summary，其中会直接输出 `Base Pull` 和 `Web Pull`
+- `weekly_build` 对应镜像：同样查看 `publish_preview_snapshot` job 日志，其中会输出 `weekly` 目录下的 `docker pull ...`
 
 ## 验证范围
 

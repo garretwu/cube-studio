@@ -21,18 +21,37 @@ require_local_docker_image "${WEB_IMAGE_REF}"
 release_version="${RELEASE_VERSION:-$(read_default_release_version)}"
 release_timestamp="${RELEASE_TIMESTAMP:-${IMAGE_TIMESTAMP:-$(timestamp_now)}}"
 release_tag="${release_version}-${release_timestamp}"
-release_image_ref="$(registry_image_ref "${APP_NAME}" "${release_tag}")"
+release_web_image_name="$(app_image_name_for_lane release)"
+release_base_image_name="$(base_image_name_for_lane release)"
+release_image_ref="$(registry_image_ref "${release_web_image_name}" "${release_tag}")"
 
 docker tag "${WEB_IMAGE_REF}" "${release_image_ref}"
 docker push "${release_image_ref}"
+
+release_base_image_ref=""
+if [ -n "${BASE_IMAGE_REF:-}" ]; then
+  if ! docker image inspect "${BASE_IMAGE_REF}" >/dev/null 2>&1; then
+    docker pull "${BASE_IMAGE_REF}" >/dev/null 2>&1 || true
+  fi
+  if docker image inspect "${BASE_IMAGE_REF}" >/dev/null 2>&1; then
+    release_base_image_ref="$(registry_image_ref "${release_base_image_name}" "${release_tag}")"
+    docker tag "${BASE_IMAGE_REF}" "${release_base_image_ref}"
+    docker push "${release_base_image_ref}"
+    echo "docker pull ${release_base_image_ref}"
+  fi
+fi
 
 echo "docker pull ${release_image_ref}"
 log "promoted release image ${release_image_ref}"
 echo
 echo "========== 正式发布已完成 =========="
 echo "Release Tag  : ${release_tag}"
-echo "Release Image: ${release_image_ref}"
-echo "Image Pull   : docker pull ${release_image_ref}"
-echo "获取方式      : 复制上面的 Image Pull 命令即可拉取正式发布镜像。"
-echo "使用说明      : 建议将 Release Tag、Image Pull 和对应 pipeline 链接一起同步给团队。"
+if [ -n "${release_base_image_ref}" ]; then
+  echo "Base Release : ${release_base_image_ref}"
+  echo "Base Pull    : docker pull ${release_base_image_ref}"
+fi
+echo "Web Release  : ${release_image_ref}"
+echo "Web Pull     : docker pull ${release_image_ref}"
+echo "获取方式      : 复制上面的 Base Pull / Web Pull 命令即可拉取正式发布镜像。"
+echo "使用说明      : 建议将 Release Tag、镜像获取地址和对应 pipeline 链接一起同步给团队。"
 echo "===================================="

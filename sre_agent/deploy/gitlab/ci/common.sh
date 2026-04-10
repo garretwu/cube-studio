@@ -75,17 +75,50 @@ registry_scheme() {
   echo "${NEXUS_REGISTRY_SCHEME:-https}"
 }
 
+publish_lane() {
+  local pipeline_kind="${1:-${PIPELINE_KIND:-commit}}"
+  case "${pipeline_kind}" in
+    weekly_build|base_refresh)
+      echo "weekly"
+      ;;
+    release)
+      echo "release"
+      ;;
+    *)
+      echo "preview"
+      ;;
+  esac
+}
+
+image_name_for_lane() {
+  local prefix="$1"
+  local lane="$2"
+  echo "${prefix}-${lane}"
+}
+
+base_image_name_for_lane() {
+  local lane="$1"
+  local prefix="${BASE_REPO_PREFIX:-${BASE_NAME:-sre-agent-base}}"
+  image_name_for_lane "${prefix}" "${lane}"
+}
+
+app_image_name_for_lane() {
+  local lane="$1"
+  local prefix="${APP_REPO_PREFIX:-${APP_NAME:-sre-agent-web}}"
+  image_name_for_lane "${prefix}" "${lane}"
+}
+
 registry_image_ref() {
   local image_name="$1"
   local image_tag="$2"
-  local image_namespace="${IMAGE_NAMESPACE:-cube-studio}"
+  local image_namespace="${IMAGE_NAMESPACE:-sre_agent}"
   require_env NEXUS_REGISTRY
   echo "${NEXUS_REGISTRY}/${image_namespace}/${image_name}:${image_tag}"
 }
 
 registry_tags_api() {
   local image_name="$1"
-  local image_namespace="${IMAGE_NAMESPACE:-cube-studio}"
+  local image_namespace="${IMAGE_NAMESPACE:-sre_agent}"
   require_env NEXUS_REGISTRY
   echo "$(registry_scheme)://${NEXUS_REGISTRY}/v2/${image_namespace}/${image_name}/tags/list"
 }

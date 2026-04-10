@@ -119,6 +119,15 @@ Preview 规则：
 | 周构建业务镜像 | `weekly-YYYYMMDDHHMM` | `weekly-202604101700` |
 | 手动正式发布镜像 | `VERSION-YYYYMMDDHHMM` | `1.0.1-202604101800` |
 
+镜像目录规划：
+
+- preview 业务镜像：`10.11.4.5:5000/sre_agent/sre-agent-web-preview:<tag>`
+- weekly 业务镜像：`10.11.4.5:5000/sre_agent/sre-agent-web-weekly:<tag>`
+- release 业务镜像：`10.11.4.5:5000/sre_agent/sre-agent-web-release:<tag>`
+- preview 基础镜像：`10.11.4.5:5000/sre_agent/sre-agent-base-preview:<tag>`
+- weekly 基础镜像：`10.11.4.5:5000/sre_agent/sre-agent-base-weekly:<tag>`
+- release 基础镜像：`10.11.4.5:5000/sre_agent/sre-agent-base-release:<tag>`
+
 短 commit ID 使用 GitLab 预定义变量：
 
 `CI_COMMIT_SHORT_SHA`
@@ -135,19 +144,19 @@ Preview 规则：
 
 请在 GitLab 的 `Settings -> CI/CD -> Variables` 中创建这些变量。
 
-| 变量 | 是否必需 | 建议值 | 用途 |
-| --- | --- | --- | --- |
-| `NEXUS_REGISTRY` | 是 | `10.11.4.5:5000` | Nexus Docker 仓库地址 |
-| `NEXUS_USERNAME` | 是 | `kevin` | Nexus 登录用户名 |
-| `NEXUS_PASSWORD` | 是 | masked + protected | Nexus 登录密码或 token |
-| `PREVIEW_DOCKER_HOST` | 推荐 | runner 可访问的 Docker 主机 | 让 preview 容器在 job 结束后仍可继续使用 |
-| `PREVIEW_PUBLIC_HOST` | 推荐 | preview 主机 IP 或域名 | 用于输出对外访问地址 |
-| `SRE_OPENAI_API_KEY` | 可选 | masked | 如果希望 preview 真正连通 LLM，可在这里配置运行时 key；未显式配置时允许 fallback 到 `sre_agent/conf/config.yaml` 的 `llm.api_key` |
-| `FORCE_BASE_BUILD` | 可选 | `1` | 即使依赖未变化也强制重建基础镜像 |
-| `FORCE_FULL_PIPELINE` | 可选 | `1` | 即使当前提交不在业务相关路径中，也强制创建并执行完整流水线 |
-| `RELEASE_VERSION` | 可选 | 手动输入 | 手动 release promotion 时使用 |
-| `FEISHU_WEBHOOK_URL` | 推荐 | masked + protected | 飞书群机器人 webhook 地址 |
-| `FEISHU_NOTIFY_ON_COMMIT_FAILURE` | 可选 | `0` | 设为 `1` 时普通提交失败也发飞书通知 |
+| 变量 | 是否必需 | 建议值 | Visibility | 用途 |
+| --- | --- | --- | --- | --- |
+| `NEXUS_REGISTRY` | 是 | `10.11.4.5:5000` | `Visible` | Nexus Docker 仓库地址 |
+| `NEXUS_USERNAME` | 是 | `kevin` | `Visible` | Nexus 登录用户名 |
+| `NEXUS_PASSWORD` | 是 | 真实密码或 token | `Masked and hidden` | Nexus 登录密码或 token |
+| `PREVIEW_DOCKER_HOST` | 推荐 | runner 可访问的 Docker 主机 | `Visible` | 让 preview 容器在 job 结束后仍可继续使用 |
+| `PREVIEW_PUBLIC_HOST` | 推荐 | preview 主机 IP 或域名 | `Visible` | 用于输出对外访问地址 |
+| `SRE_OPENAI_API_KEY` | 可选 | 真实 LLM `API key` | `Masked and hidden` | 如果希望 preview 真正连通 LLM，可在这里配置运行时 key；未显式配置时允许 fallback 到 `sre_agent/conf/config.yaml` 的 `llm.api_key` |
+| `FORCE_BASE_BUILD` | 可选 | `1` | `Visible` | 即使依赖未变化也强制重建基础镜像 |
+| `FORCE_FULL_PIPELINE` | 可选 | `1` | `Visible` | 即使当前提交不在业务相关路径中，也强制创建并执行完整流水线 |
+| `RELEASE_VERSION` | 可选 | 手动输入 | `Visible` | 手动 release promotion 时使用 |
+| `FEISHU_WEBHOOK_URL` | 推荐 | 真实 webhook 地址 | `Masked and hidden` | 飞书群机器人 webhook 地址 |
+| `FEISHU_NOTIFY_ON_COMMIT_FAILURE` | 可选 | `0` | `Visible` | 设为 `1` 时普通提交失败也发飞书通知 |
 
 安全建议：
 
@@ -160,6 +169,16 @@ Preview 规则：
 - 只有 `SRE_OPENAI_API_KEY` 支持在未显式声明时，从 [config.yaml](/home/kevin/project/cube-studio/sre_agent/conf/config.yaml) 的 `llm.api_key` fallback
 - `NEXUS_USERNAME`、`NEXUS_PASSWORD`、`FEISHU_WEBHOOK_URL` 等 CI/CD 凭证必须始终显式配置在 GitLab Variables 中
 - 如果已配置 `PREVIEW_PUBLIC_HOST`，即使 preview 因 `PREVIEW_DOCKER_HOST` 不可达而回退到 runner 本地 Docker，流水线日志也会优先输出 `PREVIEW_PUBLIC_HOST:随机端口` 作为浏览器访问地址
+
+变量取值填写建议：
+
+- `NEXUS_REGISTRY`：填写仓库地址本身，例如 `10.11.4.5:5000`
+- `NEXUS_USERNAME`：填写真实仓库用户名，例如 `kevin`
+- `NEXUS_PASSWORD`：填写真实仓库密码或 token 明文值
+- `PREVIEW_PUBLIC_HOST`：填写浏览器可访问的主机 IP 或域名，例如 `10.11.4.5`
+- `PREVIEW_DOCKER_HOST`：仅在需要通过远端 Docker API 起 preview 容器时填写，例如 `tcp://10.11.4.5:2375`
+- `SRE_OPENAI_API_KEY`：填写真实 LLM `API key` 明文值，不是字段名，不是路径，也不是 `config.yaml` 中的键名
+- `RELEASE_VERSION`：手动正式发版时填写版本号，例如 `1.0.1`
 
 ### 5.2 Runner 要求
 
@@ -294,7 +313,7 @@ http://10.11.4.5:<frontend-port>
 快照镜像拉取形式：
 
 ```bash
-docker pull 10.11.4.5:5000/sre_agent/sre-agent-web:<shortsha-yyyymmddhhmm>
+docker pull 10.11.4.5:5000/sre_agent/sre-agent-web-preview:<shortsha-yyyymmddhhmm>
 ```
 
 ### 8.2 周构建流程
@@ -311,7 +330,7 @@ docker pull 10.11.4.5:5000/sre_agent/sre-agent-web:<shortsha-yyyymmddhhmm>
 周构建镜像拉取形式：
 
 ```bash
-docker pull 10.11.4.5:5000/sre_agent/sre-agent-web:weekly-<yyyymmddhhmm>
+docker pull 10.11.4.5:5000/sre_agent/sre-agent-web-weekly:weekly-<yyyymmddhhmm>
 ```
 
 ### 8.3 基础镜像刷新流程
@@ -349,13 +368,13 @@ docker pull 10.11.4.5:5000/sre_agent/sre-agent-web:weekly-<yyyymmddhhmm>
 正式发布镜像拉取形式：
 
 ```bash
-docker pull 10.11.4.5:5000/sre_agent/sre-agent-web:<version-yyyymmddhhmm>
+docker pull 10.11.4.5:5000/sre_agent/sre-agent-web-release:<version-yyyymmddhhmm>
 ```
 
 正式 release 获取方式：
 
 - 手动执行 `promote_sre_agent_release` 成功后，job 日志末尾会输出正式发布 summary
-- 其中 `Image Pull` 一行就是可直接复制的镜像获取命令
+- 其中 `Base Pull` 和 `Web Pull` 就是可直接复制的镜像获取命令
 
 ### 8.5 `snapshot` 与正式 `release` 的区别
 
@@ -401,7 +420,7 @@ docker pull 10.11.4.5:5000/sre_agent/sre-agent-web:<version-yyyymmddhhmm>
 - 验证通过日志
 - 发布后的 `docker pull` 地址
 
-如果手动 release promotion 成功，还应该看到正式发布 summary，包括 `Release Tag`、`Release Image` 和 `Image Pull`。
+如果手动 release promotion 成功，还应该看到正式发布 summary，包括 `Release Tag`、`Base Pull` 和 `Web Pull`。
 
 如果启用了飞书通知，且被监控的 job 失败，对应飞书卡片里还应该带有 pipeline 和 job 的跳转链接。
 
