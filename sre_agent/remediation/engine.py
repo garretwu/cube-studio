@@ -42,7 +42,7 @@ class RemediationEngine:
         prometheus: Any | None = None,
         validator: PlanValidator | None = None,
         execution_context: ToolExecutionContext | None = None,
-        execution_mode: str = "mock",
+        execution_mode: str = "real",
     ) -> None:
         self.tools = tool_registry
         self.approval = approval_gate
@@ -53,8 +53,8 @@ class RemediationEngine:
         self.canary = CanaryExecutor(wal=wal, prometheus=prometheus)
         self._plans_by_session: dict[str, RemediationPlan] = {}
         self._plan_versions_by_session: dict[str, list[RemediationPlan]] = {}
-        mode = str(execution_mode or "mock").strip().lower()
-        self.execution_mode = mode if mode in {"mock", "real"} else "mock"
+        mode = str(execution_mode or "real").strip().lower()
+        self.execution_mode = mode if mode in {"mock", "real"} else "real"
 
     def register_plan(self, session_id: str, plan: RemediationPlan) -> None:
         self._plans_by_session[session_id] = plan

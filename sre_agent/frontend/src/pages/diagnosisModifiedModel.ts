@@ -184,7 +184,7 @@ function formatValue(value: unknown): string {
 
 function summarizeResult(result: Record<string, unknown> | undefined): string[] {
   if (!result) {
-    return ["Waiting for tool result..."];
+    return ["等待 tool_result 返回..."];
   }
 
   const entries = Object.entries(result)
@@ -192,7 +192,7 @@ function summarizeResult(result: Record<string, unknown> | undefined): string[] 
     .slice(0, 4)
     .map(([key, value]) => `${key}: ${formatValue(value)}`);
 
-  return entries.length > 0 ? entries : ["Tool finished, but no displayable summary was returned."];
+  return entries.length > 0 ? entries : ["工具调用已完成，但暂时没有可展示的摘要。"];
 }
 
 function normalizeConfidence(value: number | undefined) {
@@ -463,7 +463,7 @@ function buildPlan(session: DiagnosisSession | undefined): DiagnosisModifiedPlan
     steps: plan.steps.map((step, index) => ({
       id: `${plan.plan_id}-${step.step_id}-${index}`,
       title: step.description,
-      detail: `${step.tool} | \u8017\u65f6 ${step.timeout}s | \u6821\u9a8c ${step.verification.method}`,
+      detail: `调用 ${step.tool} | 超时 ${step.timeout}s | 校验 ${step.verification.method}`,
       toolName: step.tool,
       paramsSummary: Object.keys(step.params).length > 0 ? formatParamsSummary(step.params) : undefined,
       status: isResolved && index === 0 ? "done" : "pending",
@@ -483,16 +483,16 @@ export function buildDiagnosisModifiedLiveView(
     if (entry.action_type === "tool_call" && entry.tool_name) {
       const serviceHint =
         typeof entry.tool_params?.service === "string" && entry.tool_params.service.trim().length > 0
-          ? ` for ${entry.tool_params.service}`
+          ? `，目标 service=${entry.tool_params.service}`
           : "";
-      return `Next action: call ${entry.tool_name}${serviceHint} to validate this hypothesis.`;
+      return `下一步：调用 ${entry.tool_name}${serviceHint}，验证当前假设。`;
     }
 
     if (entry.action_type === "conclude") {
-      return "Next action: synthesize the current evidence and provide the root-cause conclusion.";
+      return "下一步：汇总当前证据，给出根因结论。";
     }
 
-    return "Next action: continue gathering discriminative evidence to narrow the root cause.";
+    return "下一步：继续收集区分性证据，进一步缩小根因范围。";
   };
 
   for (let index = 0; index < traceEntries.length; index += 1) {
@@ -510,10 +510,10 @@ export function buildDiagnosisModifiedLiveView(
           kind: "thinking",
           title:
             entry.action_type === "tool_call"
-              ? "Agent is planning a tool call"
+              ? "Agent 正在规划工具调用"
               : entry.action_type === "conclude"
-                ? "Agent is converging on the diagnosis"
-                : "Agent is expanding diagnostic context",
+                ? "Agent 正在收敛诊断结论"
+                : "Agent 正在扩展诊断上下文",
           content: entry.thought,
           timestamp: entry.timestamp,
           toolName: entry.tool_name,
@@ -530,7 +530,7 @@ export function buildDiagnosisModifiedLiveView(
           role: "assistant",
           content: buildTraceNextAction(entry),
           timestamp: entry.timestamp,
-          label: "Next action",
+          label: "下一步行动",
         },
       });
 
@@ -542,7 +542,7 @@ export function buildDiagnosisModifiedLiveView(
           params: entry.tool_params ?? {},
           timestamp: entry.timestamp,
           status: "loading",
-          summaryLines: ["Waiting for tool result..."],
+          summaryLines: ["等待 tool_result 返回..."],
           rawResult: undefined,
         };
 
@@ -596,7 +596,7 @@ export function buildDiagnosisModifiedLiveView(
         item: {
           id: `chat-thinking-${message.id}`,
           kind: "thinking",
-          title: "Pre-answer reasoning",
+          title: "回答前推理",
           content: message.display.thinking_raw,
           timestamp: message.created_at,
           status: "completed",
@@ -630,7 +630,7 @@ export function buildDiagnosisModifiedLiveView(
         role: message.role === "user" ? "user" : "assistant",
         content: message.display?.answer ?? message.content,
         timestamp: message.created_at,
-        label: message.role === "user" ? "User input" : "Agent response",
+        label: message.role === "user" ? "用户输入" : "Agent 回复",
       },
     });
   });

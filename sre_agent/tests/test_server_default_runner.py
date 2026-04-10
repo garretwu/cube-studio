@@ -138,6 +138,24 @@ def test_create_app_default_runner_supports_handle_without_missing_runner_error(
     assert payload["data"]["outcome"] in {"resolved", "escalated", "re_diagnosed", "partially_resolved"}
 
 
+def test_create_app_exposes_default_re_diagnose_runner(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("JWT_SECRET", "secret")
+    monkeypatch.setenv("SRE_OPENAI_API_KEY", "test-key")
+    monkeypatch.setenv("SRE_LLM_MODEL", "MiniMax-M2.7")
+
+    config = SREAgentConfig.model_validate(
+        {
+            "global": {"aidc_id": "test-aidc"},
+            "ontology": {"db_path": str(tmp_path / "ontology.db")},
+            "memory": {"db_dir": str(tmp_path / "memory")},
+        }
+    )
+
+    app = create_app(config=config)
+
+    assert app.state.services.incident_handler.loop.re_diagnose_runner is not None
+
+
 def test_default_runner_injects_network_runtime_defaults(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("JWT_SECRET", "secret")
     monkeypatch.setenv("SRE_OPENAI_API_KEY", "test-key")

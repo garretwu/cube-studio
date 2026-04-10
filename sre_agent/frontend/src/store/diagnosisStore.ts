@@ -1,7 +1,7 @@
 import { create } from "zustand";
 
-import { apiClient } from "../api/client";
-import type { ChatMessage, DiagnosisSession, DiagnosisStartedData, Observation, RemediationPlan, SessionEvent, ThinkingStep, WSEvent } from "../api/types";
+import { apiClient, streamDiagnosis } from "../api/client";
+import type { Alert, ChatMessage, DiagnosisSession, DiagnosisStartedData, Observation, RemediationPlan, SessionEvent, ThinkingStep, WSEvent } from "../api/types";
 
 type ConnectionState = "connecting" | "open" | "closed" | "error";
 type BootstrapStatus = "idle" | "loading" | "ready" | "empty" | "error";
@@ -32,16 +32,23 @@ type DiagnosisState = {
   effectiveReviseInstruction?: string;
   alertSnapshot: DiagnosisStartedData["alert"] | null;
   topologyContext: DiagnosisStartedData["topology"] | null;
+  // SSE streaming state
+  streamingText: string;
+  streamingNode: string | null;
+  isStreamingDiagnosis: boolean;
+  activeStreamingTools: Array<{ tool: string; params: Record<string, unknown> }>;
+  streamingAbortController: AbortController | null;
   bootstrapSession: (sessionId?: string) => Promise<void>;
   sendMessage: (content: string) => Promise<ChatMessage | undefined>;
   revisePlan: (instruction: string) => Promise<void>;
   approvePlan: (approved: boolean) => Promise<void>;
   setConnectionState: (value: ConnectionState) => void;
   applyEvent: (event: WSEvent) => void;
+  startStreamingDiagnosis: (alert: Alert, extraAlertFingerprints?: string[], onSessionReady?: (sessionId: string) => void) => void;
+  cancelStreamingDiagnosis: () => void;
 };
 
-const DEFAULT_REVISE_INSTRUCTION = "请优化当前修复方案，补充更稳妥步骤与验证";
-
+const DEFAULT_REVISE_INSTRUCTION = "\u8bf7\u4f18\u5316\u5f53\u524d\u4fee\u590d\u65b9\u6848\uff0c\u8865\u5145\u66f4\u7a33\u59a5\u6b65\u9aa4\u4e0e\u9a8c\u8bc1";
 const SESSION_BACKFILL_THROTTLE_MS = 1200;
 const sessionBackfillLastRunAt = new Map<string, number>();
 const sessionBackfillInFlight = new Set<string>();
@@ -64,7 +71,7 @@ function toThinkingStep(event: WSEvent, fallbackStep: number): ThinkingStep | nu
     thought:
       typeof data.thought === "string" && data.thought.trim()
         ? data.thought
-        : "The diagnosis engine is expanding the current reasoning context.",
+        : "诊断引擎正在扩展当前推理上下文。",
     action_type:
       actionType === "tool_call" || actionType === "remediate" || actionType === "conclude" ? actionType : "conclude",
     tool_name: typeof data.tool_name === "string" ? data.tool_name : null,
@@ -123,7 +130,7 @@ function getEventError(event: WSEvent) {
   if (typeof data.error === "string" && data.error.trim()) {
     return data.error;
   }
-  return "The diagnosis engine returned an error event.";
+  return "诊断引擎返回了一条错误事件。";
 }
 
 type EventLike = Pick<WSEvent, "type" | "session_id" | "timestamp" | "data">;
@@ -139,35 +146,41 @@ function getEventStage(event: EventLike): string {
 function formatRemediationEventMessage(event: EventLike): string | null {
   const data = isRecord(event.data) ? event.data : {};
   if (event.type === "execution_mocked") {
-    return String(data.message ?? "mock 已执行修复计划");
+    return String(data.message ?? "mock \u5df2\u6267\u884c\u4fee\u590d\u8ba1\u5212");
   }
   if (event.type === "plan_revised") {
-    return `修复方案已更新为版本 ${String(data.plan_version ?? "")}`.trim();
+    return `\u4fee\u590d\u65b9\u6848\u5df2\u66f4\u65b0\u4e3a\u7248\u672c ${String(data.plan_version ?? "")}`.trim();
   }
   if (event.type === "observation_started") {
-    return `进入观察阶段，持续 ${String(data.seconds ?? 180)} 秒`;
+    return `\u8fdb\u5165\u89c2\u5bdf\u9636\u6bb5\uff0c\u6301\u7eed ${String(data.seconds ?? 180)} \u79d2`;
   }
   if (event.type === "observation_result") {
-    return `观察结果：alert_cleared=${String(data.alert_cleared ?? false)}，metrics_improved=${String(data.metrics_improved ?? false)}`;
+    const baselineAlert = isRecord(data.baseline_alert) ? data.baseline_alert : {};
+    const postAlert = isRecord(data.post_alert) ? data.post_alert : {};
+    const beforeStatus =
+      typeof baselineAlert.status === "string" && baselineAlert.status.trim() ? baselineAlert.status.trim() : "unknown";
+    const afterStatus =
+      typeof postAlert.status === "string" && postAlert.status.trim() ? postAlert.status.trim() : "unknown";
+    return `\u89c2\u5bdf\u7ed3\u679c\uff1aalert_cleared=${String(data.alert_cleared ?? false)}\uff0cmetrics_improved=${String(data.metrics_improved ?? false)}\uff0c\u544a\u8b66\u72b6\u6001 ${beforeStatus} -> ${afterStatus}`;
   }
   if (event.type === "escalation_required") {
-    return String(data.message ?? "需要工程师介入");
+    return String(data.message ?? "\u9700\u8981\u5de5\u7a0b\u5e08\u4ecb\u5165");
   }
   if (event.type === "remediation_progress") {
     const stage = getEventStage(event);
     if (stage === "execution_failed" || stage === "escalation_required") {
-      return "需要工程师介入";
+      return "\u9700\u8981\u5de5\u7a0b\u5e08\u4ecb\u5165";
     }
     if (["execution_started", "execution_mocked", "observation_started", "observation_result"].includes(stage)) {
       return null;
     }
     if (stage === "execution_timeout") {
-      return "修复执行超时退出";
+      return "\u4fee\u590d\u6267\u884c\u8d85\u65f6\u9000\u51fa";
     }
     if (typeof data.message === "string" && data.message.trim()) {
       return data.message;
     }
-    return stage ? `修复进度：${stage}` : null;
+    return stage ? `\u4fee\u590d\u8fdb\u5ea6\uff1a${stage}` : null;
   }
   return null;
 }
@@ -282,21 +295,22 @@ function getEventDataEventId(event: { data?: Record<string, unknown> }): string 
   return value.length > 0 ? value : undefined;
 }
 
+function getEventIdentity(event: EventLike): string {
+  const eventId = getEventDataEventId(event);
+  if (eventId) {
+    return `id:${eventId}`;
+  }
+  return `${event.type}:${event.timestamp}:${JSON.stringify(event.data ?? {})}`;
+}
+
 function mergeSessionEvents(current: SessionEvent[], incoming: SessionEvent[]): SessionEvent[] {
   if (!incoming.length) {
     return current;
   }
   const seen = new Set<string>();
-  const identity = (event: SessionEvent) => {
-    const eventId = getEventDataEventId(event);
-    if (eventId) {
-      return `id:${eventId}`;
-    }
-    return `${event.type}:${event.timestamp}:${JSON.stringify(event.data ?? {})}`;
-  };
   const merged: SessionEvent[] = [];
   [...current, ...incoming].forEach((event) => {
-    const key = identity(event);
+    const key = getEventIdentity(event);
     if (seen.has(key)) {
       return;
     }
@@ -421,9 +435,9 @@ function deriveApprovalState(
   const approvalBlockReason = canApprove
     ? undefined
     : session?.status !== "approval_required"
-      ? `当前状态为 ${session?.status ?? "unknown"}，暂不可审批。`
-      : "仅最新版本可审批，请先刷新或重新生成最新方案。";
-  const planMissingReason = hasPlan ? undefined : "当前会话尚未产出修复计划，请先完成诊断或切换会话。";
+      ? `\u5f53\u524d\u72b6\u6001\u4e3a ${session?.status ?? "unknown"}\uff0c\u6682\u4e0d\u53ef\u5ba1\u6279\u3002`
+      : "\u4ec5\u6700\u65b0\u7248\u672c\u53ef\u5ba1\u6279\uff0c\u8bf7\u5148\u5237\u65b0\u6216\u91cd\u65b0\u751f\u6210\u6700\u65b0\u65b9\u6848\u3002";
+  const planMissingReason = hasPlan ? undefined : "\u5f53\u524d\u4f1a\u8bdd\u5c1a\u672a\u4ea7\u51fa\u4fee\u590d\u8ba1\u5212\uff0c\u8bf7\u5148\u5b8c\u6210\u8bca\u65ad\u6216\u5207\u6362\u4f1a\u8bdd\u3002";
 
   return {
     currentPlanVersion,
@@ -463,6 +477,11 @@ export const useDiagnosisStore = create<DiagnosisState>((set, get) => ({
   effectiveReviseInstruction: undefined,
   alertSnapshot: null,
   topologyContext: null,
+  streamingText: "",
+  streamingNode: null,
+  isStreamingDiagnosis: false,
+  activeStreamingTools: [],
+  streamingAbortController: null,
   connectionState: "closed",
   error: undefined,
   bootstrapSession: async (sessionId) => {
@@ -552,7 +571,6 @@ export const useDiagnosisStore = create<DiagnosisState>((set, get) => ({
       const traceStatus: TraceStatus = traceSteps.length ? "ready" : "empty";
       const approvalState = deriveApprovalState(session, events);
 
-      // Extract alert/topology from diagnosis_started events in history
       const startedEvent = Array.isArray(events)
         ? events.find((e) => e.type === "diagnosis_started")
         : undefined;
@@ -581,7 +599,7 @@ export const useDiagnosisStore = create<DiagnosisState>((set, get) => ({
       });
     } catch (error) {
       set({
-        error: error instanceof Error ? error.message : "加载会话失败",
+        error: error instanceof Error ? error.message : "\u52a0\u8f7d\u4f1a\u8bdd\u5931\u8d25",
         isLoadingSession: false,
         bootstrapStatus: "error",
         traceStatus: "unknown",
@@ -639,7 +657,7 @@ export const useDiagnosisStore = create<DiagnosisState>((set, get) => ({
       return reply;
     } catch (error) {
       set({
-        error: error instanceof Error ? error.message : "消息发送失败",
+        error: error instanceof Error ? error.message : "\u6d88\u606f\u53d1\u9001\u5931\u8d25",
         isSendingMessage: false,
       });
       throw error;
@@ -668,7 +686,7 @@ export const useDiagnosisStore = create<DiagnosisState>((set, get) => ({
           {
             id: `assistant-plan-revised-${Date.now()}`,
             role: "assistant",
-            content: `修复方案已根据指令更新（${effectiveInstruction}），当前版本 v${payload.plan_version}，步骤 ${beforeSteps} -> ${afterSteps}。`,
+            content: `\u4fee\u590d\u65b9\u6848\u5df2\u6839\u636e\u6307\u4ee4\u66f4\u65b0\uff08${effectiveInstruction}\uff09\uff0c\u5f53\u524d\u7248\u672c v${payload.plan_version}\uff0c\u6b65\u9aa4 ${beforeSteps} -> ${afterSteps}\u3002`,
             created_at: new Date().toISOString(),
           },
         ],
@@ -679,7 +697,7 @@ export const useDiagnosisStore = create<DiagnosisState>((set, get) => ({
     } catch (error) {
       set({
         isRevisingPlan: false,
-        error: error instanceof Error ? error.message : "修复计划修改失败",
+        error: error instanceof Error ? error.message : "\u4fee\u590d\u8ba1\u5212\u4fee\u6539\u5931\u8d25",
       });
       throw error;
     }
@@ -690,30 +708,10 @@ export const useDiagnosisStore = create<DiagnosisState>((set, get) => ({
     if (!sessionId) {
       return;
     }
-    set((state) => ({
+    set({
       isApprovingPlan: true,
       error: undefined,
-      session:
-        approved && state.session
-          ? {
-              ...state.session,
-              status: "remediating",
-            }
-          : state.session,
-      messages:
-        approved && state.activeSessionId
-          ? [
-              ...state.messages,
-              {
-                id: `assistant-execution-started-${Date.now()}`,
-                role: "assistant",
-                content: "执行修复中",
-                created_at: new Date().toISOString(),
-                metadata: { session_id: state.activeSessionId, event_type: "execution_started" },
-              },
-            ]
-          : state.messages,
-    }));
+    });
 
     let pollingStopped = false;
     let pollTimer: number | undefined;
@@ -750,7 +748,7 @@ export const useDiagnosisStore = create<DiagnosisState>((set, get) => ({
       }
       set({
         isApprovingPlan: false,
-        error: error instanceof Error ? error.message : "审批操作失败",
+        error: error instanceof Error ? error.message : "\u5ba1\u6279\u64cd\u4f5c\u5931\u8d25",
       });
       throw error;
     }
@@ -779,6 +777,12 @@ export const useDiagnosisStore = create<DiagnosisState>((set, get) => ({
       return;
     }
     set((state) => {
+      const eventIdentity = getEventIdentity(event);
+      const isDuplicateEvent = state.events.some((existingEvent) => getEventIdentity(existingEvent) === eventIdentity);
+      if (isDuplicateEvent) {
+        return state;
+      }
+
       const currentTrace = state.session?.trace?.steps ?? [];
       const nextEntries = [
         toThinkingStep(event, currentTrace.length + 1),
@@ -787,7 +791,6 @@ export const useDiagnosisStore = create<DiagnosisState>((set, get) => ({
 
       let nextSession = appendTraceEntries(state.session, nextEntries);
 
-      // Capture alert/topology context from diagnosis_started event
       let nextAlertSnapshot = state.alertSnapshot;
       let nextTopologyContext = state.topologyContext;
       if (event.type === "diagnosis_started") {
@@ -892,5 +895,117 @@ export const useDiagnosisStore = create<DiagnosisState>((set, get) => ({
     if (targetSessionId && shouldTriggerSessionBackfill(event)) {
       scheduleSessionBackfill(targetSessionId);
     }
+  },
+  startStreamingDiagnosis: (alert: Alert, extraAlertFingerprints: string[] = [], onSessionReady?: (sessionId: string) => void) => {
+    const controller = new AbortController();
+    set({
+      streamingText: "",
+      streamingNode: null,
+      isStreamingDiagnosis: true,
+      activeStreamingTools: [],
+      streamingAbortController: controller,
+      error: undefined,
+    });
+
+    // Run SSE stream in background — do NOT await so caller can navigate immediately.
+    const run = async () => {
+      let sessionFired = false;
+      try {
+        await streamDiagnosis(
+          alert,
+          extraAlertFingerprints,
+          (event) => {
+            const { type, session_id, data } = event;
+            if (!sessionFired && session_id) {
+              sessionFired = true;
+              set({ activeSessionId: session_id });
+              onSessionReady?.(session_id);
+            }
+            switch (type) {
+              case "token_delta":
+                set((state) => ({
+                  streamingText: state.streamingText + String(data.content ?? ""),
+                }));
+                break;
+              case "node_started":
+                set({ streamingNode: String(data.node ?? "") });
+                break;
+              case "node_completed":
+                set((state) => {
+                  const nextSession = state.session
+                    ? { ...state.session }
+                    : undefined;
+                  if (nextSession && data.diagnosis_result) {
+                    nextSession.diagnosis_result = data.diagnosis_result as DiagnosisSession["diagnosis_result"];
+                  }
+                  return {
+                    streamingText: "",
+                    streamingNode: null,
+                    session: nextSession,
+                  };
+                });
+                break;
+              case "tool_started":
+                set((state) => ({
+                  activeStreamingTools: [
+                    ...state.activeStreamingTools,
+                    { tool: String(data.tool ?? ""), params: (data.params as Record<string, unknown>) ?? {} },
+                  ],
+                }));
+                break;
+              case "tool_completed":
+                set((state) => ({
+                  activeStreamingTools: state.activeStreamingTools.filter(
+                    (t) => t.tool !== String(data.tool ?? ""),
+                  ),
+                }));
+                break;
+              case "diagnosis_started":
+                set({
+                  alertSnapshot: (data.alert as DiagnosisStartedData["alert"]) ?? null,
+                  topologyContext: (data.topology as DiagnosisStartedData["topology"]) ?? null,
+                });
+                break;
+              case "done":
+                set({
+                  isStreamingDiagnosis: false,
+                  streamingNode: null,
+                  activeStreamingTools: [],
+                  streamingAbortController: null,
+                });
+                break;
+              case "error":
+                set({
+                  isStreamingDiagnosis: false,
+                  streamingAbortController: null,
+                  error: String(data.message ?? "streaming diagnosis error"),
+                });
+                break;
+            }
+          },
+          controller.signal,
+        );
+      } catch (err) {
+        if ((err as Error).name !== "AbortError") {
+          set({
+            isStreamingDiagnosis: false,
+            streamingAbortController: null,
+            error: err instanceof Error ? err.message : "streaming diagnosis failed",
+          });
+        }
+      }
+    };
+    void run();
+  },
+  cancelStreamingDiagnosis: () => {
+    const controller = get().streamingAbortController;
+    controller?.abort();
+    set({
+      isStreamingDiagnosis: false,
+      streamingText: "",
+      streamingNode: null,
+      activeStreamingTools: [],
+      streamingAbortController: null,
+    });
   },
 }));

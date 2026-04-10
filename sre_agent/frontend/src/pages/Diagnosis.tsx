@@ -724,10 +724,12 @@ type StreamingBlockProps = {
   text: string;
   speed?: number;
   mode: "hidden" | "streaming" | "complete";
+  streamingMode?: "simulate" | "live";
   onComplete?: () => void;
 };
 
-function StreamingBlock({ text, speed = 6, mode, onComplete }: StreamingBlockProps) {
+function StreamingBlock({ text, speed = 6, mode, streamingMode = "simulate", onComplete }: StreamingBlockProps) {
+  const isLive = streamingMode === "live";
   const [visibleLength, setVisibleLength] = useState(mode === "complete" ? text.length : 0);
 
   useEffect(() => {
@@ -749,6 +751,11 @@ function StreamingBlock({ text, speed = 6, mode, onComplete }: StreamingBlockPro
       return;
     }
 
+    if (isLive) {
+      onComplete?.();
+      return;
+    }
+
     if (visibleLength >= text.length) {
       onComplete?.();
       return;
@@ -759,10 +766,10 @@ function StreamingBlock({ text, speed = 6, mode, onComplete }: StreamingBlockPro
     }, speed);
 
     return () => window.clearTimeout(timer);
-  }, [mode, onComplete, speed, text.length, visibleLength]);
+  }, [mode, onComplete, speed, text.length, visibleLength, isLive]);
 
-  const renderedText = text.slice(0, visibleLength);
-  const showCursor = mode === "streaming" && visibleLength < text.length;
+  const renderedText = isLive ? text : text.slice(0, visibleLength);
+  const showCursor = mode === "streaming" && (isLive || visibleLength < text.length);
 
   return (
     <pre className="diagnosis-thinking-plan__stream">
@@ -1303,8 +1310,6 @@ function DiagnosisPage() {
     chatContextMeta,
     connectionState,
     error,
-    alertSnapshot,
-    topologyContext,
     bootstrapSession,
     sendMessage,
     revisePlan,
@@ -2022,58 +2027,6 @@ const runStepFiveRootCauseCandidates = useCallback(() => {
             ) : null}
           </div>
         </div>
-
-        {/* Layer 1: Input context — alert & topology snapshot */}
-        {alertSnapshot || topologyContext ? (
-          <SurfaceCard
-            className="diagnosis-input-card"
-            description="展示触发本次诊断的告警上下文与拓扑爆炸半径。"
-            title="输入信息"
-            variant="soft"
-          >
-            <div className="diagnosis-input-card__body">
-              {alertSnapshot ? (
-                <div className="diagnosis-input-card__section">
-                  <p className="diagnosis-chat-state-card__copy">
-                    <strong>告警：</strong>
-                    {alertSnapshot.alert_name ?? "unknown"} | 严重度：{alertSnapshot.severity ?? "unknown"}
-                    {alertSnapshot.summary ? ` | 摘要：${alertSnapshot.summary}` : ""}
-                  </p>
-                  {alertSnapshot.labels && Object.keys(alertSnapshot.labels).length > 0 ? (
-                    <details className="diagnosis-input-card__details">
-                      <summary>告警标签 ({Object.keys(alertSnapshot.labels).length})</summary>
-                      <pre className="diagnosis-session-card__json">{JSON.stringify(alertSnapshot.labels, null, 2)}</pre>
-                    </details>
-                  ) : null}
-                  <details className="diagnosis-input-card__details">
-                    <summary>原始告警 JSON</summary>
-                    <pre className="diagnosis-session-card__json">{JSON.stringify(alertSnapshot, null, 2)}</pre>
-                  </details>
-                </div>
-              ) : null}
-              {topologyContext ? (
-                <div className="diagnosis-input-card__section">
-                  <p className="diagnosis-chat-state-card__copy">
-                    <strong>拓扑上下文：</strong>
-                    {topologyContext.summary ?? `爆炸半径 ${topologyContext.affected_count ?? 0} 个实体`}
-                  </p>
-                  {topologyContext.affected_entities && topologyContext.affected_entities.length > 0 ? (
-                    <details className="diagnosis-input-card__details">
-                      <summary>受影响实体 ({topologyContext.affected_entities.length})</summary>
-                      <ul className="diagnosis-session-card__summary-list">
-                        {topologyContext.affected_entities.slice(0, 20).map((entity) => (
-                          <li key={entity.id} className="diagnosis-session-card__summary-item">
-                            {entity.name ?? entity.id} ({entity.type})
-                          </li>
-                        ))}
-                      </ul>
-                    </details>
-                  ) : null}
-                </div>
-              ) : null}
-            </div>
-          </SurfaceCard>
-        ) : null}
 
         <div className="diagnosis-chat-workspace">
           <SurfaceCard bodyClassName="diagnosis-chat-shell__body" className="diagnosis-chat-shell">

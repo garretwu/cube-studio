@@ -145,7 +145,7 @@ describe("buildDiagnosisModifiedLiveView tool matching", () => {
 
     expect(toolItems).toHaveLength(1);
     expect(toolItems[0]?.status).toBe("loading");
-    expect(toolItems[0]?.summaryLines).toEqual(["Waiting for tool result..."]);
+    expect(toolItems[0]?.summaryLines).toEqual(["等待 tool_result 返回..."]);
   });
 });
 
@@ -177,7 +177,7 @@ describe("buildDiagnosisModifiedLiveView next-action narration", () => {
     const nextAction = view.timeline[1];
     if (nextAction?.kind === "message") {
       expect(nextAction.role).toBe("assistant");
-      expect(nextAction.label).toBe("Next action");
+      expect(nextAction.label).toBe("下一步行动");
       expect(nextAction.content).toContain("query_metrics");
     }
   });
@@ -201,9 +201,10 @@ describe("buildDiagnosisModifiedLiveView next-action narration", () => {
     const nextAction = view.timeline[1];
     if (nextAction?.kind === "message") {
       expect(nextAction.role).toBe("assistant");
-      expect(nextAction.label).toBe("Next action");
-      expect(nextAction.content).toContain("root-cause conclusion");
-    }  });
+      expect(nextAction.label).toBe("下一步行动");
+      expect(nextAction.content).toContain("根因结论");
+    }
+  });
 });
 describe("buildDiagnosisModifiedDemoScenario ReAct cadence", () => {
   it("ensures every thinking append is followed by an assistant conclusion append", () => {

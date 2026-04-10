@@ -1,15 +1,23 @@
 from __future__ import annotations
 
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 
 from langchain_core.messages import AIMessage, SystemMessage, ToolMessage
 
-from sre_agent.agent import run_diagnosis
-from sre_agent.agent.nodes import initialize_state, reason_node
+import sre_agent.agent as agent_module
+from sre_agent.agent import run_diagnosis, run_diagnosis_stream
+from sre_agent.agent.nodes import (
+    _normalize_hypotheses_payload,
+    _normalize_remediation_plan_payload,
+    initialize_state,
+    reason_node,
+)
 from sre_agent.agent.prompts import build_system_prompt
 from sre_agent.models.diagnosis import DiagnosisResult, ThinkingTrace
 from sre_agent.models.remediation import RemediationPlan
@@ -327,6 +335,10 @@ class _FirstCallErrorLLM(_FakeLLM):
 
 
 class TestGraphUnit(unittest.IsolatedAsyncioTestCase):
+    def test_agent_package_exports_stream_runner(self) -> None:
+        self.assertIn("run_diagnosis_stream", agent_module.__all__)
+        self.assertIs(run_diagnosis_stream, agent_module.run_diagnosis_stream)
+
     async def test_reason_node_applies_context_budget_before_llm_call(self) -> None:
         llm = _ContextWindowGuardLLM(
             [
@@ -1901,6 +1913,9 @@ tags:
         self.assertIn("prometheus.query_instant", prompt)
         self.assertIn("k8s.apply_manifest", prompt)
         self.assertIn("not callable in this phase", prompt)
+        self.assertIn("network.clear_tc_qdisc", prompt)
+        self.assertIn("Every remediation step `params` object must explicitly contain all required fields", prompt)
+        self.assertIn("tc qdisc/netem cleanup actions", prompt)
 
         preferred_prompt = build_system_prompt(
             registry,
@@ -2266,6 +2281,143 @@ tags:
         self.assertEqual(result["status"], "failed")
         self.assertTrue(result["tool_runs"])
         self.assertFalse(result["tool_runs"][0]["success"])
+
+
+class TestDiagnosisLocalization(unittest.TestCase):
+    def test_hypothesis_defaults_use_chinese_descriptions(self) -> None:
+        hypotheses = _normalize_hypotheses_payload(
+            {
+                "root_cause": "GPU 争用",
+                "root_cause_layer": "platform",
+                "impact_summary": "auth-svc 的 p95 时延持续升高",
+                "confidence": 0.82,
+                "diagnosis_certainty": "probable",
+            }
+        )
+
+        descriptions = [item["description"] for item in hypotheses]
+        self.assertIn("GPU 争用", descriptions)
+        self.assertIn("网络或 RDMA 退化导致时延升高", descriptions)
+        self.assertIn("常规工作负载上涨或 service 侧饱和", descriptions)
+
+    def test_remediation_defaults_use_chinese_descriptions(self) -> None:
+        diagnosis = DiagnosisResult.model_validate(
+            {
+                "root_cause": "worker-03 节点 GPU 争用",
+                "root_cause_layer": "platform",
+                "root_cause_entities": ["worker-03", "gpu-0"],
+                "confidence": 0.91,
+                "hypotheses": [],
+                "impact_summary": "auth-svc 时延升高，吞吐下降",
+                "affected_services": ["auth-svc"],
+                "triage_priority": "P1",
+                "diagnosis_certainty": "confirmed",
+            }
+        )
+
+        plan = _normalize_remediation_plan_payload(
+            raw_plan={
+                "steps": [
+                    {
+                        "tool": "k8s.cordon_node",
+                        "params": {"node": "worker-03"},
+                    }
+                ]
+            },
+            diagnosis=diagnosis,
+            session_id="sess-localize-1",
+            registry=build_default_registry(),
+        )
+
+        self.assertIsNotNone(plan)
+        assert plan is not None
+        self.assertEqual(
+            plan.description,
+            "基于现有诊断证据生成的 proposal-only 修复方案，当前尚未执行任何写入动作。",
+        )
+        self.assertEqual(
+            plan.steps[0].description,
+            "针对 worker-03 节点 GPU 争用 的候选修复步骤 1",
+        )
+
+    def test_remediation_normalization_infers_tc_qdisc_node_and_iface(self) -> None:
+        diagnosis = DiagnosisResult.model_validate(
+            {
+                "root_cause": "worker-03 节点 netem delay 残留",
+                "root_cause_layer": "network",
+                "root_cause_entities": ["10.11.0.12", "worker-03"],
+                "confidence": 0.86,
+                "hypotheses": [],
+                "impact_summary": "roce 网卡残留 netem delay 规则导致时延升高",
+                "affected_services": ["network"],
+                "triage_priority": "P1",
+                "diagnosis_certainty": "confirmed",
+            }
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            inventory = Path(tmpdir) / "inventory.yaml"
+            inventory.write_text(
+                """
+inventory:
+  workers:
+    - name: worker-03
+      ssh:
+        host: 10.11.0.12
+""".strip(),
+                encoding="utf-8",
+            )
+            with patch.dict(os.environ, {"SRE_SSH_INVENTORY_PATH": str(inventory)}, clear=False):
+                plan = _normalize_remediation_plan_payload(
+                    raw_plan={
+                        "steps": [
+                            {
+                                "tool": "network.clear_tc_qdisc",
+                                "description": "使用 SSH 在节点 10.11.0.12 上执行 tc qdisc del dev roce parent 8016:10，移除 netem delay 规则",
+                                "params": {},
+                            }
+                        ]
+                    },
+                    diagnosis=diagnosis,
+                    session_id="sess-netem-1",
+                    registry=build_default_registry(),
+                )
+
+        self.assertIsNotNone(plan)
+        assert plan is not None
+        self.assertEqual(plan.steps[0].params["node"], "worker-03")
+        self.assertEqual(plan.steps[0].params["iface"], "roce")
+        self.assertEqual(plan.steps[0].params["parent"], "8016:10")
+
+    def test_remediation_normalization_rejects_tc_qdisc_step_with_wrong_tool(self) -> None:
+        diagnosis = DiagnosisResult.model_validate(
+            {
+                "root_cause": "worker-03 节点 netem delay 残留",
+                "root_cause_layer": "network",
+                "root_cause_entities": ["10.11.0.12", "worker-03"],
+                "confidence": 0.86,
+                "hypotheses": [],
+                "impact_summary": "roce 网卡残留 netem delay 规则导致时延升高",
+                "affected_services": ["network"],
+                "triage_priority": "P1",
+                "diagnosis_certainty": "confirmed",
+            }
+        )
+        plan = _normalize_remediation_plan_payload(
+            raw_plan={
+                "steps": [
+                    {
+                        "tool": "kill_process",
+                        "description": "使用 SSH 在节点 10.11.0.12 上执行 tc qdisc del dev roce parent 8016:10，移除 netem delay 规则",
+                        "params": {},
+                    }
+                ]
+            },
+            diagnosis=diagnosis,
+            session_id="sess-netem-2",
+            registry=build_default_registry(),
+        )
+
+        self.assertIsNone(plan)
 
 
 if __name__ == "__main__":

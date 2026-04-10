@@ -4,6 +4,7 @@ import ast
 import asyncio
 import json
 import logging
+import os
 import re
 from dataclasses import asdict
 from datetime import UTC, datetime
@@ -21,6 +22,11 @@ from sre_agent.models.remediation import RemediationPlan
 from sre_agent.runtime.token_estimation import estimate_token_count
 from sre_agent.skills import SkillExecutor, SkillPolicy, SkillRegistry
 from sre_agent.tools import ToolExecutionContext, ToolRegistry, build_default_registry
+
+try:
+    import yaml
+except Exception:  # noqa: BLE001
+    yaml = None
 
 # LLM 交互日志记录器
 _llm_logger = logging.getLogger("sre_agent.llm")
@@ -411,7 +417,7 @@ async def reason_node(
             {
                 "type": "thought",
                 "step": step_index,
-                "content": raw_response_text or "Requesting read-only evidence via tools.",
+                "content": raw_response_text or "正在调用只读工具补充诊断证据。",
                 "action": "tool_call",
                 "tool_name": pending_tool_calls[0]["name"],
                 "tool_params": pending_tool_calls[0].get("args", {}),
@@ -456,8 +462,8 @@ async def reason_node(
                 "selected_skill_id": None,
                 "skill_selection_reason": None,
                 "status": "failed",
-                "summary": f"selected skill is not available: {selected_skill_id}",
-                "error": f"selected skill is not available: {selected_skill_id}",
+                "summary": f"所选技能当前不可用：{selected_skill_id}",
+                "error": f"所选技能当前不可用：{selected_skill_id}",
             }
             persist_state_snapshot(updated.get("checkpoint_dir"), updated["session_id"], "reason-failed", updated)
             return updated
@@ -495,7 +501,7 @@ async def reason_node(
         )
         if parsed.diagnosis is None:
             parsed = ReasoningEnvelope(
-                thought="Converted non-JSON model output to a structured low-confidence diagnosis.",
+                thought="已将非 JSON 模型输出转换为结构化的低置信度诊断结果。",
                 diagnosis=_build_fallback_final_output(
                     query=str(state.get("query", "")).strip(),
                     content=raw_response_text,
@@ -1806,17 +1812,17 @@ def _is_missing_required_skill_variable_error(summary: str) -> bool:
 def _build_fallback_final_output(*, query: str, content: str) -> FinalDiagnosisEnvelope:
     summary = (content or "").strip()
     if not summary:
-        summary = "LLM returned an empty response while generating diagnosis."
+        summary = "LLM 在生成诊断结论时返回了空响应。"
     if len(summary) > 300:
         summary = summary[:297] + "..."
-    root_cause = summary.splitlines()[0].strip() if summary else "Insufficient evidence from LLM response"
+    root_cause = summary.splitlines()[0].strip() if summary else "LLM 响应中的证据不足，暂无法确认根因"
     if len(root_cause) > 140:
         root_cause = root_cause[:137] + "..."
     return FinalDiagnosisEnvelope.model_validate(
         {
-            "thought": "Converted non-JSON model output to a structured low-confidence diagnosis.",
+            "thought": "已将非 JSON 模型输出转换为结构化的低置信度诊断结果。",
             "diagnosis": {
-                "root_cause": root_cause or "Insufficient evidence from LLM response",
+                "root_cause": root_cause or "LLM 响应中的证据不足，暂无法确认根因",
                 "root_cause_layer": "platform",
                 "root_cause_entities": [],
                 "confidence": 0.35,
@@ -1826,21 +1832,21 @@ def _build_fallback_final_output(*, query: str, content: str) -> FinalDiagnosisE
                 "diagnosis_certainty": "ambiguous",
                 "hypotheses": [
                     {
-                        "description": root_cause or "Primary hypothesis from unstructured model output",
+                        "description": root_cause or "来自非结构化模型输出的主要根因假设",
                         "status": "testing",
                         "evidence_for": [summary] if summary else [],
                         "evidence_against": [],
                         "confidence": 0.35,
                     },
                     {
-                        "description": "Metric collection/tool evidence was unavailable or incompatible",
+                        "description": "指标采集或 tool 证据当前不可用，或与模型调用链路不兼容",
                         "status": "testing",
-                        "evidence_for": ["tool binding fallback path activated"],
+                        "evidence_for": ["已触发 tool binding fallback 路径"],
                         "evidence_against": [],
                         "confidence": 0.3,
                     },
                     {
-                        "description": "Alert may be transient or context incomplete",
+                        "description": "告警也可能是瞬时波动，或当前上下文仍不完整",
                         "status": "testing",
                         "evidence_for": [f"query={query}"] if query else [],
                         "evidence_against": [],
@@ -2214,8 +2220,8 @@ async def execute_selected_skill_node(
         return {
             **state,
             "status": "failed",
-            "summary": state.get("summary") or "selected skill is missing",
-            "error": state.get("error") or "selected skill is missing",
+            "summary": state.get("summary") or "缺少已选择的技能标识",
+            "error": state.get("error") or "缺少已选择的技能标识",
         }
 
     if context is None:
@@ -2303,8 +2309,8 @@ async def execute_selected_skill_node(
                 "type": "thought",
                 "step": state.get("step_count", 0) + 1,
                 "content": (
-                    "Skill execution was degraded because a required runtime variable was missing; "
-                    "fallback to general reasoning flow."
+                    "技能执行因缺少必需的运行时变量而降级，"
+                    "当前将回退到通用诊断推理流程。"
                 ),
                 "action": "conclude",
                 "confidence": None,
@@ -2599,7 +2605,7 @@ def _normalize_diagnosis_payload(payload: dict[str, Any]) -> dict[str, Any]:
 
 def _normalize_hypotheses_payload(payload: dict[str, Any]) -> list[dict[str, Any]]:
     raw_hypotheses = payload.get("hypotheses")
-    root_cause = str(payload.get("root_cause") or "Primary root-cause hypothesis").strip()
+    root_cause = str(payload.get("root_cause") or "主要根因假设").strip()
     root_cause_layer = str(payload.get("root_cause_layer") or "platform").strip()
     impact_summary = str(payload.get("impact_summary") or "").strip()
     confidence = float(payload.get("confidence") or 0.5)
@@ -2639,21 +2645,21 @@ def _normalize_hypotheses_payload(payload: dict[str, Any]) -> list[dict[str, Any
             "confidence": _clamp_confidence(confidence, default=0.9),
         },
         {
-            "description": "Network or RDMA degradation contributing to latency",
+            "description": "网络或 RDMA 退化导致时延升高",
             "status": "eliminated" if root_cause_layer != "network" else "testing",
             "evidence_for": [],
             "evidence_against": [impact_summary] if impact_summary and root_cause_layer != "network" else [],
             "confidence": _clamp_confidence(min(confidence, 0.45), default=0.35),
         },
         {
-            "description": "Normal workload increase or service-side saturation",
+            "description": "常规工作负载上涨或 service 侧饱和",
             "status": "testing" if root_cause_layer != "service" else primary_status,
             "evidence_for": [],
             "evidence_against": [impact_summary] if impact_summary and root_cause_layer != "service" else [],
             "confidence": _clamp_confidence(min(confidence, 0.55), default=0.4),
         },
         {
-            "description": "Thermal throttling or other hardware-side instability",
+            "description": "热降频或其他硬件侧不稳定",
             "status": "testing" if root_cause_layer == "hardware" else "eliminated",
             "evidence_for": [],
             "evidence_against": [impact_summary] if impact_summary and root_cause_layer != "hardware" else [],
@@ -2706,10 +2712,22 @@ def _normalize_remediation_plan_payload(
             normalized_step.setdefault("step_id", index)
             normalized_step.setdefault(
                 "description",
-                f"Proposed remediation step {index} for {diagnosis.root_cause}",
+                f"针对 {diagnosis.root_cause} 的候选修复步骤 {index}",
             )
             normalized_step.setdefault("params", {})
-            _normalize_step_params_in_place(normalized_step)
+            invalid_reason = _normalize_step_params_in_place(
+                normalized_step,
+                diagnosis=diagnosis,
+                registry=registry,
+            )
+            if invalid_reason:
+                _llm_logger.warning(
+                    "dropping invalid remediation plan for session %s at step %s: %s",
+                    session_id,
+                    normalized_step.get("step_id", index),
+                    invalid_reason,
+                )
+                return None
             if not normalized_step.get("command"):
                 tool_name = normalized_step.get("tool", "")
                 step_params = normalized_step.get("params", {})
@@ -2740,7 +2758,7 @@ def _normalize_remediation_plan_payload(
     candidate.setdefault("root_cause", diagnosis.root_cause)
     candidate.setdefault(
         "description",
-        "Proposal-only remediation plan generated from diagnosis evidence. No write action has been executed.",
+        "基于现有诊断证据生成的 proposal-only 修复方案，当前尚未执行任何写入动作。",
     )
     candidate.setdefault("estimated_impact", diagnosis.impact_summary)
     candidate.setdefault("confidence", _normalize_plan_confidence(diagnosis.confidence))
@@ -2749,7 +2767,12 @@ def _normalize_remediation_plan_payload(
 
     try:
         return RemediationPlan.model_validate(candidate)
-    except Exception:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
+        _llm_logger.warning(
+            "dropping remediation plan for session %s because validation failed: %s",
+            session_id,
+            exc,
+        )
         return None
 
 
@@ -2764,13 +2787,245 @@ def _normalize_plan_priority(value: str) -> str:
     return "P2"
 
 
-def _normalize_step_params_in_place(step: dict[str, Any]) -> None:
+def _normalize_step_params_in_place(
+    step: dict[str, Any],
+    *,
+    diagnosis: DiagnosisResult,
+    registry: ToolRegistry | None,
+) -> str | None:
     tool_name = str(step.get("tool") or "").strip()
     params = step.get("params")
     if not isinstance(params, dict):
-        return
+        return "missing_required_params: params must be an object"
 
     if tool_name == "k8s.delete_pod":
         pod_selector = params.pop("pod_selector", None)
         if pod_selector is not None and "label_selector" not in params:
             params["label_selector"] = pod_selector
+
+    if _step_looks_like_tc_qdisc_cleanup(step) and tool_name != "network.clear_tc_qdisc":
+        return "tool_not_supported_for_intended_action: tc_qdisc_cleanup_requires_network.clear_tc_qdisc"
+
+    if tool_name == "network.clear_tc_qdisc":
+        iface = params.get("iface")
+        if not isinstance(iface, str) or not iface.strip():
+            inferred_iface = _infer_tc_iface(step)
+            if inferred_iface:
+                params["iface"] = inferred_iface
+        if not params.get("parent"):
+            inferred_parent = _extract_token_from_step(step, token_name="parent")
+            if inferred_parent:
+                params["parent"] = inferred_parent
+        if not params.get("handle"):
+            inferred_handle = _extract_token_from_step(step, token_name="handle")
+            if inferred_handle:
+                params["handle"] = inferred_handle
+        if not params.get("parent") and not params.get("handle") and not params.get("kind"):
+            scope = _extract_tc_scope(step)
+            if scope:
+                params["kind"] = scope
+
+    if registry is None or not tool_name:
+        return None
+
+    try:
+        tool_def = registry.get_tool(tool_name)
+    except Exception:
+        return f"tool_not_supported_for_intended_action: unknown_tool={tool_name or '<blank>'}"
+
+    required = tool_def.params_schema.get("required", [])
+    if not isinstance(required, list):
+        return None
+
+    missing = [field for field in required if field not in params or _is_blank_param(params.get(field))]
+    if "node" in missing:
+        inferred_node, ambiguous = _infer_step_node(step=step, diagnosis=diagnosis)
+        if ambiguous:
+            return "node_inference_ambiguous"
+        if inferred_node:
+            params["node"] = inferred_node
+
+    missing = [field for field in required if field not in params or _is_blank_param(params.get(field))]
+    if missing:
+        return f"missing_required_params: {missing}"
+    return None
+
+
+def _is_blank_param(value: Any) -> bool:
+    if value is None:
+        return True
+    if isinstance(value, str):
+        return not value.strip()
+    return False
+
+
+def _step_looks_like_tc_qdisc_cleanup(step: dict[str, Any]) -> bool:
+    text = " ".join(
+        str(item or "").strip()
+        for item in (
+            step.get("description"),
+            step.get("command"),
+            json.dumps(step.get("params", {}), ensure_ascii=False, sort_keys=True),
+        )
+        if str(item or "").strip()
+    ).lower()
+    return "tc qdisc" in text or "netem" in text
+
+
+def _infer_tc_iface(step: dict[str, Any]) -> str | None:
+    match = re.search(r"\bdev\s+([a-zA-Z0-9_.:-]+)", _step_text(step), flags=re.IGNORECASE)
+    if match:
+        return match.group(1).strip()
+    return None
+
+
+def _extract_token_from_step(step: dict[str, Any], *, token_name: str) -> str | None:
+    pattern = rf"\b{re.escape(token_name)}\s+([a-zA-Z0-9_.:-]+)"
+    match = re.search(pattern, _step_text(step), flags=re.IGNORECASE)
+    if match:
+        return match.group(1).strip()
+    return None
+
+
+def _extract_tc_scope(step: dict[str, Any]) -> str | None:
+    text = _step_text(step).lower()
+    for candidate in ("root", "ingress", "clsact"):
+        if re.search(rf"\b{candidate}\b", text):
+            return candidate
+    return None
+
+
+def _step_text(step: dict[str, Any]) -> str:
+    parts = [
+        str(step.get("description") or "").strip(),
+        str(step.get("command") or "").strip(),
+    ]
+    params = step.get("params", {})
+    if isinstance(params, dict):
+        parts.append(json.dumps(params, ensure_ascii=False, sort_keys=True))
+    return "\n".join(part for part in parts if part)
+
+
+def _infer_step_node(*, step: dict[str, Any], diagnosis: DiagnosisResult) -> tuple[str | None, bool]:
+    inventory_names, host_to_name = _load_inventory_node_mapping()
+    node_candidates: set[str] = set()
+    ip_candidates: set[str] = set()
+
+    for raw in diagnosis.root_cause_entities:
+        _collect_node_candidates(str(raw or ""), inventory_names, node_candidates, ip_candidates)
+
+    text = _step_text(step)
+    for ip in re.findall(r"\b(?:\d{1,3}\.){3}\d{1,3}\b", text):
+        ip_candidates.add(ip)
+    for name in inventory_names:
+        if name and name in text:
+            node_candidates.add(name)
+
+    resolved_nodes = {host_to_name[ip] for ip in ip_candidates if ip in host_to_name}
+    all_candidates = set(node_candidates) | resolved_nodes
+    if len(all_candidates) == 1:
+        return next(iter(all_candidates)), False
+
+    if len(all_candidates) > 1:
+        return None, True
+
+    if not inventory_names and len(node_candidates) == 1:
+        return next(iter(node_candidates)), False
+    return None, False
+
+
+def _collect_node_candidates(
+    raw: str,
+    inventory_names: set[str],
+    node_candidates: set[str],
+    ip_candidates: set[str],
+) -> None:
+    value = raw.strip()
+    if not value:
+        return
+    lower = value.lower()
+    if lower.startswith("node:"):
+        candidate = value.split(":", 1)[1].strip()
+        if candidate:
+            node_candidates.add(candidate)
+        return
+    if re.fullmatch(r"(?:\d{1,3}\.){3}\d{1,3}", value):
+        ip_candidates.add(value)
+        return
+    if value in inventory_names:
+        node_candidates.add(value)
+        return
+    if ":" in value:
+        return
+    if re.search(r"[a-zA-Z]", value) and re.search(r"[-\d]", value):
+        node_candidates.add(value)
+
+
+def _load_inventory_node_mapping() -> tuple[set[str], dict[str, str]]:
+    names: set[str] = set()
+    host_to_name: dict[str, str] = {}
+    for path in _inventory_candidates():
+        if not path.exists() or yaml is None:
+            continue
+        try:
+            payload = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        except Exception:  # noqa: BLE001
+            continue
+        workers = payload.get("inventory", {}).get("workers", [])
+        if not isinstance(workers, list):
+            continue
+        for worker in workers:
+            if not isinstance(worker, dict):
+                continue
+            name = str(worker.get("name") or "").strip()
+            ssh = worker.get("ssh")
+            host = str(ssh.get("host") or "").strip() if isinstance(ssh, dict) else ""
+            if name:
+                names.add(name)
+            if name and host:
+                host_to_name[host] = name
+        if names or host_to_name:
+            break
+    return names, host_to_name
+
+
+def _inventory_candidates() -> list[Path]:
+    candidates: list[Path] = []
+    env_inventory = os.getenv("SRE_SSH_INVENTORY_PATH", "").strip()
+    if env_inventory:
+        candidates.append(Path(env_inventory))
+
+    config_candidates = [
+        Path(os.getenv("SRE_AGENT_CONFIG", "").strip()) if os.getenv("SRE_AGENT_CONFIG", "").strip() else None,
+        Path("sre_agent/conf/config.yaml"),
+    ]
+    for config_path in config_candidates:
+        if config_path is None or not config_path.exists() or yaml is None:
+            continue
+        try:
+            payload = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+        except Exception:  # noqa: BLE001
+            continue
+        raw_inventory_path = (
+            payload.get("ontology", {})
+            .get("discovery", {})
+            .get("live_inventory_path")
+        )
+        if not raw_inventory_path:
+            continue
+        inventory_path = Path(str(raw_inventory_path))
+        if not inventory_path.is_absolute():
+            inventory_path = (config_path.parent.parent.parent / inventory_path).resolve() if not inventory_path.exists() else inventory_path
+        candidates.append(inventory_path)
+
+    candidates.append(Path("sre_agent/conf/live_inventory.lab.yaml"))
+
+    deduped: list[Path] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        key = str(candidate)
+        if key in seen:
+            continue
+        deduped.append(candidate)
+        seen.add(key)
+    return deduped

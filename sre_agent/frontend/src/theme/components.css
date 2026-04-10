@@ -9467,3 +9467,55 @@
     border-bottom: 0;
   }
 }
+
+/* SSE streaming indicator */
+.diagnosis-modified-streaming-indicator {
+  padding: 12px 16px;
+  border: 1px solid rgba(59, 130, 246, 0.18);
+  border-radius: 10px;
+  background: rgba(239, 246, 255, 0.6);
+  margin: 8px 0;
+}
+
+.diagnosis-modified-streaming-indicator__node {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: rgba(30, 64, 175, 0.85);
+  margin-bottom: 8px;
+}
+
+.diagnosis-modified-streaming-indicator__tools {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.diagnosis-modified-streaming-indicator__tool {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 6px;
+  background: rgba(59, 130, 246, 0.08);
+  font-size: 12px;
+  color: rgba(30, 64, 175, 0.75);
+}
+
+.diagnosis-modified-streaming-indicator__spinner {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border: 2px solid rgba(59, 130, 246, 0.2);
+  border-top-color: rgba(59, 130, 246, 0.8);
+  border-radius: 50%;
+  animation: diagnosis-modified-spinner-rotate 0.8s linear infinite;
+}
+
+@keyframes diagnosis-modified-spinner-rotate {
+  to {
+    transform: rotate(360deg);
+  }
+}

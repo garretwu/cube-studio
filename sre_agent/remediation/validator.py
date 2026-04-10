@@ -45,7 +45,7 @@ class PlanValidator:
             required = list(tool_def.params_schema.get("required", []))
             missing = [field for field in required if field not in step.params]
             if missing:
-                errors.append(f"step {step.step_id}: missing params {missing}")
+                errors.append(f"step {step.step_id}: missing_required_params {missing}")
             if step.rollback_tool and step.rollback_tool not in write_tool_names:
                 errors.append(f"step {step.step_id}: rollback_tool {step.rollback_tool!r} not found")
             if step.verification.tool and step.verification.tool not in read_tool_names:

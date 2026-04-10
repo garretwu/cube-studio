@@ -34,6 +34,14 @@ class EventType(str, Enum):
     ERROR = "error"
     DONE = "done"
 
+    # SSE streaming events
+    TOKEN_DELTA = "token_delta"
+    NODE_STARTED = "node_started"
+    NODE_COMPLETED = "node_completed"
+    TOOL_STARTED = "tool_started"
+    TOOL_COMPLETED = "tool_completed"
+    STATE_SNAPSHOT = "state_snapshot"
+
 
 class WSEvent(StrictFrozenModel):
     """Unified WebSocket event schema with backward-compatible aliases."""

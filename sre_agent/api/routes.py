@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import inspect
 import os
 import re
@@ -621,6 +622,63 @@ def build_api_router() -> APIRouter:
         if runtime_mode != "strict":
             runtime_mode = "degraded"
         return ToolChannelsStatusResponse(runtime_mode=runtime_mode, channels=rows)
+
+    def _tool_channel_status_map(services: Any) -> dict[str, ToolChannelStatusItem]:
+        payload = _tool_channel_status_payload(services)
+        return {
+            item.name.strip().lower(): item
+            for item in payload.channels
+            if item.name.strip()
+        }
+
+    def _required_channels_for_real_execution(plan: RemediationPlan | None) -> list[str]:
+        required = {"prometheus"}
+        if plan is None:
+            return sorted(required)
+        for step in plan.steps:
+            tool_name = str(step.tool or "").strip().lower()
+            if tool_name.startswith("k8s."):
+                required.add("k8s")
+            if tool_name == "kill_process" or tool_name.startswith("ssh."):
+                required.add("ssh")
+        return sorted(required)
+
+    def _validate_real_execution_readiness(
+        services: Any,
+        *,
+        plan: RemediationPlan | None,
+    ) -> dict[str, Any] | None:
+        execution_mode = str(getattr(services.remediation_engine, "execution_mode", "real") or "real").strip().lower()
+        if execution_mode != "real":
+            return None
+
+        status_map = _tool_channel_status_map(services)
+        required_channels = _required_channels_for_real_execution(plan)
+        unready_channels: list[dict[str, Any]] = []
+        for channel_name in required_channels:
+            status = status_map.get(channel_name)
+            health = status.health if status is not None else "unavailable"
+            if health == "ready":
+                continue
+            unready_channels.append(
+                {
+                    "name": channel_name,
+                    "health": health,
+                    "mode": status.mode if status is not None else "unknown",
+                    "last_error": status.last_error if status is not None else "channel status missing",
+                }
+            )
+
+        if not unready_channels:
+            return None
+
+        summary = ", ".join(f"{item['name']}={item['health']}" for item in unready_channels)
+        return {
+            "execution_mode": "real",
+            "required_channels": required_channels,
+            "unready_channels": unready_channels,
+            "message": f"real remediation execution blocked: required channels not ready ({summary})",
+        }
 
     def _llm_runtime_status_payload(services: Any) -> LLMRuntimeStatusResponse:
         payload = getattr(services, "llm_runtime_status", {}) or {}
@@ -2005,6 +2063,47 @@ def build_api_router() -> APIRouter:
         _track_background_task(request.app, handle.task)
         return SREResponse(success=True, data=handle.initial_session, trace_id=_trace_id(request))
 
+    @router.post("/diagnose/stream")
+    async def diagnose_stream(
+        alert: Alert,
+        request: Request,
+        user: CurrentUser = Depends(require_role("operator", "admin")),
+        extra_alert_fingerprints: list[str] = Query(default_factory=list),
+    ):
+        """Stream diagnosis events via SSE (Server-Sent Events).
+
+        Requires ``sse-starlette`` package.
+        """
+        _ = user
+        services = _services(request)
+        blocked_alert_names = _blocked_alert_names_from_request(request)
+        if is_blocked_alert(alert, blocked_names=blocked_alert_names):
+            raise HTTPException(status_code=400, detail="alert is blocked")
+        runner = getattr(services, "streaming_diagnosis_runner", None)
+        if runner is None:
+            raise HTTPException(status_code=500, detail="streaming diagnosis runner is not configured")
+
+        prepared_alert = _enrich_alert_with_topology_summary(services, alert)
+        extra_alerts = _lookup_extra_alerts(services.alert_store, extra_alert_fingerprints) if extra_alert_fingerprints else []
+
+        # Lazy import to avoid hard dependency at module load time.
+        from sse_starlette.sse import EventSourceResponse
+
+        async def event_generator():
+            try:
+                async for event in runner.astream_diagnose(prepared_alert, extra_alerts=extra_alerts):
+                    yield {
+                        "event": event.get("type", "message"),
+                        "data": json.dumps(event, ensure_ascii=False, default=str),
+                    }
+            except Exception as exc:  # noqa: BLE001
+                yield {
+                    "event": "error",
+                    "data": json.dumps({"message": str(exc)}),
+                }
+
+        return EventSourceResponse(event_generator(), ping=15)
+
     @router.post("/handle")
     async def handle_alert(
         alert: Alert,
@@ -2237,6 +2336,28 @@ def build_api_router() -> APIRouter:
                 ),
                 trace_id=trace_id,
             )
+        plan = services.remediation_engine.get_plan(session_id)
+        if plan is None:
+            return SREResponse(
+                success=False,
+                error=SREError(
+                    code=ErrorCode.REMEDIATION_PLAN_INVALID,
+                    message=f"remediation plan not found for session {session_id}",
+                ),
+                trace_id=trace_id,
+            )
+        if approval.approved:
+            readiness_issue = _validate_real_execution_readiness(services, plan=plan)
+            if readiness_issue is not None:
+                return SREResponse(
+                    success=False,
+                    error=SREError(
+                        code=ErrorCode.VALIDATION_ERROR,
+                        message=str(readiness_issue["message"]),
+                        details=readiness_issue,
+                    ),
+                    trace_id=trace_id,
+                )
         transition_status = getattr(services.session_store, "transition_status", None)
         if callable(transition_status):
             target_status = "remediating" if approval.approved else "rejected"
@@ -2344,7 +2465,6 @@ def build_api_router() -> APIRouter:
                 trace_id=trace_id,
             )
 
-        plan = services.remediation_engine.get_plan(session_id)
         pre_check = await _capture_check_snapshot(services, session=session, plan=plan)
         pre_evidence = RemediationEvidence(pre_check=pre_check)
         session = _update_session_evidence(services, session=session, evidence=pre_evidence)

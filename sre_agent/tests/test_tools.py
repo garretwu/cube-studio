@@ -384,6 +384,45 @@ class TestToolRegistryUnit(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(ssh.calls[0]["command"], "tc qdisc show")
         self.assertEqual(ssh.calls[1]["command"], "tc qdisc show dev eth0")
 
+    async def test_unit_network_clear_tc_qdisc_dispatches_expected_commands(self) -> None:
+        registry = build_default_registry()
+        ssh = _FakeSSHChannel()
+        context = ToolExecutionContext(channels={"ssh": ssh}, write_approved=True)
+
+        root_result = await registry.execute(
+            "network.clear_tc_qdisc",
+            {"node": "worker-01", "iface": "roce"},
+            context,
+        )
+        parent_result = await registry.execute(
+            "network.clear_tc_qdisc",
+            {"node": "worker-01", "iface": "roce", "parent": "8016:10"},
+            context,
+        )
+        handle_result = await registry.execute(
+            "network.clear_tc_qdisc",
+            {"node": "worker-01", "iface": "roce", "handle": "10:"},
+            context,
+        )
+
+        self.assertTrue(root_result.success)
+        self.assertTrue(parent_result.success)
+        self.assertTrue(handle_result.success)
+        self.assertEqual(ssh.calls[0]["command"], "tc qdisc del dev roce root")
+        self.assertEqual(ssh.calls[1]["command"], "tc qdisc del dev roce parent 8016:10")
+        self.assertEqual(ssh.calls[2]["command"], "tc qdisc del dev roce handle 10:")
+        self.assertTrue(all(call["use_sudo"] for call in ssh.calls[:3]))
+
+    async def test_unit_network_clear_tc_qdisc_requires_iface(self) -> None:
+        registry = build_default_registry()
+        result = await registry.execute(
+            "network.clear_tc_qdisc",
+            {"node": "worker-01"},
+            ToolExecutionContext(channels={"ssh": _FakeSSHChannel()}, write_approved=True),
+        )
+        self.assertFalse(result.success)
+        self.assertIn("parameter 'iface' is required", result.error)
+
     async def test_unit_network_nic_link_state_and_counters_use_ssh(self) -> None:
         registry = build_default_registry()
         ssh = _FakeSSHChannel()

@@ -428,14 +428,27 @@ def _build_manual_acceptance_payload(
         None,
     )
     execution_terminal_data = _as_record(_as_record(execution_terminal_event).get("data"))
+    observation_event = next((item for item in reversed(normalized_events) if _event_stage(item) == "observation_result"), None)
+    observation_data = _as_record(_as_record(observation_event).get("data"))
     terminal_stage = _event_stage(execution_terminal_event) if execution_terminal_event else ""
     step_results = execution_terminal_data.get("step_results")
     if not isinstance(step_results, list):
         step_results = []
+    approve_data = _as_record(_unwrap_envelope_data(approve_payload))
     steps_completed = _safe_int(
         execution_terminal_data.get("steps_completed"),
-        _safe_int(_as_record(_unwrap_envelope_data(approve_payload)).get("steps_completed"), 0),
+        _safe_int(approve_data.get("steps_completed"), 0),
     )
+    execution_mode = "real"
+    if "execution_mocked" in ordered_stages:
+        execution_mode = "mock"
+    elif any(
+        bool(_as_record(item).get("mocked")) or str(_as_record(item).get("command", "")).startswith("mock::")
+        for item in step_results
+    ):
+        execution_mode = "mock"
+    alert_cleared = observation_data.get("alert_cleared")
+    metrics_improved = observation_data.get("metrics_improved")
 
     plan_steps_count = len(plan_steps)
     if terminal_stage == "execution_succeeded":
@@ -460,6 +473,10 @@ def _build_manual_acceptance_payload(
     current_status = str(session_data.get("status", "")).strip().lower()
     has_single_batch_status = one_shot_status in {"pending", "validating", "resolved", "failed", "timeout", "escalated", "rejected"}
     checks = {
+        "approve_path_is_real_execution": {
+            "passed": execution_mode == "real",
+            "detail": f"execution_mode={execution_mode}",
+        },
         "execution_steps_has_plan": {
             "passed": plan_steps_count > 0,
             "detail": f"plan_steps={plan_steps_count}",
@@ -476,6 +493,15 @@ def _build_manual_acceptance_payload(
             "passed": has_single_batch_status,
             "detail": f"batch=一次性执行, progress={one_shot_progress}, status={one_shot_status}, session_status={current_status or 'unknown'}",
         },
+    }
+
+    checks["observation_reports_alert_cleared"] = {
+        "passed": alert_cleared is True,
+        "detail": f"alert_cleared={alert_cleared!r}",
+    }
+    checks["observation_reports_metrics_improved"] = {
+        "passed": metrics_improved is True,
+        "detail": f"metrics_improved={metrics_improved!r}",
     }
 
     missing = []
@@ -518,6 +544,15 @@ def _build_manual_acceptance_payload(
             "total_steps": plan_steps_count,
             "terminal_stage": terminal_stage or None,
             "step_result_count": len(step_results),
+            "execution_mode": execution_mode,
+        },
+        "observation": {
+            "alert_cleared": alert_cleared,
+            "metrics_improved": metrics_improved,
+            "baseline_alert": observation_data.get("baseline_alert"),
+            "post_alert": observation_data.get("post_alert"),
+            "alert_review": observation_data.get("alert_review"),
+            "metric_reviews": observation_data.get("metric_reviews"),
         },
         "checks": checks,
         "api_boundaries": {
@@ -755,6 +790,8 @@ def main() -> int:
         approve_payload=approve,
         rollback_payload=rollback,
     )
+    api_summary["execution_mode"] = _as_record(manual_acceptance_payload.get("one_shot_projection")).get("execution_mode")
+    api_summary["observation"] = manual_acceptance_payload.get("observation")
     manual_acceptance_markdown = _render_manual_acceptance_markdown(manual_acceptance_payload)
 
     (run_dir / "api" / "drill_http_exchanges.json").write_text(

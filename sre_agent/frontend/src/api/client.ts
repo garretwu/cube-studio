@@ -46,7 +46,18 @@ const DIAGNOSE_REQUEST_TIMEOUT_MS = 120000;
 const CHAT_REQUEST_TIMEOUT_MS = 120000;
 const DIAGNOSE_SESSION_POLL_MS = 2000;
 const DIAGNOSE_SESSION_POLL_ATTEMPTS = 30;
-const BLOCKED_ALERT_NAMES = new Set<string>();
+const BLOCKED_ALERT_NAMES = new Set<string>(
+  [
+    "KubeClientErrors",
+    "KubePodCrashLooping",
+    "AlertmanagerDown",
+    "KubeControllerManagerDown",
+    "KubeSchedulerDown",
+    "PrometheusOperatorDown",
+    "DeadMansSwitch",
+    "TargetDown",
+  ].map((name) => normalizeAlertName(name)),
+);
 
 let hasWarnedAboutDevFallback = false;
 
@@ -425,20 +436,12 @@ export const apiClient = {
     }
   },
 
-  getAlerts: async () =>
-    withDevFallback(
-      async () => {
-        const response = await api.get<SREApiEnvelope<{ alerts: Alert[]; clusters: AlertCluster[] }> | { alerts: Alert[]; clusters: AlertCluster[] }>(
-          "/api/alerts",
-        );
-        return filterAlertSnapshot(unwrapPayload(response.data));
-      },
-      async () => {
-        const { getAlertsFallback } = await import("./devFallback");
-        return filterAlertSnapshot(getAlertsFallback());
-      },
-      "getAlerts",
-    ),
+  getAlerts: async () => {
+    const response = await api.get<SREApiEnvelope<{ alerts: Alert[]; clusters: AlertCluster[] }> | { alerts: Alert[]; clusters: AlertCluster[] }>(
+      "/api/alerts",
+    );
+    return filterAlertSnapshot(unwrapPayload(response.data));
+  },
 
   handleAlert: async (alert: Alert) => {
     if (isBlockedAlert(alert)) {
@@ -781,14 +784,6 @@ export const apiClient = {
         baseline_review: derivedBaselineReview,
       } as RemediationOverview;
     } catch {
-      if (import.meta.env.DEV) {
-        const { getRemediationOverviewFallback } = await import("./devFallback");
-        const fallback = getRemediationOverviewFallback();
-        return {
-          ...fallback,
-          session_id: resolved,
-        } as RemediationOverview;
-      }
       const loop = await apiClient.getSessionLoop(resolved);
       return {
         session_id: loop.session_id,
@@ -1085,4 +1080,86 @@ export const apiClient = {
 };
 
 export type ApiClient = typeof apiClient;
+
+// ---------------------------------------------------------------------------
+// SSE streaming diagnosis client
+// ---------------------------------------------------------------------------
+
+export interface SSEEvent {
+  type: string;
+  session_id: string;
+  data: Record<string, unknown>;
+}
+
+/**
+ * Open an SSE connection to ``POST /api/diagnose/stream`` and relay parsed
+ * events to the caller via ``onEvent``.  Uses the Fetch API instead of axios
+ * because axios does not support streaming response bodies.
+ */
+export async function streamDiagnosis(
+  alert: Alert,
+  extraAlertFingerprints: string[],
+  onEvent: (event: SSEEvent) => void,
+  signal?: AbortSignal,
+): Promise<void> {
+  const base = import.meta.env.VITE_API_BASE_URL ?? "";
+  const token = import.meta.env.VITE_API_TOKEN;
+  const params = new URLSearchParams();
+  if (extraAlertFingerprints.length > 0) {
+    params.set("extra_alert_fingerprints", extraAlertFingerprints.join(","));
+  }
+  const url = `${base}/api/diagnose/stream${params.toString() ? `?${params.toString()}` : ""}`;
+
+  const response = await fetch(url, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+    body: JSON.stringify(alert),
+    signal,
+  });
+
+  if (!response.ok) {
+    const err = new Error(`streaming diagnosis failed: ${response.status}`);
+    (err as unknown as { status?: number }).status = response.status;
+    throw err;
+  }
+
+  if (!response.body) {
+    throw new Error("response body is null");
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+
+    const lines = buffer.split("\n");
+    buffer = lines.pop() || "";
+
+    let currentEvent = "";
+    for (const line of lines) {
+      if (line.startsWith("event: ")) {
+        currentEvent = line.slice(7).trim();
+      } else if (line.startsWith("data: ") && currentEvent) {
+        try {
+          const raw = JSON.parse(line.slice(6));
+          onEvent({
+            type: currentEvent,
+            session_id: raw.session_id ?? "",
+            data: raw.data ?? raw,
+          });
+        } catch {
+          // ignore malformed JSON lines
+        }
+        currentEvent = "";
+      }
+    }
+  }
+}
 

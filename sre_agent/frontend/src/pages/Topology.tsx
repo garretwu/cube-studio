@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import type { TopologyCanvasHandle } from "../features/topologyExplorer/components/TopologyCanvas";
 import TopologyExplorer from "../features/topologyExplorer/components/TopologyExplorer";
@@ -15,8 +15,32 @@ import {
 import { useTopologyExplorerStore } from "../features/topologyExplorer/store";
 import "../features/topologyExplorer/topologyExplorer.css";
 
+function formatExportFileTimestamp(value = new Date()) {
+  const year = value.getFullYear();
+  const month = String(value.getMonth() + 1).padStart(2, "0");
+  const day = String(value.getDate()).padStart(2, "0");
+  const hours = String(value.getHours()).padStart(2, "0");
+  const minutes = String(value.getMinutes()).padStart(2, "0");
+  const seconds = String(value.getSeconds()).padStart(2, "0");
+
+  return `${year}${month}${day}-${hours}${minutes}${seconds}`;
+}
+
+function downloadTopologyExport(payload: unknown) {
+  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+  const objectUrl = window.URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = objectUrl;
+  anchor.download = `topology-canvas-${formatExportFileTimestamp()}.json`;
+  document.body.appendChild(anchor);
+  anchor.click();
+  document.body.removeChild(anchor);
+  window.URL.revokeObjectURL(objectUrl);
+}
+
 function TopologyPage() {
   const canvasRef = useRef<TopologyCanvasHandle | null>(null);
+  const [canvasReady, setCanvasReady] = useState(false);
   const {
     data,
     isLoading,
@@ -70,6 +94,17 @@ function TopologyPage() {
   const relations = useMemo(() => getRelationsForNode(data, selectedNodeId), [data, selectedNodeId]);
   const pathsForSelected = useMemo(() => getPathsForNode(data?.paths ?? [], selectedNodeId), [data?.paths, selectedNodeId]);
   const affectedObjects = useMemo(() => getAffectedObjectsForNode(data, selectedNodeId), [data, selectedNodeId]);
+  const resolvedViewMode = viewMode === "impact" ? "graph" : viewMode;
+  const canExportTopology =
+    resolvedViewMode === "graph" && canvasReady && visibleTopology.nodes.length > 0 && Boolean(canvasRef.current);
+  const exportHint =
+    resolvedViewMode !== "graph"
+      ? "仅关系图视图支持导出当前画布"
+      : !visibleTopology.nodes.length
+        ? "当前画布没有可导出的拓扑对象"
+        : !canvasReady
+          ? "拓扑画布尚未完成初始化"
+          : undefined;
 
   const focusCurrentSelection = () => {
     if (selectedNodeId) {
@@ -120,15 +155,26 @@ function TopologyPage() {
     });
   };
 
+  const handleExport = () => {
+    const exportedView = canvasRef.current?.exportView();
+    if (!exportedView) {
+      return;
+    }
+
+    downloadTopologyExport(exportedView);
+  };
+
   return (
     <div className="page-grid topology-modified-page">
       <TopologyHeader lastUpdated={data?.lastUpdated} />
 
       <TopologyExplorer
         affectedObjects={affectedObjects}
+        canExport={canExportTopology}
         canvasRef={canvasRef}
         downstream={relations.downstream}
         error={error}
+        exportHint={exportHint}
         graphEdges={visibleTopology.edges}
         graphNodes={visibleTopology.nodes}
         hasSourceData={Boolean(data?.nodes?.length)}
@@ -138,15 +184,18 @@ function TopologyPage() {
         isLoading={isLoading}
         layerFilter={layerFilter}
         layoutPreset={layoutPreset}
+        lastUpdated={data?.lastUpdated}
         legendOpen={legendOpen}
         matchedCount={matchedNodeIds.length}
         matchedNodeIds={matchedNodeIds}
         neighborDepths={neighborDepths}
         neighbors={relations.neighbors}
+        onCanvasReadyStateChange={setCanvasReady}
         onCycleLayoutPreset={() => {
           cycleLayoutPreset();
           window.requestAnimationFrame(() => canvasRef.current?.fitView());
         }}
+        onExport={handleExport}
         onFitCanvas={() => canvasRef.current?.fitView()}
         onHighlightInGraph={() => {
           setViewMode("graph");
@@ -177,7 +226,7 @@ function TopologyPage() {
         summaryMetrics={summaryMetrics}
         tree={tree}
         upstream={relations.upstream}
-        viewMode={viewMode === "impact" ? "graph" : viewMode}
+        viewMode={resolvedViewMode}
       />
     </div>
   );

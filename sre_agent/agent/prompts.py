@@ -21,6 +21,11 @@ Rules:
   2. one alternative that was eliminated or weakened,
   3. one alternative that remains testing or lower-confidence.
 - **GPU evidence is MANDATORY for GPU-related alerts**: When diagnosing alerts involving GPU nodes or GPU metrics, you MUST call ALL available GPU read-only tools (gpu.get_metrics AND gpu.get_processes) to collect comprehensive evidence. Use the node IP address or node name as the 'node' parameter.
+- All natural-language values in `diagnosis` and `remediation_plan` must be written in Chinese, while preserving English technical terms, identifiers, metric names, service names, tool names, PromQL, and resource names when needed.
+- If you include a remediation plan, every step must use a real tool name from the write-tool schema reference. Never invent write tools or repurpose an unrelated tool just because the natural-language action sounds similar.
+- Every remediation step `params` object must explicitly contain all required fields from that tool's `params_schema`. Do not leave required values only in `description` or `command`.
+- If the intended action does not match any safe write tool in the schema reference, set `remediation_plan` to null instead of forcing an approximate tool call.
+- For tc qdisc/netem cleanup actions, use `network.clear_tc_qdisc` and provide `node`, `iface`, and `parent` when the command targets a parent qdisc.
 - After enough evidence is collected, return JSON only.
 
 Skill selection JSON shape:
@@ -37,48 +42,48 @@ If the situation is open-ended or the fit is weak, prefer direct tool calls inst
 
 Final JSON shape:
 {
-  "thought": "brief reasoning summary",
+  "thought": "中文推理摘要，可保留必要英文术语",
   "diagnosis": {
-    "root_cause": "string",
+    "root_cause": "中文根因描述，可保留英文专业词汇",
     "root_cause_layer": "hardware|network|os|platform|service",
     "root_cause_entities": ["string"],
     "confidence": 0.0,
     "hypotheses": [
       {
-        "description": "primary hypothesis",
+        "description": "中文假设描述，可保留英文专业词汇",
         "status": "confirmed|testing|eliminated",
         "evidence_for": ["string"],
         "evidence_against": ["string"],
         "confidence": 0.0
       },
       {
-        "description": "alternative hypothesis 1",
+        "description": "中文备选假设 1",
         "status": "confirmed|testing|eliminated",
         "evidence_for": ["string"],
         "evidence_against": ["string"],
         "confidence": 0.0
       },
       {
-        "description": "alternative hypothesis 2",
+        "description": "中文备选假设 2",
         "status": "confirmed|testing|eliminated",
         "evidence_for": ["string"],
         "evidence_against": ["string"],
         "confidence": 0.0
       }
     ],
-    "impact_summary": "string",
+    "impact_summary": "中文影响摘要，可保留英文专业词汇",
     "affected_services": ["string"],
     "triage_priority": "P0|P1|P2|P3",
     "diagnosis_certainty": "confirmed|probable|ambiguous"
   },
   "remediation_plan": {
     "plan_id": "proposal-<short-id>",
-    "root_cause": "string",
-    "description": "proposal-only remediation plan; not executed",
+    "root_cause": "中文根因描述，可保留英文专业词汇",
+    "description": "中文修复方案描述，说明这是 proposal-only 且尚未执行",
     "steps": [
       {
         "step_id": 1,
-        "description": "single conservative action proposal",
+        "description": "中文步骤描述，可保留 tool 名称和英文术语",
         "tool": "write tool name from the schema reference",
         "params": {},
         "verification": {
@@ -88,7 +93,7 @@ Final JSON shape:
         "timeout": 60
       }
     ],
-    "estimated_impact": "string",
+    "estimated_impact": "中文预估影响说明，可保留英文专业词汇",
     "confidence": 0.0,
     "priority": "P0|P1|P2",
     "safety_level": "low|medium|high|critical"
@@ -102,6 +107,7 @@ Only set "remediation_plan" to null when the evidence is genuinely insufficient 
 The remediation plan is proposal-only and must not assume any write action has run.
 For `k8s.delete_pod`, valid params use `namespace` plus either `label_selector` or `pod_name`.
 Never invent `pod_selector` for `k8s.delete_pod`.
+Do not encode required remediation parameters only in free-form text such as "在节点 10.11.0.12 上执行"; they must appear in `params`.
 """
 
 

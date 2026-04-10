@@ -2,11 +2,15 @@ import { act, fireEvent, render, screen } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { DiagnosisSession } from "../api/types";
+import type { DiagnosisSession, WSEvent } from "../api/types";
 import { useDiagnosisStore } from "../store/diagnosisStore";
 import DiagnosisModifiedPage from "./DiagnosisModified";
 import * as diagnosisModifiedModel from "./diagnosisModifiedModel";
-import type { DiagnosisModifiedDemoScenario, DiagnosisModifiedTimelineItem } from "./diagnosisModifiedModel";
+import type {
+  DiagnosisModifiedDemoScenario,
+  DiagnosisModifiedLiveView,
+  DiagnosisModifiedTimelineItem,
+} from "./diagnosisModifiedModel";
 
 vi.mock("../hooks/useWebSocket", () => ({
   useWebSocket: () => ({ state: "closed" as const }),
@@ -22,22 +26,37 @@ vi.mock("./diagnosisModifiedModel", async () => {
 });
 
 const baseSummary: DiagnosisModifiedDemoScenario["summary"] = {
-  title: "Demo RCA",
-  subtitle: "Demo subtitle",
-  certaintyLabel: "Likely",
+  title: "演示诊断结论",
+  subtitle: "演示摘要",
+  certaintyLabel: "较大概率",
   certaintyTone: "accent",
   confidenceLabel: "80%",
   affectedServices: ["auth-svc"],
-  impactSummary: "Demo impact",
+  impactSummary: "演示影响摘要",
 };
 
 const basePlan: DiagnosisModifiedDemoScenario["plan"] = {
-  title: "Demo plan",
-  description: "Demo remediation plan",
+  title: "演示修复方案",
+  description: "演示修复方案说明",
   priorityLabel: "P1",
   confidenceLabel: "80%",
   steps: [],
 };
+
+function buildPlanWithSteps(stepTitle = "restart deployment"): DiagnosisModifiedDemoScenario["plan"] {
+  return {
+    ...basePlan,
+    steps: [
+      {
+        id: "plan-step-1",
+        title: stepTitle,
+        detail: "调用 remediation.execute_plan",
+        paramsSummary: "namespace=svc | name=api",
+        status: "pending",
+      },
+    ],
+  };
+}
 
 function createLiveSession(sessionId: string): DiagnosisSession {
   return {
@@ -87,27 +106,28 @@ function resetDiagnosisStore(overrides: Partial<ReturnType<typeof useDiagnosisSt
     sendMessage: vi.fn().mockResolvedValue(undefined),
     revisePlan: vi.fn().mockResolvedValue(undefined),
     approvePlan: vi.fn().mockResolvedValue(undefined),
-    applyEvent: vi.fn(),
-    setConnectionState: vi.fn(),
+    applyEvent: current.applyEvent,
+    setConnectionState: current.setConnectionState,
     ...overrides,
   });
 }
 
 function renderDemoPage() {
   return render(
-    <MemoryRouter initialEntries={["/diagnosis-modified"]}>
+    <MemoryRouter initialEntries={["/diagnosis"]}>
       <Routes>
-        <Route path="/diagnosis-modified" element={<DiagnosisModifiedPage />} />
+        <Route path="/diagnosis" element={<DiagnosisModifiedPage />} />
       </Routes>
     </MemoryRouter>,
   );
 }
 
-function renderLivePage(path = "/diagnosis-modified/sess-live") {
+function renderLivePage(path = "/diagnosis/sess-live") {
   return render(
     <MemoryRouter initialEntries={[path]}>
       <Routes>
-        <Route path="/diagnosis-modified/:sessionId" element={<DiagnosisModifiedPage />} />
+        <Route path="/diagnosis/:sessionId" element={<DiagnosisModifiedPage />} />
+        <Route path="/history/:sessionId" element={<DiagnosisModifiedPage />} />
       </Routes>
     </MemoryRouter>,
   );
@@ -120,13 +140,22 @@ async function advance(ms: number) {
   });
 }
 
-
 async function flushPendingTimers() {
   await act(async () => {
     await vi.runOnlyPendingTimersAsync();
     await Promise.resolve();
   });
 }
+
+function buildEmptyLiveView(): DiagnosisModifiedLiveView {
+  return {
+    timeline: [],
+    candidates: [],
+    summary: undefined,
+    plan: undefined,
+  };
+}
+
 describe("DiagnosisModifiedPage sequential playback", () => {
   const mockedBuildDemoScenario = vi.mocked(diagnosisModifiedModel.buildDiagnosisModifiedDemoScenario);
   const mockedBuildLiveView = vi.mocked(diagnosisModifiedModel.buildDiagnosisModifiedLiveView);
@@ -135,17 +164,19 @@ describe("DiagnosisModifiedPage sequential playback", () => {
     vi.useFakeTimers();
     vi.clearAllMocks();
     resetDiagnosisStore();
-    mockedBuildLiveView.mockReturnValue({
-      timeline: [],
-      candidates: [],
-      summary: undefined,
-      plan: undefined,
-    });
+    mockedBuildLiveView.mockReturnValue(buildEmptyLiveView());
   });
 
   afterEach(() => {
     vi.useRealTimers();
     vi.restoreAllMocks();
+  });
+
+  it("renders the page heading as 诊断（修改） instead of a literal unicode escape string", () => {
+    renderDemoPage();
+
+    expect(screen.getByRole("heading", { name: "诊断（修改）" })).toBeInTheDocument();
+    expect(screen.queryByText("\\u8bca\\u65ad\\uff08\\u4fee\\u6539\\uff09")).not.toBeInTheDocument();
   });
 
   it("shows the second assistant message only after the first stream completes", async () => {
@@ -194,7 +225,7 @@ describe("DiagnosisModifiedPage sequential playback", () => {
 
     const { container } = renderDemoPage();
 
-    const input = screen.getByPlaceholderText(/Ask the agent to diagnose an issue/i);
+    const input = screen.getByPlaceholderText(/请输入诊断问题/i);
     fireEvent.change(input, { target: { value: "demo request" } });
     fireEvent.keyDown(input, { key: "Enter", code: "Enter" });
 
@@ -208,7 +239,7 @@ describe("DiagnosisModifiedPage sequential playback", () => {
     expect(container.querySelectorAll(".diagnosis-modified-message-row")).toHaveLength(3);
   });
 
-  it("collapses finished thinking into a unified Thought for x seconds label", async () => {
+  it("collapses finished thinking into a unified 已思考 x 秒 label", async () => {
     mockedBuildDemoScenario.mockReturnValue({
       initialTimeline: [
         {
@@ -226,7 +257,7 @@ describe("DiagnosisModifiedPage sequential playback", () => {
           item: {
             id: "thinking-1",
             kind: "thinking",
-            title: "Agent is understanding the request",
+            title: "Agent 正在理解请求",
             content: "abc",
             timestamp: "2026-04-08T10:20:01.000Z",
             status: "thinking",
@@ -244,15 +275,16 @@ describe("DiagnosisModifiedPage sequential playback", () => {
 
     renderDemoPage();
 
-    const input = screen.getByPlaceholderText(/Ask the agent to diagnose an issue/i);
+    const input = screen.getByPlaceholderText(/请输入诊断问题/i);
     fireEvent.change(input, { target: { value: "demo thinking" } });
     fireEvent.keyDown(input, { key: "Enter", code: "Enter" });
 
     await flushPendingTimers();
 
-    expect(screen.getByText(/Thought for \d+ seconds?/i)).toBeInTheDocument();
-    expect(screen.queryByText("Agent is understanding the request")).not.toBeInTheDocument();
+    expect(screen.getByText(/已思考 \d+ 秒/)).toBeInTheDocument();
+    expect(screen.queryByText("Agent 正在理解请求")).not.toBeInTheDocument();
   });
+
   it("blocks later timeline items while a demo tool is still loading", async () => {
     mockedBuildDemoScenario.mockReturnValue({
       initialTimeline: [
@@ -275,7 +307,7 @@ describe("DiagnosisModifiedPage sequential playback", () => {
             params: { service: "auth-svc" },
             timestamp: "2026-04-08T10:10:01.000Z",
             status: "loading",
-            summaryLines: ["Loading metrics..."],
+            summaryLines: ["拉取 metrics 中..."],
           },
         },
         {
@@ -307,15 +339,14 @@ describe("DiagnosisModifiedPage sequential playback", () => {
 
     renderDemoPage();
 
-    const input = screen.getByPlaceholderText(/Ask the agent to diagnose an issue/i);
+    const input = screen.getByPlaceholderText(/请输入诊断问题/i);
     fireEvent.change(input, { target: { value: "check tool sequence" } });
     fireEvent.keyDown(input, { key: "Enter", code: "Enter" });
 
     await advance(200);
 
-    expect(screen.getByText("loading")).toBeInTheDocument();
+    expect(screen.getByText("正在查询")).toBeInTheDocument();
     expect(screen.queryByText("after-tool")).not.toBeInTheDocument();
-
   });
 
   it("keeps demo tool cards in loading for at least 3.5 seconds before success", async () => {
@@ -340,7 +371,7 @@ describe("DiagnosisModifiedPage sequential playback", () => {
             params: { service: "auth-svc" },
             timestamp: "2026-04-08T10:15:01.000Z",
             status: "loading",
-            summaryLines: ["Loading metrics..."],
+            summaryLines: ["拉取 metrics 中..."],
           },
         },
         {
@@ -372,28 +403,29 @@ describe("DiagnosisModifiedPage sequential playback", () => {
 
     const { container } = renderDemoPage();
 
-    const input = screen.getByPlaceholderText(/Ask the agent to diagnose an issue/i);
+    const input = screen.getByPlaceholderText(/请输入诊断问题/i);
     fireEvent.change(input, { target: { value: "verify minimum dwell" } });
     fireEvent.keyDown(input, { key: "Enter", code: "Enter" });
 
     await advance(120);
 
-    expect(screen.getByText("loading")).toBeInTheDocument();
+    expect(screen.getByText("正在查询")).toBeInTheDocument();
 
     await advance(3200);
 
-    expect(screen.getByText("loading")).toBeInTheDocument();
-    expect(screen.queryByText("success")).not.toBeInTheDocument();
+    expect(screen.getByText("正在查询")).toBeInTheDocument();
+    expect(screen.queryByText("查询完成")).not.toBeInTheDocument();
     expect(container.querySelectorAll(".diagnosis-modified-message-row")).toHaveLength(1);
 
     await advance(1500);
 
-    expect(screen.getByText("success")).toBeInTheDocument();
+    expect(screen.getByText("查询完成")).toBeInTheDocument();
 
     await flushPendingTimers();
 
     expect(container.querySelectorAll(".diagnosis-modified-message-row")).toHaveLength(2);
   });
+
   it("waits for thinking completion before starting a demo tool call", async () => {
     mockedBuildDemoScenario.mockReturnValue({
       initialTimeline: [
@@ -412,7 +444,7 @@ describe("DiagnosisModifiedPage sequential playback", () => {
           item: {
             id: "demo-thinking-before-tool",
             kind: "thinking",
-            title: "Agent reasoning",
+            title: "Agent 推理中",
             content: "This reasoning block must complete before any tool call starts in the demo timeline.",
             timestamp: "2026-04-08T10:20:01.000Z",
             status: "thinking",
@@ -428,7 +460,7 @@ describe("DiagnosisModifiedPage sequential playback", () => {
             params: { service: "auth-svc" },
             timestamp: "2026-04-08T10:20:02.000Z",
             status: "loading",
-            summaryLines: ["Loading metrics..."],
+            summaryLines: ["拉取 metrics 中..."],
           },
         },
         {
@@ -449,7 +481,7 @@ describe("DiagnosisModifiedPage sequential playback", () => {
 
     renderDemoPage();
 
-    const input = screen.getByPlaceholderText(/Ask the agent to diagnose an issue/i);
+    const input = screen.getByPlaceholderText(/请输入诊断问题/i);
     fireEvent.change(input, { target: { value: "validate thinking then tool" } });
     fireEvent.keyDown(input, { key: "Enter", code: "Enter" });
 
@@ -480,7 +512,7 @@ describe("DiagnosisModifiedPage sequential playback", () => {
       bootstrapSession: vi.fn().mockResolvedValue(undefined),
     });
 
-    renderLivePage("/diagnosis-modified/sess-live-timeout");
+    renderLivePage("/diagnosis/sess-live-timeout");
 
     timelineSource = [
       {
@@ -490,7 +522,7 @@ describe("DiagnosisModifiedPage sequential playback", () => {
         params: { service: "auth-svc" },
         timestamp: "2026-04-08T11:00:01.000Z",
         status: "loading",
-        summaryLines: ["Waiting for tool result..."],
+        summaryLines: ["等待 tool_result 返回..."],
       },
       {
         id: "live-msg-after-timeout",
@@ -508,13 +540,13 @@ describe("DiagnosisModifiedPage sequential playback", () => {
 
     await advance(200);
 
-    expect(screen.getByText("loading")).toBeInTheDocument();
+    expect(screen.getByText("正在查询")).toBeInTheDocument();
     expect(screen.queryByText("post-timeout")).not.toBeInTheDocument();
 
     await advance(15000);
     await advance(1200);
 
-    expect(screen.getByText("timeout")).toBeInTheDocument();
+    expect(screen.getByText("查询超时")).toBeInTheDocument();
     expect(screen.getByText("post-timeout")).toBeInTheDocument();
   });
 
@@ -545,7 +577,7 @@ describe("DiagnosisModifiedPage sequential playback", () => {
       bootstrapSession: vi.fn().mockResolvedValue(undefined),
     });
 
-    const { container } = renderLivePage("/diagnosis-modified/sess-live-history");
+    const { container } = renderLivePage("/history/sess-live-history");
 
     expect(screen.getByText("history-ready")).toBeInTheDocument();
 
@@ -582,23 +614,243 @@ describe("DiagnosisModifiedPage sequential playback", () => {
     expect(screen.getByText("incremental-one")).toBeInTheDocument();
     expect(container.querySelectorAll(".diagnosis-modified-message-row")).toHaveLength(3);
   });
+
+  it("renders report card labels as proper Chinese text instead of literal unicode escapes", () => {
+    mockedBuildLiveView.mockReturnValue({
+      timeline: [
+        {
+          id: "report-msg-1",
+          kind: "message",
+          role: "assistant",
+          content: "report-ready",
+          timestamp: "2026-04-08T11:30:00.000Z",
+        },
+      ],
+      candidates: [
+        {
+          id: "candidate-1",
+          rank: 1,
+          title: "GPU 争用",
+          summary: "GPU 争用摘要",
+          confidence: 0.82,
+          confidenceLabel: "0.82",
+          statusLabel: "已确认",
+          statusTone: "accent",
+          evidenceSummary: "GPU queue 已经饱和",
+          distinguishingVerification: "检查 worker-03 的进程列表",
+          layer: "hardware",
+          entities: ["worker-03", "gpu-0"],
+          isPrimary: true,
+          evidenceFor: ["gpu_util 持续接近 100%"],
+          evidenceAgainst: [],
+        },
+      ],
+      hypotheses: [
+        {
+          id: "hypothesis-1",
+          description: "GPU queue 饱和",
+          statusLabel: "已确认",
+          statusTone: "accent",
+          evidenceForCount: 2,
+          evidenceAgainstCount: 0,
+          confidence: 0.82,
+        },
+      ],
+      propagationChain: [
+        {
+          id: "propagation-1",
+          entityId: "worker-03",
+          entityType: "node",
+          metric: "gpu_util",
+          valueBefore: "35%",
+          valueAfter: "99%",
+          description: "GPU 利用率明显升高",
+        },
+      ],
+      summary: {
+        title: "诊断报告",
+        subtitle: "当前诊断",
+        certaintyLabel: "已确认",
+        certaintyTone: "accent",
+        confidenceLabel: "82%",
+        confidenceRawLabel: "0.82",
+        priorityLabel: "P1",
+        impactSummary: "auth-svc 时延升高",
+        affectedServices: ["auth-svc"],
+        rootCause: "GPU 争用",
+        rootCauseLayer: "hardware",
+        rootCauseLayerLabel: "硬件",
+        rootCauseEntities: ["worker-03", "gpu-0"],
+      },
+      plan: undefined,
+    });
+
+    resetDiagnosisStore({
+      session: createLiveSession("sess-live-report"),
+      activeSessionId: "sess-live-report",
+      bootstrapStatus: "ready",
+      traceStatus: "ready",
+      messages: [],
+      bootstrapSession: vi.fn().mockResolvedValue(undefined),
+    });
+
+    renderLivePage("/diagnosis/sess-live-report");
+
+    expect(screen.getByText("当前结论")).toBeInTheDocument();
+    expect(screen.getByText("候选根因（1）")).toBeInTheDocument();
+    expect(screen.getByText("假设与证据")).toBeInTheDocument();
+    expect(screen.getByText("传播链路（折叠）")).toBeInTheDocument();
+    expect(screen.queryByText("\\u5f53\\u524d\\u7ed3\\u8bba")).not.toBeInTheDocument();
+  });
+
+  it("uses real store actions for live approval and revise flows", () => {
+    const approveSpy = vi.fn().mockResolvedValue(undefined);
+    const reviseSpy = vi.fn().mockResolvedValue(undefined);
+
+    mockedBuildLiveView.mockReturnValue({
+      timeline: [],
+      candidates: [],
+      summary: baseSummary,
+      plan: buildPlanWithSteps(),
+    });
+
+    resetDiagnosisStore({
+      session: { ...createLiveSession("sess-live-approval"), status: "approval_required" },
+      activeSessionId: "sess-live-approval",
+      bootstrapStatus: "ready",
+      traceStatus: "ready",
+      canApprove: true,
+      hasPlan: true,
+      latestPlanVersion: 3,
+      bootstrapSession: vi.fn().mockResolvedValue(undefined),
+      approvePlan: approveSpy,
+      revisePlan: reviseSpy,
+    });
+
+    renderLivePage("/diagnosis/sess-live-approval");
+
+    fireEvent.click(screen.getByRole("button", { name: "审批通过" }));
+    expect(approveSpy).toHaveBeenCalledWith(true);
+
+    fireEvent.click(screen.getByRole("button", { name: "修改方案" }));
+    fireEvent.change(screen.getByPlaceholderText("例如：避免一次性全量发布，先从 canary 验证开始。"), {
+      target: { value: "先只执行 canary 批次" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "更新方案" }));
+
+    expect(reviseSpy).toHaveBeenCalledWith("先只执行 canary 批次");
+  });
+
+  it("keeps demo approval local and labels the card as a non-real execution path", async () => {
+    const approveSpy = vi.fn().mockResolvedValue(undefined);
+
+    mockedBuildDemoScenario.mockReturnValue({
+      initialTimeline: [
+        {
+          id: "demo-user-approval",
+          kind: "message",
+          role: "user",
+          content: "demo approval",
+          timestamp: "2026-04-08T12:00:00.000Z",
+        },
+      ],
+      events: [{ delayMs: 0, type: "complete" }],
+      candidates: [],
+      summary: baseSummary,
+      plan: buildPlanWithSteps(),
+    });
+
+    resetDiagnosisStore({
+      approvePlan: approveSpy,
+    });
+
+    renderDemoPage();
+
+    const composer = document.querySelector(".diagnosis-modified-composer__input") as HTMLTextAreaElement | null;
+    expect(composer).not.toBeNull();
+    fireEvent.change(composer!, { target: { value: "demo approval" } });
+    fireEvent.keyDown(composer!, { key: "Enter", code: "Enter" });
+
+    await flushPendingTimers();
+
+    expect(screen.getByText("当前为演示模式，审批按钮只会更新前端演示状态，不会触发真实修复执行。")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "审批通过" }));
+
+    expect(approveSpy).not.toHaveBeenCalled();
+    expect(screen.getByText("方案已批准，Agent 将按计划执行后续动作。")).toBeInTheDocument();
+  });
+
+  it("disables live approval buttons when the session is not approval_required", () => {
+    mockedBuildLiveView.mockReturnValue({
+      timeline: [],
+      candidates: [],
+      summary: baseSummary,
+      plan: buildPlanWithSteps(),
+    });
+
+    resetDiagnosisStore({
+      session: { ...createLiveSession("sess-live-blocked"), status: "diagnosing" },
+      activeSessionId: "sess-live-blocked",
+      bootstrapStatus: "ready",
+      traceStatus: "ready",
+      canApprove: false,
+      hasPlan: true,
+      approvalBlockReason: "当前状态为 diagnosing，暂不可审批。",
+      bootstrapSession: vi.fn().mockResolvedValue(undefined),
+    });
+
+    renderLivePage("/diagnosis/sess-live-blocked");
+
+    expect(screen.getByRole("button", { name: "审批通过" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "拒绝" })).toBeDisabled();
+    expect(screen.getByText("当前状态为 diagnosing，暂不可审批。")).toBeInTheDocument();
+  });
+
+  it("renders only one next-action entry when duplicate live events are replayed", async () => {
+    const actualBuildLiveView = await vi.importActual<typeof import("./diagnosisModifiedModel")>(
+      "./diagnosisModifiedModel",
+    );
+    mockedBuildLiveView.mockImplementation((session, messages) =>
+      actualBuildLiveView.buildDiagnosisModifiedLiveView(session, messages),
+    );
+
+    resetDiagnosisStore({
+      session: {
+        ...createLiveSession("sess-live-dedupe"),
+        trace: { steps: [] },
+      },
+      activeSessionId: "sess-live-dedupe",
+      bootstrapStatus: "ready",
+      traceStatus: "empty",
+      messages: [],
+      bootstrapSession: vi.fn().mockResolvedValue(undefined),
+      applyEvent: useDiagnosisStore.getState().applyEvent,
+    });
+
+    renderLivePage("/diagnosis/sess-live-dedupe");
+
+    const thinkingEvent: WSEvent = {
+      schema_version: "1",
+      type: "thinking_step",
+      session_id: "sess-live-dedupe",
+      timestamp: "2026-04-08T11:20:00.000Z",
+      data: {
+        event_id: "evt-live-dedupe-1",
+        step: 1,
+        thought: "Verify auth service metrics before concluding",
+        action_type: "tool_call",
+        tool_name: "query_metrics",
+        tool_params: { service: "auth-svc" },
+      },
+    };
+
+    act(() => {
+      useDiagnosisStore.getState().applyEvent(thinkingEvent);
+      useDiagnosisStore.getState().applyEvent(thinkingEvent);
+    });
+
+    await advance(5000);
+
+    expect(screen.getAllByText("下一步：调用 query_metrics，目标 service=auth-svc，验证当前假设。")).toHaveLength(1);
+  });
 });
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-

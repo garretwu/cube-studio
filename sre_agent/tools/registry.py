@@ -791,6 +791,18 @@ def build_default_registry() -> ToolRegistry:
     )
     registry.register(
         ToolDefinition(
+            name="network.clear_tc_qdisc",
+            description="Delete tc qdisc/netem rules from a node interface via SSH.",
+            safety_level=SafetyLevel.HIGH,
+            params_schema={"type": "object", "required": ["node", "iface"]},
+            tags=("network", "write", "ssh"),
+            needs_approval=True,
+            command_template="ssh {node} sudo tc qdisc del dev {iface} root",
+        ),
+        write_network.clear_tc_qdisc,
+    )
+    registry.register(
+        ToolDefinition(
             name="network.set_bmc_vlan",
             description="Set BMC VLAN (hard blocked without explicit network approval flag).",
             safety_level=SafetyLevel.CRITICAL,

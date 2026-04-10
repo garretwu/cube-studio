@@ -20,6 +20,20 @@ import {
 
 type BadgeTone = "neutral" | "accent" | "success" | "warning" | "danger" | "info";
 type ApprovalState = "pending" | "modifying" | "updating" | "approved" | "rejected";
+type ApprovalPlanCardProps = {
+  plan: DiagnosisModifiedPlanView;
+  mode: "demo" | "live";
+  currentStatus?: string;
+  planVersion?: number | null;
+  canApprove?: boolean;
+  approvalBlockReason?: string;
+  isApproving?: boolean;
+  isRevising?: boolean;
+  errorMessage?: string;
+  onApprove?: () => void;
+  onReject?: () => void;
+  onRevise?: (instruction: string) => void;
+};
 
 const DEMO_TEXT_SPEED_MS = 40;
 const DEMO_THINKING_COLLAPSE_DELAY_MS = 800;
@@ -39,7 +53,7 @@ function estimateThoughtDurationSecFromContent(content: string) {
 
 function formatThoughtDurationLabel(durationSec?: number) {
   const safeDuration = Math.max(1, Math.round(durationSec ?? 1));
-  return `Thought for ${safeDuration} second${safeDuration === 1 ? "" : "s"}`;
+  return `已思考 ${safeDuration} 秒`;
 }
 
 function splitThinkingAndConclusion(content: string): { thinking: string | null; conclusion: string } {
@@ -64,11 +78,40 @@ function resolveInlineError(error?: string): { tone: "error" | "warning"; messag
   if (/status\s+404/i.test(error)) {
     return {
       tone: "warning",
-      message:
-        "The session could not be found (404). It may have expired or the backend detail endpoint is unavailable. You can still type below to start a new diagnosis.",
+      message: "未找到对应会话（404）。该会话可能已过期，或后端详情接口暂不可用。你仍然可以在下方输入新的诊断请求。",
     };
   }
   return { tone: "error", message: error };
+}
+
+function getConnectionStateLabel(state: "connecting" | "open" | "closed" | "error") {
+  switch (state) {
+    case "connecting":
+      return "连接中";
+    case "open":
+      return "已连接";
+    case "closed":
+      return "已断开";
+    case "error":
+      return "连接异常";
+    default:
+      return state;
+  }
+}
+
+function getToolStatusLabel(status: "loading" | "success" | "error" | "timeout") {
+  switch (status) {
+    case "loading":
+      return "正在查询";
+    case "success":
+      return "查询完成";
+    case "error":
+      return "查询失败";
+    case "timeout":
+      return "查询超时";
+    default:
+      return status;
+  }
 }
 
 function useProgressiveText(
@@ -123,6 +166,49 @@ function useProgressiveText(
 
 function ToneBadge({ children, tone = "neutral" }: { children: ReactNode; tone?: BadgeTone }) {
   return <span className={cn("diagnosis-modified-badge", `diagnosis-modified-badge--${tone}`)}>{children}</span>;
+}
+
+function getApprovalStatusTone(status: string | undefined): BadgeTone {
+  const normalized = String(status ?? "").trim().toLowerCase();
+  if (normalized === "approval_required" || normalized === "awaiting_approval") {
+    return "accent";
+  }
+  if (normalized === "remediating" || normalized === "validating") {
+    return "warning";
+  }
+  if (normalized === "resolved") {
+    return "success";
+  }
+  if (normalized === "failed" || normalized === "timeout" || normalized === "escalated" || normalized === "rejected") {
+    return "danger";
+  }
+  return "neutral";
+}
+
+function getApprovalStatusLabel(status: string | undefined): string {
+  const normalized = String(status ?? "").trim().toLowerCase();
+  if (normalized === "approval_required" || normalized === "awaiting_approval") {
+    return "待审批";
+  }
+  if (normalized === "remediating") {
+    return "执行中";
+  }
+  if (normalized === "resolved") {
+    return "已恢复";
+  }
+  if (normalized === "failed") {
+    return "执行失败";
+  }
+  if (normalized === "timeout") {
+    return "执行超时";
+  }
+  if (normalized === "escalated") {
+    return "待人工介入";
+  }
+  if (normalized === "rejected") {
+    return "已拒绝";
+  }
+  return status?.trim() || "未知状态";
 }
 
 function StreamingText({
@@ -220,7 +306,7 @@ function ThinkingBlock({
               </span>
             ) : null}
             <span className={cn("diagnosis-modified-thinking__label", isThinking && "diagnosis-modified-thinking__label--thinking")}>
-              {isThinking ? "Thinking..." : formatThoughtDurationLabel(item.thoughtDurationSec ?? estimateThoughtDurationSecFromContent(item.content))}
+              {isThinking ? "思考中..." : formatThoughtDurationLabel(item.thoughtDurationSec ?? estimateThoughtDurationSecFromContent(item.content))}
             </span>
           </span>
           {item.toolName ? <span className="diagnosis-modified-thinking__tool">{item.toolName}</span> : null}
@@ -277,7 +363,7 @@ function ToolCard({ item }: { item: Extract<DiagnosisModifiedTimelineItem, { kin
               <strong>{item.toolName}</strong>
               {Object.keys(item.params).length > 0 ? <span>{JSON.stringify(item.params)}</span> : null}
             </div>
-            <span className="diagnosis-modified-tool-card__status-label">{item.status}</span>
+            <span className="diagnosis-modified-tool-card__status-label">{getToolStatusLabel(item.status)}</span>
           </div>
 
           {isExpanded ? (
@@ -286,11 +372,11 @@ function ToolCard({ item }: { item: Extract<DiagnosisModifiedTimelineItem, { kin
                 <div className="diagnosis-modified-tool-card__loading">
                   <div>
                     <span className="diagnosis-modified-tool-card__loading-indicator" />
-                    <span>Connecting to telemetry stream...</span>
+                    <span>正在连接 telemetry 数据流...</span>
                   </div>
                   <div>
                     <span className="diagnosis-modified-tool-card__loading-indicator" />
-                    <span>Querying diagnostics context...</span>
+                    <span>正在查询诊断上下文...</span>
                   </div>
                 </div>
               ) : (
@@ -339,7 +425,7 @@ function RCAReportCard({
       <header className="diagnosis-modified-report-card__header">
         <div>
           <div className="diagnosis-modified-report-card__eyebrow">
-            <ToneBadge tone="neutral">\u6839\u56e0\u8bca\u65ad</ToneBadge>
+            <ToneBadge tone="neutral">{"\u6839\u56e0\u8bca\u65ad"}</ToneBadge>
             {summary.priorityLabel ? <ToneBadge tone="warning">{summary.priorityLabel}</ToneBadge> : null}
             <ToneBadge tone={summary.certaintyTone}>{summary.certaintyLabel}</ToneBadge>
           </div>
@@ -353,89 +439,89 @@ function RCAReportCard({
 
       <div className="diagnosis-modified-report-card__grid">
         <div>
-          <span>\u786e\u5b9a\u6027</span>
+          <span>{"\u786e\u5b9a\u6027"}</span>
           <strong>{summary.certaintyLabel}</strong>
         </div>
         <div>
-          <span>\u7f6e\u4fe1\u5ea6</span>
+          <span>{"\u7f6e\u4fe1\u5ea6"}</span>
           <strong>{summary.confidenceRawLabel ?? summary.confidenceLabel}</strong>
         </div>
         <div>
-          <span>\u4f18\u5148\u7ea7</span>
+          <span>{"\u4f18\u5148\u7ea7"}</span>
           <strong>{summary.priorityLabel ?? "--"}</strong>
         </div>
         <div>
-          <span>\u66f4\u65b0\u65f6\u95f4</span>
+          <span>{"\u66f4\u65b0\u65f6\u95f4"}</span>
           <strong>{lastTimestamp ? lastParts.time : "--"}</strong>
         </div>
       </div>
 
       <div className="diagnosis-modified-report-card__sections">
         <div>
-          <p className="diagnosis-modified-report-card__section-label">\u5f53\u524d\u7ed3\u8bba</p>
+          <p className="diagnosis-modified-report-card__section-label">{"\u5f53\u524d\u7ed3\u8bba"}</p>
           <div className="diagnosis-modified-report-card__facts">
             <p>
-              <span>\u6839\u56e0\uff1a</span>
+              <span>{"\u6839\u56e0\uff1a"}</span>
               {summary.rootCause ?? primaryCandidate?.title ?? "--"}
             </p>
             <p>
-              <span>\u5c42\u7ea7\uff1a</span>
+              <span>{"\u5c42\u7ea7\uff1a"}</span>
               {summary.rootCauseLayerLabel ?? summary.rootCauseLayer ?? primaryCandidate?.layer ?? "--"}
             </p>
             <p>
-              <span>\u5b9e\u4f53\uff1a</span>
+              <span>{"\u5b9e\u4f53\uff1a"}</span>
               {summary.rootCauseEntities && summary.rootCauseEntities.length > 0
                 ? summary.rootCauseEntities.join("\uff0c")
                 : primaryCandidate?.entities?.join("\uff0c") || "--"}
             </p>
             <p>
-              <span>\u5f71\u54cd\uff1a</span>
+              <span>{"\u5f71\u54cd\uff1a"}</span>
               {summary.impactSummary}
             </p>
             <p>
-              <span>\u53d7\u5f71\u54cd\u670d\u52a1\uff1a</span>
+              <span>{"\u53d7\u5f71\u54cd\u670d\u52a1\uff1a"}</span>
               {summary.affectedServices.length > 0 ? summary.affectedServices.join("\uff0c") : "--"}
             </p>
           </div>
         </div>
 
         <div>
-          <p className="diagnosis-modified-report-card__section-label">\u5019\u9009\u6839\u56e0\uff08{candidates.length}\uff09</p>
+          <p className="diagnosis-modified-report-card__section-label">{`\u5019\u9009\u6839\u56e0\uff08${candidates.length}\uff09`}</p>
           <div className="diagnosis-modified-report-card__candidates">
             {candidates.length > 0 ? (
               candidates.map((candidate, index) => (
                 <div key={candidate.id} className="diagnosis-modified-report-card__candidate-item">
                   <p>
-                    #{candidate.rank ?? index + 1} {candidate.title} ({candidate.confidence.toFixed(2)}) \u8bc1\u636e\u6458\u8981\uff1a
+                    #{candidate.rank ?? index + 1} {candidate.title} ({candidate.confidence.toFixed(2)}) {"\u8bc1\u636e\u6458\u8981\uff1a"}
                     {candidate.evidenceSummary ?? candidate.summary}
                   </p>
-                  {candidate.distinguishingVerification ? <p>\u533a\u5206\u9a8c\u8bc1\uff1a{candidate.distinguishingVerification}</p> : null}
+                  {candidate.distinguishingVerification ? <p>{"\u533a\u5206\u9a8c\u8bc1\uff1a"}{candidate.distinguishingVerification}</p> : null}
                 </div>
               ))
             ) : (
-              <p className="diagnosis-modified-report-card__section-copy">\u6682\u65e0\u5019\u9009\u6839\u56e0\u3002</p>
+              <p className="diagnosis-modified-report-card__section-copy">{"\u6682\u65e0\u5019\u9009\u6839\u56e0\u3002"}</p>
             )}
           </div>
         </div>
 
         <div>
-          <p className="diagnosis-modified-report-card__section-label">\u5047\u8bbe\u4e0e\u8bc1\u636e</p>
+          <p className="diagnosis-modified-report-card__section-label">{"\u5047\u8bbe\u4e0e\u8bc1\u636e"}</p>
           <div className="diagnosis-modified-report-card__hypotheses">
             {hypothesisRows.length > 0 ? (
               hypothesisRows.map((item, index) => (
                 <p key={item.id}>
-                  {String.fromCharCode(65 + index)}. {item.description} [{item.statusLabel}] \u652f\u6301\u8bc1\u636e({item.evidenceForCount}) \u53cd\u8bc1({item.evidenceAgainstCount})
+                  {String.fromCharCode(65 + index)}. {item.description} [{item.statusLabel}] {"\u652f\u6301\u8bc1\u636e"}({item.evidenceForCount}) {"\u53cd\u8bc1"}({item.evidenceAgainstCount})
                 </p>
               ))
             ) : (
-              <p className="diagnosis-modified-report-card__section-copy">\u6682\u65e0\u5047\u8bbe\u8bc1\u636e\u6570\u636e\u3002</p>
+              <p className="diagnosis-modified-report-card__section-copy">{"\u6682\u65e0\u5047\u8bbe\u8bc1\u636e\u6570\u636e\u3002"}</p>
             )}
           </div>
         </div>
 
         <div>
           <details className="diagnosis-modified-report-card__propagation">
-            <summary className="diagnosis-modified-report-card__section-label">\u4f20\u64ad\u94fe\u8def\uff08\u6298\u53e0\uff09</summary>
+            <summary className="diagnosis-modified-report-card__section-label">{"\u4f20\u64ad\u94fe\u8def\uff08\u6298\u53e0\uff09"}</summary>
             <div className="diagnosis-modified-report-card__propagation-body">
               {chainRows.length > 0 ? (
                 chainRows.map((step) => (
@@ -444,7 +530,7 @@ function RCAReportCard({
                   </p>
                 ))
               ) : (
-                <p className="diagnosis-modified-report-card__section-copy">\u6682\u65e0\u4f20\u64ad\u94fe\u8def\u6570\u636e\u3002</p>
+                <p className="diagnosis-modified-report-card__section-copy">{"\u6682\u65e0\u4f20\u64ad\u94fe\u8def\u6570\u636e\u3002"}</p>
               )}
             </div>
           </details>
@@ -453,7 +539,21 @@ function RCAReportCard({
     </section>
   );
 }
-function ApprovalPlanCard({ plan }: { plan: DiagnosisModifiedPlanView }) {
+function ApprovalPlanCard({
+  plan,
+  mode,
+  currentStatus,
+  planVersion,
+  canApprove = false,
+  approvalBlockReason,
+  isApproving = false,
+  isRevising = false,
+  errorMessage,
+  onApprove,
+  onReject,
+  onRevise,
+}: ApprovalPlanCardProps) {
+  const isLive = mode === "live";
   const [status, setStatus] = useState<ApprovalState>("pending");
   const [modifyInput, setModifyInput] = useState("");
   const [actions, setActions] = useState(plan.steps.map((step) => step.title));
@@ -462,9 +562,16 @@ function ApprovalPlanCard({ plan }: { plan: DiagnosisModifiedPlanView }) {
     setStatus("pending");
     setModifyInput("");
     setActions(plan.steps.map((step) => step.title));
-  }, [plan]);
+  }, [mode, plan]);
 
   const handleSubmitModify = useCallback(() => {
+    if (isLive) {
+      onRevise?.(modifyInput.trim());
+      setModifyInput("");
+      setStatus("pending");
+      return;
+    }
+
     if (!modifyInput.trim()) {
       return;
     }
@@ -474,10 +581,10 @@ function ApprovalPlanCard({ plan }: { plan: DiagnosisModifiedPlanView }) {
       setActions((current) =>
         current.map((action, index) => {
           if (index === 1) {
-            return "Only roll out to canary instances first, then observe Redis timeouts and error rate for 15 minutes before expanding scope.";
+            return "先仅对 canary 实例放量，再观察 15 分钟 Redis timeout 与 error rate，确认稳定后再扩大范围。";
           }
           if (index === 2) {
-            return "Before moving to full rollout, add one more verification pass for database wait queue and cache hit ratio.";
+            return "进入全量前，再补一次 database wait queue 与 cache hit ratio 的校验。";
           }
           return action;
         }),
@@ -485,7 +592,127 @@ function ApprovalPlanCard({ plan }: { plan: DiagnosisModifiedPlanView }) {
       setModifyInput("");
       setStatus("pending");
     }, 1600);
-  }, [modifyInput]);
+  }, [isLive, modifyInput, onRevise]);
+
+  const liveStatusTone = getApprovalStatusTone(currentStatus);
+  const liveStatusLabel = getApprovalStatusLabel(currentStatus);
+  const liveStatusText = currentStatus?.trim() || "unknown";
+  const showDemoResolvedState = status === "approved" || status === "rejected";
+
+  if (isLive) {
+    return (
+      <section className="diagnosis-modified-approval-card">
+        <header className="diagnosis-modified-approval-card__header">
+          <div>
+            <div className="diagnosis-modified-approval-card__eyebrow">
+              <ToneBadge tone="neutral">执行计划</ToneBadge>
+              <ToneBadge tone={liveStatusTone}>{liveStatusLabel}</ToneBadge>
+            </div>
+            <h3 className="diagnosis-modified-approval-card__title">{plan.title}</h3>
+            <p className="diagnosis-modified-approval-card__description">{plan.description}</p>
+          </div>
+        </header>
+
+        <div className="diagnosis-modified-approval-card__body">
+          <div className="diagnosis-modified-approval-card__meta-row">
+            <ToneBadge tone="warning">{plan.priorityLabel}</ToneBadge>
+            <ToneBadge tone="neutral">{`AI 置信度 ${plan.confidenceLabel}`}</ToneBadge>
+            {plan.safetyLabel ? <ToneBadge tone="info">{plan.safetyLabel}</ToneBadge> : null}
+            {plan.canaryLabel ? <ToneBadge tone="neutral">{plan.canaryLabel}</ToneBadge> : null}
+            {planVersion ? <ToneBadge tone="neutral">{`方案 v${planVersion}`}</ToneBadge> : null}
+          </div>
+
+          <div className="diagnosis-modified-inline-note">
+            当前状态：{liveStatusText}。只有 `approval_required` 且方案版本最新时，审批按钮才会触发真实后端执行。
+          </div>
+          {approvalBlockReason ? (
+            <div className="diagnosis-modified-inline-note diagnosis-modified-inline-note--warning">{approvalBlockReason}</div>
+          ) : null}
+          {errorMessage ? (
+            <div className="diagnosis-modified-inline-note diagnosis-modified-inline-note--error">{errorMessage}</div>
+          ) : null}
+
+          <div className="diagnosis-modified-approval-card__actions-wrap">
+            {isApproving ? (
+              <div className="diagnosis-modified-approval-card__updating">正在提交审批并等待后端回填执行状态...</div>
+            ) : null}
+            {isRevising ? <div className="diagnosis-modified-approval-card__updating">正在更新方案...</div> : null}
+            <ol className="diagnosis-modified-approval-card__actions">
+              {plan.steps.map((step, index) => (
+                <li key={`${step.id}-${index}`}>
+                  <span>{index + 1}</span>
+                  <div>
+                    <strong>{step.title}</strong>
+                    {step.detail ? <p>{step.detail}</p> : null}
+                    {step.paramsSummary ? <code>{step.paramsSummary}</code> : null}
+                  </div>
+                </li>
+              ))}
+            </ol>
+          </div>
+
+          <div className="diagnosis-modified-approval-card__footer">
+            <button
+              className="diagnosis-modified-action-btn diagnosis-modified-action-btn--primary"
+              disabled={!canApprove || isApproving || isRevising}
+              onClick={() => onApprove?.()}
+              type="button"
+            >
+              审批通过
+            </button>
+            <button
+              className="diagnosis-modified-action-btn"
+              disabled={!canApprove || isApproving || isRevising}
+              onClick={() => onReject?.()}
+              type="button"
+            >
+              拒绝
+            </button>
+            <button
+              className="diagnosis-modified-action-btn"
+              disabled={isApproving || isRevising}
+              onClick={() => setStatus("modifying")}
+              type="button"
+            >
+              修改方案
+            </button>
+          </div>
+
+          {status === "modifying" ? (
+            <div className="diagnosis-modified-approval-card__editor">
+              <p>补充给 Agent 的修改意见；留空时会使用默认优化指令。</p>
+              <div className="diagnosis-modified-approval-card__editor-row">
+                <textarea
+                  disabled={isApproving || isRevising}
+                  onChange={(event) => setModifyInput(event.target.value)}
+                  placeholder="例如：避免一次性全量发布，先从 canary 验证开始。"
+                  value={modifyInput}
+                />
+                <div>
+                  <button
+                    className="diagnosis-modified-action-btn diagnosis-modified-action-btn--primary"
+                    disabled={isApproving || isRevising}
+                    onClick={handleSubmitModify}
+                    type="button"
+                  >
+                    更新方案
+                  </button>
+                  <button
+                    className="diagnosis-modified-action-btn"
+                    disabled={isApproving || isRevising}
+                    onClick={() => setStatus("pending")}
+                    type="button"
+                  >
+                    取消
+                  </button>
+                </div>
+              </div>
+            </div>
+          ) : null}
+        </div>
+      </section>
+    );
+  }
 
   return (
     <section
@@ -498,13 +725,13 @@ function ApprovalPlanCard({ plan }: { plan: DiagnosisModifiedPlanView }) {
       <header className="diagnosis-modified-approval-card__header">
         <div>
           <div className="diagnosis-modified-approval-card__eyebrow">
-            <ToneBadge tone="neutral">Execution Plan</ToneBadge>
+            <ToneBadge tone="neutral">执行计划</ToneBadge>
             {status === "approved" ? (
-              <ToneBadge tone="success">Approved</ToneBadge>
+              <ToneBadge tone="success">已批准</ToneBadge>
             ) : status === "rejected" ? (
-              <ToneBadge tone="danger">Rejected</ToneBadge>
+              <ToneBadge tone="danger">已拒绝</ToneBadge>
             ) : (
-              <ToneBadge tone="accent">Requires Approval</ToneBadge>
+              <ToneBadge tone="accent">待审批</ToneBadge>
             )}
           </div>
           <h3 className="diagnosis-modified-approval-card__title">{plan.title}</h3>
@@ -515,13 +742,17 @@ function ApprovalPlanCard({ plan }: { plan: DiagnosisModifiedPlanView }) {
       <div className="diagnosis-modified-approval-card__body">
         <div className="diagnosis-modified-approval-card__meta-row">
           <ToneBadge tone="warning">{plan.priorityLabel}</ToneBadge>
-          <ToneBadge tone="neutral">{`AI Confidence ${plan.confidenceLabel}`}</ToneBadge>
+          <ToneBadge tone="neutral">{`AI 置信度 ${plan.confidenceLabel}`}</ToneBadge>
           {plan.safetyLabel ? <ToneBadge tone="info">{plan.safetyLabel}</ToneBadge> : null}
           {plan.canaryLabel ? <ToneBadge tone="neutral">{plan.canaryLabel}</ToneBadge> : null}
         </div>
 
+        <div className="diagnosis-modified-inline-note diagnosis-modified-inline-note--warning">
+          当前为演示模式，审批按钮只会更新前端演示状态，不会触发真实修复执行。
+        </div>
+
         <div className="diagnosis-modified-approval-card__actions-wrap">
-          {status === "updating" ? <div className="diagnosis-modified-approval-card__updating">Updating plan...</div> : null}
+          {status === "updating" ? <div className="diagnosis-modified-approval-card__updating">正在更新方案...</div> : null}
           <ol className="diagnosis-modified-approval-card__actions">
             {actions.map((action, index) => (
               <li key={`${action}-${index}`}>
@@ -539,24 +770,24 @@ function ApprovalPlanCard({ plan }: { plan: DiagnosisModifiedPlanView }) {
         {status === "pending" ? (
           <div className="diagnosis-modified-approval-card__footer">
             <button className="diagnosis-modified-action-btn diagnosis-modified-action-btn--primary" onClick={() => setStatus("approved")} type="button">
-              Approve & Execute
+              审批通过
             </button>
             <button className="diagnosis-modified-action-btn" onClick={() => setStatus("rejected")} type="button">
-              Reject
+              拒绝
             </button>
             <button className="diagnosis-modified-action-btn" onClick={() => setStatus("modifying")} type="button">
-              Modify Plan
+              修改方案
             </button>
           </div>
         ) : null}
 
         {status === "modifying" ? (
           <div className="diagnosis-modified-approval-card__editor">
-            <p>Provide feedback to agent</p>
+            <p>补充给 Agent 的修改意见。</p>
             <div className="diagnosis-modified-approval-card__editor-row">
               <textarea
                 onChange={(event) => setModifyInput(event.target.value)}
-                placeholder="Example: avoid a full rollout at once; start with canary verification first."
+                placeholder="例如：避免一次性全量发布，先从 canary 验证开始。"
                 value={modifyInput}
               />
               <div>
@@ -566,10 +797,108 @@ function ApprovalPlanCard({ plan }: { plan: DiagnosisModifiedPlanView }) {
                   onClick={handleSubmitModify}
                   type="button"
                 >
-                  Update Plan
+                  更新方案
                 </button>
                 <button className="diagnosis-modified-action-btn" onClick={() => setStatus("pending")} type="button">
-                  Cancel
+                  取消
+                </button>
+              </div>
+            </div>
+          </div>
+        ) : null}
+
+        {showDemoResolvedState ? (
+          <div className="diagnosis-modified-approval-card__resolved">
+            <p>{status === "approved" ? "方案已批准，Agent 将按计划执行后续动作。" : "方案已拒绝，Agent 将等待进一步指令。"}</p>
+          </div>
+        ) : null}
+      </div>
+    </section>
+  );
+
+  return (
+    <section
+      className={cn(
+        "diagnosis-modified-approval-card",
+        !isLive && status === "approved" && "diagnosis-modified-approval-card--approved",
+        !isLive && status === "rejected" && "diagnosis-modified-approval-card--rejected",
+      )}
+    >
+      <header className="diagnosis-modified-approval-card__header">
+        <div>
+          <div className="diagnosis-modified-approval-card__eyebrow">
+            <ToneBadge tone="neutral">执行计划</ToneBadge>
+            {status === "approved" ? (
+              <ToneBadge tone="success">已批准</ToneBadge>
+            ) : status === "rejected" ? (
+              <ToneBadge tone="danger">已拒绝</ToneBadge>
+            ) : (
+              <ToneBadge tone="accent">待审批</ToneBadge>
+            )}
+          </div>
+          <h3 className="diagnosis-modified-approval-card__title">{plan.title}</h3>
+          <p className="diagnosis-modified-approval-card__description">{plan.description}</p>
+        </div>
+      </header>
+
+      <div className="diagnosis-modified-approval-card__body">
+        <div className="diagnosis-modified-approval-card__meta-row">
+          <ToneBadge tone="warning">{plan.priorityLabel}</ToneBadge>
+          <ToneBadge tone="neutral">{`AI 置信度 ${plan.confidenceLabel}`}</ToneBadge>
+          {plan.safetyLabel ? <ToneBadge tone="info">{plan.safetyLabel}</ToneBadge> : null}
+          {plan.canaryLabel ? <ToneBadge tone="neutral">{plan.canaryLabel}</ToneBadge> : null}
+        </div>
+
+        <div className="diagnosis-modified-approval-card__actions-wrap">
+          {status === "updating" ? <div className="diagnosis-modified-approval-card__updating">正在更新方案...</div> : null}
+          <ol className="diagnosis-modified-approval-card__actions">
+            {actions.map((action, index) => (
+              <li key={`${action}-${index}`}>
+                <span>{index + 1}</span>
+                <div>
+                  <strong>{action}</strong>
+                  {plan.steps[index]?.detail ? <p>{plan.steps[index]?.detail}</p> : null}
+                  {plan.steps[index]?.paramsSummary ? <code>{plan.steps[index]?.paramsSummary}</code> : null}
+                </div>
+              </li>
+            ))}
+          </ol>
+        </div>
+
+        {status === "pending" ? (
+          <div className="diagnosis-modified-approval-card__footer">
+            <button className="diagnosis-modified-action-btn diagnosis-modified-action-btn--primary" onClick={() => setStatus("approved")} type="button">
+              批准并执行
+            </button>
+            <button className="diagnosis-modified-action-btn" onClick={() => setStatus("rejected")} type="button">
+              拒绝
+            </button>
+            <button className="diagnosis-modified-action-btn" onClick={() => setStatus("modifying")} type="button">
+              修改方案
+            </button>
+          </div>
+        ) : null}
+
+        {status === "modifying" ? (
+          <div className="diagnosis-modified-approval-card__editor">
+            <p>补充给 Agent 的修改意见</p>
+            <div className="diagnosis-modified-approval-card__editor-row">
+              <textarea
+                onChange={(event) => setModifyInput(event.target.value)}
+                placeholder="例如：避免一次性全量发布，先从 canary 验证开始。"
+                value={modifyInput}
+              />
+              <div>
+                <button
+                  className="diagnosis-modified-action-btn diagnosis-modified-action-btn--primary"
+                  disabled={!modifyInput.trim()}
+                  onClick={handleSubmitModify}
+                  type="button"
+                >
+                  更新方案
+                </button>
+                <button className="diagnosis-modified-action-btn" onClick={() => setStatus("pending")} type="button">
+                  取消
                 </button>
               </div>
             </div>
@@ -578,7 +907,7 @@ function ApprovalPlanCard({ plan }: { plan: DiagnosisModifiedPlanView }) {
 
         {(status === "approved" || status === "rejected") ? (
           <div className="diagnosis-modified-approval-card__resolved">
-            <p>{status === "approved" ? "Plan approved. The agent will now execute the actions." : "Plan rejected. The agent will await further instructions."}</p>
+            <p>{status === "approved" ? "方案已批准，Agent 将按计划执行后续动作。" : "方案已拒绝，Agent 将等待进一步指令。"}</p>
           </div>
         ) : null}
       </div>
@@ -638,8 +967,20 @@ function DiagnosisModifiedPage() {
     error,
     bootstrapSession,
     sendMessage,
+    revisePlan,
+    approvePlan,
     applyEvent,
     setConnectionState,
+    canApprove,
+    approvalBlockReason,
+    isApprovingPlan,
+    isRevisingPlan,
+    latestPlanVersion,
+    streamingText,
+    streamingNode,
+    isStreamingDiagnosis,
+    activeStreamingTools,
+    cancelStreamingDiagnosis,
   } = useDiagnosisStore();
 
   const liveView = useMemo(() => buildDiagnosisModifiedLiveView(session, messages), [messages, session]);
@@ -709,6 +1050,14 @@ function DiagnosisModifiedPage() {
     },
     [clearDemoTimers, clearDemoToolLoadingStates, clearLiveToolWaiters, clearPendingMessageStreams, clearPendingThinkingStreams],
   );
+
+  useEffect(() => {
+    return () => {
+      if (isStreamingDiagnosis) {
+        cancelStreamingDiagnosis();
+      }
+    };
+  }, []);
 
   const resolveMessageStream = useCallback((messageId: string) => {
     const resolver = messageStreamResolversRef.current.get(messageId);
@@ -1352,10 +1701,10 @@ function DiagnosisModifiedPage() {
   const composerDisabled =
     (shouldBootstrapLiveSession ? isLoadingSession : false) || isSendingMessage || demoState === "running";
   const introCopy = hasLiveSession
-    ? "当前页面正在消费真实诊断会话，并按统一流程呈现思考、工具调用、根因分析与审批执行。"
+    ? "\u5f53\u524d\u9875\u9762\u6b63\u5728\u6d88\u8d39\u771f\u5b9e\u8bca\u65ad\u4f1a\u8bdd\uff0c\u5e76\u6309\u7edf\u4e00\u6d41\u7a0b\u5448\u73b0\u601d\u8003\u3001\u5de5\u5177\u8c03\u7528\u3001\u6839\u56e0\u5206\u6790\u4e0e\u5ba1\u6279\u6267\u884c\u3002"
     : demoState === "idle"
-      ? "输入诊断问题后，页面会按较慢节奏回放完整诊断过程，方便逐步查看每一次思考与工具调用。"
-      : "当前正在按慢速回放诊断流程。";
+      ? "\u8f93\u5165\u8bca\u65ad\u95ee\u9898\u540e\uff0c\u9875\u9762\u4f1a\u6309\u8f83\u6162\u8282\u594f\u56de\u653e\u5b8c\u6574\u8bca\u65ad\u8fc7\u7a0b\uff0c\u4fbf\u4e8e\u9010\u6b65\u67e5\u770b\u6bcf\u4e00\u6b21\u601d\u8003\u4e0e\u5de5\u5177\u8c03\u7528\u3002"
+      : "\u5f53\u524d\u6b63\u5728\u6309\u6162\u901f\u56de\u653e\u8bca\u65ad\u6d41\u7a0b\u3002";
 
   return (
     <div className="page-grid diagnosis-modified-page">
@@ -1366,9 +1715,9 @@ function DiagnosisModifiedPage() {
           actions={
             <div className="diagnosis-modified-shell__header-actions">
               <div className="diagnosis-modified-shell__badges">
-                <ToneBadge tone={hasLiveSession ? "success" : "accent"}>{hasLiveSession ? "实时会话" : "演示模式"}</ToneBadge>
+                <ToneBadge tone={hasLiveSession ? "success" : "accent"}>{hasLiveSession ? "\u5b9e\u65f6\u4f1a\u8bdd" : "\u6f14\u793a\u6a21\u5f0f"}</ToneBadge>
                 {hasLiveSession && activeSessionId ? <ToneBadge tone="neutral">{activeSessionId}</ToneBadge> : null}
-                {hasLiveSession ? <ToneBadge tone={connectionState === "open" ? "success" : "warning"}>{`实时链路 ${connectionState}`}</ToneBadge> : null}
+                {hasLiveSession ? <ToneBadge tone={connectionState === "open" ? "success" : "warning"}>{`实时链路 ${getConnectionStateLabel(connectionState)}`}</ToneBadge> : null}
               </div>
             </div>
           }
@@ -1383,8 +1732,8 @@ function DiagnosisModifiedPage() {
                 <div className="diagnosis-modified-empty-state__icon">
                   <AppIcon name="aiChat" size={18} />
                 </div>
-                <h2>Welcome to the RCA Agent</h2>
-                <p>Type your request below to trigger the ReAct diagnostic process, or use the pre-filled example.</p>
+                <h2>{"\u6b22\u8fce\u4f7f\u7528 RCA Agent"}</h2>
+                <p>{"\u5728\u4e0b\u65b9\u8f93\u5165\u8bca\u65ad\u8bf7\u6c42\u5373\u53ef\u89e6\u53d1 ReAct \u8bca\u65ad\u6d41\u7a0b\uff0c\u6216\u76f4\u63a5\u4f7f\u7528\u9884\u7f6e\u793a\u4f8b\u5f00\u59cb\u56de\u653e\u3002"}</p>
               </div>
             ) : (
               activeTimeline.map((item) => {
@@ -1432,7 +1781,42 @@ function DiagnosisModifiedPage() {
 
             {hasLiveSession && traceStatus === "empty" ? (
               <div className="diagnosis-modified-inline-note">
-                The live session has not produced trace entries yet. The input remains available while waiting for incremental diagnosis events.
+                当前实时会话还没有产出 trace 条目。等待增量诊断事件期间，输入框仍可继续使用。
+              </div>
+            ) : null}
+
+            {isStreamingDiagnosis ? (
+              <div className="diagnosis-modified-streaming-indicator">
+                {streamingNode ? (
+                  <div className="diagnosis-modified-streaming-indicator__node">
+                    <span className="diagnosis-modified-streaming-indicator__spinner" aria-hidden="true" />
+                    {"执行中："}{streamingNode}
+                  </div>
+                ) : null}
+                {streamingText ? (
+                  <ThinkingBlock
+                    animate={false}
+                    item={{
+                      id: "sse-streaming-live",
+                      kind: "thinking",
+                      title: "实时推理",
+                      content: streamingText,
+                      timestamp: new Date().toISOString(),
+                      status: "thinking",
+                    }}
+                    onStreamComplete={undefined}
+                  />
+                ) : null}
+                {activeStreamingTools.length > 0 ? (
+                  <div className="diagnosis-modified-streaming-indicator__tools">
+                    {activeStreamingTools.map((t) => (
+                      <div key={t.tool} className="diagnosis-modified-streaming-indicator__tool">
+                        <span className="diagnosis-modified-streaming-indicator__spinner" aria-hidden="true" />
+                        {t.tool}
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
               </div>
             ) : null}
 
@@ -1448,7 +1832,22 @@ function DiagnosisModifiedPage() {
             ) : null}
 
             {activeSummary ? <RCAReportCard candidates={activeCandidates} hypotheses={activeHypotheses} propagationChain={activePropagationChain} summary={activeSummary} timeline={activeTimeline} /> : null}
-            {activePlan ? <ApprovalPlanCard plan={activePlan} /> : null}
+            {activePlan ? (
+              <ApprovalPlanCard
+                approvalBlockReason={hasLiveSession ? approvalBlockReason : undefined}
+                canApprove={hasLiveSession ? canApprove : undefined}
+                currentStatus={hasLiveSession ? session?.status : undefined}
+                errorMessage={hasLiveSession ? error : undefined}
+                isApproving={hasLiveSession ? isApprovingPlan : undefined}
+                isRevising={hasLiveSession ? isRevisingPlan : undefined}
+                mode={hasLiveSession ? "live" : "demo"}
+                onApprove={hasLiveSession ? () => void approvePlan(true) : undefined}
+                onReject={hasLiveSession ? () => void approvePlan(false) : undefined}
+                onRevise={hasLiveSession ? (instruction) => void revisePlan(instruction) : undefined}
+                plan={activePlan}
+                planVersion={hasLiveSession ? latestPlanVersion : undefined}
+              />
+            ) : null}
             <div ref={bottomRef} />
           </div>
         </div>
@@ -1462,8 +1861,8 @@ function DiagnosisModifiedPage() {
               onKeyDown={handleInputKeyDown}
               placeholder={
                 hasLiveSession
-                  ? "Continue the current diagnosis session, for example: explain why these root-cause candidates were selected."
-                  : "Ask the agent to diagnose an issue... (Press Enter to start)"
+                  ? "继续当前诊断会话，例如：解释为什么会选择这些候选根因。"
+                  : "请输入诊断问题，例如：分析 auth-svc 最近一小时的时延与错误率抖动。（按 Enter 开始）"
               }
               rows={1}
               value={draft}
@@ -1471,13 +1870,13 @@ function DiagnosisModifiedPage() {
             <div className="diagnosis-modified-composer__actions">
               <p className="diagnosis-modified-composer__hint">
                 {hasLiveSession
-                  ? "The live data stream is preserved and rendered with Toolcall pacing and hierarchy."
-                  : "Without an active session, local demo mode runs and replays a slower Toolcall-style diagnosis flow."}
+                  ? "\u5b9e\u65f6\u6570\u636e\u6d41\u4f1a\u88ab\u4fdd\u7559\uff0c\u5e76\u6309 Toolcall \u7684\u8282\u594f\u4e0e\u5c42\u7ea7\u8fdb\u884c\u6e32\u67d3\u3002"
+                  : "\u6ca1\u6709\u6d3b\u52a8\u4f1a\u8bdd\u65f6\uff0c\u5c06\u8fd0\u884c\u672c\u5730\u6f14\u793a\u6a21\u5f0f\uff0c\u5e76\u4ee5\u8f83\u6162\u8282\u594f\u56de\u653e Toolcall \u98ce\u683c\u7684\u8bca\u65ad\u6d41\u7a0b\u3002"}
               </p>
               <div className="diagnosis-modified-composer__buttons">
                 {!hasLiveSession && demoTimeline.length > 0 ? (
-                  <button className="diagnosis-modified-send-btn diagnosis-modified-send-btn--secondary" onClick={() => startDemo(lastDemoPrompt || draft || "Analyze auth-svc latency and error-rate spike in the past hour")} type="button">
-                    Replay
+                  <button className="diagnosis-modified-send-btn diagnosis-modified-send-btn--secondary" onClick={() => startDemo(lastDemoPrompt || draft || "分析 auth-svc 过去一小时的时延与错误率抖动")} type="button">
+                    重新回放
                   </button>
                 ) : null}
                 <button

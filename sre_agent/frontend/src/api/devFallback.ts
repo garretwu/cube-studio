@@ -1,13 +1,9 @@
-﻿import {
+import {
   alertClusters,
   alerts,
-  diagnosisHistorySessions,
-  diagnosisSession,
-  initialChatMessages,
   knowledgeBaseDetails,
   knowledgeBases,
   knowledgeDocuments,
-  remediationOverview,
   skills,
   topologyEdges,
   topologyExplorerMock,
@@ -16,15 +12,11 @@
 import type {
   Alert,
   AlertCluster,
-  ChatMessage,
-  DiagnosisSession,
-  DiagnosisSessionSummary,
   KnowledgeBaseDetail,
   KnowledgeBaseSummary,
   KnowledgeDocument,
   OntologyEdge,
   OntologyNode,
-  RemediationOverview,
   SkillDescriptor,
   TopologyExplorerResponse,
 } from "./types";
@@ -53,45 +45,6 @@ export function getTopologyFallback(): TopologyFallbackResponse {
 
 export function getTopologyExplorerFallback(): TopologyExplorerResponse {
   return topologyExplorerMock;
-}
-
-export function getAlertsFallback(): { alerts: Alert[]; clusters: AlertCluster[] } {
-  return {
-    alerts,
-    clusters: alertClusters,
-  };
-}
-
-export function getDiagnosisSessionFallback(): DiagnosisSession {
-  return diagnosisSession;
-}
-
-export function getDiagnosisHistorySessionsFallback(): DiagnosisSessionSummary[] {
-  return diagnosisHistorySessions;
-}
-
-export function getChatHistoryFallback(_sessionId?: string): ChatMessage[] {
-  return [...initialChatMessages];
-}
-
-export function getRemediationOverviewFallback(): RemediationOverview {
-  return remediationOverview;
-}
-
-export function approveRemediationFallback(_sessionId: string, approved: boolean) {
-  return {
-    success: true,
-    status: approved ? "approved" : "rejected",
-  };
-}
-
-export function postChatMessageFallback(sessionId: string, content: string): ChatMessage {
-  return {
-    id: `assistant-${Date.now()}`,
-    role: "assistant",
-    created_at: new Date().toISOString(),
-    content: `已绑定会话 ${sessionId}。收到你的问题：“${content}”。建议先检查 GPU 进程列表，再结合最近 15 分钟的影响链路继续排查。`,
-  };
 }
 
 export function getKnowledgeBasesFallback(): KnowledgeBaseSummary[] {

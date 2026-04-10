@@ -10,6 +10,7 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
+from sre_agent.alerts_filter import DEFAULT_BLOCKED_ALERT_NAMES
 from sre_agent.auth.jwt import CurrentUser, encode_token, resolve_jwt_settings
 from sre_agent.config import SREAgentConfig
 from sre_agent.models.alert import Alert
@@ -17,7 +18,7 @@ from sre_agent.models.common import ErrorCode
 from sre_agent.models.diagnosis import DiagnosisResult, DiagnosisSession, Observation, RankedRootCause, ThinkingStep, ThinkingTrace
 from sre_agent.models.events import EventType, WSEvent
 from sre_agent.models.ontology import EntityType, OntologyEdge, OntologyNode, RelationType
-from sre_agent.models.remediation import RemediationPlan, RemediationStep, VerificationConfig
+from sre_agent.models.remediation import RemediationPlan, RemediationResult, RemediationStep, VerificationConfig
 from sre_agent.ontology.graph import OntologyGraph
 from sre_agent.server import create_app
 from sre_agent.tools import SafetyLevel, ToolDefinition, ToolExecutionContext, ToolRegistry
@@ -556,6 +557,21 @@ class _FakeOntologyNoRefresh:
         return [from_id, "switch:compat", to_id]
 
 
+class _FakePrometheus:
+    def __init__(self, *, before: float = 900.0, after: float = 100.0, switch_after_calls: int = 3) -> None:
+        self.before = before
+        self.after = after
+        self.switch_after_calls = max(0, switch_after_calls)
+        self.calls = 0
+
+    async def query_instant(self, promql: str) -> float:
+        _ = promql
+        self.calls += 1
+        if self.calls <= self.switch_after_calls:
+            return self.before
+        return self.after
+
+
 def _registry() -> tuple[ToolRegistry, ToolExecutionContext]:
     registry = ToolRegistry()
 
@@ -607,6 +623,22 @@ def _kube_client_errors_alert_payload(*, fingerprint: str = "fp-kube-client-erro
         "severity": "warning",
         "labels": {"alertname": "KubeClientErrors", "instance": "apiserver-0", "node": "node-a"},
         "annotations": {"summary": "kube client request errors are high"},
+        "starts_at": "2026-03-18T12:00:00Z",
+        "fingerprint": fingerprint,
+        "status": "firing",
+    }
+
+
+def _demo_blocked_alert_payload(
+    *,
+    alert_name: str = "TargetDown",
+    fingerprint: str = "fp-target-down-1",
+) -> dict[str, Any]:
+    return {
+        "alert_name": alert_name,
+        "severity": "warning",
+        "labels": {"alertname": alert_name, "instance": "monitoring-0", "node": "node-a"},
+        "annotations": {"summary": f"{alert_name} is firing in demo"},
         "starts_at": "2026-03-18T12:00:00Z",
         "fingerprint": fingerprint,
         "status": "firing",
@@ -668,11 +700,87 @@ def _build_client(monkeypatch: pytest.MonkeyPatch) -> tuple[TestClient, str]:
     return TestClient(app), token
 
 
+def _build_real_client(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    prometheus: Any | None = None,
+) -> tuple[TestClient, str]:
+    monkeypatch.setenv("JWT_SECRET", "secret")
+    settings = resolve_jwt_settings()
+    token = encode_token(CurrentUser(user_id="u1", username="alice", role="operator"), settings)
+    graph = OntologyGraph()
+    asyncio.run(graph.connect())
+    asyncio.run(
+        graph.add_entity(
+            OntologyNode(
+                id="node-a",
+                entity_type=EntityType.NODE,
+                name="node-a",
+                properties={"zone": "az-1"},
+                updated_at=datetime(2026, 3, 18, 12, 0, tzinfo=UTC),
+            )
+        )
+    )
+    registry, context = _registry()
+    config = SREAgentConfig.model_validate(
+        {
+            "global": {"aidc_id": "aidc-demo"},
+            "remediation": {"execution_mode": "real", "observation_seconds": 0},
+        }
+    )
+    app = create_app(
+        config=config,
+        diagnosis_runner=_FakeDiagnosisRunner(),
+        ontology=graph,
+        memory=_FakeMemory(),
+        knowledge=_FakeKnowledge(),
+        prometheus=prometheus,
+        tool_registry=registry,
+        execution_context=context,
+        chat_handler=_FakeChatHandler(),
+    )
+    return TestClient(app), token
+
+
+def _set_tool_channel_health(
+    client: TestClient,
+    channel_name: str,
+    *,
+    health: str,
+    mode: str = "test",
+    last_error: str | None = None,
+) -> None:
+    services = client.app.state.services
+    existing = dict(services.tool_channel_status.get(channel_name, {}))
+    existing.update(
+        {
+            "name": channel_name,
+            "health": health,
+            "required_by_tools": existing.get("required_by_tools", []),
+            "enabled": True,
+            "mode": mode,
+            "last_error": last_error,
+            "last_checked_at": datetime.now(UTC).isoformat(),
+        }
+    )
+    services.tool_channel_status[channel_name] = existing
+
+
 def _auth_headers(token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 
 
 class TestAPIUnit:
+    def test_unit_default_blocked_alert_names_include_demo_noise_alerts(self) -> None:
+        config = SREAgentConfig.model_validate({})
+
+        assert config.global_.blocked_alert_names == list(DEFAULT_BLOCKED_ALERT_NAMES)
+
+    def test_unit_default_remediation_execution_mode_is_real(self) -> None:
+        config = SREAgentConfig.model_validate({})
+
+        assert config.remediation.execution_mode == "real"
+
     def test_unit_returns_401_when_bearer_missing_on_protected_route(self, monkeypatch: pytest.MonkeyPatch) -> None:
         client, _ = _build_client(monkeypatch)
         response = client.get("/api/memory/incidents")
@@ -1220,6 +1328,34 @@ class TestAPIIntegration:
         sessions = client.get("/api/sessions", headers=_auth_headers(token)).json()["data"]
         assert all(item["fingerprint"] != "fp-kube-client-errors-1" for item in sessions)
 
+    def test_integration_diagnose_start_rejects_default_demo_blocked_alert(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        client, token = _build_client(monkeypatch)
+
+        response = client.post("/api/diagnose/start", json=_demo_blocked_alert_payload(), headers=_auth_headers(token))
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["success"] is False
+        assert payload["error"]["code"] == ErrorCode.VALIDATION_ERROR.value
+        assert "temporarily filtered" in payload["error"]["message"]
+
+        sessions = client.get("/api/sessions", headers=_auth_headers(token)).json()["data"]
+        assert all(item["fingerprint"] != "fp-target-down-1" for item in sessions)
+
+    def test_integration_handle_rejects_default_demo_blocked_alert(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        client, token = _build_client(monkeypatch)
+
+        response = client.post("/api/handle", json=_demo_blocked_alert_payload(), headers=_auth_headers(token))
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["success"] is False
+        assert payload["error"]["code"] == ErrorCode.VALIDATION_ERROR.value
+        assert "temporarily filtered" in payload["error"]["message"]
+
+        sessions = client.get("/api/sessions", headers=_auth_headers(token)).json()["data"]
+        assert all(item["fingerprint"] != "fp-target-down-1" for item in sessions)
+
     def test_integration_get_knowledge_documents_returns_document_list(self, monkeypatch: pytest.MonkeyPatch) -> None:
         client, token = _build_client(monkeypatch)
 
@@ -1611,6 +1747,151 @@ class TestAPIE2E:
         assert isinstance(remediation_events[-1]["data"].get("step_results"), list)
         assert remediation_events[-1]["data"]["step_results"]
         assert remediation_events[-1]["data"]["step_results"][0]["command"].startswith("mock::")
+
+    def test_e2e_approve_route_real_mode_rejects_when_required_channels_not_ready(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        client, token = _build_real_client(monkeypatch)
+        try:
+            diagnose = client.post("/api/diagnose", json=_alert_payload(), headers=_auth_headers(token)).json()
+            session_id = diagnose["data"]["session_id"]
+
+            approve = client.post(
+                f"/api/remediate/{session_id}/approve",
+                json={"approved": True, "user": "alice"},
+                headers=_auth_headers(token),
+            )
+            assert approve.status_code == 200
+            payload = approve.json()
+            assert payload["success"] is False
+            assert payload["error"]["code"] == ErrorCode.VALIDATION_ERROR.value
+            assert "required channels not ready" in payload["error"]["message"]
+            details = payload["error"]["details"]
+            assert details["execution_mode"] == "real"
+            assert {item["name"] for item in details["unready_channels"]} >= {"k8s", "prometheus"}
+
+            session_resp = client.get(f"/api/sessions/{session_id}", headers=_auth_headers(token))
+            assert session_resp.status_code == 200
+            assert session_resp.json()["data"]["status"] == "approval_required"
+        finally:
+            client.close()
+
+    def test_e2e_approve_route_real_mode_executes_and_resolves_after_observation(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        client, token = _build_real_client(monkeypatch, prometheus=_FakePrometheus(before=900.0, after=100.0))
+        try:
+            _set_tool_channel_health(client, "k8s", health="ready")
+            _set_tool_channel_health(client, "prometheus", health="ready")
+            services = client.app.state.services
+            original_approve = services.remediation_engine.approve_and_execute
+
+            async def _approve_and_clear_alert(
+                target_session_id: str,
+                approval_input: Any,
+                *,
+                progress_callback: Any | None = None,
+            ) -> Any:
+                result = await original_approve(
+                    target_session_id,
+                    approval_input,
+                    progress_callback=progress_callback,
+                )
+                services.alert_store.replace([])
+                return result
+
+            services.remediation_engine.approve_and_execute = _approve_and_clear_alert  # type: ignore[method-assign]
+
+            diagnose = client.post("/api/diagnose", json=_alert_payload(), headers=_auth_headers(token)).json()
+            session_id = diagnose["data"]["session_id"]
+
+            approve = client.post(
+                f"/api/remediate/{session_id}/approve",
+                json={"approved": True, "user": "alice"},
+                headers=_auth_headers(token),
+            )
+            assert approve.status_code == 200
+            assert approve.json()["success"] is True
+
+            events_resp = client.get(f"/api/sessions/{session_id}/events", headers=_auth_headers(token))
+            assert events_resp.status_code == 200
+            remediation_events = [
+                item for item in events_resp.json()["data"] if item["type"] == EventType.REMEDIATION_PROGRESS.value
+            ]
+            stages = [item["data"]["stage"] for item in remediation_events]
+            assert "execution_mocked" not in stages
+            assert "observation_result" in stages
+            observation = next(item for item in remediation_events if item["data"]["stage"] == "observation_result")
+            assert observation["data"]["alert_cleared"] is True
+            assert observation["data"]["metrics_improved"] is True
+            succeeded = remediation_events[-1]
+            assert succeeded["data"]["stage"] == "execution_succeeded"
+            assert isinstance(succeeded["data"].get("step_results"), list)
+            assert succeeded["data"]["step_results"]
+            assert all(item.get("mocked") is not True for item in succeeded["data"]["step_results"])
+
+            session_resp = client.get(f"/api/sessions/{session_id}", headers=_auth_headers(token))
+            assert session_resp.status_code == 200
+            assert session_resp.json()["data"]["status"] == "resolved"
+        finally:
+            client.close()
+
+    def test_e2e_approve_route_real_mode_escalates_when_alert_persists_after_execution(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        client, token = _build_real_client(monkeypatch, prometheus=_FakePrometheus(before=900.0, after=1200.0))
+        try:
+            _set_tool_channel_health(client, "k8s", health="ready")
+            _set_tool_channel_health(client, "prometheus", health="ready")
+            services = client.app.state.services
+
+            async def _approve_and_keep_alert(
+                target_session_id: str,
+                approval_input: Any,
+                *,
+                progress_callback: Any | None = None,
+            ) -> Any:
+                _ = (approval_input, progress_callback)
+                plan = services.remediation_engine.get_plan(target_session_id)
+                services.alert_store.replace([Alert.model_validate(_alert_payload())])
+                return RemediationResult(
+                    plan_id=plan.plan_id if plan is not None else "plan-missing",
+                    success=True,
+                    steps_completed=len(plan.steps) if plan is not None else 0,
+                    steps_total=len(plan.steps) if plan is not None else 0,
+                    verification_results=[{"step_id": 1, "verified": True}],
+                )
+
+            services.remediation_engine.approve_and_execute = _approve_and_keep_alert  # type: ignore[method-assign]
+
+            diagnose = client.post("/api/diagnose", json=_alert_payload(), headers=_auth_headers(token)).json()
+            session_id = diagnose["data"]["session_id"]
+
+            approve = client.post(
+                f"/api/remediate/{session_id}/approve",
+                json={"approved": True, "user": "alice"},
+                headers=_auth_headers(token),
+            )
+            assert approve.status_code == 200
+            payload = approve.json()
+            assert payload["success"] is False
+            assert payload["error"]["code"] == ErrorCode.REMEDIATION_EXECUTION_FAILED.value
+
+            events_resp = client.get(f"/api/sessions/{session_id}/events", headers=_auth_headers(token))
+            assert events_resp.status_code == 200
+            remediation_events = [
+                item for item in events_resp.json()["data"] if item["type"] == EventType.REMEDIATION_PROGRESS.value
+            ]
+            observation = next(item for item in remediation_events if item["data"]["stage"] == "observation_result")
+            assert observation["data"]["alert_cleared"] is False
+            assert observation["data"]["metrics_improved"] is False
+            assert remediation_events[-1]["data"]["stage"] == "escalation_required"
+
+            session_resp = client.get(f"/api/sessions/{session_id}", headers=_auth_headers(token))
+            assert session_resp.status_code == 200
+            assert session_resp.json()["data"]["status"] == "escalated"
+        finally:
+            client.close()
 
     def test_e2e_approve_route_rejects_outdated_plan_version(self, monkeypatch: pytest.MonkeyPatch) -> None:
         client, token = _build_client(monkeypatch)
@@ -2042,6 +2323,45 @@ class TestAPIE2E:
             assert "fp-api-1" in fingerprints
             assert "fp-kube-client-errors-1" not in fingerprints
 
+    def test_e2e_alert_poller_filters_target_down_by_default(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        monkeypatch.setenv("JWT_SECRET", "secret")
+        settings = resolve_jwt_settings()
+        token = encode_token(CurrentUser(user_id="u1", username="alice", role="operator"), settings)
+        registry, context = _registry()
+        fake_alert = Alert.model_validate(_alert_payload())
+        target_down_alert = Alert.model_validate(_demo_blocked_alert_payload())
+        fake_channel = _FakeAlertChannel([fake_alert, target_down_alert])
+        context.channels["alert"] = fake_channel
+        config = SREAgentConfig.model_validate(
+            {
+                "global": {"aidc_id": "test-aidc", "alert_poll_interval_seconds": 0.2},
+                "ontology": {"db_path": str(tmp_path / "ontology.db")},
+                "memory": {"db_dir": str(tmp_path / "memory")},
+            }
+        )
+        with TestClient(
+            create_app(
+                config=config,
+                diagnosis_runner=_FakeDiagnosisRunner(),
+                ontology=OntologyGraph(),
+                memory=_FakeMemory(),
+                knowledge=_FakeKnowledge(),
+                tool_registry=registry,
+                execution_context=context,
+            )
+        ) as client:
+            snapshot = None
+            for _ in range(20):
+                response = client.get("/api/alerts", headers=_auth_headers(token))
+                if response.status_code == 200 and response.json().get("data", {}).get("alerts"):
+                    snapshot = response.json()
+                    break
+                time.sleep(0.1)
+            assert snapshot is not None
+            fingerprints = {item["fingerprint"] for item in snapshot["data"]["alerts"]}
+            assert "fp-api-1" in fingerprints
+            assert "fp-target-down-1" not in fingerprints
+
     def test_e2e_default_blocked_kube_client_errors_prevents_auto_diagnose_even_when_targeted(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
@@ -2057,6 +2377,42 @@ class TestAPIE2E:
                     "aidc_id": "test-aidc",
                     "alert_poll_interval_seconds": 0.05,
                     "auto_diagnose_alert_names": ["KubeClientErrors"],
+                    "auto_diagnose_delay_seconds": 0.05,
+                },
+                "ontology": {"db_path": str(tmp_path / "ontology.db")},
+                "memory": {"db_dir": str(tmp_path / "memory")},
+            }
+        )
+
+        with TestClient(
+            create_app(
+                config=config,
+                diagnosis_runner=runner,
+                ontology=OntologyGraph(),
+                memory=_FakeMemory(),
+                knowledge=_FakeKnowledge(),
+                tool_registry=registry,
+                execution_context=context,
+            )
+        ):
+            time.sleep(0.4)
+            assert len(runner.calls) == 0
+
+    def test_e2e_default_blocked_target_down_prevents_auto_diagnose_even_when_targeted(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        monkeypatch.setenv("JWT_SECRET", "secret")
+        registry, context = _registry()
+        runner = _CountingDiagnosisRunner()
+        target_down_alert = Alert.model_validate(_demo_blocked_alert_payload())
+        channel = _MutableAlertChannel([target_down_alert])
+        context.channels["alert"] = channel
+        config = SREAgentConfig.model_validate(
+            {
+                "global": {
+                    "aidc_id": "test-aidc",
+                    "alert_poll_interval_seconds": 0.05,
+                    "auto_diagnose_alert_names": ["TargetDown"],
                     "auto_diagnose_delay_seconds": 0.05,
                 },
                 "ontology": {"db_path": str(tmp_path / "ontology.db")},

@@ -361,9 +361,9 @@ describe("apiClient.getTopology", () => {
           data: {
             alerts: [
               {
-                alert_name: "GPU utilization is high",
+                alert_name: "TargetDown",
                 severity: "warning",
-                labels: { alertname: "GPU utilization is high" },
+                labels: { alertname: "TargetDown" },
                 annotations: {},
                 starts_at: "2026-03-26T00:00:00Z",
                 fingerprint: "fp-blocked",
@@ -391,14 +391,13 @@ describe("apiClient.getTopology", () => {
     );
 
     const payload = await apiClient.getAlerts();
-    expect(payload.alerts).toHaveLength(2);
-    expect(payload.alerts.map((a) => a.fingerprint)).toEqual(
-      expect.arrayContaining(["fp-blocked", "fp-allowed"]),
-    );
+    expect(payload.alerts).toHaveLength(1);
+    expect(payload.alerts[0]?.fingerprint).toBe("fp-allowed");
     expect(payload.clusters).toHaveLength(1);
+    expect(payload.clusters[0]?.alerts).toEqual(["fp-allowed"]);
   });
 
-  it("allows diagnose request for previously-filtered GPU alert", async () => {
+  it("blocks diagnose request for default demo blocked alert before sending the request", async () => {
     let called = false;
     server.use(
       http.post("/api/diagnose", async () => {
@@ -427,17 +426,18 @@ describe("apiClient.getTopology", () => {
       }),
     );
 
-    const session = await apiClient.diagnoseAlert({
-      alert_name: "GPUUtilizationHigh",
-      severity: "warning",
-      labels: { alertname: "GPUUtilizationHigh" },
-      annotations: {},
-      starts_at: "2026-03-26T00:00:00Z",
-      fingerprint: "fp-blocked-2",
-      status: "firing",
-    });
-    expect(called).toBe(true);
-    expect(session.session_id).toBe("sess-gpu-diagnose");
+    await expect(
+      apiClient.diagnoseAlert({
+        alert_name: "TargetDown",
+        severity: "warning",
+        labels: { alertname: "TargetDown" },
+        annotations: {},
+        starts_at: "2026-03-26T00:00:00Z",
+        fingerprint: "fp-blocked-2",
+        status: "firing",
+      }),
+    ).rejects.toThrow("temporarily filtered");
+    expect(called).toBe(false);
   });
 
   it("falls back to /api/diagnose when /api/diagnose/start is unavailable", async () => {
@@ -490,7 +490,30 @@ describe("apiClient.getTopology", () => {
     expect(session.session_id).toBe("sess-start-fallback");
   });
 
-  it("allows handle request for previously-filtered GPU alert", async () => {
+  it("blocks startDiagnoseAlert for default demo blocked alert before sending the request", async () => {
+    let called = false;
+    server.use(
+      http.post("/api/diagnose/start", async () => {
+        called = true;
+        return HttpResponse.json({});
+      }),
+    );
+
+    await expect(
+      apiClient.startDiagnoseAlert({
+        alert_name: "DeadMansSwitch",
+        severity: "warning",
+        labels: { alertname: "DeadMansSwitch" },
+        annotations: {},
+        starts_at: "2026-03-26T00:00:00Z",
+        fingerprint: "fp-blocked-start",
+        status: "firing",
+      }),
+    ).rejects.toThrow("temporarily filtered");
+    expect(called).toBe(false);
+  });
+
+  it("blocks handle request for default demo blocked alert before sending the request", async () => {
     let called = false;
     server.use(
       http.post("/api/handle", async () => {
@@ -505,18 +528,18 @@ describe("apiClient.getTopology", () => {
       }),
     );
 
-    const sessionId = await apiClient.handleAlert({
-      alert_name: "GPU utilization is high",
-      severity: "warning",
-      labels: { alertname: "GPU utilization is high" },
-      annotations: {},
-      starts_at: "2026-03-26T00:00:00Z",
-      fingerprint: "fp-blocked-3",
-      status: "firing",
-    });
-
-    expect(called).toBe(true);
-    expect(sessionId).toBe("sess-3");
+    await expect(
+      apiClient.handleAlert({
+        alert_name: "PrometheusOperatorDown",
+        severity: "warning",
+        labels: { alertname: "PrometheusOperatorDown" },
+        annotations: {},
+        starts_at: "2026-03-26T00:00:00Z",
+        fingerprint: "fp-blocked-3",
+        status: "firing",
+      }),
+    ).rejects.toThrow("temporarily filtered");
+    expect(called).toBe(false);
   });
 
   it("falls back to /api/diagnosis/sessions when /api/sessions fails", async () => {

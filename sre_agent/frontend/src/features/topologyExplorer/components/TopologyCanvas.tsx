@@ -21,7 +21,13 @@ import {
   getNodeMetricSummary,
   getTopologyTypeIconName,
 } from "../formatters";
-import type { ExplorerLayoutPreset } from "../types";
+import type {
+  ExplorerLayerFilter,
+  ExplorerLayoutPreset,
+  ExplorerStatusFilter,
+  ExplorerSummaryFilter,
+  TopologyCanvasExport,
+} from "../types";
 
 type TopologyCanvasProps = {
   nodes: TopologyObject[];
@@ -32,9 +38,15 @@ type TopologyCanvasProps = {
   matchedNodeIds: string[];
   neighborDepths: Map<string, number>;
   layoutPreset: ExplorerLayoutPreset;
+  lastUpdated?: string;
+  searchQuery: string;
+  statusFilter: ExplorerStatusFilter;
+  layerFilter: ExplorerLayerFilter;
+  summaryFilter: ExplorerSummaryFilter;
   onSelectNode: (nodeId: string) => void;
   onHoverNode: (nodeId?: string) => void;
   onZoomChange?: (zoomPercent: number) => void;
+  onReadyStateChange?: (ready: boolean) => void;
 };
 
 export type TopologyCanvasHandle = {
@@ -43,6 +55,7 @@ export type TopologyCanvasHandle = {
   zoomOut: () => void;
   recenter: (nodeId?: string) => void;
   focusNode: (nodeId: string) => void;
+  exportView: () => TopologyCanvasExport | null;
 };
 
 type ExplorerFlowNodeData = {
@@ -160,9 +173,15 @@ const TopologyCanvas = forwardRef<TopologyCanvasHandle, TopologyCanvasProps>(fun
     matchedNodeIds,
     neighborDepths,
     layoutPreset,
+    lastUpdated,
+    searchQuery,
+    statusFilter,
+    layerFilter,
+    summaryFilter,
     onSelectNode,
     onHoverNode,
     onZoomChange,
+    onReadyStateChange,
   },
   ref,
 ) {
@@ -251,6 +270,14 @@ const TopologyCanvas = forwardRef<TopologyCanvasHandle, TopologyCanvasProps>(fun
   };
 
   useEffect(() => {
+    onReadyStateChange?.(Boolean(instance && nodes.length > 0));
+
+    return () => {
+      onReadyStateChange?.(false);
+    };
+  }, [instance, nodes.length, onReadyStateChange]);
+
+  useEffect(() => {
     if (!instance) {
       return;
     }
@@ -326,8 +353,96 @@ const TopologyCanvas = forwardRef<TopologyCanvasHandle, TopologyCanvasProps>(fun
         });
         window.setTimeout(syncZoom, 240);
       },
+      exportView: () => {
+        if (!instance || flowNodesRef.current.length === 0) {
+          return null;
+        }
+
+        const instanceNodes = instance.getNodes();
+        if (instanceNodes.length === 0) {
+          return null;
+        }
+
+        const instanceNodeMap = new Map(instanceNodes.map((node) => [node.id, node]));
+        const fallbackNodeMap = new Map(flowNodesRef.current.map((node) => [node.id, node]));
+
+        return {
+          meta: {
+            exportedAt: new Date().toISOString(),
+            source: "topology-modified-canvas",
+            lastUpdated,
+            viewMode: "graph",
+            layoutPreset,
+            zoomPercent: Math.round(instance.getZoom() * 100),
+          },
+          filters: {
+            statusFilter,
+            layerFilter,
+            summaryFilter,
+            searchQuery,
+          },
+          focus: {
+            selectedNodeId,
+            hoveredNodeId,
+            matchedNodeIds,
+          },
+          nodes: nodes.map((node) => {
+            const instanceNode = instanceNodeMap.get(node.id);
+            const fallbackNode = fallbackNodeMap.get(node.id);
+            const position = positionsRef.current[node.id] ?? instanceNode?.position ?? fallbackNode?.position ?? { x: 0, y: 0 };
+
+            return {
+              id: node.id,
+              name: node.name,
+              type: node.type,
+              status: node.status,
+              layer: node.layer,
+              domain: node.domain,
+              region: node.region,
+              zone: node.zone,
+              cluster: node.cluster,
+              rack: node.rack,
+              slot: node.slot,
+              summary: node.summary,
+              tags: node.tags,
+              metrics: node.metrics,
+              attributes: node.attributes,
+              position,
+              size: {
+                width: instanceNode?.width ?? fallbackNode?.width ?? NODE_WIDTH,
+                height: instanceNode?.height ?? fallbackNode?.height ?? NODE_HEIGHT,
+              },
+            };
+          }),
+          edges: edges.map((edge) => ({
+            id: edge.id,
+            source: edge.source,
+            target: edge.target,
+            relationType: edge.relationType,
+            status: edge.status,
+            impactLevel: edge.impactLevel,
+            label: edge.label,
+            isCritical: edge.isCritical,
+            isAggregated: edge.isAggregated,
+          })),
+        };
+      },
     }),
-    [instance, onZoomChange],
+    [
+      edges,
+      hoveredNodeId,
+      instance,
+      lastUpdated,
+      layerFilter,
+      layoutPreset,
+      matchedNodeIds,
+      nodes,
+      onZoomChange,
+      searchQuery,
+      selectedNodeId,
+      statusFilter,
+      summaryFilter,
+    ],
   );
 
   return (

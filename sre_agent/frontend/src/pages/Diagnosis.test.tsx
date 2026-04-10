@@ -4,9 +4,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 
 import type { WSEvent } from "../api/types";
-import { initialChatMessages } from "../mocks/data";
 import { useDiagnosisStore } from "../store/diagnosisStore";
 import DiagnosisPage from "./Diagnosis";
+
+const testChatMessageContent = "我已经带入当前 AIDC 拓扑与最新告警，可以继续帮你诊断问题或生成修复计划。";
 
 let websocketState: "connecting" | "open" | "closed" | "error" = "closed";
 let emitWebsocketEvent: ((event: WSEvent) => void) | undefined;
@@ -69,15 +70,16 @@ describe("DiagnosisPage", () => {
     renderDiagnosisPage("/diagnosis/sess-latency-001");
 
     await waitFor(() => {
-      expect(screen.getByText(initialChatMessages[0].content)).toBeInTheDocument();
+      expect(screen.getByText(testChatMessageContent)).toBeInTheDocument();
     });
 
     expect(screen.getByRole("heading", { name: "诊断对话" })).toBeInTheDocument();
     expect(screen.getByText(/会话 sess-latency-001/)).toBeInTheDocument();
     expect(screen.getByText(/会话先创建后流式推送/)).toBeInTheDocument();
-    expect(screen.getByText("循环卡片")).toBeInTheDocument();
+    expect(screen.getByText(/诊断过程按循环卡片分段展示/)).toBeInTheDocument();
     expect(screen.getByPlaceholderText(/继续追问当前诊断/)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "模拟演示" })).toBeInTheDocument();
+    expect(screen.queryByText("输入信息")).not.toBeInTheDocument();
   });
 
   it("runs step1 then unlocks step2 in script panel", async () => {
@@ -86,7 +88,7 @@ describe("DiagnosisPage", () => {
     renderDiagnosisPage("/diagnosis/sess-latency-001");
 
     await waitFor(() => {
-      expect(screen.getByText(initialChatMessages[0].content)).toBeInTheDocument();
+      expect(screen.getByText(testChatMessageContent)).toBeInTheDocument();
     });
 
     await user.click(screen.getByRole("button", { name: "模拟演示" }));
@@ -176,7 +178,8 @@ describe("DiagnosisPage", () => {
     renderDiagnosisPage("/diagnosis/sess-latency-001");
 
     expect(await screen.findByText("修复审批")).toBeInTheDocument();
-    expect(screen.queryByText(/步骤 \d+：/)).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "审批通过" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /拒\s*绝/ })).toBeInTheDocument();
   });
 });
 

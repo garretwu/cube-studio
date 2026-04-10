@@ -20,7 +20,7 @@ from fastapi import FastAPI
 
 from lib.channels.alert import AlertChannel
 from lib.channels.knowledge import DifyKnowledgeStoreAdapter
-from sre_agent.agent import ConversationalAgent, run_diagnosis
+from sre_agent.agent import ConversationalAgent, run_diagnosis, run_diagnosis_stream
 from sre_agent.alerts_filter import build_blocked_alert_name_set, filter_blocked_alerts, normalize_alert_name
 from sre_agent.api import build_api_router, build_websocket_router, install_middlewares
 from sre_agent.api.routes import AuditLogger
@@ -920,6 +920,131 @@ class DefaultDiagnosisRunner:
         return _diagnosis_session_from_state(alert=enriched_alert, state=result)
 
 
+class StreamingDiagnosisRunner:
+    """Streams diagnosis events via SSE by wrapping ``run_diagnosis_stream``."""
+
+    def __init__(
+        self,
+        *,
+        execution_context: ToolExecutionContext,
+        tool_registry: Any,
+        config: SREAgentConfig,
+        ontology: OntologyGraph,
+        trace_publisher: Any,
+        session_store: Any,
+        remediation_engine: Any,
+    ) -> None:
+        self._execution_context = execution_context
+        self._tool_registry = tool_registry
+        self._config = config
+        self._ontology = ontology
+        self._trace_publisher = trace_publisher
+        self._session_store = session_store
+        self._remediation_engine = remediation_engine
+
+    async def astream_diagnose(
+        self,
+        alert: Alert,
+        extra_alerts: list[Alert] | None = None,
+    ) -> AsyncIterator[dict[str, Any]]:
+        topology_context = _build_alert_blast_radius_context(self._ontology, alert)
+        annotations = dict(alert.annotations)
+        annotations["topology_blast_radius_summary"] = str(topology_context["summary"])
+        enriched_alert = alert.model_copy(update={"annotations": annotations})
+        query = f"{_build_default_query(enriched_alert)}\n{topology_context['summary']}"
+        if extra_alerts:
+            query += "\n\nAdditional correlated alerts from the same convergence group:"
+            for idx, extra in enumerate(extra_alerts, start=1):
+                query += (
+                    f"\n- Alert {idx + 1}: '{extra.alert_name}' severity={extra.severity.value}"
+                    f" entity={extra.labels.get('instance', extra.labels.get('node', 'unknown'))}"
+                    f" summary={extra.summary or 'n/a'}"
+                )
+            query += "\nConsider all above alerts as context when forming diagnosis hypotheses."
+        extra_alerts_payload = [a.model_dump(mode="json") for a in (extra_alerts or [])]
+        runtime_variables = _build_runtime_diagnosis_variables(
+            alert=enriched_alert,
+            aidc_id=self._config.global_.aidc_id,
+            cfg=self._config,
+            topology_context=topology_context,
+            extra_alerts=extra_alerts_payload,
+        )
+
+        final_session_id: str | None = None
+        final_state: dict[str, Any] = {}
+
+        async for event in run_diagnosis_stream(
+            query=query,
+            context=self._execution_context,
+            variables=runtime_variables,
+            tool_registry=self._tool_registry,
+            reasoning_context_strategy=_resolve_reasoning_context_strategy(self._config),
+            reasoning_overflow_behavior=_resolve_reasoning_overflow_behavior(self._config),
+            reasoning_input_target_tokens=_resolve_reasoning_input_target_tokens(self._config),
+            reasoning_model_family=_resolve_reasoning_model_family(self._config),
+            reason_context_char_budget=_resolve_reason_context_char_budget(self._config),
+            tool_message_char_limit=_resolve_tool_message_char_limit(self._config),
+            reason_preserve_recent_messages=_resolve_reason_preserve_recent_messages(self._config),
+            checkpoint_dir=None,
+            alert_snapshot=enriched_alert.model_dump(mode="json"),
+            topology_context=topology_context,
+            extra_alerts=extra_alerts_payload,
+        ):
+            if final_session_id is None:
+                final_session_id = event.get("session_id")
+
+            # Track state from node_completed events for session persistence.
+            if event.get("type") == "node_completed" and isinstance(event.get("data"), dict):
+                data = event["data"]
+                if data.get("diagnosis_result") is not None:
+                    final_state["diagnosis_result"] = data["diagnosis_result"]
+                if data.get("remediation_plan") is not None:
+                    final_state["remediation_plan"] = data["remediation_plan"]
+                if data.get("status") is not None:
+                    final_state["status"] = data["status"]
+                if data.get("step_count") is not None:
+                    final_state["step_count"] = data["step_count"]
+
+            # Publish key events to WebSocket for backward compatibility.
+            event_type = event.get("type", "")
+            if event_type in {
+                EventType.DIAGNOSIS_STARTED.value,
+                EventType.NODE_COMPLETED.value,
+                EventType.TOOL_STARTED.value,
+                EventType.TOOL_COMPLETED.value,
+                EventType.ERROR.value,
+                "done",
+            }:
+                try:
+                    await self._trace_publisher.publish(event)
+                except Exception:  # noqa: BLE001
+                    pass
+
+            yield event
+
+        # Persist the completed session.
+        if final_session_id:
+            final_state.setdefault("status", "diagnosed")
+            final_state.setdefault("step_count", 0)
+            completed = _diagnosis_session_from_state(alert=enriched_alert, state=final_state)
+            completed = completed.model_copy(update={"session_id": final_session_id})
+            self._session_store.put(completed)
+            plan = self._extract_recommended_fix(completed)
+            if plan is not None:
+                self._remediation_engine.register_plan(final_session_id, plan)
+
+    @staticmethod
+    def _extract_recommended_fix(session: DiagnosisSession) -> Any:
+        if session.diagnosis_result is None:
+            return None
+        if session.diagnosis_result.recommended_fix is not None:
+            return session.diagnosis_result.recommended_fix
+        for candidate in session.diagnosis_result.ranked_candidates:
+            if candidate.recommended_fix is not None:
+                return candidate.recommended_fix
+        return None
+
+
 class DefaultReDiagnoseRunner:
     def __init__(
         self,
@@ -1218,6 +1343,7 @@ class AgentCServices:
     alert_store: InMemoryAlertStore
     audit_logger: AuditLogger
     diagnosis_start_coordinator: DiagnosisStartCoordinator | None = None
+    streaming_diagnosis_runner: StreamingDiagnosisRunner | None = None
     topology_discovery: TopologyDiscoveryService | None = None
     chat_handler: ChatHandlerProtocol | None = None
     tool_channel_status: dict[str, dict[str, Any]] = field(default_factory=dict)
@@ -1773,6 +1899,15 @@ def create_app(
         session_store=session_store,
         trace_publisher=publisher,
     )
+    streaming_runner = StreamingDiagnosisRunner(
+        execution_context=context,
+        tool_registry=registry,
+        config=cfg,
+        ontology=ontology_graph,
+        trace_publisher=publisher,
+        session_store=session_store,
+        remediation_engine=engine,
+    )
     runtime_chat_handler = chat_handler
     if runtime_chat_handler is None:
         try:
@@ -1802,6 +1937,7 @@ def create_app(
         alert_store=alert_store,
         audit_logger=AuditLogger(),
         diagnosis_start_coordinator=diagnosis_start_coordinator,
+        streaming_diagnosis_runner=streaming_runner,
         topology_discovery=topology_discovery_service,
         chat_handler=runtime_chat_handler,
         tool_channel_status={name: status.as_json() for name, status in bootstrap_result.statuses.items()},
