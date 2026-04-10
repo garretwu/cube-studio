@@ -1,87 +1,94 @@
-# GitLab CI For `feature/sre-c-core-infra`
+# `feature/sre-c-core-infra` 分支 GitLab CI 说明
 
-This document summarizes the branch-scoped GitLab CI assets for the `sre_agent` web stack.
+这份文档汇总了 `sre_agent` Web 工程在当前分支上的 GitLab CI 资产与关键规则。
 
-Primary usage guide:
+主要使用说明：
 
 - [PIPELINE_RUNBOOK.md](/home/kevin/project/cube-studio/sre_agent/docs/gitlab/PIPELINE_RUNBOOK.md)
 
-## Files At A Glance
+## 文件一览
 
-| File | Purpose |
+| 文件 | 用途 |
 | --- | --- |
-| `ci/common.sh` | Shared helpers for logging, registry auth, image naming, and timestamp parsing. |
-| `ci/generate_metadata.sh` | Generates the timestamped image tags and writes `dist/pipeline.env`. |
-| `ci/resolve_latest_base_tag.sh` | Queries Nexus and resolves the newest published `base-YYYYMMDDHHMM` tag. |
-| `ci/build_base_image.sh` | Builds the base image and exports it as a tar artifact. |
-| `ci/build_web_image.sh` | Builds the web image from the newest available base image and exports it as a tar artifact. |
-| `ci/run_preview_container.sh` | Starts a preview container with unique ports and a unique name, then waits for health checks to pass. |
-| `ci/validate_runtime_smoke.sh` | Runs container startup, health, backend OpenAPI, and frontend index smoke validation. |
-| `ci/validate_business_suite.sh` | Runs selected backend and fault injection business tests inside the base image environment. |
-| `ci/push_images.sh` | Pushes the generated image tar artifacts to Nexus and prints `docker pull` addresses. |
-| `ci/promote_release.sh` | Manually promotes a validated build to a formal release tag using a version plus timestamp. |
-| `ci/notify_feishu.sh` | Sends Feishu interactive card notifications when failure notification conditions are met. |
-| `ci/cleanup_docker_state.sh` | Removes preview containers and managed images older than 7 days while preserving the newest ones. |
+| `ci/common.sh` | 提供日志、仓库认证、镜像命名、时间戳解析等公共函数。 |
+| `ci/generate_metadata.sh` | 生成镜像时间戳、tag 和 `dist/pipeline.env` 元数据文件。 |
+| `ci/resolve_latest_base_tag.sh` | 从 Nexus 查询最新的 `base-YYYYMMDDHHMM` 基础镜像 tag。 |
+| `ci/build_base_image.sh` | 构建基础镜像并导出为 tar 制品。 |
+| `ci/build_web_image.sh` | 基于最新可用基础镜像构建业务镜像并导出为 tar 制品。 |
+| `ci/run_preview_container.sh` | 启动 preview 容器，自动规避端口和容器名冲突，并等待健康检查通过。 |
+| `ci/validate_runtime_smoke.sh` | 执行容器启动、健康检查、后端 OpenAPI 和前端首页的环境验收。 |
+| `ci/validate_business_suite.sh` | 在基础镜像环境中执行选定的后端与故障注入业务测试。 |
+| `ci/push_images.sh` | 将生成的镜像 tar 推送到 Nexus，并输出 `docker pull` 地址。 |
+| `ci/promote_release.sh` | 手动把已验证通过的业务镜像提升为正式 release tag。 |
+| `ci/notify_feishu.sh` | 在满足条件时向飞书群机器人发送失败通知卡片。 |
+| `ci/cleanup_docker_state.sh` | 清理过期 preview 容器、旧镜像和旧缓存，并保留关键最新版本。 |
 
-## Pipeline Scope
+## 流水线范围
 
-The jobs in the root `.gitlab-ci.yml` are intentionally limited to the branch:
+根目录 [`.gitlab-ci.yml`](/home/kevin/project/cube-studio/.gitlab-ci.yml) 中和 `sre_agent` 相关的 job 只作用于分支：
 
 `feature/sre-c-core-infra`
 
-Other branches are not matched by the new SRE Agent CI rules.
+其他分支不会命中这套新的 SRE Agent 流水线规则。
 
-## Required CI Variables
+## 必要 CI 变量
 
-| Variable | Purpose |
+| 变量 | 用途 |
 | --- | --- |
-| `NEXUS_REGISTRY` | Nexus Docker registry host, for example `nexus.example.com:5001`. |
-| `NEXUS_USERNAME` | Username used for Docker login and tag lookup API calls. Store it as a protected CI variable. |
-| `NEXUS_PASSWORD` | Password or token used for Docker login and tag lookup API calls. Store it as a masked protected CI variable. |
-| `PREVIEW_DOCKER_HOST` | Optional remote Docker host for persistent preview containers, for example `tcp://10.10.10.20:2375`. |
-| `PREVIEW_PUBLIC_HOST` | Optional public host or IP printed in preview URLs. |
-| `SRE_OPENAI_API_KEY` | Optional preview-time runtime key; if omitted, the container falls back to the placeholder startup key. |
-| `FORCE_BASE_BUILD` | Optional `1` to force a base image rebuild even when dependency files did not change. |
-| `RELEASE_VERSION` | Optional manual release version, for example `1.0.1`; if omitted, CI reads `sre_agent/VERSION`. |
-| `FEISHU_WEBHOOK_URL` | Optional Feishu bot webhook URL used for failure notifications. Store it as a masked protected CI variable. |
-| `FEISHU_NOTIFY_ON_COMMIT_FAILURE` | Optional `1` to also notify normal commit pipeline failures; default behavior only notifies non-commit flows. |
+| `NEXUS_REGISTRY` | Nexus Docker 仓库地址，例如 `10.11.4.5:5000`。 |
+| `NEXUS_USERNAME` | Docker 登录和 tag 查询 API 使用的用户名，建议作为受保护变量维护。 |
+| `NEXUS_PASSWORD` | Docker 登录和 tag 查询 API 使用的密码或 token，建议作为 masked + protected 变量维护。 |
+| `PREVIEW_DOCKER_HOST` | 可选，用于承载 preview 容器的远端 Docker 主机，例如 `tcp://10.10.10.20:2375`。 |
+| `PREVIEW_PUBLIC_HOST` | 可选，用于在日志中输出对外可访问的 preview 地址。 |
+| `SRE_OPENAI_API_KEY` | 可选，preview 运行时使用的 LLM key；未显式配置时允许从 `sre_agent/conf/config.yaml` 的 `llm.api_key` fallback。 |
+| `FORCE_BASE_BUILD` | 可选，设为 `1` 时即使依赖未变化也强制重建基础镜像。 |
+| `RELEASE_VERSION` | 可选，手动发版时指定版本号，例如 `1.0.1`；未指定时读取 `sre_agent/VERSION`。 |
+| `FEISHU_WEBHOOK_URL` | 可选，飞书群机器人 webhook 地址，建议作为 masked + protected 变量维护。 |
+| `FEISHU_NOTIFY_ON_COMMIT_FAILURE` | 可选，设为 `1` 时普通 commit 流水线失败也通知飞书；默认只通知非 commit 流程。 |
 
-## Schedule Variables
+补充说明：
 
-GitLab cron schedules must be created in the GitLab UI for the same branch.
+- 只有 `SRE_OPENAI_API_KEY` 支持在未显式声明时 fallback 到 [config.yaml](/home/kevin/project/cube-studio/sre_agent/conf/config.yaml) 中的 `llm.api_key`
+- `NEXUS_USERNAME`、`NEXUS_PASSWORD`、`FEISHU_WEBHOOK_URL` 这类 CI/CD 凭证仍然必须显式配置在 GitLab Variables 中
 
-| Schedule | Branch | Variable |
+## Schedule 变量
+
+这些定时任务需要在 GitLab UI 中创建，并指向同一个分支。
+
+| 定时任务 | 分支 | 变量 |
 | --- | --- | --- |
-| Weekly build every Friday 17:00 | `feature/sre-c-core-infra` | `PIPELINE_KIND=weekly_build` |
-| Monthly or bi-weekly base refresh | `feature/sre-c-core-infra` | `PIPELINE_KIND=base_refresh` |
-| Weekly cleanup at your preferred time | `feature/sre-c-core-infra` | `PIPELINE_KIND=cleanup` |
+| 每周五 17:00 的周构建 | `feature/sre-c-core-infra` | `PIPELINE_KIND=weekly_build` |
+| 每月或每两周一次的基础镜像兜底刷新 | `feature/sre-c-core-infra` | `PIPELINE_KIND=base_refresh` |
+| 每周固定时间的清理任务 | `feature/sre-c-core-infra` | `PIPELINE_KIND=cleanup` |
 
-## Tag Rules
+## Tag 规则
 
-| Image Type | Tag Format |
+| 镜像类型 | Tag 规则 |
 | --- | --- |
-| Base image | `base-YYYYMMDDHHMM` |
-| Commit web image | `CI_COMMIT_SHORT_SHA-YYYYMMDDHHMM` |
-| Weekly web image | `weekly-YYYYMMDDHHMM` |
-| Manual release image | `VERSION-YYYYMMDDHHMM` |
+| 基础镜像 | `base-YYYYMMDDHHMM` |
+| 普通提交业务镜像 | `CI_COMMIT_SHORT_SHA-YYYYMMDDHHMM` |
+| 周构建业务镜像 | `weekly-YYYYMMDDHHMM` |
+| 手动正式发布镜像 | `VERSION-YYYYMMDDHHMM` |
 
-## Release Strategy
+## 发布策略
 
-The pipeline now separates snapshot publication from formal release promotion:
+当前流水线把“快照发布”和“正式发版”拆成两层：
 
-- `publish_sre_agent_snapshot` automatically pushes validated commit or weekly images to Nexus.
-- `promote_sre_agent_release` is a manual job that re-tags the validated web image as `VERSION-YYYYMMDDHHMM`.
-- If `RELEASE_VERSION` is not provided at trigger time, the job reads the default version from `sre_agent/VERSION`.
+- `publish_sre_agent_snapshot`：自动把已验证通过的 commit 或 weekly 镜像推送到 Nexus。
+- `promote_sre_agent_release`：手动执行，把已验证通过的业务镜像重新打成 `VERSION-YYYYMMDDHHMM`。
+- 如果手动触发时没有提供 `RELEASE_VERSION`，就读取 `sre_agent/VERSION` 里的默认版本。
 
-## Validation Coverage
+## 验证范围
 
-The release gate is split into two jobs:
+release 门禁目前拆成两类 job：
 
-- Environment validation:
-  container startup, Docker health, backend `/openapi.json`, and frontend `/`
-- Business validation:
-  `sre_agent/tests/test_start_frontend_backend.py`, `fault_injector/tests/unit/features/scenarios/test_scenarios.py`, and `python -m fault_injector list-scenarios`
+- 环境验收：
+  容器启动、Docker 健康检查、后端 `/openapi.json`、前端 `/`
+- 业务验收：
+  `sre_agent/tests/test_start_frontend_backend.py`、`fault_injector/tests/unit/features/scenarios/test_scenarios.py`、`python -m fault_injector list-scenarios`
 
-GitLab predefined variable reference for the short commit ID:
+GitLab 的短 commit ID 使用预定义变量：
 
-`CI_COMMIT_SHORT_SHA` is documented by GitLab as the first 8 characters of `CI_COMMIT_SHA`.
+`CI_COMMIT_SHORT_SHA`
+
+官方定义是 `CI_COMMIT_SHA` 的前 8 位。

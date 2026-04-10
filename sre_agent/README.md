@@ -268,9 +268,9 @@
 | [runtime](/home/kevin/project/cube-studio/sre_agent/runtime) | Tool channel bootstrap and health model |
 | [frontend](/home/kevin/project/cube-studio/sre_agent/frontend) | Web UI |
 | [scripts](/home/kevin/project/cube-studio/sre_agent/scripts) | Startup helpers, demos, probes, sync utilities |
-| [deploy](/home/kevin/project/cube-studio/sre_agent/deploy) | SOP, FAQ, release checklist, Kubernetes, Helm |
+| [deploy](/home/kevin/project/cube-studio/sre_agent/deploy) | Kubernetes、Helm 和 GitLab CI 相关的部署资源与脚本 |
 | [docker](/home/kevin/project/cube-studio/sre_agent/docker) | Dockerfiles, image build, container run scripts |
-| [docs](/home/kevin/project/cube-studio/sre_agent/docs) | Progress, tool catalog, contracts, acceptance notes |
+| [docs](/home/kevin/project/cube-studio/sre_agent/docs) | 项目说明、部署文档、GitLab 流水线文档、tool catalog、contract、acceptance notes |
 
 ## 6. Deployment Documentation Index
 
@@ -278,7 +278,7 @@
 
 ### 6.1 First Read
 
-- [deploy/SOP.md](/home/kevin/project/cube-studio/sre_agent/deploy/SOP.md)
+- [docs/deploy/SOP.md](/home/kevin/project/cube-studio/sre_agent/docs/deploy/SOP.md)
 
 用途：
 
@@ -286,7 +286,7 @@
 
 ### 6.2 Troubleshooting
 
-- [deploy/FAQ.md](/home/kevin/project/cube-studio/sre_agent/deploy/FAQ.md)
+- [docs/deploy/FAQ.md](/home/kevin/project/cube-studio/sre_agent/docs/deploy/FAQ.md)
 
 用途：
 
@@ -294,13 +294,21 @@
 
 ### 6.3 Release Execution
 
-- [deploy/RELEASE_CHECKLIST.md](/home/kevin/project/cube-studio/sre_agent/deploy/RELEASE_CHECKLIST.md)
+- [docs/deploy/RELEASE_CHECKLIST.md](/home/kevin/project/cube-studio/sre_agent/docs/deploy/RELEASE_CHECKLIST.md)
 
 用途：
 
 - 规范化每次构建、推送、部署、验收、回滚准备的检查动作
 
-### 6.4 Automated Build And Release
+### 6.4 Release Notes
+
+- [docs/RELEASE_NOTES.md](/home/kevin/project/cube-studio/sre_agent/docs/RELEASE_NOTES.md)
+
+用途：
+
+- 记录容器化、云原生部署、GitLab CI 流水线与通知能力等阶段性迭代成果
+
+### 6.5 Automated Build And Release
 
 - [docs/gitlab/PIPELINE_RUNBOOK.md](/home/kevin/project/cube-studio/sre_agent/docs/gitlab/PIPELINE_RUNBOOK.md)
 - [docs/gitlab/README.md](/home/kevin/project/cube-studio/sre_agent/docs/gitlab/README.md)
@@ -311,7 +319,7 @@
 - 说明基础镜像、业务镜像、preview、验证、snapshot 发布、手动 release promotion 的规则
 - 提供 GitLab 变量、schedule、Runner 要求和镜像 tag 规范
 
-### 6.5 Raw Kubernetes Manifests
+### 6.6 Raw Kubernetes Manifests
 
 - [deploy/k8s](/home/kevin/project/cube-studio/sre_agent/deploy/k8s)
 
@@ -319,7 +327,7 @@
 
 - 使用 `Deployment + Service + ConfigMap + Secret` 直接部署
 
-### 6.6 Helm Chart
+### 6.7 Helm Chart
 
 - [deploy/helm/sre-agent-web](/home/kevin/project/cube-studio/sre_agent/deploy/helm/sre-agent-web)
 
@@ -332,7 +340,7 @@
 推荐新人按这个顺序熟悉项目：
 
 1. 先读本页 README，建立整体认知
-2. 再看 [deploy/SOP.md](/home/kevin/project/cube-studio/sre_agent/deploy/SOP.md)，理解运行和交付方式
+2. 再看 [docs/deploy/SOP.md](/home/kevin/project/cube-studio/sre_agent/docs/deploy/SOP.md)，理解运行和交付方式
 3. 再看 [docs/current_progress.md](/home/kevin/project/cube-studio/sre_agent/docs/current_progress.md)，了解当前实现边界
 4. 再看 [docs/tool-catalog.md](/home/kevin/project/cube-studio/sre_agent/docs/tool-catalog.md)，理解 agent 实际可调用的工具
 5. 最后按职责深入相应模块，例如 `agent/`、`remediation/`、`ontology/`、`frontend/`
