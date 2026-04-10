@@ -1,60 +1,66 @@
 from __future__ import annotations
 
-import re
-from dataclasses import replace
-from typing import Iterable
+from dataclasses import dataclass
+from enum import Enum
+from fnmatch import fnmatchcase
+from typing import Any, Iterable
 
-from sre_agent.skills.registry import SkillDescriptor
+
+class SkillDecision(str, Enum):
+    ALLOW = "allow"
+    DENY = "deny"
+    ASK = "ask"
+
+
+@dataclass(frozen=True)
+class SkillPolicyResult:
+    decision: SkillDecision
+    reason: str = ""
 
 
 class SkillPolicy:
-    """Deterministic keyword/tag based skill matching policy."""
+    """Execution policy for skill scripts."""
 
-    def rank(self, query: str, skills: Iterable[SkillDescriptor], top_k: int = 5) -> list[SkillDescriptor]:
-        terms = self._tokenize(query)
-        ranked: list[SkillDescriptor] = []
-        for skill in skills:
-            score = self._score(skill, terms)
-            ranked.append(replace(skill, match_score=score))
-        # Stable deterministic sort: highest score first, then skill id.
-        ranked.sort(key=lambda item: (-item.match_score, item.id))
-        return ranked[: max(1, int(top_k))]
+    def __init__(
+        self,
+        *,
+        default_decision: SkillDecision | str = SkillDecision.ALLOW,
+        deny: Iterable[str] | None = None,
+        ask: Iterable[str] | None = None,
+    ) -> None:
+        self.default_decision = self._normalize(default_decision)
+        self.deny_patterns = tuple(str(item).strip() for item in (deny or []) if str(item).strip())
+        self.ask_patterns = tuple(str(item).strip() for item in (ask or []) if str(item).strip())
+
+    def evaluate(
+        self,
+        *,
+        skill_id: str,
+        script: str | None = None,
+        context: dict[str, Any] | None = None,
+    ) -> SkillPolicyResult:
+        _ = context
+        target = f"{skill_id}:{script}" if script else skill_id
+        for pattern in self.deny_patterns:
+            if fnmatchcase(target, pattern) or fnmatchcase(skill_id, pattern):
+                return SkillPolicyResult(
+                    decision=SkillDecision.DENY,
+                    reason=f"skill execution denied by policy pattern: {pattern}",
+                )
+        for pattern in self.ask_patterns:
+            if fnmatchcase(target, pattern) or fnmatchcase(skill_id, pattern):
+                return SkillPolicyResult(
+                    decision=SkillDecision.ASK,
+                    reason=f"skill execution requires approval due to policy pattern: {pattern}",
+                )
+        return SkillPolicyResult(decision=self.default_decision, reason="default skill execution policy")
 
     @staticmethod
-    def _tokenize(query: str) -> list[str]:
-        terms = [part.strip().lower() for part in re.split(r"[^a-zA-Z0-9_:-]+", query or "") if part.strip()]
-        return terms
-
-    @staticmethod
-    def _score(skill: SkillDescriptor, terms: list[str]) -> float:
-        if not terms:
-            return 0.0
-        name = skill.name.lower()
-        summary = skill.summary.lower()
-        tags = [tag.lower() for tag in skill.tags]
-        haystack = " ".join([name, summary, " ".join(tags)])
-        total = 0.0
-        matched_tags = 0
-        for term in terms:
-            if term in tags:
-                total += 2.0
-                matched_tags += 1
-            elif term in name:
-                total += 1.5
-            elif term in summary:
-                total += 1.0
-            elif term in haystack:
-                total += 0.5
-        # Reward skills whose tags align with multiple alert/query concepts,
-        # which helps alert-shaped queries prefer reusable diagnosis playbooks.
-        if matched_tags >= 2:
-            total += 2.0
-        if matched_tags >= 3:
-            total += 1.0
-        joined_terms = " ".join(terms)
-        if all(tag in joined_terms for tag in tags[:2]):
-            total += 1.0
-        max_score = 2.0 * len(terms)
-        if max_score <= 0:
-            return 0.0
-        return round(min(1.0, total / max_score), 4)
+    def _normalize(value: SkillDecision | str) -> SkillDecision:
+        if isinstance(value, SkillDecision):
+            return value
+        text = str(value).strip().lower()
+        for candidate in SkillDecision:
+            if candidate.value == text:
+                return candidate
+        raise ValueError(f"unknown skill decision: {value!r}")

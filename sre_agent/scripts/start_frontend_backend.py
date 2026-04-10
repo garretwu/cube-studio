@@ -21,7 +21,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import jwt
@@ -95,6 +95,25 @@ def resolve_npm_command() -> str:
         if found:
             return found
     raise SystemExit("missing required command: npm (or npm.cmd)")
+
+
+def ensure_frontend_dependencies(frontend_dir: Path) -> None:
+    package_json = frontend_dir / "package.json"
+    if not package_json.exists():
+        raise SystemExit(f"frontend package manifest not found: {package_json}")
+
+    vite_candidates = [
+        frontend_dir / "node_modules" / ".bin" / "vite",
+        frontend_dir / "node_modules" / ".bin" / "vite.cmd",
+    ]
+    if any(candidate.exists() for candidate in vite_candidates):
+        return
+
+    install_cmd = f"cd {frontend_dir} && npm install"
+    raise SystemExit(
+        "frontend dependencies are missing: local Vite executable not found under "
+        f"{frontend_dir / 'node_modules' / '.bin'}. Run `{install_cmd}` and retry."
+    )
 
 
 def _http_json_request(
@@ -280,7 +299,7 @@ def _encode_token(
         "username": username,
         "role": role,
         "aud": audience,
-        "exp": datetime.now(UTC) + timedelta(seconds=expire_seconds),
+        "exp": datetime.now(timezone.utc) + timedelta(seconds=expire_seconds),
     }
     return jwt.encode(payload, secret, algorithm=algorithm)
 
@@ -392,6 +411,9 @@ def wait_backend_ready(
 
 
 def main() -> int:
+    frontend_dir = REPO_ROOT / "sre_agent" / "frontend"
+    ensure_frontend_dependencies(frontend_dir)
+
     backend_port = _next_free_port(args.backend_host, args.backend_port)
     frontend_port = _next_free_port("0.0.0.0", args.frontend_port)
     if backend_port != args.backend_port:

@@ -1,12 +1,7 @@
 ---
+id: builtin-network-diagnosis
 name: Network Diagnosis
 description: Diagnose network-related latency and transport symptoms through metrics, RDMA stats, and pod state.
----
-
-## Runtime Metadata
-```yaml
-id: builtin-network-diagnosis
-scope: builtin
 permissions:
   - read:network
   - read:k8s
@@ -15,32 +10,18 @@ tags:
   - network
   - rdma
   - latency
-```
+---
 
-## Steps
-```yaml
-- description: Verify RTT/packet-loss signal via Prometheus.
-  tool: prometheus.query_instant
-  params:
-    promql: "${promql}"
-- description: Inspect tc qdisc/netem rules on target interface.
-  tool: network.get_tc_qdisc
-  params:
-    node: "${node}"
-- description: Check NIC link state and negotiated speed/duplex.
-  tool: network.get_nic_link_state
-  params:
-    node: "${node}"
-- description: Check NIC error/drop counters for queue issues.
-  tool: network.get_nic_counters
-  params:
-    node: "${node}"
-- description: Check RDMA statistics on target node.
-  tool: network.get_rdma_stats
-  params:
-    node: "${node}"
-- description: Inspect impacted namespace pod list.
-  tool: k8s.list_pods
-  params:
-    namespace: "${namespace}"
-```
+## When To Use
+- Transport or network alerts where latency, packet loss, or RDMA degradation may be involved.
+- Pod traffic problems that could be caused by node or fabric-level instability.
+
+## Required Context
+- `node`
+- `namespace`
+- `promql` for the affected network or latency signal
+
+## Suggested Checks
+- Confirm the transport symptom from metrics.
+- Read RDMA or link statistics on the target node.
+- Inspect impacted pods in the target namespace.

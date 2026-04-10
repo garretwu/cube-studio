@@ -1,11 +1,362 @@
-sync-feature-branch:
-  image: alpine/git:latest
-  script:
-    - git config --global user.email "ci-bot@gitlab.local"
-    - git config --global user.name "CI Sync Bot"
-    - git remote add github https://${GITHUB_TOKEN}@${GITHUB_URL} || true
-    - git fetch github ${SYNC_BRANCH}:${SYNC_BRANCH}
-    - git push origin ${SYNC_BRANCH} --force
+workflow:
   rules:
-    # 仅当 pipeline 由 schedule 触发时才执行此 job
-    - if: $CI_PIPELINE_SOURCE == "schedule"
+    - if: '$CI_COMMIT_BRANCH == "feature/sre-c-core-infra" && $CI_PIPELINE_SOURCE == "schedule" && $PIPELINE_KIND =~ /^(weekly_build|cleanup|base_refresh)$/'
+    - if: '$CI_COMMIT_BRANCH == "feature/sre-c-core-infra" && $CI_PIPELINE_SOURCE != "schedule" && $FORCE_FULL_PIPELINE == "1"'
+    - if: '$CI_COMMIT_BRANCH == "feature/sre-c-core-infra" && $CI_PIPELINE_SOURCE != "schedule"'
+      changes:
+        - .gitlab-ci.yml
+        - .dockerignore
+        - fault_injector/**/*
+        - lib/**/*
+        - sre_agent/VERSION
+        - sre_agent/conf/**/*
+        - sre_agent/docker/**/*
+        - sre_agent/frontend/**/*
+        - sre_agent/agent/**/*
+        - sre_agent/api/**/*
+        - sre_agent/auth/**/*
+        - sre_agent/knowledge/**/*
+        - sre_agent/memory/**/*
+        - sre_agent/ontology/**/*
+        - sre_agent/remediation/**/*
+        - sre_agent/runtime/**/*
+        - sre_agent/safety/**/*
+        - sre_agent/topology/**/*
+        - sre_agent/requirements.txt
+        - sre_agent/scripts/start_frontend_backend.py
+        - sre_agent/tests/test_start_frontend_backend.py
+    - when: never
+
+stages:
+  - build
+  - preview
+  - release
+  - cleanup
+
+variables:
+  SRE_CI_BRANCH: "feature/sre-c-core-infra"
+  NEXUS_REGISTRY: "10.11.4.5:5000"
+  IMAGE_NAMESPACE: "cube-studio"
+  BASE_NAME: "sre-agent-base"
+  APP_NAME: "sre-agent-web"
+  IMAGE_TAG_TIMEZONE: "Asia/Shanghai"
+  NEXUS_REGISTRY_SCHEME: "http"
+  DOCKER_TLS_CERTDIR: ""
+  DOCKER_HOST: "tcp://docker:2375"
+  DOCKER_DRIVER: "overlay2"
+
+.sre_agent_docker_job:
+  image: docker:27.0.3-cli
+  interruptible: true
+  services:
+    - name: docker:27.0.3-dind
+      command: ["--tls=false"]
+  before_script:
+    - apk add --no-cache bash curl jq coreutils
+    - chmod +x sre_agent/deploy/gitlab/ci/*.sh
+
+.sre_agent_notify_on_failure:
+  after_script:
+    - sre_agent/deploy/gitlab/ci/notify_feishu.sh
+
+.sre_agent_branch_rules:
+  rules:
+    - if: '$CI_COMMIT_BRANCH == $SRE_CI_BRANCH && $CI_PIPELINE_SOURCE != "schedule" && $FORCE_FULL_PIPELINE == "1"'
+    - if: '$CI_COMMIT_BRANCH == $SRE_CI_BRANCH && $CI_PIPELINE_SOURCE != "schedule"'
+      changes:
+        - .gitlab-ci.yml
+        - .dockerignore
+        - fault_injector/**/*
+        - lib/**/*
+        - sre_agent/VERSION
+        - sre_agent/conf/**/*
+        - sre_agent/docker/**/*
+        - sre_agent/frontend/**/*
+        - sre_agent/agent/**/*
+        - sre_agent/api/**/*
+        - sre_agent/auth/**/*
+        - sre_agent/knowledge/**/*
+        - sre_agent/memory/**/*
+        - sre_agent/ontology/**/*
+        - sre_agent/remediation/**/*
+        - sre_agent/runtime/**/*
+        - sre_agent/safety/**/*
+        - sre_agent/topology/**/*
+        - sre_agent/requirements.txt
+        - sre_agent/scripts/start_frontend_backend.py
+        - sre_agent/tests/test_start_frontend_backend.py
+
+.sre_agent_weekly_rules:
+  rules:
+    - if: '$CI_COMMIT_BRANCH == $SRE_CI_BRANCH && $CI_PIPELINE_SOURCE == "schedule" && $PIPELINE_KIND == "weekly_build"'
+
+.sre_agent_refresh_rules:
+  rules:
+    - if: '$CI_COMMIT_BRANCH == $SRE_CI_BRANCH && $CI_PIPELINE_SOURCE == "schedule" && $PIPELINE_KIND == "base_refresh"'
+
+prepare_sre_agent_metadata:
+  extends: .sre_agent_docker_job
+  stage: build
+  script:
+    - sre_agent/deploy/gitlab/ci/generate_metadata.sh
+    - cat dist/pipeline.env
+  artifacts:
+    paths:
+      - dist/pipeline.env
+    reports:
+      dotenv: dist/pipeline.env
+  rules:
+    - if: '$CI_COMMIT_BRANCH == $SRE_CI_BRANCH && $CI_PIPELINE_SOURCE != "schedule" && $FORCE_FULL_PIPELINE == "1"'
+    - if: '$CI_COMMIT_BRANCH == $SRE_CI_BRANCH && $CI_PIPELINE_SOURCE != "schedule"'
+      changes:
+        - .gitlab-ci.yml
+        - .dockerignore
+        - fault_injector/**/*
+        - lib/**/*
+        - sre_agent/VERSION
+        - sre_agent/conf/**/*
+        - sre_agent/docker/**/*
+        - sre_agent/frontend/**/*
+        - sre_agent/agent/**/*
+        - sre_agent/api/**/*
+        - sre_agent/auth/**/*
+        - sre_agent/knowledge/**/*
+        - sre_agent/memory/**/*
+        - sre_agent/ontology/**/*
+        - sre_agent/remediation/**/*
+        - sre_agent/runtime/**/*
+        - sre_agent/safety/**/*
+        - sre_agent/topology/**/*
+        - sre_agent/requirements.txt
+        - sre_agent/scripts/start_frontend_backend.py
+        - sre_agent/tests/test_start_frontend_backend.py
+    - if: '$CI_COMMIT_BRANCH == $SRE_CI_BRANCH && $CI_PIPELINE_SOURCE == "schedule" && $PIPELINE_KIND == "weekly_build"'
+    - if: '$CI_COMMIT_BRANCH == $SRE_CI_BRANCH && $CI_PIPELINE_SOURCE == "schedule" && $PIPELINE_KIND == "base_refresh"'
+
+build_sre_agent_base:
+  extends:
+    - .sre_agent_docker_job
+    - .sre_agent_notify_on_failure
+  stage: build
+  needs:
+    - job: prepare_sre_agent_metadata
+      artifacts: true
+  script:
+    - sre_agent/deploy/gitlab/ci/build_base_image.sh
+  artifacts:
+    paths:
+      - dist/pipeline.env
+      - dist/base-image.tar
+      - dist/build-base.env
+  rules:
+    - if: '$CI_COMMIT_BRANCH == $SRE_CI_BRANCH && $FORCE_BASE_BUILD == "1"'
+    - if: '$CI_COMMIT_BRANCH == $SRE_CI_BRANCH && $CI_PIPELINE_SOURCE != "schedule"'
+      changes:
+        - fault_injector/requirements.txt
+        - sre_agent/requirements.txt
+        - sre_agent/docker/Dockerfile.base
+        - sre_agent/frontend/package.json
+        - sre_agent/frontend/package-lock.json
+    - if: '$CI_COMMIT_BRANCH == $SRE_CI_BRANCH && $CI_PIPELINE_SOURCE == "schedule" && $PIPELINE_KIND == "base_refresh"'
+
+build_sre_agent_web:
+  stage: build
+  needs:
+    - job: prepare_sre_agent_metadata
+      artifacts: true
+    - job: build_sre_agent_base
+      artifacts: true
+      optional: true
+  script:
+    - sre_agent/deploy/gitlab/ci/build_web_image.sh
+  artifacts:
+    paths:
+      - dist/pipeline.env
+      - dist/base-image.tar
+      - dist/build-base.env
+      - dist/web-image.tar
+      - dist/build-web.env
+  extends:
+    - .sre_agent_docker_job
+    - .sre_agent_branch_rules
+    - .sre_agent_notify_on_failure
+
+weekly_build_sre_agent_web:
+  stage: build
+  needs:
+    - job: prepare_sre_agent_metadata
+      artifacts: true
+    - job: build_sre_agent_base
+      artifacts: true
+      optional: true
+  script:
+    - sre_agent/deploy/gitlab/ci/build_web_image.sh
+  artifacts:
+    paths:
+      - dist/pipeline.env
+      - dist/base-image.tar
+      - dist/build-base.env
+      - dist/web-image.tar
+      - dist/build-web.env
+  variables:
+    PIPELINE_KIND: "weekly_build"
+  extends:
+    - .sre_agent_docker_job
+    - .sre_agent_weekly_rules
+    - .sre_agent_notify_on_failure
+
+refresh_build_sre_agent_web:
+  stage: build
+  needs:
+    - job: prepare_sre_agent_metadata
+      artifacts: true
+    - job: build_sre_agent_base
+      artifacts: true
+      optional: true
+  script:
+    - sre_agent/deploy/gitlab/ci/build_web_image.sh
+  artifacts:
+    paths:
+      - dist/pipeline.env
+      - dist/base-image.tar
+      - dist/build-base.env
+      - dist/web-image.tar
+      - dist/build-web.env
+  extends:
+    - .sre_agent_docker_job
+    - .sre_agent_refresh_rules
+    - .sre_agent_notify_on_failure
+
+preview_sre_agent_web:
+  stage: preview
+  needs:
+    - job: build_sre_agent_web
+      artifacts: true
+  script:
+    - sre_agent/deploy/gitlab/ci/run_preview_container.sh
+    - cat dist/preview.env
+  artifacts:
+    paths:
+      - dist/preview.env
+    reports:
+      dotenv: dist/preview.env
+  extends:
+    - .sre_agent_docker_job
+    - .sre_agent_branch_rules
+    - .sre_agent_notify_on_failure
+
+validate_sre_agent_runtime:
+  extends:
+    - .sre_agent_docker_job
+    - .sre_agent_notify_on_failure
+  stage: release
+  needs:
+    - job: build_sre_agent_web
+      artifacts: true
+      optional: true
+    - job: weekly_build_sre_agent_web
+      artifacts: true
+      optional: true
+    - job: refresh_build_sre_agent_web
+      artifacts: true
+      optional: true
+    - job: build_sre_agent_base
+      artifacts: true
+      optional: true
+    - job: preview_sre_agent_web
+      optional: true
+  script:
+    - sre_agent/deploy/gitlab/ci/validate_runtime_smoke.sh
+  rules:
+    - if: '$CI_COMMIT_BRANCH == $SRE_CI_BRANCH && $CI_PIPELINE_SOURCE != "schedule"'
+    - if: '$CI_COMMIT_BRANCH == $SRE_CI_BRANCH && $CI_PIPELINE_SOURCE == "schedule" && $PIPELINE_KIND == "weekly_build"'
+    - if: '$CI_COMMIT_BRANCH == $SRE_CI_BRANCH && $CI_PIPELINE_SOURCE == "schedule" && $PIPELINE_KIND == "base_refresh"'
+
+validate_sre_agent_business:
+  extends:
+    - .sre_agent_docker_job
+    - .sre_agent_notify_on_failure
+  stage: release
+  needs:
+    - job: prepare_sre_agent_metadata
+      artifacts: true
+    - job: build_sre_agent_web
+      artifacts: true
+      optional: true
+    - job: weekly_build_sre_agent_web
+      artifacts: true
+      optional: true
+    - job: refresh_build_sre_agent_web
+      artifacts: true
+      optional: true
+    - job: build_sre_agent_base
+      artifacts: true
+      optional: true
+  script:
+    - sre_agent/deploy/gitlab/ci/validate_business_suite.sh
+  rules:
+    - if: '$CI_COMMIT_BRANCH == $SRE_CI_BRANCH && $CI_PIPELINE_SOURCE != "schedule"'
+    - if: '$CI_COMMIT_BRANCH == $SRE_CI_BRANCH && $CI_PIPELINE_SOURCE == "schedule" && $PIPELINE_KIND == "weekly_build"'
+    - if: '$CI_COMMIT_BRANCH == $SRE_CI_BRANCH && $CI_PIPELINE_SOURCE == "schedule" && $PIPELINE_KIND == "base_refresh"'
+
+publish_sre_agent_snapshot:
+  extends:
+    - .sre_agent_docker_job
+    - .sre_agent_notify_on_failure
+  stage: release
+  needs:
+    - job: build_sre_agent_web
+      artifacts: true
+      optional: true
+    - job: weekly_build_sre_agent_web
+      artifacts: true
+      optional: true
+    - job: refresh_build_sre_agent_web
+      artifacts: true
+      optional: true
+    - job: build_sre_agent_base
+      artifacts: true
+      optional: true
+    - job: validate_sre_agent_runtime
+    - job: validate_sre_agent_business
+  script:
+    - sre_agent/deploy/gitlab/ci/push_images.sh
+  rules:
+    - if: '$CI_COMMIT_BRANCH == $SRE_CI_BRANCH && $CI_PIPELINE_SOURCE != "schedule"'
+    - if: '$CI_COMMIT_BRANCH == $SRE_CI_BRANCH && $CI_PIPELINE_SOURCE == "schedule" && $PIPELINE_KIND == "weekly_build"'
+    - if: '$CI_COMMIT_BRANCH == $SRE_CI_BRANCH && $CI_PIPELINE_SOURCE == "schedule" && $PIPELINE_KIND == "base_refresh"'
+
+promote_sre_agent_release:
+  extends:
+    - .sre_agent_docker_job
+    - .sre_agent_notify_on_failure
+  stage: release
+  needs:
+    - job: build_sre_agent_web
+      artifacts: true
+      optional: true
+    - job: weekly_build_sre_agent_web
+      artifacts: true
+      optional: true
+    - job: refresh_build_sre_agent_web
+      artifacts: true
+      optional: true
+    - job: validate_sre_agent_runtime
+    - job: validate_sre_agent_business
+  script:
+    - sre_agent/deploy/gitlab/ci/promote_release.sh
+  when: manual
+  allow_failure: false
+  rules:
+    - if: '$CI_COMMIT_BRANCH == $SRE_CI_BRANCH && $CI_PIPELINE_SOURCE != "schedule"'
+    - if: '$CI_COMMIT_BRANCH == $SRE_CI_BRANCH && $CI_PIPELINE_SOURCE == "schedule" && $PIPELINE_KIND == "weekly_build"'
+
+cleanup_sre_agent_runtime:
+  extends:
+    - .sre_agent_docker_job
+    - .sre_agent_notify_on_failure
+  stage: cleanup
+  script:
+    - sre_agent/deploy/gitlab/ci/cleanup_docker_state.sh
+  rules:
+    - if: '$CI_COMMIT_BRANCH == $SRE_CI_BRANCH && $CI_PIPELINE_SOURCE == "schedule" && $PIPELINE_KIND == "cleanup"'

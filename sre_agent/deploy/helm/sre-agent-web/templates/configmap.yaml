@@ -1,0 +1,13 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "sre-agent-web.fullname" . }}-config
+  labels:
+    {{- include "sre-agent-web.labels" . | nindent 4 }}
+data:
+  BACKEND_PORT: {{ .Values.config.backendPort | quote }}
+  FRONTEND_PORT: {{ .Values.config.frontendPort | quote }}
+  STARTUP_CONFIG_PATH: {{ .Values.config.startupConfigPath | quote }}
+  STARTUP_BACKEND_HOST: {{ .Values.config.startupBackendHost | quote }}
+  STARTUP_BACKEND_URL_HOST: {{ .Values.config.startupBackendUrlHost | quote }}
+  SRE_KUBECONFIG: {{ .Values.config.sreKubeconfig | quote }}

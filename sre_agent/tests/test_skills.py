@@ -1,29 +1,12 @@
 from __future__ import annotations
 
+import tempfile
 import unittest
 from pathlib import Path
 from typing import Any
 
-from sre_agent.skills import SkillExecutor, SkillPolicy, SkillRegistry, SkillRegistryError
+from sre_agent.skills import SkillDecision, SkillExecutor, SkillPolicy, SkillRegistry, rank_skills
 from sre_agent.tools import ToolExecutionContext, build_default_registry
-
-
-class _FakeSSHChannel:
-    async def run_command(self, node: str, command: str, use_sudo: bool = False) -> Any:
-        _ = node, command, use_sudo
-
-        class Result:
-            success = True
-            output = "ok"
-            error = ""
-
-        return Result()
-
-
-class _FakeK8sClient:
-    def list_pods(self, namespace: str, label_selector: str | None = None) -> list[dict[str, Any]]:
-        _ = label_selector
-        return [{"name": "pod-a", "namespace": namespace, "status": {"phase": "Running"}}]
 
 
 class _FakePrometheus:
@@ -32,148 +15,203 @@ class _FakePrometheus:
         return 1.0
 
 
-class _FailingPrometheus:
-    async def query_instant(self, promql: str) -> Any:
-        _ = promql
-        raise RuntimeError("prometheus unavailable")
-
-
-class _FakeSkillChannelBundle:
-    @staticmethod
-    def context() -> ToolExecutionContext:
-        from lib.channels.kubernetes import K8sChannel
-
-        return ToolExecutionContext(
-            channels={
-                "k8s": K8sChannel(client=_FakeK8sClient()),
-                "prometheus": _FakePrometheus(),
-                "ssh": _FakeSSHChannel(),
-            }
-        )
-
-
 class TestSkillsUnit(unittest.IsolatedAsyncioTestCase):
-    async def test_registry_discovers_builtin_skills(self) -> None:
+    async def test_registry_discovers_builtin_skills_including_doc_first_skill(self) -> None:
         registry = SkillRegistry()
-        skills = registry.discover()
-        self.assertEqual(len(skills), 6)
+        skills = registry.discover(refresh=True)
         ids = {skill.id for skill in skills}
         self.assertIn("builtin-vllm-diagnosis", ids)
-        self.assertIn("builtin-platform-health", ids)
+        self.assertIn("gpu-fault-sop", ids)
+        gpu_fault = registry.get("gpu-fault-sop")
+        self.assertIn("gpu_health_check.sh", gpu_fault.scripts)
 
-    async def test_registry_rejects_invalid_skill_markdown(self) -> None:
-        tmp_root = Path("sre_agent/tests/.tmp_skills")
-        bad_skill_dir = tmp_root / "bad-skill"
-        bad_skill_dir.mkdir(parents=True, exist_ok=True)
-        (bad_skill_dir / "SKILL.md").write_text(
-            "---\nname: bad\nscope: builtin\nsummary: missing id\npermissions: []\ntags: []\n---\n\n## Steps\n```yaml\n[]\n```\n",
-            encoding="utf-8",
-        )
-        try:
-            registry = SkillRegistry(root=tmp_root)
-            with self.assertRaises(SkillRegistryError):
-                registry.discover()
-        finally:
-            for item in sorted(tmp_root.rglob("*"), reverse=True):
-                if item.is_file():
-                    item.unlink(missing_ok=True)
-                elif item.is_dir():
-                    item.rmdir()
+    async def test_registry_supports_claude_style_skill_with_scripts_and_references(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir) / "skills"
+            skill_dir = root / "diag" / "network-check"
+            (skill_dir / "scripts").mkdir(parents=True, exist_ok=True)
+            (skill_dir / "references").mkdir(parents=True, exist_ok=True)
+            (skill_dir / "SKILL.md").write_text(
+                """---
+name: sre:network-check
+description: Diagnose a network issue from a Claude-style skill.
+version: "1.0"
+---
 
-    async def test_policy_rank_is_deterministic(self) -> None:
+# Network Check
+
+## Notes
+Read the reference first and then run the script.
+""",
+                encoding="utf-8",
+            )
+            (skill_dir / "scripts" / "check.sh").write_text("#!/usr/bin/env bash\necho ready\n", encoding="utf-8")
+            (skill_dir / "references" / "triage.md").write_text("look at link state\n", encoding="utf-8")
+
+            registry = SkillRegistry(root=root)
+            skills = registry.discover(refresh=True)
+            self.assertEqual(len(skills), 1)
+            skill = skills[0]
+            self.assertEqual(skill.id, "sre:network-check")
+            self.assertEqual(skill.version, "1.0")
+            self.assertEqual(skill.scripts, ["check.sh"])
+            self.assertEqual(skill.references, ["triage.md"])
+
+    async def test_registry_skips_invalid_skill_and_records_warning(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir) / "skills"
+            good = root / "good-skill"
+            bad = root / "bad-skill"
+            good.mkdir(parents=True, exist_ok=True)
+            bad.mkdir(parents=True, exist_ok=True)
+            (good / "SKILL.md").write_text(
+                "---\nname: good-skill\ndescription: ok\n---\n\n# Good Skill\n",
+                encoding="utf-8",
+            )
+            (bad / "SKILL.md").write_text("---\nname: [broken\ndescription: nope\n", encoding="utf-8")
+            registry = SkillRegistry(root=root)
+            skills = registry.discover(refresh=True)
+            self.assertEqual([item.id for item in skills], ["good-skill"])
+            self.assertTrue(registry.warnings)
+
+    async def test_rank_skills_prefers_vllm_skill_for_alert_like_query(self) -> None:
         registry = SkillRegistry()
-        skills = registry.discover()
-        policy = SkillPolicy()
-
-        ranked = policy.rank("rdma network anomaly", skills, top_k=3)
-        self.assertEqual(len(ranked), 3)
-        self.assertGreaterEqual(ranked[0].match_score, ranked[1].match_score)
-        self.assertIn("rdma", " ".join(ranked[0].tags).lower())
-
-    async def test_policy_prefers_vllm_skill_for_alert_like_query(self) -> None:
-        registry = SkillRegistry()
-        skills = registry.discover()
-        policy = SkillPolicy()
-
-        ranked = policy.rank(
+        skills = registry.discover(refresh=True)
+        ranked = rank_skills(
             (
                 "alertname VLLMInterTokenLatencyP95High "
                 "summary vLLM inter-token latency p95 is high "
-                "service qwen3-32b-fp8-202602261 "
-                "topology inference_service gpu"
+                "service qwen3-32b-fp8-202602261 topology inference_service gpu"
             ),
             skills,
             top_k=3,
         )
         self.assertEqual(ranked[0].id, "builtin-vllm-diagnosis")
 
-    async def test_executor_success_path(self) -> None:
-        skill_registry = SkillRegistry()
-        skill_registry.discover()
-        skill = skill_registry.get("builtin-platform-health")
+    async def test_skill_policy_returns_allow_ask_and_deny(self) -> None:
+        policy = SkillPolicy(deny=["builtin-danger:*"], ask=["gpu-fault-sop:gpu_benchmark.sh"])
+        self.assertEqual(
+            policy.evaluate(skill_id="builtin-vllm-diagnosis", script="noop.sh").decision,
+            SkillDecision.ALLOW,
+        )
+        self.assertEqual(
+            policy.evaluate(skill_id="gpu-fault-sop", script="gpu_benchmark.sh").decision,
+            SkillDecision.ASK,
+        )
+        self.assertEqual(
+            policy.evaluate(skill_id="builtin-danger", script="wipe.sh").decision,
+            SkillDecision.DENY,
+        )
 
-        tool_registry = build_default_registry()
+    async def test_executor_runs_script_skill(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir) / "skills"
+            skill_dir = root / "scripted"
+            (skill_dir / "scripts").mkdir(parents=True, exist_ok=True)
+            (skill_dir / "SKILL.md").write_text(
+                "---\nname: scripted\ndescription: run a script\n---\n\n# Scripted Skill\n",
+                encoding="utf-8",
+            )
+            (skill_dir / "scripts" / "collect.sh").write_text(
+                "#!/usr/bin/env bash\necho script-ok\n",
+                encoding="utf-8",
+            )
+            registry = SkillRegistry(root=root)
+            skill = registry.discover(refresh=True)[0]
+            executor = SkillExecutor()
+            result = await executor.execute(
+                skill=skill,
+                script="collect.sh",
+                args=[],
+                policy=SkillPolicy(),
+                skill_registry=registry,
+            )
+            self.assertEqual(result.status, "success")
+            self.assertEqual(result.mode, "script")
+            self.assertIn("script-ok", result.stdout)
+
+    async def test_executor_requires_script_parameter(self) -> None:
+        registry = SkillRegistry()
+        skill = registry.get("gpu-fault-sop")
         executor = SkillExecutor()
-        context = _FakeSkillChannelBundle.context()
-        result = await executor.execute(
-            skill=skill,
-            registry=tool_registry,
-            context=context,
-            variables={"namespace": "default", "promql": "up", "node": "worker-01"},
-        )
-
-        self.assertEqual(result.status, "success")
-        self.assertEqual(len(result.tool_runs), 3)
-        self.assertTrue(all(run.success for run in result.tool_runs))
-
-    async def test_executor_continues_on_step_error(self) -> None:
-        skill_registry = SkillRegistry()
-        skill_registry.discover()
-        skill = skill_registry.get("builtin-vllm-diagnosis")
-
-        tool_registry = build_default_registry()
-        executor = SkillExecutor()
-        context = ToolExecutionContext(
-            channels={
-                "k8s": _FakeK8sClient(),  # wrong interface for tool on purpose
-                "prometheus": _FailingPrometheus(),
-                "ssh": _FakeSSHChannel(),
-            }
-        )
-        result = await executor.execute(
-            skill=skill,
-            registry=tool_registry,
-            context=context,
-            variables={"namespace": "default", "promql": "up", "node": "worker-01"},
-        )
-
-        self.assertIn(result.status, {"failed", "partial"})
-        self.assertEqual(len(result.tool_runs), len(skill.steps))
-        self.assertFalse(result.tool_runs[0].success)
-
-    async def test_executor_enforces_v1_tool_whitelist(self) -> None:
-        from sre_agent.skills.registry import SkillDescriptor, SkillStep
-
-        tool_registry = build_default_registry()
-        skill = SkillDescriptor(
-            id="custom-bad",
-            name="Bad",
-            scope="custom",
-            summary="contains disallowed tool",
-            source="skills://bad",
-            permissions=[],
-            tags=[],
-            steps=[SkillStep(tool="ontology.query", params={"entity_type": "node"})],
-        )
-        executor = SkillExecutor()
-        result = await executor.execute(
-            skill=skill,
-            registry=tool_registry,
-            context=_FakeSkillChannelBundle.context(),
-            variables={},
-        )
+        result = await executor.execute(skill=skill)
         self.assertEqual(result.status, "failed")
-        self.assertIn("tool_not_allowed", result.summary)
+        self.assertIn("script", result.summary)
+
+    async def test_skill_tools_cover_list_load_read_and_run(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir) / "skills"
+            skill_dir = root / "doc-skill"
+            (skill_dir / "scripts").mkdir(parents=True, exist_ok=True)
+            (skill_dir / "references").mkdir(parents=True, exist_ok=True)
+            (skill_dir / "SKILL.md").write_text(
+                "---\nname: doc-skill\ndescription: a scripted diagnosis skill\n---\n\n# Doc Skill\n",
+                encoding="utf-8",
+            )
+            (skill_dir / "scripts" / "run.sh").write_text(
+                "#!/usr/bin/env bash\necho $1\n",
+                encoding="utf-8",
+            )
+            (skill_dir / "references" / "guide.md").write_text("read me first\n", encoding="utf-8")
+
+            skill_registry = SkillRegistry(root=root)
+            skill_policy = SkillPolicy()
+            skill_executor = SkillExecutor()
+            tool_registry = build_default_registry()
+            context = ToolExecutionContext(
+                metadata={
+                    "skill_registry": skill_registry,
+                    "skill_policy": skill_policy,
+                    "skill_executor": skill_executor,
+                    "tool_registry": tool_registry,
+                }
+            )
+
+            listed = await tool_registry.execute("skills.list_skills", {"query": "doc scripted"}, context)
+            self.assertTrue(listed.success)
+            self.assertEqual(listed.data["skills"][0]["skill_id"], "doc-skill")
+
+            loaded = await tool_registry.execute("skills.load_skill", {"skill_id": "doc-skill"}, context)
+            self.assertTrue(loaded.success)
+            self.assertIn("Doc Skill", loaded.data["content"])
+
+            reference = await tool_registry.execute(
+                "skills.read_skill_ref",
+                {"skill_id": "doc-skill", "reference": "guide.md"},
+                context,
+            )
+            self.assertTrue(reference.success)
+            self.assertIn("read me first", reference.data["content"])
+
+            executed = await tool_registry.execute(
+                "skills.run_skill",
+                {"skill_id": "doc-skill", "script": "run.sh", "args": ["hello"]},
+                context,
+            )
+            self.assertTrue(executed.success)
+            self.assertEqual(executed.data["status"], "success")
+            self.assertIn("hello", executed.data["stdout"])
+
+    async def test_read_skill_ref_rejects_escape_path(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir) / "skills"
+            skill_dir = root / "doc-skill"
+            (skill_dir / "references").mkdir(parents=True, exist_ok=True)
+            (skill_dir / "SKILL.md").write_text(
+                "---\nname: doc-skill\ndescription: a diagnosis skill\n---\n\n# Doc Skill\n",
+                encoding="utf-8",
+            )
+            (skill_dir / "references" / "guide.md").write_text("guide\n", encoding="utf-8")
+            tool_registry = build_default_registry()
+            context = ToolExecutionContext(metadata={"skill_registry": SkillRegistry(root=root)})
+
+            result = await tool_registry.execute(
+                "skills.read_skill_ref",
+                {"skill_id": "doc-skill", "reference": "../secret.txt"},
+                context,
+            )
+            self.assertFalse(result.success)
+            self.assertIn("must not escape", result.error)
 
 
 if __name__ == "__main__":

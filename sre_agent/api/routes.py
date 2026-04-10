@@ -3436,8 +3436,12 @@ def build_api_router() -> APIRouter:
                 "id": item.id,
                 "name": item.name,
                 "scope": item.scope,
+                "description": item.description,
                 "summary": item.summary,
                 "source": item.source,
+                "path": item.path,
+                "scripts": item.scripts,
+                "references": item.references,
                 "permissions": item.permissions,
                 "match_score": item.match_score,
             }
@@ -3456,5 +3460,4 @@ def build_api_router() -> APIRouter:
         return SREResponse(success=True, data=payload, trace_id=_trace_id(request))
 
     return router
-
 

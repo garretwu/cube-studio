@@ -14,15 +14,12 @@ from sre_agent.agent.checkpoint import create_checkpointer
 from sre_agent.agent.nodes import (
     act_node,
     decide_node,
-    execute_selected_skill_node,
     finalize_node,
     initialize_state,
-    load_and_select_skill_node,
     observe_node,
     reason_node,
     route_after_decide,
     route_after_reason,
-    route_after_skill_selection,
 )
 from sre_agent.agent.state import SREAgentState
 from sre_agent.models.events import EventType
@@ -166,6 +163,28 @@ async def _emit_incremental_trace_events(
         )
 
 
+def _bind_skill_runtime_context(
+    context: ToolExecutionContext | None,
+    *,
+    skill_registry: SkillRegistry,
+    skill_policy: SkillPolicy,
+    skill_executor: SkillExecutor,
+    tool_registry: ToolRegistry,
+) -> ToolExecutionContext:
+    base = context or ToolExecutionContext()
+    metadata = dict(base.metadata)
+    metadata.setdefault("skill_registry", skill_registry)
+    metadata.setdefault("skill_policy", skill_policy)
+    metadata.setdefault("skill_executor", skill_executor)
+    metadata.setdefault("tool_registry", tool_registry)
+    return ToolExecutionContext(
+        channels=dict(base.channels),
+        write_approved=base.write_approved,
+        approval_token=base.approval_token,
+        metadata=metadata,
+    )
+
+
 def create_sre_graph(
     *,
     llm: Any | None = None,
@@ -180,10 +199,17 @@ def create_sre_graph(
     runtime_llm = llm or build_default_llm_from_env()
     runtime_guardrails = guardrails or PassthroughGuardrails()
     wrapped_llm = runtime_guardrails.wrap(runtime_llm)
+    tools = tool_registry or build_default_registry()
     registry = skill_registry or SkillRegistry()
     policy = skill_policy or SkillPolicy()
     executor = skill_executor or SkillExecutor()
-    tools = tool_registry or build_default_registry()
+    effective_context = _bind_skill_runtime_context(
+        tool_context,
+        skill_registry=registry,
+        skill_policy=policy,
+        skill_executor=executor,
+        tool_registry=tools,
+    )
 
     async def _reason(state: SREAgentState) -> SREAgentState:
         try:
@@ -191,8 +217,6 @@ def create_sre_graph(
                 state,
                 llm=wrapped_llm,
                 registry=tools,
-                skill_registry=registry,
-                skill_policy=policy,
             )
             await _emit_incremental_trace_events(
                 trace_callback=trace_callback,
@@ -255,7 +279,7 @@ def create_sre_graph(
 
     async def _act(state: SREAgentState) -> SREAgentState:
         try:
-            next_state = await act_node(state, registry=tools, context=tool_context)
+            next_state = await act_node(state, registry=tools, context=effective_context)
             await _emit_incremental_trace_events(
                 trace_callback=trace_callback,
                 previous_state=state,
@@ -289,81 +313,18 @@ def create_sre_graph(
                 "error": f"act step failed: {exc}",
             }
 
-    async def _execute_selected_skill(state: SREAgentState) -> SREAgentState:
-        return await execute_selected_skill_node(
-            state,
-            registry=registry,
-            executor=executor,
-            context=tool_context,
-            tool_registry=tools,
-        )
-
-    async def _select_skill(state: SREAgentState) -> SREAgentState:
-        try:
-            next_state = await load_and_select_skill_node(
-                state,
-                llm=wrapped_llm,
-                registry=registry,
-                policy=policy,
-                tool_registry=tools,
-            )
-            await _emit_incremental_trace_events(
-                trace_callback=trace_callback,
-                previous_state=state,
-                next_state=next_state,
-            )
-            return next_state
-        except asyncio.TimeoutError:
-            trace_items = list(state.get("trace_items", []))
-            trace_items.append(
-                {
-                    "type": "thought",
-                    "step": state.get("step_count", 0) + 1,
-                    "content": "skill selection step timed out; concluding with evidence collected so far",
-                    "action": "conclude",
-                    "confidence": None,
-                    "tool_params": {"kind": "skill_selection_timeout"},
-                }
-            )
-            return {
-                **state,
-                "trace_items": trace_items,
-                "status": "step_timeout",
-                "summary": "skill selection step timed out; partial diagnosis from collected evidence",
-                "error": "skill selection step timed out",
-            }
-        except Exception as exc:  # noqa: BLE001
-            return {
-                **state,
-                "status": "failed",
-                "summary": f"skill selection step failed: {exc}",
-                "error": f"skill selection step failed: {exc}",
-            }
-
     graph = StateGraph(SREAgentState)
-    graph.add_node("load_and_select_skill", _select_skill)
     graph.add_node("reason", _reason)
     graph.add_node("act", _act)
     graph.add_node("observe", observe_node)
     graph.add_node("decide", decide_node)
-    graph.add_node("execute_selected_skill", _execute_selected_skill)
     graph.add_node("finalize", finalize_node)
 
-    graph.add_edge(START, "load_and_select_skill")
-    graph.add_conditional_edges(
-        "load_and_select_skill",
-        route_after_skill_selection,
-        {
-            "execute_selected_skill": "execute_selected_skill",
-            "reason": "reason",
-            "finalize": "finalize",
-        },
-    )
+    graph.add_edge(START, "reason")
     graph.add_conditional_edges(
         "reason",
         route_after_reason,
         {
-            "execute_selected_skill": "execute_selected_skill",
             "act": "act",
             "finalize": "finalize",
         },
@@ -378,7 +339,6 @@ def create_sre_graph(
             "finalize": "finalize",
         },
     )
-    graph.add_edge("execute_selected_skill", "observe")
     graph.add_edge("finalize", END)
     return graph.compile(checkpointer=create_checkpointer())
 
@@ -401,13 +361,6 @@ async def run_diagnosis(
     step_timeout_sec: float = 120.0,
     total_timeout_sec: float = 600.0,
     max_steps: int = 50,
-    reasoning_context_strategy: str = "state_rebuilt",
-    reasoning_overflow_behavior: str = "fail",
-    reasoning_input_target_tokens: int = 180000,
-    reasoning_model_family: str | None = "MiniMax-M2.7",
-    reason_context_char_budget: int = 2400,
-    tool_message_char_limit: int = 1200,
-    reason_preserve_recent_messages: int = 6,
     checkpoint_dir: str | None = "./data/checkpoints/sre_agent",
     allowed_tool_names: list[str] | None = None,
     trace_callback: TraceEventCallback | None = None,
@@ -430,13 +383,6 @@ async def run_diagnosis(
         step_timeout_sec=step_timeout_sec,
         total_timeout_sec=total_timeout_sec,
         max_steps=max_steps,
-        reasoning_context_strategy=reasoning_context_strategy,
-        reasoning_overflow_behavior=reasoning_overflow_behavior,
-        reasoning_input_target_tokens=reasoning_input_target_tokens,
-        reasoning_model_family=reasoning_model_family,
-        reason_context_char_budget=reason_context_char_budget,
-        tool_message_char_limit=tool_message_char_limit,
-        reason_preserve_recent_messages=reason_preserve_recent_messages,
         checkpoint_dir=checkpoint_dir,
         allowed_tool_names=allowed_tool_names,
         alert_snapshot=alert_snapshot,
@@ -479,7 +425,7 @@ async def run_diagnosis(
 
 
 _STREAM_GRAPH_NODES = frozenset(
-    {"load_and_select_skill", "reason", "act", "observe", "decide", "execute_selected_skill", "finalize"},
+    {"reason", "act", "observe", "decide", "finalize"},
 )
 
 
@@ -501,13 +447,6 @@ async def run_diagnosis_stream(
     step_timeout_sec: float = 120.0,
     total_timeout_sec: float = 600.0,
     max_steps: int = 50,
-    reasoning_context_strategy: str = "state_rebuilt",
-    reasoning_overflow_behavior: str = "fail",
-    reasoning_input_target_tokens: int = 180000,
-    reasoning_model_family: str | None = "MiniMax-M2.7",
-    reason_context_char_budget: int = 2400,
-    tool_message_char_limit: int = 1200,
-    reason_preserve_recent_messages: int = 6,
     checkpoint_dir: str | None = "./data/checkpoints/sre_agent",
     allowed_tool_names: list[str] | None = None,
 ) -> AsyncIterator[dict[str, Any]]:
@@ -534,13 +473,6 @@ async def run_diagnosis_stream(
         step_timeout_sec=step_timeout_sec,
         total_timeout_sec=total_timeout_sec,
         max_steps=max_steps,
-        reasoning_context_strategy=reasoning_context_strategy,
-        reasoning_overflow_behavior=reasoning_overflow_behavior,
-        reasoning_input_target_tokens=reasoning_input_target_tokens,
-        reasoning_model_family=reasoning_model_family,
-        reason_context_char_budget=reason_context_char_budget,
-        tool_message_char_limit=tool_message_char_limit,
-        reason_preserve_recent_messages=reason_preserve_recent_messages,
         checkpoint_dir=checkpoint_dir,
         allowed_tool_names=allowed_tool_names,
         alert_snapshot=alert_snapshot,

@@ -1,21 +1,14 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass, field
+import os
+import sys
+from dataclasses import asdict, dataclass, field
+from pathlib import Path
 from typing import Any
 
-from sre_agent.skills.registry import SkillDescriptor
-from sre_agent.tools import ToolExecutionContext, ToolRegistry
-
-
-@dataclass(frozen=True)
-class ToolRunResult:
-    step: int
-    tool: str
-    params: dict[str, Any]
-    success: bool
-    data: Any = None
-    error: str = ""
+from sre_agent.skills.policy import SkillDecision, SkillPolicy, SkillPolicyResult
+from sre_agent.skills.registry import SkillDescriptor, SkillRegistry, SkillRegistryError
 
 
 @dataclass(frozen=True)
@@ -23,138 +16,211 @@ class SkillExecutionResult:
     skill_id: str
     status: str
     summary: str
-    tool_runs: list[ToolRunResult] = field(default_factory=list)
+    mode: str
+    script: str | None = None
+    args: list[str] = field(default_factory=list)
+    exit_code: int | None = None
+    stdout: str = ""
+    stderr: str = ""
+    timed_out: bool = False
+    policy_decision: str = SkillDecision.ALLOW.value
+    audit: dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
 
 
 class SkillExecutor:
-    """Execute skill steps sequentially against ToolRegistry."""
+    """Execute Claude-style skill scripts."""
 
-    DEFAULT_ALLOWED_TOOLS = {
-        "prometheus.query_instant",
-        "k8s.list_pods",
-        "gpu.get_metrics",
-        "network.get_rdma_stats",
-        "network.get_tc_qdisc",
-        "network.get_nic_link_state",
-        "network.get_nic_counters",
-    }
+    DEFAULT_TIMEOUT_SEC = 300
+    DEFAULT_OUTPUT_LIMIT = 8000
 
     async def execute(
         self,
         *,
         skill: SkillDescriptor,
-        registry: ToolRegistry,
-        context: ToolExecutionContext,
-        variables: dict[str, Any] | None = None,
-        allowed_tools: set[str] | None = None,
-        step_timeout_sec: float | None = None,
+        script: str | None = None,
+        args: list[str] | None = None,
+        policy: SkillPolicy | None = None,
+        skill_registry: SkillRegistry | None = None,
+        timeout_sec: int | float | None = None,
+        output_limit: int | None = None,
     ) -> SkillExecutionResult:
-        vars_payload = variables or {}
-        whitelist = allowed_tools or self.DEFAULT_ALLOWED_TOOLS
-        runs: list[ToolRunResult] = []
-        failed_steps: list[int] = []
-
-        for idx, step in enumerate(skill.steps, start=1):
-            if step.tool not in whitelist:
-                reason = f"tool_not_allowed: {step.tool} not in v1 allowed tools"
-                runs.append(
-                    ToolRunResult(
-                        step=idx,
-                        tool=step.tool,
-                        params=step.params,
-                        success=False,
-                        error=reason,
-                    )
-                )
-                failed_steps.append(idx)
-                continue
-
-            try:
-                resolved_params = self._resolve_params(step.params, vars_payload)
-            except ValueError as exc:
-                reason = str(exc)
-                runs.append(
-                    ToolRunResult(
-                        step=idx,
-                        tool=step.tool,
-                        params=step.params,
-                        success=False,
-                        error=reason,
-                    )
-                )
-                failed_steps.append(idx)
-                continue
-
-            try:
-                if step_timeout_sec is not None:
-                    result = await asyncio.wait_for(
-                        registry.execute(step.tool, resolved_params, context),
-                        timeout=step_timeout_sec,
-                    )
-                else:
-                    result = await registry.execute(step.tool, resolved_params, context)
-            except asyncio.TimeoutError:
-                runs.append(
-                    ToolRunResult(
-                        step=idx,
-                        tool=step.tool,
-                        params=resolved_params,
-                        success=False,
-                        error=f"tool timed out after {step_timeout_sec}s",
-                    )
-                )
-                failed_steps.append(idx)
-                continue
-
-            run = ToolRunResult(
-                step=idx,
-                tool=step.tool,
-                params=resolved_params,
-                success=result.success,
-                data=result.data,
-                error=result.error,
-            )
-            runs.append(run)
-            if not result.success:
-                failed_steps.append(idx)
-
-        if failed_steps:
-            status = "partial" if len(failed_steps) < len(skill.steps) else "failed"
-            succeeded = len(runs) - len(failed_steps)
-            first_error = next((r.error for r in runs if not r.success), "")
+        if not script:
             return SkillExecutionResult(
                 skill_id=skill.id,
-                status=status,
-                summary=f"completed {succeeded}/{len(runs)} steps; failed at steps {failed_steps}: {first_error}",
-                tool_runs=runs,
+                status="failed",
+                summary="parameter 'script' is required for skill execution",
+                mode="script",
             )
-
-        return SkillExecutionResult(
-            skill_id=skill.id,
-            status="success",
-            summary=f"success: {len(runs)} step(s) succeeded",
-            tool_runs=runs,
+        return await self.execute_script(
+            skill=skill,
+            script=script,
+            args=args or [],
+            policy=policy or SkillPolicy(),
+            skill_registry=skill_registry,
+            timeout_sec=timeout_sec,
+            output_limit=output_limit,
         )
 
-    @classmethod
-    def _resolve_params(cls, params: dict[str, Any], variables: dict[str, Any]) -> dict[str, Any]:
-        out: dict[str, Any] = {}
-        for key, value in params.items():
-            out[key] = cls._resolve_value(value, variables)
-        return out
+    async def execute_script(
+        self,
+        *,
+        skill: SkillDescriptor,
+        script: str,
+        args: list[str],
+        policy: SkillPolicy,
+        skill_registry: SkillRegistry | None = None,
+        timeout_sec: int | float | None = None,
+        output_limit: int | None = None,
+    ) -> SkillExecutionResult:
+        registry = skill_registry or SkillRegistry()
+        try:
+            script_path = registry.resolve_script_path(skill.id, script)
+        except SkillRegistryError as exc:
+            return SkillExecutionResult(
+                skill_id=skill.id,
+                status="failed",
+                summary=str(exc),
+                mode="script",
+                script=script,
+                args=list(args),
+            )
 
-    @classmethod
-    def _resolve_value(cls, value: Any, variables: dict[str, Any]) -> Any:
-        if isinstance(value, str):
-            value = value.strip()
-            if value.startswith("${") and value.endswith("}"):
-                var_name = value[2:-1].strip()
-                if var_name not in variables:
-                    raise ValueError(f"missing required variable: {var_name}")
-                return variables[var_name]
+        decision = policy.evaluate(skill_id=skill.id, script=script)
+        if decision.decision is SkillDecision.DENY:
+            return SkillExecutionResult(
+                skill_id=skill.id,
+                status="denied",
+                summary=decision.reason,
+                mode="script",
+                script=script,
+                args=list(args),
+                policy_decision=decision.decision.value,
+                audit=self._build_audit(skill=skill, script_path=script_path, args=args, decision=decision),
+            )
+        if decision.decision is SkillDecision.ASK:
+            return SkillExecutionResult(
+                skill_id=skill.id,
+                status="ask",
+                summary=decision.reason,
+                mode="script",
+                script=script,
+                args=list(args),
+                policy_decision=decision.decision.value,
+                audit=self._build_audit(skill=skill, script_path=script_path, args=args, decision=decision),
+            )
+
+        command = self._build_command(script_path, args)
+        env = self._build_env()
+        limit = max(256, int(output_limit or self.DEFAULT_OUTPUT_LIMIT))
+        timeout = max(1, int(timeout_sec or self.DEFAULT_TIMEOUT_SEC))
+        stdout = ""
+        stderr = ""
+        exit_code: int | None = None
+        timed_out = False
+        try:
+            process = await asyncio.create_subprocess_exec(
+                *command,
+                cwd=str(skill.directory),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env=env,
+            )
+            try:
+                raw_stdout, raw_stderr = await asyncio.wait_for(process.communicate(), timeout=timeout)
+            except asyncio.TimeoutError:
+                timed_out = True
+                process.kill()
+                raw_stdout, raw_stderr = await process.communicate()
+            stdout = self._truncate(raw_stdout.decode("utf-8", errors="replace"), limit)
+            stderr = self._truncate(raw_stderr.decode("utf-8", errors="replace"), limit)
+            exit_code = process.returncode
+        except Exception as exc:  # noqa: BLE001
+            return SkillExecutionResult(
+                skill_id=skill.id,
+                status="failed",
+                summary=f"skill script execution failed: {exc}",
+                mode="script",
+                script=script,
+                args=list(args),
+                policy_decision=decision.decision.value,
+                audit=self._build_audit(skill=skill, script_path=script_path, args=args, decision=decision),
+            )
+
+        status = "success" if not timed_out and exit_code == 0 else "failed"
+        summary = f"script completed with exit_code={exit_code}"
+        if timed_out:
+            summary = f"script timed out after {timeout}s"
+        elif exit_code not in (0, None):
+            summary = f"script exited with code {exit_code}"
+        return SkillExecutionResult(
+            skill_id=skill.id,
+            status=status,
+            summary=summary,
+            mode="script",
+            script=script,
+            args=list(args),
+            exit_code=exit_code,
+            stdout=stdout,
+            stderr=stderr,
+            timed_out=timed_out,
+            policy_decision=decision.decision.value,
+            audit=self._build_audit(skill=skill, script_path=script_path, args=args, decision=decision),
+        )
+
+    @staticmethod
+    def _build_command(script_path: Path, args: list[str]) -> list[str]:
+        suffix = script_path.suffix.lower()
+        normalized_args = [str(item) for item in args]
+        if suffix == ".py":
+            return [sys.executable, str(script_path), *normalized_args]
+        if suffix in {".sh", ".bash"}:
+            return ["bash", str(script_path), *normalized_args]
+        return [str(script_path), *normalized_args]
+
+    @staticmethod
+    def _truncate(value: str, limit: int) -> str:
+        if len(value) <= limit:
             return value
-        if isinstance(value, dict):
-            return {k: cls._resolve_value(v, variables) for k, v in value.items()}
-        if isinstance(value, list):
-            return [cls._resolve_value(item, variables) for item in value]
-        return value
+        return value[: limit - 3] + "..."
+
+    @staticmethod
+    def _build_env() -> dict[str, str]:
+        allowed_exact = {
+            "HOME",
+            "LANG",
+            "LC_ALL",
+            "PATH",
+            "PYTHONPATH",
+            "PYTHONUNBUFFERED",
+            "KUBECONFIG",
+        }
+        allowed_prefixes = ("SRE_", "OPENAI_", "CUDA_", "NVIDIA_")
+        env: dict[str, str] = {}
+        for key, value in os.environ.items():
+            if key in allowed_exact or key.startswith(allowed_prefixes):
+                env[key] = value
+        env.setdefault("PATH", os.environ.get("PATH", ""))
+        env.setdefault("LANG", "C.UTF-8")
+        env.setdefault("LC_ALL", "C.UTF-8")
+        return env
+
+    @staticmethod
+    def _build_audit(
+        *,
+        skill: SkillDescriptor,
+        script_path: Path,
+        args: list[str],
+        decision: SkillPolicyResult,
+    ) -> dict[str, Any]:
+        return {
+            "skill_id": skill.id,
+            "skill_path": skill.path,
+            "script": script_path.name,
+            "script_path": str(script_path),
+            "args": [str(item) for item in args],
+            "policy_decision": decision.decision.value,
+            "policy_reason": decision.reason,
+        }

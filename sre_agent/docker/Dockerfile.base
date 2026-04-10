@@ -1,0 +1,33 @@
+FROM node:20-bookworm-slim AS node_runtime
+
+FROM python:3.11-slim-bookworm
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PATH=/usr/local/bin:${PATH} \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    npm_config_update_notifier=false
+
+COPY --from=node_runtime /usr/local/ /usr/local/
+
+WORKDIR /app
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        bash \
+        build-essential \
+        ca-certificates \
+        libffi-dev \
+        python3.11-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY fault_injector/requirements.txt /app/fault_injector/requirements.txt
+COPY sre_agent/requirements.txt /app/sre_agent/requirements.txt
+COPY sre_agent/frontend/package.json /app/sre_agent/frontend/package.json
+COPY sre_agent/frontend/package-lock.json /app/sre_agent/frontend/package-lock.json
+
+RUN python -m pip install --upgrade pip setuptools wheel \
+    && python -m pip install -r /app/sre_agent/requirements.txt \
+    && npm --prefix /app/sre_agent/frontend ci \
+    && npm cache clean --force
