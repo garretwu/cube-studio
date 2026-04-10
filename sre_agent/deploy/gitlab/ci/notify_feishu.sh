@@ -50,9 +50,34 @@ user_name="${GITLAB_USER_NAME:-system}"
 
 send_card() {
   local payload="$1"
-  curl -fsS -X POST "${FEISHU_WEBHOOK_URL}" \
-    -H "Content-Type: application/json" \
-    -d "${payload}" >/dev/null
+  local response=""
+  response="$(
+    curl -fsS -X POST "${FEISHU_WEBHOOK_URL}" \
+      -H "Content-Type: application/json" \
+      -d "${payload}"
+  )"
+
+  FEISHU_RESPONSE="${response}" "${PYTHON_BIN}" - <<'PY'
+import json
+import os
+import sys
+
+raw = os.environ.get("FEISHU_RESPONSE", "").strip()
+if not raw:
+    print("empty response from Feishu webhook", file=sys.stderr)
+    sys.exit(1)
+
+try:
+    payload = json.loads(raw)
+except json.JSONDecodeError:
+    print(f"unexpected Feishu response: {raw}", file=sys.stderr)
+    sys.exit(1)
+
+code = payload.get("code")
+if code not in (0, "0"):
+    print(f"Feishu webhook rejected the message: {raw}", file=sys.stderr)
+    sys.exit(1)
+PY
 }
 
 failure_payload() {
