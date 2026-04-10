@@ -639,7 +639,7 @@ def build_api_router() -> APIRouter:
             tool_name = str(step.tool or "").strip().lower()
             if tool_name.startswith("k8s."):
                 required.add("k8s")
-            if tool_name == "kill_process" or tool_name.startswith("ssh."):
+            if tool_name in {"kill_process", "network.clear_tc_qdisc"} or tool_name.startswith("ssh."):
                 required.add("ssh")
         return sorted(required)
 
