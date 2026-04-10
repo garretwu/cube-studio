@@ -12,15 +12,21 @@ require_env NEXUS_PASSWORD
 IMAGE_NAMESPACE="${IMAGE_NAMESPACE:-cube-studio}"
 BASE_NAME="${BASE_NAME:-sre-agent-base}"
 TAGS_URL="$(registry_tags_api "${BASE_NAME}")"
+PYTHON_BIN="$(python_cmd)"
 
 response="$(curl -fsSL -u "${NEXUS_USERNAME}:${NEXUS_PASSWORD}" "${TAGS_URL}")"
 
 latest_tag="$(
-  echo "${response}" \
-    | jq -r '.tags[]? // empty' \
-    | awk '/^base-[0-9]{12}$/' \
-    | sort \
-    | tail -n 1
+  RESPONSE_JSON="${response}" "${PYTHON_BIN}" - <<'PY'
+import json
+import os
+import re
+
+payload = json.loads(os.environ["RESPONSE_JSON"])
+tags = payload.get("tags") or []
+base_tags = sorted(tag for tag in tags if re.fullmatch(r"base-\d{12}", str(tag)))
+print(base_tags[-1] if base_tags else "")
+PY
 )"
 
 if [ -z "${latest_tag}" ]; then

@@ -5,6 +5,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck disable=SC1091
 source "${SCRIPT_DIR}/common.sh"
 
+PYTHON_BIN="$(python_cmd)"
+
 if [ -z "${FEISHU_WEBHOOK_URL:-}" ]; then
   log "FEISHU_WEBHOOK_URL is not configured, skipping Feishu notification"
   exit 0
@@ -101,117 +103,86 @@ elif [ "${pipeline_kind}" = "cleanup" ]; then
 fi
 
 payload="$(
-  jq -nc \
-    --arg project_path "${project_path}" \
-    --arg branch_name "${branch_name}" \
-    --arg pipeline_kind "${pipeline_kind}" \
-    --arg stage_name "${stage_name}" \
-    --arg job_name "${job_name}" \
-    --arg job_status "${job_status}" \
-    --arg short_sha "${short_sha}" \
-    --arg user_name "${user_name}" \
-    --arg timestamp_human "${timestamp_human}" \
-    --arg commit_title "${commit_title:-N/A}" \
-    --arg pipeline_link "${pipeline_link_markdown}" \
-    --arg job_link "${job_link_markdown}" \
-    --arg card_title "${card_title}" \
-    --arg card_template "${card_template}" \
-    --arg pipeline_button_label "${pipeline_button_label}" \
-    --arg job_button_label "${job_button_label}" \
-    --arg next_action "${next_action}" \
-    '{
-      msg_type: "interactive",
-      card: {
-        schema: "2.0",
-        config: {
-          wide_screen_mode: true
+  PROJECT_PATH="${project_path}" \
+  BRANCH_NAME="${branch_name}" \
+  PIPELINE_KIND="${pipeline_kind}" \
+  STAGE_NAME="${stage_name}" \
+  JOB_NAME="${job_name}" \
+  JOB_STATUS="${job_status}" \
+  SHORT_SHA="${short_sha}" \
+  USER_NAME="${user_name}" \
+  TIMESTAMP_HUMAN="${timestamp_human}" \
+  COMMIT_TITLE="${commit_title:-N/A}" \
+  PIPELINE_LINK="${pipeline_link_markdown}" \
+  JOB_LINK="${job_link_markdown}" \
+  CARD_TITLE="${card_title}" \
+  CARD_TEMPLATE="${card_template}" \
+  PIPELINE_BUTTON_LABEL="${pipeline_button_label}" \
+  JOB_BUTTON_LABEL="${job_button_label}" \
+  NEXT_ACTION="${next_action}" \
+  "${PYTHON_BIN}" - <<'PY'
+import json
+import os
+
+payload = {
+    "msg_type": "interactive",
+    "card": {
+        "schema": "2.0",
+        "config": {"wide_screen_mode": True},
+        "header": {
+            "template": os.environ["CARD_TEMPLATE"],
+            "title": {"tag": "plain_text", "content": os.environ["CARD_TITLE"]},
         },
-        header: {
-          template: $card_template,
-          title: {
-            tag: "plain_text",
-            content: $card_title
-          }
-        },
-        elements: [
-          {
-            tag: "div",
-            text: {
-              tag: "lark_md",
-              content:
-                "**Project**: \($project_path)\n" +
-                "**Branch**: \($branch_name)\n" +
-                "**Pipeline Kind**: \($pipeline_kind)\n" +
-                "**Stage**: \($stage_name)\n" +
-                "**Job**: \($job_name)\n" +
-                "**Status**: \($job_status)"
-            }
-          },
-          {
-            tag: "div",
-            fields: [
-              {
-                is_short: true,
-                text: {
-                  tag: "lark_md",
-                  content: "**Commit**\n\($short_sha)"
-                }
-              },
-              {
-                is_short: true,
-                text: {
-                  tag: "lark_md",
-                  content: "**User**\n\($user_name)"
-                }
-              },
-              {
-                is_short: true,
-                text: {
-                  tag: "lark_md",
-                  content: "**Time**\n\($timestamp_human)"
-                }
-              },
-              {
-                is_short: true,
-                text: {
-                  tag: "lark_md",
-                  content: "**Commit Title**\n\($commit_title)"
-                }
-              }
-            ]
-          },
-          {
-            tag: "div",
-            text: {
-              tag: "lark_md",
-              content: "**Suggested Next Action**\n\($next_action)"
-            }
-          },
-          {
-            tag: "action",
-            actions: [
-              {
-                tag: "button",
-                text: {
-                  tag: "plain_text",
-                  content: $pipeline_button_label
+        "elements": [
+            {
+                "tag": "div",
+                "text": {
+                    "tag": "lark_md",
+                    "content": (
+                        f"**Project**: {os.environ['PROJECT_PATH']}\n"
+                        f"**Branch**: {os.environ['BRANCH_NAME']}\n"
+                        f"**Pipeline Kind**: {os.environ['PIPELINE_KIND']}\n"
+                        f"**Stage**: {os.environ['STAGE_NAME']}\n"
+                        f"**Job**: {os.environ['JOB_NAME']}\n"
+                        f"**Status**: {os.environ['JOB_STATUS']}"
+                    ),
                 },
-                type: "primary",
-                url: $pipeline_link
-              },
-              {
-                tag: "button",
-                text: {
-                  tag: "plain_text",
-                  content: $job_button_label
-                },
-                url: $job_link
-              }
-            ]
-          }
-        ]
-      }
-    }'
+            },
+            {
+                "tag": "div",
+                "fields": [
+                    {"is_short": True, "text": {"tag": "lark_md", "content": f"**Commit**\n{os.environ['SHORT_SHA']}"}},
+                    {"is_short": True, "text": {"tag": "lark_md", "content": f"**User**\n{os.environ['USER_NAME']}"}},
+                    {"is_short": True, "text": {"tag": "lark_md", "content": f"**Time**\n{os.environ['TIMESTAMP_HUMAN']}"}},
+                    {"is_short": True, "text": {"tag": "lark_md", "content": f"**Commit Title**\n{os.environ['COMMIT_TITLE']}"}},
+                ],
+            },
+            {
+                "tag": "div",
+                "text": {"tag": "lark_md", "content": f"**Suggested Next Action**\n{os.environ['NEXT_ACTION']}"},
+            },
+            {
+                "tag": "action",
+                "actions": [
+                    {
+                        "tag": "button",
+                        "text": {"tag": "plain_text", "content": os.environ["PIPELINE_BUTTON_LABEL"]},
+                        "type": "primary",
+                        "url": os.environ["PIPELINE_LINK"],
+                    },
+                    {
+                        "tag": "button",
+                        "text": {"tag": "plain_text", "content": os.environ["JOB_BUTTON_LABEL"]},
+                        "url": os.environ["JOB_LINK"],
+                    },
+                ],
+            },
+        ],
+    },
+}
+
+print(json.dumps(payload, ensure_ascii=False))
+PY
 )"
 
 curl -fsS -X POST "${FEISHU_WEBHOOK_URL}" \

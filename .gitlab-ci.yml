@@ -52,7 +52,9 @@ variables:
     - name: docker:27.0.3-dind
       command: ["--tls=false"]
   before_script:
-    - apk add --no-cache bash curl jq coreutils
+    - source sre_agent/deploy/gitlab/ci/common.sh
+    - ensure_ci_tooling
+    - ensure_docker_access
     - chmod +x sre_agent/deploy/gitlab/ci/*.sh
 
 .sre_agent_notify_on_failure:
