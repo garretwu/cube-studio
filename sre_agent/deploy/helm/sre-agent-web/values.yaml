@@ -1,7 +1,7 @@
 replicaCount: 1
 
 image:
-  repository: cube-studio/sre-agent-web
+  repository: sre_agent/sre-agent-web
   tag: ""
   pullPolicy: IfNotPresent
 

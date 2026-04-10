@@ -13,12 +13,12 @@
 | `ci/common.sh` | 提供日志、仓库认证、镜像命名、时间戳解析等公共函数。 |
 | `ci/generate_metadata.sh` | 生成镜像时间戳、tag 和 `dist/pipeline.env` 元数据文件。 |
 | `ci/resolve_latest_base_tag.sh` | 从 Nexus 查询最新的 `base-YYYYMMDDHHMM` 基础镜像 tag。 |
-| `ci/build_base_image.sh` | 构建基础镜像并导出为 tar 制品。 |
-| `ci/build_web_image.sh` | 基于最新可用基础镜像构建业务镜像并导出为 tar 制品。 |
+| `ci/build_base_image.sh` | 构建基础镜像。 |
+| `ci/build_web_image.sh` | 基于最新可用基础镜像构建业务镜像。 |
 | `ci/run_preview_container.sh` | 启动 preview 容器，自动规避端口和容器名冲突，并等待健康检查通过。 |
 | `ci/validate_runtime_smoke.sh` | 执行容器启动、健康检查、后端 OpenAPI 和前端首页的环境验收。 |
 | `ci/validate_business_suite.sh` | 在基础镜像环境中执行选定的后端与故障注入业务测试。 |
-| `ci/push_images.sh` | 将生成的镜像 tar 推送到 Nexus，并输出 `docker pull` 地址。 |
+| `ci/push_images.sh` | 将生成的镜像推送到 Nexus，并输出 `docker pull` 地址。 |
 | `ci/promote_release.sh` | 手动把已验证通过的业务镜像提升为正式 release tag。 |
 | `ci/notify_feishu.sh` | 在满足条件时向飞书群机器人发送失败通知卡片。 |
 | `ci/cleanup_docker_state.sh` | 清理过期 preview 容器、旧镜像和旧缓存，并保留关键最新版本。 |
@@ -75,6 +75,7 @@
 - 只有 `SRE_OPENAI_API_KEY` 支持在未显式声明时 fallback 到 [config.yaml](/home/kevin/project/cube-studio/sre_agent/conf/config.yaml) 中的 `llm.api_key`
 - `NEXUS_USERNAME`、`NEXUS_PASSWORD`、`FEISHU_WEBHOOK_URL` 这类 CI/CD 凭证仍然必须显式配置在 GitLab Variables 中
 - 如果设置了 `PREVIEW_PUBLIC_HOST`，即使 preview 因 `PREVIEW_DOCKER_HOST` 不可达而回退到 runner 本地 Docker，日志中仍优先输出 `PREVIEW_PUBLIC_HOST:随机端口` 作为浏览器访问地址
+- 默认镜像命名空间为 `sre_agent`，例如 `10.11.4.5:5000/sre_agent/sre-agent-web:<tag>`
 
 ## Schedule 变量
 
@@ -99,7 +100,7 @@
 
 当前流水线把“快照发布”和“正式发版”拆成两层：
 
-- `publish_sre_agent_snapshot`：自动把已验证通过的 commit 或 weekly 镜像推送到 Nexus。
+- `publish_sre_agent_snapshot`：在 preview 成功后自动把 commit 或 weekly 镜像推送到 Nexus，供内部测试和联调共享。
 - `promote_sre_agent_release`：手动执行，把已验证通过的业务镜像重新打成 `VERSION-YYYYMMDDHHMM`。
 - 如果手动触发时没有提供 `RELEASE_VERSION`，就读取 `sre_agent/VERSION` 里的默认版本。
 

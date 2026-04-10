@@ -37,7 +37,7 @@ stages:
 variables:
   SRE_CI_BRANCH: "feature/sre-c-core-infra"
   NEXUS_REGISTRY: "10.11.4.5:5000"
-  IMAGE_NAMESPACE: "cube-studio"
+  IMAGE_NAMESPACE: "sre_agent"
   BASE_NAME: "sre-agent-base"
   APP_NAME: "sre-agent-web"
   IMAGE_TAG_TIMEZONE: "Asia/Shanghai"
@@ -321,13 +321,10 @@ publish_sre_agent_snapshot:
       optional: true
     - job: preview_sre_agent_web
       optional: false
-    - job: validate_sre_agent_runtime
-    - job: validate_sre_agent_business
   script:
     - sre_agent/deploy/gitlab/ci/push_images.sh
   rules:
     - if: '$CI_COMMIT_BRANCH == $SRE_CI_BRANCH && $CI_PIPELINE_SOURCE != "schedule"'
-      when: manual
     - if: '$CI_COMMIT_BRANCH == $SRE_CI_BRANCH && $CI_PIPELINE_SOURCE == "schedule" && $PIPELINE_KIND == "weekly_build"'
     - if: '$CI_COMMIT_BRANCH == $SRE_CI_BRANCH && $CI_PIPELINE_SOURCE == "schedule" && $PIPELINE_KIND == "base_refresh"'
 

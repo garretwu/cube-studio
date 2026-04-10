@@ -4,7 +4,7 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 IMAGE_REGISTRY="${IMAGE_REGISTRY:-}"
-IMAGE_NAMESPACE="${IMAGE_NAMESPACE:-cube-studio}"
+IMAGE_NAMESPACE="${IMAGE_NAMESPACE:-sre_agent}"
 BASE_NAME="${BASE_NAME:-sre-agent-base}"
 APP_NAME="${APP_NAME:-sre-agent-web}"
 IMAGE_TIMESTAMP="${IMAGE_TIMESTAMP:-$(date +%Y%m%d%H%M)}"

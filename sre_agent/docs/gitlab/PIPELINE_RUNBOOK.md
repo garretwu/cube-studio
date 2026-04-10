@@ -13,7 +13,7 @@
 - 分支：`feature/sre-c-core-infra`
 - 镜像地址格式：`10.11.4.5:5000/<namespace>/<image-name>:<tag>`
 - 目标：
-  自动构建 `sre_agent` Web 工程镜像，提供 preview 容器，执行环境与业务验收，将验证通过的镜像发布到 Nexus，并支持手动提升为正式 release
+  自动构建 `sre_agent` Web 工程镜像，提供 preview 容器，自动发布可共享的 snapshot 镜像，执行手动验收，并支持手动提升为正式 release
 
 其他分支不会命中这套流程，入口限制由 [`.gitlab-ci.yml`](/home/kevin/project/cube-studio/.gitlab-ci.yml) 中的 `workflow: rules` 控制。
 
@@ -32,9 +32,9 @@
 2. 仅在依赖输入变化时重建基础镜像
 3. 使用最新可用基础镜像构建业务镜像
 4. 启动 preview 容器并输出访问地址
-5. 执行环境验收和业务验收
-6. 将验证通过的快照镜像推送到 Nexus
-7. 如有需要，再手动把本次验证通过的版本提升为正式 release
+5. preview 成功后自动将 snapshot 镜像推送到 Nexus，供内部测试和调试共享
+6. 如有需要，再手动执行环境验收和业务验收
+7. 最后按需手动把本次确认通过的版本提升为正式 release
 
 普通提交默认只在“业务相关改动”发生时才会进入这套完整流程。
 
@@ -85,7 +85,7 @@ Preview 规则：
 | --- | --- | --- |
 | `validate_sre_agent_runtime` | 验证环境可用性，包括容器启动、后端接口和前端页面。 | 普通提交、`weekly_build`、`base_refresh` |
 | `validate_sre_agent_business` | 验证后端和故障注入模块的核心业务行为。 | 普通提交、`weekly_build`、`base_refresh` |
-| `publish_sre_agent_snapshot` | 将验证通过的快照镜像推送到 Nexus，并输出 `docker pull` 地址。 | 两类验收全部通过后 |
+| `publish_sre_agent_snapshot` | 在 preview 成功后自动将快照镜像推送到 Nexus，并输出 `docker pull` 地址。 | preview 成功后 |
 | `promote_sre_agent_release` | 手动提升为正式 release 镜像。 | 手动触发 |
 
 当前 release 门禁拆成两层：
@@ -259,7 +259,7 @@ Preview 规则：
 
 ### 8.1 普通提交流程
 
-适用于日常在 `feature/sre-c-core-infra` 上开发时的自动构建与预览。
+适用于日常在 `feature/sre-c-core-infra` 上开发时的自动构建、预览与快照共享。
 
 预期行为：
 
@@ -268,7 +268,8 @@ Preview 规则：
 3. 构建业务快照镜像
 4. 创建 preview 容器
 5. 在 `preview_sre_agent_web` 日志末尾查看 `Frontend URL`
-6. 由人工确认页面和服务效果
+6. preview 成功后自动推送 `snapshot` 镜像到 Nexus
+7. 由人工确认页面和服务效果
 
 如果只是文档改动或轻量无关改动，这条重流水线默认不会创建。
 
@@ -280,8 +281,9 @@ FORCE_FULL_PIPELINE=1
 
 说明：
 
-- 普通提交场景下，`validate_sre_agent_runtime`、`validate_sre_agent_business`、`publish_sre_agent_snapshot`、`promote_sre_agent_release` 都改为手动触发
-- 也就是说，开发提交流水线不会在 preview 之后自动继续发布
+- 普通提交场景下，`publish_sre_agent_snapshot` 会在 preview 成功后自动执行
+- `validate_sre_agent_runtime`、`validate_sre_agent_business`、`promote_sre_agent_release` 仍然保留为手动触发
+- 也就是说，开发提交流水线会自动生成 preview 并上传候选镜像，但正式 release 仍需人工确认
 
 预览访问形式：
 
@@ -292,7 +294,7 @@ http://10.11.4.5:<frontend-port>
 快照镜像拉取形式：
 
 ```bash
-docker pull 10.11.4.5:5000/cube-studio/sre-agent-web:<shortsha-yyyymmddhhmm>
+docker pull 10.11.4.5:5000/sre_agent/sre-agent-web:<shortsha-yyyymmddhhmm>
 ```
 
 ### 8.2 周构建流程
@@ -309,7 +311,7 @@ docker pull 10.11.4.5:5000/cube-studio/sre-agent-web:<shortsha-yyyymmddhhmm>
 周构建镜像拉取形式：
 
 ```bash
-docker pull 10.11.4.5:5000/cube-studio/sre-agent-web:weekly-<yyyymmddhhmm>
+docker pull 10.11.4.5:5000/sre_agent/sre-agent-web:weekly-<yyyymmddhhmm>
 ```
 
 ### 8.3 基础镜像刷新流程
@@ -326,30 +328,28 @@ docker pull 10.11.4.5:5000/cube-studio/sre-agent-web:weekly-<yyyymmddhhmm>
 
 ### 8.4 手动正式发布流程
 
-适用于在 preview 确认无误后，由人工执行验收、发布 snapshot，并按需提升为正式 release。
+适用于在 preview 和自动生成的 snapshot 确认无误后，由人工执行验收，并按需提升为正式 release。
 
 操作方式：
 
 1. 打开 `feature/sre-c-core-infra` 上一条 preview 成功的 pipeline
 2. 先手动执行 `validate_sre_agent_runtime`
 3. 再手动执行 `validate_sre_agent_business`
-4. 等两类验收都成功后，手动执行 `publish_sre_agent_snapshot`
-5. 如果这次只需要候选镜像，到第 4 步即可结束
-6. 如果这次要做正式发版，再最后手动执行 `promote_sre_agent_release`
-7. 如需指定正式版本号，在手动执行 `promote_sre_agent_release` 时传入 `RELEASE_VERSION`
-8. 如果不传，CI 会读取 [sre_agent/VERSION](/home/kevin/project/cube-studio/sre_agent/VERSION)
+4. 如果这次只需要候选镜像，preview 成功并自动完成 `publish_sre_agent_snapshot` 后即可结束
+5. 如果这次要做正式发版，再最后手动执行 `promote_sre_agent_release`
+6. 如需指定正式版本号，在手动执行 `promote_sre_agent_release` 时传入 `RELEASE_VERSION`
+7. 如果不传，CI 会读取 [sre_agent/VERSION](/home/kevin/project/cube-studio/sre_agent/VERSION)
 
 推荐顺序：
 
 1. `validate_sre_agent_runtime`
 2. `validate_sre_agent_business`
-3. `publish_sre_agent_snapshot`
-4. `promote_sre_agent_release`
+3. `promote_sre_agent_release`
 
 正式发布镜像拉取形式：
 
 ```bash
-docker pull 10.11.4.5:5000/cube-studio/sre-agent-web:<version-yyyymmddhhmm>
+docker pull 10.11.4.5:5000/sre_agent/sre-agent-web:<version-yyyymmddhhmm>
 ```
 
 ### 8.5 `snapshot` 与正式 `release` 的区别
@@ -372,7 +372,7 @@ docker pull 10.11.4.5:5000/cube-studio/sre-agent-web:<version-yyyymmddhhmm>
 
 建议理解方式：
 
-- `publish_sre_agent_snapshot`：发布候选镜像
+- `publish_sre_agent_snapshot`：在 preview 成功后自动发布候选镜像
 - `promote_sre_agent_release`：发布正式版本
 
 ### 8.6 夜间或值班场景建议

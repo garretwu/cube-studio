@@ -7,7 +7,7 @@ source "${SCRIPT_DIR}/common.sh"
 
 mkdir -p dist
 
-IMAGE_NAMESPACE="${IMAGE_NAMESPACE:-cube-studio}"
+IMAGE_NAMESPACE="${IMAGE_NAMESPACE:-sre_agent}"
 BASE_NAME="${BASE_NAME:-sre-agent-base}"
 APP_NAME="${APP_NAME:-sre-agent-web}"
 TIMESTAMP="$(timestamp_now)"

@@ -9,7 +9,7 @@ require_env NEXUS_REGISTRY
 require_env NEXUS_USERNAME
 require_env NEXUS_PASSWORD
 
-IMAGE_NAMESPACE="${IMAGE_NAMESPACE:-cube-studio}"
+IMAGE_NAMESPACE="${IMAGE_NAMESPACE:-sre_agent}"
 BASE_NAME="${BASE_NAME:-sre-agent-base}"
 TAGS_URL="$(registry_tags_api "${BASE_NAME}")"
 PYTHON_BIN="$(python_cmd)"
