@@ -133,6 +133,8 @@ PREVIEW_CONTAINER_NAME=${container_name}
 PREVIEW_BACKEND_URL=http://${preview_host}:${backend_host_port}
 PREVIEW_FRONTEND_URL=http://${preview_host}:${frontend_host_port}
 PREVIEW_EXPIRES_AT_EPOCH=${expires_at_epoch}
+PREVIEW_IMAGE_REF=${WEB_IMAGE_REF}
+PREVIEW_IMAGE_PULL=docker pull ${WEB_IMAGE_REF}
 EOF
 
 log "preview backend: http://${preview_host}:${backend_host_port}"
@@ -143,6 +145,7 @@ echo
 echo "========== 预览环境已就绪 =========="
 echo "Frontend URL : http://${preview_host}:${frontend_host_port}"
 echo "Backend URL  : http://${preview_host}:${backend_host_port}"
+echo "Image Pull   : docker pull ${WEB_IMAGE_REF}"
 echo "Container    : ${container_name}"
 echo "TTL Hours    : ${preview_ttl_hours}"
 if [ "${preview_target}" = "remote" ]; then
@@ -150,6 +153,5 @@ if [ "${preview_target}" = "remote" ]; then
 else
   echo "访问说明      : 当前 preview 运行在本地 shell runner 主机上。"
   echo "访问说明      : 只有当 ${preview_host} 对你的机器可达时，浏览器才能直接访问。"
-  echo "访问说明      : 如果要给团队共享，请配置 PREVIEW_DOCKER_HOST 和 PREVIEW_PUBLIC_HOST。"
 fi
 echo "==================================="
