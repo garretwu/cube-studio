@@ -231,6 +231,7 @@ Preview 规则：
 - `weekly_preview_sre_agent_web` 成功时发送 weekly preview ready 卡片，便于团队直接打开周版本页面
 - `publish_preview_snapshot` 成功时发送候选镜像发布卡片，包含 `docker pull ...`
 - `promote_sre_agent_release` 成功时发送正式发布卡片，包含 `Release Tag`、`Web Pull`、`Base Pull`
+- 不同类型的成功卡片使用不同 header 颜色与中文标题，便于在飞书消息流中快速区分 preview、snapshot 和 release
 
 说明：
 

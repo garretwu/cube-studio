@@ -149,8 +149,10 @@ PY
 success_payload() {
   local card_title="$1"
   local card_template="$2"
-  local summary_md="$3"
-  local actions_json="$4"
+  local summary_title="$3"
+  local hint_text="$4"
+  local summary_md="$5"
+  local actions_json="$6"
 
   PROJECT_PATH="${project_path}" \
   BRANCH_NAME="${branch_name}" \
@@ -162,6 +164,8 @@ success_payload() {
   COMMIT_TITLE="${commit_title:-N/A}" \
   CARD_TITLE="${card_title}" \
   CARD_TEMPLATE="${card_template}" \
+  SUMMARY_TITLE="${summary_title}" \
+  HINT_TEXT="${hint_text}" \
   SUMMARY_MD="${summary_md}" \
   ACTIONS_JSON="${actions_json}" \
   "${PYTHON_BIN}" - <<'PY'
@@ -199,9 +203,20 @@ payload = {
                     {"is_short": True, "text": {"tag": "lark_md", "content": f"**Commit Title**\n{os.environ['COMMIT_TITLE']}"}},
                 ],
             },
+            {"tag": "hr"},
+            {
+                "tag": "div",
+                "text": {"tag": "lark_md", "content": f"**{os.environ['SUMMARY_TITLE']}**"},
+            },
             {
                 "tag": "div",
                 "text": {"tag": "lark_md", "content": os.environ["SUMMARY_MD"]},
+            },
+            {
+                "tag": "note",
+                "elements": [
+                    {"tag": "plain_text", "content": os.environ["HINT_TEXT"]},
+                ],
             },
             {
                 "tag": "action",
@@ -276,15 +291,22 @@ notify_failure() {
 
 notify_success() {
   local card_title=""
+  local summary_title=""
+  local hint_text=""
   local summary_md=""
   local actions_json=""
   local card_template="green"
 
   case "${job_name}" in
     preview_sre_agent_web|weekly_preview_sre_agent_web)
-      card_title="SRE Agent Preview Ready"
+      card_title="预览环境已就绪"
+      summary_title="访问与镜像信息"
+      hint_text="可直接通过 Open Preview 打开页面，日志摘要仍会保留在对应 job 中。"
+      card_template="blue"
       if [ "${job_name}" = "weekly_preview_sre_agent_web" ]; then
-        card_title="SRE Agent Weekly Preview Ready"
+        card_title="每周稳定预览已就绪"
+        hint_text="这是 weekly build 生成的稳定预览入口，适合周版本评审与集中演示。"
+        card_template="indigo"
       fi
       summary_md=$(
         cat <<EOF
@@ -332,9 +354,14 @@ PY
       )"
       ;;
     publish_preview_snapshot)
-      card_title="SRE Agent Snapshot Published"
+      card_title="候选镜像已发布"
+      summary_title="镜像获取信息"
+      hint_text="可直接复制 docker pull 命令给测试或联调同学，preview 页面与镜像 tag 一一对应。"
+      card_template="turquoise"
       if [ "${PUBLISHED_LANE:-preview}" = "weekly" ]; then
-        card_title="SRE Agent Weekly Snapshot Published"
+        card_title="每周候选镜像已发布"
+        hint_text="这是 weekly build 产出的候选镜像，可配合 weekly preview 一起评审。"
+        card_template="carmine"
       fi
       summary_md=$(
         cat <<EOF
@@ -382,7 +409,10 @@ PY
       )"
       ;;
     promote_sre_agent_release)
-      card_title="SRE Agent Release Published"
+      card_title="正式发布已完成"
+      summary_title="正式版本信息"
+      hint_text="建议将 Release Tag、镜像获取地址与 pipeline 链接一并同步给团队。"
+      card_template="green"
       summary_md=$(
         cat <<EOF
 **Release Tag**
@@ -429,7 +459,7 @@ PY
     return 0
   fi
 
-  send_card "$(success_payload "${card_title}" "${card_template}" "${summary_md}" "${actions_json}")"
+  send_card "$(success_payload "${card_title}" "${card_template}" "${summary_title}" "${hint_text}" "${summary_md}" "${actions_json}")"
   log "Feishu success card sent for ${job_name}"
 }
 
