@@ -1,5 +1,36 @@
 # SRE Agent Release Notes
 
+2026-04-10 18:40
+
+**Scope**
+
+- 优化 preview 容器保留策略，普通提交不再只保留单个 preview，而是默认保留最近 `3` 个实例，避免测试和评审中的版本被研发新提交立即替换
+- 新增 `weekly_preview_sre_agent_web`，让 `weekly_build` 除了发布 weekly 镜像外，也会生成一个可直接访问的稳定 weekly preview
+- 调整 cleanup 逻辑，普通提交 preview 默认保留最近 `3` 个，weekly preview 保留最新 `1` 个，兼顾资源控制与评审可用性
+- 更新 GitLab 流水线文档，补充 weekly preview 的访问方式与新的 preview 保留策略
+
+**Code**
+
+GitLab CI:
+
+- [/.gitlab-ci.yml](/home/kevin/project/cube-studio/.gitlab-ci.yml)
+- [sre_agent/deploy/gitlab/ci/run_preview_container.sh](/home/kevin/project/cube-studio/sre_agent/deploy/gitlab/ci/run_preview_container.sh)
+- [sre_agent/deploy/gitlab/ci/cleanup_docker_state.sh](/home/kevin/project/cube-studio/sre_agent/deploy/gitlab/ci/cleanup_docker_state.sh)
+
+Docs:
+
+- [sre_agent/docs/gitlab/README.md](/home/kevin/project/cube-studio/sre_agent/docs/gitlab/README.md)
+- [sre_agent/docs/gitlab/PIPELINE_RUNBOOK.md](/home/kevin/project/cube-studio/sre_agent/docs/gitlab/PIPELINE_RUNBOOK.md)
+- [sre_agent/docs/RELEASE_NOTES.md](/home/kevin/project/cube-studio/sre_agent/docs/RELEASE_NOTES.md)
+
+**Runtime**
+
+Preview behavior:
+
+- 普通提交 preview 默认保留最近 `3` 个实例
+- weekly preview 默认保留最新 `1` 个实例
+- `weekly_build` 结束后可在 `weekly_preview_sre_agent_web` 日志中直接获取 `Frontend URL`
+
 2026-04-10 17:05
 
 **Scope**

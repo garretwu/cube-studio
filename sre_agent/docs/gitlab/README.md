@@ -75,6 +75,8 @@
 - 只有 `SRE_OPENAI_API_KEY` 支持在未显式声明时 fallback 到 [config.yaml](/home/kevin/project/cube-studio/sre_agent/conf/config.yaml) 中的 `llm.api_key`
 - `NEXUS_USERNAME`、`NEXUS_PASSWORD`、`FEISHU_WEBHOOK_URL` 这类 CI/CD 凭证仍然必须显式配置在 GitLab Variables 中
 - 如果设置了 `PREVIEW_PUBLIC_HOST`，即使 preview 因 `PREVIEW_DOCKER_HOST` 不可达而回退到 runner 本地 Docker，日志中仍优先输出 `PREVIEW_PUBLIC_HOST:随机端口` 作为浏览器访问地址
+- 普通提交 preview 默认保留最近 `3` 个实例，避免测试或评审中的版本被新提交立即替换
+- `weekly_build` 会额外创建一个 `weekly preview`，默认仅保留最新 `1` 个实例，作为相对稳定的周版本预览入口
 - 默认镜像命名空间为 `sre_agent`，并按用途分目录：
   - preview：`10.11.4.5:5000/sre_agent/sre-agent-web-preview:<tag>`
   - weekly：`10.11.4.5:5000/sre_agent/sre-agent-web-weekly:<tag>`
@@ -123,6 +125,7 @@
 - 预览对应的候选镜像：查看 `publish_preview_snapshot` job 日志中的 `docker pull ...`
 - 正式 release 镜像：查看 `promote_sre_agent_release` job 日志末尾的发布 summary，其中会直接输出 `Base Pull` 和 `Web Pull`
 - `weekly_build` 对应镜像：同样查看 `publish_preview_snapshot` job 日志，其中会输出 `weekly` 目录下的 `docker pull ...`
+- `weekly preview` 页面地址：查看 `weekly_preview_sre_agent_web` job 日志末尾的 `Frontend URL`
 
 ## 验证范围
 

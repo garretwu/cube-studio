@@ -41,8 +41,18 @@ fi
 
 mkdir -p "${REPO_ROOT}/dist"
 
-preview_suffix="${CI_PIPELINE_IID:-${CI_PIPELINE_ID:-0}}-${CI_JOB_ID:-0}"
-container_name="sre-agent-preview-${preview_suffix}"
+pipeline_kind="${PIPELINE_KIND:-commit}"
+preview_kind_label="preview"
+preview_name_prefix="sre-agent-preview"
+preview_keep_recent_count="${PREVIEW_KEEP_RECENT_COUNT:-3}"
+if [ "${pipeline_kind}" = "weekly_build" ]; then
+  preview_kind_label="weekly-preview"
+  preview_name_prefix="sre-agent-weekly-preview"
+  preview_keep_recent_count="${WEEKLY_PREVIEW_KEEP_RECENT_COUNT:-1}"
+fi
+
+preview_suffix="${CI_COMMIT_SHORT_SHA:-manual}-${CI_PIPELINE_IID:-${CI_PIPELINE_ID:-0}}-${CI_JOB_ID:-0}"
+container_name="${preview_name_prefix}-${preview_suffix}"
 backend_container_port="${CONTAINER_BACKEND_PORT:-8000}"
 frontend_container_port="${CONTAINER_FRONTEND_PORT:-8080}"
 preview_ttl_hours="${PREVIEW_TTL_HOURS:-72}"
@@ -61,6 +71,7 @@ cleanup_existing() {
 }
 
 cleanup_previous_previews() {
+  local keep_existing_count="$1"
   local previous_container_id=""
   while read -r previous_container_id; do
     [ -n "${previous_container_id}" ] || continue
@@ -69,13 +80,27 @@ cleanup_previous_previews() {
   done < <(
     docker ps -a \
       --filter "label=com.cube_studio.sre_agent.ci.managed=true" \
-      --filter "label=com.cube_studio.sre_agent.ci.kind=preview" \
+      --filter "label=com.cube_studio.sre_agent.ci.kind=${preview_kind_label}" \
       --filter "label=com.cube_studio.sre_agent.ci.branch=${CI_COMMIT_REF_NAME:-manual}" \
-      --format '{{.ID}}'
+      --format '{{.ID}} {{.CreatedAt}}' \
+      | while read -r existing_id created_at_1 created_at_2 created_at_3 created_at_4 created_at_5; do
+          [ -n "${existing_id}" ] || continue
+          created_epoch="$(date -d "${created_at_1} ${created_at_2} ${created_at_3} ${created_at_4} ${created_at_5}" +%s 2>/dev/null || true)"
+          [ -n "${created_epoch}" ] || continue
+          echo "${created_epoch} ${existing_id}"
+        done \
+      | sort -nr \
+      | awk '{print $2}' \
+      | tail -n +"$((keep_existing_count + 1))"
   )
 }
 
-cleanup_previous_previews
+existing_preview_keep_count="$((preview_keep_recent_count - 1))"
+if [ "${existing_preview_keep_count}" -lt 0 ]; then
+  existing_preview_keep_count=0
+fi
+
+cleanup_previous_previews "${existing_preview_keep_count}"
 cleanup_existing
 
 run_attempts=0
@@ -88,9 +113,10 @@ while [ "${run_attempts}" -lt 20 ]; do
     docker run -d
     --name "${container_name}"
     --label "com.cube_studio.sre_agent.ci.managed=true"
-    --label "com.cube_studio.sre_agent.ci.kind=preview"
+    --label "com.cube_studio.sre_agent.ci.kind=${preview_kind_label}"
     --label "com.cube_studio.sre_agent.ci.branch=${CI_COMMIT_REF_NAME:-manual}"
     --label "com.cube_studio.sre_agent.ci.pipeline=${CI_PIPELINE_ID:-local}"
+    --label "com.cube_studio.sre_agent.ci.commit=${CI_COMMIT_SHORT_SHA:-manual}"
     --label "com.cube_studio.sre_agent.ci.expires_at=${expires_at_epoch}"
     -p "${backend_host_port}:${backend_container_port}"
     -p "${frontend_host_port}:${frontend_container_port}"
@@ -151,6 +177,7 @@ PREVIEW_FRONTEND_URL=http://${preview_host}:${frontend_host_port}
 PREVIEW_EXPIRES_AT_EPOCH=${expires_at_epoch}
 PREVIEW_IMAGE_REF=${WEB_IMAGE_REF}
 PREVIEW_IMAGE_PULL=docker pull ${WEB_IMAGE_REF}
+PREVIEW_KIND=${preview_kind_label}
 EOF
 
 log "preview backend: http://${preview_host}:${backend_host_port}"
@@ -163,11 +190,17 @@ echo "Frontend URL : http://${preview_host}:${frontend_host_port}"
 echo "Backend URL  : http://${preview_host}:${backend_host_port}"
 echo "Image Pull   : docker pull ${WEB_IMAGE_REF}"
 echo "Container    : ${container_name}"
+echo "Preview Kind : ${preview_kind_label}"
 echo "TTL Hours    : ${preview_ttl_hours}"
 if [ "${preview_target}" = "remote" ]; then
   echo "访问说明      : 请在浏览器中打开 Frontend URL。"
 else
   echo "访问说明      : 当前 preview 运行在本地 shell runner 主机上。"
   echo "访问说明      : 只有当 ${preview_host} 对你的机器可达时，浏览器才能直接访问。"
+fi
+if [ "${preview_kind_label}" = "weekly-preview" ]; then
+  echo "保留策略      : 每周稳定预览仅保留最新 1 个实例，供周版本评审与回看。"
+else
+  echo "保留策略      : 提交预览默认保留最近 ${preview_keep_recent_count} 个实例，避免评审中的版本被新提交立即替换。"
 fi
 echo "==================================="

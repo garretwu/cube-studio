@@ -42,7 +42,7 @@
 
 定时流程：
 
-- `weekly_build`：构建周镜像，验证通过后发布
+- `weekly_build`：构建周镜像，创建稳定的 weekly preview，并在验证通过后发布
 - `base_refresh`：强制刷新基础镜像，再重建业务镜像并验证发布
 - `cleanup`：清理过期 preview 容器与陈旧 Docker 资源
 
@@ -71,6 +71,7 @@
 | Job | 作用 | 触发方式 |
 | --- | --- | --- |
 | `preview_sre_agent_web` | 启动 preview 容器，规避容器名和端口冲突，并等待健康检查通过。 | 普通提交 |
+| `weekly_preview_sre_agent_web` | 启动 weekly preview 容器，提供每周稳定版本的预览入口。 | `weekly_build` 定时任务 |
 
 Preview 规则：
 
@@ -78,6 +79,8 @@ Preview 规则：
 - 后端和前端端口从可配置范围内随机选择
 - preview TTL 默认 72 小时
 - TTL 到期后由 cleanup 统一清理
+- 普通提交 preview 默认保留最近 `3` 个实例，避免测试或评审中的版本被新提交立即替换
+- weekly preview 默认仅保留最新 `1` 个实例，作为相对稳定的周版本评审入口
 
 ### 3.3 Release 阶段
 
@@ -105,6 +108,8 @@ Preview 规则：
 
 - 删除 TTL 已过期的 preview 容器
 - 删除 7 天前的受管 Docker 资源
+- 保留最近 `3` 个普通提交 preview 容器
+- 保留最新 `1` 个 weekly preview 容器
 - 保留最新的基础镜像
 - 保留最新的普通提交快照镜像
 - 保留最新的 weekly 镜像
@@ -324,13 +329,21 @@ docker pull 10.11.4.5:5000/sre_agent/sre-agent-web-preview:<shortsha-yyyymmddhhm
 
 1. GitLab schedule 触发 `PIPELINE_KIND=weekly_build`
 2. 生成 `weekly-YYYYMMDDHHMM` 业务镜像
-3. 执行验收
-4. 推送到 Nexus
+3. 创建 `weekly_preview_sre_agent_web`
+4. 在 `weekly_preview_sre_agent_web` 日志末尾查看 `Frontend URL`
+5. 执行验收
+6. 推送到 Nexus
 
 周构建镜像拉取形式：
 
 ```bash
 docker pull 10.11.4.5:5000/sre_agent/sre-agent-web-weekly:weekly-<yyyymmddhhmm>
+```
+
+周构建预览访问形式：
+
+```bash
+http://10.11.4.5:<frontend-port>
 ```
 
 ### 8.3 基础镜像刷新流程
