@@ -1,7 +1,30 @@
 workflow:
   rules:
-    - if: '$CI_COMMIT_BRANCH == "feature/sre-c-core-infra" && $CI_PIPELINE_SOURCE != "schedule"'
     - if: '$CI_COMMIT_BRANCH == "feature/sre-c-core-infra" && $CI_PIPELINE_SOURCE == "schedule" && $PIPELINE_KIND =~ /^(weekly_build|cleanup|base_refresh)$/'
+    - if: '$CI_COMMIT_BRANCH == "feature/sre-c-core-infra" && $CI_PIPELINE_SOURCE != "schedule" && $FORCE_FULL_PIPELINE == "1"'
+    - if: '$CI_COMMIT_BRANCH == "feature/sre-c-core-infra" && $CI_PIPELINE_SOURCE != "schedule"'
+      changes:
+        - .gitlab-ci.yml
+        - .dockerignore
+        - fault_injector/**/*
+        - lib/**/*
+        - sre_agent/VERSION
+        - sre_agent/conf/**/*
+        - sre_agent/docker/**/*
+        - sre_agent/frontend/**/*
+        - sre_agent/agent/**/*
+        - sre_agent/api/**/*
+        - sre_agent/auth/**/*
+        - sre_agent/knowledge/**/*
+        - sre_agent/memory/**/*
+        - sre_agent/ontology/**/*
+        - sre_agent/remediation/**/*
+        - sre_agent/runtime/**/*
+        - sre_agent/safety/**/*
+        - sre_agent/topology/**/*
+        - sre_agent/requirements.txt
+        - sre_agent/scripts/start_frontend_backend.py
+        - sre_agent/tests/test_start_frontend_backend.py
     - when: never
 
 stages:
@@ -24,6 +47,7 @@ variables:
 
 .sre_agent_docker_job:
   image: docker:27.0.3-cli
+  interruptible: true
   services:
     - name: docker:27.0.3-dind
       command: ["--tls=false"]
@@ -37,7 +61,30 @@ variables:
 
 .sre_agent_branch_rules:
   rules:
+    - if: '$CI_COMMIT_BRANCH == $SRE_CI_BRANCH && $CI_PIPELINE_SOURCE != "schedule" && $FORCE_FULL_PIPELINE == "1"'
     - if: '$CI_COMMIT_BRANCH == $SRE_CI_BRANCH && $CI_PIPELINE_SOURCE != "schedule"'
+      changes:
+        - .gitlab-ci.yml
+        - .dockerignore
+        - fault_injector/**/*
+        - lib/**/*
+        - sre_agent/VERSION
+        - sre_agent/conf/**/*
+        - sre_agent/docker/**/*
+        - sre_agent/frontend/**/*
+        - sre_agent/agent/**/*
+        - sre_agent/api/**/*
+        - sre_agent/auth/**/*
+        - sre_agent/knowledge/**/*
+        - sre_agent/memory/**/*
+        - sre_agent/ontology/**/*
+        - sre_agent/remediation/**/*
+        - sre_agent/runtime/**/*
+        - sre_agent/safety/**/*
+        - sre_agent/topology/**/*
+        - sre_agent/requirements.txt
+        - sre_agent/scripts/start_frontend_backend.py
+        - sre_agent/tests/test_start_frontend_backend.py
 
 .sre_agent_weekly_rules:
   rules:
@@ -59,7 +106,30 @@ prepare_sre_agent_metadata:
     reports:
       dotenv: dist/pipeline.env
   rules:
+    - if: '$CI_COMMIT_BRANCH == $SRE_CI_BRANCH && $CI_PIPELINE_SOURCE != "schedule" && $FORCE_FULL_PIPELINE == "1"'
     - if: '$CI_COMMIT_BRANCH == $SRE_CI_BRANCH && $CI_PIPELINE_SOURCE != "schedule"'
+      changes:
+        - .gitlab-ci.yml
+        - .dockerignore
+        - fault_injector/**/*
+        - lib/**/*
+        - sre_agent/VERSION
+        - sre_agent/conf/**/*
+        - sre_agent/docker/**/*
+        - sre_agent/frontend/**/*
+        - sre_agent/agent/**/*
+        - sre_agent/api/**/*
+        - sre_agent/auth/**/*
+        - sre_agent/knowledge/**/*
+        - sre_agent/memory/**/*
+        - sre_agent/ontology/**/*
+        - sre_agent/remediation/**/*
+        - sre_agent/runtime/**/*
+        - sre_agent/safety/**/*
+        - sre_agent/topology/**/*
+        - sre_agent/requirements.txt
+        - sre_agent/scripts/start_frontend_backend.py
+        - sre_agent/tests/test_start_frontend_backend.py
     - if: '$CI_COMMIT_BRANCH == $SRE_CI_BRANCH && $CI_PIPELINE_SOURCE == "schedule" && $PIPELINE_KIND == "weekly_build"'
     - if: '$CI_COMMIT_BRANCH == $SRE_CI_BRANCH && $CI_PIPELINE_SOURCE == "schedule" && $PIPELINE_KIND == "base_refresh"'
 

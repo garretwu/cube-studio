@@ -31,6 +31,29 @@
 
 其他分支不会命中这套新的 SRE Agent 流水线规则。
 
+普通提交场景下，这条流水线默认只在“业务相关改动”发生时创建和执行。
+
+以下类型的改动会触发完整构建与 preview：
+
+- `sre_agent/frontend/**`
+- `sre_agent/agent/**`
+- `sre_agent/api/**`
+- `sre_agent/runtime/**`
+- `sre_agent/remediation/**`
+- `sre_agent/docker/**`
+- `sre_agent/conf/**`
+- `fault_injector/**`
+- `lib/**`
+- `sre_agent/requirements.txt`
+- `sre_agent/scripts/start_frontend_backend.py`
+- `.gitlab-ci.yml`
+
+如果只是文档变更、无关轻改动或短时间重复提交，默认不会创建这条重流水线。
+
+如果确实需要强制跑完整流水线，可以在手动触发时设置：
+
+- `FORCE_FULL_PIPELINE=1`
+
 ## 必要 CI 变量
 
 | 变量 | 用途 |
@@ -42,6 +65,7 @@
 | `PREVIEW_PUBLIC_HOST` | 可选，用于在日志中输出对外可访问的 preview 地址。 |
 | `SRE_OPENAI_API_KEY` | 可选，preview 运行时使用的 LLM key；未显式配置时允许从 `sre_agent/conf/config.yaml` 的 `llm.api_key` fallback。 |
 | `FORCE_BASE_BUILD` | 可选，设为 `1` 时即使依赖未变化也强制重建基础镜像。 |
+| `FORCE_FULL_PIPELINE` | 可选，设为 `1` 时即使当前改动不在业务相关路径中，也强制创建并执行完整流水线。 |
 | `RELEASE_VERSION` | 可选，手动发版时指定版本号，例如 `1.0.1`；未指定时读取 `sre_agent/VERSION`。 |
 | `FEISHU_WEBHOOK_URL` | 可选，飞书群机器人 webhook 地址，建议作为 masked + protected 变量维护。 |
 | `FEISHU_NOTIFY_ON_COMMIT_FAILURE` | 可选，设为 `1` 时普通 commit 流水线失败也通知飞书；默认只通知非 commit 流程。 |

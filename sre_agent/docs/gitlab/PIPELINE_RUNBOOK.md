@@ -36,6 +36,10 @@
 6. 将验证通过的快照镜像推送到 Nexus
 7. 如有需要，再手动把本次验证通过的版本提升为正式 release
 
+普通提交默认只在“业务相关改动”发生时才会进入这套完整流程。
+
+如果只是文档改动、说明补充或其他不会影响运行时行为的轻改动，流水线默认不会创建，从而避免无意义的镜像构建和 preview 资源消耗。
+
 定时流程：
 
 - `weekly_build`：构建周镜像，验证通过后发布
@@ -140,6 +144,7 @@ Preview 规则：
 | `PREVIEW_PUBLIC_HOST` | 推荐 | preview 主机 IP 或域名 | 用于输出对外访问地址 |
 | `SRE_OPENAI_API_KEY` | 可选 | masked | 如果希望 preview 真正连通 LLM，可在这里配置运行时 key；未显式配置时允许 fallback 到 `sre_agent/conf/config.yaml` 的 `llm.api_key` |
 | `FORCE_BASE_BUILD` | 可选 | `1` | 即使依赖未变化也强制重建基础镜像 |
+| `FORCE_FULL_PIPELINE` | 可选 | `1` | 即使当前提交不在业务相关路径中，也强制创建并执行完整流水线 |
 | `RELEASE_VERSION` | 可选 | 手动输入 | 手动 release promotion 时使用 |
 | `FEISHU_WEBHOOK_URL` | 推荐 | masked + protected | 飞书群机器人 webhook 地址 |
 | `FEISHU_NOTIFY_ON_COMMIT_FAILURE` | 可选 | `0` | 设为 `1` 时普通提交失败也发飞书通知 |
@@ -182,6 +187,7 @@ Preview 规则：
 - `weekly_build` 放在固定、业务可感知的时间点
 - `cleanup` 放在 preview 使用较少的时间段
 - `base_refresh` 放在低峰时段，因为它会触发更多镜像层重建
+- 在 GitLab 项目中开启 `Auto-cancel redundant pipelines`，配合当前 job 的 `interruptible: true` 使用，可减少短时间连续提交造成的资源浪费
 
 ## 7. 失败通知
 
@@ -257,11 +263,19 @@ Preview 规则：
 预期行为：
 
 1. 向该分支提交代码
-2. 流水线自动启动
+2. 如果改动命中业务相关路径，流水线自动启动
 3. 构建业务快照镜像
 4. 创建 preview 容器
 5. 执行环境与业务验收
 6. 把验证通过的快照镜像推送到 Nexus
+
+如果只是文档改动或轻量无关改动，这条重流水线默认不会创建。
+
+如需强制执行完整流程，可以在手动触发 pipeline 时设置：
+
+```text
+FORCE_FULL_PIPELINE=1
+```
 
 快照镜像拉取形式：
 
