@@ -14,6 +14,11 @@ if [ -n "${PREVIEW_DOCKER_HOST:-}" ]; then
   export DOCKER_HOST="${PREVIEW_DOCKER_HOST}"
 fi
 
+if ! docker image inspect "${WEB_IMAGE_REF}" >/dev/null 2>&1; then
+  log "web image ${WEB_IMAGE_REF} is not available locally, rebuilding it on this runner for preview"
+  "${SCRIPT_DIR}/build_web_image.sh"
+fi
+
 require_local_docker_image "${WEB_IMAGE_REF}"
 
 mkdir -p "${REPO_ROOT}/dist"

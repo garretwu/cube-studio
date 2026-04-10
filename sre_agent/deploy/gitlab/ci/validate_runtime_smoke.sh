@@ -10,6 +10,11 @@ source "${REPO_ROOT}/dist/pipeline.env"
 # shellcheck disable=SC1091
 source "${REPO_ROOT}/dist/build-web.env"
 
+if ! docker image inspect "${WEB_IMAGE_REF}" >/dev/null 2>&1; then
+  log "web image ${WEB_IMAGE_REF} is not available locally, rebuilding it on this runner for runtime validation"
+  "${SCRIPT_DIR}/build_web_image.sh"
+fi
+
 require_local_docker_image "${WEB_IMAGE_REF}"
 
 container_name="sre-agent-smoke-${CI_PIPELINE_IID:-${CI_PIPELINE_ID:-0}}-${CI_JOB_ID:-0}"

@@ -10,6 +10,11 @@ source "${REPO_ROOT}/dist/pipeline.env"
 # shellcheck disable=SC1091
 source "${REPO_ROOT}/dist/build-web.env"
 
+if ! docker image inspect "${WEB_IMAGE_REF}" >/dev/null 2>&1; then
+  log "web image ${WEB_IMAGE_REF} is not available locally, rebuilding it on this runner before release promotion"
+  "${SCRIPT_DIR}/build_web_image.sh"
+fi
+
 docker_registry_login
 require_local_docker_image "${WEB_IMAGE_REF}"
 
