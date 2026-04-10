@@ -259,7 +259,7 @@ Preview 规则：
 
 ### 8.1 普通提交流程
 
-适用于日常在 `feature/sre-c-core-infra` 上开发时的自动构建与发布。
+适用于日常在 `feature/sre-c-core-infra` 上开发时的自动构建与预览。
 
 预期行为：
 
@@ -267,8 +267,8 @@ Preview 规则：
 2. 如果改动命中业务相关路径，流水线自动启动
 3. 构建业务快照镜像
 4. 创建 preview 容器
-5. 执行环境与业务验收
-6. 把验证通过的快照镜像推送到 Nexus
+5. 在 `preview_sre_agent_web` 日志末尾查看 `Frontend URL`
+6. 由人工确认页面和服务效果
 
 如果只是文档改动或轻量无关改动，这条重流水线默认不会创建。
 
@@ -276,6 +276,17 @@ Preview 规则：
 
 ```text
 FORCE_FULL_PIPELINE=1
+```
+
+说明：
+
+- 普通提交场景下，`validate_sre_agent_runtime`、`validate_sre_agent_business`、`publish_sre_agent_snapshot`、`promote_sre_agent_release` 都改为手动触发
+- 也就是说，开发提交流水线不会在 preview 之后自动继续发布
+
+预览访问形式：
+
+```bash
+http://10.11.4.5:<frontend-port>
 ```
 
 快照镜像拉取形式：
@@ -315,20 +326,66 @@ docker pull 10.11.4.5:5000/cube-studio/sre-agent-web:weekly-<yyyymmddhhmm>
 
 ### 8.4 手动正式发布流程
 
-适用于把某次已验证通过的快照版本提升为正式 release。
+适用于在 preview 确认无误后，由人工执行验收、发布 snapshot，并按需提升为正式 release。
 
 操作方式：
 
-1. 打开 `feature/sre-c-core-infra` 上一条成功的 pipeline
-2. 手动执行 `promote_sre_agent_release`
-3. 可选地传入 `RELEASE_VERSION`
-4. 如果不传，CI 会读取 [sre_agent/VERSION](/home/kevin/project/cube-studio/sre_agent/VERSION)
+1. 打开 `feature/sre-c-core-infra` 上一条 preview 成功的 pipeline
+2. 先手动执行 `validate_sre_agent_runtime`
+3. 再手动执行 `validate_sre_agent_business`
+4. 等两类验收都成功后，手动执行 `publish_sre_agent_snapshot`
+5. 如果这次只需要候选镜像，到第 4 步即可结束
+6. 如果这次要做正式发版，再最后手动执行 `promote_sre_agent_release`
+7. 如需指定正式版本号，在手动执行 `promote_sre_agent_release` 时传入 `RELEASE_VERSION`
+8. 如果不传，CI 会读取 [sre_agent/VERSION](/home/kevin/project/cube-studio/sre_agent/VERSION)
+
+推荐顺序：
+
+1. `validate_sre_agent_runtime`
+2. `validate_sre_agent_business`
+3. `publish_sre_agent_snapshot`
+4. `promote_sre_agent_release`
 
 正式发布镜像拉取形式：
 
 ```bash
 docker pull 10.11.4.5:5000/cube-studio/sre-agent-web:<version-yyyymmddhhmm>
 ```
+
+### 8.5 `snapshot` 与正式 `release` 的区别
+
+`snapshot` 用于候选版本验证，正式 `release` 用于确定版本交付。
+
+`snapshot` 特点：
+
+- 与本次提交或周构建直接绑定
+- 适合测试、联调、回看某次提交
+- 代表“当前镜像已通过现有验收，可以继续验证”
+- 不代表正式对外交付版本
+
+正式 `release` 特点：
+
+- 由人工在 preview 和验收完成后手动提升
+- 使用 `VERSION-YYYYMMDDHHMM` 形式的版本 tag
+- 更适合写入发布记录、变更单、部署单和回滚清单
+- 代表“这个版本被明确选中，作为正式交付版本”
+
+建议理解方式：
+
+- `publish_sre_agent_snapshot`：发布候选镜像
+- `promote_sre_agent_release`：发布正式版本
+
+### 8.6 夜间或值班场景建议
+
+如果在夜间或值班窗口执行发布，建议严格按这个顺序操作：
+
+1. 先确认 preview 页面和接口访问正常
+2. 执行 `validate_sre_agent_runtime`
+3. 执行 `validate_sre_agent_business`
+4. 确认两类验收都通过
+5. 执行 `publish_sre_agent_snapshot`
+6. 如果需要正式发版，再执行 `promote_sre_agent_release`
+7. 记录最终的 `docker pull` 地址、版本 tag 和 pipeline 链接
 
 ## 9. 成功运行后应看到什么
 
