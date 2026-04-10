@@ -133,7 +133,6 @@ def button(label: str, url: str, primary: bool = False):
 payload = {
     "msg_type": "interactive",
     "card": {
-        "schema": "2.0",
         "config": {"wide_screen_mode": True},
         "header": {
             "template": os.environ["CARD_TEMPLATE"],
@@ -211,7 +210,6 @@ import os
 payload = {
     "msg_type": "interactive",
     "card": {
-        "schema": "2.0",
         "config": {"wide_screen_mode": True},
         "header": {
             "template": os.environ["CARD_TEMPLATE"],
