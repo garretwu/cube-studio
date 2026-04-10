@@ -6,6 +6,7 @@ import { apiClient } from "../api/client";
 import type { AlertStatus, DiagnosisSession, Severity } from "../api/types";
 import { AppButton, AppIcon, AppInput, SectionHeader, StatusChip, SurfaceCard } from "../components/ui";
 import { useAlertStore } from "../store/alertStore";
+import { useDiagnosisStore } from "../store/diagnosisStore";
 import { formatSeverity } from "../utils/display";
 import { formatTimestamp } from "../utils/format";
 import { buildAlertConvergenceView } from "./alertsModifiedModel";
@@ -149,16 +150,39 @@ function AlertsModifiedPage() {
       : [];
     setDiagnosisError(null);
     setDiagnosingResultId(resultId);
+    const fps = extraFingerprints.length > 0 ? extraFingerprints : undefined;
+    let navigated = false;
+
+    // Try SSE streaming first (fire-and-forget, navigate via callback).
     try {
-      const session = await apiClient.startDiagnoseAlert(selected, extraFingerprints.length > 0 ? extraFingerprints : undefined);
-      setActiveSession(session);
-      navigate(`/diagnosis/${session.session_id}`);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "发起诊断失败";
-      setDiagnosisError(message);
-    } finally {
-      setDiagnosingResultId(null);
+      useDiagnosisStore.getState().startStreamingDiagnosis(
+        selected,
+        fps,
+        (sessionId) => {
+          navigated = true;
+          navigate(`/diagnosis/${sessionId}`);
+        },
+      );
+    } catch {
+      // Synchronous throw is unexpected; fallback below handles it.
     }
+
+    // Fallback to standard async diagnosis if SSE doesn't navigate within 3s
+    // (e.g. endpoint returns 404 or connection refused before any event).
+    window.setTimeout(async () => {
+      if (navigated) return;
+      try {
+        const session = await apiClient.startDiagnoseAlert(selected, fps);
+        navigated = true;
+        setActiveSession(session);
+        navigate(`/diagnosis/${session.session_id}`);
+      } catch (fallbackError) {
+        const message = fallbackError instanceof Error ? fallbackError.message : "发起诊断失败";
+        setDiagnosisError(message);
+      } finally {
+        setDiagnosingResultId(null);
+      }
+    }, 3000);
   };
 
   return (

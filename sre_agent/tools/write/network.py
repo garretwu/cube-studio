@@ -1,4 +1,4 @@
-"""Purpose: Switch port enable/disable, route update.
+"""Purpose: Switch port enable/disable, route update, and network qdisc cleanup.
 
 Primary tools: switch_port_enable, switch_port_disable, update_route,
 set_bmc_vlan, set_bmc_mtu.
@@ -48,6 +48,21 @@ def _extract_result(value: Any, *, action: str, unsupported_message: str | None 
     data = getattr(value, "data", None)
     if data is not None:
         return data
+    output = getattr(value, "output", None)
+    error = getattr(value, "error", None)
+    if output is None and error is None:
+        return value
+    return {"output": output or "", "error": error or ""}
+
+
+def _extract_ssh_result(value: Any, *, action: str) -> Any:
+    success = getattr(value, "success", None)
+    if success is not None and not bool(success):
+        error_text = str(getattr(value, "error", "") or "").strip()
+        if error_text:
+            raise ToolValidationError(error_text)
+        raise ToolValidationError(f"ssh action failed: {action}")
+
     output = getattr(value, "output", None)
     error = getattr(value, "error", None)
     if output is None and error is None:
@@ -110,6 +125,40 @@ async def update_route(params: dict[str, Any], context: ToolExecutionContext) ->
         result = await switch.execute("apply_raw_config", {"switch": switch_name, "config_xml": config_xml})
         return _extract_result(result, action="apply_raw_config")
     raise ToolValidationError("switch backend does not support route/config update")
+
+
+async def clear_tc_qdisc(params: dict[str, Any], context: ToolExecutionContext) -> Any:
+    ssh = context.channels.get("ssh")
+    if ssh is None:
+        raise ToolValidationError("required channel is missing: ssh")
+
+    node = _require_str(params, "node")
+    iface = _require_str(params, "iface")
+    parent = str(params.get("parent") or "").strip()
+    handle = str(params.get("handle") or "").strip()
+    kind = str(params.get("kind") or "root").strip().lower()
+    if kind and kind not in {"root", "ingress", "clsact"}:
+        raise ToolValidationError(f"unsupported qdisc scope: {kind!r}")
+    if parent and handle:
+        raise ToolValidationError("parameters 'parent' and 'handle' are mutually exclusive")
+
+    if parent:
+        command = f"tc qdisc del dev {iface} parent {parent}"
+    elif handle:
+        command = f"tc qdisc del dev {iface} handle {handle}"
+    else:
+        command = f"tc qdisc del dev {iface} {kind or 'root'}"
+
+    result = await ssh.run_command(node, command, use_sudo=True)
+    payload = _extract_ssh_result(result, action="run_command")
+    if isinstance(payload, dict):
+        payload["node"] = node
+        payload["iface"] = iface
+        payload["parent"] = parent or None
+        payload["handle"] = handle or None
+        payload["kind"] = None if parent or handle else (kind or "root")
+        payload["source"] = "tc qdisc del"
+    return payload
 
 
 async def set_bmc_vlan(params: dict[str, Any], context: ToolExecutionContext) -> Any:

@@ -1,10 +1,122 @@
 ﻿import { beforeEach, describe, expect, it } from "vitest";
 import { http, HttpResponse } from "msw";
 
-import type { WSEvent } from "../api/types";
-import { diagnosisSession, initialChatMessages } from "../mocks/data";
+import type { DiagnosisSession, WSEvent } from "../api/types";
 import { server } from "../test/server";
 import { useDiagnosisStore } from "./diagnosisStore";
+
+const testSessionId = "sess-latency-001";
+
+const testChatMessages = [
+  {
+    id: "chat-1",
+    role: "assistant" as const,
+    content: "我已经带入当前 AIDC 拓扑与最新告警，可以继续帮你诊断问题或生成修复计划。",
+    created_at: "2026-03-18T12:04:00Z",
+  },
+];
+
+function buildTestSession(overrides: Partial<DiagnosisSession> = {}): DiagnosisSession {
+  return {
+    session_id: testSessionId,
+    alert: {
+      alert_name: "VLLM 延迟过高",
+      severity: "critical",
+      labels: { service: "vllm", instance: "vllm-0", aidc: "aidc-001" },
+      annotations: { summary: "p95 延迟已超过 600ms", entity: "svc-vllm" },
+      starts_at: "2026-03-18T12:00:00Z",
+      fingerprint: "fp-001",
+      status: "firing",
+      source: "alertmanager",
+    },
+    status: "remediating",
+    re_diagnosis_round: 1,
+    duration_seconds: 182,
+    outcome: "proposed_fix_ready",
+    diagnosis_result: {
+      root_cause: "异常基准测试进程导致 GPU 资源争用",
+      root_cause_layer: "hardware",
+      root_cause_entities: ["gpu-01", "node-gpu-01"],
+      confidence: 0.93,
+      recommended_fix: {
+        plan_id: "plan-rollback-01-v3",
+        root_cause: "异常基准测试进程导致 GPU 资源争用",
+        description: "先排空 10% 金丝雀分片，再终止 gpu-burn 进程，最后确认 vLLM p95 与 GPU 利用率恢复正常。",
+        steps: [],
+        estimated_impact: "业务影响较低，灰度阶段仅影响 10% 推理分片，并保留快速回滚能力。",
+        confidence: 0.93,
+        priority: "P1" as const,
+        canary: { enabled: true, target_percentage: 0.1, monitor_duration: 120, success_criteria: [] },
+        safety_level: "high",
+      },
+      hypotheses: [
+        {
+          description: "RoCE 网络拥塞导致链路退化",
+          status: "eliminated",
+          evidence_for: ["ECN 计数器曾短暂升高"],
+          evidence_against: ["交换机队列深度维持正常"],
+          confidence: 0.28,
+        },
+        {
+          description: "异常进程占满 GPU 资源",
+          status: "confirmed",
+          evidence_for: ["DCGM 进程列表出现 gpu-burn", "利用率持续锁定在 92%"],
+          evidence_against: [],
+          confidence: 0.93,
+        },
+      ],
+      impact_summary: "单个推理分片持续饱和，导致整条服务链路上的 p95 延迟被放大。",
+      affected_services: ["vllm-latency", "chat-serving"],
+      triage_priority: "P1",
+      diagnosis_certainty: "confirmed",
+    },
+    trace: {
+      steps: [
+        {
+          step: 1,
+          timestamp: "2026-03-18T12:00:12Z",
+          thought: "先把延迟告警与当前拓扑影响半径关联起来，判断是否存在局部资源热点。",
+          action_type: "tool_call",
+          tool_name: "ontology.get_blast_radius",
+          tool_params: { entity_id: "svc-vllm" },
+          confidence: 0.74,
+        },
+        {
+          tool: "prometheus_query",
+          params: { query: "gpu_utilization{node='node-gpu-01'}" },
+          result: { value: 0.92, trend: "上升" },
+          timestamp: "2026-03-18T12:00:32Z",
+        },
+        {
+          step: 2,
+          timestamp: "2026-03-18T12:00:48Z",
+          thought: "温度和利用率信号都指向本地 GPU 资源争用，而不是网络丢包或拥塞。",
+          action_type: "conclude",
+          confidence: 0.93,
+        },
+      ],
+    },
+    bootstrap: {
+      session_name: "3月18日推理变慢",
+      started_at: "2026-03-18T12:00:12Z",
+      related_alerts: {
+        count: 2,
+        items: [
+          { id: "fp-001", alert_name: "VLLM 延迟过高", severity: "critical", source_entity: "svc-vllm", starts_at: "2026-03-18T12:00:00Z", summary: "p95 延迟已超过 600ms" },
+          { id: "fp-002", alert_name: "GPU 温度偏高", severity: "warning", source_entity: "node-gpu-01", starts_at: "2026-03-18T11:57:00Z", summary: "GPU 温度持续高于目标阈值" },
+        ],
+      },
+      impact: {
+        object_count: 2,
+        service_count: 2,
+        affected_entities: ["gpu-01", "node-gpu-01"],
+        affected_services: ["vllm-latency", "chat-serving"],
+        blast_radius_summary: "影响集中在单个热点节点，但已放大到整条推理链路的 p95 延迟。",
+      },
+    },
+    ...overrides,
+  };
+}
 
 async function waitUntil(assertion: () => void, timeoutMs = 1200): Promise<void> {
   const startedAt = Date.now();
@@ -55,13 +167,13 @@ describe("useDiagnosisStore", () => {
 
     await useDiagnosisStore.getState().sendMessage("追问上一轮诊断");
 
-    expect(useDiagnosisStore.getState().messages).toHaveLength(initialChatMessages.length + 2);
-    expect(useDiagnosisStore.getState().activeSessionId).toBe(diagnosisSession.session_id);
+    expect(useDiagnosisStore.getState().messages).toHaveLength(testChatMessages.length + 2);
+    expect(useDiagnosisStore.getState().activeSessionId).toBe(testSessionId);
 
     server.use(
       http.get("/api/sessions/:sessionId", async ({ params }) =>
         HttpResponse.json({
-          ...diagnosisSession,
+          ...buildTestSession(),
           session_id: String(params.sessionId ?? "sess-latency-002"),
         }),
       ),
@@ -71,7 +183,7 @@ describe("useDiagnosisStore", () => {
 
     expect(useDiagnosisStore.getState().session?.session_id).toBe("sess-latency-002");
     expect(useDiagnosisStore.getState().activeSessionId).toBe("sess-latency-002");
-    expect(useDiagnosisStore.getState().messages).toEqual(initialChatMessages);
+    expect(useDiagnosisStore.getState().messages).toEqual(testChatMessages);
   });
 
   it("switches to empty state when backend has no sessions", async () => {
@@ -94,7 +206,7 @@ describe("useDiagnosisStore", () => {
     const thinkingEvent: WSEvent = {
       schema_version: "1",
       type: "thinking_step",
-      session_id: diagnosisSession.session_id,
+      session_id: testSessionId,
       timestamp: "2026-03-18T12:06:10Z",
       data: {
         step: 3,
@@ -107,7 +219,7 @@ describe("useDiagnosisStore", () => {
     const resultEvent: WSEvent = {
       schema_version: "1",
       type: "tool_result",
-      session_id: diagnosisSession.session_id,
+      session_id: testSessionId,
       timestamp: "2026-03-18T12:06:15Z",
       data: {
         tool_name: "metrics.query",
@@ -135,8 +247,83 @@ describe("useDiagnosisStore", () => {
     });
   });
 
+  it("deduplicates websocket events by event_id before appending trace entries", async () => {
+    await useDiagnosisStore.getState().bootstrapSession();
+
+    const baselineTraceCount = useDiagnosisStore.getState().session?.trace?.steps.length ?? 0;
+    const baselineEventCount = useDiagnosisStore.getState().events.length;
+
+    const thinkingEvent: WSEvent = {
+      schema_version: "1",
+      type: "thinking_step",
+      session_id: testSessionId,
+      timestamp: "2026-03-18T12:07:00Z",
+      data: {
+        event_id: "evt-dedupe-1",
+        step: 4,
+        thought: "Recheck the same metric snapshot",
+        action_type: "tool_call",
+        tool_name: "metrics.query",
+      },
+    };
+
+    const resultEvent: WSEvent = {
+      schema_version: "1",
+      type: "tool_result",
+      session_id: testSessionId,
+      timestamp: "2026-03-18T12:07:05Z",
+      data: {
+        event_id: "evt-dedupe-2",
+        tool_name: "metrics.query",
+        result: {
+          value: 0.95,
+        },
+      },
+    };
+
+    useDiagnosisStore.getState().applyEvent(thinkingEvent);
+    useDiagnosisStore.getState().applyEvent(thinkingEvent);
+    useDiagnosisStore.getState().applyEvent(resultEvent);
+    useDiagnosisStore.getState().applyEvent(resultEvent);
+
+    const state = useDiagnosisStore.getState();
+
+    expect(state.events).toHaveLength(baselineEventCount + 2);
+    expect(state.session?.trace?.steps).toHaveLength(baselineTraceCount + 2);
+  });
+
+  it("deduplicates websocket events without event_id using type/timestamp/payload identity", async () => {
+    await useDiagnosisStore.getState().bootstrapSession();
+
+    const baselineTraceCount = useDiagnosisStore.getState().session?.trace?.steps.length ?? 0;
+    const baselineEventCount = useDiagnosisStore.getState().events.length;
+
+    const thinkingEvent: WSEvent = {
+      schema_version: "1",
+      type: "thinking_step",
+      session_id: testSessionId,
+      timestamp: "2026-03-18T12:08:00Z",
+      data: {
+        step: 5,
+        thought: "Check whether the same fallback identity dedupes",
+        action_type: "conclude",
+      },
+    };
+
+    useDiagnosisStore.getState().applyEvent(thinkingEvent);
+    useDiagnosisStore.getState().applyEvent({
+      ...thinkingEvent,
+      data: { ...thinkingEvent.data },
+    });
+
+    const state = useDiagnosisStore.getState();
+
+    expect(state.events).toHaveLength(baselineEventCount + 1);
+    expect(state.session?.trace?.steps).toHaveLength(baselineTraceCount + 1);
+  });
+
   it("updates session status immediately when diagnosis_result arrives", async () => {
-    await useDiagnosisStore.getState().bootstrapSession(diagnosisSession.session_id);
+    await useDiagnosisStore.getState().bootstrapSession(testSessionId);
     useDiagnosisStore.setState((state) => ({
       session: state.session
         ? {
@@ -150,10 +337,10 @@ describe("useDiagnosisStore", () => {
     useDiagnosisStore.getState().applyEvent({
       schema_version: "1",
       type: "diagnosis_result",
-      session_id: diagnosisSession.session_id,
+      session_id: testSessionId,
       timestamp: "2026-04-03T14:00:00Z",
       data: {
-        ...(diagnosisSession.diagnosis_result ?? {}),
+        ...(buildTestSession().diagnosis_result ?? {}),
         recommended_fix: null,
       },
     });
@@ -182,7 +369,7 @@ describe("useDiagnosisStore", () => {
             priority: "P2",
           },
           session: {
-            ...diagnosisSession,
+            ...buildTestSession(),
             session_id: String(params.sessionId ?? "sess-latency-001"),
             status: "approval_required",
           },
@@ -196,7 +383,7 @@ describe("useDiagnosisStore", () => {
   });
 
   it("appends escalation chat message when approval ends in execution_failed via polled events", async () => {
-    const sessionId = diagnosisSession.session_id;
+    const sessionId = testSessionId;
     let eventsRequestCount = 0;
     server.use(
       http.post("/api/remediate/:sessionId/approve", async () =>
@@ -211,7 +398,7 @@ describe("useDiagnosisStore", () => {
       ),
       http.get("/api/sessions/:sessionId", async ({ params }) =>
         HttpResponse.json({
-          ...diagnosisSession,
+          ...buildTestSession(),
           session_id: String(params.sessionId ?? sessionId),
           status: "failed",
         }),
@@ -249,6 +436,27 @@ describe("useDiagnosisStore", () => {
     expect(escalationMessages.length).toBeGreaterThan(baselineCount);
   });
 
+  it("marks the session resolved and summarizes alert status when observation_result clears the alert", async () => {
+    await useDiagnosisStore.getState().bootstrapSession(testSessionId);
+
+    useDiagnosisStore.getState().applyEvent({
+      schema_version: "1",
+      type: "observation_result",
+      session_id: testSessionId,
+      timestamp: "2026-04-03T14:10:00Z",
+      data: {
+        alert_cleared: true,
+        metrics_improved: true,
+        baseline_alert: { status: "firing" },
+        post_alert: { status: "resolved" },
+      },
+    });
+
+    const state = useDiagnosisStore.getState();
+    expect(state.session?.status).toBe("resolved");
+    expect(state.messages.at(-1)?.content).toContain("告警状态 firing -> resolved");
+  });
+
   it("extracts remediation plan from ranked_candidates when top-level plan is empty", async () => {
     const candidatePlan = {
       plan_id: "candidate-plan-v2",
@@ -271,11 +479,11 @@ describe("useDiagnosisStore", () => {
     server.use(
       http.get("/api/sessions/:sessionId", async ({ params }) =>
         HttpResponse.json({
-          ...diagnosisSession,
-          session_id: String(params.sessionId ?? diagnosisSession.session_id),
+          ...buildTestSession(),
+          session_id: String(params.sessionId ?? testSessionId),
           status: "approval_required",
           diagnosis_result: {
-            ...(diagnosisSession.diagnosis_result ?? {}),
+            ...(buildTestSession().diagnosis_result ?? {}),
             recommended_fix: null,
             ranked_candidates: [
               {
@@ -292,7 +500,7 @@ describe("useDiagnosisStore", () => {
       http.get("/api/sessions/:sessionId/events", async () => HttpResponse.json([])),
     );
 
-    await useDiagnosisStore.getState().bootstrapSession(diagnosisSession.session_id);
+    await useDiagnosisStore.getState().bootstrapSession(testSessionId);
     const state = useDiagnosisStore.getState();
     expect(state.hasPlan).toBe(true);
     expect(state.planMissingReason).toBeUndefined();
@@ -317,11 +525,11 @@ describe("useDiagnosisStore", () => {
         sessionFetchCount += 1;
         const withPlan = sessionFetchCount > 1;
         return HttpResponse.json({
-          ...diagnosisSession,
+          ...buildTestSession(),
           session_id: String(params.sessionId ?? sessionId),
           status: "approval_required",
           diagnosis_result: {
-            ...(diagnosisSession.diagnosis_result ?? {}),
+            ...(buildTestSession().diagnosis_result ?? {}),
             recommended_fix: withPlan ? repairedPlan : null,
           },
         });
@@ -337,7 +545,7 @@ describe("useDiagnosisStore", () => {
             timestamp: "2026-04-03T12:00:00Z",
             data: {
               event_id: "evt-backfill-200",
-              ...(diagnosisSession.diagnosis_result ?? {}),
+              ...(buildTestSession().diagnosis_result ?? {}),
               recommended_fix: repairedPlan,
             },
           },

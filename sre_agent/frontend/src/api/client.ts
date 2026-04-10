@@ -46,7 +46,18 @@ const DIAGNOSE_REQUEST_TIMEOUT_MS = 120000;
 const CHAT_REQUEST_TIMEOUT_MS = 120000;
 const DIAGNOSE_SESSION_POLL_MS = 2000;
 const DIAGNOSE_SESSION_POLL_ATTEMPTS = 30;
-const BLOCKED_ALERT_NAMES = new Set<string>();
+const BLOCKED_ALERT_NAMES = new Set<string>(
+  [
+    "KubeClientErrors",
+    "KubePodCrashLooping",
+    "AlertmanagerDown",
+    "KubeControllerManagerDown",
+    "KubeSchedulerDown",
+    "PrometheusOperatorDown",
+    "DeadMansSwitch",
+    "TargetDown",
+  ].map((name) => normalizeAlertName(name)),
+);
 
 let hasWarnedAboutDevFallback = false;
 
@@ -291,6 +302,11 @@ function buildTopologyExplorerFromSnapshot(snapshot: TopologySnapshot): Topology
     const region = String((attributes as Record<string, unknown>).region ?? "AIDC-CN");
     const zone = String((attributes as Record<string, unknown>).zone ?? "zone-a");
     const domain = String((attributes as Record<string, unknown>).domain ?? "aidc");
+    const namespace = String(attrs.namespace ?? "").trim();
+    const clusterId = String(attrs.cluster ?? attrs.cluster_id ?? "").trim();
+    const rawName = node.name || node.id;
+    const displayName =
+      (entityType === "pod" || entityType === "service") && namespace ? `${namespace}/${rawName}` : rawName;
     const podPhaseRaw = attrs.phase ?? node.status ?? "Unknown";
     const podPhase = typeof podPhaseRaw === "string" ? podPhaseRaw : String(podPhaseRaw);
     const podRestartRaw = attrs.restart_count ?? attrs.restartCount;
@@ -306,18 +322,20 @@ function buildTopologyExplorerFromSnapshot(snapshot: TopologySnapshot): Topology
 
     return {
       id: node.id,
-      name: node.name || node.id,
+      name: displayName,
       type: entityType,
       status: mapNodeStatus(node.status),
       layer: mapLayer(entityType),
       domain,
       region,
       zone,
-      cluster: String(attrs.cluster ?? attrs.cluster_id ?? "") || undefined,
+      cluster: clusterId || undefined,
       rack: String((attributes as Record<string, unknown>).rack ?? "") || undefined,
       slot: String((attributes as Record<string, unknown>).slot ?? "") || undefined,
-      summary: `${node.name || node.id} (${node.entity_type})`,
-      tags: [String(attrs.namespace ?? ""), String(attrs.source ?? "")]
+      summary: [displayName, `(${node.entity_type})`, namespace ? `namespace=${namespace}` : "", clusterId ? `cluster=${clusterId}` : ""]
+        .filter(Boolean)
+        .join(" "),
+      tags: [namespace, String(attrs.source ?? ""), clusterId]
         .map((item) => item.trim())
         .filter(Boolean),
       updatedAt: node.updated_at,
@@ -418,20 +436,12 @@ export const apiClient = {
     }
   },
 
-  getAlerts: async () =>
-    withDevFallback(
-      async () => {
-        const response = await api.get<SREApiEnvelope<{ alerts: Alert[]; clusters: AlertCluster[] }> | { alerts: Alert[]; clusters: AlertCluster[] }>(
-          "/api/alerts",
-        );
-        return filterAlertSnapshot(unwrapPayload(response.data));
-      },
-      async () => {
-        const { getAlertsFallback } = await import("./devFallback");
-        return filterAlertSnapshot(getAlertsFallback());
-      },
-      "getAlerts",
-    ),
+  getAlerts: async () => {
+    const response = await api.get<SREApiEnvelope<{ alerts: Alert[]; clusters: AlertCluster[] }> | { alerts: Alert[]; clusters: AlertCluster[] }>(
+      "/api/alerts",
+    );
+    return filterAlertSnapshot(unwrapPayload(response.data));
+  },
 
   handleAlert: async (alert: Alert) => {
     if (isBlockedAlert(alert)) {
@@ -694,6 +704,65 @@ export const apiClient = {
             }
           : null);
 
+      // Build batch_status from canary progress events when available
+      const canaryBatchEvents = remediationEvents.filter(
+        (event) => typeof event.data?.["batch"] === "string" && String(event.data["batch"]).startsWith("canary-"),
+      );
+      const batchStatus: Array<{ batch: string; progress: number; status: string }> =
+        canaryBatchEvents.length > 0
+          ? (() => {
+              const batchMap = new Map<string, { batch: string; index: number; total: number }>();
+              for (const event of canaryBatchEvents) {
+                const batch = String(event.data?.["batch"] ?? "");
+                const index = Number(event.data?.["batch_index"] ?? 0);
+                const total = Number(event.data?.["batch_total"] ?? 0);
+                if (!batchMap.has(batch)) {
+                  batchMap.set(batch, { batch, index, total });
+                }
+              }
+              const canaryTotal = batchMap.size;
+              let completedBatches = 0;
+              const entries = [...batchMap.values()].sort((a, b) => a.index - b.index);
+              for (const entry of entries) {
+                const lastEventForBatch = [...canaryBatchEvents]
+                  .reverse()
+                  .find((e) => String(e.data?.["batch"]) === entry.batch);
+                const stage = String(lastEventForBatch?.data?.["stage"] ?? "").toLowerCase();
+                if (stage === "validating" || stage === "remediating") {
+                  completedBatches = entry.index;
+                } else {
+                  completedBatches = entry.index;
+                }
+              }
+              const lastCanaryEvent = canaryBatchEvents.at(-1);
+              const lastStage = String(lastCanaryEvent?.data?.["stage"] ?? "").toLowerCase();
+              const canaryStatus =
+                oneShotStatus === "resolved"
+                  ? "resolved"
+                  : oneShotStatus === "failed"
+                    ? "failed"
+                    : lastStage === "validating"
+                      ? "validating"
+                      : "remediating";
+              return [
+                {
+                  batch: `canary (${canaryTotal} batches)`,
+                  progress: Math.max(0, Math.min(100, Math.round((completedBatches / Math.max(canaryTotal, 1)) * 100))),
+                  status: canaryStatus,
+                },
+              ];
+            })()
+          : [
+              {
+                batch: "一次性执行",
+                progress:
+                  oneShotStatus === "resolved"
+                    ? 100
+                    : Math.max(0, Math.min(100, batchProgress)),
+                status: oneShotStatus,
+              },
+            ];
+
       return {
         session_id: resolved,
         plan: currentPlan,
@@ -708,35 +777,13 @@ export const apiClient = {
           status: progressStatus,
           completed_steps: normalizedCompletedSteps,
           total_steps: totalSteps,
-          batch_status: [
-            {
-              batch: "一次性执行",
-              progress:
-                oneShotStatus === "resolved"
-                  ? 100
-                  : oneShotStatus === "failed" ||
-                      oneShotStatus === "timeout" ||
-                      oneShotStatus === "escalated" ||
-                      oneShotStatus === "rejected"
-                    ? Math.max(0, Math.min(100, batchProgress))
-                    : Math.max(0, Math.min(100, batchProgress)),
-              status: oneShotStatus,
-            },
-          ],
+          batch_status: batchStatus,
         },
         timeline: events,
         approval_required: session.status === "approval_required",
         baseline_review: derivedBaselineReview,
       } as RemediationOverview;
     } catch {
-      if (import.meta.env.DEV) {
-        const { getRemediationOverviewFallback } = await import("./devFallback");
-        const fallback = getRemediationOverviewFallback();
-        return {
-          ...fallback,
-          session_id: resolved,
-        } as RemediationOverview;
-      }
       const loop = await apiClient.getSessionLoop(resolved);
       return {
         session_id: loop.session_id,
@@ -1033,4 +1080,86 @@ export const apiClient = {
 };
 
 export type ApiClient = typeof apiClient;
+
+// ---------------------------------------------------------------------------
+// SSE streaming diagnosis client
+// ---------------------------------------------------------------------------
+
+export interface SSEEvent {
+  type: string;
+  session_id: string;
+  data: Record<string, unknown>;
+}
+
+/**
+ * Open an SSE connection to ``POST /api/diagnose/stream`` and relay parsed
+ * events to the caller via ``onEvent``.  Uses the Fetch API instead of axios
+ * because axios does not support streaming response bodies.
+ */
+export async function streamDiagnosis(
+  alert: Alert,
+  extraAlertFingerprints: string[],
+  onEvent: (event: SSEEvent) => void,
+  signal?: AbortSignal,
+): Promise<void> {
+  const base = import.meta.env.VITE_API_BASE_URL ?? "";
+  const token = import.meta.env.VITE_API_TOKEN;
+  const params = new URLSearchParams();
+  if (extraAlertFingerprints.length > 0) {
+    params.set("extra_alert_fingerprints", extraAlertFingerprints.join(","));
+  }
+  const url = `${base}/api/diagnose/stream${params.toString() ? `?${params.toString()}` : ""}`;
+
+  const response = await fetch(url, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+    body: JSON.stringify(alert),
+    signal,
+  });
+
+  if (!response.ok) {
+    const err = new Error(`streaming diagnosis failed: ${response.status}`);
+    (err as unknown as { status?: number }).status = response.status;
+    throw err;
+  }
+
+  if (!response.body) {
+    throw new Error("response body is null");
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+
+    const lines = buffer.split("\n");
+    buffer = lines.pop() || "";
+
+    let currentEvent = "";
+    for (const line of lines) {
+      if (line.startsWith("event: ")) {
+        currentEvent = line.slice(7).trim();
+      } else if (line.startsWith("data: ") && currentEvent) {
+        try {
+          const raw = JSON.parse(line.slice(6));
+          onEvent({
+            type: currentEvent,
+            session_id: raw.session_id ?? "",
+            data: raw.data ?? raw,
+          });
+        } catch {
+          // ignore malformed JSON lines
+        }
+        currentEvent = "";
+      }
+    }
+  }
+}
 

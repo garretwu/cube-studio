@@ -14,6 +14,7 @@ vi.mock("../api/client", () => ({
 
 const remediationOverviewFixture: RemediationOverview = {
   session_id: "sess-1",
+  plan_version: 2,
   approval_required: false,
   plan: {
     plan_id: "plan-1",
@@ -89,15 +90,16 @@ describe("remediationStore", () => {
     useRemediationStore.setState({
       sessionId: "sess-1",
       overview: remediationOverviewFixture,
+      approvalDialogOpen: true,
     });
 
     await expect(useRemediationStore.getState().submitApproval(true)).resolves.toBeUndefined();
 
     const state = useRemediationStore.getState();
-    expect(apiClient.approveRemediation).toHaveBeenCalledWith("sess-1", true);
+    expect(apiClient.approveRemediation).toHaveBeenCalledWith("sess-1", true, "ui-operator", 2);
     expect(apiClient.getSessionLoop).toHaveBeenCalledWith("sess-1");
     expect(state.overview?.session_id).toBe("sess-1");
     expect(state.events).toHaveLength(1);
+    expect(state.approvalDialogOpen).toBe(false);
   });
 });
-

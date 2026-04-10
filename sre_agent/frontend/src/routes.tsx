@@ -3,7 +3,7 @@
 import type { AppIconName } from "./components/ui";
 import AlertsModifiedPage from "./pages/AlertsModified";
 import DesignTokensPage from "./pages/DesignTokens";
-import DiagnosisPage from "./pages/Diagnosis";
+import DiagnosisModifiedPage from "./pages/DiagnosisModified";
 import KnowledgePage from "./pages/Knowledge";
 import RemediationPage from "./pages/Remediation";
 import SkillsPage from "./pages/Skills";
@@ -41,7 +41,7 @@ export const appRoutes: AppRoute[] = [
     label: "诊断",
     section: "operations",
     icon: "diagnosis",
-    element: <DiagnosisPage />,
+    element: <DiagnosisModifiedPage />,
   },
   {
     key: "remediation",

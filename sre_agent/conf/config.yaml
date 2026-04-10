@@ -3,11 +3,18 @@ global:
   prometheus_url: "http://10.11.4.3:31260"
   alertmanager_url: "http://10.11.4.3:31013/"
   loki_url: "http://10.11.4.2:30628"
+  auto_diagnose_entity_correlation_count: 2
 
 llm:
   api_key: "sk-api-Ml_dsXwgRtYGuBgoQJEfWZ3K1RConiku0CH7OOhRAFHQNk3J3ybKQtUyxwnB_euGb-l1sIDZMB0kNIcYVjzWhNKbQ8Lq8p8gXekaHKviVXw1CFP8pudEY8U"
   base_url: "https://api.minimax.chat/v1"
   model: "MiniMax-M2.7"
+
+agent:
+  reasoning_context_strategy: state_rebuilt
+  reasoning_overflow_behavior: fail
+  reasoning_input_target_tokens: 180000
+  reasoning_model_family: "MiniMax-M2.7"
 
 knowledge_base:
   provider: dify
@@ -33,10 +40,7 @@ ontology:
     live_inventory_path: sre_agent/conf/live_inventory.lab.yaml
     live_fallback_to_static: true
     k8s_cluster_name: aidc-lab
-    k8s_namespaces:
-      - default
-      - sre
-      - inference
+    k8s_namespaces: []
     prometheus_targets:
       cpu_util: worker-01
       memory_util: worker-04

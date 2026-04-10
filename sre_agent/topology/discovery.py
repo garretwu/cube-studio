@@ -24,7 +24,7 @@ from sre_agent.ontology.discovery.switch_scanner import SwitchScanner
 LOGGER = logging.getLogger(__name__)
 
 _DISCOVER_ALL_K8S_NAMESPACE_TOKENS = frozenset({"*", "all"})
-_EXCLUDED_DYNAMIC_K8S_NAMESPACES = frozenset({"kube-system", "kube-public", "kube-node-lease"})
+_EXCLUDED_DYNAMIC_K8S_NAMESPACES = frozenset({"kube-system"})
 
 
 def _summary_counts(nodes: list[OntologyNode], edges: list[OntologyEdge]) -> dict[str, int]:

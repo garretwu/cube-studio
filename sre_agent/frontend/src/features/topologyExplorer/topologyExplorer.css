@@ -790,6 +790,13 @@
   white-space: nowrap;
 }
 
+.topology-modified-explorer__export-hint {
+  margin: 0;
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  line-height: 18px;
+}
+
 .topology-modified-impact-banner {
   gap: 12px;
 }

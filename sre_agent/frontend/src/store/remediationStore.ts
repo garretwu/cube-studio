@@ -46,23 +46,12 @@ export const useRemediationStore = create<RemediationState>((set, get) => ({
   },
   setApprovalDialogOpen: (approvalDialogOpen) => set({ approvalDialogOpen }),
   submitApproval: async (approved: boolean) => {
-    const sessionId = get().sessionId || get().loop?.session_id;
+    const state = get();
+    const sessionId = state.sessionId || state.loop?.session_id;
+    const planVersion = state.overview?.plan_version;
     if (!sessionId) {
       return;
     }
-    set((state) => ({
-      approvalDialogOpen: false,
-      overview:
-        approved && state.overview
-          ? {
-              ...state.overview,
-              progress: {
-                ...state.overview.progress,
-                status: "remediating",
-              },
-            }
-          : state.overview,
-    }));
 
     let pollingStopped = false;
     let pollTimer: number | undefined;
@@ -84,7 +73,7 @@ export const useRemediationStore = create<RemediationState>((set, get) => ({
     }
 
     try {
-      await apiClient.approveRemediation(sessionId, approved);
+      await apiClient.approveRemediation(sessionId, approved, "ui-operator", planVersion);
     } finally {
       pollingStopped = true;
       if (pollTimer !== undefined && typeof window !== "undefined") {
@@ -97,6 +86,7 @@ export const useRemediationStore = create<RemediationState>((set, get) => ({
       loop: loop ?? get().loop,
       overview,
       events: overview.timeline ?? [],
+      approvalDialogOpen: false,
     });
   },
 }));

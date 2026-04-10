@@ -23,6 +23,7 @@ type TopologyExplorerProps = {
   isLoading: boolean;
   error?: string;
   hasSourceData: boolean;
+  lastUpdated?: string;
   searchQuery: string;
   searchFeedback: SearchFeedback;
   matchedCount: number;
@@ -31,6 +32,8 @@ type TopologyExplorerProps = {
   summaryFilter: ExplorerSummaryFilter;
   viewMode: ExplorerViewMode;
   layoutPreset: ExplorerLayoutPreset;
+  canExport: boolean;
+  exportHint?: string;
   legendOpen: boolean;
   inspectorOpen: boolean;
   summaryMetrics: TopologySummaryMetrics;
@@ -61,9 +64,11 @@ type TopologyExplorerProps = {
   onZoomIn: () => void;
   onZoomOut: () => void;
   onCycleLayoutPreset: () => void;
+  onExport: () => void;
   onRecenter: () => void;
   onSelectNode: (nodeId: string) => void;
   onHoverNode: (nodeId?: string) => void;
+  onCanvasReadyStateChange: (ready: boolean) => void;
   onInspectorOpenChange: (open: boolean) => void;
   onInspectorTabChange: (key: InspectorTabKey) => void;
   onHighlightInGraph: () => void;
@@ -101,6 +106,7 @@ function TopologyExplorer({
   isLoading,
   error,
   hasSourceData,
+  lastUpdated,
   searchQuery,
   searchFeedback,
   matchedCount,
@@ -109,6 +115,8 @@ function TopologyExplorer({
   summaryFilter,
   viewMode,
   layoutPreset,
+  canExport,
+  exportHint,
   legendOpen,
   inspectorOpen,
   summaryMetrics,
@@ -139,9 +147,11 @@ function TopologyExplorer({
   onZoomIn,
   onZoomOut,
   onCycleLayoutPreset,
+  onExport,
   onRecenter,
   onSelectNode,
   onHoverNode,
+  onCanvasReadyStateChange,
   onInspectorOpenChange,
   onInspectorTabChange,
   onHighlightInGraph,
@@ -226,6 +236,9 @@ function TopologyExplorer({
           />
 
           <div className="topology-modified-explorer__control-actions">
+            <AppButton disabled={!canExport} iconLeft="documentZip" size="sm" title={exportHint} variant="secondary" onClick={onExport}>
+              导出拓扑
+            </AppButton>
             <AppButton size="sm" variant="secondary" onClick={onCycleLayoutPreset}>
               {layoutPreset === "layered" ? "切换域布局" : "切换层级布局"}
             </AppButton>
@@ -237,6 +250,8 @@ function TopologyExplorer({
             </AppButton>
           </div>
         </div>
+
+        {!canExport && exportHint ? <p className="topology-modified-explorer__export-hint">{exportHint}</p> : null}
 
         <div className="topology-modified-explorer__stage" data-testid="topology-explorer-stage">
           <div className={`topology-modified-explorer__stage-shell ${inspectorOpen ? "topology-modified-explorer__stage-shell--panel-open" : ""}`}>
@@ -306,14 +321,20 @@ function TopologyExplorer({
                   edges={graphEdges}
                   forceEdgeLabels={false}
                   hoveredNodeId={hoveredNodeId}
+                  lastUpdated={lastUpdated}
+                  layerFilter={layerFilter}
                   layoutPreset={layoutPreset}
                   matchedNodeIds={matchedNodeIds}
                   neighborDepths={neighborDepths}
                   nodes={graphNodes}
                   onHoverNode={onHoverNode}
+                  onReadyStateChange={onCanvasReadyStateChange}
                   onSelectNode={onSelectNode}
                   onZoomChange={setZoomPercent}
+                  searchQuery={searchQuery}
                   selectedNodeId={selectedNodeId}
+                  statusFilter={statusFilter}
+                  summaryFilter={summaryFilter}
                 />
               )}
             </div>

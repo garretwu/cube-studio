@@ -170,7 +170,8 @@ function RemediationPage() {
   const [activeStepSelection, setActiveStepSelection] = useState<{ sessionId: string; stepId: number } | null>(null);
   const [query, setQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
-  const [actionLoading, setActionLoading] = useState(false);
+  const [actionIntent, setActionIntent] = useState<"approve" | "reject" | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
 
   const loadRecords = useCallback(async (preferredSessionId?: string) => {
     setRecordsLoading(true);
@@ -222,6 +223,7 @@ function RemediationPage() {
 
   useEffect(() => {
     setActiveStepSelection(null);
+    setActionError(null);
   }, [selectedSessionId]);
 
   const filteredRecords = useMemo(() => {
@@ -233,6 +235,15 @@ function RemediationPage() {
     () => records.find((record) => record.summary.session_id === selectedSessionId) ?? null,
     [records, selectedSessionId],
   );
+  const selectedOverview = useMemo(
+    () =>
+      selectedRecord
+        ? selectedRecord.summary.session_id === overview?.session_id
+          ? overview
+          : selectedRecord.overview
+        : undefined,
+    [overview, selectedRecord],
+  );
 
   const pendingApprovalCount = records.filter((record) => {
     const status = String(record.overview?.progress.status ?? record.summary.status ?? "").trim().toLowerCase();
@@ -243,16 +254,33 @@ function RemediationPage() {
 
   const handleSubmitApproval = useCallback(
     async (approved: boolean) => {
-      setActionLoading(true);
+      setActionIntent(approved ? "approve" : "reject");
+      setActionError(null);
       try {
         await submitApproval(approved);
         await loadRecords(selectedSessionId);
+        setActionError(null);
+      } catch (error) {
+        setActionError(error instanceof Error ? error.message : "审批操作失败");
       } finally {
-        setActionLoading(false);
+        setActionIntent(null);
       }
     },
     [loadRecords, selectedSessionId, submitApproval],
   );
+
+  const handleOpenApproval = useCallback(() => {
+    setActionError(null);
+    setApprovalDialogOpen(true);
+  }, [setApprovalDialogOpen]);
+
+  const handleCloseApproval = useCallback(() => {
+    if (actionIntent) {
+      return;
+    }
+    setActionError(null);
+    setApprovalDialogOpen(false);
+  }, [actionIntent, setApprovalDialogOpen]);
 
   const handleSelectStep = useCallback((sessionId: string, stepId: number) => {
     setActiveStepSelection((current) =>
@@ -396,23 +424,27 @@ function RemediationPage() {
       </div>
 
       <RemediationDetailDrawer
-        actionLoading={actionLoading}
+        actionLoading={actionIntent !== null}
         activeStepSelection={activeStepSelection}
         events={events}
         isLoading={isLoading}
         onClose={() => setSelectedSessionId("")}
-        onOpenApproval={() => setApprovalDialogOpen(true)}
+        onOpenApproval={handleOpenApproval}
         onSelectStep={handleSelectStep}
         open={Boolean(selectedRecord)}
         overview={overview}
         record={selectedRecord}
       />
       <ApprovalDialog
+        approveDisabled={!selectedOverview?.approval_required}
+        errorMessage={actionError}
+        loadingAction={actionIntent}
         onApprove={() => void handleSubmitApproval(true)}
-        onCancel={() => setApprovalDialogOpen(false)}
+        onCancel={handleCloseApproval}
         onReject={() => void handleSubmitApproval(false)}
         open={approvalDialogOpen}
-        plan={selectedRecord?.summary.session_id === overview?.session_id ? overview?.plan : selectedRecord?.overview?.plan}
+        plan={selectedOverview?.plan}
+        rejectDisabled={!selectedOverview?.approval_required}
       />
     </div>
   );

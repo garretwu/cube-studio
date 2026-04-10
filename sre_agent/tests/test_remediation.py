@@ -99,6 +99,15 @@ class _FakePrometheus:
 
 
 class TestRemediationUnit:
+    def test_unit_engine_defaults_to_real_execution_mode(self, tmp_path: Path) -> None:
+        registry = _make_registry()
+        gate = ApprovalGate(default_policy="auto_approve")
+        wal = RollbackJournal(tmp_path / "wal.jsonl")
+
+        engine = RemediationEngine(registry, gate, wal, execution_context=ToolExecutionContext())
+
+        assert engine.execution_mode == "real"
+
     def test_unit_validator_reports_missing_required_params_when_plan_incomplete(self) -> None:
         registry = _make_registry()
         validator = PlanValidator(registry)
@@ -123,7 +132,7 @@ class TestRemediationUnit:
         errors = validator.validate(bad_plan)
 
         assert errors
-        assert "missing params" in errors[0]
+        assert "missing_required_params" in errors[0]
 
     @pytest.mark.asyncio
     async def test_unit_approval_gate_auto_approves_low_risk_plan_when_no_human_required(self) -> None:

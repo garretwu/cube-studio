@@ -28,10 +28,19 @@ class EventType(str, Enum):
     OBSERVATION_RESULT = "observation_result"
     ESCALATION_REQUIRED = "escalation_required"
     DIAGNOSIS_STARTED = "diagnosis_started"
+    DIAGNOSIS_TRIGGERED = "diagnosis_triggered"
     ALERT = "alert"
     TOPOLOGY = "topology"
     ERROR = "error"
     DONE = "done"
+
+    # SSE streaming events
+    TOKEN_DELTA = "token_delta"
+    NODE_STARTED = "node_started"
+    NODE_COMPLETED = "node_completed"
+    TOOL_STARTED = "tool_started"
+    TOOL_COMPLETED = "tool_completed"
+    STATE_SNAPSHOT = "state_snapshot"
 
 
 class WSEvent(StrictFrozenModel):

@@ -46,7 +46,7 @@ describe("apiClient.getTopology", () => {
     expect(response.active_alerts).toBe(0);
   });
 
-  it("maps pod and service entities separately when falling back from /api/topology-explorer", async () => {
+  it("keeps multi-namespace pod and service entities visible when falling back from /api/topology-explorer", async () => {
     server.use(
       http.get("/api/topology-explorer", async () => HttpResponse.json({ message: "not found" }, { status: 404 })),
       http.get("/api/topology", async () =>
@@ -70,6 +70,22 @@ describe("apiClient.getTopology", () => {
                 status: "online",
                 updated_at: "2026-03-25T00:00:00Z",
               },
+              {
+                id: "pod:team-a:demo",
+                entity_type: "k8s_pod",
+                name: "demo",
+                properties: { namespace: "team-a", cluster_id: "k8s:lab-cluster" },
+                status: "Running",
+                updated_at: "2026-03-25T00:00:00Z",
+              },
+              {
+                id: "svc:team-a:demo",
+                entity_type: "inference_service",
+                name: "demo",
+                properties: { namespace: "team-a", cluster_id: "k8s:lab-cluster" },
+                status: "online",
+                updated_at: "2026-03-25T00:00:00Z",
+              },
             ],
             edges: [
               {
@@ -81,6 +97,18 @@ describe("apiClient.getTopology", () => {
               {
                 source_id: "svc:default:demo",
                 target_id: "pod:default:demo",
+                relation: "serves",
+                properties: {},
+              },
+              {
+                source_id: "pod:team-a:demo",
+                target_id: "node-b",
+                relation: "hosted_on",
+                properties: {},
+              },
+              {
+                source_id: "svc:team-a:demo",
+                target_id: "pod:team-a:demo",
                 relation: "serves",
                 properties: {},
               },
@@ -101,6 +129,70 @@ describe("apiClient.getTopology", () => {
     const response = await apiClient.getTopologyExplorer();
     expect(response.nodes.find((node) => node.id === "pod:default:demo")?.type).toBe("pod");
     expect(response.nodes.find((node) => node.id === "svc:default:demo")?.type).toBe("service");
+    expect(response.nodes.find((node) => node.id === "pod:team-a:demo")?.name).toBe("team-a/demo");
+    expect(response.nodes.find((node) => node.id === "svc:team-a:demo")?.name).toBe("team-a/demo");
+  });
+
+  it("unwraps direct /api/topology-explorer responses", async () => {
+    server.use(
+      http.get("/api/topology-explorer", async () =>
+        HttpResponse.json({
+          success: true,
+          data: {
+            site: {
+              id: "aidc-site",
+              name: "AIDC Site",
+              region: "AIDC-CN",
+              zone: "zone-a",
+              domain: "aidc",
+              summary: "Topology explorer snapshot mapped from /api/topology",
+            },
+            nodes: [
+              {
+                id: "svc:team-a:demo",
+                name: "team-a/demo",
+                type: "service",
+                status: "healthy",
+                layer: "service",
+                domain: "aidc",
+                region: "AIDC-CN",
+                zone: "zone-a",
+                cluster: "k8s:lab-cluster",
+                summary: "team-a/demo (inference_service) namespace=team-a cluster=k8s:lab-cluster",
+                tags: ["team-a", "k8s", "k8s:lab-cluster"],
+                updatedAt: "2026-04-08T00:00:00Z",
+                attributes: { namespace: "team-a", cluster_id: "k8s:lab-cluster" },
+              },
+            ],
+            edges: [
+              {
+                id: "edge-0-svc:team-a:demo-pod:team-a:demo-0",
+                source: "svc:team-a:demo",
+                target: "pod:team-a:demo-0",
+                relationType: "depends_on",
+                status: "healthy",
+                isCritical: false,
+                impactLevel: "low",
+                label: "serves",
+                isAggregated: false,
+              },
+            ],
+            paths: [],
+            lastUpdated: "2026-04-08T00:00:00Z",
+          },
+          error: null,
+          trace_id: "trace-topology-explorer-direct",
+          timestamp: "2026-04-08T00:00:00Z",
+        }),
+      ),
+    );
+
+    const response = await apiClient.getTopologyExplorer();
+
+    expect(response.site.id).toBe("aidc-site");
+    expect(response.nodes[0]?.name).toBe("team-a/demo");
+    expect(response.edges[0]?.relationType).toBe("depends_on");
+    expect(response.paths).toEqual([]);
   });
 
   it("uses backend session contract and unwraps envelope", async () => {
@@ -269,9 +361,9 @@ describe("apiClient.getTopology", () => {
           data: {
             alerts: [
               {
-                alert_name: "GPU utilization is high",
+                alert_name: "TargetDown",
                 severity: "warning",
-                labels: { alertname: "GPU utilization is high" },
+                labels: { alertname: "TargetDown" },
                 annotations: {},
                 starts_at: "2026-03-26T00:00:00Z",
                 fingerprint: "fp-blocked",
@@ -299,14 +391,13 @@ describe("apiClient.getTopology", () => {
     );
 
     const payload = await apiClient.getAlerts();
-    expect(payload.alerts).toHaveLength(2);
-    expect(payload.alerts.map((a) => a.fingerprint)).toEqual(
-      expect.arrayContaining(["fp-blocked", "fp-allowed"]),
-    );
+    expect(payload.alerts).toHaveLength(1);
+    expect(payload.alerts[0]?.fingerprint).toBe("fp-allowed");
     expect(payload.clusters).toHaveLength(1);
+    expect(payload.clusters[0]?.alerts).toEqual(["fp-allowed"]);
   });
 
-  it("allows diagnose request for previously-filtered GPU alert", async () => {
+  it("blocks diagnose request for default demo blocked alert before sending the request", async () => {
     let called = false;
     server.use(
       http.post("/api/diagnose", async () => {
@@ -335,17 +426,18 @@ describe("apiClient.getTopology", () => {
       }),
     );
 
-    const session = await apiClient.diagnoseAlert({
-      alert_name: "GPUUtilizationHigh",
-      severity: "warning",
-      labels: { alertname: "GPUUtilizationHigh" },
-      annotations: {},
-      starts_at: "2026-03-26T00:00:00Z",
-      fingerprint: "fp-blocked-2",
-      status: "firing",
-    });
-    expect(called).toBe(true);
-    expect(session.session_id).toBe("sess-gpu-diagnose");
+    await expect(
+      apiClient.diagnoseAlert({
+        alert_name: "TargetDown",
+        severity: "warning",
+        labels: { alertname: "TargetDown" },
+        annotations: {},
+        starts_at: "2026-03-26T00:00:00Z",
+        fingerprint: "fp-blocked-2",
+        status: "firing",
+      }),
+    ).rejects.toThrow("temporarily filtered");
+    expect(called).toBe(false);
   });
 
   it("falls back to /api/diagnose when /api/diagnose/start is unavailable", async () => {
@@ -398,7 +490,30 @@ describe("apiClient.getTopology", () => {
     expect(session.session_id).toBe("sess-start-fallback");
   });
 
-  it("allows handle request for previously-filtered GPU alert", async () => {
+  it("blocks startDiagnoseAlert for default demo blocked alert before sending the request", async () => {
+    let called = false;
+    server.use(
+      http.post("/api/diagnose/start", async () => {
+        called = true;
+        return HttpResponse.json({});
+      }),
+    );
+
+    await expect(
+      apiClient.startDiagnoseAlert({
+        alert_name: "DeadMansSwitch",
+        severity: "warning",
+        labels: { alertname: "DeadMansSwitch" },
+        annotations: {},
+        starts_at: "2026-03-26T00:00:00Z",
+        fingerprint: "fp-blocked-start",
+        status: "firing",
+      }),
+    ).rejects.toThrow("temporarily filtered");
+    expect(called).toBe(false);
+  });
+
+  it("blocks handle request for default demo blocked alert before sending the request", async () => {
     let called = false;
     server.use(
       http.post("/api/handle", async () => {
@@ -413,18 +528,18 @@ describe("apiClient.getTopology", () => {
       }),
     );
 
-    const sessionId = await apiClient.handleAlert({
-      alert_name: "GPU utilization is high",
-      severity: "warning",
-      labels: { alertname: "GPU utilization is high" },
-      annotations: {},
-      starts_at: "2026-03-26T00:00:00Z",
-      fingerprint: "fp-blocked-3",
-      status: "firing",
-    });
-
-    expect(called).toBe(true);
-    expect(sessionId).toBe("sess-3");
+    await expect(
+      apiClient.handleAlert({
+        alert_name: "PrometheusOperatorDown",
+        severity: "warning",
+        labels: { alertname: "PrometheusOperatorDown" },
+        annotations: {},
+        starts_at: "2026-03-26T00:00:00Z",
+        fingerprint: "fp-blocked-3",
+        status: "firing",
+      }),
+    ).rejects.toThrow("temporarily filtered");
+    expect(called).toBe(false);
   });
 
   it("falls back to /api/diagnosis/sessions when /api/sessions fails", async () => {

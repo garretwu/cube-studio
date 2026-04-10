@@ -6,7 +6,7 @@ import type { DiagnosisSessionSummary } from "./api/types";
 import { AppShell } from "./components/ui";
 import { useAlertsRealtimeSync } from "./hooks/useAlertsRealtimeSync";
 import HistoryPage from "./pages/History";
-import DiagnosisPage from "./pages/Diagnosis";
+import DiagnosisModifiedPage from "./pages/DiagnosisModified";
 import KnowledgeDetailPage from "./pages/KnowledgeDetail";
 import RemediationPage from "./pages/Remediation";
 import SkillDetailPage from "./pages/SkillDetail";
@@ -31,9 +31,9 @@ function AppRoutes() {
       <Route path="/" element={<Navigate to="/topology" replace />} />
       <Route path="/alerts" element={<Navigate to="/alerts-modified" replace />} />
       <Route path="/history" element={<HistoryPage />} />
-      <Route path="/history/:sessionId" element={<DiagnosisPage />} />
-      <Route path="/diagnosis" element={<DiagnosisPage />} />
-      <Route path="/diagnosis/:sessionId" element={<DiagnosisPage />} />
+      <Route path="/history/:sessionId" element={<DiagnosisModifiedPage />} />
+      <Route path="/diagnosis" element={<DiagnosisModifiedPage />} />
+      <Route path="/diagnosis/:sessionId" element={<DiagnosisModifiedPage />} />
       <Route path="/remediation/:sessionId" element={<RemediationPage />} />
       <Route path="/skills/:skillId" element={<SkillDetailPage />} />
       <Route path="/knowledge/:knowledgeBaseId" element={<KnowledgeDetailPage />} />

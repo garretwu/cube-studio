@@ -1,9 +1,9 @@
 import { Modal } from "antd";
 
-import { AppButton, StatusChip } from "./ui";
 import type { RemediationPlan } from "../api/types";
 import { formatWorkflowStatus } from "../utils/display";
 import { formatPercent } from "../utils/format";
+import { AppButton, StatusChip } from "./ui";
 
 type ApprovalDialogProps = {
   open: boolean;
@@ -11,28 +11,50 @@ type ApprovalDialogProps = {
   onApprove: () => void;
   onReject: () => void;
   onCancel: () => void;
+  loadingAction?: "approve" | "reject" | null;
+  errorMessage?: string | null;
+  approveDisabled?: boolean;
+  rejectDisabled?: boolean;
 };
 
-function ApprovalDialog({ open, plan, onApprove, onReject, onCancel }: ApprovalDialogProps) {
+function ApprovalDialog({
+  open,
+  plan,
+  onApprove,
+  onReject,
+  onCancel,
+  loadingAction = null,
+  errorMessage,
+  approveDisabled = false,
+  rejectDisabled = false,
+}: ApprovalDialogProps) {
+  const isBusy = loadingAction !== null;
+
   return (
     <Modal
-      destroyOnClose
+      closable={!isBusy}
+      destroyOnHidden
       footer={
         <div style={{ display: "flex", justifyContent: "space-between", gap: 12, marginTop: 8 }}>
-          <AppButton onClick={onReject} variant="danger">
+          <AppButton disabled={rejectDisabled || isBusy} loading={loadingAction === "reject"} onClick={onReject} variant="danger">
             驳回
           </AppButton>
           <div style={{ display: "flex", gap: 12 }}>
-            <AppButton onClick={onCancel} variant="secondary">
+            <AppButton disabled={isBusy} onClick={onCancel} variant="secondary">
               稍后处理
             </AppButton>
-            <AppButton onClick={onApprove} variant="primary">
+            <AppButton disabled={approveDisabled || isBusy} loading={loadingAction === "approve"} onClick={onApprove} variant="primary">
               批准
             </AppButton>
           </div>
         </div>
       }
-      onCancel={onCancel}
+      mask={{ closable: !isBusy }}
+      onCancel={() => {
+        if (!isBusy) {
+          onCancel();
+        }
+      }}
       open={open}
       title="批准修复方案"
     >
@@ -42,6 +64,7 @@ function ApprovalDialog({ open, plan, onApprove, onReject, onCancel }: ApprovalD
           {plan?.confidence ? <StatusChip tone="info">{formatPercent(plan.confidence)}</StatusChip> : null}
           {plan?.safety_level ? <StatusChip tone="neutral">{formatWorkflowStatus(plan.safety_level)}</StatusChip> : null}
         </div>
+        {errorMessage ? <p className="data-list__copy remediation-sidebar__error">{errorMessage}</p> : null}
         <div className="mini-card">
           <p className="mini-card__title">{plan?.description ?? "当前暂无可审批的修复方案。"}</p>
           <p className="mini-card__copy">根因：{plan?.root_cause ?? "暂无"}</p>
@@ -49,9 +72,9 @@ function ApprovalDialog({ open, plan, onApprove, onReject, onCancel }: ApprovalD
         </div>
         {plan?.steps && plan.steps.length > 0 ? (
           <div className="mini-card" style={{ marginTop: 8 }}>
-            <p className="mini-card__title">执行命令预览</p>
+            <p className="mini-card__title">执行步骤预览</p>
             <p className="mini-card__copy" style={{ marginBottom: 8 }}>
-              以下为审批后将执行的详细命令，当前为模拟模式不会实际执行。
+              以下内容会在审批通过后交由后端真实执行，页面会同步展示执行、观察和最终结果。
             </p>
             <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
               {plan.steps.map((step) => (

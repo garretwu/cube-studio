@@ -2,18 +2,13 @@
   Alert,
   AlertCluster,
   ChatMessage,
-  ConfigBaseline,
   KnowledgeDataset,
   DiagnosisSession,
   DiagnosisSessionSummary,
-  IncidentRecord,
   KnowledgeDocument,
-  LearnedPattern,
   OntologyEdge,
   OntologyNode,
-  RemediationOverview,
   RemediationPlan,
-  SessionEvent,
   SkillDescriptor,
 } from "../api/types";
 
@@ -312,136 +307,6 @@ export const diagnosisSession: DiagnosisSession = {
   },
 };
 
-export const remediationTimeline: SessionEvent[] = [
-  {
-    schema_version: "1",
-    type: "approval_required",
-    session_id: diagnosisSession.session_id,
-    timestamp: "2026-03-18T12:04:30Z",
-    data: {
-      user: "miaomiao.zhou",
-      message: "等待值班工程师审批修复方案",
-      plan_version: 3,
-    },
-  },
-  {
-    schema_version: "1",
-    type: "plan_revised",
-    session_id: diagnosisSession.session_id,
-    timestamp: "2026-03-18T12:05:10Z",
-    data: {
-      user: "auto-sre-bot",
-      message: "已补充 GPU 观测与回滚说明",
-      plan_version: 3,
-      plan_id: "plan-rollback-01-v3",
-      instruction: "请补充执行前校验、回滚条件和观测指标，降低误操作风险。",
-    },
-  },
-  {
-    schema_version: "1",
-    type: "remediation_progress",
-    session_id: diagnosisSession.session_id,
-    timestamp: "2026-03-18T12:06:02Z",
-    data: {
-      stage: "execution_started",
-      user: "auto-sre-bot",
-      message: "开始执行步骤 1：排出热点节点上的 10% 分片",
-      timeout_seconds: 60,
-      step_results: [
-        {
-          step_id: 1,
-          tool: "k8s_cordon_drain",
-          command: "kubectl cordon node-gpu-01 && kubectl drain node-gpu-01 --ignore-daemonsets",
-          result: { cordoned: true, drained_pods: 1 },
-          success: true,
-          mocked: true,
-        },
-      ],
-    },
-  },
-  {
-    schema_version: "1",
-    type: "remediation_progress",
-    session_id: diagnosisSession.session_id,
-    timestamp: "2026-03-18T12:07:20Z",
-    data: {
-      stage: "validating",
-      user: "system",
-      message: "正在验证 p95 与 GPU 利用率是否恢复",
-      timeout_seconds: 120,
-      step_results: [
-        {
-          step_id: 2,
-          tool: "metrics.check",
-          command: "query vllm_p95_ms and gpu_utilization",
-          result: { vllm_p95_ms: 214, gpu_utilization: 0.71, trend: "stable" },
-          success: true,
-          mocked: true,
-        },
-      ],
-    },
-  },
-  {
-    schema_version: "1",
-    type: "remediation_progress",
-    session_id: diagnosisSession.session_id,
-    timestamp: "2026-03-18T12:08:40Z",
-    data: {
-      stage: "execution_succeeded",
-      user: "system",
-      message: "金丝雀批次验证通过，等待继续扩容",
-      steps_completed: 2,
-      timeout_seconds: 120,
-      step_results: [
-        {
-          step_id: 3,
-          tool: "metrics.check",
-          command: "confirm canary batch",
-          result: { status: "healthy", canary_p95_ms: 214 },
-          success: true,
-          mocked: true,
-        },
-      ],
-    },
-  },
-];
-
-export const remediationOverview: RemediationOverview = {
-  session_id: diagnosisSession.session_id,
-  approval_required: false,
-  plan: remediationPlan,
-  plan_version: 3,
-  plan_history: [
-    {
-      version: 1,
-      plan_id: "plan-rollback-01-v1",
-      revised_at: "2026-03-18T12:03:40Z",
-      instruction: "请先给出一个最小可执行的缓解方案。",
-    },
-    {
-      version: 2,
-      plan_id: "plan-rollback-01-v2",
-      revised_at: "2026-03-18T12:04:58Z",
-      instruction: "请补充回滚策略与观察窗口。",
-    },
-    {
-      version: 3,
-      plan_id: "plan-rollback-01-v3",
-      revised_at: "2026-03-18T12:05:10Z",
-      instruction: "请补充执行前校验、回滚条件和观测指标，降低误操作风险。",
-    },
-  ],
-  progress: {
-    status: "remediating",
-    completed_steps: 2,
-    total_steps: 3,
-    batch_status: [
-      { batch: "金丝雀 10%", progress: 100, status: "execution_succeeded" },
-      { batch: "全量扩容", progress: 42, status: "validating" },
-    ],
-  },
-  timeline: remediationTimeline,
-};
 export const diagnosisHistorySessions: DiagnosisSessionSummary[] = [
   {
     session_id: diagnosisSession.session_id,
@@ -573,78 +438,4 @@ export const knowledgeDatasets: KnowledgeDataset[] = [
 ];
 
 export { knowledgeBaseDetails, knowledgeBases } from "./knowledgeData";
-
-export const incidents: IncidentRecord[] = [
-  {
-    incident_id: "inc-demo-004",
-    aidc_id: "local-aidc",
-    timestamp: "2026-03-18T12:03:00Z",
-    alert: alerts[0],
-    symptoms: ["instance", "namespace", "vllm_latency_high"],
-    root_cause: "GPU 资源争用",
-    root_cause_layer: "hardware",
-    root_cause_entities: ["gpu-01"],
-    outcome: "resolved",
-    resolution_time_seconds: 182,
-  },
-  {
-    incident_id: "inc-demo-003",
-    aidc_id: "local-aidc",
-    timestamp: "2026-03-18T12:02:00Z",
-    alert: alerts[0],
-    symptoms: ["instance", "namespace", "vllm_latency_high"],
-    root_cause: "GPU 资源争用",
-    root_cause_layer: "hardware",
-    root_cause_entities: ["gpu-01"],
-    outcome: "resolved",
-    resolution_time_seconds: 181,
-  },
-];
-
-export const learnedPatterns: LearnedPattern[] = [
-  {
-    pattern_id: "inc-demo-001",
-    aidc_id: "local-aidc",
-    symptom_signature: ["instance", "namespace", "vllm_latency_high"],
-    root_cause: "GPU 资源争用",
-    effective_fix: "先排空热点分片，再终止节点上的 gpu-burn 进程。",
-    occurrence_count: 4,
-    confidence: 0.75,
-    first_seen: "2026-03-18T12:00:00Z",
-    last_seen: "2026-03-18T12:03:00Z",
-    example_incidents: ["inc-demo-001", "inc-demo-004"],
-  },
-];
-
-export const baseline: ConfigBaseline = {
-  aidc_id: "local-aidc",
-  version: 2,
-  metric_baselines: { vllm_p95_ms: 180, gpu_temp_c: 78 },
-  safety_thresholds: { vllm_p95_warn: 500, gpu_temp_warn: 85 },
-  custom_rules: { night_window: "00:00-06:00", noisy_neighbors: ["gpu-burn"] },
-  updated_at: "2026-03-18T10:30:00Z",
-};
-
-const legacySkills: SkillDescriptor[] = [
-  {
-    id: "builtin-topology",
-    name: "拓扑导航器",
-    scope: "builtin",
-    summary: "总结影响半径，并高亮机柜、交换机与服务之间的依赖链路。",
-    source: "builtin://topology",
-    permissions: ["read:ontology", "read:events"],
-    match_score: 0.96,
-  },
-  {
-    id: "custom-runbook-rdma",
-    name: "RDMA 手册匹配器",
-    scope: "custom",
-    summary: "将告警模式匹配到 RoCE/ECN 手册，并返回高置信度修复建议。",
-    source: "skills://rdma-runbook",
-    permissions: ["read:knowledge", "read:metrics"],
-    match_score: 0.88,
-  },
-];
-
-void legacySkills;
 

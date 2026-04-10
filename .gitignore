@@ -68,3 +68,4 @@ config.lab.yaml
 /sre_agent/scripts/agent_demo_model_fallback_test.json
 /sre_agent/docs/evidence/
 /sre_agent/.devlogs
+.claude/settings.local.json

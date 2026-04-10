@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from typing import Any, Awaitable, Callable
 from uuid import uuid4
@@ -39,7 +40,7 @@ def build_default_llm_from_env() -> ChatOpenAI:
     if not api_key:
         raise RuntimeError("SRE_OPENAI_API_KEY or OPENAI_API_KEY is required")
     base_url = os.getenv("SRE_OPENAI_BASE_URL", "").strip() or None
-    model = os.getenv("SRE_LLM_MODEL", "").strip() or "MiniMax-M2.5"
+    model = os.getenv("SRE_LLM_MODEL", "").strip() or "MiniMax-M2.7"
     kwargs: dict[str, Any] = {
         "api_key": api_key,
         "model": model,
@@ -65,6 +66,24 @@ def _to_dict(value: Any) -> dict[str, Any]:
     if isinstance(value, dict):
         return dict(value)
     return {}
+
+
+def _is_context_window_exceeded_error(exc: Exception) -> bool:
+    message = str(exc).strip().lower()
+    if not message:
+        return False
+    signals = (
+        "context window exceeds limit",
+        "maximum context length",
+        "context length exceeded",
+        "prompt is too long",
+        "too many tokens",
+        "token limit",
+        "invalid params",
+    )
+    return any(signal in message for signal in signals) and (
+        "context" in message or "token" in message or "prompt" in message
+    )
 
 
 def _normalize_trace_item_event(*, session_id: str, item: dict[str, Any]) -> dict[str, Any] | None:
@@ -206,18 +225,56 @@ def create_sre_graph(
             )
             return next_state
         except asyncio.TimeoutError:
+            trace_items = list(state.get("trace_items", []))
+            trace_items.append(
+                {
+                    "type": "thought",
+                    "step": state.get("step_count", 0) + 1,
+                    "content": "reason step timed out; concluding with evidence collected so far",
+                    "action": "conclude",
+                    "confidence": None,
+                    "tool_params": {"kind": "reason_timeout"},
+                }
+            )
             return {
                 **state,
-                "status": "timeout",
-                "summary": "reason step timed out",
+                "trace_items": trace_items,
+                "status": "step_timeout",
+                "summary": "reason step timed out; partial diagnosis from collected evidence",
                 "error": "reason step timed out",
             }
         except Exception as exc:  # noqa: BLE001
+            error_text = str(exc).strip() or exc.__class__.__name__
+            if _is_context_window_exceeded_error(exc):
+                trace_items = list(state.get("trace_items", []))
+                trace_items.append(
+                    {
+                        "type": "thought",
+                        "step": state.get("step_count", 0) + 1,
+                        "content": (
+                            "Reasoning failed because the model context window limit was reached; "
+                            "try reducing prompt/tool output size."
+                        ),
+                        "action": "conclude",
+                        "confidence": None,
+                        "tool_params": {
+                            "kind": "reason_context_overflow",
+                            "error": error_text,
+                        },
+                    }
+                )
+                return {
+                    **state,
+                    "trace_items": trace_items,
+                    "status": "failed",
+                    "summary": f"reason step failed: context window limit reached: {error_text}",
+                    "error": f"reason step failed: context window limit reached: {error_text}",
+                }
             return {
                 **state,
                 "status": "failed",
-                "summary": f"reason step failed: {exc}",
-                "error": f"reason step failed: {exc}",
+                "summary": f"reason step failed: {error_text}",
+                "error": f"reason step failed: {error_text}",
             }
 
     async def _act(state: SREAgentState) -> SREAgentState:
@@ -230,10 +287,22 @@ def create_sre_graph(
             )
             return next_state
         except asyncio.TimeoutError:
+            trace_items = list(state.get("trace_items", []))
+            trace_items.append(
+                {
+                    "type": "thought",
+                    "step": state.get("step_count", 0) + 1,
+                    "content": "act step timed out; concluding with evidence collected so far",
+                    "action": "conclude",
+                    "confidence": None,
+                    "tool_params": {"kind": "act_timeout"},
+                }
+            )
             return {
                 **state,
-                "status": "timeout",
-                "summary": "act step timed out",
+                "trace_items": trace_items,
+                "status": "step_timeout",
+                "summary": "act step timed out; partial diagnosis from collected evidence",
                 "error": "act step timed out",
             }
         except Exception as exc:  # noqa: BLE001
@@ -289,7 +358,7 @@ async def run_diagnosis(
     skill_policy: SkillPolicy | None = None,
     skill_executor: SkillExecutor | None = None,
     session_id: str | None = None,
-    step_timeout_sec: float = 60.0,
+    step_timeout_sec: float = 120.0,
     total_timeout_sec: float = 600.0,
     max_steps: int = 50,
     checkpoint_dir: str | None = "./data/checkpoints/sre_agent",
@@ -353,3 +422,169 @@ async def run_diagnosis(
             "error": "diagnosis session timed out",
         }
     return result
+
+
+_STREAM_GRAPH_NODES = frozenset(
+    {"reason", "act", "observe", "decide", "finalize"},
+)
+
+
+async def run_diagnosis_stream(
+    *,
+    query: str,
+    context: ToolExecutionContext | None,
+    variables: dict[str, Any] | None = None,
+    alert_snapshot: dict[str, Any] | None = None,
+    topology_context: dict[str, Any] | None = None,
+    extra_alerts: list[dict[str, Any]] | None = None,
+    llm: Any | None = None,
+    guardrails: Any | None = None,
+    tool_registry: ToolRegistry | None = None,
+    skill_registry: SkillRegistry | None = None,
+    skill_policy: SkillPolicy | None = None,
+    skill_executor: SkillExecutor | None = None,
+    session_id: str | None = None,
+    step_timeout_sec: float = 120.0,
+    total_timeout_sec: float = 600.0,
+    max_steps: int = 50,
+    checkpoint_dir: str | None = "./data/checkpoints/sre_agent",
+    allowed_tool_names: list[str] | None = None,
+) -> AsyncIterator[dict[str, Any]]:
+    """Stream diagnosis events by iterating over ``graph.astream_events(version='v2')``.
+
+    Yields dicts with ``{"type": ..., "session_id": ..., "data": ...}`` which the
+    SSE endpoint can relay directly to the frontend.
+    """
+    active_session_id = session_id or uuid4().hex
+    graph = create_sre_graph(
+        llm=llm,
+        guardrails=guardrails,
+        skill_registry=skill_registry,
+        skill_policy=skill_policy,
+        skill_executor=skill_executor,
+        tool_registry=tool_registry,
+        tool_context=context,
+        trace_callback=None,  # events come from astream_events, not trace_callback
+    )
+    initial_state = initialize_state(
+        query=query,
+        variables=variables,
+        session_id=active_session_id,
+        step_timeout_sec=step_timeout_sec,
+        total_timeout_sec=total_timeout_sec,
+        max_steps=max_steps,
+        checkpoint_dir=checkpoint_dir,
+        allowed_tool_names=allowed_tool_names,
+        alert_snapshot=alert_snapshot,
+        topology_context=topology_context,
+        extra_alerts=extra_alerts,
+    )
+
+    yield {
+        "type": EventType.DIAGNOSIS_STARTED.value,
+        "session_id": active_session_id,
+        "data": {
+            "alert": alert_snapshot,
+            "topology": topology_context,
+            "variables": variables or {},
+            "extra_alerts": extra_alerts or [],
+        },
+    }
+
+    final_state: dict[str, Any] = dict(initial_state)
+
+    async def _run() -> None:
+        nonlocal final_state
+        async for event in graph.astream_events(
+            initial_state,
+            config={"configurable": {"thread_id": active_session_id}},
+            version="v2",
+        ):
+            kind = event.get("event", "")
+            name = event.get("name", "")
+            data = event.get("data", {})
+
+            if kind == "on_chat_model_stream":
+                chunk = data.get("chunk")
+                if chunk is None:
+                    continue
+                content = getattr(chunk, "content", None)
+                if not content:
+                    continue
+                # Some providers return content as a list of parts.
+                if isinstance(content, list):
+                    text = "".join(
+                        part if isinstance(part, str) else str(getattr(part, "text", ""))
+                        for part in content
+                    )
+                else:
+                    text = str(content)
+                if not text:
+                    continue
+                yield {
+                    "type": EventType.TOKEN_DELTA.value,
+                    "session_id": active_session_id,
+                    "data": {"content": text, "node": name},
+                }
+
+            elif kind == "on_chain_start" and name in _STREAM_GRAPH_NODES:
+                yield {
+                    "type": EventType.NODE_STARTED.value,
+                    "session_id": active_session_id,
+                    "data": {"node": name},
+                }
+
+            elif kind == "on_chain_end" and name in _STREAM_GRAPH_NODES:
+                output = data.get("output")
+                if isinstance(output, dict):
+                    final_state = output
+                event_data: dict[str, Any] = {"node": name}
+                if isinstance(output, dict):
+                    event_data["status"] = output.get("status")
+                    event_data["step_count"] = output.get("step_count")
+                    trace_items = output.get("trace_items") or []
+                    if trace_items:
+                        event_data["new_trace_items"] = trace_items[-1:]
+                    if output.get("diagnosis_result") is not None:
+                        event_data["diagnosis_result"] = output["diagnosis_result"]
+                    if output.get("remediation_plan") is not None:
+                        event_data["remediation_plan"] = output["remediation_plan"]
+                yield {
+                    "type": EventType.NODE_COMPLETED.value,
+                    "session_id": active_session_id,
+                    "data": event_data,
+                }
+
+            elif kind == "on_tool_start":
+                yield {
+                    "type": EventType.TOOL_STARTED.value,
+                    "session_id": active_session_id,
+                    "data": {"tool": name, "params": data.get("input", {})},
+                }
+
+            elif kind == "on_tool_end":
+                yield {
+                    "type": EventType.TOOL_COMPLETED.value,
+                    "session_id": active_session_id,
+                    "data": {"tool": name, "result": data.get("output")},
+                }
+
+    try:
+        async with asyncio.timeout(total_timeout_sec):
+            async for event in _run():
+                yield event
+    except TimeoutError:
+        yield {
+            "type": EventType.ERROR.value,
+            "session_id": active_session_id,
+            "data": {"message": "diagnosis session timed out"},
+        }
+
+    # Yield the final done event.
+    final_status = final_state.get("status", "completed")
+    final_summary = final_state.get("summary")
+    yield {
+        "type": "done",
+        "session_id": active_session_id,
+        "data": {"status": final_status, "summary": final_summary},
+    }

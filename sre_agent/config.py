@@ -8,6 +8,8 @@ from typing import MutableMapping
 import yaml
 from pydantic import BaseModel, ConfigDict, Field
 
+from sre_agent.alerts_filter import DEFAULT_BLOCKED_ALERT_NAMES
+
 
 class GlobalConfig(BaseModel):
     model_config = ConfigDict(extra="allow")
@@ -30,8 +32,13 @@ class GlobalConfig(BaseModel):
     cors_allow_headers: list[str] = Field(default_factory=lambda: ["Authorization", "Content-Type", "x-trace-id"])
     cors_expose_headers: list[str] = Field(default_factory=lambda: ["x-trace-id"])
     blocked_alert_names: list[str] = Field(
-        default_factory=lambda: []
+        default_factory=lambda: list(DEFAULT_BLOCKED_ALERT_NAMES)
     )
+    auto_diagnose_alert_names: list[str] = Field(
+        default_factory=lambda: ["CubeStudioWebLatencyP95High", "NetworkLatencyHigh100ms"]
+    )
+    auto_diagnose_delay_seconds: float = 10.0
+    auto_diagnose_entity_correlation_count: int = 2
 
 
 class AuthConfig(BaseModel):
@@ -56,6 +63,15 @@ class AgentRuntimeConfig(BaseModel):
 
     guardrails_config_dir: str = "./sre_agent/guardrails"
     langgraph_checkpoint_db: str = "./data/checkpoints/sre_agent.db"
+    reasoning_context_strategy: str = "state_rebuilt"
+    reasoning_overflow_behavior: str = "fail"
+    reasoning_input_target_tokens: int = 180000
+    reasoning_model_family: str | None = None
+    reason_context_char_budget: int = 2400
+    tool_message_char_limit: int = 1200
+    reason_preserve_recent_messages: int = 6
+    step_timeout_sec: float = 120.0
+    total_timeout_sec: float = 600.0
 
 
 class SwitchPortDiscoveryConfig(BaseModel):
@@ -168,7 +184,7 @@ class RemediationConfig(BaseModel):
     default_policy: str = "human_confirm"
     dry_run: bool = False
     max_concurrent_remediations: int = 2
-    execution_mode: str = "mock"
+    execution_mode: str = "real"
     observation_seconds: int = 180
     execution_timeout_seconds: int = 600
 

@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any
+from typing import Any, Callable, Coroutine
 
 from sre_agent.models.remediation import CanaryCondition, RemediationPlan, RemediationResult
 from sre_agent.remediation.wal import RollbackJournal
+
+ProgressCallback = Callable[..., Coroutine[Any, Any, None]]
 
 
 class CanaryExecutor:
@@ -19,6 +21,8 @@ class CanaryExecutor:
         plan: RemediationPlan,
         targets: list[str],
         execute_step,
+        *,
+        progress_callback: ProgressCallback | None = None,
     ) -> RemediationResult:
         if not plan.canary or not plan.canary.enabled or not targets:
             return await execute_step(targets)
@@ -26,9 +30,23 @@ class CanaryExecutor:
         canary = plan.canary
         batch_size = max(1, int(len(targets) * canary.target_percentage))
         batches = [targets[i : i + batch_size] for i in range(0, len(targets), batch_size)]
+        max_batches = min(canary.max_batches, len(batches))
 
         total_completed = 0
-        for batch in batches[: canary.max_batches]:
+        for batch_index, batch in enumerate(batches[:max_batches]):
+            if progress_callback is not None:
+                await progress_callback(
+                    stage="remediating",
+                    details={
+                        "batch": f"canary-{batch_index + 1}",
+                        "batch_index": batch_index + 1,
+                        "batch_total": max_batches,
+                        "targets_in_batch": len(batch),
+                        "steps_completed": total_completed,
+                        "steps_total": len(plan.steps),
+                        "message": f"灰度批次 {batch_index + 1}/{max_batches}，覆盖 {len(batch)} 个目标",
+                    },
+                )
             result = await execute_step(batch)
             total_completed += result.steps_completed
             if not result.success:
@@ -36,8 +54,15 @@ class CanaryExecutor:
                     await self.wal.recover_all()
                 return result.model_copy(update={"rolled_back": True})
 
-            await asyncio.sleep(0)
             if canary.success_criteria:
+                if progress_callback is not None:
+                    await progress_callback(
+                        stage="validating",
+                        details={
+                            "batch": f"canary-{batch_index + 1}",
+                            "message": f"验证灰度批次 {batch_index + 1} 的成功条件",
+                        },
+                    )
                 checks = [await self._check_canary_condition(item) for item in canary.success_criteria]
                 passed = all(checks) if canary.criteria_mode == "all" else any(checks)
                 if not passed:

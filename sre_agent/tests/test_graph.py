@@ -85,6 +85,19 @@ class _FakeLLM:
         return _FakeBoundLLM(self, tools, tool_choice)
 
 
+class _SlowLLM:
+    def bind_tools(self, tools: list[Any], tool_choice: str = "auto") -> "_SlowLLM":
+        _ = tools, tool_choice
+        return self
+
+    async def ainvoke(self, messages: list[Any]) -> AIMessage:
+        _ = messages
+        import asyncio
+
+        await asyncio.sleep(0.2)
+        return AIMessage(content="{}")
+
+
 class TestGraphUnit(unittest.IsolatedAsyncioTestCase):
     async def test_react_can_use_fixed_skill_tools_before_concluding(self) -> None:
         llm = _FakeLLM(
@@ -268,6 +281,34 @@ description: Diagnose vLLM latency with a Claude-style skill.
         self.assertIn("skills.run_skill", prompt)
         self.assertNotIn("Current turn guidance:", prompt)
         self.assertIn("k8s.apply_manifest", prompt)
+
+    async def test_step_timeout_returns_step_timeout_state(self) -> None:
+        result = await run_diagnosis(
+            query="Diagnose with a slow llm.",
+            context=_happy_context(),
+            variables={},
+            llm=_SlowLLM(),
+            step_timeout_sec=0.05,
+            total_timeout_sec=1.0,
+            allowed_tool_names=["prometheus.query_instant"],
+            checkpoint_dir=None,
+        )
+        self.assertEqual(result["status"], "step_timeout")
+        self.assertIn("timed out", result["summary"])
+
+    async def test_session_timeout_returns_timeout_state(self) -> None:
+        result = await run_diagnosis(
+            query="Diagnose with a slow llm.",
+            context=_happy_context(),
+            variables={},
+            llm=_SlowLLM(),
+            step_timeout_sec=1.0,
+            total_timeout_sec=0.05,
+            allowed_tool_names=["prometheus.query_instant"],
+            checkpoint_dir=None,
+        )
+        self.assertEqual(result["status"], "timeout")
+        self.assertEqual(result["error"], "diagnosis session timed out")
 
 
 if __name__ == "__main__":
