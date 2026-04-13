@@ -158,8 +158,8 @@ payload = {
                 "fields": [
                     {"is_short": True, "text": {"tag": "lark_md", "content": f"**Commit**\n{os.environ['SHORT_SHA']}"}},
                     {"is_short": True, "text": {"tag": "lark_md", "content": f"**User**\n{os.environ['USER_NAME']}"}},
-                    {"is_short": True, "text": {"tag": "lark_md", "content": f"**Time**\n{os.environ['TIMESTAMP_HUMAN']}"}},
                     {"is_short": True, "text": {"tag": "lark_md", "content": f"**Commit Title**\n{os.environ['COMMIT_TITLE']}"}},
+                    {"is_short": True, "text": {"tag": "lark_md", "content": f"**Time**\n{os.environ['TIMESTAMP_HUMAN']}"}},
                 ],
             },
             {
@@ -233,8 +233,8 @@ payload = {
                 "fields": [
                     {"is_short": True, "text": {"tag": "lark_md", "content": f"**Commit**\n{os.environ['SHORT_SHA']}"}},
                     {"is_short": True, "text": {"tag": "lark_md", "content": f"**User**\n{os.environ['USER_NAME']}"}},
-                    {"is_short": True, "text": {"tag": "lark_md", "content": f"**Time**\n{os.environ['TIMESTAMP_HUMAN']}"}},
                     {"is_short": True, "text": {"tag": "lark_md", "content": f"**Commit Title**\n{os.environ['COMMIT_TITLE']}"}},
+                    {"is_short": True, "text": {"tag": "lark_md", "content": f"**Time**\n{os.environ['TIMESTAMP_HUMAN']}"}},
                 ],
             },
             {"tag": "hr"},
@@ -452,6 +452,9 @@ PY
 **Release Tag**
 ${RELEASE_TAG:-N/A}
 
+**Preview URL**
+${PREVIEW_FRONTEND_URL:-N/A}
+
 **Web Pull**
 ${release_web_pull_cmd}
 
@@ -462,16 +465,26 @@ EOF
       actions_json="$(
         PIPELINE_URL="${pipeline_url:-}" \
         JOB_URL="${job_url:-}" \
+        FRONTEND_URL="${PREVIEW_FRONTEND_URL:-}" \
         "${PYTHON_BIN}" - <<'PY'
 import json, os
 actions = []
-if os.environ.get("PIPELINE_URL"):
+if os.environ.get("FRONTEND_URL"):
     actions.append({
         "tag": "button",
-        "text": {"tag": "plain_text", "content": "Open Pipeline"},
+        "text": {"tag": "plain_text", "content": "Open Preview"},
         "type": "primary",
-        "url": os.environ["PIPELINE_URL"],
+        "url": os.environ["FRONTEND_URL"],
     })
+if os.environ.get("PIPELINE_URL"):
+    action = {
+        "tag": "button",
+        "text": {"tag": "plain_text", "content": "Open Pipeline"},
+        "url": os.environ["PIPELINE_URL"],
+    }
+    if not actions:
+        action["type"] = "primary"
+    actions.append(action)
 if os.environ.get("JOB_URL"):
     actions.append({
         "tag": "button",
