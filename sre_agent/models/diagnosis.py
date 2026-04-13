@@ -97,6 +97,8 @@ class ThinkingStep(StrictFrozenModel):
     tool_name: str | None = None
     tool_params: dict[str, Any] | None = None
     confidence: float | None = Field(default=None, ge=0.0, le=1.0)
+    next_action: str | None = None
+    thought_duration_sec: int | None = Field(default=None, ge=1)
 
     def to_dict(self) -> dict[str, Any]:
         return self.model_dump(mode="json")
@@ -140,6 +142,8 @@ class ThinkingTrace(StrictFrozenModel):
                     tool_name=item.get("tool_name"),
                     tool_params=item.get("tool_params"),
                     confidence=item.get("confidence"),
+                    next_action=item.get("next_action"),
+                    thought_duration_sec=item.get("thought_duration_sec"),
                 )
                 trace_items.append(step)
                 next_step = step.step + 1

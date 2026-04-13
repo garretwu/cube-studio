@@ -440,29 +440,11 @@ function formatParamsSummary(params: Record<string, unknown>) {
 
 function buildSummary(session: DiagnosisSession | undefined): DiagnosisSummaryView | undefined {
   const result = session?.diagnosis_result;
-  const updatedLabels = getUpdatedLabelParts(getLatestTraceTimestamp(session));
   if (!result) {
-    return session
-      ? {
-          title: "\u6839\u56e0\u8bca\u65ad",
-          subtitle: "\u5f53\u524d\u4f1a\u8bdd\u5c1a\u672a\u5f62\u6210\u6700\u7ec8\u8bca\u65ad\u7ed3\u8bba\u3002",
-          certaintyLabel: "\u5206\u6790\u4e2d",
-          certaintyTone: "info",
-          confidenceLabel: "--",
-          confidenceRawLabel: "--",
-          priorityLabel: undefined,
-          sessionLabel: session.session_id,
-          updatedTimeLabel: updatedLabels.updatedTimeLabel,
-          updatedDateTimeLabel: updatedLabels.updatedDateTimeLabel,
-          affectedServices: [],
-          impactSummary: "\u7b49\u5f85\u63a8\u7406\u601d\u8003\u8f68\u8ff9\u4e0e\u5de5\u5177\u89c2\u5bdf\u7ed3\u679c\u3002",
-          rootCause: undefined,
-          rootCauseLayer: undefined,
-          rootCauseLayerLabel: "\u5c42\u7ea7",
-          rootCauseEntities: [],
-        }
-      : undefined;
+    return undefined;
   }
+
+  const updatedLabels = getUpdatedLabelParts(getLatestTraceTimestamp(session));
 
   return {
     title: "\u6839\u56e0\u8bca\u65ad",
@@ -634,20 +616,11 @@ function buildPlan(session: DiagnosisSession | undefined): DiagnosisPlanView | u
   };
 }
 
-function buildTraceNextAction(entry: ThinkingStep) {
-  if (entry.action_type === "tool_call" && entry.tool_name) {
-    const serviceHint =
-      typeof entry.tool_params?.service === "string" && entry.tool_params.service.trim().length > 0
-        ? ` for ${entry.tool_params.service}`
-        : "";
-    return `Next action: call ${entry.tool_name}${serviceHint} to validate this hypothesis.`;
+function buildTraceNextAction(entry: ThinkingStep): string | undefined {
+  if (typeof entry.next_action === "string" && entry.next_action.trim().length > 0) {
+    return entry.next_action.trim();
   }
-
-  if (entry.action_type === "conclude") {
-    return "Next action: synthesize the current evidence and provide the root-cause conclusion.";
-  }
-
-  return "Next action: continue gathering discriminative evidence to narrow the root cause.";
+  return undefined;
 }
 
 function isSyntheticRemediationMessage(message: ChatMessage) {
@@ -877,21 +850,28 @@ export function buildDiagnosisLiveView(
           timestamp: entry.timestamp,
           toolName: entry.tool_name,
           status: "completed",
+          thoughtDurationSec:
+            typeof entry.thought_duration_sec === "number" && Number.isFinite(entry.thought_duration_sec)
+              ? Math.max(1, Math.round(entry.thought_duration_sec))
+              : undefined,
         },
       });
 
-      timelineItems.push({
-        order: timelineItems.length,
-        timestamp: entry.timestamp,
-        item: {
-          id: `trace-next-action-${index + 1}-${entry.timestamp}`,
-          kind: "message",
-          role: "assistant",
-          content: buildTraceNextAction(entry),
+      const backendNextAction = buildTraceNextAction(entry);
+      if (backendNextAction) {
+        timelineItems.push({
+          order: timelineItems.length,
           timestamp: entry.timestamp,
-          label: "Next action",
-        },
-      });
+          item: {
+            id: `trace-next-action-${index + 1}-${entry.timestamp}`,
+            kind: "message",
+            role: "assistant",
+            content: backendNextAction,
+            timestamp: entry.timestamp,
+            label: "Next action",
+          },
+        });
+      }
 
       if (entry.action_type === "tool_call" && entry.tool_name) {
         const toolItem: Extract<DiagnosisTimelineItem, { kind: "tool" }> = {

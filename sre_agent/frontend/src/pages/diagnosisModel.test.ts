@@ -152,6 +152,32 @@ describe("buildDiagnosisLiveView tool matching", () => {
 });
 
 describe("buildDiagnosisLiveView next-action narration", () => {
+  it("prefers backend-provided next_action and thought_duration_sec fields", () => {
+    const session = createSession([
+      {
+        step: 1,
+        timestamp: "2026-04-08T10:35:01.000Z",
+        thought: "Inspect queue depth before concluding",
+        action_type: "conclude",
+        next_action: "Next action: use backend supplied narration.",
+        thought_duration_sec: 12,
+      },
+    ]);
+
+    const view = buildDiagnosisLiveView(session, []);
+    const thinking = view.timeline[0];
+    const nextAction = view.timeline[1];
+
+    expect(thinking?.kind).toBe("thinking");
+    if (thinking?.kind === "thinking") {
+      expect(thinking.thoughtDurationSec).toBe(12);
+    }
+    expect(nextAction?.kind).toBe("message");
+    if (nextAction?.kind === "message") {
+      expect(nextAction.content).toBe("Next action: use backend supplied narration.");
+    }
+  });
+
   it("injects a next-action assistant message right after tool-call thinking", () => {
     const session = createSession([
       {
@@ -161,6 +187,7 @@ describe("buildDiagnosisLiveView next-action narration", () => {
         action_type: "tool_call",
         tool_name: "query_metrics",
         tool_params: { service: "auth-svc" },
+        next_action: "Next action: call query_metrics for auth-svc and compare p95 with baseline.",
       },
       {
         tool: "query_metrics",
@@ -180,11 +207,11 @@ describe("buildDiagnosisLiveView next-action narration", () => {
     if (nextAction?.kind === "message") {
       expect(nextAction.role).toBe("assistant");
       expect(nextAction.label).toBe("Next action");
-      expect(nextAction.content).toContain("query_metrics");
+      expect(nextAction.content).toBe("Next action: call query_metrics for auth-svc and compare p95 with baseline.");
     }
   });
 
-  it("injects a next-action assistant message after conclude thinking", () => {
+  it("does not inject next-action narration when backend next_action is missing", () => {
     const session = createSession([
       {
         step: 1,
@@ -196,17 +223,34 @@ describe("buildDiagnosisLiveView next-action narration", () => {
 
     const view = buildDiagnosisLiveView(session, []);
 
-    expect(view.timeline).toHaveLength(2);
+    expect(view.timeline).toHaveLength(1);
     expect(view.timeline[0]?.kind).toBe("thinking");
-    expect(view.timeline[1]?.kind).toBe("message");
-
-    const nextAction = view.timeline[1];
-    if (nextAction?.kind === "message") {
-      expect(nextAction.role).toBe("assistant");
-      expect(nextAction.label).toBe("Next action");
-      expect(nextAction.content).toContain("root-cause conclusion");
-    }  });
+    expect(view.timeline[0]?.kind).not.toBe("message");
+  });
 });
+
+describe("buildDiagnosisLiveView summary timing", () => {
+  it("does not create an RCA summary before a diagnosis result exists", () => {
+    const session = createSession([
+      {
+        step: 1,
+        timestamp: "2026-04-08T10:55:01.000Z",
+        thought: "Gathering evidence before making a conclusion",
+        action_type: "tool_call",
+        tool_name: "query_metrics",
+        tool_params: { service: "auth-svc" },
+      },
+    ]);
+
+    const view = buildDiagnosisLiveView(session, []);
+
+    expect(view.summary).toBeUndefined();
+    expect(view.candidates).toEqual([]);
+    expect(view.hypotheses).toEqual([]);
+    expect(view.propagationChain).toEqual([]);
+  });
+});
+
 describe("buildDiagnosisDemoScenario ReAct cadence", () => {
   it("ensures every thinking append is followed by an assistant conclusion append", () => {
     const scenario = buildDiagnosisDemoScenario("Analyze auth-svc latency and error-rate spike");

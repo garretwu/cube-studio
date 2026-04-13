@@ -145,6 +145,8 @@ export type ThinkingStep = {
   tool_name?: string | null;
   tool_params?: Record<string, unknown> | null;
   confidence?: number | null;
+  next_action?: string | null;
+  thought_duration_sec?: number | null;
 };
 
 export type Observation = {

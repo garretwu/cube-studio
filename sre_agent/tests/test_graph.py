@@ -5,10 +5,11 @@ import tempfile
 import unittest
 from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 
 from langchain_core.messages import AIMessage
 
-from sre_agent.agent import run_diagnosis
+from sre_agent.agent import run_diagnosis, run_diagnosis_stream
 from sre_agent.agent.prompts import build_system_prompt
 from sre_agent.models.diagnosis import DiagnosisResult, ThinkingTrace
 from sre_agent.tools import ToolExecutionContext, build_default_registry
@@ -154,6 +155,20 @@ class _SlowLLM:
 
         await asyncio.sleep(0.2)
         return AIMessage(content="{}")
+
+
+class _FakeStreamChunk:
+    def __init__(self, content: str) -> None:
+        self.content = content
+
+
+class _FakeStreamGraph:
+    def __init__(self, events: list[dict[str, Any]]) -> None:
+        self._events = events
+
+    async def astream_events(self, *_args: Any, **_kwargs: Any):  # noqa: ANN401
+        for event in self._events:
+            yield event
 
 
 class TestGraphUnit(unittest.IsolatedAsyncioTestCase):
@@ -534,6 +549,119 @@ description: Diagnose vLLM latency with a Claude-style skill.
             self.assertTrue(result["loop_guard"]["triggered"])
             self.assertTrue(result["force_final_turn"] is False)
             self.assertEqual(llm.calls[-1]["tool_choice"], "none")
+
+    async def test_run_diagnosis_stream_emits_real_duration_and_backend_next_action_without_trace_duplicates(self) -> None:
+        stream_events = [
+            {
+                "event": "on_chain_start",
+                "name": "reason",
+                "run_id": "run-reason-1",
+                "data": {},
+            },
+            {
+                "event": "on_chat_model_stream",
+                "name": "ChatOpenAI",
+                "run_id": "run-llm-1",
+                "metadata": {"langgraph_node": "reason"},
+                "data": {"chunk": _FakeStreamChunk("Analyzing telemetry...")},
+            },
+            {
+                "event": "on_chain_end",
+                "name": "reason",
+                "run_id": "run-reason-1",
+                "data": {
+                    "output": {
+                        "status": "diagnosing",
+                        "step_count": 1,
+                        "trace_items": [
+                            {
+                                "type": "thought",
+                                "step": 1,
+                                "timestamp": "2026-04-13T13:00:00+00:00",
+                                "content": "Inspecting service latency and queue depth.",
+                                "action": "tool_call",
+                                "tool_name": "query_metrics",
+                                "tool_params": {"service": "auth-svc"},
+                                "confidence": 0.74,
+                            }
+                        ],
+                    }
+                },
+            },
+            {
+                "event": "on_chain_end",
+                "name": "finalize",
+                "run_id": "run-finalize-1",
+                "data": {
+                    "output": {
+                        "status": "diagnosed",
+                        "step_count": 2,
+                        "trace_items": [
+                            {
+                                "type": "thought",
+                                "step": 1,
+                                "timestamp": "2026-04-13T13:00:00+00:00",
+                                "content": "Inspecting service latency and queue depth.",
+                                "action": "tool_call",
+                                "tool_name": "query_metrics",
+                                "tool_params": {"service": "auth-svc"},
+                                "confidence": 0.74,
+                            }
+                        ],
+                        "diagnosis_result": {
+                            "root_cause": "Node contention",
+                            "root_cause_layer": "platform",
+                            "root_cause_entities": ["node:worker-03"],
+                            "confidence": 0.82,
+                            "hypotheses": [],
+                            "propagation_chain": [],
+                            "impact_summary": "p95 latency increased due to contention.",
+                            "affected_services": ["auth-svc"],
+                            "triage_priority": "P1",
+                            "diagnosis_certainty": "probable",
+                            "ranked_candidates": [],
+                        },
+                    }
+                },
+            },
+        ]
+
+        with patch("sre_agent.agent.graph.create_sre_graph", return_value=_FakeStreamGraph(stream_events)):
+            emitted: list[dict[str, Any]] = []
+            async for event in run_diagnosis_stream(
+                query="Diagnose auth latency",
+                context=_happy_context(),
+                variables={},
+                checkpoint_dir=None,
+                total_timeout_sec=10.0,
+            ):
+                emitted.append(event)
+
+        token_event = next(item for item in emitted if item["type"] == "token_delta")
+        self.assertEqual(token_event["data"]["node"], "reason")
+        self.assertEqual(token_event["data"]["run_id"], "run-reason-1")
+
+        node_started = next(item for item in emitted if item["type"] == "node_started")
+        self.assertEqual(node_started["data"]["run_id"], "run-reason-1")
+        self.assertIn("started_at", node_started["data"])
+
+        node_completed_events = [item for item in emitted if item["type"] == "node_completed"]
+        self.assertGreaterEqual(len(node_completed_events), 2)
+        reason_completed = next(item for item in node_completed_events if item["data"].get("node") == "reason")
+        self.assertEqual(reason_completed["data"]["run_id"], "run-reason-1")
+        self.assertIn("completed_at", reason_completed["data"])
+        self.assertGreaterEqual(int(reason_completed["data"]["thought_duration_sec"]), 1)
+        self.assertIn("new_trace_items", reason_completed["data"])
+
+        new_trace_items = reason_completed["data"]["new_trace_items"]
+        self.assertEqual(len(new_trace_items), 1)
+        self.assertEqual(new_trace_items[0]["event_type"], "tool_call")
+        self.assertIsInstance(new_trace_items[0].get("next_action"), str)
+        self.assertGreater(len(str(new_trace_items[0]["next_action"])), 0)
+        self.assertGreaterEqual(int(new_trace_items[0]["thought_duration_sec"]), 1)
+
+        finalize_completed = next(item for item in node_completed_events if item["data"].get("node") == "finalize")
+        self.assertNotIn("new_trace_items", finalize_completed["data"])
 
     async def test_step_timeout_returns_step_timeout_state(self) -> None:
         result = await run_diagnosis(

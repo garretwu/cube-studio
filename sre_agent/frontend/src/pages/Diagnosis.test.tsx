@@ -291,6 +291,47 @@ describe("DiagnosisPage sequential playback", () => {
     expect(screen.getByText(/Thought for \d+ seconds?/i)).toBeInTheDocument();
     expect(screen.queryByText("Agent is understanding the request")).not.toBeInTheDocument();
   });
+
+  it("keeps live completed thinking expanded and avoids local thought-duration estimation", async () => {
+    let timelineSource: DiagnosisTimelineItem[] = [
+      {
+        id: "live-thinking-no-duration",
+        kind: "thinking",
+        title: "Agent is converging on the diagnosis",
+        content: "Live reasoning content should remain visible.",
+        timestamp: "2026-04-08T10:25:01.000Z",
+        status: "completed",
+      },
+    ];
+
+    mockedBuildLiveView.mockImplementation(() => ({
+      timeline: timelineSource,
+      candidates: [],
+      summary: undefined,
+      plan: undefined,
+    }));
+
+    resetDiagnosisStore({
+      session: createLiveSession("sess-live-thinking-no-duration"),
+      activeSessionId: "sess-live-thinking-no-duration",
+      bootstrapStatus: "ready",
+      traceStatus: "ready",
+      messages: [],
+      bootstrapSession: vi.fn().mockResolvedValue(undefined),
+    });
+
+    renderLivePage("/diagnosis/sess-live-thinking-no-duration");
+    await advance(120);
+
+    expect(screen.getByText("Thought completed")).toBeInTheDocument();
+    expect(screen.queryByText(/Thought for \d+ seconds?/i)).not.toBeInTheDocument();
+    expect(screen.getByText("Live reasoning content should remain visible.")).toBeInTheDocument();
+
+    await advance(2000);
+
+    expect(screen.getByText("Live reasoning content should remain visible.")).toBeInTheDocument();
+  });
+
   it("blocks later timeline items while a demo tool is still loading", async () => {
     mockedBuildDemoScenario.mockReturnValue({
       initialTimeline: [
@@ -1042,6 +1083,28 @@ describe("DiagnosisPage status badges", () => {
     expect(screen.queryByText(/\u5b9e\u65f6\u94fe\u8def/u)).not.toBeInTheDocument();
   });
 
+  it("renders realtime streaming block when backend stream is active", () => {
+    resetDiagnosisStore({
+      session: createLiveSession("sess-live-stream"),
+      activeSessionId: "sess-live-stream",
+      bootstrapStatus: "ready",
+      traceStatus: "ready",
+      isStreamingDiagnosis: true,
+      streamingNode: "reason",
+      streamingText: "partial token output",
+      activeStreamingTools: [{ tool: "query_metrics", params: { service: "auth-svc" } }],
+      messages: [],
+      bootstrapSession: vi.fn().mockResolvedValue(undefined),
+    });
+
+    renderLivePage("/diagnosis/sess-live-stream");
+
+    expect(screen.getByText("Live stream")).toBeInTheDocument();
+    expect(screen.getByText(/Node: reason/)).toBeInTheDocument();
+    expect(screen.getByText(/partial token output/)).toBeInTheDocument();
+    expect(screen.getByText(/Running tool: query_metrics/)).toBeInTheDocument();
+  });
+
   it("keeps the demo badge without live business fields", () => {
     resetDiagnosisStore();
 
@@ -1085,6 +1148,20 @@ describe("DiagnosisPage RCA report card", () => {
       messages: [],
       bootstrapSession: vi.fn().mockResolvedValue(undefined),
     });
+  });
+
+  it("does not render the RCA card while the live view has no summary", () => {
+    mockedBuildLiveView.mockReturnValue({
+      timeline: [],
+      candidates: [],
+      summary: undefined,
+      plan: undefined,
+    });
+
+    const { container } = renderLivePage("/diagnosis/sess-live-rca");
+
+    expect(container.querySelector(".diagnosis-workspace-report-card")).toBeNull();
+    expect(screen.queryByText("\u5f53\u524d\u7ed3\u8bba")).not.toBeInTheDocument();
   });
 
   it("renders the restructured RCA card sections with localized labels", () => {

@@ -75,7 +75,10 @@ function estimateThoughtDurationSecFromContent(content: string) {
 }
 
 function formatThoughtDurationLabel(durationSec?: number) {
-  const safeDuration = Math.max(1, Math.round(durationSec ?? 1));
+  if (typeof durationSec !== "number" || !Number.isFinite(durationSec) || durationSec <= 0) {
+    return "Thought completed";
+  }
+  const safeDuration = Math.max(1, Math.round(durationSec));
   return `Thought for ${safeDuration} second${safeDuration === 1 ? "" : "s"}`;
 }
 
@@ -361,10 +364,12 @@ function MessageRow({
 function ThinkingBlock({
   item,
   animate,
+  autoCollapseOnComplete,
   onStreamComplete,
 }: {
   item: Extract<DiagnosisTimelineItem, { kind: "thinking" }>;
   animate: boolean;
+  autoCollapseOnComplete: boolean;
   onStreamComplete?: () => void;
 }) {
   const isThinking = item.status === "thinking";
@@ -375,13 +380,16 @@ function ThinkingBlock({
       setIsExpanded(true);
       return;
     }
+    if (!autoCollapseOnComplete) {
+      return;
+    }
 
     const timer = window.setTimeout(
       () => setIsExpanded(false),
       DEMO_THINKING_COLLAPSE_DELAY_MS,
     );
     return () => window.clearTimeout(timer);
-  }, [isThinking, item.id]);
+  }, [autoCollapseOnComplete, isThinking, item.id]);
 
   return (
     <article className="diagnosis-workspace-process-row">
@@ -431,10 +439,7 @@ function ThinkingBlock({
             >
               {isThinking
                 ? "Thinking..."
-                : formatThoughtDurationLabel(
-                    item.thoughtDurationSec ??
-                      estimateThoughtDurationSecFromContent(item.content),
-                  )}
+                : formatThoughtDurationLabel(item.thoughtDurationSec)}
             </span>
           </span>
           {item.toolName ? (
@@ -555,6 +560,57 @@ function ToolCard({
             </div>
           ) : null}
         </button>
+      </div>
+    </article>
+  );
+}
+
+function RealtimeStreamingCard({
+  streamingNode,
+  streamingText,
+  activeStreamingTools,
+}: {
+  streamingNode: string | null;
+  streamingText: string;
+  activeStreamingTools: Array<{ tool: string; params: Record<string, unknown> }>;
+}) {
+  const hasNode = Boolean(streamingNode && streamingNode.trim().length > 0);
+  const hasText = Boolean(streamingText.trim().length > 0);
+  const hasTools = activeStreamingTools.length > 0;
+  if (!hasNode && !hasText && !hasTools) {
+    return null;
+  }
+
+  return (
+    <article className="diagnosis-workspace-process-row diagnosis-workspace-process-row--tool">
+      <div className="diagnosis-workspace-process-row__body">
+        <div className="diagnosis-workspace-tool-card diagnosis-workspace-tool-card--loading">
+          <div className="diagnosis-workspace-tool-card__header">
+            <span className="diagnosis-workspace-tool-card__title">
+              Live stream
+            </span>
+            <span className="diagnosis-workspace-tool-card__status">
+              streaming
+            </span>
+          </div>
+          {hasNode ? (
+            <div className="diagnosis-workspace-tool-card__results">
+              <p>{`Node: ${streamingNode}`}</p>
+            </div>
+          ) : null}
+          {hasText ? (
+            <div className="diagnosis-workspace-tool-card__results">
+              <p>{streamingText}</p>
+            </div>
+          ) : null}
+          {hasTools ? (
+            <div className="diagnosis-workspace-tool-card__results">
+              {activeStreamingTools.map((tool, index) => (
+                <p key={`${tool.tool}-${index}`}>{`Running tool: ${tool.tool}`}</p>
+              ))}
+            </div>
+          ) : null}
+        </div>
       </div>
     </article>
   );
@@ -1276,6 +1332,7 @@ function DiagnosisPage() {
 
   const feedRef = useRef<HTMLDivElement | null>(null);
   const pendingAutoScrollFrameRef = useRef<number | null>(null);
+  const feedMutationThrottleTimerRef = useRef<number | null>(null);
   const autoScrollEnabledRef = useRef(true);
   const demoTimerRef = useRef<number[]>([]);
   const demoRunTokenRef = useRef(0);
@@ -1323,6 +1380,10 @@ function DiagnosisPage() {
     latestPlanVersion,
     canApprove,
     approvalBlockReason,
+    streamingText,
+    streamingNode,
+    isStreamingDiagnosis,
+    activeStreamingTools,
     bootstrapSession,
     sendMessage,
     approvePlan,
@@ -2310,7 +2371,13 @@ function DiagnosisPage() {
     }
 
     const observer = new MutationObserver(() => {
-      scheduleFeedScrollToBottom();
+      if (feedMutationThrottleTimerRef.current !== null) {
+        return;
+      }
+      feedMutationThrottleTimerRef.current = window.setTimeout(() => {
+        feedMutationThrottleTimerRef.current = null;
+        scheduleFeedScrollToBottom();
+      }, 80);
     });
 
     observer.observe(feedElement, {
@@ -2319,13 +2386,22 @@ function DiagnosisPage() {
       characterData: true,
     });
 
-    return () => observer.disconnect();
+    return () => {
+      observer.disconnect();
+      if (feedMutationThrottleTimerRef.current !== null) {
+        window.clearTimeout(feedMutationThrottleTimerRef.current);
+        feedMutationThrottleTimerRef.current = null;
+      }
+    };
   }, [scheduleFeedScrollToBottom]);
 
   useEffect(
     () => () => {
       if (pendingAutoScrollFrameRef.current !== null) {
         window.cancelAnimationFrame(pendingAutoScrollFrameRef.current);
+      }
+      if (feedMutationThrottleTimerRef.current !== null) {
+        window.clearTimeout(feedMutationThrottleTimerRef.current);
       }
     },
     [],
@@ -2430,6 +2506,7 @@ function DiagnosisPage() {
                       !hasLiveSession && item.status === "thinking";
                     return (
                       <ThinkingBlock
+                        autoCollapseOnComplete={!hasLiveSession}
                         animate={shouldAnimateThinking}
                         item={item}
                         key={item.id}
@@ -2471,6 +2548,14 @@ function DiagnosisPage() {
                 >
                   {inlineError.message}
                 </div>
+              ) : null}
+
+              {hasLiveSession && isStreamingDiagnosis ? (
+                <RealtimeStreamingCard
+                  activeStreamingTools={activeStreamingTools}
+                  streamingNode={streamingNode}
+                  streamingText={streamingText}
+                />
               ) : null}
 
               {activeSummary ? (

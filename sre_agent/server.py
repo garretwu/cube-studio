@@ -968,6 +968,7 @@ class StreamingDiagnosisRunner:
 
         final_session_id: str | None = None
         final_state: dict[str, Any] = {}
+        final_trace_items: list[dict[str, Any]] = []
 
         async for event in run_diagnosis_stream(
             query=query,
@@ -995,11 +996,21 @@ class StreamingDiagnosisRunner:
                     final_state["status"] = data["status"]
                 if data.get("step_count") is not None:
                     final_state["step_count"] = data["step_count"]
+                raw_trace_items = data.get("new_trace_items")
+                if isinstance(raw_trace_items, list):
+                    for raw_item in raw_trace_items:
+                        if not isinstance(raw_item, dict):
+                            continue
+                        trace_item = self._trace_item_from_stream_snapshot(raw_item)
+                        if trace_item is not None:
+                            final_trace_items.append(trace_item)
 
             # Publish key events to WebSocket for backward compatibility.
             event_type = event.get("type", "")
             if event_type in {
                 EventType.DIAGNOSIS_STARTED.value,
+                EventType.TOKEN_DELTA.value,
+                EventType.NODE_STARTED.value,
                 EventType.NODE_COMPLETED.value,
                 EventType.TOOL_STARTED.value,
                 EventType.TOOL_COMPLETED.value,
@@ -1017,12 +1028,49 @@ class StreamingDiagnosisRunner:
         if final_session_id:
             final_state.setdefault("status", "diagnosed")
             final_state.setdefault("step_count", 0)
+            if final_trace_items:
+                final_state["trace_items"] = final_trace_items
             completed = _diagnosis_session_from_state(alert=enriched_alert, state=final_state)
             completed = completed.model_copy(update={"session_id": final_session_id})
             self._session_store.put(completed)
             plan = self._extract_recommended_fix(completed)
             if plan is not None:
                 self._remediation_engine.register_plan(final_session_id, plan)
+
+    @staticmethod
+    def _trace_item_from_stream_snapshot(item: dict[str, Any]) -> dict[str, Any] | None:
+        event_type = str(item.get("event_type", "")).strip().lower()
+        if event_type in {EventType.THINKING_STEP.value, EventType.TOOL_CALL.value}:
+            action = str(item.get("action_type", "tool_call")).strip().lower()
+            if action not in {"tool_call", "conclude", "remediate"}:
+                action = "tool_call" if event_type == EventType.TOOL_CALL.value else "conclude"
+            thought = str(item.get("thought", "")).strip()
+            if not thought:
+                return None
+            output: dict[str, Any] = {
+                "type": "thought",
+                "step": int(item.get("step", 1)),
+                "timestamp": item.get("timestamp"),
+                "content": thought,
+                "action": action,
+                "tool_name": item.get("tool_name"),
+                "tool_params": item.get("tool_params") if isinstance(item.get("tool_params"), dict) else {},
+                "confidence": item.get("confidence"),
+                "next_action": item.get("next_action"),
+                "thought_duration_sec": item.get("thought_duration_sec"),
+            }
+            return output
+
+        if event_type == EventType.TOOL_RESULT.value:
+            return {
+                "type": "observation",
+                "timestamp": item.get("timestamp"),
+                "tool": str(item.get("tool", "unknown")).strip() or "unknown",
+                "params": item.get("params") if isinstance(item.get("params"), dict) else {},
+                "result": item.get("result") if isinstance(item.get("result"), dict) else {},
+            }
+
+        return None
 
     @staticmethod
     def _extract_recommended_fix(session: DiagnosisSession) -> Any:

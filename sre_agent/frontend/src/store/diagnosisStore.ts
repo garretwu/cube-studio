@@ -107,6 +107,8 @@ function toThinkingStep(event: WSEvent, fallbackStep: number): ThinkingStep | nu
     tool_name: typeof data.tool_name === "string" ? data.tool_name : null,
     tool_params: isRecord(data.tool_params) ? data.tool_params : null,
     confidence: typeof data.confidence === "number" ? data.confidence : null,
+    next_action: typeof data.next_action === "string" ? data.next_action : null,
+    thought_duration_sec: typeof data.thought_duration_sec === "number" ? data.thought_duration_sec : null,
   };
 }
 
@@ -177,6 +179,44 @@ function parsePlanVersionFromPlanId(planId: string | undefined): number | null {
 function normalizePlanVersion(value: unknown): number | null {
   const parsed = Number(value);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+}
+
+function toTraceEntryFromNodeSnapshot(
+  item: Record<string, unknown>,
+  fallbackStep: number,
+): ThinkingStep | Observation | null {
+  const eventType = String(item.event_type ?? "").trim().toLowerCase();
+  if (eventType === "tool_result") {
+    return {
+      tool: typeof item.tool === "string" ? item.tool : "tool_result",
+      params: isRecord(item.params) ? item.params : {},
+      result: isRecord(item.result) ? item.result : {},
+      timestamp: typeof item.timestamp === "string" ? item.timestamp : new Date().toISOString(),
+    };
+  }
+
+  if (eventType === "tool_call" || eventType === "thinking_step") {
+    const actionType = item.action_type;
+    return {
+      step: typeof item.step === "number" ? item.step : fallbackStep,
+      timestamp: typeof item.timestamp === "string" ? item.timestamp : new Date().toISOString(),
+      thought:
+        typeof item.thought === "string" && item.thought.trim()
+          ? item.thought
+          : "诊断引擎正在扩展当前推理上下文。",
+      action_type:
+        actionType === "tool_call" || actionType === "remediate" || actionType === "conclude"
+          ? actionType
+          : "conclude",
+      tool_name: typeof item.tool_name === "string" ? item.tool_name : null,
+      tool_params: isRecord(item.tool_params) ? item.tool_params : null,
+      confidence: typeof item.confidence === "number" ? item.confidence : null,
+      next_action: typeof item.next_action === "string" ? item.next_action : null,
+      thought_duration_sec: typeof item.thought_duration_sec === "number" ? item.thought_duration_sec : null,
+    };
+  }
+
+  return null;
 }
 
 function sortByCandidateRank(left: { rank?: number }, right: { rank?: number }) {
@@ -985,6 +1025,115 @@ export const useDiagnosisStore = create<DiagnosisState>((set, get) => ({
         const data = isRecord(event.data) ? event.data : {};
         nextAlertSnapshot = (data.alert as DiagnosisStartedData["alert"]) ?? null;
         nextTopologyContext = (data.topology as DiagnosisStartedData["topology"]) ?? null;
+      }
+      if (event.type === "token_delta") {
+        if (state.streamingAbortController) {
+          return state;
+        }
+        const data = isRecord(event.data) ? event.data : {};
+        return {
+          ...state,
+          streamingText: state.streamingText + String(data.content ?? ""),
+          isStreamingDiagnosis: true,
+        };
+      }
+      if (event.type === "node_started") {
+        if (state.streamingAbortController) {
+          return state;
+        }
+        const data = isRecord(event.data) ? event.data : {};
+        return {
+          ...state,
+          streamingNode: String(data.node ?? ""),
+          isStreamingDiagnosis: true,
+        };
+      }
+      if (event.type === "node_completed") {
+        const data = isRecord(event.data) ? event.data : {};
+        const snapshotItems = Array.isArray(data.new_trace_items)
+          ? data.new_trace_items.filter(isRecord)
+          : [];
+        const snapshotEntries = snapshotItems
+          .map((item, index) => toTraceEntryFromNodeSnapshot(item, currentTrace.length + index + 1))
+          .filter((entry): entry is ThinkingStep | Observation => Boolean(entry));
+        const mergedEntries = [...nextEntries, ...snapshotEntries];
+        nextSession = appendTraceEntries(nextSession, snapshotEntries);
+        const nextEvents = mergeSessionEvents(state.events, [event as SessionEvent]);
+        const approvalState = deriveApprovalState(nextSession, nextEvents);
+        const completionError = getEventError(event) ?? state.error;
+
+        return {
+          session: nextSession,
+          events: nextEvents,
+          localAuditRecords: state.localAuditRecords,
+          ...approvalState,
+          approvalOverlayOpen:
+            nextSession?.status === "approval_required" ? state.approvalOverlayOpen : false,
+          effectiveReviseInstruction: state.effectiveReviseInstruction,
+          messages: state.messages,
+          alertSnapshot: nextAlertSnapshot,
+          topologyContext: nextTopologyContext,
+          error: completionError,
+          traceStatus:
+            mergedEntries.length > 0 ? "ready" : state.traceStatus,
+          streamingText: "",
+          streamingNode: null,
+          isStreamingDiagnosis: true,
+          activeStreamingTools: state.activeStreamingTools,
+          streamingAbortController: state.streamingAbortController,
+        };
+      }
+      if (event.type === "tool_started") {
+        if (state.streamingAbortController) {
+          return state;
+        }
+        const data = isRecord(event.data) ? event.data : {};
+        const tool = String(data.tool ?? "");
+        if (!tool) {
+          return state;
+        }
+        return {
+          ...state,
+          isStreamingDiagnosis: true,
+          activeStreamingTools: [
+            ...state.activeStreamingTools,
+            { tool, params: isRecord(data.params) ? data.params : {} },
+          ],
+        };
+      }
+      if (event.type === "tool_completed") {
+        if (state.streamingAbortController) {
+          return state;
+        }
+        const data = isRecord(event.data) ? event.data : {};
+        const tool = String(data.tool ?? "");
+        return {
+          ...state,
+          activeStreamingTools: tool
+            ? state.activeStreamingTools.filter((item) => item.tool !== tool)
+            : state.activeStreamingTools,
+        };
+      }
+      if (event.type === "done") {
+        if (state.streamingAbortController) {
+          return state;
+        }
+        return {
+          ...state,
+          isStreamingDiagnosis: false,
+          streamingText: "",
+          streamingNode: null,
+          activeStreamingTools: [],
+          streamingAbortController: null,
+        };
+      }
+      if (event.type === "error" && !nextSession) {
+        return {
+          ...state,
+          isStreamingDiagnosis: false,
+          streamingAbortController: null,
+          error: getEventError(event) ?? state.error,
+        };
       }
 
       if (event.type === "diagnosis_result" && nextSession) {

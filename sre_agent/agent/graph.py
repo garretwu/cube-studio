@@ -68,6 +68,56 @@ def _to_dict(value: Any) -> dict[str, Any]:
     return {}
 
 
+def _parse_iso_utc(value: Any) -> datetime | None:
+    if isinstance(value, datetime):
+        return value.astimezone(UTC)
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    if not text:
+        return None
+    if text.endswith("Z"):
+        text = f"{text[:-1]}+00:00"
+    try:
+        return datetime.fromisoformat(text).astimezone(UTC)
+    except ValueError:
+        return None
+
+
+def _build_trace_next_action(action_type: str, tool_name: str | None, tool_params: dict[str, Any]) -> str:
+    normalized_action = action_type.strip().lower()
+    if normalized_action == "tool_call":
+        service_hint = ""
+        service = tool_params.get("service")
+        if isinstance(service, str) and service.strip():
+            service_hint = f" for {service.strip()}"
+        return f"Next action: call {tool_name or 'tool'}{service_hint} to validate this hypothesis."
+    if normalized_action == "conclude":
+        return "Next action: synthesize the current evidence and provide the root-cause conclusion."
+    return "Next action: continue gathering discriminative evidence to narrow the root cause."
+
+
+def _normalize_stream_trace_items(
+    *,
+    session_id: str,
+    trace_items: list[dict[str, Any]],
+    thought_duration_sec: int | None = None,
+) -> list[dict[str, Any]]:
+    normalized: list[dict[str, Any]] = []
+    for item in trace_items:
+        event = _normalize_trace_item_event(session_id=session_id, item=item)
+        if not event:
+            continue
+        payload = _to_dict(event.get("data"))
+        if event["type"] in {EventType.THINKING_STEP.value, EventType.TOOL_CALL.value}:
+            if thought_duration_sec is not None:
+                payload["thought_duration_sec"] = thought_duration_sec
+
+        payload["event_type"] = event["type"]
+        normalized.append(payload)
+    return normalized
+
+
 def _is_context_window_exceeded_error(exc: Exception) -> bool:
     message = str(exc).strip().lower()
     if not message:
@@ -93,14 +143,17 @@ def _normalize_trace_item_event(*, session_id: str, item: dict[str, Any]) -> dic
         event_type = EventType.THINKING_STEP.value
         if action == "tool_call":
             event_type = EventType.TOOL_CALL.value
+        tool_params = _to_dict(item.get("tool_params"))
+        thought = str(item.get("content", "")).strip() or "diagnosis step"
         payload = {
             "step": int(item.get("step", 1)),
             "timestamp": _to_iso_utc(item.get("timestamp")),
-            "thought": str(item.get("content", "")).strip() or "diagnosis step",
+            "thought": thought,
             "action_type": action if action in {"tool_call", "conclude", "remediate"} else "tool_call",
             "tool_name": item.get("tool_name"),
-            "tool_params": _to_dict(item.get("tool_params")),
+            "tool_params": tool_params,
             "confidence": item.get("confidence"),
+            "next_action": _build_trace_next_action(action, item.get("tool_name"), tool_params),
         }
         return {
             "type": event_type,
@@ -495,6 +548,32 @@ async def run_diagnosis_stream(
 
     async def _run() -> None:
         nonlocal final_state
+        active_node_runs: dict[str, str] = {}
+        node_started_at: dict[tuple[str, str], datetime] = {}
+        last_trace_count = 0
+
+        def _event_run_id(raw_event: dict[str, Any]) -> str:
+            raw = raw_event.get("run_id")
+            if isinstance(raw, str) and raw.strip():
+                return raw.strip()
+            return ""
+
+        def _event_metadata(raw_event: dict[str, Any]) -> dict[str, Any]:
+            return _to_dict(raw_event.get("metadata"))
+
+        def _event_node(raw_event: dict[str, Any], fallback: str = "") -> str:
+            metadata = _event_metadata(raw_event)
+            candidate = metadata.get("langgraph_node")
+            if isinstance(candidate, str) and candidate.strip():
+                return candidate.strip()
+            fallback_text = fallback.strip()
+            if fallback_text:
+                return fallback_text
+            raw_name = raw_event.get("name")
+            if isinstance(raw_name, str) and raw_name.strip():
+                return raw_name.strip()
+            return ""
+
         async for event in graph.astream_events(
             initial_state,
             config={"configurable": {"thread_id": active_session_id}},
@@ -521,34 +600,91 @@ async def run_diagnosis_stream(
                     text = str(content)
                 if not text:
                     continue
+                node_name = _event_node(event)
+                active_run_id = active_node_runs.get(node_name, "")
+                token_run_id = active_run_id or _event_run_id(event)
+                token_payload: dict[str, Any] = {"content": text}
+                if node_name:
+                    token_payload["node"] = node_name
+                if token_run_id:
+                    token_payload["run_id"] = token_run_id
                 yield {
                     "type": EventType.TOKEN_DELTA.value,
                     "session_id": active_session_id,
-                    "data": {"content": text, "node": name},
+                    "data": token_payload,
                 }
 
             elif kind == "on_chain_start" and name in _STREAM_GRAPH_NODES:
+                run_id = _event_run_id(event)
+                if not run_id:
+                    run_id = uuid4().hex
+                started_at = datetime.now(UTC)
+                active_node_runs[name] = run_id
+                node_started_at[(run_id, name)] = started_at
                 yield {
                     "type": EventType.NODE_STARTED.value,
                     "session_id": active_session_id,
-                    "data": {"node": name},
+                    "data": {
+                        "node": name,
+                        "run_id": run_id,
+                        "started_at": started_at.isoformat(),
+                    },
                 }
 
             elif kind == "on_chain_end" and name in _STREAM_GRAPH_NODES:
                 output = data.get("output")
                 if isinstance(output, dict):
                     final_state = output
-                event_data: dict[str, Any] = {"node": name}
+                run_id = _event_run_id(event) or active_node_runs.get(name, "")
+                started_at: datetime | None = None
+                if run_id:
+                    started_at = node_started_at.pop((run_id, name), None)
+                if started_at is None:
+                    for key, value in list(node_started_at.items()):
+                        if key[1] == name:
+                            started_at = value
+                            if not run_id:
+                                run_id = key[0]
+                            node_started_at.pop(key, None)
+                            break
+                completed_at = datetime.now(UTC)
+                duration_sec: int | None = None
+                if started_at is not None:
+                    elapsed = (completed_at - started_at).total_seconds()
+                    duration_sec = max(1, int(round(elapsed)))
+
+                event_data: dict[str, Any] = {
+                    "node": name,
+                    "completed_at": completed_at.isoformat(),
+                }
+                if run_id:
+                    event_data["run_id"] = run_id
+                if started_at is not None:
+                    event_data["started_at"] = started_at.isoformat()
+                if duration_sec is not None:
+                    event_data["thought_duration_sec"] = duration_sec
                 if isinstance(output, dict):
                     event_data["status"] = output.get("status")
                     event_data["step_count"] = output.get("step_count")
                     trace_items = output.get("trace_items") or []
                     if trace_items:
-                        event_data["new_trace_items"] = trace_items[-1:]
+                        serialized_trace_items = [_to_dict(item) for item in trace_items if isinstance(item, dict)]
+                        if len(serialized_trace_items) < last_trace_count:
+                            last_trace_count = 0
+                        trace_delta = serialized_trace_items[last_trace_count:]
+                        last_trace_count = len(serialized_trace_items)
+                        normalized_trace_items = _normalize_stream_trace_items(
+                            session_id=active_session_id,
+                            trace_items=trace_delta,
+                            thought_duration_sec=duration_sec,
+                        )
+                        if normalized_trace_items:
+                            event_data["new_trace_items"] = normalized_trace_items
                     if output.get("diagnosis_result") is not None:
                         event_data["diagnosis_result"] = output["diagnosis_result"]
                     if output.get("remediation_plan") is not None:
                         event_data["remediation_plan"] = output["remediation_plan"]
+                active_node_runs.pop(name, None)
                 yield {
                     "type": EventType.NODE_COMPLETED.value,
                     "session_id": active_session_id,
@@ -556,17 +692,25 @@ async def run_diagnosis_stream(
                 }
 
             elif kind == "on_tool_start":
+                tool_data: dict[str, Any] = {"tool": name, "params": data.get("input", {})}
+                run_id = _event_run_id(event)
+                if run_id:
+                    tool_data["run_id"] = run_id
                 yield {
                     "type": EventType.TOOL_STARTED.value,
                     "session_id": active_session_id,
-                    "data": {"tool": name, "params": data.get("input", {})},
+                    "data": tool_data,
                 }
 
             elif kind == "on_tool_end":
+                tool_data: dict[str, Any] = {"tool": name, "result": data.get("output")}
+                run_id = _event_run_id(event)
+                if run_id:
+                    tool_data["run_id"] = run_id
                 yield {
                     "type": EventType.TOOL_COMPLETED.value,
                     "session_id": active_session_id,
-                    "data": {"tool": name, "result": data.get("output")},
+                    "data": tool_data,
                 }
 
     try:
