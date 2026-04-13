@@ -143,7 +143,9 @@ Preview 规则：
 
 如果手动运行 `promote_sre_agent_release` job 时提供了 `RELEASE_VERSION`，就以传入值为准。
 这个变量用于“提交前忘记更新版本文件”的补救场景：不要重跑整条 pipeline，直接打开当前 pipeline 中已经等待的 `promote_sre_agent_release` 手动 job，在 job 页面填写 `RELEASE_VERSION=1.0.1` 后点击 `Run job`。正式镜像 tag 会使用 `1.0.1-YYYYMMDDHHMM`，不会反向修改仓库里的 [sre_agent/VERSION](/home/kevin/project/cube-studio/sre_agent/VERSION)。
-版本号会在 promote 阶段校验，支持 `1.0.1`、`v1.0.1`、`1.0.1-rc.1` 这类格式。
+如果忘记这次应该发布哪个版本，可填写 `RELEASE_VERSION=auto`，流水线会读取 Nexus 中最新的正式 release tag，并自动取下一个 patch 版本。
+版本号会在 promote 阶段校验，必须大于 Nexus 中最新正式版本；如果已发布 `1.0.1-*`，再次发布 `1.0.1-*` 会失败，从而避免重复版本和版本倒退。
+只有确实要重建同一个正式版本时，才允许额外设置 `ALLOW_RELEASE_VERSION_REUSE=1`。
 
 ## 5. GitLab 配置清单
 
@@ -161,7 +163,8 @@ Preview 规则：
 | `SRE_OPENAI_API_KEY` | 可选 | 真实 LLM `API key` | `Masked and hidden` | 如果希望 preview 真正连通 LLM，可在这里配置运行时 key；未显式配置时允许 fallback 到 `sre_agent/conf/config.yaml` 的 `llm.api_key` |
 | `FORCE_BASE_BUILD` | 可选 | `1` | `Visible` | 即使依赖未变化也强制重建基础镜像 |
 | `FORCE_FULL_PIPELINE` | 可选 | `1` | `Visible` | 即使当前提交不在业务相关路径中，也强制创建并执行完整流水线 |
-| `RELEASE_VERSION` | 可选 | 手动输入 | `Visible` | 手动 release promotion 时使用 |
+| `RELEASE_VERSION` | 可选 | 手动输入或 `auto` | `Visible` | 手动 release promotion 时使用；`auto` 表示基于 Nexus 最新正式版本自动递增 patch |
+| `ALLOW_RELEASE_VERSION_REUSE` | 可选 | `0` | `Visible` | 仅在确实要重建已发布版本时设为 `1` |
 | `FEISHU_WEBHOOK_URL` | 推荐 | 真实 webhook 地址 | `Masked and hidden` | 飞书群机器人 webhook 地址 |
 | `FEISHU_NOTIFY_ON_COMMIT_FAILURE` | 可选 | `0` | `Visible` | 设为 `1` 时普通提交失败也发飞书通知 |
 | `FEISHU_NOTIFY_ON_SUCCESS` | 可选 | `1` | `Visible` | 设为 `1` 时对 preview、snapshot、release 成功发送飞书卡片；设为 `0` 可关闭成功通知 |
@@ -186,7 +189,8 @@ Preview 规则：
 - `PREVIEW_PUBLIC_HOST`：填写浏览器可访问的主机 IP 或域名，例如 `10.11.4.5`
 - `PREVIEW_DOCKER_HOST`：仅在需要通过远端 Docker API 起 preview 容器时填写，例如 `tcp://10.11.4.5:2375`
 - `SRE_OPENAI_API_KEY`：填写真实 LLM `API key` 明文值，不是字段名，不是路径，也不是 `config.yaml` 中的键名
-- `RELEASE_VERSION`：手动正式发版时填写版本号，例如 `1.0.1`；如果提交前忘记更新 [sre_agent/VERSION](/home/kevin/project/cube-studio/sre_agent/VERSION)，可在当前 pipeline 的 `promote_sre_agent_release` job 页面用这个变量临时覆盖，无需重跑整条 pipeline
+- `RELEASE_VERSION`：手动正式发版时填写版本号，例如 `1.0.1`；如果提交前忘记更新 [sre_agent/VERSION](/home/kevin/project/cube-studio/sre_agent/VERSION)，可在当前 pipeline 的 `promote_sre_agent_release` job 页面用这个变量临时覆盖，无需重跑整条 pipeline；如果不确定该发哪个版本，填写 `auto`
+- `ALLOW_RELEASE_VERSION_REUSE`：默认保持 `0`；只有明确需要重建已发布版本时才设置为 `1`
 
 ### 5.2 Runner 要求
 

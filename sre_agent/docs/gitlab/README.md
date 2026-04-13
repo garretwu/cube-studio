@@ -66,7 +66,8 @@
 | `SRE_OPENAI_API_KEY` | `Masked and hidden` | 可选，preview 运行时使用的 LLM key；未显式配置时允许从 `sre_agent/conf/config.yaml` 的 `llm.api_key` fallback。 |
 | `FORCE_BASE_BUILD` | `Visible` | 可选，设为 `1` 时即使依赖未变化也强制重建基础镜像。 |
 | `FORCE_FULL_PIPELINE` | `Visible` | 可选，设为 `1` 时即使当前改动不在业务相关路径中，也强制创建并执行完整流水线。 |
-| `RELEASE_VERSION` | `Visible` | 可选，手动发版时指定版本号，例如 `1.0.1`；未指定时读取 `sre_agent/VERSION`。 |
+| `RELEASE_VERSION` | `Visible` | 可选，手动发版时指定版本号，例如 `1.0.1`；填写 `auto` 时基于 Nexus 最新正式版本自动递增 patch；未指定时读取 `sre_agent/VERSION`。 |
+| `ALLOW_RELEASE_VERSION_REUSE` | `Visible` | 可选，默认 `0`；只有确实要重建已发布版本时设置为 `1`。 |
 | `FEISHU_WEBHOOK_URL` | `Masked and hidden` | 可选，飞书群机器人 webhook 地址。 |
 | `FEISHU_NOTIFY_ON_COMMIT_FAILURE` | `Visible` | 可选，设为 `1` 时普通 commit 流水线失败也通知飞书；默认只通知非 commit 流程。 |
 | `FEISHU_NOTIFY_ON_SUCCESS` | `Visible` | 可选，设为 `1` 时对 `preview`、`snapshot`、`release` 成功发送飞书卡片；默认开启。 |
@@ -92,7 +93,8 @@
 - `PREVIEW_PUBLIC_HOST`：填写浏览器可访问的主机 IP 或域名，例如 `10.11.4.5`
 - `PREVIEW_DOCKER_HOST`：仅在需要通过远端 Docker API 起 preview 容器时填写，例如 `tcp://10.11.4.5:2375`
 - `SRE_OPENAI_API_KEY`：填写真实 LLM `API key` 明文值，不是字段名，不是路径，也不是 `config.yaml` 中的键名
-- `RELEASE_VERSION`：手动正式发版时填写版本号，例如 `1.0.1`
+- `RELEASE_VERSION`：手动正式发版时填写版本号，例如 `1.0.1`；如果不确定该发哪个版本，填写 `auto`
+- `ALLOW_RELEASE_VERSION_REUSE`：默认保持 `0`；只有明确需要重建已发布版本时才设置为 `1`
 
 ## Schedule 变量
 
@@ -119,8 +121,10 @@
 
 - `publish_preview_snapshot`：在 preview 成功后自动把 commit 或 weekly 镜像推送到 Nexus，供内部测试和联调共享。
 - `promote_sre_agent_release`：手动执行，把已验证通过的业务镜像重新打成 `VERSION-YYYYMMDDHHMM`。
-- 如果手动触发时没有提供 `RELEASE_VERSION`，就读取 `sre_agent/VERSION` 里的默认版本。
+- 如果手动触发时没有提供 `RELEASE_VERSION`，就读取 `sre_agent/VERSION` 里的默认版本，并要求它大于 Nexus 中最新的正式版本。
 - 如果提交前忘记更新 `sre_agent/VERSION`，可以直接打开当前 pipeline 中的 `promote_sre_agent_release` 手动 job，在 job 页面填写 `RELEASE_VERSION=1.0.1` 临时覆盖；该变量只影响本次正式镜像 tag，不会自动提交版本文件，也不需要重跑整条 pipeline。
+- 如果不确定当前应发布哪个版本，可以填写 `RELEASE_VERSION=auto`，promote job 会基于 Nexus 中最新正式版本自动取下一个 patch 版本；多个 preview pipeline 不会导致版本跳跃，因为正式版本只看 release 仓库历史。
+- 如果已发布 `1.0.1-*`，再次发布 `1.0.1-*` 会失败；只有明确重建同一正式版本时才设置 `ALLOW_RELEASE_VERSION_REUSE=1`。
 
 镜像获取说明：
 

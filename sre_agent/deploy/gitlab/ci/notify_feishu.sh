@@ -452,6 +452,12 @@ PY
 **Release Tag**
 ${RELEASE_TAG:-N/A}
 
+**Version Source**
+${RELEASE_VERSION_SOURCE:-N/A}
+
+**Previous Release**
+${LATEST_RELEASE_VERSION:-N/A}
+
 **Preview URL**
 ${PREVIEW_FRONTEND_URL:-N/A}
 

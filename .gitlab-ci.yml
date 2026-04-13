@@ -47,7 +47,10 @@ variables:
   DOCKER_DRIVER: "overlay2"
   RELEASE_VERSION:
     value: ""
-    description: "Optional manual release version override, for example 1.0.1. Leave empty to use sre_agent/VERSION."
+    description: "Optional manual release version override, for example 1.0.1 or auto. Leave empty to use sre_agent/VERSION."
+  ALLOW_RELEASE_VERSION_REUSE:
+    value: "0"
+    description: "Set to 1 only for an intentional rebuild of an already published release version."
 
 .sre_agent_docker_job:
   image: docker:27.0.3-cli

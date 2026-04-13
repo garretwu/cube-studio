@@ -168,8 +168,13 @@ validate_release_version() {
     return 0
   fi
   echo "invalid release version: ${version}" >&2
-  echo "expected format like 1.0.1, v1.0.1, or 1.0.1-rc.1" >&2
+  echo "expected format like 1.0.1, v1.0.1, 1.0.1-rc.1, or auto" >&2
   return 1
+}
+
+normalize_release_version() {
+  local version="$1"
+  echo "${version#v}"
 }
 
 require_local_docker_image() {
