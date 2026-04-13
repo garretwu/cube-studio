@@ -463,6 +463,16 @@ def build_default_registry() -> ToolRegistry:
     )
     registry.register(
         ToolDefinition(
+            name="network.find_process",
+            description="Find matching processes on a node via SSH ps output (read-only).",
+            safety_level=SafetyLevel.READ_ONLY,
+            params_schema={"type": "object", "required": ["node", "pattern"]},
+            tags=("network", "readonly"),
+        ),
+        network.find_process,
+    )
+    registry.register(
+        ToolDefinition(
             name="network.get_nic_link_state",
             description="Inspect NIC link and interface state on node.",
             safety_level=SafetyLevel.READ_ONLY,

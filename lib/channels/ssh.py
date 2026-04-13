@@ -1,8 +1,5 @@
 """
-SSHChannel — SSH 命令执行 Channel
-
-使用 asyncssh 实现异步 SSH 连接和命令执行。
-支持 sudo 模式执行需要 root 权限的命令。
+SSH command execution channel based on asyncssh.
 """
 from __future__ import annotations
 
@@ -12,26 +9,14 @@ from typing import Any
 
 import asyncssh
 
+from fault_injector.config.schema import SSHConfig, TargetNodeConfig
 from lib.channels.base import BaseChannel, ChannelResult, SafetyViolationError
-from fault_injector.config.schema import (
-    SSHConfig,
-    TargetNodeConfig,
-)
 
 logger = logging.getLogger(__name__)
 
 
 class SSHChannel(BaseChannel):
-    """
-    SSH 命令执行 Channel。
-
-    功能：
-    - 异步 SSH 连接池管理
-    - 命令执行超时控制
-    - 自动注册恢复命令到 WAL
-    - 安全命令检查
-    - 支持 sudo 模式执行命令（默认启用）
-    """
+    """Execute remote commands through SSH with optional sudo."""
 
     def __init__(
         self,
@@ -42,203 +27,105 @@ class SSHChannel(BaseChannel):
         command_timeout: int = 60,
         connect_timeout: int = 10,
     ):
-        """
-        初始化 SSH Channel。
-
-        Args:
-            inventory: 节点清单 {node_name: TargetNodeConfig}
-            dry_run: 干运行模式
-            wal: 回滚日志
-            guard: 安全守卫
-            command_timeout: 命令执行超时（秒）
-            connect_timeout: 连接超时（秒）
-        """
         super().__init__(dry_run=dry_run, wal=wal, guard=guard)
         self.inventory = inventory
         self.command_timeout = command_timeout
         self.connect_timeout = connect_timeout
         self._connections: dict[str, asyncssh.SSHClientConnection] = {}
-        # 构建 IP 到节点名的反向映射
         self._ip_to_node: dict[str, str] = {}
         for node_name, node_config in inventory.items():
-            ssh_host = getattr(node_config.ssh, 'host', None) if hasattr(node_config, 'ssh') else None
+            ssh_host = getattr(node_config.ssh, "host", None) if hasattr(node_config, "ssh") else None
             if ssh_host:
-                self._ip_to_node[ssh_host] = node_name
+                self._ip_to_node[str(ssh_host)] = node_name
 
     def _resolve_node_name(self, node: str) -> str:
-        """解析节点名称，支持通过 IP 或节点名查找。
+        from sre_agent.runtime.node_mapping import normalize_node_identifier
 
-        Args:
-            node: 节点名称或 IP 地址
-
-        Returns:
-            节点名称
-        """
-        # 直接匹配节点名
-        if node in self.inventory:
-            return node
-        # 通过 IP 查找节点名
-        if node in self._ip_to_node:
-            resolved = self._ip_to_node[node]
-            logger.debug(f"Resolved node IP '{node}' to name '{resolved}'")
-            return resolved
+        normalized_node, _ = normalize_node_identifier(
+            node,
+            inventory_names=set(self.inventory.keys()),
+            host_to_name=self._ip_to_node,
+        )
+        if normalized_node:
+            if normalized_node != node:
+                logger.debug("Resolved node %r to inventory node %r", node, normalized_node)
+            return normalized_node
         return node
 
     def _get_node_config(self, node: str) -> TargetNodeConfig:
-        """获取节点配置，支持通过 IP 或节点名查找"""
         resolved_node = self._resolve_node_name(node)
         if resolved_node not in self.inventory:
             raise ValueError(f"节点 '{node}' 不在清单中")
         return self.inventory[resolved_node]
 
     def _should_use_sudo(self, node: str) -> bool:
-        """检查节点是否需要使用 sudo（默认 True）"""
         node_config = self._get_node_config(node)
-        # 如果配置中没有 use_sudo 字段，默认返回 True
-        return getattr(node_config.ssh, 'use_sudo', True)
+        return getattr(node_config.ssh, "use_sudo", True)
 
-    async def _get_connection(
-        self, node: str
-    ) -> asyncssh.SSHClientConnection:
-        """
-        获取或创建到节点的 SSH 连接。
-
-        Args:
-            node: 节点名称或 IP 地址
-
-        Returns:
-            asyncssh.SSHClientConnection
-
-        Raises:
-            ValueError: 节点不存在
-            asyncssh.Error: 连接失败
-        """
-        # 解析节点名（支持 IP 查找）
+    async def _get_connection(self, node: str) -> asyncssh.SSHClientConnection:
         resolved_node = self._resolve_node_name(node)
-
-        # 检查现有连接（使用解析后的节点名作为 key）
         if resolved_node in self._connections:
             conn = self._connections[resolved_node]
             if not conn.is_closed():
                 return conn
 
-        # 获取节点配置
         node_config = self._get_node_config(resolved_node)
-        ssh_config = node_config.ssh
-
-        # 构建连接参数
-        connect_kwargs = {
+        ssh_config: SSHConfig = node_config.ssh
+        connect_kwargs: dict[str, Any] = {
             "host": ssh_config.host,
             "port": ssh_config.port,
             "username": ssh_config.user,
-            "known_hosts": None,  # 禁用主机密钥检查（内网环境）
-            "config": [],  # Avoid local ~/.ssh/config encoding/parse issues on Windows.
+            "known_hosts": None,
+            "config": [],
         }
-
-        # 认证方式
         if ssh_config.key_file:
             connect_kwargs["client_keys"] = [ssh_config.key_file]
         elif ssh_config.password:
             connect_kwargs["password"] = ssh_config.password
 
-        # 创建连接
         try:
-            conn = await asyncio.wait_for(
-                asyncssh.connect(**connect_kwargs),
-                timeout=self.connect_timeout,
-            )
+            conn = await asyncio.wait_for(asyncssh.connect(**connect_kwargs), timeout=self.connect_timeout)
             self._connections[resolved_node] = conn
-            logger.info(f"SSH 连接成功: {resolved_node} ({ssh_config.host})")
+            logger.info("SSH connected: %s (%s)", resolved_node, ssh_config.host)
             return conn
-        except asyncio.TimeoutError:
-            raise asyncssh.Error(
-                f"SSH 连接超时: {resolved_node} ({ssh_config.host})"
-            )
+        except asyncio.TimeoutError as exc:
+            raise asyncssh.Error(f"SSH connection timed out: {resolved_node} ({ssh_config.host})") from exc
 
     async def run_command(
         self,
         node: str,
         command: str,
         timeout: int | None = None,
-        use_sudo: bool = True,  # 默认使用 sudo
+        use_sudo: bool = True,
     ) -> ChannelResult:
-        """
-        在目标节点执行命令。
-
-        Args:
-            node: 节点名称
-            command: 要执行的命令
-            timeout: 超时时间（秒），默认使用 command_timeout
-            use_sudo: 是否使用 sudo，默认 True
-
-        Returns:
-            ChannelResult: 执行结果
-        """
         timeout = timeout or self.command_timeout
-
-        # 先验证节点是否存在（即使在 dry_run 模式下也要验证）
         self._get_node_config(node)
-
-        # 如果需要 sudo，包装命令
         actual_command = f"sudo {command}" if use_sudo else command
 
-        # dry_run 模式
         if self.dry_run:
-            logger.info(f"[DRY-RUN] SSH {node}: {actual_command}")
-            return ChannelResult(
-                success=True,
-                output="[DRY-RUN] 命令未实际执行",
-                dry_run=True,
-            )
+            logger.info("[DRY-RUN] SSH %s: %s", node, actual_command)
+            return ChannelResult(success=True, output="[DRY-RUN] command not executed", dry_run=True)
 
         try:
             conn = await self._get_connection(node)
-
-            # 执行命令
             result = await asyncio.wait_for(
                 conn.run(actual_command, encoding="utf-8", errors="replace"),
                 timeout=timeout,
             )
-
             return ChannelResult(
                 success=result.exit_status == 0,
                 output=result.stdout or "",
                 error=result.stderr or "",
                 dry_run=False,
             )
-
         except asyncio.TimeoutError:
-            return ChannelResult(
-                success=False,
-                error=f"命令执行超时 ({timeout}s): {actual_command}",
-                dry_run=False,
-            )
-        except asyncssh.Error as e:
-            return ChannelResult(
-                success=False,
-                error=f"SSH 错误: {e}",
-                dry_run=False,
-            )
-        except Exception as e:
-            return ChannelResult(
-                success=False,
-                error=f"执行失败: {e}",
-                dry_run=False,
-            )
+            return ChannelResult(success=False, error=f"command timed out ({timeout}s): {actual_command}", dry_run=False)
+        except asyncssh.Error as exc:
+            return ChannelResult(success=False, error=f"SSH error: {exc}", dry_run=False)
+        except Exception as exc:  # noqa: BLE001
+            return ChannelResult(success=False, error=f"execution failed: {exc}", dry_run=False)
 
-    async def _execute_impl(
-        self, action: str, params: dict[str, Any]
-    ) -> ChannelResult:
-        """
-        执行操作实现。
-
-        Args:
-            action: 操作类型
-            params: 操作参数
-
-        Returns:
-            ChannelResult
-        """
+    async def _execute_impl(self, action: str, params: dict[str, Any]) -> ChannelResult:
         if action == "run_command":
             return await self.run_command(
                 node=params["node"],
@@ -246,32 +133,13 @@ class SSHChannel(BaseChannel):
                 timeout=params.get("timeout"),
                 use_sudo=params.get("use_sudo", True),
             )
-        elif action == "tc_add_delay":
+        if action == "tc_add_delay":
             return await self._tc_add_delay(params)
-        elif action == "tc_del_qdisc":
+        if action == "tc_del_qdisc":
             return await self._tc_del_qdisc(params)
-        else:
-            return ChannelResult(
-                success=False,
-                error=f"未知操作: {action}",
-                dry_run=False,
-            )
+        return ChannelResult(success=False, error=f"unknown action: {action}", dry_run=False)
 
     async def _tc_add_delay(self, params: dict[str, Any]) -> ChannelResult:
-        """
-        使用 tc netem 添加网络延迟。
-        强制使用 sudo 执行。
-
-        Args:
-            params: {
-                "node": 节点名,
-                "interface": 接口名,
-                "delay_ms": 延迟毫秒,
-                "jitter_ms": 抖动毫秒,
-                "distribution": 分布类型,
-                "loss_pct": 丢包率
-            }
-        """
         node = params["node"]
         interface = params["interface"]
         delay_ms = params["delay_ms"]
@@ -279,7 +147,6 @@ class SSHChannel(BaseChannel):
         distribution = params.get("distribution", "pareto")
         loss_pct = params.get("loss_pct", 0)
 
-        # 构建命令
         cmd = f"tc qdisc add dev {interface} root netem delay {delay_ms}ms"
         if jitter_ms > 0:
             cmd += f" {jitter_ms}ms"
@@ -287,67 +154,33 @@ class SSHChannel(BaseChannel):
             cmd += f" distribution {distribution}"
         if loss_pct > 0:
             cmd += f" loss {loss_pct}%"
-
-        # 强制使用 sudo
         return await self.run_command(node, cmd, use_sudo=True)
 
     async def _tc_del_qdisc(self, params: dict[str, Any]) -> ChannelResult:
-        """
-        删除 tc qdisc（恢复网络）。
-        强制使用 sudo 执行。
-
-        Args:
-            params: {"node": 节点名, "interface": 接口名}
-        """
         node = params["node"]
         interface = params["interface"]
         cmd = f"tc qdisc del dev {interface} root"
-
-        # 强制使用 sudo
         return await self.run_command(node, cmd, use_sudo=True)
 
     def _check_safety(self, action: str, params: dict[str, Any]) -> None:
-        """
-        SSH 安全检查。
-
-        Args:
-            action: 操作类型
-            params: 操作参数
-
-        Raises:
-            SafetyViolationError
-        """
-        if self.guard:
-            if action == "run_command":
-                self.guard.check_command(params.get("command", ""), "ssh")
+        if self.guard and action == "run_command":
+            self.guard.check_command(params.get("command", ""), "ssh")
 
     async def close(self) -> None:
-        """关闭所有连接"""
         for node, conn in self._connections.items():
             try:
                 conn.close()
                 await conn.wait_closed()
-                logger.debug(f"SSH 连接关闭: {node}")
-            except Exception as e:
-                logger.warning(f"关闭 SSH 连接失败 ({node}): {e}")
+                logger.debug("SSH connection closed: %s", node)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Failed to close SSH connection (%s): %s", node, exc)
         self._connections.clear()
 
     async def test_connection(self, node: str) -> bool:
-        """
-        测试到节点的连接。
-
-        Args:
-            node: 节点名称
-
-        Returns:
-            bool: 连接是否成功
-        """
         try:
-            # 测试连接时使用简单的 echo 命令，不需要 sudo
             result = await self.run_command(node, "echo 'OK'", use_sudo=False)
-            # dry_run 模式下返回 True
             if result.dry_run:
                 return True
             return result.success and "OK" in result.output
-        except Exception:
+        except Exception:  # noqa: BLE001
             return False

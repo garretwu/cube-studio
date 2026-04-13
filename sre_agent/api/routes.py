@@ -643,6 +643,17 @@ def build_api_router() -> APIRouter:
                 required.add("ssh")
         return sorted(required)
 
+    def _validate_plan_param_values(plan: RemediationPlan | None) -> list[str]:
+        if plan is None:
+            return []
+        errors: list[str] = []
+        _placeholders = {"unknown", "n/a", "none", "-", "--", "null", ""}
+        for step in plan.steps:
+            for key, value in step.params.items():
+                if isinstance(value, str) and value.strip().lower() in _placeholders:
+                    errors.append(f"step {step.step_id}: param '{key}' has placeholder value '{value}'")
+        return errors
+
     def _validate_real_execution_readiness(
         services: Any,
         *,
@@ -2347,6 +2358,18 @@ def build_api_router() -> APIRouter:
                 trace_id=trace_id,
             )
         if approval.approved:
+            # 参数有效性检查（占位值阻断）
+            plan_param_errors = _validate_plan_param_values(plan)
+            if plan_param_errors:
+                return SREResponse(
+                    success=False,
+                    error=SREError(
+                        code=ErrorCode.VALIDATION_ERROR,
+                        message=plan_param_errors[0],
+                        details={"param_errors": plan_param_errors},
+                    ),
+                    trace_id=trace_id,
+                )
             readiness_issue = _validate_real_execution_readiness(services, plan=plan)
             if readiness_issue is not None:
                 return SREResponse(

@@ -32,6 +32,23 @@ class _FakeSSHChannel:
         return Result()
 
 
+class _FakeTcEvidenceSSHChannel:
+    async def run_command(self, node: str, command: str, use_sudo: bool = False) -> Any:
+        _ = node, use_sudo
+
+        class Result:
+            success = True
+            error = ""
+            if "tc qdisc show" in command:
+                output = "qdisc netem 8016: parent 8016:10 limit 1000 delay 120ms"
+            elif "ps -eo" in command:
+                output = "2233 fault_injector /usr/local/bin/fault_injector --scene network-jitter"
+            else:
+                output = "ok"
+
+        return Result()
+
+
 class _FakeK8sClient:
     def list_pods(self, namespace: str, label_selector: str | None = None) -> list[dict[str, Any]]:
         _ = label_selector
@@ -46,6 +63,18 @@ def _happy_context() -> ToolExecutionContext:
             "k8s": K8sChannel(client=_FakeK8sClient()),
             "prometheus": _FakePrometheus(),
             "ssh": _FakeSSHChannel(),
+        }
+    )
+
+
+def _tc_evidence_context() -> ToolExecutionContext:
+    from lib.channels.kubernetes import K8sChannel
+
+    return ToolExecutionContext(
+        channels={
+            "k8s": K8sChannel(client=_FakeK8sClient()),
+            "prometheus": _FakePrometheus(),
+            "ssh": _FakeTcEvidenceSSHChannel(),
         }
     )
 
@@ -360,6 +389,151 @@ description: Diagnose vLLM latency with a Claude-style skill.
         self.assertIn("skills.run_skill", prompt)
         self.assertNotIn("Current turn guidance:", prompt)
         self.assertIn("k8s.apply_manifest", prompt)
+
+    async def test_tc_evidence_forces_consistent_root_cause_when_initial_conclusion_is_ambiguous(self) -> None:
+        llm = _FakeLLM(
+            [
+                AIMessage(
+                    content="Inspect tc qdisc first.",
+                    tool_calls=[
+                        {
+                            "name": "network.get_tc_qdisc",
+                            "args": {"node": "worker-03", "iface": "roce"},
+                            "id": "call-1",
+                            "type": "tool_call",
+                        }
+                    ],
+                ),
+                AIMessage(
+                    content=json.dumps(
+                        {
+                            "thought": "目前证据不足，暂时只能给出保守判断。",
+                            "diagnosis": {
+                                "root_cause": "证据不足，暂无法确认根因",
+                                "root_cause_layer": "service",
+                                "root_cause_entities": [],
+                                "confidence": 0.42,
+                                "impact_summary": "需要更多证据。",
+                                "affected_services": ["inference-service"],
+                                "triage_priority": "P2",
+                                "diagnosis_certainty": "ambiguous",
+                            },
+                            "remediation_plan": None,
+                        }
+                    )
+                ),
+                AIMessage(
+                    content=json.dumps(
+                        {
+                            "thought": "已根据 tc/netem 证据纠偏诊断结论。",
+                            "diagnosis": {
+                                "root_cause": "节点存在 tc/netem 注入规则导致网络时延抖动",
+                                "root_cause_layer": "network",
+                                "root_cause_entities": ["worker-03"],
+                                "confidence": 0.82,
+                                "impact_summary": "tc qdisc 出现 netem delay 120ms，与告警一致。",
+                                "affected_services": ["inference-service"],
+                                "triage_priority": "P1",
+                                "diagnosis_certainty": "probable",
+                            },
+                            "remediation_plan": None,
+                        }
+                    )
+                ),
+            ]
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            result = await run_diagnosis(
+                query="Diagnose NetworkLatencyHigh100ms alert on worker-03.",
+                context=_tc_evidence_context(),
+                variables={},
+                llm=llm,
+                step_timeout_sec=5.0,
+                total_timeout_sec=10.0,
+                checkpoint_dir=tmpdir,
+                allowed_tool_names=["network.get_tc_qdisc"],
+            )
+
+            self.assertEqual(result["status"], "diagnosed")
+            root_cause = str(result["diagnosis_result"]["root_cause"]).lower()
+            self.assertTrue("tc" in root_cause or "netem" in root_cause)
+            self.assertTrue(result["evidence_signals"]["tc_netem_present"])
+            self.assertIn("netem_present=true", result["tool_runs"][0]["prompt_summary"])
+            self.assertTrue(result["tool_runs"][0]["key_fields"]["netem_present"])
+
+    async def test_loop_guard_forces_final_turn_after_repeated_same_tool_calls(self) -> None:
+        llm = _FakeLLM(
+            [
+                AIMessage(
+                    content="Collect NIC counters.",
+                    tool_calls=[
+                        {
+                            "name": "network.get_nic_counters",
+                            "args": {"node": "worker-03"},
+                            "id": "call-1",
+                            "type": "tool_call",
+                        }
+                    ],
+                ),
+                AIMessage(
+                    content="Collect NIC counters again.",
+                    tool_calls=[
+                        {
+                            "name": "network.get_nic_counters",
+                            "args": {"node": "worker-03"},
+                            "id": "call-2",
+                            "type": "tool_call",
+                        }
+                    ],
+                ),
+                AIMessage(
+                    content="Collect NIC counters one more time.",
+                    tool_calls=[
+                        {
+                            "name": "network.get_nic_counters",
+                            "args": {"node": "worker-03"},
+                            "id": "call-3",
+                            "type": "tool_call",
+                        }
+                    ],
+                ),
+                AIMessage(
+                    content=json.dumps(
+                        {
+                            "thought": "重复采样收益不足，直接总结。",
+                            "diagnosis": {
+                                "root_cause": "网络计数器重复采样未发现新增异常",
+                                "root_cause_layer": "network",
+                                "root_cause_entities": ["worker-03"],
+                                "confidence": 0.6,
+                                "impact_summary": "重复调用触发 loop guard，转入总结。",
+                                "affected_services": ["inference-service"],
+                                "triage_priority": "P2",
+                                "diagnosis_certainty": "ambiguous",
+                            },
+                            "remediation_plan": None,
+                        }
+                    )
+                ),
+            ]
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            result = await run_diagnosis(
+                query="Diagnose network jitter.",
+                context=_happy_context(),
+                variables={},
+                llm=llm,
+                step_timeout_sec=5.0,
+                total_timeout_sec=10.0,
+                checkpoint_dir=tmpdir,
+                allowed_tool_names=["network.get_nic_counters"],
+                max_steps=8,
+            )
+
+            self.assertEqual(result["status"], "diagnosed")
+            self.assertTrue(result["loop_guard"]["triggered"])
+            self.assertTrue(result["force_final_turn"] is False)
+            self.assertEqual(llm.calls[-1]["tool_choice"], "none")
 
     async def test_step_timeout_returns_step_timeout_state(self) -> None:
         result = await run_diagnosis(

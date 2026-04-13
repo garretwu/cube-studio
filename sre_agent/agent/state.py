@@ -30,6 +30,14 @@ class SkillRunRecord(TypedDict):
     tool_runs: list[ToolRunRecord]
 
 
+class LoopGuardState(TypedDict, total=False):
+    recent_fingerprint: str | None
+    repeat_count: int
+    threshold: int
+    triggered: bool
+    trigger_step: int | None
+
+
 class SREAgentState(TypedDict):
     query: str
     variables: dict[str, Any]
@@ -54,3 +62,6 @@ class SREAgentState(TypedDict):
     alert_snapshot: NotRequired[dict[str, Any] | None]
     topology_context: NotRequired[dict[str, Any] | None]
     extra_alerts: NotRequired[list[dict[str, Any]] | None]
+    evidence_signals: NotRequired[dict[str, Any]]
+    loop_guard: NotRequired[LoopGuardState]
+    force_final_turn: NotRequired[bool]

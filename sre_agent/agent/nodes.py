@@ -18,6 +18,7 @@ from sre_agent.agent.prompts import build_system_prompt
 from sre_agent.agent.state import SREAgentState
 from sre_agent.models.diagnosis import DiagnosisResult, Observation, ThinkingStep, ThinkingTrace
 from sre_agent.models.remediation import RemediationPlan
+from sre_agent.runtime.node_mapping import load_inventory_node_mapping, normalize_node_identifier
 from sre_agent.runtime.token_estimation import estimate_token_count
 from sre_agent.tools import ToolExecutionContext, ToolRegistry, ToolResult
 
@@ -79,6 +80,15 @@ def initialize_state(
         "alert_snapshot": alert_snapshot,
         "topology_context": topology_context,
         "extra_alerts": extra_alerts,
+        "evidence_signals": {},
+        "loop_guard": {
+            "recent_fingerprint": None,
+            "repeat_count": 0,
+            "threshold": 2,
+            "triggered": False,
+            "trigger_step": None,
+        },
+        "force_final_turn": False,
     }
 
 
@@ -199,7 +209,9 @@ async def reason_node(
     prompt_fallback_used = False
     bound_tool_names: list[str] = []
     tool_choice = "auto"
-    final_turn = bool(state.get("tool_runs")) and state.get("step_count", 0) >= max(state.get("max_steps", 10) - 1, 1)
+    final_turn = bool(state.get("force_final_turn", False)) or (
+        bool(state.get("tool_runs")) and state.get("step_count", 0) >= max(state.get("max_steps", 10) - 1, 1)
+    )
     interaction_mode = "final_json" if final_turn else "tool_bound"
     if final_turn and hasattr(llm, "ainvoke"):
         invoked_messages, prompt_metadata, overflow_failed = _prepare_reason_prompt_messages_for_invocation(
@@ -387,12 +399,104 @@ async def reason_node(
                 ).diagnosis,
                 remediation_plan=None,
             )
-    diagnosis = DiagnosisResult.model_validate(_normalize_diagnosis_payload(parsed.diagnosis))
+    final_thought = parsed.thought
+    raw_remediation_plan = parsed.remediation_plan
+    evidence_signals = _extract_evidence_signals(list(state.get("tool_runs", []) or []))
+    diagnosis_payload = _normalize_diagnosis_payload(parsed.diagnosis)
+
+    tc_strong_evidence = bool(
+        evidence_signals.get("tc_netem_present", False) or evidence_signals.get("tc_process_present", False)
+    )
+    if tc_strong_evidence and not _diagnosis_mentions_tc_evidence(diagnosis_payload):
+        correction_messages = _build_tc_consistency_retry_messages(
+            system_prompt=system_prompt,
+            query=str(state.get("query", "") or "").strip(),
+            evidence_signals=evidence_signals,
+            diagnosis_payload=diagnosis_payload,
+        )
+        correction_prompt_stats = _build_prompt_message_stats(correction_messages)
+        correction_response: AIMessage | None = None
+        correction_raw_response_text = ""
+        correction_error = ""
+        corrected_payload: dict[str, Any] | None = None
+        corrected_remediation_plan: dict[str, Any] | None = None
+        corrected_thought = ""
+        if hasattr(llm, "ainvoke"):
+            try:
+                retry_response = await asyncio.wait_for(llm.ainvoke(correction_messages), timeout=state["step_timeout_sec"])
+                if isinstance(retry_response, AIMessage):
+                    correction_response = retry_response
+                    correction_raw_response_text = _extract_text(retry_response.content)
+                    correction_parsed = _parse_reasoning_output(correction_raw_response_text)
+                    if correction_parsed.diagnosis is not None:
+                        corrected_payload = _normalize_diagnosis_payload(correction_parsed.diagnosis)
+                    corrected_remediation_plan = correction_parsed.remediation_plan
+                    corrected_thought = correction_parsed.thought
+                else:
+                    correction_raw_response_text = _extract_text(getattr(retry_response, "content", retry_response))
+            except Exception as exc:  # noqa: BLE001
+                correction_error = _normalized_exception_message(exc)
+
+        _log_llm_interaction(
+            session_id=str(state.get("session_id", "unknown")),
+            step=step_index,
+            prompt_messages=correction_messages,
+            response=correction_response,
+            mode="tc_consistency_retry",
+            tool_choice="none",
+            tool_calls=[],
+            prompt_message_stats=correction_prompt_stats,
+            prompt_fallback_used=False,
+            prompt_metadata={
+                "evidence_signals": _safe_jsonable(evidence_signals),
+                "correction_error": correction_error or None,
+                "provider_invocation_skipped": not hasattr(llm, "ainvoke"),
+            },
+        )
+        updated_interactions.append(
+            {
+                "step": step_index,
+                "mode": "tc_consistency_retry",
+                "tool_choice": "none",
+                "bound_tool_names": [],
+                "prompt_messages": messages_to_dict(correction_messages),
+                "prompt_message_stats": correction_prompt_stats,
+                "prompt_fallback_used": False,
+                "prompt_metadata": {
+                    "evidence_signals": _safe_jsonable(evidence_signals),
+                    "correction_error": correction_error or None,
+                    "provider_invocation_skipped": not hasattr(llm, "ainvoke"),
+                },
+                "response_message": messages_to_dict([correction_response])[0] if correction_response is not None else None,
+                "raw_response_text": correction_raw_response_text,
+                "tool_calls": [],
+            }
+        )
+
+        if corrected_payload is not None and _diagnosis_mentions_tc_evidence(corrected_payload):
+            diagnosis_payload = corrected_payload
+            if corrected_remediation_plan is not None:
+                raw_remediation_plan = corrected_remediation_plan
+            if corrected_thought:
+                final_thought = corrected_thought
+        else:
+            diagnosis_payload = _normalize_diagnosis_payload(
+                _build_tc_fallback_diagnosis_payload(
+                    original=diagnosis_payload,
+                    evidence_signals=evidence_signals,
+                    tool_runs=list(state.get("tool_runs", []) or []),
+                )
+            )
+            final_thought = f"{final_thought}\n已根据 tc/netem 强证据执行一致性纠偏。"
+
+    diagnosis = DiagnosisResult.model_validate(diagnosis_payload)
     remediation_plan = _normalize_remediation_plan_payload(
-        raw_plan=parsed.remediation_plan,
+        raw_plan=raw_remediation_plan,
         diagnosis=diagnosis,
         session_id=str(state.get("session_id", "")),
         registry=registry,
+        tool_runs=list(state.get("tool_runs", []) or []),
+        variables=dict(state.get("variables", {}) or {}),
     )
     if remediation_plan is not None:
         diagnosis = diagnosis.model_copy(update={"recommended_fix": remediation_plan})
@@ -400,7 +504,7 @@ async def reason_node(
         {
             "type": "thought",
             "step": step_index,
-            "content": parsed.thought,
+            "content": final_thought,
             "action": "conclude" if remediation_plan is None else "remediate",
             "confidence": diagnosis.confidence,
         }
@@ -417,6 +521,8 @@ async def reason_node(
         "status": "diagnosed",
         "summary": diagnosis.impact_summary,
         "error": None,
+        "evidence_signals": evidence_signals,
+        "force_final_turn": False,
     }
     persist_state_snapshot(updated.get("checkpoint_dir"), updated["session_id"], "reason", updated)
     return updated
@@ -851,14 +957,89 @@ def _summarize_k8s_pods(data: Any) -> tuple[str, int | None, dict[str, Any] | No
 
 def _summarize_tc_qdisc(data: Any) -> tuple[str, dict[str, Any] | None]:
     text = _extract_output_blob(data)
-    findings: list[str] = []
-    for pattern in ("netem", "delay", "loss", "corrupt", "reorder"):
-        match = re.search(rf"{pattern}\s+([^\n]+)", text, flags=re.IGNORECASE)
-        if match:
-            findings.append(f"{pattern}={_truncate_prompt_note(match.group(1), max_chars=48)}")
-    if not findings:
-        findings.append("netem=absent")
-    return "; ".join(findings), {"signals": findings[:4]}
+    netem_present = bool(re.search(r"\bnetem\b", text, flags=re.IGNORECASE))
+    delay_ms: float | None = None
+    delay_match = re.search(r"\bdelay\s+([0-9]+(?:\.[0-9]+)?)\s*(ms|us|s)?", text, flags=re.IGNORECASE)
+    if delay_match:
+        raw = float(delay_match.group(1))
+        unit = str(delay_match.group(2) or "ms").strip().lower()
+        if unit == "us":
+            delay_ms = raw / 1000.0
+        elif unit == "s":
+            delay_ms = raw * 1000.0
+        else:
+            delay_ms = raw
+
+    parent_match = re.search(r"\bparent\s+([^\s]+)", text, flags=re.IGNORECASE)
+    handle_match = re.search(r"\bhandle\s+([^\s]+)", text, flags=re.IGNORECASE)
+    loss_match = re.search(r"\bloss\s+([^\s]+(?:\s+[^\s]+)?)", text, flags=re.IGNORECASE)
+
+    findings: list[str] = [f"netem_present={str(netem_present).lower()}"]
+    if delay_ms is not None:
+        findings.append(f"delay_ms={round(delay_ms, 3)}")
+    if loss_match:
+        findings.append(f"loss={_truncate_prompt_note(loss_match.group(1), max_chars=32)}")
+    if parent_match:
+        findings.append(f"parent={_truncate_prompt_note(parent_match.group(1), max_chars=24)}")
+    if handle_match:
+        findings.append(f"handle={_truncate_prompt_note(handle_match.group(1), max_chars=24)}")
+
+    # 提取 iface：优先 data.iface，fallback 到文本中的 dev <iface>
+    raw_iface = data.get("iface") if isinstance(data, dict) else None
+    iface_match = re.search(r"\bdev\s+([a-zA-Z0-9_.:-]+)", text, flags=re.IGNORECASE)
+    resolved_iface = str(raw_iface or "").strip() or (iface_match.group(1).strip() if iface_match else None) or None
+    if resolved_iface:
+        findings.append(f"iface={_truncate_prompt_note(resolved_iface, max_chars=24)}")
+
+    return "; ".join(findings), {
+        "netem_present": netem_present,
+        "delay_ms": delay_ms,
+        "parent": parent_match.group(1) if parent_match else None,
+        "handle": handle_match.group(1) if handle_match else None,
+        "loss": loss_match.group(1) if loss_match else None,
+        "iface": resolved_iface,
+        "signals": findings[:5],
+    }
+
+
+def _summarize_find_process(data: Any) -> tuple[str, dict[str, Any] | None]:
+    if not isinstance(data, dict):
+        summary, _, fields = _summarize_generic_data(data)
+        return summary, fields
+
+    raw_count = data.get("count")
+    try:
+        count = max(0, int(raw_count))
+    except Exception:  # noqa: BLE001
+        count = 0
+    matches = data.get("matches")
+    normalized_matches = matches if isinstance(matches, list) else []
+    process_names: list[str] = []
+    sample_pids: list[int] = []
+    for item in normalized_matches[:8]:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("process", "") or "").strip()
+        if name and name not in process_names:
+            process_names.append(name)
+        pid = item.get("pid")
+        try:
+            parsed_pid = int(pid)
+        except Exception:  # noqa: BLE001
+            continue
+        if parsed_pid not in sample_pids:
+            sample_pids.append(parsed_pid)
+    tc_process_present = count > 0 and any(
+        token in " ".join(process_names).lower()
+        for token in ("tc", "netem", "fault_injector", "fi_")
+    )
+    summary = f"matches={count}; processes={','.join(process_names[:4]) if process_names else 'none'}"
+    return summary, {
+        "match_count": count,
+        "process_names": process_names[:6],
+        "sample_pids": sample_pids[:6],
+        "tc_process_present": tc_process_present,
+    }
 
 
 def _summarize_link_state(data: Any) -> tuple[str, dict[str, Any] | None]:
@@ -930,6 +1111,8 @@ def _build_tool_prompt_fields(
         prompt_summary, key_fields = _summarize_counter_text(data, label="nic")
     elif tool == "network.get_rdma_stats":
         prompt_summary, key_fields = _summarize_counter_text(data, label="rdma")
+    elif tool == "network.find_process":
+        prompt_summary, key_fields = _summarize_find_process(data)
     else:
         prompt_summary, item_count, key_fields = _summarize_generic_data(data)
     if item_count is None:
@@ -1055,6 +1238,8 @@ def _build_state_rebuilt_sections(
     topology_context = state.get("topology_context")
     diagnosis_result = state.get("diagnosis_result")
     remediation_plan = state.get("remediation_plan")
+    evidence_signals = state.get("evidence_signals")
+    loop_guard = state.get("loop_guard")
     skill_runs = list(state.get("skill_runs", []) or [])
     tool_runs = list(state.get("tool_runs", []) or [])
     conversation_note = _build_latest_conversation_note(list(_coerce_messages(state.get("messages", []))), query=query)
@@ -1098,7 +1283,9 @@ def _build_state_rebuilt_sections(
             "diagnosis_state",
             "Current diagnosis and remediation state:\n"
             f"diagnosis_result={_json_line(diagnosis_result)}\n"
-            f"remediation_plan={_json_line(remediation_plan)}",
+            f"remediation_plan={_json_line(remediation_plan)}\n"
+            f"evidence_signals={_json_line(evidence_signals)}\n"
+            f"loop_guard={_json_line(loop_guard)}",
         ),
         (
             "skill_history",
@@ -1470,6 +1657,158 @@ def _build_tool_run_highlights(tool_runs: list[dict[str, Any]], *, max_items: in
     return highlights
 
 
+def _normalize_loop_guard_state(raw: Any, *, threshold_default: int = 2) -> dict[str, Any]:
+    payload = dict(raw) if isinstance(raw, dict) else {}
+    threshold = _normalize_positive_int(payload.get("threshold"), default=threshold_default, minimum=1)
+    repeat_count = _normalize_positive_int(payload.get("repeat_count"), default=0, minimum=0)
+    return {
+        "recent_fingerprint": str(payload.get("recent_fingerprint", "") or "").strip() or None,
+        "repeat_count": repeat_count,
+        "threshold": threshold,
+        "triggered": bool(payload.get("triggered", False)),
+        "trigger_step": payload.get("trigger_step"),
+    }
+
+
+def _build_tool_call_fingerprint(item: dict[str, Any]) -> str:
+    tool = str(item.get("tool", "") or "").strip() or "unknown"
+    params = _safe_jsonable(item.get("params", {}))
+    if not isinstance(params, dict):
+        params = {}
+    summary = _truncate_prompt_note(str(item.get("prompt_summary", "") or "").strip(), max_chars=200)
+    params_json = json.dumps(params, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+    return f"{tool}|{params_json}|{summary}"
+
+
+def _extract_evidence_signals(tool_runs: list[dict[str, Any]]) -> dict[str, Any]:
+    signals: dict[str, Any] = {
+        "tc_netem_present": False,
+        "tc_process_present": False,
+        "tc_delay_value": None,
+        "tc_parent": None,
+        "tc_handle": None,
+        "tc_iface_candidates": [],
+        "qdisc_evidence_steps": [],
+        "process_evidence_steps": [],
+    }
+    for run in tool_runs:
+        if not isinstance(run, dict) or not bool(run.get("success", False)):
+            continue
+        tool = str(run.get("tool", "") or "").strip()
+        key_fields = run.get("key_fields")
+        fields = key_fields if isinstance(key_fields, dict) else {}
+        summary = str(run.get("prompt_summary", "") or "").strip().lower()
+        if tool == "network.get_tc_qdisc":
+            netem_present = bool(fields.get("netem_present")) or "netem" in summary
+            if netem_present:
+                signals["tc_netem_present"] = True
+                signals["qdisc_evidence_steps"].append(int(run.get("step", 0) or 0))
+            delay_value = fields.get("delay_ms")
+            if delay_value is not None and signals.get("tc_delay_value") is None:
+                signals["tc_delay_value"] = delay_value
+            parent = str(fields.get("parent", "") or "").strip()
+            handle = str(fields.get("handle", "") or "").strip()
+            if parent and not signals.get("tc_parent"):
+                signals["tc_parent"] = parent
+            if handle and not signals.get("tc_handle"):
+                signals["tc_handle"] = handle
+            iface = str(fields.get("iface", "") or "").strip()
+            if iface and iface.lower() not in _PLACEHOLDER_VALUES:
+                existing = signals.get("tc_iface_candidates")
+                if not isinstance(existing, list):
+                    existing = []
+                    signals["tc_iface_candidates"] = existing
+                if iface not in existing:
+                    existing.append(iface)
+        elif tool == "network.find_process":
+            tc_process_present = bool(fields.get("tc_process_present"))
+            if not tc_process_present:
+                names = fields.get("process_names")
+                joined = " ".join(str(name) for name in names) if isinstance(names, list) else summary
+                tc_process_present = any(
+                    token in joined.lower()
+                    for token in ("tc", "netem", "fault_injector", "fi_")
+                ) and int(fields.get("match_count") or 0) > 0
+            if tc_process_present:
+                signals["tc_process_present"] = True
+                signals["process_evidence_steps"].append(int(run.get("step", 0) or 0))
+    return signals
+
+
+def _diagnosis_mentions_tc_evidence(payload: dict[str, Any]) -> bool:
+    texts: list[str] = []
+    texts.append(str(payload.get("root_cause", "") or ""))
+    texts.append(str(payload.get("impact_summary", "") or ""))
+    hypotheses = payload.get("hypotheses")
+    if isinstance(hypotheses, list):
+        for item in hypotheses:
+            if not isinstance(item, dict):
+                continue
+            texts.append(str(item.get("description", "") or ""))
+            for evidence in item.get("evidence_for", []) if isinstance(item.get("evidence_for"), list) else []:
+                texts.append(str(evidence))
+    combined = " ".join(texts).lower()
+    return any(token in combined for token in ("tc ", "tc/", "netem", "qdisc", "fault_injector", "fi_"))
+
+
+def _build_tc_consistency_retry_messages(
+    *,
+    system_prompt: str,
+    query: str,
+    evidence_signals: dict[str, Any],
+    diagnosis_payload: dict[str, Any],
+) -> list[Any]:
+    return [
+        SystemMessage(content=system_prompt),
+        HumanMessage(
+            content=(
+                "Network Jitter evidence consistency correction:\n"
+                f"query={query or '<empty>'}\n"
+                f"evidence_signals={_json_line(evidence_signals)}\n"
+                f"current_diagnosis={_json_line(diagnosis_payload)}\n\n"
+                "Rules:\n"
+                "- If tc/netem evidence exists, diagnosis root cause and hypotheses must explicitly reflect tc/netem.\n"
+                "- Do not output '证据不足' when tc/netem evidence is present.\n"
+                "- Return JSON only with keys: thought, diagnosis, remediation_plan."
+            )
+        ),
+    ]
+
+
+def _build_tc_fallback_diagnosis_payload(
+    *,
+    original: dict[str, Any],
+    evidence_signals: dict[str, Any],
+    tool_runs: list[dict[str, Any]],
+) -> dict[str, Any]:
+    fallback = dict(original)
+    delay_value = evidence_signals.get("tc_delay_value")
+    delay_text = f"{delay_value}ms" if delay_value is not None else "未知"
+    entities: list[str] = []
+    for run in tool_runs:
+        if not isinstance(run, dict):
+            continue
+        params = run.get("params")
+        if not isinstance(params, dict):
+            continue
+        node = str(params.get("node", "") or "").strip()
+        if node and node not in entities:
+            entities.append(node)
+    if not entities:
+        entities = [str(item) for item in (fallback.get("root_cause_entities") or []) if str(item).strip()]
+    fallback["root_cause"] = "检测到 tc/netem 注入或残留规则导致网络时延抖动"
+    fallback["root_cause_layer"] = "network"
+    fallback["root_cause_entities"] = entities
+    fallback["confidence"] = max(_clamp_confidence(fallback.get("confidence"), default=0.6), 0.72)
+    fallback["diagnosis_certainty"] = "probable"
+    fallback["impact_summary"] = (
+        f"已命中 tc/netem 强证据（delay≈{delay_text}），当前时延异常与 tc qdisc 注入/残留高度相关。"
+    )
+    priority = str(fallback.get("triage_priority") or "P1").strip().upper()
+    fallback["triage_priority"] = priority if priority in {"P0", "P1", "P2", "P3"} else "P1"
+    return fallback
+
+
 def _extract_query_anchor(query: str) -> str:
     text = str(query or "").strip()
     if not text:
@@ -1796,15 +2135,34 @@ def _canonicalize_tool_run(
     if not isinstance(params, dict):
         params = {}
     success = bool(payload.get("success", False))
+    data = _safe_jsonable(payload.get("data"))
+    error = str(payload.get("error", "") or "").strip()
+    skill_id = str(payload.get("skill_id", "") or "").strip() or None
+    prompt_fields = _build_tool_prompt_fields(
+        session_id=str(session_id or "").strip(),
+        source=str(source or "").strip() or "tool",
+        step=step,
+        tool=tool,
+        params=params,
+        data=data,
+        error=error,
+        skill_id=skill_id,
+    )
     return {
         "step": step,
         "tool": tool,
         "params": params,
         "success": success,
-        "data": _safe_jsonable(payload.get("data")),
-        "error": str(payload.get("error", "") or "").strip() or None,
+        "data": data,
+        "error": error or None,
         "session_id": str(session_id or "").strip(),
         "source": str(source or "").strip() or "tool",
+        "skill_id": skill_id,
+        "prompt_summary": prompt_fields.get("prompt_summary") or "",
+        "artifact_ref": prompt_fields.get("artifact_ref"),
+        "data_kind": prompt_fields.get("data_kind"),
+        "item_count": prompt_fields.get("item_count"),
+        "key_fields": prompt_fields.get("key_fields"),
         "timestamp": datetime.now(UTC).isoformat(),
     }
 
@@ -1829,6 +2187,9 @@ async def act_node(
     tool_runs = list(state.get("tool_runs", []))
     pending = list(state.get("pending_tool_calls", []))
     variables = dict(state.get("variables", {}))
+    loop_guard = _normalize_loop_guard_state(state.get("loop_guard"), threshold_default=2)
+    force_final_turn = bool(state.get("force_final_turn", False))
+    loop_guard_triggered = False
     tool_message_char_limit = _normalize_positive_int(
         state.get("tool_message_char_limit"),
         default=1200,
@@ -1876,6 +2237,18 @@ async def act_node(
             },
         )
         tool_runs.append(serialized)
+        fingerprint = _build_tool_call_fingerprint(serialized)
+        if fingerprint and fingerprint == loop_guard.get("recent_fingerprint"):
+            loop_guard["repeat_count"] = int(loop_guard.get("repeat_count", 0) or 0) + 1
+        else:
+            loop_guard["recent_fingerprint"] = fingerprint
+            loop_guard["repeat_count"] = 1
+        if int(loop_guard.get("repeat_count", 0) or 0) > int(loop_guard.get("threshold", 2) or 2):
+            if not bool(loop_guard.get("triggered", False)):
+                loop_guard["triggered"] = True
+                loop_guard["trigger_step"] = serialized["step"]
+                loop_guard_triggered = True
+            force_final_turn = True
         messages.append(
             ToolMessage(
                 tool_call_id=str(tool_call.get("id", "")),
@@ -1900,15 +2273,38 @@ async def act_node(
                 },
             }
         )
+    updated_trace_items = [*state.get("trace_items", []), *observation_entries]
+    if loop_guard_triggered:
+        updated_trace_items.append(
+            {
+                "type": "thought",
+                "step": state.get("step_count", 0) + 1,
+                "content": (
+                    "检测到同参同摘要工具调用重复超过阈值，已触发 loop_guard，"
+                    "下一轮将强制进入总结阶段。"
+                ),
+                "action": "conclude",
+                "confidence": None,
+                "tool_params": {
+                    "kind": "loop_guard_triggered",
+                    "repeat_count": loop_guard.get("repeat_count"),
+                    "threshold": loop_guard.get("threshold"),
+                    "fingerprint": loop_guard.get("recent_fingerprint"),
+                },
+            }
+        )
     updated = {
         **state,
         "messages": messages,
         "tool_runs": tool_runs,
         "pending_tool_calls": [],
-        "trace_items": [*state.get("trace_items", []), *observation_entries],
+        "trace_items": updated_trace_items,
         "status": "running",
         "summary": state.get("summary"),
         "error": None,
+        "evidence_signals": _extract_evidence_signals(tool_runs),
+        "loop_guard": loop_guard,
+        "force_final_turn": force_final_turn,
     }
     if any(not bool(run.get("result", {}).get("success", False)) for run in observation_entries):
         persist_state_snapshot(updated.get("checkpoint_dir"), updated["session_id"], "act-failed", updated)
@@ -2256,6 +2652,8 @@ def _normalize_remediation_plan_payload(
     diagnosis: DiagnosisResult,
     session_id: str,
     registry: ToolRegistry | None = None,
+    tool_runs: list[dict[str, Any]] | None = None,
+    variables: dict[str, Any] | None = None,
 ) -> RemediationPlan | None:
     if raw_plan is None:
         return None
@@ -2282,6 +2680,8 @@ def _normalize_remediation_plan_payload(
                 normalized_step,
                 diagnosis=diagnosis,
                 registry=registry,
+                tool_runs=tool_runs,
+                variables=variables,
             )
             if invalid_reason:
                 _llm_logger.warning(
@@ -2355,11 +2755,16 @@ def _normalize_step_params_in_place(
     *,
     diagnosis: DiagnosisResult,
     registry: ToolRegistry | None,
+    tool_runs: list[dict[str, Any]] | None = None,
+    variables: dict[str, Any] | None = None,
 ) -> str | None:
     tool_name = str(step.get("tool") or "").strip()
     params = step.get("params")
     if not isinstance(params, dict):
         return "missing_required_params: params must be an object"
+    node_param_error = _normalize_node_param_in_place(params)
+    if node_param_error:
+        return node_param_error
 
     if tool_name == "k8s.delete_pod":
         pod_selector = params.pop("pod_selector", None)
@@ -2371,10 +2776,22 @@ def _normalize_step_params_in_place(
 
     if tool_name == "network.clear_tc_qdisc":
         iface = params.get("iface")
-        if not isinstance(iface, str) or not iface.strip():
-            inferred_iface = _infer_tc_iface(step)
-            if inferred_iface:
-                params["iface"] = inferred_iface
+        # 占位值视为缺失
+        if _is_placeholder_param(iface):
+            params.pop("iface", None)
+
+        if not params.get("iface"):
+            # 推断顺序：step 文本 → tc qdisc tool run 的 key_fields → 运行时变量
+            candidates = _collect_tc_iface_candidates(
+                step,
+                diagnosis=diagnosis,
+                tool_runs=tool_runs,
+                variables=variables,
+            )
+            if len(candidates) == 1:
+                params["iface"] = candidates[0]
+            elif len(candidates) > 1:
+                return "iface_inference_ambiguous"
         if not params.get("parent"):
             inferred_parent = _extract_token_from_step(step, token_name="parent")
             if inferred_parent:
@@ -2407,6 +2824,9 @@ def _normalize_step_params_in_place(
             return "node_inference_ambiguous"
         if inferred_node:
             params["node"] = inferred_node
+            node_param_error = _normalize_node_param_in_place(params)
+            if node_param_error:
+                return node_param_error
 
     missing = [field for field in required if field not in params or _is_blank_param(params.get(field))]
     if missing:
@@ -2414,12 +2834,39 @@ def _normalize_step_params_in_place(
     return None
 
 
-def _is_blank_param(value: Any) -> bool:
+_PLACEHOLDER_VALUES = frozenset({"unknown", "n/a", "none", "-", "--", "null", ""})
+
+
+def _is_placeholder_param(value: Any) -> bool:
     if value is None:
         return True
     if isinstance(value, str):
-        return not value.strip()
+        return value.strip().lower() in _PLACEHOLDER_VALUES
     return False
+
+
+def _is_blank_param(value: Any) -> bool:
+    return _is_placeholder_param(value)
+
+
+def _normalize_node_param_in_place(params: dict[str, Any]) -> str | None:
+    raw_node = params.get("node")
+    if not isinstance(raw_node, str) or not raw_node.strip():
+        return None
+
+    inventory_names, host_to_name = _load_inventory_node_mapping()
+    if not inventory_names and not host_to_name:
+        return None
+
+    normalized_node, reason = normalize_node_identifier(
+        raw_node,
+        inventory_names=inventory_names,
+        host_to_name=host_to_name,
+    )
+    if normalized_node:
+        params["node"] = normalized_node
+        return None
+    return f"missing_required_params: ['node'] ({reason or 'node_not_in_inventory'})"
 
 
 def _step_looks_like_tc_qdisc_cleanup(step: dict[str, Any]) -> bool:
@@ -2440,6 +2887,106 @@ def _infer_tc_iface(step: dict[str, Any]) -> str | None:
     if match:
         return match.group(1).strip()
     return None
+
+
+def _collect_tc_iface_candidates(
+    step: dict[str, Any],
+    diagnosis: Any,
+    *,
+    tool_runs: list[dict[str, Any]] | None = None,
+    variables: dict[str, Any] | None = None,
+) -> list[str]:
+    seen: set[str] = set()
+    candidates: list[str] = []
+
+    def _add(iface: str | None) -> None:
+        if iface and iface.lower() not in _PLACEHOLDER_VALUES and iface not in seen:
+            seen.add(iface)
+            candidates.append(iface)
+
+    # 来源 1：step 文本中的 dev <iface>
+    _add(_infer_tc_iface(step))
+    if candidates:
+        return candidates
+
+    step_params = step.get("params", {})
+    expected_node = ""
+    expected_parent = ""
+    expected_handle = ""
+    if isinstance(step_params, dict):
+        expected_node = str(step_params.get("node", "") or "").strip()
+        expected_parent = str(step_params.get("parent", "") or "").strip()
+        expected_handle = str(step_params.get("handle", "") or "").strip()
+    if not expected_parent:
+        expected_parent = str(_extract_token_from_step(step, token_name="parent") or "").strip()
+    if not expected_handle:
+        expected_handle = str(_extract_token_from_step(step, token_name="handle") or "").strip()
+
+    # 来源 2：tool_runs 中 network.get_tc_qdisc 的 key_fields.iface
+    source_tool_runs = list(tool_runs or [])
+    diag_dict = diagnosis if isinstance(diagnosis, dict) else None
+    if not source_tool_runs and diag_dict is not None:
+        raw_runs = diag_dict.get("tool_runs", [])
+        if isinstance(raw_runs, list):
+            source_tool_runs = [item for item in raw_runs if isinstance(item, dict)]
+
+    if source_tool_runs:
+        strict_runs: list[dict[str, Any]] = []
+        relaxed_runs: list[dict[str, Any]] = []
+        for run in source_tool_runs:
+            if str(run.get("tool", "")).strip() != "network.get_tc_qdisc":
+                continue
+            run_params = run.get("params")
+            run_data = run.get("data")
+            run_fields = run.get("key_fields")
+            run_node = ""
+            if isinstance(run_params, dict):
+                run_node = str(run_params.get("node", "") or "").strip()
+            if not run_node and isinstance(run_data, dict):
+                run_node = str(run_data.get("node", "") or "").strip()
+
+            run_parent = str(run_fields.get("parent", "") or "").strip() if isinstance(run_fields, dict) else ""
+            run_handle = str(run_fields.get("handle", "") or "").strip() if isinstance(run_fields, dict) else ""
+
+            node_match = bool(expected_node and run_node and run_node == expected_node)
+            parent_match = bool(expected_parent and run_parent and run_parent == expected_parent)
+            handle_match = bool(expected_handle and run_handle and run_handle == expected_handle)
+
+            if node_match and (parent_match or handle_match):
+                strict_runs.append(run)
+            else:
+                relaxed_runs.append(run)
+
+        for run in strict_runs:
+            key_fields = run.get("key_fields")
+            if isinstance(key_fields, dict):
+                _add(key_fields.get("iface"))
+            data = run.get("data")
+            if isinstance(data, dict):
+                _add(data.get("iface"))
+        if candidates:
+            return candidates
+
+        for run in relaxed_runs:
+            key_fields = run.get("key_fields")
+            if isinstance(key_fields, dict):
+                _add(key_fields.get("iface"))
+            data = run.get("data")
+            if isinstance(data, dict):
+                _add(data.get("iface"))
+        if candidates:
+            return candidates
+
+    # 来源 3：运行时变量
+    source_variables = dict(variables or {})
+    if not source_variables and diag_dict is not None:
+        raw_variables = diag_dict.get("variables", {})
+        if isinstance(raw_variables, dict):
+            source_variables = raw_variables
+    if source_variables:
+        _add(source_variables.get("iface"))
+
+    return candidates
 
 
 def _extract_token_from_step(step: dict[str, Any], *, token_name: str) -> str | None:
@@ -2484,12 +3031,20 @@ def _infer_step_node(*, step: dict[str, Any], diagnosis: DiagnosisResult) -> tup
         if name and name in text:
             node_candidates.add(name)
 
-    resolved_nodes = {host_to_name[ip] for ip in ip_candidates if ip in host_to_name}
-    all_candidates = set(node_candidates) | resolved_nodes
-    if len(all_candidates) == 1:
-        return next(iter(all_candidates)), False
+    resolved_nodes: set[str] = set()
+    for candidate in {*(node_candidates or set()), *(ip_candidates or set())}:
+        normalized_node, _ = normalize_node_identifier(
+            candidate,
+            inventory_names=inventory_names,
+            host_to_name=host_to_name,
+        )
+        if normalized_node:
+            resolved_nodes.add(normalized_node)
 
-    if len(all_candidates) > 1:
+    if len(resolved_nodes) == 1:
+        return next(iter(resolved_nodes)), False
+
+    if len(resolved_nodes) > 1:
         return None, True
 
     if not inventory_names and len(node_candidates) == 1:
@@ -2525,70 +3080,9 @@ def _collect_node_candidates(
 
 
 def _load_inventory_node_mapping() -> tuple[set[str], dict[str, str]]:
-    names: set[str] = set()
-    host_to_name: dict[str, str] = {}
-    for path in _inventory_candidates():
-        if not path.exists() or yaml is None:
-            continue
-        try:
-            payload = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-        except Exception:  # noqa: BLE001
-            continue
-        workers = payload.get("inventory", {}).get("workers", [])
-        if not isinstance(workers, list):
-            continue
-        for worker in workers:
-            if not isinstance(worker, dict):
-                continue
-            name = str(worker.get("name") or "").strip()
-            ssh = worker.get("ssh")
-            host = str(ssh.get("host") or "").strip() if isinstance(ssh, dict) else ""
-            if name:
-                names.add(name)
-            if name and host:
-                host_to_name[host] = name
-        if names or host_to_name:
-            break
-    return names, host_to_name
+    return load_inventory_node_mapping()
 
 
 def _inventory_candidates() -> list[Path]:
-    candidates: list[Path] = []
-    env_inventory = os.getenv("SRE_SSH_INVENTORY_PATH", "").strip()
-    if env_inventory:
-        candidates.append(Path(env_inventory))
-
-    config_candidates = [
-        Path(os.getenv("SRE_AGENT_CONFIG", "").strip()) if os.getenv("SRE_AGENT_CONFIG", "").strip() else None,
-        Path("sre_agent/conf/config.yaml"),
-    ]
-    for config_path in config_candidates:
-        if config_path is None or not config_path.exists() or yaml is None:
-            continue
-        try:
-            payload = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
-        except Exception:  # noqa: BLE001
-            continue
-        raw_inventory_path = (
-            payload.get("ontology", {})
-            .get("discovery", {})
-            .get("live_inventory_path")
-        )
-        if not raw_inventory_path:
-            continue
-        inventory_path = Path(str(raw_inventory_path))
-        if not inventory_path.is_absolute():
-            inventory_path = (config_path.parent.parent.parent / inventory_path).resolve() if not inventory_path.exists() else inventory_path
-        candidates.append(inventory_path)
-
-    candidates.append(Path("sre_agent/conf/live_inventory.lab.yaml"))
-
-    deduped: list[Path] = []
-    seen: set[str] = set()
-    for candidate in candidates:
-        key = str(candidate)
-        if key in seen:
-            continue
-        deduped.append(candidate)
-        seen.add(key)
-    return deduped
+    # Backward-compatible shim for older callers.
+    return []

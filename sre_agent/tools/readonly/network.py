@@ -1,12 +1,14 @@
 """Purpose: RDMA/network diagnostics and switch port counters.
 
-Primary tools: get_rdma_stats, get_tc_qdisc, get_nic_link_state,
-get_nic_counters, get_switch_port_counters.
+Primary tools: get_rdma_stats, get_tc_qdisc, find_process,
+get_nic_link_state, get_nic_counters, get_switch_port_counters.
 Channels used: ssh, switch.
 """
 
 from __future__ import annotations
 
+import re
+import shlex
 from typing import Any
 
 from sre_agent.tools.registry import ToolExecutionContext, ToolValidationError
@@ -71,6 +73,57 @@ async def get_tc_qdisc(params: dict[str, Any], context: ToolExecutionContext) ->
         payload["iface"] = iface or None
         payload["source"] = "tc qdisc show"
     return payload
+
+
+async def find_process(params: dict[str, Any], context: ToolExecutionContext) -> Any:
+    ssh = context.channels.get("ssh")
+    if ssh is None:
+        raise ToolValidationError("required channel is missing: ssh")
+
+    node = _require_str(params, "node")
+    pattern = _require_str(params, "pattern")
+    grep_pattern = shlex.quote(pattern)
+    command = (
+        "ps -eo pid=,comm=,args= "
+        f"| grep -E -- {grep_pattern} "
+        "| grep -v -E 'grep -E --' || true"
+    )
+    result = await ssh.run_command(node, command, use_sudo=False)
+    payload = _extract_output(result, action="run_command")
+
+    output_text = ""
+    if isinstance(payload, dict):
+        output_text = str(payload.get("output") or "")
+    else:
+        output_text = str(payload or "")
+
+    matches: list[dict[str, Any]] = []
+    for raw_line in output_text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        match = re.match(r"^(\d+)\s+(\S+)\s*(.*)$", line)
+        if not match:
+            continue
+        matches.append(
+            {
+                "pid": int(match.group(1)),
+                "process": match.group(2),
+                "command": match.group(3).strip(),
+            }
+        )
+
+    structured = {
+        "node": node,
+        "pattern": pattern,
+        "count": len(matches),
+        "matches": matches,
+        "source": "ps -eo",
+        "output": output_text,
+    }
+    if isinstance(payload, dict) and payload.get("error"):
+        structured["error"] = payload.get("error")
+    return structured
 
 
 async def get_nic_link_state(params: dict[str, Any], context: ToolExecutionContext) -> Any:
