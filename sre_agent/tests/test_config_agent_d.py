@@ -2,7 +2,15 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from sre_agent.config import load_config
+from sre_agent.config import (
+    GLM_DEFAULT_BASE_URL,
+    GLM_DEFAULT_FALLBACK_MODELS,
+    GLM_DEFAULT_MODEL,
+    SREAgentConfig,
+    apply_llm_env_from_config,
+    load_config,
+    resolve_llm_runtime_settings,
+)
 
 
 def test_agent_d_config_blocks_parse_from_yaml(tmp_path: Path) -> None:
@@ -42,3 +50,38 @@ def test_agent_d_config_blocks_parse_from_yaml(tmp_path: Path) -> None:
     assert config.slo.auto_recovery_hours == 1
     assert config.data_lifecycle.hot_retention_days == 90
     assert config.data_lifecycle.cleanup_schedule == "0 3 * * *"
+
+
+def test_apply_llm_env_from_config_glm_provider_applies_defaults() -> None:
+    config = SREAgentConfig.model_validate(
+        {
+            "llm": {
+                "provider": "glm",
+            }
+        }
+    )
+    env: dict[str, str] = {}
+    applied = apply_llm_env_from_config(config, env, only_if_missing=True)
+
+    assert env["SRE_LLM_PROVIDER"] == "glm"
+    assert env["SRE_OPENAI_BASE_URL"] == GLM_DEFAULT_BASE_URL
+    assert env["SRE_LLM_MODEL"] == GLM_DEFAULT_MODEL
+    assert env["SRE_LLM_FALLBACK_MODELS"] == ",".join(GLM_DEFAULT_FALLBACK_MODELS)
+    assert applied["SRE_LLM_PROVIDER"] == "glm"
+
+
+def test_resolve_llm_runtime_settings_env_override_provider_defaults() -> None:
+    env = {
+        "SRE_LLM_PROVIDER": "glm",
+        "SRE_OPENAI_BASE_URL": "https://example-override/v1",
+        "SRE_LLM_MODEL": "glm-override",
+        "SRE_LLM_FALLBACK_MODELS": "glm-5-turbo,glm-4.7",
+        "SRE_OPENAI_API_KEY": "test-key",
+    }
+    resolved = resolve_llm_runtime_settings(env)
+
+    assert resolved["provider"] == "glm"
+    assert resolved["base_url"] == "https://example-override/v1"
+    assert resolved["model"] == "glm-override"
+    assert resolved["fallback_models"] == ["glm-5-turbo", "glm-4.7"]
+    assert resolved["api_key_source"] == "SRE_OPENAI_API_KEY"

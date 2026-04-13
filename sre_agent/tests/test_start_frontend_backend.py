@@ -10,6 +10,7 @@ from sre_agent.scripts.start_frontend_backend import (
     DEFAULT_CONFIG_PATH,
     DEFAULT_LOCAL_LLM_BASE_URL,
     DEFAULT_LOCAL_LLM_MODEL,
+    DEFAULT_LLM_MODE,
     DEFAULT_KUBECONFIG_PATH,
     build_parser,
     build_runtime_env,
@@ -86,9 +87,30 @@ def test_parser_default_config_path() -> None:
     parser = build_parser()
     args = parser.parse_args([])
     assert args.config == DEFAULT_CONFIG_PATH
-    assert args.llm_mode == "minimax_api"
+    assert args.llm_mode == DEFAULT_LLM_MODE
     assert args.local_llm_base_url == DEFAULT_LOCAL_LLM_BASE_URL
     assert args.local_model == DEFAULT_LOCAL_LLM_MODEL
+
+
+def test_build_runtime_env_accepts_legacy_llm_mode_alias(monkeypatch, tmp_path: Path) -> None:
+    config_path = _write_config(tmp_path)
+    monkeypatch.setattr("sre_agent.scripts.start_frontend_backend._probe_local_llm", lambda **kwargs: None)
+
+    _env, info = build_runtime_env(
+        config_path=str(config_path),
+        backend_host="127.0.0.1",
+        backend_port=18090,
+        frontend_port=5173,
+        api_mode="proxy",
+        role="operator",
+        username="local-ui",
+        token_expire_seconds=3600,
+        llm_mode="minimax_local",
+        local_llm_base_url="http://10.11.4.13:18080/v1",
+        local_model=DEFAULT_LOCAL_LLM_MODEL,
+    )
+
+    assert info["llm_mode"] == "openai_compatible_local"
 
 
 def test_build_runtime_env_local_mode_overrides_llm_env_and_runs_probe(monkeypatch, tmp_path: Path) -> None:
@@ -110,7 +132,7 @@ def test_build_runtime_env_local_mode_overrides_llm_env_and_runs_probe(monkeypat
         role="operator",
         username="local-ui",
         token_expire_seconds=3600,
-        llm_mode="minimax_local",
+        llm_mode="openai_compatible_local",
         local_llm_base_url="http://10.11.4.13:18080/v1",
         local_model=DEFAULT_LOCAL_LLM_MODEL,
     )
@@ -120,7 +142,7 @@ def test_build_runtime_env_local_mode_overrides_llm_env_and_runs_probe(monkeypat
     assert env["SRE_OPENAI_BASE_URL"] == "http://10.11.4.13:18080/v1"
     assert env["SRE_LLM_MODEL"] == DEFAULT_LOCAL_LLM_MODEL
     assert env["SRE_OPENAI_API_KEY"] == "local-llama-placeholder"
-    assert info["llm_mode"] == "minimax_local"
+    assert info["llm_mode"] == "openai_compatible_local"
     assert info["llm_local_probe_passed"] == "true"
     assert info["llm_local_selected_model"] == DEFAULT_LOCAL_LLM_MODEL
     assert info["llm_local_base_url"] == "http://10.11.4.13:18080/v1"
@@ -145,7 +167,7 @@ def test_build_runtime_env_local_mode_probe_failure_blocks_startup(monkeypatch, 
             role="operator",
             username="local-ui",
             token_expire_seconds=3600,
-            llm_mode="minimax_local",
+            llm_mode="openai_compatible_local",
             local_llm_base_url="http://10.11.4.13:18080/v1",
             local_model=DEFAULT_LOCAL_LLM_MODEL,
         )
@@ -174,7 +196,7 @@ def _runtime_info_template() -> dict[str, str]:
         "llm_api_key_length": "8",
         "llm_model": "MiniMax-M2.7",
         "llm_base_url": "https://api.minimax.chat/v1",
-        "llm_mode": "minimax_api",
+        "llm_mode": "openai_compatible_api",
         "llm_local_probe_passed": "false",
         "llm_local_selected_model": "",
         "llm_local_base_url": "",
@@ -247,7 +269,7 @@ def test_main_waits_for_backend_then_starts_frontend(monkeypatch) -> None:
             role="operator",
             username="local-ui",
             token_expire_seconds=3600,
-            llm_mode="minimax_api",
+            llm_mode="openai_compatible_api",
             local_llm_base_url=DEFAULT_LOCAL_LLM_BASE_URL,
             local_model=DEFAULT_LOCAL_LLM_MODEL,
             runtime_info="sre_agent/temp/dev_runtime_info.json",
@@ -309,7 +331,7 @@ def test_main_does_not_start_frontend_when_backend_not_ready(monkeypatch) -> Non
             role="operator",
             username="local-ui",
             token_expire_seconds=3600,
-            llm_mode="minimax_api",
+            llm_mode="openai_compatible_api",
             local_llm_base_url=DEFAULT_LOCAL_LLM_BASE_URL,
             local_model=DEFAULT_LOCAL_LLM_MODEL,
             runtime_info="sre_agent/temp/dev_runtime_info.json",
@@ -362,7 +384,7 @@ def test_main_fails_fast_when_frontend_dependencies_are_missing(monkeypatch) -> 
             role="operator",
             username="local-ui",
             token_expire_seconds=3600,
-            llm_mode="minimax_api",
+            llm_mode="openai_compatible_api",
             local_llm_base_url=DEFAULT_LOCAL_LLM_BASE_URL,
             local_model=DEFAULT_LOCAL_LLM_MODEL,
             runtime_info="sre_agent/temp/dev_runtime_info.json",

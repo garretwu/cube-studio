@@ -5,10 +5,11 @@ import tempfile
 import unittest
 from pathlib import Path
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from langchain_core.messages import AIMessage
 
+import sre_agent.agent.graph as graph_module
 from sre_agent.agent import run_diagnosis, run_diagnosis_stream
 from sre_agent.agent.prompts import build_system_prompt
 from sre_agent.models.diagnosis import DiagnosisResult, ThinkingTrace
@@ -158,8 +159,10 @@ class _SlowLLM:
 
 
 class _FakeStreamChunk:
-    def __init__(self, content: str) -> None:
+    def __init__(self, content: str | None = None, *, reasoning_content: str | None = None) -> None:
         self.content = content
+        self.reasoning_content = reasoning_content
+        self.additional_kwargs = {}
 
 
 class _FakeStreamGraph:
@@ -169,6 +172,32 @@ class _FakeStreamGraph:
     async def astream_events(self, *_args: Any, **_kwargs: Any):  # noqa: ANN401
         for event in self._events:
             yield event
+
+
+class _ResilientFakeBoundModel:
+    def __init__(self, parent: "_ResilientFakeChatOpenAI", tool_choice: str) -> None:
+        self._parent = parent
+        self._tool_choice = tool_choice
+
+    async def ainvoke(self, messages: list[Any]) -> AIMessage:
+        return await self._parent._ainvoke(messages, tool_choice=self._tool_choice)  # noqa: SLF001
+
+
+class _ResilientFakeChatOpenAI:
+    def __init__(self, **kwargs: Any) -> None:
+        self._kwargs = kwargs
+        self.model = str(kwargs.get("model", "")).strip()
+
+    async def _ainvoke(self, _messages: list[Any], *, tool_choice: str) -> AIMessage:
+        if self.model == "glm-5.1":
+            raise RuntimeError('{"error":{"code":"1305","message":"该模型当前访问量过大，请您稍后再试"}}')
+        return AIMessage(content=f"ok:{self.model}:{tool_choice}")
+
+    async def ainvoke(self, messages: list[Any]) -> AIMessage:
+        return await self._ainvoke(messages, tool_choice="none")
+
+    def bind_tools(self, _tools: list[Any], tool_choice: str = "auto") -> _ResilientFakeBoundModel:
+        return _ResilientFakeBoundModel(self, tool_choice)
 
 
 class TestGraphUnit(unittest.IsolatedAsyncioTestCase):
@@ -718,6 +747,67 @@ description: Diagnose vLLM latency with a Claude-style skill.
         new_trace_items = reason_completed["data"]["new_trace_items"]
         self.assertEqual(len(new_trace_items), 1)
         self.assertNotIn("next_action", new_trace_items[0])
+
+    async def test_run_diagnosis_stream_emits_token_from_reasoning_content_when_content_empty(self) -> None:
+        stream_events = [
+            {
+                "event": "on_chain_start",
+                "name": "reason",
+                "run_id": "run-reason-3",
+                "data": {},
+            },
+            {
+                "event": "on_chat_model_stream",
+                "name": "ChatOpenAI",
+                "run_id": "run-llm-2",
+                "metadata": {"langgraph_node": "reason"},
+                "data": {"chunk": _FakeStreamChunk(content=None, reasoning_content="thinking-token")},
+            },
+            {
+                "event": "on_chain_end",
+                "name": "reason",
+                "run_id": "run-reason-3",
+                "data": {"output": {"status": "diagnosing", "step_count": 1, "trace_items": []}},
+            },
+        ]
+        with patch("sre_agent.agent.graph.create_sre_graph", return_value=_FakeStreamGraph(stream_events)):
+            emitted: list[dict[str, Any]] = []
+            async for event in run_diagnosis_stream(
+                query="Diagnose reasoning stream",
+                context=_happy_context(),
+                variables={},
+                checkpoint_dir=None,
+                total_timeout_sec=10.0,
+            ):
+                emitted.append(event)
+
+        token_event = next(item for item in emitted if item["type"] == "token_delta")
+        self.assertEqual(token_event["data"]["content"], "thinking-token")
+        self.assertEqual(token_event["data"]["thought_key"], "run-reason-3:reason")
+
+    async def test_resilient_llm_retries_and_fallbacks_for_retryable_errors(self) -> None:
+        env = {
+            "SRE_OPENAI_API_KEY": "test-key",
+            "SRE_LLM_PROVIDER": "glm",
+            "SRE_LLM_MODEL": "glm-5.1",
+            "SRE_LLM_FALLBACK_MODELS": "glm-5-turbo",
+            "SRE_OPENAI_BASE_URL": "https://open.bigmodel.cn/api/coding/paas/v4",
+        }
+        with (
+            patch.dict("os.environ", env, clear=True),
+            patch("sre_agent.agent.graph.ChatOpenAI", _ResilientFakeChatOpenAI),
+            patch("sre_agent.agent.graph.asyncio.sleep", new=AsyncMock(return_value=None)),
+        ):
+            runtime_llm = graph_module.build_default_llm_from_env()
+            response = await runtime_llm.ainvoke([])
+            self.assertIsInstance(response, AIMessage)
+            self.assertIn("glm-5-turbo", str(response.content))
+
+            diagnostics = graph_module.get_last_llm_runtime_diagnostics()
+            self.assertEqual(diagnostics["active_model"], "glm-5-turbo")
+            self.assertTrue(diagnostics["fallback_used"])
+            self.assertGreaterEqual(int(diagnostics["retry_count"]), 1)
+            self.assertEqual(str(diagnostics["last_error_code"]), "1305")
 
     async def test_step_timeout_returns_step_timeout_state(self) -> None:
         result = await run_diagnosis(
