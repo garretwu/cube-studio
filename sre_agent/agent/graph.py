@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from typing import Any, Awaitable, Callable
@@ -22,6 +23,7 @@ from sre_agent.agent.nodes import (
     route_after_reason,
 )
 from sre_agent.agent.state import SREAgentState
+from sre_agent.config import resolve_llm_runtime_settings
 from sre_agent.models.events import EventType
 from sre_agent.skills import SkillExecutor, SkillPolicy, SkillRegistry
 from sre_agent.tools import ToolExecutionContext, ToolRegistry, build_default_registry
@@ -32,23 +34,217 @@ class PassthroughGuardrails:
         return llm
 
 
-def build_default_llm_from_env() -> ChatOpenAI:
-    api_key = (
-        os.getenv("SRE_OPENAI_API_KEY", "").strip()
-        or os.getenv("OPENAI_API_KEY", "").strip()
+def _extract_error_code(exc: Exception) -> str | None:
+    message = str(exc).strip()
+    if not message:
+        return None
+    for pattern in (
+        r'"code"\s*:\s*"?(?P<code>\d{3,4})"?',
+        r"http_code'\s*:\s*'(?P<code>\d{3,4})'",
+        r"status(?:\s+code)?\s*[:=]\s*(?P<code>\d{3})",
+    ):
+        match = re.search(pattern, message, flags=re.IGNORECASE)
+        if match:
+            return str(match.group("code")).strip()
+    return None
+
+
+def _is_retryable_llm_error(exc: Exception) -> bool:
+    message = str(exc).strip().lower()
+    code = _extract_error_code(exc)
+    if code == "1305" or code == "429":
+        return True
+    if code is not None and code.isdigit() and 500 <= int(code) <= 599:
+        return True
+    signals = (
+        "rate limit",
+        "too many requests",
+        "temporarily unavailable",
+        "service unavailable",
+        "访问量过大",
     )
+    return any(signal in message for signal in signals)
+
+
+_LAST_LLM_RUNTIME_DIAGNOSTICS: dict[str, Any] = {
+    "last_error_code": None,
+    "last_error_message": None,
+    "retry_count": 0,
+    "active_model": None,
+    "fallback_used": False,
+    "last_attempt_at": None,
+}
+_RUNTIME_DIAGNOSTIC_UNSET = object()
+
+
+def _record_llm_runtime_diagnostics(
+    *,
+    last_error_code: str | None | object = _RUNTIME_DIAGNOSTIC_UNSET,
+    last_error_message: str | None | object = _RUNTIME_DIAGNOSTIC_UNSET,
+    retry_count: int | None = None,
+    active_model: str | None = None,
+    fallback_used: bool | None = None,
+) -> None:
+    if last_error_code is not _RUNTIME_DIAGNOSTIC_UNSET:
+        _LAST_LLM_RUNTIME_DIAGNOSTICS["last_error_code"] = last_error_code
+    if last_error_message is not _RUNTIME_DIAGNOSTIC_UNSET:
+        _LAST_LLM_RUNTIME_DIAGNOSTICS["last_error_message"] = last_error_message
+    if retry_count is not None:
+        _LAST_LLM_RUNTIME_DIAGNOSTICS["retry_count"] = max(0, int(retry_count))
+    if active_model is not None:
+        _LAST_LLM_RUNTIME_DIAGNOSTICS["active_model"] = active_model
+    if fallback_used is not None:
+        _LAST_LLM_RUNTIME_DIAGNOSTICS["fallback_used"] = bool(fallback_used)
+    _LAST_LLM_RUNTIME_DIAGNOSTICS["last_attempt_at"] = datetime.now(UTC).isoformat()
+
+
+def get_last_llm_runtime_diagnostics() -> dict[str, Any]:
+    return dict(_LAST_LLM_RUNTIME_DIAGNOSTICS)
+
+
+class _BoundResilientLLM:
+    def __init__(self, parent: "ResilientOpenAICompatibleLLM", tools: list[Any], tool_choice: str) -> None:
+        self._parent = parent
+        self._tools = tools
+        self._tool_choice = tool_choice
+
+    async def ainvoke(self, messages: list[Any]) -> Any:
+        return await self._parent._ainvoke_with_resilience(  # noqa: SLF001
+            messages,
+            tools=self._tools,
+            tool_choice=self._tool_choice,
+        )
+
+
+class ResilientOpenAICompatibleLLM:
+    def __init__(
+        self,
+        *,
+        api_key: str,
+        model: str,
+        base_url: str | None = None,
+        fallback_models: list[str] | None = None,
+        max_retries_per_model: int = 2,
+        retry_backoff_base_sec: float = 0.35,
+    ) -> None:
+        self._api_key = api_key
+        self._base_url = base_url
+        self._max_retries_per_model = max(0, int(max_retries_per_model))
+        self._retry_backoff_base_sec = max(0.1, float(retry_backoff_base_sec))
+        ordered_models = [model, *(fallback_models or [])]
+        self._models: list[str] = []
+        seen: set[str] = set()
+        for candidate in ordered_models:
+            normalized = str(candidate or "").strip()
+            if not normalized or normalized in seen:
+                continue
+            seen.add(normalized)
+            self._models.append(normalized)
+        if not self._models:
+            raise RuntimeError("at least one LLM model is required")
+        self._clients: dict[str, ChatOpenAI] = {}
+
+    def _get_client(self, model: str) -> ChatOpenAI:
+        client = self._clients.get(model)
+        if client is not None:
+            return client
+        kwargs: dict[str, Any] = {
+            "api_key": self._api_key,
+            "model": model,
+            "temperature": 0,
+        }
+        if self._base_url:
+            kwargs["base_url"] = self._base_url
+        client = ChatOpenAI(**kwargs)
+        self._clients[model] = client
+        return client
+
+    async def _invoke_once(
+        self,
+        *,
+        model: str,
+        messages: list[Any],
+        tools: list[Any] | None,
+        tool_choice: str | None,
+    ) -> Any:
+        client = self._get_client(model)
+        if tools is None:
+            return await client.ainvoke(messages)
+        bound = client.bind_tools(tools, tool_choice=tool_choice or "auto")
+        return await bound.ainvoke(messages)
+
+    async def _ainvoke_with_resilience(
+        self,
+        messages: list[Any],
+        *,
+        tools: list[Any] | None = None,
+        tool_choice: str | None = None,
+    ) -> Any:
+        total_retries = 0
+        for model_index, model in enumerate(self._models):
+            fallback_used = model_index > 0
+            for attempt in range(self._max_retries_per_model + 1):
+                try:
+                    response = await self._invoke_once(
+                        model=model,
+                        messages=messages,
+                        tools=tools,
+                        tool_choice=tool_choice,
+                    )
+                    _record_llm_runtime_diagnostics(
+                        last_error_code=None,
+                        retry_count=total_retries,
+                        active_model=model,
+                        fallback_used=fallback_used,
+                    )
+                    return response
+                except Exception as exc:  # noqa: BLE001
+                    retryable = _is_retryable_llm_error(exc)
+                    code = _extract_error_code(exc)
+                    _record_llm_runtime_diagnostics(
+                        last_error_code=code,
+                        last_error_message=str(exc).strip() or exc.__class__.__name__,
+                        retry_count=total_retries,
+                        active_model=model,
+                        fallback_used=fallback_used,
+                    )
+                    if not retryable:
+                        raise
+                    if attempt < self._max_retries_per_model:
+                        total_retries += 1
+                        await asyncio.sleep(self._retry_backoff_base_sec * (2**attempt))
+                        continue
+                    break
+        raise RuntimeError(
+            "all configured LLM models failed after retry/fallback: "
+            f"{', '.join(self._models)}"
+        )
+
+    async def ainvoke(self, messages: list[Any]) -> Any:
+        return await self._ainvoke_with_resilience(messages)
+
+    def bind_tools(self, tools: list[Any], tool_choice: str = "auto") -> _BoundResilientLLM:
+        return _BoundResilientLLM(self, tools, tool_choice)
+
+
+def build_default_llm_from_env() -> Any:
+    settings = resolve_llm_runtime_settings()
+    api_key = str(settings["api_key"] or "").strip()
     if not api_key:
         raise RuntimeError("SRE_OPENAI_API_KEY or OPENAI_API_KEY is required")
-    base_url = os.getenv("SRE_OPENAI_BASE_URL", "").strip() or None
-    model = os.getenv("SRE_LLM_MODEL", "").strip() or "MiniMax-M2.7"
-    kwargs: dict[str, Any] = {
-        "api_key": api_key,
-        "model": model,
-        "temperature": 0,
-    }
-    if base_url:
-        kwargs["base_url"] = base_url
-    return ChatOpenAI(**kwargs)
+    model = str(settings["model"] or "").strip()
+    base_url = str(settings["base_url"] or "").strip() or None
+    fallback_models = [
+        str(item).strip()
+        for item in list(settings.get("fallback_models", []))
+        if str(item).strip()
+    ]
+    return ResilientOpenAICompatibleLLM(
+        api_key=api_key,
+        model=model,
+        base_url=base_url,
+        fallback_models=fallback_models,
+    )
 
 
 TraceEventCallback = Callable[[dict[str, Any]], Awaitable[None]]
@@ -66,6 +262,35 @@ def _to_dict(value: Any) -> dict[str, Any]:
     if isinstance(value, dict):
         return dict(value)
     return {}
+
+
+def _coerce_stream_text_chunk(value: Any) -> str:
+    if isinstance(value, list):
+        return "".join(
+            part if isinstance(part, str) else str(getattr(part, "text", ""))
+            for part in value
+        )
+    if value is None:
+        return ""
+    return str(value)
+
+
+def _extract_stream_text(chunk: Any) -> str:
+    if chunk is None:
+        return ""
+    content_text = _coerce_stream_text_chunk(getattr(chunk, "content", None))
+    if content_text:
+        return content_text
+
+    reasoning_text = _coerce_stream_text_chunk(getattr(chunk, "reasoning_content", None))
+    if reasoning_text:
+        return reasoning_text
+
+    additional_kwargs = _to_dict(getattr(chunk, "additional_kwargs", {}))
+    fallback_reasoning = _coerce_stream_text_chunk(additional_kwargs.get("reasoning_content"))
+    if fallback_reasoning:
+        return fallback_reasoning
+    return ""
 
 
 def _parse_iso_utc(value: Any) -> datetime | None:
@@ -591,17 +816,7 @@ async def run_diagnosis_stream(
                 chunk = data.get("chunk")
                 if chunk is None:
                     continue
-                content = getattr(chunk, "content", None)
-                if not content:
-                    continue
-                # Some providers return content as a list of parts.
-                if isinstance(content, list):
-                    text = "".join(
-                        part if isinstance(part, str) else str(getattr(part, "text", ""))
-                        for part in content
-                    )
-                else:
-                    text = str(content)
+                text = _extract_stream_text(chunk)
                 if not text:
                     continue
                 node_name = _event_node(event)

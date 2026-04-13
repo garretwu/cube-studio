@@ -56,6 +56,8 @@ class LLMConfig(BaseModel):
     api_key: str | None = None
     base_url: str | None = None
     model: str | None = None
+    provider: str | None = None
+    fallback_models: list[str] = Field(default_factory=list)
 
 
 class AgentRuntimeConfig(BaseModel):
@@ -255,6 +257,80 @@ class SREAgentConfig(BaseModel):
     tool_runtime: ToolRuntimeConfig = Field(default_factory=ToolRuntimeConfig)
 
 
+DEFAULT_OPENAI_COMPATIBLE_MODEL = "MiniMax-M2.7"
+GLM_PROVIDER_KEY = "glm"
+OPENAI_COMPATIBLE_PROVIDER_KEY = "openai_compatible"
+GLM_DEFAULT_BASE_URL = "https://open.bigmodel.cn/api/coding/paas/v4"
+GLM_DEFAULT_MODEL = "glm-5.1"
+GLM_DEFAULT_FALLBACK_MODELS = ["glm-5-turbo"]
+
+
+def _normalize_llm_provider(value: str | None) -> str:
+    normalized = str(value or "").strip().lower()
+    if normalized in {"glm", "zhipu", "bigmodel"}:
+        return GLM_PROVIDER_KEY
+    return OPENAI_COMPATIBLE_PROVIDER_KEY
+
+
+def _split_fallback_models(raw: str | None) -> list[str]:
+    if not isinstance(raw, str):
+        return []
+    models: list[str] = []
+    seen: set[str] = set()
+    for part in raw.split(","):
+        model = part.strip()
+        if not model or model in seen:
+            continue
+        seen.add(model)
+        models.append(model)
+    return models
+
+
+def resolve_llm_runtime_settings(env: MutableMapping[str, str] | None = None) -> dict[str, object]:
+    target_env = env if env is not None else os.environ
+    api_key = str(target_env.get("SRE_OPENAI_API_KEY", "") or "").strip()
+    api_key_source = "SRE_OPENAI_API_KEY"
+    if not api_key:
+        api_key = str(target_env.get("OPENAI_API_KEY", "") or "").strip()
+        api_key_source = "OPENAI_API_KEY" if api_key else "none"
+
+    provider = _normalize_llm_provider(str(target_env.get("SRE_LLM_PROVIDER", "") or ""))
+    base_url = str(target_env.get("SRE_OPENAI_BASE_URL", "") or "").strip() or None
+    model = (
+        str(target_env.get("SRE_LLM_MODEL", "") or "").strip()
+        or str(target_env.get("OPENAI_MODEL", "") or "").strip()
+    )
+    fallback_models = _split_fallback_models(str(target_env.get("SRE_LLM_FALLBACK_MODELS", "") or ""))
+
+    if provider == GLM_PROVIDER_KEY:
+        if base_url is None:
+            base_url = GLM_DEFAULT_BASE_URL
+        if not model:
+            model = GLM_DEFAULT_MODEL
+        if not fallback_models:
+            fallback_models = list(GLM_DEFAULT_FALLBACK_MODELS)
+    else:
+        if not model:
+            model = DEFAULT_OPENAI_COMPATIBLE_MODEL
+
+    deduped_fallback_models: list[str] = []
+    seen_models: set[str] = {model}
+    for item in fallback_models:
+        if item in seen_models:
+            continue
+        seen_models.add(item)
+        deduped_fallback_models.append(item)
+
+    return {
+        "provider": provider,
+        "api_key": api_key,
+        "api_key_source": api_key_source,
+        "base_url": base_url,
+        "model": model,
+        "fallback_models": deduped_fallback_models,
+    }
+
+
 def apply_llm_env_from_config(
     config: SREAgentConfig,
     env: MutableMapping[str, str] | None = None,
@@ -266,10 +342,28 @@ def apply_llm_env_from_config(
     candidates: dict[str, str] = {}
     if isinstance(llm.api_key, str) and llm.api_key.strip():
         candidates["SRE_OPENAI_API_KEY"] = llm.api_key.strip()
-    if isinstance(llm.base_url, str) and llm.base_url.strip():
-        candidates["SRE_OPENAI_BASE_URL"] = llm.base_url.strip()
-    if isinstance(llm.model, str) and llm.model.strip():
-        candidates["SRE_LLM_MODEL"] = llm.model.strip()
+    provider = _normalize_llm_provider(llm.provider)
+    candidates["SRE_LLM_PROVIDER"] = provider
+
+    configured_base_url = llm.base_url.strip() if isinstance(llm.base_url, str) else ""
+    configured_model = llm.model.strip() if isinstance(llm.model, str) else ""
+    configured_fallback = [
+        item.strip()
+        for item in (llm.fallback_models or [])
+        if isinstance(item, str) and item.strip()
+    ]
+
+    if configured_base_url:
+        candidates["SRE_OPENAI_BASE_URL"] = configured_base_url
+    if configured_model:
+        candidates["SRE_LLM_MODEL"] = configured_model
+    if configured_fallback:
+        candidates["SRE_LLM_FALLBACK_MODELS"] = ",".join(configured_fallback)
+
+    if provider == GLM_PROVIDER_KEY:
+        candidates.setdefault("SRE_OPENAI_BASE_URL", GLM_DEFAULT_BASE_URL)
+        candidates.setdefault("SRE_LLM_MODEL", GLM_DEFAULT_MODEL)
+        candidates.setdefault("SRE_LLM_FALLBACK_MODELS", ",".join(GLM_DEFAULT_FALLBACK_MODELS))
 
     applied: dict[str, str] = {}
     for key, value in candidates.items():

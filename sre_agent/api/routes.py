@@ -221,8 +221,16 @@ class LLMRuntimeStatusResponse(BaseModel):
     api_key_configured: bool = False
     api_key_source: str = "none"
     api_key_length: int = 0
-    model: str = "gpt-4o-mini"
+    model: str = "MiniMax-M2.7"
     base_url: str | None = None
+    provider: str = "openai_compatible"
+    fallback_models: list[str] = Field(default_factory=list)
+    active_model: str | None = None
+    retry_count: int = 0
+    fallback_used: bool = False
+    last_error_code: str | None = None
+    last_error_message: str | None = None
+    last_attempt_at: str | None = None
     reason: str | None = None
 
 
@@ -701,8 +709,20 @@ def build_api_router() -> APIRouter:
             api_key_configured=bool(payload.get("api_key_configured", False)),
             api_key_source=str(payload.get("api_key_source", "none")),
             api_key_length=int(payload.get("api_key_length", 0) or 0),
-            model=str(payload.get("model", "gpt-4o-mini")),
+            model=str(payload.get("model", "MiniMax-M2.7")),
             base_url=str(payload["base_url"]) if payload.get("base_url") else None,
+            provider=str(payload.get("provider", "openai_compatible")),
+            fallback_models=[
+                str(item).strip()
+                for item in (payload.get("fallback_models") or [])
+                if str(item).strip()
+            ],
+            active_model=str(payload["active_model"]) if payload.get("active_model") else None,
+            retry_count=int(payload.get("retry_count", 0) or 0),
+            fallback_used=bool(payload.get("fallback_used", False)),
+            last_error_code=str(payload["last_error_code"]) if payload.get("last_error_code") else None,
+            last_error_message=str(payload["last_error_message"]) if payload.get("last_error_message") else None,
+            last_attempt_at=str(payload["last_attempt_at"]) if payload.get("last_attempt_at") else None,
             reason=str(payload["reason"]) if payload.get("reason") else None,
         )
 
@@ -3483,4 +3503,3 @@ def build_api_router() -> APIRouter:
         return SREResponse(success=True, data=payload, trace_id=_trace_id(request))
 
     return router
-

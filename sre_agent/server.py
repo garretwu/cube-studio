@@ -21,11 +21,12 @@ from fastapi import FastAPI
 from lib.channels.alert import AlertChannel
 from lib.channels.knowledge import DifyKnowledgeStoreAdapter
 from sre_agent.agent import ConversationalAgent, run_diagnosis, run_diagnosis_stream
+from sre_agent.agent.graph import get_last_llm_runtime_diagnostics
 from sre_agent.alerts_filter import build_blocked_alert_name_set, filter_blocked_alerts, normalize_alert_name
 from sre_agent.api import build_api_router, build_websocket_router, install_middlewares
 from sre_agent.api.routes import AuditLogger
 from sre_agent.auth.jwt import CurrentUser, JWTSettings, resolve_jwt_settings
-from sre_agent.config import SREAgentConfig
+from sre_agent.config import SREAgentConfig, resolve_llm_runtime_settings
 from sre_agent.concurrency import AlertCorrelator, AlertDeduplicator, ResourceLock
 from sre_agent.knowledge.store import KnowledgeStore
 from sre_agent.memory.factory import create_memory_store
@@ -1504,16 +1505,19 @@ def _resolve_tool_runtime_mode(cfg: SREAgentConfig) -> str:
 
 
 def _collect_llm_runtime_status() -> dict[str, Any]:
-    key_name = ""
-    api_key = (os.getenv("SRE_OPENAI_API_KEY") or "").strip()
-    if api_key:
-        key_name = "SRE_OPENAI_API_KEY"
-    else:
-        api_key = (os.getenv("OPENAI_API_KEY") or "").strip()
-        if api_key:
-            key_name = "OPENAI_API_KEY"
-    model = (os.getenv("SRE_LLM_MODEL") or "gpt-4o-mini").strip()
-    base_url = (os.getenv("SRE_OPENAI_BASE_URL") or "").strip()
+    settings = resolve_llm_runtime_settings()
+    diagnostics = get_last_llm_runtime_diagnostics()
+    api_key = str(settings.get("api_key") or "").strip()
+    key_name = str(settings.get("api_key_source") or "none")
+    model = str(settings.get("model") or "").strip()
+    base_url = str(settings.get("base_url") or "").strip()
+    provider = str(settings.get("provider") or "").strip() or "openai_compatible"
+    fallback_models = [
+        str(item).strip()
+        for item in list(settings.get("fallback_models", []))
+        if str(item).strip()
+    ]
+    retry_count = int(diagnostics.get("retry_count") or 0)
     status = {
         "ready": bool(api_key),
         "required": True,
@@ -1522,6 +1526,14 @@ def _collect_llm_runtime_status() -> dict[str, Any]:
         "api_key_length": len(api_key),
         "model": model,
         "base_url": base_url or None,
+        "provider": provider,
+        "fallback_models": fallback_models,
+        "active_model": diagnostics.get("active_model") or model,
+        "retry_count": retry_count,
+        "fallback_used": bool(diagnostics.get("fallback_used", False)),
+        "last_error_code": diagnostics.get("last_error_code"),
+        "last_error_message": diagnostics.get("last_error_message"),
+        "last_attempt_at": diagnostics.get("last_attempt_at"),
         "reason": None if api_key else "SRE_OPENAI_API_KEY or OPENAI_API_KEY is required",
     }
     return status
