@@ -1,11 +1,10 @@
-﻿import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
-import { useParams } from "react-router-dom";
+﻿import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { apiClient } from "../api/client";
 import type { DiagnosisSessionSummary, RemediationOverview, SessionEvent } from "../api/types";
 import ApprovalDialog from "../components/ApprovalDialog";
 import RemediationDetailDrawer from "../components/RemediationDetailDrawer";
-import { AppIcon, AppInput, MetricTile, SectionHeader, StatusChip, SurfaceCard } from "../components/ui";
+import { AppIcon, AppInput, MetricTile, StatusChip, SurfaceCard } from "../components/ui";
 import { useRemediationStore } from "../store/remediationStore";
 import { formatPercent, formatTimestamp } from "../utils/format";
 
@@ -160,7 +159,6 @@ function buildSearchText(record: RemediationRecord): string {
 }
 
 function RemediationPage() {
-  const { sessionId: sessionIdFromRoute } = useParams<{ sessionId?: string }>();
   const { overview, events, approvalDialogOpen, fetchOverview, isLoading, setApprovalDialogOpen, setSessionId, submitApproval } =
     useRemediationStore();
   const [records, setRecords] = useState<RemediationRecord[]>([]);
@@ -170,8 +168,8 @@ function RemediationPage() {
   const [activeStepSelection, setActiveStepSelection] = useState<{ sessionId: string; stepId: number } | null>(null);
   const [query, setQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
-  const [actionIntent, setActionIntent] = useState<"approve" | "reject" | null>(null);
-  const [actionError, setActionError] = useState<string | null>(null);
+  const [actionLoading, setActionLoading] = useState(false);
+  const initialRequestedSessionIdRef = useRef(new URLSearchParams(window.location.search).get("sessionId")?.trim() ?? "");
 
   const loadRecords = useCallback(async (preferredSessionId?: string) => {
     setRecordsLoading(true);
@@ -192,10 +190,9 @@ function RemediationPage() {
       });
       setRecords(nextRecords);
       setSelectedSessionId((current) => {
-        const routeSessionId = String(sessionIdFromRoute ?? "").trim();
-        const candidate = preferredSessionId || routeSessionId || current || nextRecords[0]?.summary.session_id || "";
+        const candidate = preferredSessionId || current;
         if (candidate && nextRecords.some((item) => item.summary.session_id === candidate)) return candidate;
-        return nextRecords[0]?.summary.session_id ?? "";
+        return "";
       });
     } catch (error) {
       setRecords([]);
@@ -203,12 +200,13 @@ function RemediationPage() {
     } finally {
       setRecordsLoading(false);
     }
-  }, [sessionIdFromRoute]);
+  }, []);
 
   useEffect(() => {
-    const routeSessionId = String(sessionIdFromRoute ?? "").trim();
-    void loadRecords(routeSessionId || undefined);
-  }, [loadRecords, sessionIdFromRoute]);
+    const preferredSessionId = initialRequestedSessionIdRef.current || undefined;
+    initialRequestedSessionIdRef.current = "";
+    void loadRecords(preferredSessionId);
+  }, [loadRecords]);
 
   useEffect(() => {
     if (!selectedSessionId) return;
@@ -223,7 +221,6 @@ function RemediationPage() {
 
   useEffect(() => {
     setActiveStepSelection(null);
-    setActionError(null);
   }, [selectedSessionId]);
 
   const filteredRecords = useMemo(() => {
@@ -235,15 +232,6 @@ function RemediationPage() {
     () => records.find((record) => record.summary.session_id === selectedSessionId) ?? null,
     [records, selectedSessionId],
   );
-  const selectedOverview = useMemo(
-    () =>
-      selectedRecord
-        ? selectedRecord.summary.session_id === overview?.session_id
-          ? overview
-          : selectedRecord.overview
-        : undefined,
-    [overview, selectedRecord],
-  );
 
   const pendingApprovalCount = records.filter((record) => {
     const status = String(record.overview?.progress.status ?? record.summary.status ?? "").trim().toLowerCase();
@@ -254,33 +242,16 @@ function RemediationPage() {
 
   const handleSubmitApproval = useCallback(
     async (approved: boolean) => {
-      setActionIntent(approved ? "approve" : "reject");
-      setActionError(null);
+      setActionLoading(true);
       try {
         await submitApproval(approved);
         await loadRecords(selectedSessionId);
-        setActionError(null);
-      } catch (error) {
-        setActionError(error instanceof Error ? error.message : "审批操作失败");
       } finally {
-        setActionIntent(null);
+        setActionLoading(false);
       }
     },
     [loadRecords, selectedSessionId, submitApproval],
   );
-
-  const handleOpenApproval = useCallback(() => {
-    setActionError(null);
-    setApprovalDialogOpen(true);
-  }, [setApprovalDialogOpen]);
-
-  const handleCloseApproval = useCallback(() => {
-    if (actionIntent) {
-      return;
-    }
-    setActionError(null);
-    setApprovalDialogOpen(false);
-  }, [actionIntent, setApprovalDialogOpen]);
 
   const handleSelectStep = useCallback((sessionId: string, stepId: number) => {
     setActiveStepSelection((current) =>
@@ -290,21 +261,21 @@ function RemediationPage() {
 
   return (
     <div className="page-grid remediation-page">
-      <div className="page-intro">
-        <SectionHeader title="修复与执行" description="按修复记录查看审批、版本、金丝雀策略和执行结果。" />
-        <div className="card-grid--metrics remediation-page__metrics">
-          <MetricTile hint="已识别到修复流程的诊断会话" label="修复记录" value={records.length} />
-          <MetricTile hint="等待人工批准后进入执行" label="待审批" value={pendingApprovalCount} />
-          <MetricTile hint="正在执行或观察验证中" label="执行中" value={runningCount} />
-          <MetricTile hint="已配置灰度或金丝雀策略" label="金丝雀方案" value={canaryEnabledCount} />
+      <section className="page-stage remediation-page__stage">
+        <div className="page-stage__summary">
+          <div className="card-grid--metrics remediation-page__metrics">
+                  <MetricTile hint="已识别到修复流程的诊断会话" label="修复记录" value={records.length} />
+                  <MetricTile hint="等待人工批准后进入执行" label="待审批" value={pendingApprovalCount} />
+                  <MetricTile hint="正在执行或观察验证中" label="执行中" value={runningCount} />
+                  <MetricTile hint="已配置灰度或金丝雀策略" label="金丝雀方案" value={canaryEnabledCount} />
+                </div>
         </div>
-      </div>
 
-      <div className="remediation-layout">
+        <div className="remediation-layout">
         <aside className="remediation-sidebar">
-          <SurfaceCard title="修复记录" description="按状态和关键词快速定位会话，点击行后在右侧查看详情。">
+          <SurfaceCard className="page-stage__panel" title="修复记录" description="按状态和关键词快速定位会话，点击行后在右侧查看详情。" variant="panel">
             <div className="page-stack remediation-sidebar__body">
-              <div className="remediation-toolbar">
+              <div className="page-stage__toolbar remediation-toolbar">
                 <AppInput
                   value={query}
                   onChange={setQuery}
@@ -340,7 +311,7 @@ function RemediationPage() {
                 </div>
               ) : null}
 
-              <div className="remediation-record-table-shell">
+              <div className="page-stage__table-shell remediation-record-table-shell">
                 <table className="remediation-record-table">
                   <thead>
                     <tr>
@@ -422,32 +393,33 @@ function RemediationPage() {
           </SurfaceCard>
         </aside>
       </div>
+      </section>
 
       <RemediationDetailDrawer
-        actionLoading={actionIntent !== null}
+        actionLoading={actionLoading}
         activeStepSelection={activeStepSelection}
         events={events}
         isLoading={isLoading}
         onClose={() => setSelectedSessionId("")}
-        onOpenApproval={handleOpenApproval}
+        onOpenApproval={() => setApprovalDialogOpen(true)}
         onSelectStep={handleSelectStep}
         open={Boolean(selectedRecord)}
         overview={overview}
         record={selectedRecord}
       />
       <ApprovalDialog
-        approveDisabled={!selectedOverview?.approval_required}
-        errorMessage={actionError}
-        loadingAction={actionIntent}
         onApprove={() => void handleSubmitApproval(true)}
-        onCancel={handleCloseApproval}
+        onCancel={() => setApprovalDialogOpen(false)}
         onReject={() => void handleSubmitApproval(false)}
         open={approvalDialogOpen}
-        plan={selectedOverview?.plan}
-        rejectDisabled={!selectedOverview?.approval_required}
+        plan={selectedRecord?.summary.session_id === overview?.session_id ? overview?.plan : selectedRecord?.overview?.plan}
       />
     </div>
   );
 }
 
 export default RemediationPage;
+
+
+
+

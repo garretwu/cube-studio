@@ -1,76 +1,45 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef } from "react";
+import { useNavigate } from "react-router-dom";
 
+import type { TopologyObject } from "../api/types";
 import type { TopologyCanvasHandle } from "../features/topologyExplorer/components/TopologyCanvas";
 import TopologyExplorer from "../features/topologyExplorer/components/TopologyExplorer";
-import TopologyHeader from "../features/topologyExplorer/components/TopologyHeader";
 import {
   buildTopologyTree,
-  getAffectedObjectsForNode,
+  getGlobalTopologyDisplayData,
   getNeighborDepths,
-  getPathsForNode,
-  getRelationsForNode,
-  getSummaryMetrics,
-  getVisibleTopology,
+  getStageTopology,
 } from "../features/topologyExplorer/selectors";
 import { useTopologyExplorerStore } from "../features/topologyExplorer/store";
 import "../features/topologyExplorer/topologyExplorer.css";
 
-function formatExportFileTimestamp(value = new Date()) {
-  const year = value.getFullYear();
-  const month = String(value.getMonth() + 1).padStart(2, "0");
-  const day = String(value.getDate()).padStart(2, "0");
-  const hours = String(value.getHours()).padStart(2, "0");
-  const minutes = String(value.getMinutes()).padStart(2, "0");
-  const seconds = String(value.getSeconds()).padStart(2, "0");
-
-  return `${year}${month}${day}-${hours}${minutes}${seconds}`;
-}
-
-function downloadTopologyExport(payload: unknown) {
-  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
-  const objectUrl = window.URL.createObjectURL(blob);
-  const anchor = document.createElement("a");
-  anchor.href = objectUrl;
-  anchor.download = `topology-canvas-${formatExportFileTimestamp()}.json`;
-  document.body.appendChild(anchor);
-  anchor.click();
-  document.body.removeChild(anchor);
-  window.URL.revokeObjectURL(objectUrl);
-}
-
 function TopologyPage() {
   const canvasRef = useRef<TopologyCanvasHandle | null>(null);
-  const [canvasReady, setCanvasReady] = useState(false);
+  const navigate = useNavigate();
   const {
     data,
     isLoading,
     error,
     viewMode,
     selectedNodeId,
-    inspectorOpen,
     searchQuery,
-    matchedNodeIds,
-    hoveredNodeId,
+    searchResultIds,
     searchFeedback,
-    statusFilter,
     layerFilter,
-    summaryFilter,
     legendOpen,
+    filterPanelOpen,
     layoutPreset,
-    inspectorTab,
+    hoveredNodeId,
     fetchTopologyExplorer,
     setViewMode,
     setSelectedNodeId,
-    setInspectorOpen,
     setSearchQuery,
-    locateSearchResult,
-    setStatusFilter,
+    focusFirstSearchResult,
     setLayerFilter,
-    applySummaryFilter,
     setLegendOpen,
+    setFilterPanelOpen,
     cycleLayoutPreset,
     setHoveredNodeId,
-    setInspectorTab,
     resetExplorerView,
   } = useTopologyExplorerStore();
 
@@ -78,156 +47,112 @@ function TopologyPage() {
     void fetchTopologyExplorer();
   }, [fetchTopologyExplorer]);
 
-  const summaryMetrics = useMemo(() => getSummaryMetrics(data), [data]);
-  const visibleTopology = useMemo(
+  const topologyPageData = useMemo(() => getGlobalTopologyDisplayData(data), [data]);
+  const effectiveSelectedNodeId =
+    selectedNodeId && topologyPageData?.nodes.some((node) => node.id === selectedNodeId)
+      ? selectedNodeId
+      : undefined;
+  const stageTopology = useMemo(
     () =>
-      getVisibleTopology(data, {
-        statusFilter,
+      getStageTopology(topologyPageData, {
         layerFilter,
-        summaryFilter,
+        searchQuery,
+        searchResultIds,
       }),
-    [data, layerFilter, statusFilter, summaryFilter],
+    [topologyPageData, layerFilter, searchQuery, searchResultIds],
   );
-  const tree = useMemo(() => buildTopologyTree(data), [data]);
-  const selectedNode = data?.nodes?.find((node) => node.id === selectedNodeId);
-  const neighborDepths = useMemo(() => getNeighborDepths(data?.edges ?? [], selectedNodeId), [data?.edges, selectedNodeId]);
-  const relations = useMemo(() => getRelationsForNode(data, selectedNodeId), [data, selectedNodeId]);
-  const pathsForSelected = useMemo(() => getPathsForNode(data?.paths ?? [], selectedNodeId), [data?.paths, selectedNodeId]);
-  const affectedObjects = useMemo(() => getAffectedObjectsForNode(data, selectedNodeId), [data, selectedNodeId]);
-  const resolvedViewMode = viewMode === "impact" ? "graph" : viewMode;
-  const canExportTopology =
-    resolvedViewMode === "graph" && canvasReady && visibleTopology.nodes.length > 0 && Boolean(canvasRef.current);
-  const exportHint =
-    resolvedViewMode !== "graph"
-      ? "仅关系图视图支持导出当前画布"
-      : !visibleTopology.nodes.length
-        ? "当前画布没有可导出的拓扑对象"
-        : !canvasReady
-          ? "拓扑画布尚未完成初始化"
-          : undefined;
+  const tree = useMemo(() => buildTopologyTree(topologyPageData), [topologyPageData]);
+  const selectedNode = useMemo(
+    () => topologyPageData?.nodes.find((node) => node.id === effectiveSelectedNodeId),
+    [topologyPageData, effectiveSelectedNodeId],
+  );
+  const searchResultNodes = useMemo(() => {
+    const nodeMap = new Map(topologyPageData?.nodes.map((node) => [node.id, node]) ?? []);
+    return searchResultIds
+      .map((id) => nodeMap.get(id))
+      .filter((node): node is TopologyObject => Boolean(node));
+  }, [topologyPageData, searchResultIds]);
+  const neighborDepths = useMemo(
+    () => getNeighborDepths(stageTopology.edges, effectiveSelectedNodeId, 1),
+    [stageTopology.edges, effectiveSelectedNodeId],
+  );
 
-  const focusCurrentSelection = () => {
-    if (selectedNodeId) {
-      canvasRef.current?.focusNode(selectedNodeId);
-      return;
-    }
-
-    canvasRef.current?.fitView();
+  const focusNode = (nodeId: string) => {
+    window.requestAnimationFrame(() => {
+      canvasRef.current?.focusNode(nodeId);
+    });
   };
 
   const handleSearchSubmit = () => {
-    const targetId = locateSearchResult();
+    const targetId = focusFirstSearchResult();
     if (!targetId) {
       return;
     }
 
-    window.requestAnimationFrame(() => {
-      canvasRef.current?.focusNode(targetId);
-    });
+    setViewMode("graph");
+    focusNode(targetId);
   };
 
-  const handleSummarySelect = (filter: typeof summaryFilter) => {
-    applySummaryFilter(filter);
-    window.requestAnimationFrame(() => {
-      const state = useTopologyExplorerStore.getState();
-
-      if (state.selectedNodeId) {
-        canvasRef.current?.focusNode(state.selectedNodeId);
-      } else {
-        canvasRef.current?.fitView();
-      }
-    });
+  const handleSearchResultSelect = (nodeId: string) => {
+    setSelectedNodeId(nodeId);
+    setViewMode("graph");
+    focusNode(nodeId);
   };
 
-  const handleViewModeChange = (nextViewMode: typeof viewMode) => {
-    const resolvedViewMode = nextViewMode === "impact" ? "graph" : nextViewMode;
-    setViewMode(resolvedViewMode);
-
-    window.requestAnimationFrame(() => {
-      focusCurrentSelection();
-    });
-  };
-
-  const handleResetView = () => {
-    resetExplorerView();
-    window.requestAnimationFrame(() => {
-      canvasRef.current?.fitView();
-    });
-  };
-
-  const handleExport = () => {
-    const exportedView = canvasRef.current?.exportView();
-    if (!exportedView) {
-      return;
-    }
-
-    downloadTopologyExport(exportedView);
+  const handleOpenObjectTopology = (nodeId: string, mode: "default" | "isolate") => {
+    const query = mode === "isolate" ? "?mode=isolate" : "";
+    navigate(`/topology/object/${nodeId}${query}`);
   };
 
   return (
     <div className="page-grid topology-modified-page">
-      <TopologyHeader lastUpdated={data?.lastUpdated} />
-
-      <TopologyExplorer
-        affectedObjects={affectedObjects}
-        canExport={canExportTopology}
-        canvasRef={canvasRef}
-        downstream={relations.downstream}
-        error={error}
-        exportHint={exportHint}
-        graphEdges={visibleTopology.edges}
-        graphNodes={visibleTopology.nodes}
-        hasSourceData={Boolean(data?.nodes?.length)}
-        hoveredNodeId={hoveredNodeId}
-        inspectorOpen={inspectorOpen}
-        inspectorTab={inspectorTab}
-        isLoading={isLoading}
-        layerFilter={layerFilter}
-        layoutPreset={layoutPreset}
-        lastUpdated={data?.lastUpdated}
-        legendOpen={legendOpen}
-        matchedCount={matchedNodeIds.length}
-        matchedNodeIds={matchedNodeIds}
-        neighborDepths={neighborDepths}
-        neighbors={relations.neighbors}
-        onCanvasReadyStateChange={setCanvasReady}
-        onCycleLayoutPreset={() => {
-          cycleLayoutPreset();
-          window.requestAnimationFrame(() => canvasRef.current?.fitView());
-        }}
-        onExport={handleExport}
-        onFitCanvas={() => canvasRef.current?.fitView()}
-        onHighlightInGraph={() => {
-          setViewMode("graph");
-          window.requestAnimationFrame(focusCurrentSelection);
-        }}
-        onHoverNode={setHoveredNodeId}
-        onInspectorOpenChange={setInspectorOpen}
-        onInspectorTabChange={setInspectorTab}
-        onLayerFilterChange={setLayerFilter}
-        onRecenter={() => canvasRef.current?.recenter(selectedNodeId)}
-        onResetView={handleResetView}
-        onSearchQueryChange={setSearchQuery}
-        onSearchSubmit={handleSearchSubmit}
-        onSelectNode={setSelectedNodeId}
-        onStatusFilterChange={setStatusFilter}
-        onSummarySelect={handleSummarySelect}
-        onToggleLegend={() => setLegendOpen(!legendOpen)}
-        onViewModeChange={handleViewModeChange}
-        onZoomIn={() => canvasRef.current?.zoomIn()}
-        onZoomOut={() => canvasRef.current?.zoomOut()}
-        paths={pathsForSelected}
-        searchFeedback={searchFeedback}
-        searchQuery={searchQuery}
-        selectedNode={selectedNode}
-        selectedNodeId={selectedNodeId}
-        statusFilter={statusFilter}
-        summaryFilter={summaryFilter}
-        summaryMetrics={summaryMetrics}
-        tree={tree}
-        upstream={relations.upstream}
-        viewMode={resolvedViewMode}
-      />
+      <h1 className="visually-hidden">运行拓扑</h1>
+      <section className="page-stage topology-modified-stage topology-modified-stage--canvas-only">
+        <TopologyExplorer
+          canvasRef={canvasRef}
+          error={error}
+          filterPanelOpen={filterPanelOpen}
+          graphEdges={stageTopology.edges}
+          graphNodes={stageTopology.nodes}
+          hasSourceData={Boolean(topologyPageData?.nodes?.length)}
+          hoveredNodeId={hoveredNodeId}
+          isLoading={isLoading}
+          layerFilter={layerFilter}
+          layoutPreset={layoutPreset}
+          legendOpen={legendOpen}
+          matchedNodeIds={searchResultIds}
+          neighborDepths={neighborDepths}
+          onCycleLayoutPreset={() => {
+            cycleLayoutPreset();
+            window.requestAnimationFrame(() => canvasRef.current?.fitView());
+          }}
+          onFilterPanelOpenChange={setFilterPanelOpen}
+          onFitCanvas={() => canvasRef.current?.fitView()}
+          onHoverNode={setHoveredNodeId}
+          onLayerFilterChange={setLayerFilter}
+          onOpenObjectTopology={handleOpenObjectTopology}
+          onRecenter={() => canvasRef.current?.recenter(effectiveSelectedNodeId)}
+          onResetView={() => {
+            resetExplorerView();
+            window.requestAnimationFrame(() => canvasRef.current?.fitView());
+          }}
+          onSearchQueryChange={setSearchQuery}
+          onSearchResultSelect={handleSearchResultSelect}
+          onSearchSubmit={handleSearchSubmit}
+          onSelectNode={setSelectedNodeId}
+          onToggleLegend={() => setLegendOpen(!legendOpen)}
+          onViewModeChange={setViewMode}
+          onZoomIn={() => canvasRef.current?.zoomIn()}
+          onZoomOut={() => canvasRef.current?.zoomOut()}
+          searchFeedback={searchFeedback}
+          searchQuery={searchQuery}
+          searchResultNodes={searchResultNodes}
+          selectedNode={selectedNode}
+          selectedNodeId={effectiveSelectedNodeId}
+          tree={tree}
+          viewMode={viewMode === "impact" ? "graph" : viewMode}
+        />
+      </section>
     </div>
   );
 }

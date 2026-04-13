@@ -1,4 +1,4 @@
-import { Tabs } from "antd";
+﻿import { Tabs } from "antd";
 
 import type { TopologyObject, TopologyPath } from "../../../api/types";
 import { AppButton, AppIcon, StatusChip } from "../../../components/ui";
@@ -19,22 +19,24 @@ import InspectorStatusTab from "./InspectorStatusTab";
 
 type ObjectInspectorProps = {
   node?: TopologyObject;
-  open: boolean;
+  open?: boolean;
   inspectorTab: InspectorTabKey;
-  onOpenChange: (open: boolean) => void;
+  onOpenChange?: (open: boolean) => void;
   onTabChange: (key: InspectorTabKey) => void;
   upstream: TopologyObject[];
   downstream: TopologyObject[];
   neighbors: TopologyObject[];
   paths: TopologyPath[];
   affectedObjects: TopologyObject[];
-  onHighlightInGraph: () => void;
+  onHighlightInGraph?: () => void;
   onSelectNode: (nodeId: string) => void;
+  showCloseButton?: boolean;
+  testId?: string;
 };
 
 function ObjectInspector({
   node,
-  open,
+  open = true,
   inspectorTab,
   onOpenChange,
   onTabChange,
@@ -45,13 +47,15 @@ function ObjectInspector({
   affectedObjects,
   onHighlightInGraph,
   onSelectNode,
+  showCloseButton = false,
+  testId = "topology-object-inspector",
 }: ObjectInspectorProps) {
   if (!open) {
     return null;
   }
 
   return (
-    <aside className="topology-modified-stage-panel" data-testid="topology-side-inspector">
+    <aside className="topology-modified-stage-panel" data-testid={testId}>
       <div className="topology-modified-stage-panel__header">
         <div className="topology-modified-stage-panel__header-main">
           {node ? (
@@ -63,21 +67,25 @@ function ObjectInspector({
             <p className="topology-modified-stage-panel__eyebrow">对象检查器</p>
             <h3 className="topology-modified-stage-panel__title">{node ? node.name : "等待选择对象"}</h3>
             <p className="topology-modified-stage-panel__meta">
-              {node ? `${formatTopologyType(node.type)} · 最近更新 ${formatTimestamp(node.updatedAt)}` : "在右侧面板中查看对象的关系、状态与属性。"}
+              {node
+                ? `${formatTopologyType(node.type)} · 最近更新 ${formatTimestamp(node.updatedAt)}`
+                : "当前对象的关系、状态与属性会在这里集中展示。"}
             </p>
           </div>
         </div>
         <div className="topology-modified-stage-panel__header-actions">
           {node ? <StatusChip tone={getStatusTone(node.status)}>{formatTopologyStatus(node.status)}</StatusChip> : null}
-          <AppButton size="sm" variant="secondary" onClick={() => onOpenChange(false)}>
-            隐藏
-          </AppButton>
+          {showCloseButton && onOpenChange ? (
+            <AppButton size="sm" variant="secondary" onClick={() => onOpenChange(false)}>
+              隐藏
+            </AppButton>
+          ) : null}
         </div>
       </div>
 
       {!node ? (
         <div className="topology-modified-stage-panel__empty">
-          <p className="topology-modified-empty-copy">请选择图中的对象，查看其关系、状态与属性。</p>
+          <p className="topology-modified-empty-copy">请选择一个对象，查看它的关系、状态与属性。</p>
         </div>
       ) : (
         <>

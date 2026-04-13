@@ -4,9 +4,10 @@ import {
   knowledgeBaseDetails,
   knowledgeBases,
   knowledgeDocuments,
+  remediationOverview,
   skills,
   topologyEdges,
-  topologyExplorerMock,
+  topologyExplorerOnlineMock,
   topologyNodes,
 } from "../mocks/data";
 import type {
@@ -17,6 +18,7 @@ import type {
   KnowledgeDocument,
   OntologyEdge,
   OntologyNode,
+  RemediationOverview,
   SkillDescriptor,
   TopologyExplorerResponse,
 } from "./types";
@@ -36,15 +38,23 @@ export function getTopologyFallback(): TopologyFallbackResponse {
     nodes: topologyNodes,
     edges: topologyEdges,
     active_alerts: alerts.filter((alert) => alert.status === "firing").length,
-    recent_events: [
-      "vLLM 推理服务正在进行金丝雀验证",
-      "node-gpu-01 检测到 GPU 热压升高",
-    ],
+    recent_events: ["vLLM inference canary is running.", "node-gpu-01 reported high temperature."],
   };
 }
 
 export function getTopologyExplorerFallback(): TopologyExplorerResponse {
-  return topologyExplorerMock;
+  return topologyExplorerOnlineMock;
+}
+
+export function getAlertsFallback(): { alerts: Alert[]; clusters: AlertCluster[] } {
+  return {
+    alerts,
+    clusters: alertClusters,
+  };
+}
+
+export function getRemediationOverviewFallback(): RemediationOverview {
+  return remediationOverview;
 }
 
 export function getKnowledgeBasesFallback(): KnowledgeBaseSummary[] {
@@ -54,7 +64,7 @@ export function getKnowledgeBasesFallback(): KnowledgeBaseSummary[] {
 export function getKnowledgeBaseDetailFallback(knowledgeBaseId: string): KnowledgeBaseDetail {
   const matched = knowledgeBaseDetails.find((item) => item.id === knowledgeBaseId);
   if (!matched) {
-    throw new Error("未找到对应知识库");
+    throw new Error("Knowledge base not found");
   }
   return matched;
 }
@@ -79,7 +89,7 @@ export function getSkillsFallback(): SkillDescriptor[] {
 export function getSkillFallback(skillId: string): SkillDescriptor {
   const matched = skills.find((skill) => skill.id === skillId);
   if (!matched) {
-    throw new Error("未找到对应技能");
+    throw new Error("Skill not found");
   }
   return matched;
 }

@@ -2,144 +2,144 @@ import { create } from "zustand";
 
 import { apiClient } from "../../api/client";
 import type { TopologyExplorerResponse } from "../../api/types";
-import { getImpactPathIdForNode, getPrimaryImpactPathId, searchTopologyObjects } from "./selectors";
+import { getGlobalTopologyDisplayData, searchTopologyObjects } from "./selectors";
 import type {
-  DrawerTabKey,
   ExplorerLayerFilter,
   ExplorerLayoutPreset,
-  ExplorerStatusFilter,
-  ExplorerSummaryFilter,
   ExplorerViewMode,
-  InspectorTabKey,
   SearchFeedback,
 } from "./types";
 
-type TopologyExplorerStore = {
+export type TopologyExplorerState = {
   data?: TopologyExplorerResponse;
   isLoading: boolean;
   error?: string;
   viewMode: ExplorerViewMode;
   selectedNodeId?: string;
-  activeImpactPathId?: string;
-  inspectorOpen: boolean;
   searchQuery: string;
-  matchedNodeIds: string[];
+  searchResultIds: string[];
   searchFeedback: SearchFeedback;
-  statusFilter: ExplorerStatusFilter;
   layerFilter: ExplorerLayerFilter;
-  summaryFilter: ExplorerSummaryFilter;
   legendOpen: boolean;
-  drawerOpen: boolean;
+  filterPanelOpen: boolean;
   layoutPreset: ExplorerLayoutPreset;
   hoveredNodeId?: string;
-  inspectorTab: InspectorTabKey;
-  drawerTab: DrawerTabKey;
+};
+
+export type TopologyExplorerStore = TopologyExplorerState & {
   fetchTopologyExplorer: () => Promise<void>;
   setViewMode: (viewMode: ExplorerViewMode) => void;
   setSelectedNodeId: (selectedNodeId?: string) => void;
-  setActiveImpactPathId: (activeImpactPathId?: string) => void;
-  setInspectorOpen: (inspectorOpen: boolean) => void;
   setSearchQuery: (searchQuery: string) => void;
-  locateSearchResult: () => string | undefined;
-  setStatusFilter: (statusFilter: ExplorerStatusFilter) => void;
+  focusFirstSearchResult: () => string | undefined;
   setLayerFilter: (layerFilter: ExplorerLayerFilter) => void;
-  applySummaryFilter: (summaryFilter: ExplorerSummaryFilter) => void;
   setLegendOpen: (legendOpen: boolean) => void;
-  toggleDrawer: () => void;
+  setFilterPanelOpen: (filterPanelOpen: boolean) => void;
   setLayoutPreset: (layoutPreset: ExplorerLayoutPreset) => void;
   cycleLayoutPreset: () => void;
   setHoveredNodeId: (hoveredNodeId?: string) => void;
-  setInspectorTab: (inspectorTab: InspectorTabKey) => void;
-  setDrawerTab: (drawerTab: DrawerTabKey) => void;
   resetExplorerView: () => void;
 };
 
-function resolveSearchMatches(data: TopologyExplorerResponse | undefined, searchQuery: string) {
-  if (!data) {
+function resolveSearchResults(
+  data: TopologyExplorerResponse | undefined,
+  searchQuery: string,
+  layerFilter: ExplorerLayerFilter,
+) {
+  const scopedData = getGlobalTopologyDisplayData(data);
+
+  if (!scopedData || !searchQuery.trim()) {
     return [];
   }
 
-  return searchTopologyObjects(data.nodes, searchQuery).map((node) => node.id);
+  const layerScopedNodes =
+    layerFilter === "all"
+      ? scopedData.nodes
+      : scopedData.nodes.filter((node) => node.layer === layerFilter);
+
+  return searchTopologyObjects(layerScopedNodes, searchQuery).map((node) => node.id);
+}
+
+function resolveSearchFeedback(searchQuery: string, searchResultIds: string[]): SearchFeedback {
+  if (!searchQuery.trim()) {
+    return "idle";
+  }
+
+  return searchResultIds.length > 0 ? "ready" : "not_found";
+}
+
+export function createTopologyExplorerState(): TopologyExplorerState {
+  return {
+    data: undefined,
+    isLoading: false,
+    error: undefined,
+    viewMode: "graph",
+    selectedNodeId: undefined,
+    searchQuery: "",
+    searchResultIds: [],
+    searchFeedback: "idle",
+    layerFilter: "all",
+    legendOpen: false,
+    filterPanelOpen: false,
+    layoutPreset: "layered",
+    hoveredNodeId: undefined,
+  };
 }
 
 export const useTopologyExplorerStore = create<TopologyExplorerStore>((set, get) => ({
-  data: undefined,
-  isLoading: false,
-  error: undefined,
-  viewMode: "graph",
-  selectedNodeId: undefined,
-  activeImpactPathId: undefined,
-  inspectorOpen: true,
-  searchQuery: "",
-  matchedNodeIds: [],
-  searchFeedback: "idle",
-  statusFilter: "all",
-  layerFilter: "all",
-  summaryFilter: "all",
-  legendOpen: false,
-  drawerOpen: false,
-  layoutPreset: "layered",
-  hoveredNodeId: undefined,
-  inspectorTab: "overview",
-  drawerTab: "paths",
+  ...createTopologyExplorerState(),
   fetchTopologyExplorer: async () => {
     set({ isLoading: true, error: undefined });
 
     try {
       const data = await apiClient.getTopologyExplorer();
-      set((state) => ({
-        data,
-        isLoading: false,
-        activeImpactPathId: state.activeImpactPathId ?? getPrimaryImpactPathId(data),
-        matchedNodeIds: resolveSearchMatches(data, state.searchQuery),
-        searchFeedback: state.searchQuery ? "ready" : "idle",
-      }));
+      set((state) => {
+        const searchResultIds = resolveSearchResults(data, state.searchQuery, state.layerFilter);
+        const selectedNodeId =
+          state.selectedNodeId && data.nodes.some((node) => node.id === state.selectedNodeId)
+            ? state.selectedNodeId
+            : undefined;
+
+        return {
+          data,
+          isLoading: false,
+          selectedNodeId,
+          searchResultIds,
+          searchFeedback: resolveSearchFeedback(state.searchQuery, searchResultIds),
+        };
+      });
     } catch (error) {
       const message = error instanceof Error ? error.message : "加载拓扑失败";
       set({ error: message, isLoading: false });
     }
   },
-  setViewMode: (viewMode) =>
+  setViewMode: (viewMode) => set({ viewMode }),
+  setSelectedNodeId: (selectedNodeId) => set({ selectedNodeId }),
+  setSearchQuery: (searchQuery) =>
     set((state) => {
-      if (viewMode !== "impact") {
-        return { viewMode };
-      }
-
-      const nextImpactPathId =
-        getImpactPathIdForNode(state.data?.paths ?? [], state.selectedNodeId) ??
-        state.activeImpactPathId ??
-        getPrimaryImpactPathId(state.data);
+      const searchResultIds = resolveSearchResults(state.data, searchQuery, state.layerFilter);
+      const nextSelectedNodeId = searchQuery.trim()
+        ? searchResultIds.includes(state.selectedNodeId ?? "")
+          ? state.selectedNodeId
+          : searchResultIds[0]
+        : state.selectedNodeId;
 
       return {
-        viewMode,
-        activeImpactPathId: nextImpactPathId,
+        searchQuery,
+        searchResultIds,
+        searchFeedback: resolveSearchFeedback(searchQuery, searchResultIds),
+        selectedNodeId: nextSelectedNodeId,
+        viewMode: searchQuery.trim() ? "graph" : state.viewMode,
       };
     }),
-  setSelectedNodeId: (selectedNodeId) =>
-    set((state) => ({
-      selectedNodeId,
-      activeImpactPathId:
-        getImpactPathIdForNode(state.data?.paths ?? [], selectedNodeId) ?? state.activeImpactPathId,
-      inspectorOpen: selectedNodeId ? state.inspectorOpen : false,
-      inspectorTab: "overview",
-      drawerTab: "paths",
-    })),
-  setActiveImpactPathId: (activeImpactPathId) => set({ activeImpactPathId }),
-  setInspectorOpen: (inspectorOpen) => set({ inspectorOpen }),
-  setSearchQuery: (searchQuery) =>
-    set((state) => ({
-      searchQuery,
-      matchedNodeIds: resolveSearchMatches(state.data, searchQuery),
-      searchFeedback: searchQuery ? "ready" : "idle",
-    })),
-  locateSearchResult: () => {
-    const { data, matchedNodeIds, searchQuery } = get();
-    if (!data || !searchQuery.trim()) {
+  focusFirstSearchResult: () => {
+    const { searchQuery, searchResultIds } = get();
+    if (!searchQuery.trim()) {
       set({ searchFeedback: "idle" });
       return undefined;
     }
 
-      const firstMatchId = matchedNodeIds[0];
+    const firstMatchId = searchResultIds[0];
     if (!firstMatchId) {
       set({ searchFeedback: "not_found" });
       return undefined;
@@ -147,94 +147,35 @@ export const useTopologyExplorerStore = create<TopologyExplorerStore>((set, get)
 
     set({
       selectedNodeId: firstMatchId,
-      activeImpactPathId: getImpactPathIdForNode(data.paths, firstMatchId) ?? get().activeImpactPathId,
       viewMode: "graph",
-      inspectorOpen: true,
       searchFeedback: "ready",
     });
     return firstMatchId;
   },
-  setStatusFilter: (statusFilter) => set({ statusFilter }),
-  setLayerFilter: (layerFilter) => set({ layerFilter }),
-  applySummaryFilter: (summaryFilter) =>
+  setLayerFilter: (layerFilter) =>
     set((state) => {
-      const data = state.data;
-      if (!data || summaryFilter === "all") {
-        return {
-          summaryFilter,
-          statusFilter: "all" as const,
-          viewMode: "graph" as const,
-          activeImpactPathId: state.activeImpactPathId ?? getPrimaryImpactPathId(data),
-        };
-      }
+      const searchResultIds = resolveSearchResults(state.data, state.searchQuery, layerFilter);
+      const shouldResetSelection =
+        searchResultIds.length > 0 && !searchResultIds.includes(state.selectedNodeId ?? "");
 
-      if (summaryFilter === "abnormal") {
-        const abnormalNode = data.nodes.find((node) => node.status === "abnormal");
-        return {
-          summaryFilter,
-          statusFilter: "abnormal" as const,
-          viewMode: "graph" as const,
-          activeImpactPathId:
-            getImpactPathIdForNode(data.paths, abnormalNode?.id ?? state.selectedNodeId) ?? state.activeImpactPathId,
-          inspectorOpen: true,
-          selectedNodeId: abnormalNode?.id ?? state.selectedNodeId,
-        };
-      }
-
-      if (summaryFilter === "impacted") {
-        const impactedNode = data.nodes.find((node) => node.status === "impacted");
-        return {
-          summaryFilter,
-          statusFilter: "all" as const,
-          viewMode: "graph" as const,
-          activeImpactPathId:
-            getImpactPathIdForNode(data.paths, impactedNode?.id ?? state.selectedNodeId) ?? state.activeImpactPathId,
-          inspectorOpen: true,
-          selectedNodeId: impactedNode?.id ?? state.selectedNodeId,
-        };
-      }
-
-      const activePathId =
-        getImpactPathIdForNode(data.paths, state.selectedNodeId) ??
-        state.activeImpactPathId ??
-        getPrimaryImpactPathId(data);
-      const activePath = data.paths.find((path) => path.id === activePathId);
       return {
-        summaryFilter,
-        statusFilter: "all" as const,
-        viewMode: "impact" as const,
-        activeImpactPathId: activePathId,
-        inspectorOpen: true,
-        selectedNodeId: activePath?.rootCauseNodeId ?? state.selectedNodeId,
+        layerFilter,
+        searchResultIds,
+        searchFeedback: resolveSearchFeedback(state.searchQuery, searchResultIds),
+        selectedNodeId: shouldResetSelection ? searchResultIds[0] : state.selectedNodeId,
       };
     }),
   setLegendOpen: (legendOpen) => set({ legendOpen }),
-  toggleDrawer: () => set((state) => ({ drawerOpen: !state.drawerOpen })),
+  setFilterPanelOpen: (filterPanelOpen) => set({ filterPanelOpen }),
   setLayoutPreset: (layoutPreset) => set({ layoutPreset }),
   cycleLayoutPreset: () =>
     set((state) => ({
       layoutPreset: state.layoutPreset === "layered" ? "domain" : "layered",
     })),
   setHoveredNodeId: (hoveredNodeId) => set({ hoveredNodeId }),
-  setInspectorTab: (inspectorTab) => set({ inspectorTab }),
-  setDrawerTab: (drawerTab) => set({ drawerTab }),
   resetExplorerView: () =>
-    set({
-      viewMode: "graph",
-      selectedNodeId: undefined,
-      activeImpactPathId: undefined,
-      inspectorOpen: true,
-      searchQuery: "",
-      matchedNodeIds: [],
-      searchFeedback: "idle",
-      statusFilter: "all",
-      layerFilter: "all",
-      summaryFilter: "all",
-      legendOpen: false,
-      drawerOpen: false,
-      layoutPreset: "layered",
-      hoveredNodeId: undefined,
-      inspectorTab: "overview",
-      drawerTab: "paths",
-    }),
+    set((state) => ({
+      ...createTopologyExplorerState(),
+      data: state.data,
+    })),
 }));

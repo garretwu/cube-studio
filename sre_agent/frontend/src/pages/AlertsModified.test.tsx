@@ -1,10 +1,9 @@
-import { render, screen, waitFor } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
+﻿import { render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 
 import { apiClient } from "../api/client";
-import type { Alert, AlertCluster, DiagnosisSession } from "../api/types";
+import type { Alert, AlertCluster, DiagnosisSession, DiagnosisSessionSummary } from "../api/types";
 import { useAlertStore } from "../store/alertStore";
 import AlertsModifiedPage from "./AlertsModified";
 
@@ -20,16 +19,6 @@ const alerts: Alert[] = [
     source: "alertmanager",
   },
   {
-    alert_name: "VLLM 延迟过高",
-    severity: "critical",
-    labels: { service: "vllm", instance: "vllm-0", aidc: "aidc-001" },
-    annotations: { summary: "第 2 次重试事件", entity: "svc-vllm" },
-    starts_at: "2026-03-18T12:01:00Z",
-    fingerprint: "fp-001",
-    status: "firing",
-    source: "alertmanager",
-  },
-  {
     alert_name: "GPU 温度偏高",
     severity: "warning",
     labels: { node: "node-gpu-01", gpu: "gpu-01", aidc: "aidc-001" },
@@ -39,30 +28,110 @@ const alerts: Alert[] = [
     status: "firing",
     source: "prometheus",
   },
+  {
+    alert_name: "NCCLTimeout",
+    severity: "critical",
+    labels: { node: "sw-200g", service: "trainer-gateway", aidc: "aidc-001" },
+    annotations: { summary: "交换机端口出现持续拥塞", entity: "sw-200g:HGE1/0/1" },
+    starts_at: "2026-03-18T12:03:00Z",
+    fingerprint: "fp-003",
+    status: "firing",
+    source: "alertmanager",
+  },
 ];
 
 const clusters: AlertCluster[] = [
   {
     cluster_id: "cluster-01",
-    summary: "延迟突增与单个推理节点的热压异常高度相关",
+    summary: "延迟突增与热点推理分片相关",
     severity: "critical",
-    alerts: ["fp-001", "fp-002"],
+    alerts: ["fp-001"],
   },
 ];
 
-const session: DiagnosisSession = {
-  session_id: "sess-latency-001",
+const summaries: DiagnosisSessionSummary[] = [
+  {
+    session_id: "sess-diagnosis-001",
+    title: "existing diagnosis",
+    summary: "诊断中",
+    started_at: "2026-03-18T12:00:00Z",
+    updated_at: "2026-03-18T12:05:00Z",
+    status: "re_diagnosed",
+    severity: "critical",
+    alert_name: "VLLM 延迟过高",
+    fingerprint: "fp-001",
+    duration_seconds: 120,
+    outcome: null,
+    affected_services: [],
+  },
+  {
+    session_id: "sess-remediation-002",
+    title: "pending remediation",
+    summary: "待审批",
+    started_at: "2026-03-18T11:57:00Z",
+    updated_at: "2026-03-18T12:06:00Z",
+    status: "approval_required",
+    severity: "warning",
+    alert_name: "GPU 温度偏高",
+    fingerprint: "fp-002",
+    duration_seconds: 98,
+    outcome: "proposed_fix_ready",
+    affected_services: [],
+  },
+];
+
+const diagnosisSession: DiagnosisSession = {
+  session_id: "sess-diagnosis-001",
   alert: alerts[0]!,
   status: "re_diagnosed",
-  duration_seconds: 142,
+  duration_seconds: 120,
+  diagnosis_result: {
+    root_cause: "热点分片上的 GPU 资源争用",
+    root_cause_layer: "hardware",
+    root_cause_entities: ["gpu-01"],
+    confidence: 0.91,
+    hypotheses: [],
+    impact_summary: "影响集中在单个推理热点分片。",
+    affected_services: ["vllm"],
+    triage_priority: "P1",
+    diagnosis_certainty: "confirmed",
+  },
 };
 
-function renderAlertsModifiedPage(initialRoute = "/alerts-modified") {
+const remediationSession: DiagnosisSession = {
+  session_id: "sess-remediation-002",
+  alert: alerts[1]!,
+  status: "approval_required",
+  duration_seconds: 98,
+  diagnosis_result: {
+    root_cause: "机柜散热效率下降",
+    root_cause_layer: "hardware",
+    root_cause_entities: ["gpu-01"],
+    confidence: 0.84,
+    hypotheses: [],
+    impact_summary: "影响集中在单节点 GPU 温度抬升。",
+    affected_services: ["embedding-serving"],
+    triage_priority: "P2",
+    diagnosis_certainty: "probable",
+    recommended_fix: {
+      plan_id: "plan-1",
+      root_cause: "机柜散热效率下降",
+      description: "先提升风扇档位，再观察温度曲线是否回落。",
+      steps: [],
+      estimated_impact: "low",
+      confidence: 0.84,
+      priority: "P2",
+    },
+  },
+};
+
+function renderAlertsModifiedPage() {
   return render(
-    <MemoryRouter initialEntries={[initialRoute]}>
+    <MemoryRouter initialEntries={["/alerts"]}>
       <Routes>
-        <Route path="/alerts-modified" element={<AlertsModifiedPage />} />
-        <Route path="/diagnosis/:sessionId" element={<div>diagnosis page reached</div>} />
+        <Route path="/alerts" element={<AlertsModifiedPage />} />
+        <Route path="/diagnosis/:sessionId" element={<div>diagnosis route</div>} />
+        <Route path="/remediation" element={<div>remediation route</div>} />
       </Routes>
     </MemoryRouter>,
   );
@@ -74,68 +143,51 @@ describe("AlertsModifiedPage", () => {
       alerts: [],
       clusters: [],
       severityFilter: "all",
-      wsState: "closed",
-      lastAlertEventAt: undefined,
-      lastSnapshotSyncAt: undefined,
-      realtimeEnabled: false,
       isLoading: false,
       hasLoaded: false,
       error: undefined,
     });
 
     vi.spyOn(apiClient, "getAlerts").mockResolvedValue({ alerts, clusters });
+    vi.spyOn(apiClient, "getDiagnosisHistorySessions").mockResolvedValue(summaries);
+    vi.spyOn(apiClient, "getDiagnosisSession").mockImplementation(async (sessionId?: string) => {
+      if (sessionId === "sess-diagnosis-001") {
+        return diagnosisSession;
+      }
+      if (sessionId === "sess-remediation-002") {
+        return remediationSession;
+      }
+      return null;
+    });
   });
 
   afterEach(() => {
     vi.restoreAllMocks();
   });
 
-  it("renders convergence workspace and supports grouped expansion", async () => {
-    const user = userEvent.setup();
-    vi.spyOn(apiClient, "getDiagnosisSession").mockResolvedValue(session);
-
+  it("renders an alert diagnosis list without aggregation-only labels", async () => {
     renderAlertsModifiedPage();
-
-    expect(await screen.findByRole("heading", { name: "告警收敛" })).toBeInTheDocument();
-    expect(screen.getAllByText("2 个 fingerprint").length).toBeGreaterThan(0);
-    expect(screen.getByText("2 次事件")).toBeInTheDocument();
-    expect(screen.getByText("收敛结果")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "查看诊断" })).toBeInTheDocument();
-    expect(screen.getAllByText("并入已有诊断").length).toBeGreaterThan(0);
-    expect(screen.getByText("第 2 次重试事件")).toBeInTheDocument();
-
-    await user.click(screen.getByRole("button", { name: "切换 fp-001 事件流" }));
-    expect(screen.queryByText("第 2 次重试事件")).not.toBeInTheDocument();
-
-    await user.click(screen.getByRole("button", { name: "切换 fp-002 事件流" }));
-    expect(screen.getByText("GPU 温度持续高于目标阈值")).toBeInTheDocument();
-  });
-
-  it("starts diagnosis via new async API and navigates immediately", async () => {
-    const user = userEvent.setup();
-    vi.spyOn(apiClient, "getDiagnosisSession").mockResolvedValue(null);
-    vi.spyOn(apiClient, "startDiagnoseAlert").mockResolvedValue({
-      session_id: "sess-created-001",
-      alert: alerts[0],
-      status: "diagnosing",
-      duration_seconds: 0,
-    });
-
-    renderAlertsModifiedPage();
-
-    await screen.findByRole("heading", { name: "告警收敛" });
-
-    await user.click(screen.getByRole("button", { name: "进入诊断" }));
 
     await waitFor(() => {
-      expect(apiClient.startDiagnoseAlert).toHaveBeenCalledTimes(1);
-      expect(apiClient.startDiagnoseAlert).toHaveBeenCalledWith(
-        expect.objectContaining({
-          fingerprint: "fp-001",
-        }),
-        expect.arrayContaining(["fp-002"]),
-      );
+      expect(screen.getByRole("button", { name: "查看诊断" })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "审批修复" })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "进入诊断" })).toBeInTheDocument();
     });
-    expect(await screen.findByText("diagnosis page reached")).toBeInTheDocument();
+
+    await waitFor(() => {
+      expect(screen.getByText("机柜散热效率下降")).toBeInTheDocument();
+      expect(screen.getByText("先提升风扇档位，再观察温度曲线是否回落。"))
+        .toBeInTheDocument();
+    });
+
+    expect(screen.queryByText("原始告警流")).not.toBeInTheDocument();
+    expect(screen.queryByText("聚合诊断")).not.toBeInTheDocument();
+    expect(screen.queryByText(/fingerprint/i)).not.toBeInTheDocument();
+    expect(screen.queryByText("关联告警")).not.toBeInTheDocument();
+    expect(screen.queryByText("2 条事件")).not.toBeInTheDocument();
+    expect(screen.getByText("尚未生成诊断结论")).toBeInTheDocument();
+    expect(screen.getByText("待诊断")).toBeInTheDocument();
+    expect(screen.getByText("告警工作项")).toBeInTheDocument();
   });
 });
+

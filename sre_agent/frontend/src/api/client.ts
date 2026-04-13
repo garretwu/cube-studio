@@ -9,20 +9,17 @@ import type {
   ConfigBaseline,
   DiagnosisSession,
   DiagnosisSessionSummary,
-  KnowledgeDataset,
   IncidentRecord,
   KnowledgeBaseDetail,
   KnowledgeBaseSummary,
+  KnowledgeDataset,
   KnowledgeDocument,
-  KnowledgeDocumentDetail,
   KnowledgeSearchHit,
-  KnowledgeSegment,
   LearnedPattern,
   LoopResult,
   OntologyEdge,
   OntologyNode,
   RemediationOverview,
-  RemediationEvidence,
   RemediationPlan,
   RemediationResult,
   SREApiEnvelope,
@@ -46,18 +43,18 @@ const DIAGNOSE_REQUEST_TIMEOUT_MS = 120000;
 const CHAT_REQUEST_TIMEOUT_MS = 120000;
 const DIAGNOSE_SESSION_POLL_MS = 2000;
 const DIAGNOSE_SESSION_POLL_ATTEMPTS = 30;
-const BLOCKED_ALERT_NAMES = new Set<string>(
-  [
-    "KubeClientErrors",
-    "KubePodCrashLooping",
-    "AlertmanagerDown",
-    "KubeControllerManagerDown",
-    "KubeSchedulerDown",
-    "PrometheusOperatorDown",
-    "DeadMansSwitch",
-    "TargetDown",
-  ].map((name) => normalizeAlertName(name)),
-);
+const BLOCKED_ALERT_NAMES = new Set([
+  "kubeclienterrors",
+  "kubepodcrashlooping",
+  "alertmanagerdown",
+  "kubecontrollermanagerdown",
+  "kubeschedulerdown",
+  "prometheusoperatordown",
+  "deadmansswitch",
+  "targetdown",
+  "gpu utilization is high",
+  "gpuutilizationhigh",
+]);
 
 let hasWarnedAboutDevFallback = false;
 
@@ -179,6 +176,41 @@ function clearRememberedSessionId(): void {
   window.localStorage.removeItem("sre_session_id");
 }
 
+function getHttpStatusFromError(error: unknown): number | undefined {
+  if (axios.isAxiosError(error)) {
+    return error.response?.status;
+  }
+  if (!(error instanceof Error)) {
+    return undefined;
+  }
+  const matched = /status\s+(\d{3})/i.exec(error.message);
+  if (!matched) {
+    return undefined;
+  }
+  const status = Number(matched[1]);
+  return Number.isFinite(status) ? status : undefined;
+}
+
+function isHttpStatusError(error: unknown, status: number): boolean {
+  return getHttpStatusFromError(error) === status;
+}
+
+async function getDiagnosisSessionById(sessionId: string): Promise<DiagnosisSession> {
+  try {
+    const response = await api.get<SREApiEnvelope<DiagnosisSession> | DiagnosisSession>(`/api/sessions/${sessionId}`);
+    return unwrapPayload(response.data);
+  } catch (error) {
+    if (!isHttpStatusError(error, 404)) {
+      throw error;
+    }
+    // Compatibility fallback for backends that only expose the legacy session endpoint.
+    const legacyResponse = await api.get<SREApiEnvelope<DiagnosisSession> | DiagnosisSession>("/api/diagnosis/session/current", {
+      params: { session_id: sessionId },
+    });
+    return unwrapPayload(legacyResponse.data);
+  }
+}
+
 function extractDuplicateSessionId(payload: SREApiEnvelope<LoopResult>): string {
   const details = payload.error?.details;
   if (details && typeof details === "object") {
@@ -210,6 +242,7 @@ function mapSummaryToDiagnosisSummary(item: SessionSummary): DiagnosisSessionSum
     status: item.status,
     severity: normalizeSeverity(item.severity),
     alert_name: item.alert_name,
+    fingerprint: item.fingerprint,
     duration_seconds: item.duration_seconds,
     outcome: item.outcome ?? null,
     triage_priority: null,
@@ -262,9 +295,6 @@ function mapLayer(type: ReturnType<typeof mapEntityTypeToExplorerType>): Topolog
   if (type === "gpu" || type === "node") {
     return "compute";
   }
-  if (type === "pod") {
-    return "service";
-  }
   if (type === "cluster") {
     return "physical";
   }
@@ -278,9 +308,6 @@ function mapRelationType(relation: string): "contains" | "runs_on" | "connects_t
   }
   if (value.includes("hosted") || value.includes("runs_on") || value.includes("run_on")) {
     return "runs_on";
-  }
-  if (value.includes("serve")) {
-    return "depends_on";
   }
   if (value.includes("uplink")) {
     return "uplink_to";
@@ -298,48 +325,36 @@ function buildTopologyExplorerFromSnapshot(snapshot: TopologySnapshot): Topology
   const nodes = snapshot.nodes.map((node) => {
     const entityType = mapEntityTypeToExplorerType(node.entity_type);
     const attributes = typeof node.properties === "object" && node.properties ? node.properties : {};
-    const attrs = attributes as Record<string, unknown>;
+    const namespace = String((attributes as Record<string, unknown>).namespace ?? "").trim();
+    const baseName = String(node.name || node.id).trim();
+    const hasNamespacePrefix = baseName.includes("/");
+    const displayName =
+      (entityType === "pod" || entityType === "service") && namespace && !hasNamespacePrefix
+        ? `${namespace}/${baseName}`
+        : baseName;
     const region = String((attributes as Record<string, unknown>).region ?? "AIDC-CN");
     const zone = String((attributes as Record<string, unknown>).zone ?? "zone-a");
     const domain = String((attributes as Record<string, unknown>).domain ?? "aidc");
-    const namespace = String(attrs.namespace ?? "").trim();
-    const clusterId = String(attrs.cluster ?? attrs.cluster_id ?? "").trim();
-    const rawName = node.name || node.id;
-    const displayName =
-      (entityType === "pod" || entityType === "service") && namespace ? `${namespace}/${rawName}` : rawName;
-    const podPhaseRaw = attrs.phase ?? node.status ?? "Unknown";
-    const podPhase = typeof podPhaseRaw === "string" ? podPhaseRaw : String(podPhaseRaw);
-    const podRestartRaw = attrs.restart_count ?? attrs.restartCount;
-    const podRestartNumeric = typeof podRestartRaw === "number" ? podRestartRaw : Number(podRestartRaw);
-    const podRestartCount = Number.isFinite(podRestartNumeric) ? podRestartNumeric : null;
-    const metrics: Record<string, string | number | null> | undefined =
-      entityType === "pod"
-        ? {
-            phase: podPhase,
-            restartCount: podRestartCount,
-          }
-        : undefined;
+    const cluster = String(
+      (attributes as Record<string, unknown>).cluster ?? (attributes as Record<string, unknown>).cluster_id ?? "",
+    ).trim();
 
     return {
       id: node.id,
-      name: displayName,
+      name: displayName || node.id,
       type: entityType,
       status: mapNodeStatus(node.status),
       layer: mapLayer(entityType),
       domain,
       region,
       zone,
-      cluster: clusterId || undefined,
+      cluster: cluster || undefined,
       rack: String((attributes as Record<string, unknown>).rack ?? "") || undefined,
       slot: String((attributes as Record<string, unknown>).slot ?? "") || undefined,
-      summary: [displayName, `(${node.entity_type})`, namespace ? `namespace=${namespace}` : "", clusterId ? `cluster=${clusterId}` : ""]
-        .filter(Boolean)
-        .join(" "),
-      tags: [namespace, String(attrs.source ?? ""), clusterId]
-        .map((item) => item.trim())
-        .filter(Boolean),
+      summary: `${displayName || node.id} (${node.entity_type})`,
+      tags: [],
       updatedAt: node.updated_at,
-      metrics,
+      metrics: undefined,
       attributes,
     };
   });
@@ -394,6 +409,173 @@ async function withDevFallback<T>(request: () => Promise<T>, fallback: () => Pro
   }
 }
 
+function normalizeListPayload<T>(payload: unknown): T[] {
+  if (Array.isArray(payload)) {
+    return payload.filter((item): item is T => !!item && typeof item === "object");
+  }
+  if (!payload || typeof payload !== "object") {
+    return [];
+  }
+  const candidate = payload as {
+    data?: unknown;
+    items?: unknown;
+    documents?: unknown;
+    results?: unknown;
+  };
+  const raw = candidate.data ?? candidate.items ?? candidate.documents ?? candidate.results;
+  if (Array.isArray(raw)) {
+    return raw.filter((item): item is T => !!item && typeof item === "object");
+  }
+  return [];
+}
+
+type DiagnosisStreamEvent = {
+  type: string;
+  session_id?: string;
+  data?: Record<string, unknown>;
+  [key: string]: unknown;
+};
+
+type DiagnosisStreamEventHandler = (event: DiagnosisStreamEvent) => void;
+
+function parseSseChunk(chunk: string, onEvent: DiagnosisStreamEventHandler): void {
+  const lines = chunk.split(/\r?\n/);
+  const dataLines: string[] = [];
+  let eventName = "message";
+
+  lines.forEach((line) => {
+    if (line.startsWith("event:")) {
+      eventName = line.slice("event:".length).trim() || "message";
+      return;
+    }
+    if (line.startsWith("data:")) {
+      dataLines.push(line.slice("data:".length).trimStart());
+    }
+  });
+
+  if (dataLines.length === 0) {
+    return;
+  }
+
+  const rawData = dataLines.join("\n").trim();
+  if (!rawData) {
+    return;
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(rawData);
+  } catch {
+    parsed = { message: rawData };
+  }
+
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    onEvent({ type: eventName, data: { value: parsed } });
+    return;
+  }
+
+  const payload = { ...(parsed as Record<string, unknown>) };
+  if (typeof payload.type !== "string" || !payload.type.trim()) {
+    payload.type = eventName;
+  }
+  onEvent(payload as DiagnosisStreamEvent);
+}
+
+async function consumeSseResponse(
+  response: Response,
+  onEvent: DiagnosisStreamEventHandler,
+  signal?: AbortSignal,
+): Promise<void> {
+  if (!response.body) {
+    throw new Error("SSE stream body is empty.");
+  }
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  while (true) {
+    if (signal?.aborted) {
+      throw new DOMException("Aborted", "AbortError");
+    }
+    const { done, value } = await reader.read();
+    if (done) {
+      break;
+    }
+    buffer += decoder.decode(value, { stream: true });
+    while (true) {
+      const separatorIndex = buffer.indexOf("\n\n");
+      if (separatorIndex < 0) {
+        break;
+      }
+      const chunk = buffer.slice(0, separatorIndex).trim();
+      buffer = buffer.slice(separatorIndex + 2);
+      if (chunk) {
+        parseSseChunk(chunk, onEvent);
+      }
+    }
+  }
+
+  const tail = buffer.trim();
+  if (tail) {
+    parseSseChunk(tail, onEvent);
+  }
+}
+
+export async function streamDiagnosis(
+  alert: Alert,
+  extraAlertFingerprints: string[] = [],
+  onEvent: DiagnosisStreamEventHandler,
+  signal?: AbortSignal,
+): Promise<void> {
+  if (isBlockedAlert(alert)) {
+    throw new Error(`Alert '${alert.alert_name}' is temporarily filtered and cannot be processed.`);
+  }
+
+  const params = new URLSearchParams();
+  extraAlertFingerprints.forEach((fingerprint) => {
+    if (fingerprint) {
+      params.append("extra_alert_fingerprints", fingerprint);
+    }
+  });
+
+  const baseUrl = String(import.meta.env.VITE_API_BASE_URL ?? "").trim();
+  const path = "/api/diagnose/stream";
+  const url = `${baseUrl}${path}${params.size > 0 ? `?${params.toString()}` : ""}`;
+  const headers: Record<string, string> = {
+    Accept: "text/event-stream",
+    "Content-Type": "application/json",
+    "x-trace-id": `sre-ui-${Date.now()}`,
+  };
+  const token = import.meta.env.VITE_API_TOKEN;
+  if (token) {
+    headers.Authorization = `Bearer ${token}`;
+  }
+
+  const response = await fetch(url, {
+    method: "POST",
+    headers,
+    body: JSON.stringify(alert),
+    signal,
+  });
+
+  if (response.status === 404 || response.status === 405 || response.status === 500) {
+    const session = await apiClient.startDiagnoseAlert(alert, extraAlertFingerprints);
+    onEvent({
+      type: "diagnosis_started",
+      session_id: session.session_id,
+      data: { alert, topology: null, variables: {} },
+    });
+    onEvent({ type: "done", session_id: session.session_id, data: {} });
+    return;
+  }
+
+  if (!response.ok) {
+    throw new Error(`Request failed with status ${response.status}.`);
+  }
+
+  await consumeSseResponse(response, onEvent, signal);
+}
+
 export const apiClient = {
   getTopology: async () =>
     withDevFallback(
@@ -436,12 +618,20 @@ export const apiClient = {
     }
   },
 
-  getAlerts: async () => {
-    const response = await api.get<SREApiEnvelope<{ alerts: Alert[]; clusters: AlertCluster[] }> | { alerts: Alert[]; clusters: AlertCluster[] }>(
-      "/api/alerts",
-    );
-    return filterAlertSnapshot(unwrapPayload(response.data));
-  },
+  getAlerts: async () =>
+    withDevFallback(
+      async () => {
+        const response = await api.get<SREApiEnvelope<{ alerts: Alert[]; clusters: AlertCluster[] }> | { alerts: Alert[]; clusters: AlertCluster[] }>(
+          "/api/alerts",
+        );
+        return filterAlertSnapshot(unwrapPayload(response.data));
+      },
+      async () => {
+        const { getAlertsFallback } = await import("./devFallback");
+        return filterAlertSnapshot(getAlertsFallback());
+      },
+      "getAlerts",
+    ),
 
   handleAlert: async (alert: Alert) => {
     if (isBlockedAlert(alert)) {
@@ -552,27 +742,34 @@ export const apiClient = {
     const resolved = explicit || remembered;
     if (resolved) {
       try {
-        const response = await api.get<SREApiEnvelope<DiagnosisSession> | DiagnosisSession>(`/api/sessions/${resolved}`);
-        const session = unwrapPayload(response.data);
+        const session = await getDiagnosisSessionById(resolved);
         rememberSessionId(session.session_id);
         return session;
       } catch (error) {
         if (explicit) {
+          if (isHttpStatusError(error, 404)) {
+            throw new Error("Diagnosis session was not found (404). Please select another history session or start a new diagnosis.");
+          }
           throw error;
         }
         clearRememberedSessionId();
       }
     }
 
-    const sessions = await apiClient.getSessions(1);
-    if (!sessions.length) {
-      return null;
+    const sessions = await apiClient.getSessions(50);
+    for (const candidate of sessions) {
+      try {
+        const session = await getDiagnosisSessionById(candidate.session_id);
+        rememberSessionId(session.session_id);
+        return session;
+      } catch (error) {
+        if (isHttpStatusError(error, 404)) {
+          continue;
+        }
+        throw error;
+      }
     }
-    const latest = sessions[0];
-    const response = await api.get<SREApiEnvelope<DiagnosisSession> | DiagnosisSession>(`/api/sessions/${latest.session_id}`);
-    const session = unwrapPayload(response.data);
-    rememberSessionId(session.session_id);
-    return session;
+    return null;
   },
 
   getDiagnosisHistorySessions: async () => {
@@ -649,13 +846,6 @@ export const apiClient = {
       }
       const revisedEvents = events.filter((event) => event.type === "plan_revised");
       const latestRevision = revisedEvents.at(-1);
-      const latestObservation = [...events]
-        .reverse()
-        .find(
-          (event) =>
-            event.type === "remediation_progress" &&
-            String(event.data?.["stage"] ?? "").trim().toLowerCase() === "observation_result",
-        );
       const planVersionFromPlanId = Number(/-v(\d+)$/.exec(currentPlan.plan_id)?.[1] ?? 1);
       const planVersion = Number((latestRevision?.data?.["plan_version"] as number | undefined) ?? planVersionFromPlanId);
       const remediationEvents = events.filter((event) => event.type === "remediation_progress");
@@ -669,99 +859,6 @@ export const apiClient = {
           (String(session.status ?? "").trim().toLowerCase() === "resolved" ? currentPlan.steps.length : 0),
       );
       const progressStatus = String(session.status || "").trim() || latestStage || "pending";
-      const totalSteps = currentPlan.steps.length;
-      const normalizedCompletedSteps = Number.isFinite(completedSteps) ? Math.max(0, Math.min(totalSteps, completedSteps)) : 0;
-      const batchProgress = totalSteps > 0 ? Math.round((normalizedCompletedSteps / totalSteps) * 100) : 0;
-      const normalizedStatus = progressStatus.toLowerCase();
-      const oneShotStatus =
-        normalizedStatus === "resolved"
-          ? "resolved"
-          : normalizedStatus === "failed"
-            ? "failed"
-            : normalizedStatus === "timeout"
-              ? "timeout"
-              : normalizedStatus === "escalated"
-                ? "escalated"
-                : normalizedStatus === "rejected"
-                  ? "rejected"
-                  : "validating";
-
-      const derivedBaselineReview: RemediationEvidence | null =
-        session.remediation_evidence ??
-        (typeof latestObservation?.data?.["alert_cleared"] === "boolean" ||
-        typeof latestObservation?.data?.["metrics_improved"] === "boolean"
-          ? {
-              pre_check: (latestObservation?.data?.["pre_check"] as RemediationEvidence["pre_check"]) ?? null,
-              post_check: (latestObservation?.data?.["post_check"] as RemediationEvidence["post_check"]) ?? null,
-              alert_review: (latestObservation?.data?.["alert_review"] as RemediationEvidence["alert_review"]) ?? null,
-              metric_reviews: (latestObservation?.data?.["metric_reviews"] as RemediationEvidence["metric_reviews"]) ?? [],
-              alert_cleared: (latestObservation?.data?.["alert_cleared"] as boolean | null | undefined) ?? null,
-              metrics_improved: (latestObservation?.data?.["metrics_improved"] as boolean | null | undefined) ?? null,
-              collected_at:
-                (latestObservation?.data?.["collected_at"] as string | undefined) ??
-                latestObservation?.timestamp ??
-                new Date().toISOString(),
-            }
-          : null);
-
-      // Build batch_status from canary progress events when available
-      const canaryBatchEvents = remediationEvents.filter(
-        (event) => typeof event.data?.["batch"] === "string" && String(event.data["batch"]).startsWith("canary-"),
-      );
-      const batchStatus: Array<{ batch: string; progress: number; status: string }> =
-        canaryBatchEvents.length > 0
-          ? (() => {
-              const batchMap = new Map<string, { batch: string; index: number; total: number }>();
-              for (const event of canaryBatchEvents) {
-                const batch = String(event.data?.["batch"] ?? "");
-                const index = Number(event.data?.["batch_index"] ?? 0);
-                const total = Number(event.data?.["batch_total"] ?? 0);
-                if (!batchMap.has(batch)) {
-                  batchMap.set(batch, { batch, index, total });
-                }
-              }
-              const canaryTotal = batchMap.size;
-              let completedBatches = 0;
-              const entries = [...batchMap.values()].sort((a, b) => a.index - b.index);
-              for (const entry of entries) {
-                const lastEventForBatch = [...canaryBatchEvents]
-                  .reverse()
-                  .find((e) => String(e.data?.["batch"]) === entry.batch);
-                const stage = String(lastEventForBatch?.data?.["stage"] ?? "").toLowerCase();
-                if (stage === "validating" || stage === "remediating") {
-                  completedBatches = entry.index;
-                } else {
-                  completedBatches = entry.index;
-                }
-              }
-              const lastCanaryEvent = canaryBatchEvents.at(-1);
-              const lastStage = String(lastCanaryEvent?.data?.["stage"] ?? "").toLowerCase();
-              const canaryStatus =
-                oneShotStatus === "resolved"
-                  ? "resolved"
-                  : oneShotStatus === "failed"
-                    ? "failed"
-                    : lastStage === "validating"
-                      ? "validating"
-                      : "remediating";
-              return [
-                {
-                  batch: `canary (${canaryTotal} batches)`,
-                  progress: Math.max(0, Math.min(100, Math.round((completedBatches / Math.max(canaryTotal, 1)) * 100))),
-                  status: canaryStatus,
-                },
-              ];
-            })()
-          : [
-              {
-                batch: "一次性执行",
-                progress:
-                  oneShotStatus === "resolved"
-                    ? 100
-                    : Math.max(0, Math.min(100, batchProgress)),
-                status: oneShotStatus,
-              },
-            ];
 
       return {
         session_id: resolved,
@@ -775,15 +872,22 @@ export const apiClient = {
         })),
         progress: {
           status: progressStatus,
-          completed_steps: normalizedCompletedSteps,
-          total_steps: totalSteps,
-          batch_status: batchStatus,
+          completed_steps: completedSteps,
+          total_steps: currentPlan.steps.length,
+          batch_status: [],
         },
         timeline: events,
         approval_required: session.status === "approval_required",
-        baseline_review: derivedBaselineReview,
       } as RemediationOverview;
     } catch {
+      if (import.meta.env.DEV) {
+        const { getRemediationOverviewFallback } = await import("./devFallback");
+        const fallback = getRemediationOverviewFallback();
+        return {
+          ...fallback,
+          session_id: resolved,
+        } as RemediationOverview;
+      }
       const loop = await apiClient.getSessionLoop(resolved);
       return {
         session_id: loop.session_id,
@@ -800,13 +904,7 @@ export const apiClient = {
           status: loop.outcome,
           completed_steps: loop.attempts.length,
           total_steps: loop.attempts.length,
-          batch_status: [
-            {
-              batch: "一次性执行",
-              progress: loop.attempts.length > 0 ? 100 : 0,
-              status: loop.outcome === "resolved" ? "resolved" : loop.outcome,
-            },
-          ],
+          batch_status: [],
         },
         timeline: [],
         approval_required: false,
@@ -923,95 +1021,100 @@ export const apiClient = {
   getKnowledgeDatasets: async (keyword?: string, page = 1, limit = 50) =>
     withDevFallback(
       async () => {
-        const response = await api.get<SREApiEnvelope<KnowledgeDataset[]> | KnowledgeDataset[]>("/api/knowledge/datasets", {
-          params: { keyword, page, limit },
+        const response = await api.get<
+          | SREApiEnvelope<KnowledgeDataset[]>
+          | KnowledgeDataset[]
+          | { items?: KnowledgeDataset[]; data?: KnowledgeDataset[] }
+        >("/api/knowledge/datasets", {
+          params: {
+            keyword: keyword?.trim() || undefined,
+            page: Math.max(1, page),
+            limit: Math.max(1, limit),
+          },
         });
-        return unwrapPayload(response.data);
+        if (isEnvelope<KnowledgeDataset[]>(response.data)) {
+          return normalizeListPayload<KnowledgeDataset>(unwrapPayload(response.data));
+        }
+        return normalizeListPayload<KnowledgeDataset>(response.data);
       },
       async () => {
-        const single = await apiClient.getKnowledgeDataset();
-        return single ? [single] : [];
+        const { getKnowledgeBasesFallback } = await import("./devFallback");
+        return getKnowledgeBasesFallback().map((item) => ({
+          id: item.id,
+          name: item.name,
+          description: item.description,
+          document_count: item.document_count,
+          status: item.status,
+          updated_at: item.updated_at,
+        }));
       },
       "getKnowledgeDatasets",
-    ),
-
-  getKnowledgeDataset: async (datasetId?: string) =>
-    withDevFallback(
-      async () => {
-        const response = await api.get<SREApiEnvelope<KnowledgeDataset> | KnowledgeDataset>("/api/knowledge/dataset", {
-          params: datasetId ? { dataset_id: datasetId } : undefined,
-        });
-        return unwrapPayload(response.data);
-      },
-      async () => ({
-        id: "dataset-local",
-        name: "Local Knowledge Base",
-        description: "Fallback dataset for local development",
-        document_count: 0,
-        word_count: 0,
-        status: "ready",
-      }),
-      "getKnowledgeDataset",
     ),
 
   getKnowledgeSources: async (keyword?: string, page = 1, limit = 50, datasetId?: string) =>
     withDevFallback(
       async () => {
         const response = await api.get<
-          SREApiEnvelope<KnowledgeDocument[]> | { documents: KnowledgeDocument[] } | KnowledgeDocument[]
+          | SREApiEnvelope<KnowledgeDocument[]>
+          | KnowledgeDocument[]
+          | { documents?: KnowledgeDocument[]; data?: KnowledgeDocument[]; items?: KnowledgeDocument[] }
         >("/api/knowledge/documents", {
-          params: { keyword, page, limit, dataset_id: datasetId },
+          params: {
+            keyword: keyword?.trim() || undefined,
+            page: Math.max(1, page),
+            limit: Math.max(1, limit),
+            dataset_id: datasetId?.trim() || undefined,
+          },
         });
         if (isEnvelope<KnowledgeDocument[]>(response.data)) {
-          return unwrapPayload(response.data);
+          return normalizeListPayload<KnowledgeDocument>(unwrapPayload(response.data));
         }
-        if (Array.isArray(response.data)) {
-          return response.data;
-        }
-        return response.data.documents ?? [];
+        return normalizeListPayload<KnowledgeDocument>(response.data);
       },
       async () => {
         const { getKnowledgeSourcesFallback } = await import("./devFallback");
-        return getKnowledgeSourcesFallback();
+        const normalizedKeyword = keyword?.trim().toLowerCase() ?? "";
+        return getKnowledgeSourcesFallback().filter((item) => {
+          if (!normalizedKeyword) {
+            return true;
+          }
+          const haystack = `${item.title} ${item.excerpt} ${item.tags.join(" ")}`.toLowerCase();
+          return haystack.includes(normalizedKeyword);
+        });
       },
       "getKnowledgeSources",
     ),
 
-  getKnowledgeDocumentDetail: async (documentId: string, datasetId?: string) => {
-    const response = await api.get<SREApiEnvelope<KnowledgeDocumentDetail> | KnowledgeDocumentDetail>(
-      `/api/knowledge/documents/${encodeURIComponent(documentId)}`,
-      {
-        params: datasetId ? { dataset_id: datasetId } : undefined,
+  searchKnowledgeSegments: async (query: string, topK = 5, datasetId?: string) =>
+    withDevFallback(
+      async () => {
+        const response = await api.get<
+          SREApiEnvelope<KnowledgeSearchHit[]> | KnowledgeSearchHit[] | { results?: KnowledgeSearchHit[]; data?: KnowledgeSearchHit[] }
+        >("/api/knowledge/segments/search", {
+          params: {
+            query,
+            top_k: Math.max(1, topK),
+            dataset_id: datasetId?.trim() || undefined,
+          },
+        });
+        if (isEnvelope<KnowledgeSearchHit[]>(response.data)) {
+          return normalizeListPayload<KnowledgeSearchHit>(unwrapPayload(response.data));
+        }
+        return normalizeListPayload<KnowledgeSearchHit>(response.data);
       },
-    );
-    return unwrapPayload(response.data);
-  },
-
-  getKnowledgeDocumentSegments: async (
-    documentId: string,
-    options: { keyword?: string; status?: string; page?: number; limit?: number; datasetId?: string } = {},
-  ) => {
-    const response = await api.get<SREApiEnvelope<KnowledgeSegment[]> | KnowledgeSegment[]>(
-      `/api/knowledge/documents/${encodeURIComponent(documentId)}/segments`,
-      {
-        params: {
-          keyword: options.keyword,
-          status: options.status,
-          page: options.page ?? 1,
-          limit: options.limit ?? 50,
-          dataset_id: options.datasetId,
-        },
+      async () => {
+        const { searchKnowledgeFallback } = await import("./devFallback");
+        return searchKnowledgeFallback(query).map((item, index) => ({
+          id: `segment-${item.id}-${index}`,
+          document_id: item.id,
+          content: item.excerpt,
+          source: item.source,
+          score: item.score,
+          metadata: { title: item.title, tags: item.tags },
+        }));
       },
-    );
-    return unwrapPayload(response.data);
-  },
-
-  searchKnowledgeSegments: async (query: string, topK = 5, datasetId?: string) => {
-    const response = await api.get<SREApiEnvelope<KnowledgeSearchHit[]> | KnowledgeSearchHit[]>("/api/knowledge/segments/search", {
-      params: { query, top_k: topK, dataset_id: datasetId },
-    });
-    return unwrapPayload(response.data);
-  },
+      "searchKnowledgeSegments",
+    ),
 
   getMemoryIncidents: async (last = 10) => {
     const response = await api.get<SREApiEnvelope<IncidentRecord[]> | IncidentRecord[]>("/api/memory/incidents", { params: { last } });
@@ -1037,7 +1140,7 @@ export const apiClient = {
           );
           return unwrapPayload(response.data);
         } catch (error) {
-          if (axios.isAxiosError(error) && error.response?.status === 404) {
+          if (isHttpStatusError(error, 404)) {
             const skills = await apiClient.getSkills();
             const matched = skills.find((skill) => skill.id === skillId);
             if (matched) {
@@ -1081,85 +1184,4 @@ export const apiClient = {
 
 export type ApiClient = typeof apiClient;
 
-// ---------------------------------------------------------------------------
-// SSE streaming diagnosis client
-// ---------------------------------------------------------------------------
-
-export interface SSEEvent {
-  type: string;
-  session_id: string;
-  data: Record<string, unknown>;
-}
-
-/**
- * Open an SSE connection to ``POST /api/diagnose/stream`` and relay parsed
- * events to the caller via ``onEvent``.  Uses the Fetch API instead of axios
- * because axios does not support streaming response bodies.
- */
-export async function streamDiagnosis(
-  alert: Alert,
-  extraAlertFingerprints: string[],
-  onEvent: (event: SSEEvent) => void,
-  signal?: AbortSignal,
-): Promise<void> {
-  const base = import.meta.env.VITE_API_BASE_URL ?? "";
-  const token = import.meta.env.VITE_API_TOKEN;
-  const params = new URLSearchParams();
-  if (extraAlertFingerprints.length > 0) {
-    params.set("extra_alert_fingerprints", extraAlertFingerprints.join(","));
-  }
-  const url = `${base}/api/diagnose/stream${params.toString() ? `?${params.toString()}` : ""}`;
-
-  const response = await fetch(url, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-    },
-    body: JSON.stringify(alert),
-    signal,
-  });
-
-  if (!response.ok) {
-    const err = new Error(`streaming diagnosis failed: ${response.status}`);
-    (err as unknown as { status?: number }).status = response.status;
-    throw err;
-  }
-
-  if (!response.body) {
-    throw new Error("response body is null");
-  }
-
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
-
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-
-    const lines = buffer.split("\n");
-    buffer = lines.pop() || "";
-
-    let currentEvent = "";
-    for (const line of lines) {
-      if (line.startsWith("event: ")) {
-        currentEvent = line.slice(7).trim();
-      } else if (line.startsWith("data: ") && currentEvent) {
-        try {
-          const raw = JSON.parse(line.slice(6));
-          onEvent({
-            type: currentEvent,
-            session_id: raw.session_id ?? "",
-            data: raw.data ?? raw,
-          });
-        } catch {
-          // ignore malformed JSON lines
-        }
-        currentEvent = "";
-      }
-    }
-  }
-}
 

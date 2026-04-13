@@ -1,1351 +1,2165 @@
-﻿import { Bubble, Sender, Think } from "@ant-design/x";
-import type { BubbleItemType, BubbleListProps } from "@ant-design/x";
-import { Button, Collapse, Dropdown } from "antd";
-import type { MenuProps } from "antd";
-import { isValidElement, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type KeyboardEvent,
+  type ReactNode,
+  type UIEvent,
+} from "react";
 import { useParams } from "react-router-dom";
 
-import type { DiagnosisSession, Observation, RemediationPlan, ThinkingStep, WSEvent } from "../api/types";
 import { buildBackendWsUrl } from "../api/ws";
-import { AppIcon, SectionHeader, StatusChip, SurfaceCard } from "../components/ui";
+import { AppIcon } from "../components/ui";
 import { useWebSocket } from "../hooks/useWebSocket";
-import { extractRecommendedPlan, useDiagnosisStore } from "../store/diagnosisStore";
+import { useDiagnosisStore } from "../store/diagnosisStore";
+import { formatSeverity, formatWorkflowStatus } from "../utils/display";
 import { formatTimestamp } from "../utils/format";
+import {
+  buildDiagnosisDemoScenario,
+  buildDiagnosisLiveView,
+  type DiagnosisCandidateView,
+  type DiagnosisDemoEvent,
+  type DiagnosisPlanView,
+  type DiagnosisHypothesisView,
+  type DiagnosisPropagationStepView,
+  type DiagnosisSummaryView,
+  type DiagnosisTimelineItem,
+} from "./diagnosisModel";
 
-type BubbleRoleType = NonNullable<BubbleListProps["role"]>;
+type BadgeTone =
+  | "neutral"
+  | "accent"
+  | "success"
+  | "warning"
+  | "danger"
+  | "info";
+const DEMO_TEXT_SPEED_MS = 40;
+const DEMO_THINKING_COLLAPSE_DELAY_MS = 800;
+const DEMO_EVENT_SLOWDOWN = 4.5;
+const DEMO_MIN_TOOL_LOADING_DWELL_MS = 3500;
+const DEMO_APPROVAL_CARD_DELAY_MS = 320;
+const DEMO_APPROVAL_SUBMIT_DELAY_MS = 720;
+const TOOL_RESULT_TIMEOUT_MS = 15_000;
+const STREAM_COMPLETION_BUFFER_MS = 640;
+const AUTO_SCROLL_BOTTOM_THRESHOLD_PX = 48;
 
-type BubbleMeta = {
-  createdAt: string;
-  toolName?: string;
+type DemoApprovalDecision = "approved" | "rejected";
+type ApprovalSurfaceResolution = {
+  label: string;
+  tone: BadgeTone;
+  description: string;
 };
 
-type ToolEventPayload = {
-  kind: "tool_event";
-  toolName: string;
-  status: "loading" | "success";
-  stepLabel: string;
-  toolParams?: Record<string, unknown>;
-  summaryLines?: string[];
-};
-
-type ThinkingPlanItem = {
-  key: string;
+type ApprovalSurfaceView = {
+  statusLabel: string;
+  statusTone: BadgeTone;
   title: string;
   description: string;
-  toolName: string;
-  checkTarget: string;
-  nextToolName?: string;
-  status?: "loading" | "success" | "error" | "abort";
-  blink?: boolean;
-};
-
-type ThinkingPlanPayload = {
-  kind: "thinking_plan";
-  summary: string;
-  thinkTitle: string;
-  thinkingText: string;
-  conclusionText: string;
-  toolName: string;
-  toolParams: Record<string, unknown>;
-  typingStage?: "thinking" | "conclusion" | "complete";
-  blink?: boolean;
-  items: ThinkingPlanItem[];
-};
-
-
-type RankedCandidateItem = {
-  rank: number;
-  rootCause: string;
-  rootCauseLayer: "hardware" | "network" | "os" | "platform" | "service";
-  confidence: number;
-  rootCauseEntities: string[];
-  evidenceSummary: string;
-  distinguishingVerification?: string;
-  hasRecommendedFix?: boolean;
-};
-
-type RootCauseCandidatesPayload = {
-  kind: "ranked_candidates";
-  diagnosisCertainty: "confirmed" | "probable" | "ambiguous";
-  summary: string;
-  candidates: RankedCandidateItem[];
-};
-
-
-type ApprovalPlanPriority = "P0" | "P1" | "P2";
-type ApprovalPlanSafetyLevel = "low" | "medium" | "high";
-
-type ApprovalPlanStep = {
-  stepId: number;
-  description: string;
-  tool: string;
-  timeout: number;
-  verificationMethod: "promql" | "tool_call" | "wait";
-  rollbackTool?: string | null;
-};
-
-type ApprovalPlanPayload = {
-  kind: "approval_plan";
-  candidateRank: number;
-  diagnosisCertainty: RootCauseCandidatesPayload["diagnosisCertainty"];
-  planId: string;
-  rootCause: string;
-  description: string;
-  estimatedImpact: string;
-  confidence: number;
-  priority: ApprovalPlanPriority;
-  safetyLevel: ApprovalPlanSafetyLevel;
-  canary: {
-    enabled: boolean;
-    targetPercentage: number;
-    monitorDuration: number;
-    criteriaMode: "all" | "any";
-    maxBatches: number;
-    autoRollbackOnRegression: boolean;
-    successCriteria: string[];
-  };
-  steps: ApprovalPlanStep[];
-  rollbackSummary: string;
-};
-
-type ChatAnswerPayload = {
-  kind: "chat_answer";
-  answer: string;
-  thinkingRaw?: string;
-};
-
-type DisplayMessage = {
-  id: string;
-  role: "assistant" | "user" | "tool";
-  content:
-    | string
-    | ToolEventPayload
-    | ThinkingPlanPayload
-    | RootCauseCandidatesPayload
-    | ApprovalPlanPayload
-    | ChatAnswerPayload;
-  createdAt: string;
-  toolName?: string;
-};
-
-type SessionLoopCard = {
-  kind: "loop";
-  id: string;
-  timestamp: string;
-  toolName: string;
-  toolParams: Record<string, unknown>;
-  resultSummary: string;
-  resultPayload: Record<string, unknown>;
-  conclusion?: string;
-};
-
-type SessionConclusionCard = {
-  kind: "diagnosis_result";
-  id: string;
-  timestamp: string;
-  rootCause: string;
-  confidence: number;
+  impactLabel: string;
   impactSummary: string;
+  metaItems: string[];
+  steps: DiagnosisPlanView["steps"];
+  hasTechnicalDetails: boolean;
 };
 
-type SessionPlanCard = {
-  kind: "plan";
-  id: string;
-  timestamp: string;
-  plan: RemediationPlan;
-};
+function cn(...parts: Array<string | false | null | undefined>) {
+  return parts.filter(Boolean).join(" ");
+}
+const THINK_TAG_BLOCK_PATTERN = /<think>([\s\S]*?)<\/think>/i;
 
-type SessionCard = SessionLoopCard | SessionConclusionCard | SessionPlanCard;
-
-type ThinkingRoundPhase = "thinking" | "tool_call" | "observation" | "conclusion" | "complete";
-
-type ThinkingRound = {
-  roundIndex: number;
-  roundId: string;
-  timestamp: string;
-  thinkingText: string;
-  toolName: string | null;
-  toolParams: Record<string, unknown>;
-  observation: Observation | null;
-  conclusionText: string | null;
-  phase: ThinkingRoundPhase;
-  isActive: boolean;
-};
-
-const PHASE_ORDER: Record<ThinkingRoundPhase, number> = {
-  thinking: 0,
-  tool_call: 1,
-  observation: 2,
-  conclusion: 3,
-  complete: 4,
-};
-
-function phaseAtLeast(phase: ThinkingRoundPhase, threshold: ThinkingRoundPhase): boolean {
-  return PHASE_ORDER[phase] >= PHASE_ORDER[threshold];
+function estimateThoughtDurationSecFromContent(content: string) {
+  return Math.max(1, Math.round((content.length * DEMO_TEXT_SPEED_MS) / 1000));
 }
 
-function isThinkingStep(entry: ThinkingStep | Observation): entry is ThinkingStep {
-  return "thought" in entry;
+function formatThoughtDurationLabel(durationSec?: number) {
+  const safeDuration = Math.max(1, Math.round(durationSec ?? 1));
+  return `Thought for ${safeDuration} second${safeDuration === 1 ? "" : "s"}`;
 }
 
-function buildThinkingRounds(steps: Array<ThinkingStep | Observation>): ThinkingRound[] {
-  if (!steps.length) {
-    return [];
+function splitThinkingAndConclusion(content: string): {
+  thinking: string | null;
+  conclusion: string;
+} {
+  const matched = THINK_TAG_BLOCK_PATTERN.exec(content);
+  if (!matched) {
+    return { thinking: null, conclusion: content.trim() };
   }
 
-  const rounds: ThinkingRound[] = [];
-  let currentRound: ThinkingRound | null = null;
+  const thinking = matched[1]?.trim() ?? "";
+  const conclusion = content.replace(THINK_TAG_BLOCK_PATTERN, "").trim();
+  return {
+    thinking: thinking.length > 0 ? thinking : null,
+    conclusion,
+  };
+}
 
-  for (const entry of steps) {
-    if (isThinkingStep(entry)) {
-      if (entry.action_type === "tool_call") {
-        currentRound = {
-          roundIndex: rounds.length,
-          roundId: `round-${rounds.length}-${entry.timestamp ?? Date.now()}`,
-          timestamp: entry.timestamp ?? new Date().toISOString(),
-          thinkingText: entry.thought ?? "",
-          toolName: entry.tool_name ?? null,
-          toolParams: entry.tool_params ?? {},
-          observation: null,
-          conclusionText: null,
-          phase: "tool_call",
-          isActive: false,
-        };
-        rounds.push(currentRound);
-        continue;
+function resolveInlineError(
+  error?: string,
+): { tone: "error" | "warning"; message: string } | null {
+  if (!error) {
+    return null;
+  }
+  if (/status\s+404/i.test(error)) {
+    return {
+      tone: "warning",
+      message:
+        "The session could not be found (404). It may have expired or the backend detail endpoint is unavailable. You can still type below to start a new diagnosis.",
+    };
+  }
+  return { tone: "error", message: error };
+}
+
+function getDiagnosisStatusBadgeTone(status?: string): BadgeTone {
+  switch (status) {
+    case "resolved":
+    case "closed":
+      return "success";
+    case "error":
+    case "failed":
+    case "escalated":
+      return "danger";
+    case "diagnosing":
+    case "remediating":
+    case "validating":
+    case "testing":
+      return "warning";
+    case "awaiting_approval":
+    case "approval_required":
+      return "info";
+    case "diagnosed":
+    case "approved":
+    case "re_diagnosed":
+    case "proposed_fix_ready":
+      return "accent";
+    default:
+      return "neutral";
+  }
+}
+
+function getSeverityBadgeTone(severity?: string): BadgeTone {
+  switch (severity) {
+    case "critical":
+      return "danger";
+    case "warning":
+      return "warning";
+    case "info":
+      return "info";
+    default:
+      return "neutral";
+  }
+}
+
+function useProgressiveText(
+  text: string,
+  animate: boolean,
+  speedMs = DEMO_TEXT_SPEED_MS,
+  onComplete?: () => void,
+) {
+  const [displayedText, setDisplayedText] = useState(animate ? "" : text);
+  const onCompleteRef = useRef(onComplete);
+
+  useEffect(() => {
+    onCompleteRef.current = onComplete;
+  }, [onComplete]);
+
+  useEffect(() => {
+    if (!animate) {
+      setDisplayedText(text);
+      if (text.length === 0) {
+        onCompleteRef.current?.();
       }
+      return;
+    }
 
-      if (entry.action_type === "conclude" || entry.action_type === "remediate") {
-        const conclusion = entry.thought?.trim();
-        if (!conclusion) {
-          continue;
+    if (text.length === 0) {
+      setDisplayedText("");
+      onCompleteRef.current?.();
+      return;
+    }
+
+    setDisplayedText("");
+    let index = 0;
+    let completed = false;
+    const timer = window.setInterval(() => {
+      index += 1;
+      setDisplayedText(text.slice(0, index));
+      if (index >= text.length) {
+        window.clearInterval(timer);
+        if (!completed) {
+          completed = true;
+          onCompleteRef.current?.();
         }
-        // Walk backward to find a round missing a conclusion
-        for (let i = rounds.length - 1; i >= 0; i--) {
-          if (!rounds[i].conclusionText) {
-            rounds[i].conclusionText = conclusion;
-            if (rounds[i].phase === "observation" || rounds[i].phase === "tool_call") {
-              rounds[i].phase = "complete";
-            }
-            break;
-          }
-        }
       }
-      continue;
-    }
+    }, speedMs);
 
-    // Observation
-    if (currentRound && !currentRound.observation) {
-      currentRound.observation = entry;
-      if (currentRound.phase === "tool_call") {
-        currentRound.phase = "observation";
-      }
-    }
-  }
+    return () => window.clearInterval(timer);
+  }, [animate, speedMs, text]);
 
-  // Mark the last non-complete round as active
-  for (let i = rounds.length - 1; i >= 0; i--) {
-    if (rounds[i].phase !== "complete") {
-      rounds[i].isActive = true;
-      break;
-    }
-  }
-
-  return rounds;
+  return displayedText;
 }
 
-const DEMO_STEP_LABELS = [
-  { id: "1", title: "确认影响范围" },
-  { id: "2", title: "规划观测动作" },
-  { id: "2.1", title: "DeepThink 流式思考" },
-  { id: "3", title: "收集关键观测" },
-  { id: "4", title: "输出初步诊断" },
-  { id: "5", title: "展示候选根因" },
-  { id: "6", title: "生成待审批方案" },
-  { id: "7", title: "人工审批执行" },
-  { id: "8", title: "执行受控修复" },
-  { id: "9", title: "输出最终结果" },
-] as const;
-
-const STEP6_APPROVAL_PLAN: ApprovalPlanPayload = {
-  kind: "approval_plan",
-  candidateRank: 1,
-  diagnosisCertainty: "ambiguous",
-  planId: "plan-candidate-1",
-  rootCause: "异常基准测试进程导致 GPU 资源争用",
-  description: "先小流量排空热点分片，再终止异常 GPU 进程，最后按金丝雀恢复。",
-  estimatedImpact: "仅对单节点分片进行受控操作，业务整体风险可控。",
-  confidence: 0.78,
-  priority: "P1",
-  safetyLevel: "high",
-  canary: {
-    enabled: true,
-    targetPercentage: 0.1,
-    monitorDuration: 120,
-    criteriaMode: "all",
-    maxBatches: 3,
-    autoRollbackOnRegression: true,
-    successCriteria: ["vllm_p95_ms < 300", "gpu_utilization < 0.75"],
-  },
-  steps: [
-    {
-      stepId: 1,
-      description: "先从热点节点排出 10% 金丝雀流量。",
-      tool: "k8s_cordon_drain",
-      timeout: 60,
-      verificationMethod: "wait",
-      rollbackTool: "k8s_uncordon",
-    },
-    {
-      stepId: 2,
-      description: "终止节点上的异常 GPU 进程。",
-      tool: "shell_command",
-      timeout: 45,
-      verificationMethod: "tool_call",
-      rollbackTool: null,
-    },
-  ],
-  rollbackSummary: "步骤 1 支持自动回滚（k8s_uncordon: node-gpu-01）；步骤 2 无自动回滚，保留人工兜底。",
-};
-
-function getDemoStepDisplayLabel(index: number) {
-  return DEMO_STEP_LABELS[index]?.id ?? String(index + 1);
+function ToneBadge({
+  children,
+  tone = "neutral",
+}: {
+  children: ReactNode;
+  tone?: BadgeTone;
+}) {
+  return (
+    <span
+      className={cn(
+        "diagnosis-workspace-badge",
+        `diagnosis-workspace-badge--${tone}`,
+      )}
+    >
+      {children}
+    </span>
+  );
 }
 
-function renderBubbleMeta(meta?: BubbleMeta) {
-  if (!meta) {
+function getApprovalConfidenceMeta(label?: string) {
+  if (!label) {
+    return null;
+  }
+  return /\u7f6e\u4fe1/u.test(label) ? label : `${label} \u7f6e\u4fe1`;
+}
+
+function getApprovalStepDetailLines(step: DiagnosisPlanView["steps"][number]) {
+  const lines: string[] = [];
+  const detail = step.detail?.trim();
+  const paramsSummary = step.paramsSummary?.trim();
+
+  if (detail && detail !== step.title.trim()) {
+    lines.push(detail);
+  }
+
+  if (paramsSummary) {
+    lines.push(paramsSummary);
+  }
+
+  return lines;
+}
+
+function buildApprovalSurfaceView({
+  plan,
+  summary,
+  planVersion,
+  statusLabel,
+  statusTone,
+}: {
+  plan?: DiagnosisPlanView;
+  summary?: DiagnosisSummaryView;
+  planVersion: number | null;
+  statusLabel: string;
+  statusTone: BadgeTone;
+}): ApprovalSurfaceView | null {
+  if (!plan) {
     return null;
   }
 
-  return (
-    <div className="diagnosis-bubble__meta">
-      <span>{formatTimestamp(meta.createdAt)}</span>
-      {meta.toolName ? <span>{meta.toolName}</span> : null}
-    </div>
+  const impactSummary =
+    summary?.impactSummary?.trim() ||
+    plan.safetyLabel?.trim() ||
+    plan.canaryLabel?.trim() ||
+    plan.description.trim();
+  const metaItems = [
+    plan.safetyLabel?.trim(),
+    plan.priorityLabel?.trim(),
+    getApprovalConfidenceMeta(plan.confidenceLabel),
+    planVersion ? `v${planVersion}` : null,
+    plan.canaryLabel?.trim(),
+  ].filter((value): value is string => Boolean(value && value.trim().length > 0));
+  const dedupedMetaItems = metaItems.filter(
+    (value, index, items) => items.indexOf(value) === index,
   );
+
+  return {
+    statusLabel,
+    statusTone,
+    title: plan.title,
+    description: plan.description,
+    impactLabel: summary?.impactSummary?.trim() ? "\u98ce\u9669\u5f71\u54cd" : "\u6267\u884c\u8fb9\u754c",
+    impactSummary,
+    metaItems: dedupedMetaItems,
+    steps: plan.steps,
+    hasTechnicalDetails: plan.steps.some(
+      (step) => getApprovalStepDetailLines(step).length > 0,
+    ),
+  };
 }
 
-function isToolEventPayload(value: unknown): value is ToolEventPayload {
-  return typeof value === "object" && value !== null && (value as ToolEventPayload).kind === "tool_event";
-}
+function StreamingText({
+  text,
+  animate = false,
+  className,
+  onComplete,
+}: {
+  text: string;
+  animate?: boolean;
+  className?: string;
+  onComplete?: () => void;
+}) {
+  const displayedText = useProgressiveText(
+    text,
+    animate,
+    DEMO_TEXT_SPEED_MS,
+    onComplete,
+  );
+  const showCaret = animate && displayedText.length < text.length;
 
-function isThinkingPlanPayload(value: unknown): value is ThinkingPlanPayload {
-  return typeof value === "object" && value !== null && (value as ThinkingPlanPayload).kind === "thinking_plan";
-}
-
-
-function isRootCauseCandidatesPayload(value: unknown): value is RootCauseCandidatesPayload {
-  return typeof value === "object" && value !== null && (value as RootCauseCandidatesPayload).kind === "ranked_candidates";
-}
-
-
-function isApprovalPlanPayload(value: unknown): value is ApprovalPlanPayload {
-  return typeof value === "object" && value !== null && (value as ApprovalPlanPayload).kind === "approval_plan";
-}
-
-function isChatAnswerPayload(value: unknown): value is ChatAnswerPayload {
-  return typeof value === "object" && value !== null && (value as ChatAnswerPayload).kind === "chat_answer";
-}
-
-function renderChatAnswerCard(payload: ChatAnswerPayload) {
   return (
-    <div className="diagnosis-bubble__content">
-      <div>{payload.answer}</div>
-      {payload.thinkingRaw ? (
-        <details className="diagnosis-chat-thinking-raw">
-          <summary>原始推理（调试）</summary>
-          <pre>{payload.thinkingRaw}</pre>
-        </details>
+    <span className={className}>
+      {displayedText}
+      {showCaret ? (
+        <span className="diagnosis-workspace-caret" aria-hidden="true" />
       ) : null}
-    </div>
+    </span>
   );
 }
 
-function renderPlanDetails(plan: RemediationPlan) {
+function MessageRow({
+  item,
+  animate,
+  onStreamComplete,
+}: {
+  item: Extract<DiagnosisTimelineItem, { kind: "message" }>;
+  animate: boolean;
+  onStreamComplete?: () => void;
+}) {
+  const isUser = item.role === "user";
+  const hoverTime = formatTimestamp(item.timestamp);
+
   return (
-    <div className="diagnosis-plan-details">
-      <p className="diagnosis-chat-state-card__copy">
-        根因：{plan.root_cause} | 优先级：{plan.priority} | 置信度：{Math.round((plan.confidence ?? 0) * 100)}%
-      </p>
-      <p className="diagnosis-chat-state-card__copy">方案说明：{plan.description}</p>
-      <p className="diagnosis-chat-state-card__copy">预估影响：{plan.estimated_impact}</p>
-      {plan.steps.length ? (
-        <div className="diagnosis-plan-steps">
-          {plan.steps.map((step) => (
-            <div className="diagnosis-plan-step" key={`${plan.plan_id}-${step.step_id}`}>
-              <p className="diagnosis-chat-state-card__copy">
-                步骤 {step.step_id}：{step.description}
-              </p>
-              <p className="diagnosis-chat-state-card__copy">工具：{step.tool}</p>
-              <p className="diagnosis-chat-state-card__copy">
-                验证：{step.verification.method}
-                {step.verification.query ? ` | query: ${step.verification.query}` : ""}
-                {step.verification.tool ? ` | tool: ${step.verification.tool}` : ""}
+    <article
+      className={cn(
+        "diagnosis-workspace-message-row",
+        isUser && "diagnosis-workspace-message-row--user",
+      )}
+      title={hoverTime}
+    >
+      <div className="diagnosis-workspace-message-row__body">
+        <span
+          className="diagnosis-workspace-message-row__hover-time"
+          aria-hidden="true"
+        >
+          {hoverTime}
+        </span>
+        <p className="diagnosis-workspace-message-row__text">
+          <StreamingText
+            animate={animate && !isUser}
+            onComplete={animate && !isUser ? onStreamComplete : undefined}
+            text={item.content}
+          />
+        </p>
+      </div>
+    </article>
+  );
+}
+function ThinkingBlock({
+  item,
+  animate,
+  onStreamComplete,
+}: {
+  item: Extract<DiagnosisTimelineItem, { kind: "thinking" }>;
+  animate: boolean;
+  onStreamComplete?: () => void;
+}) {
+  const isThinking = item.status === "thinking";
+  const [isExpanded, setIsExpanded] = useState(true);
+
+  useEffect(() => {
+    if (isThinking) {
+      setIsExpanded(true);
+      return;
+    }
+
+    const timer = window.setTimeout(
+      () => setIsExpanded(false),
+      DEMO_THINKING_COLLAPSE_DELAY_MS,
+    );
+    return () => window.clearTimeout(timer);
+  }, [isThinking, item.id]);
+
+  return (
+    <article className="diagnosis-workspace-process-row">
+      <div className="diagnosis-workspace-process-row__body">
+        <button
+          className={cn(
+            "diagnosis-workspace-thinking__toggle",
+            !isThinking && "diagnosis-workspace-thinking__toggle--interactive",
+          )}
+          onClick={() => {
+            if (!isThinking) {
+              setIsExpanded((current) => !current);
+            }
+          }}
+          type="button"
+        >
+          <span
+            className="diagnosis-workspace-thinking__icon"
+            aria-hidden="true"
+          >
+            {isThinking ? (
+              <span className="diagnosis-workspace-thinking__pulse" />
+            ) : (
+              <span
+                className={cn(
+                  "diagnosis-workspace-thinking__chevron",
+                  isExpanded &&
+                    "diagnosis-workspace-thinking__chevron--expanded",
+                )}
+              />
+            )}
+          </span>
+          <span className="diagnosis-workspace-thinking__label-wrap">
+            {isThinking ? (
+              <span
+                className="diagnosis-workspace-thinking__label-tag"
+                aria-hidden="true"
+              >
+                <AppIcon name="spark" size={11} />
+              </span>
+            ) : null}
+            <span
+              className={cn(
+                "diagnosis-workspace-thinking__label",
+                isThinking && "diagnosis-workspace-thinking__label--thinking",
+              )}
+            >
+              {isThinking
+                ? "Thinking..."
+                : formatThoughtDurationLabel(
+                    item.thoughtDurationSec ??
+                      estimateThoughtDurationSecFromContent(item.content),
+                  )}
+            </span>
+          </span>
+          {item.toolName ? (
+            <span className="diagnosis-workspace-thinking__tool">
+              {item.toolName}
+            </span>
+          ) : null}
+        </button>
+
+        {isExpanded ? (
+          <div className="diagnosis-workspace-thinking__panel">
+            <div className="diagnosis-workspace-thinking__content">
+              <p>
+                <StreamingText
+                  animate={animate && isThinking}
+                  onComplete={
+                    animate && isThinking ? onStreamComplete : undefined
+                  }
+                  text={item.content}
+                />
               </p>
             </div>
-          ))}
-        </div>
-      ) : (
-        <p className="diagnosis-chat-state-card__copy">当前计划暂无执行步骤。</p>
-      )}
-    </div>
+          </div>
+        ) : null}
+      </div>
+    </article>
   );
 }
 
-function toJsonText(payload: unknown): string {
-  try {
-    return JSON.stringify(payload ?? {}, null, 2);
-  } catch {
-    return String(payload ?? "");
-  }
-}
+function ToolCard({
+  item,
+}: {
+  item: Extract<DiagnosisTimelineItem, { kind: "tool" }>;
+}) {
+  const [isExpanded, setIsExpanded] = useState(item.status === "loading");
+  const hasDetails =
+    Object.keys(item.params).length > 0 || item.summaryLines.length > 0;
 
-function truncateText(value: string, maxLength = 180): string {
-  if (value.length <= maxLength) {
-    return value;
-  }
-  return `${value.slice(0, maxLength - 3)}...`;
-}
-
-function toCompactValue(value: unknown): string {
-  if (value === null || value === undefined) {
-    return "null";
-  }
-  if (typeof value === "string") {
-    const normalized = value.replace(/\s+/g, " ").trim();
-    return truncateText(normalized || "(empty)");
-  }
-  if (typeof value === "number" || typeof value === "boolean") {
-    return String(value);
-  }
-  if (Array.isArray(value)) {
-    if (!value.length) {
-      return "[]";
-    }
-    const preview = value.slice(0, 2).map((item) => toCompactValue(item)).join(", ");
-    return truncateText(`[${value.length}] ${preview}${value.length > 2 ? ", ..." : ""}`);
-  }
-  if (typeof value === "object") {
-    const keys = Object.keys(value as Record<string, unknown>);
-    return keys.length ? `{${keys.slice(0, 4).join(", ")}${keys.length > 4 ? ", ..." : ""}}` : "{}";
-  }
-  return truncateText(String(value));
-}
-
-function summarizePayload(payload: Record<string, unknown>, maxItems = 5): Array<{ key: string; value: string }> {
-  return Object.entries(payload)
-    .slice(0, maxItems)
-    .map(([key, value]) => ({ key, value: toCompactValue(value) }));
-}
-
-function summarizeResultPayload(result: Record<string, unknown>): string {
-  const keys = Object.keys(result);
-  if (keys.length === 0) {
-    return "工具已执行，未返回结构化字段。";
-  }
-  const preview = keys.slice(0, 4).join("、");
-  return `返回字段：${preview}${keys.length > 4 ? "..." : ""}`;
-}
-
-function buildSessionCards(session: DiagnosisSession | undefined, plan: RemediationPlan | null): SessionCard[] {
-  const cards: SessionCard[] = [];
-  if (!session) {
-    return cards;
-  }
-  const trace = session.trace?.steps ?? [];
-  const fallbackTimestamp = trace.length > 0
-    ? (trace[trace.length - 1]?.timestamp ?? new Date().toISOString())
-    : new Date().toISOString();
-  let pendingLoop: { toolName: string; toolParams: Record<string, unknown>; bufferedConclusion?: string } | null = null;
-  let delayedConclusion: string | undefined;
-
-  trace.forEach((entry, index) => {
-    if ("thought" in entry) {
-      if (entry.action_type === "tool_call") {
-        pendingLoop = {
-          toolName: entry.tool_name ?? "tool_call",
-          toolParams: entry.tool_params ?? {},
-        };
-        return;
-      }
-      if (entry.action_type === "conclude") {
-        const conclusion = entry.thought?.trim();
-        if (!conclusion) {
-          return;
-        }
-        for (let cardIndex = cards.length - 1; cardIndex >= 0; cardIndex -= 1) {
-          const candidate = cards[cardIndex];
-          if (candidate.kind === "loop" && !candidate.conclusion) {
-            candidate.conclusion = conclusion;
-            return;
-          }
-        }
-        if (pendingLoop) {
-          pendingLoop.bufferedConclusion = conclusion;
-        } else {
-          delayedConclusion = conclusion;
-        }
-      }
+  useEffect(() => {
+    if (item.status === "loading") {
+      setIsExpanded(true);
       return;
     }
 
-    const loopCard: SessionLoopCard = {
-      kind: "loop",
-      id: `loop-${index}-${entry.timestamp ?? "now"}`,
-      timestamp: entry.timestamp ?? new Date().toISOString(),
-      toolName: pendingLoop?.toolName ?? entry.tool ?? "tool_result",
-      toolParams: pendingLoop?.toolParams ?? entry.params ?? {},
-      resultSummary: summarizeResultPayload(entry.result ?? {}),
-      resultPayload: entry.result ?? {},
-      conclusion: pendingLoop?.bufferedConclusion ?? delayedConclusion,
-    };
-    cards.push(loopCard);
-    pendingLoop = null;
-    delayedConclusion = undefined;
-  });
-
-  if (session.diagnosis_result) {
-    cards.push({
-      kind: "diagnosis_result",
-      id: `diagnosis-result-${session.session_id}`,
-      timestamp: fallbackTimestamp,
-      rootCause: session.diagnosis_result.root_cause,
-      confidence: session.diagnosis_result.confidence,
-      impactSummary: session.diagnosis_result.impact_summary,
-    });
-  }
-  if (plan) {
-    cards.push({
-      kind: "plan",
-      id: `plan-${plan.plan_id}`,
-      timestamp: fallbackTimestamp,
-      plan,
-    });
-  }
-  return cards;
-}
-
-function renderSessionCard(card: SessionCard) {
-  if (card.kind === "loop") {
-    const paramSummary = summarizePayload(card.toolParams);
-    const resultSummary = summarizePayload(card.resultPayload);
-    return (
-      <div key={card.id} className="diagnosis-session-card">
-        <div className="status-row">
-          <StatusChip tone="accent">循环卡片</StatusChip>
-          <StatusChip tone="neutral">{card.toolName}</StatusChip>
-          <StatusChip tone="neutral">{formatTimestamp(card.timestamp)}</StatusChip>
-        </div>
-        <p className="diagnosis-chat-state-card__copy">{card.resultSummary}</p>
-        <p className="diagnosis-chat-state-card__copy">工具参数摘要</p>
-        {paramSummary.length ? (
-          <ul className="diagnosis-session-card__summary-list">
-            {paramSummary.map((item) => (
-              <li key={`${card.id}-param-${item.key}`} className="diagnosis-session-card__summary-item">
-                <strong>{item.key}</strong>：{item.value}
-              </li>
-            ))}
-          </ul>
-        ) : (
-          <p className="diagnosis-chat-state-card__copy">无参数</p>
-        )}
-        <p className="diagnosis-chat-state-card__copy">工具结果摘要</p>
-        {resultSummary.length ? (
-          <ul className="diagnosis-session-card__summary-list">
-            {resultSummary.map((item) => (
-              <li key={`${card.id}-result-${item.key}`} className="diagnosis-session-card__summary-item">
-                <strong>{item.key}</strong>：{item.value}
-              </li>
-            ))}
-          </ul>
-        ) : (
-          <p className="diagnosis-chat-state-card__copy">无结构化结果</p>
-        )}
-        <Collapse
-          bordered={false}
-          ghost
-          size="small"
-          items={[
-            {
-              key: "params",
-              label: "查看完整工具参数 JSON",
-              children: <pre className="diagnosis-session-card__json">{toJsonText(card.toolParams)}</pre>,
-            },
-            {
-              key: "result",
-              label: "查看完整工具结果 JSON",
-              children: <pre className="diagnosis-session-card__json">{toJsonText(card.resultPayload)}</pre>,
-            },
-          ]}
-        />
-        {card.conclusion ? <p className="diagnosis-chat-state-card__copy">该轮结论：{card.conclusion}</p> : null}
-      </div>
-    );
-  }
-  if (card.kind === "diagnosis_result") {
-    return (
-      <div key={card.id} className="diagnosis-session-card">
-        <div className="status-row">
-          <StatusChip tone="success">诊断结论</StatusChip>
-          <StatusChip tone="neutral">{formatTimestamp(card.timestamp)}</StatusChip>
-        </div>
-        <p className="diagnosis-chat-state-card__copy">根因：{card.rootCause}</p>
-        <p className="diagnosis-chat-state-card__copy">置信度：{Math.round(card.confidence * 100)}%</p>
-        <p className="diagnosis-chat-state-card__copy">影响：{card.impactSummary}</p>
-      </div>
-    );
-  }
-  return (
-    <div key={card.id} className="diagnosis-session-card">
-      <div className="status-row">
-        <StatusChip tone="warning">修复计划</StatusChip>
-        <StatusChip tone="neutral">{card.plan.plan_id}</StatusChip>
-      </div>
-      <p className="diagnosis-chat-state-card__copy">根因：{card.plan.root_cause}</p>
-      <p className="diagnosis-chat-state-card__copy">说明：{card.plan.description}</p>
-      <p className="diagnosis-chat-state-card__copy">步骤数：{card.plan.steps.length}</p>
-    </div>
-  );
-}
-
-function getRootCauseLayerLabel(layer: RankedCandidateItem["rootCauseLayer"]) {
-  switch (layer) {
-    case "hardware":
-      return "硬件层";
-    case "network":
-      return "网络层";
-    case "os":
-      return "系统层";
-    case "platform":
-      return "平台层";
-    case "service":
-      return "服务层";
-    default:
-      return "未知层";
-  }
-}
-
-function getCertaintyLabel(certainty: RootCauseCandidatesPayload["diagnosisCertainty"]) {
-  switch (certainty) {
-    case "confirmed":
-      return "已确认";
-    case "probable":
-      return "高概率";
-    case "ambiguous":
-    default:
-      return "存在歧义";
-  }
-}
-
-
-function getPriorityLabel(priority: ApprovalPlanPriority) {
-  switch (priority) {
-    case "P0":
-      return "P0（立即处理）";
-    case "P1":
-      return "P1（高优先）";
-    case "P2":
-    default:
-      return "P2（常规）";
-  }
-}
-
-function getSafetyLevelLabel(level: ApprovalPlanSafetyLevel) {
-  switch (level) {
-    case "high":
-      return "高（需严格审批）";
-    case "medium":
-      return "中（受控执行）";
-    case "low":
-    default:
-      return "低（可自动化）";
-  }
-}
-
-function formatRatio(value: number) {
-  return `${Math.round(value * 100)}%`;
-}
-function formatConfidence(value: number) {
-  return `${Math.round(value * 100)}%`;
-}
-function renderToolEventCard(payload: ToolEventPayload) {
-  const isLoading = payload.status === "loading";
-  const statusLabel = isLoading ? "正在查询" : "查询完成";
+    setIsExpanded(false);
+  }, [item.id, item.status]);
 
   return (
-    <div className="diagnosis-tool-event">
-      <div className="diagnosis-tool-event__header">
-        <span className={`diagnosis-tool-event__name${isLoading ? " diagnosis-tool-event__name--loading" : ""}`}>
-          {payload.toolName}
-        </span>
-        <span
-          className={`diagnosis-tool-event__status diagnosis-tool-event__status--${
-            isLoading ? "loading" : "success"
-          }`}
+    <article className="diagnosis-workspace-process-row diagnosis-workspace-process-row--tool">
+      <div className="diagnosis-workspace-process-row__body">
+        <button
+          className={cn(
+            "diagnosis-workspace-tool-card",
+            `diagnosis-workspace-tool-card--${item.status}`,
+            hasDetails &&
+              item.status !== "loading" &&
+              "diagnosis-workspace-tool-card--interactive",
+          )}
+          onClick={() => {
+            if (hasDetails && item.status !== "loading") {
+              setIsExpanded((current) => !current);
+            }
+          }}
+          type="button"
         >
-          {statusLabel}
-        </span>
-      </div>
-
-      <p className="diagnosis-tool-event__pair">{payload.stepLabel}</p>
-
-      <Collapse
-        bordered={false}
-        className="diagnosis-tool-event__collapse"
-        ghost
-        items={[
-          {
-            key: "params",
-            label: "查看 tool_params",
-            children: <pre className="diagnosis-tool-event__params">{JSON.stringify(payload.toolParams ?? {}, null, 2)}</pre>,
-          },
-        ]}
-        size="small"
-      />
-
-      {payload.summaryLines?.length ? (
-        <div className="diagnosis-tool-event__result">
-          <p className="diagnosis-tool-event__result-title">关键观测</p>
-          <ul className="diagnosis-tool-event__result-list">
-            {payload.summaryLines.map((line) => (
-              <li key={line}>{line}</li>
-            ))}
-          </ul>
-          <p className="diagnosis-tool-event__observation-note">
-            tool_result 已写入诊断轨迹，并沉淀为一条 Observation。
-          </p>
-        </div>
-      ) : null}
-    </div>
-  );
-}
-
-type StreamingBlockProps = {
-  text: string;
-  speed?: number;
-  mode: "hidden" | "streaming" | "complete";
-  streamingMode?: "simulate" | "live";
-  onComplete?: () => void;
-};
-
-function StreamingBlock({ text, speed = 6, mode, streamingMode = "simulate", onComplete }: StreamingBlockProps) {
-  const isLive = streamingMode === "live";
-  const [visibleLength, setVisibleLength] = useState(mode === "complete" ? text.length : 0);
-
-  useEffect(() => {
-    if (mode === "hidden") {
-      setVisibleLength(0);
-      return;
-    }
-
-    if (mode === "complete") {
-      setVisibleLength(text.length);
-      return;
-    }
-
-    setVisibleLength(0);
-  }, [mode, text]);
-
-  useEffect(() => {
-    if (mode !== "streaming") {
-      return;
-    }
-
-    if (isLive) {
-      onComplete?.();
-      return;
-    }
-
-    if (visibleLength >= text.length) {
-      onComplete?.();
-      return;
-    }
-
-    const timer = window.setTimeout(() => {
-      setVisibleLength((current) => Math.min(current + 1, text.length));
-    }, speed);
-
-    return () => window.clearTimeout(timer);
-  }, [mode, onComplete, speed, text.length, visibleLength, isLive]);
-
-  const renderedText = isLive ? text : text.slice(0, visibleLength);
-  const showCursor = mode === "streaming" && (isLive || visibleLength < text.length);
-
-  return (
-    <pre className="diagnosis-thinking-plan__stream">
-      {renderedText}
-      {showCursor ? <span className="diagnosis-thinking-plan__cursor" aria-hidden="true" /> : null}
-    </pre>
-  );
-}
-
-function ThinkingPlanCard({ payload }: { payload: ThinkingPlanPayload }) {
-  const [thinkingDone, setThinkingDone] = useState(payload.typingStage !== "thinking");
-  const [conclusionDone, setConclusionDone] = useState(payload.typingStage === "complete");
-  const showConclusion = payload.typingStage !== "thinking" && thinkingDone;
-  const showToolSelection = payload.typingStage === "complete" && conclusionDone;
-
-  useEffect(() => {
-    setThinkingDone(payload.typingStage !== "thinking");
-    setConclusionDone(payload.typingStage === "complete");
-  }, [payload.thinkTitle, payload.thinkingText, payload.conclusionText]);
-
-  return (
-    <div className="diagnosis-thinking-plan">
-      <Think
-        className="diagnosis-thinking-plan__think"
-        title={payload.thinkTitle}
-        loading={!showToolSelection}
-        blink={payload.blink}
-        defaultExpanded
-      >
-        <div className="diagnosis-thinking-plan__think-body">
-          <div className="diagnosis-thinking-plan__panel">
-            <div className="diagnosis-thinking-plan__section diagnosis-thinking-plan__section--thinking">
-              <div className="diagnosis-thinking-plan__section-header">
-                <span className="diagnosis-thinking-plan__section-icon diagnosis-thinking-plan__section-icon--thinking">
-                  <AppIcon name="algorithm" size={16} />
-                </span>
-                <div className="diagnosis-thinking-plan__section-copy">
-                  <p className="diagnosis-thinking-plan__section-title">思考过程</p>
-                  <p className="diagnosis-thinking-plan__section-description">展示当前正在组织的观测路径与判断依据。</p>
-                </div>
-              </div>
-              <StreamingBlock
-                text={payload.thinkingText}
-                mode={thinkingDone ? "complete" : "streaming"}
-                speed={3}
-                onComplete={() => setThinkingDone(true)}
+          <div className="diagnosis-workspace-tool-card__header">
+            <div
+              className="diagnosis-workspace-tool-card__status-icon"
+              aria-hidden="true"
+            >
+              <span
+                className={cn(
+                  "diagnosis-workspace-tool-card__status-indicator",
+                  `diagnosis-workspace-tool-card__status-indicator--${item.status}`,
+                )}
               />
             </div>
-
-            {showConclusion ? (
-              <div className="diagnosis-thinking-plan__section diagnosis-thinking-plan__section--answer">
-                <div className="diagnosis-thinking-plan__section-header">
-                  <span className="diagnosis-thinking-plan__section-icon diagnosis-thinking-plan__section-icon--answer">
-                    <AppIcon name="documentCheck" size={16} />
-                  </span>
-                  <div className="diagnosis-thinking-plan__section-copy">
-                    <p className="diagnosis-thinking-plan__section-title">阶段结论</p>
-                    <p className="diagnosis-thinking-plan__section-description">将上一段推理收敛为当前回合的可解释判断。</p>
-                  </div>
-                </div>
-                <StreamingBlock
-                  text={payload.conclusionText}
-                  mode={conclusionDone ? "complete" : "streaming"}
-                  speed={4}
-                  onComplete={() => setConclusionDone(true)}
-                />
-              </div>
-            ) : null}
-
-            {showToolSelection ? (
-              <div className="diagnosis-thinking-plan__tool-call diagnosis-thinking-plan__section diagnosis-thinking-plan__section--tool">
-                <div className="diagnosis-thinking-plan__section-header">
-                  <span className="diagnosis-thinking-plan__section-icon diagnosis-thinking-plan__section-icon--tool">
-                    <AppIcon name="clipboardTasks" size={16} />
-                  </span>
-                  <div className="diagnosis-thinking-plan__section-copy">
-                    <p className="diagnosis-thinking-plan__section-title">下一步工具选择</p>
-                    <p className="diagnosis-thinking-plan__section-description">这里只决定下一步要调用哪个 tool 以及准备传什么参数，当前阶段尚未执行。</p>
-                  </div>
-                </div>
-                <div className="status-row diagnosis-thinking-plan__tool-chips">
-                  <StatusChip tone="info">计划调用</StatusChip>
-                  <StatusChip tone="warning">未执行</StatusChip>
-                </div>
-                <p className="diagnosis-thinking-plan__row">
-                  <span className="diagnosis-thinking-plan__label">工具名</span>
-                  <code className="diagnosis-thinking-plan__value">{payload.toolName}</code>
-                </p>
-                <p className="diagnosis-thinking-plan__row">
-                  <span className="diagnosis-thinking-plan__label">说明</span>
-                  本阶段仅完成 tool 选择与参数草拟，真正执行后的结果将在后续工具消息中展示。
-                </p>
-                <Collapse
-                  bordered={false}
-                  className="diagnosis-thinking-plan__collapse"
-                  ghost
-                  items={[
-                    {
-                      key: "params",
-                      label: "查看计划传入参数",
-                      children: (
-                        <pre className="diagnosis-thinking-plan__params">
-                          {JSON.stringify(payload.toolParams, null, 2)}
-                        </pre>
-                      ),
-                    },
-                  ]}
-                  size="small"
-                />
-              </div>
-            ) : null}
+            <div className="diagnosis-workspace-tool-card__header-copy">
+              <strong>{item.toolName}</strong>
+              {Object.keys(item.params).length > 0 ? (
+                <span>{JSON.stringify(item.params)}</span>
+              ) : null}
+            </div>
+            <span className="diagnosis-workspace-tool-card__status-label">
+              {item.status}
+            </span>
           </div>
-        </div>
-      </Think>
-    </div>
+
+          {isExpanded ? (
+            <div className="diagnosis-workspace-tool-card__body">
+              {item.status === "loading" ? (
+                <div className="diagnosis-workspace-tool-card__loading">
+                  <div>
+                    <span className="diagnosis-workspace-tool-card__loading-indicator" />
+                    <span>Connecting to telemetry stream...</span>
+                  </div>
+                  <div>
+                    <span className="diagnosis-workspace-tool-card__loading-indicator" />
+                    <span>Querying diagnostics context...</span>
+                  </div>
+                </div>
+              ) : (
+                <div className="diagnosis-workspace-tool-card__details">
+                  {Object.keys(item.params).length > 0 ? (
+                    <pre className="diagnosis-workspace-tool-card__params">
+                      {JSON.stringify(item.params, null, 2)}
+                    </pre>
+                  ) : null}
+                  {item.summaryLines.length > 0 ? (
+                    <div className="diagnosis-workspace-tool-card__results">
+                      {item.summaryLines.map((line) => (
+                        <p key={line}>{line}</p>
+                      ))}
+                    </div>
+                  ) : null}
+                </div>
+              )}
+            </div>
+          ) : null}
+        </button>
+      </div>
+    </article>
   );
 }
-function renderThinkingPlanCard(payload: ThinkingPlanPayload) {
-  return <ThinkingPlanCard payload={payload} />;
-}
 
-function ThinkingRoundCard({ round }: { round: ThinkingRound }) {
-  const showToolCall = phaseAtLeast(round.phase, "tool_call") && round.toolName;
-  const showObservation = phaseAtLeast(round.phase, "observation") && round.observation !== null;
-  const showConclusion = round.conclusionText !== null;
-
-  const phaseLabel: Record<ThinkingRoundPhase, string> = {
-    thinking: "思考中",
-    tool_call: "选择工具",
-    observation: "观测中",
-    conclusion: "归纳中",
-    complete: "已完成",
-  };
-
-  const phaseTone: Record<ThinkingRoundPhase, "accent" | "info" | "success" | "warning" | "neutral"> = {
-    thinking: "accent",
-    tool_call: "info",
-    observation: "warning",
-    conclusion: "info",
-    complete: "success",
-  };
+function RCAReportCard({
+  summary,
+  candidates,
+  hypotheses,
+  propagationChain,
+}: {
+  summary: DiagnosisSummaryView;
+  candidates: DiagnosisCandidateView[];
+  hypotheses?: DiagnosisHypothesisView[];
+  propagationChain?: DiagnosisPropagationStepView[];
+}) {
+  const primaryCandidate = candidates[0];
+  const hypothesisRows = hypotheses ?? [];
+  const chainRows = propagationChain ?? [];
+  const rootCauseEntities =
+    summary.rootCauseEntities && summary.rootCauseEntities.length > 0
+      ? summary.rootCauseEntities
+      : (primaryCandidate?.entities ?? []);
 
   return (
-    <div className="diagnosis-thinking-loop__round">
-      <div className="diagnosis-thinking-loop__round-header">
-        <StatusChip tone="accent">第 {round.roundIndex + 1} 轮</StatusChip>
-        <StatusChip tone={phaseTone[round.phase]}>{phaseLabel[round.phase]}</StatusChip>
-        <StatusChip tone="neutral">{formatTimestamp(round.timestamp)}</StatusChip>
-      </div>
-
-      {/* Thinking section */}
-      <div className="diagnosis-thinking-plan__section diagnosis-thinking-plan__section--thinking">
-        <div className="diagnosis-thinking-plan__section-header">
-          <span className="diagnosis-thinking-plan__section-icon diagnosis-thinking-plan__section-icon--thinking">
-            <AppIcon name="algorithm" size={16} />
-          </span>
-          <div className="diagnosis-thinking-plan__section-copy">
-            <p className="diagnosis-thinking-plan__section-title">思考过程</p>
+    <section className="diagnosis-workspace-report-card">
+      <header className="diagnosis-workspace-report-card__header">
+        <div>
+          <div className="diagnosis-workspace-report-card__eyebrow">
+            <ToneBadge tone="neutral">{"\u6839\u56e0\u8bca\u65ad"}</ToneBadge>
+            {summary.priorityLabel ? (
+              <ToneBadge tone="warning">{summary.priorityLabel}</ToneBadge>
+            ) : null}
+            <ToneBadge tone={summary.certaintyTone}>
+              {summary.certaintyLabel}
+            </ToneBadge>
           </div>
-        </div>
-        <StreamingBlock
-          text={round.thinkingText}
-          mode={round.isActive && round.phase === "thinking" ? "streaming" : "complete"}
-          speed={3}
-        />
-      </div>
-
-      {/* Tool call section */}
-      {showToolCall ? (
-        <div className="diagnosis-thinking-plan__section diagnosis-thinking-plan__section--tool">
-          <div className="diagnosis-thinking-plan__section-header">
-            <span className="diagnosis-thinking-plan__section-icon diagnosis-thinking-plan__section-icon--tool">
-              <AppIcon name="clipboardTasks" size={16} />
-            </span>
-            <div className="diagnosis-thinking-plan__section-copy">
-              <p className="diagnosis-thinking-plan__section-title">工具调用</p>
-            </div>
-          </div>
-          <div className="status-row diagnosis-thinking-plan__tool-chips">
-            <StatusChip tone="info">{round.toolName}</StatusChip>
-            <StatusChip tone={phaseAtLeast(round.phase, "observation") ? "success" : "warning"}>
-              {phaseAtLeast(round.phase, "observation") ? "已完成" : "执行中"}
-            </StatusChip>
-          </div>
-          <Collapse
-            bordered={false}
-            className="diagnosis-thinking-plan__collapse"
-            ghost
-            items={[
-              {
-                key: "params",
-                label: "查看工具参数",
-                children: (
-                  <pre className="diagnosis-thinking-plan__params">
-                    {JSON.stringify(round.toolParams, null, 2)}
-                  </pre>
-                ),
-              },
-            ]}
-            size="small"
-          />
-        </div>
-      ) : null}
-
-      {/* Observation section */}
-      {showObservation ? (
-        <div className="diagnosis-thinking-plan__section diagnosis-thinking-plan__section--answer">
-          <div className="diagnosis-thinking-plan__section-header">
-            <span className="diagnosis-thinking-plan__section-icon diagnosis-thinking-plan__section-icon--answer">
-              <AppIcon name="documentCheck" size={16} />
-            </span>
-            <div className="diagnosis-thinking-plan__section-copy">
-              <p className="diagnosis-thinking-plan__section-title">观测结果</p>
-            </div>
-          </div>
-          <p className="diagnosis-chat-state-card__copy">
-            {summarizeResultPayload(round.observation?.result ?? {})}
+          <h3 className="diagnosis-workspace-report-card__title">
+            {summary.title}
+          </h3>
+          <p className="diagnosis-workspace-report-card__subtitle">
+            {summary.subtitle}
           </p>
-          <Collapse
-            bordered={false}
-            ghost
-            size="small"
-            items={[
-              {
-                key: "result",
-                label: "查看完整结果 JSON",
-                children: (
-                  <pre className="diagnosis-session-card__json">
-                    {toJsonText(round.observation?.result ?? {})}
-                  </pre>
-                ),
-              },
-            ]}
-          />
         </div>
-      ) : null}
+        <div className="diagnosis-workspace-report-card__meta">
+          {summary.sessionLabel ? <span>{summary.sessionLabel}</span> : null}
+          <span>{summary.updatedDateTimeLabel ?? "--"}</span>
+        </div>
+      </header>
 
-      {/* Conclusion section */}
-      {showConclusion ? (
-        <div className="diagnosis-thinking-plan__section diagnosis-thinking-plan__section--answer">
-          <div className="diagnosis-thinking-plan__section-header">
-            <span className="diagnosis-thinking-plan__section-icon diagnosis-thinking-plan__section-icon--answer">
-              <AppIcon name="documentCheck" size={16} />
-            </span>
-            <div className="diagnosis-thinking-plan__section-copy">
-              <p className="diagnosis-thinking-plan__section-title">阶段结论</p>
+      <div className="diagnosis-workspace-report-card__grid">
+        <div>
+          <span>{"\u786e\u5b9a\u6027"}</span>
+          <strong>{summary.certaintyLabel}</strong>
+        </div>
+        <div>
+          <span>{"\u7f6e\u4fe1\u5ea6"}</span>
+          <strong>
+            {summary.confidenceRawLabel ?? summary.confidenceLabel}
+          </strong>
+        </div>
+        <div>
+          <span>{"\u4f18\u5148\u7ea7"}</span>
+          <strong>{summary.priorityLabel ?? "--"}</strong>
+        </div>
+        <div>
+          <span>{"\u66f4\u65b0\u65f6\u95f4"}</span>
+          <strong>{summary.updatedTimeLabel ?? "--"}</strong>
+        </div>
+      </div>
+
+      <div className="diagnosis-workspace-report-card__sections">
+        <section className="diagnosis-workspace-report-card__section">
+          <p className="diagnosis-workspace-report-card__section-label">
+            {"\u5f53\u524d\u7ed3\u8bba"}
+          </p>
+          <div className="diagnosis-workspace-report-card__facts">
+            <div className="diagnosis-workspace-report-card__fact-row">
+              <span className="diagnosis-workspace-report-card__fact-label">
+                {"\u6839\u56e0"}
+              </span>
+              <strong className="diagnosis-workspace-report-card__fact-value">
+                {summary.rootCause ?? primaryCandidate?.title ?? "--"}
+              </strong>
+            </div>
+            <div className="diagnosis-workspace-report-card__fact-row">
+              <span className="diagnosis-workspace-report-card__fact-label">
+                {"\u5c42\u7ea7"}
+              </span>
+              <span className="diagnosis-workspace-report-card__fact-value">
+                {summary.rootCauseLayerLabel ??
+                  summary.rootCauseLayer ??
+                  primaryCandidate?.layer ??
+                  "--"}
+              </span>
+            </div>
+            <div className="diagnosis-workspace-report-card__fact-row">
+              <span className="diagnosis-workspace-report-card__fact-label">
+                {"\u5b9e\u4f53"}
+              </span>
+              <span className="diagnosis-workspace-report-card__fact-value">
+                {rootCauseEntities.length > 0
+                  ? rootCauseEntities.join("\uFF0C")
+                  : "--"}
+              </span>
+            </div>
+            <div className="diagnosis-workspace-report-card__fact-row">
+              <span className="diagnosis-workspace-report-card__fact-label">
+                {"\u5f71\u54cd"}
+              </span>
+              <span className="diagnosis-workspace-report-card__fact-value">
+                {summary.impactSummary}
+              </span>
+            </div>
+            <div className="diagnosis-workspace-report-card__fact-row">
+              <span className="diagnosis-workspace-report-card__fact-label">
+                {"\u53d7\u5f71\u54cd\u670d\u52a1"}
+              </span>
+              <span className="diagnosis-workspace-report-card__fact-value">
+                {summary.affectedServices.length > 0
+                  ? summary.affectedServices.join("\uFF0C")
+                  : "--"}
+              </span>
             </div>
           </div>
-          <StreamingBlock
-            text={round.conclusionText ?? ""}
-            mode={round.isActive && round.phase === "conclusion" ? "streaming" : "complete"}
-            speed={4}
-          />
-        </div>
-      ) : null}
-    </div>
+        </section>
+
+        <section className="diagnosis-workspace-report-card__section">
+          <p className="diagnosis-workspace-report-card__section-label">
+            {"\u5019\u9009\u6839\u56e0\uff08" + candidates.length + "\uff09"}
+          </p>
+          <div className="diagnosis-workspace-report-card__candidates">
+            {candidates.length > 0 ? (
+              candidates.map((candidate, index) => (
+                <article
+                  key={candidate.id}
+                  className="diagnosis-workspace-report-card__candidate-item"
+                >
+                  <div className="diagnosis-workspace-report-card__candidate-header">
+                    <strong>
+                      {"#" +
+                        (candidate.rank ?? index + 1) +
+                        " " +
+                        candidate.title}
+                    </strong>
+                    <span>
+                      {"\u7f6e\u4fe1\u5ea6 " + candidate.confidence.toFixed(2)}
+                    </span>
+                  </div>
+                  <p className="diagnosis-workspace-report-card__candidate-copy">
+                    {"\u8bc1\u636e\u6458\u8981\uff1a" +
+                      (candidate.evidenceSummary ?? candidate.summary)}
+                  </p>
+                  {candidate.distinguishingVerification ? (
+                    <p className="diagnosis-workspace-report-card__candidate-copy diagnosis-workspace-report-card__candidate-copy--muted">
+                      {"\u533a\u5206\u9a8c\u8bc1\uff1a" +
+                        candidate.distinguishingVerification}
+                    </p>
+                  ) : null}
+                </article>
+              ))
+            ) : (
+              <p className="diagnosis-workspace-report-card__section-copy">
+                {"\u6682\u65e0\u5019\u9009\u6839\u56e0\u3002"}
+              </p>
+            )}
+          </div>
+        </section>
+
+        <section className="diagnosis-workspace-report-card__section">
+          <p className="diagnosis-workspace-report-card__section-label">
+            {"\u5047\u8bbe\u4e0e\u8bc1\u636e"}
+          </p>
+          <div className="diagnosis-workspace-report-card__hypotheses">
+            {hypothesisRows.length > 0 ? (
+              hypothesisRows.map((item, index) => (
+                <article
+                  key={item.id}
+                  className="diagnosis-workspace-report-card__hypothesis-item"
+                >
+                  <div className="diagnosis-workspace-report-card__hypothesis-header">
+                    <strong>
+                      {String.fromCharCode(65 + index) +
+                        ". " +
+                        item.description}
+                    </strong>
+                    <ToneBadge tone={item.statusTone}>
+                      {item.statusLabel}
+                    </ToneBadge>
+                  </div>
+                  <p className="diagnosis-workspace-report-card__section-copy">
+                    {"\u652f\u6301\u8bc1\u636e " +
+                      item.evidenceForCount +
+                      " \u6761 | \u53cd\u8bc1 " +
+                      item.evidenceAgainstCount +
+                      " \u6761 | \u7f6e\u4fe1\u5ea6 " +
+                      item.confidence.toFixed(2)}
+                  </p>
+                </article>
+              ))
+            ) : (
+              <p className="diagnosis-workspace-report-card__section-copy">
+                {"\u6682\u65e0\u5047\u8bbe\u8bc1\u636e\u6570\u636e\u3002"}
+              </p>
+            )}
+          </div>
+        </section>
+
+        <details className="diagnosis-workspace-report-card__propagation">
+          <summary className="diagnosis-workspace-report-card__section-label">
+            {"\u4f20\u64ad\u94fe\u8def\uff08\u6298\u53e0\uff09"}
+          </summary>
+          <div className="diagnosis-workspace-report-card__propagation-body">
+            {chainRows.length > 0 ? (
+              chainRows.map((step) => (
+                <article
+                  key={step.id}
+                  className="diagnosis-workspace-report-card__propagation-item"
+                >
+                  <p>
+                    {step.entityId +
+                      " -> " +
+                      step.metric +
+                      " -> " +
+                      step.valueBefore +
+                      " -> " +
+                      step.valueAfter +
+                      " -> " +
+                      step.description}
+                  </p>
+                </article>
+              ))
+            ) : (
+              <p className="diagnosis-workspace-report-card__section-copy">
+                {"\u6682\u65e0\u4f20\u64ad\u94fe\u8def\u6570\u636e\u3002"}
+              </p>
+            )}
+          </div>
+        </details>
+      </div>
+    </section>
+  );
+}
+function SystemEventBlock({
+  item,
+}: {
+  item: Extract<DiagnosisTimelineItem, { kind: "system" }>;
+}) {
+  const [isExpanded, setIsExpanded] = useState(false);
+  const hoverTime = formatTimestamp(item.timestamp);
+  const categoryLabel =
+    item.eventKind === "approval_result"
+      ? "Approval Audit"
+      : "Execution Progress";
+
+  return (
+    <article
+      className="diagnosis-workspace-process-row diagnosis-workspace-process-row--system"
+      title={hoverTime}
+    >
+      <div className="diagnosis-workspace-process-row__body">
+        <button
+          className="diagnosis-workspace-system-event__toggle"
+          onClick={() => setIsExpanded((current) => !current)}
+          type="button"
+        >
+          <span className="diagnosis-workspace-thinking__icon" aria-hidden="true">
+            <span
+              className={cn(
+                "diagnosis-workspace-thinking__chevron",
+                isExpanded && "diagnosis-workspace-thinking__chevron--expanded",
+              )}
+            />
+          </span>
+          <span className="diagnosis-workspace-system-event__label-wrap">
+            <ToneBadge tone={item.statusTone}>{categoryLabel}</ToneBadge>
+            <span className="diagnosis-workspace-system-event__summary">
+              {item.summary}
+            </span>
+          </span>
+          <span className="diagnosis-workspace-system-event__time">
+            {hoverTime}
+          </span>
+        </button>
+
+        {isExpanded ? (
+          <div className="diagnosis-workspace-system-event__panel">
+            <div className="diagnosis-workspace-system-event__content">
+              {item.details.map((detail, index) => (
+                <p key={`${item.id}-${index}`}>{detail}</p>
+              ))}
+            </div>
+          </div>
+        ) : null}
+      </div>
+    </article>
   );
 }
 
-function ThinkingLoopVisualization({
-  rounds,
-  diagnosisResult,
-  effectivePlan,
+function DemoApprovalCard({
+  open,
+  plan,
+  summary,
+  rejectReason,
+  rejectExpanded,
+  isSubmitting,
+  resolution,
+  onRejectReasonChange,
+  onExpandReject,
+  onCancelReject,
+  onApprove,
+  onReject,
 }: {
-  rounds: ThinkingRound[];
-  diagnosisResult: DiagnosisSession["diagnosis_result"] | null;
-  effectivePlan: RemediationPlan | null;
+  open: boolean;
+  plan?: DiagnosisPlanView;
+  summary?: DiagnosisSummaryView;
+  rejectReason: string;
+  rejectExpanded: boolean;
+  isSubmitting: boolean;
+  resolution: DemoApprovalDecision | null;
+  onRejectReasonChange: (value: string) => void;
+  onExpandReject: () => void;
+  onCancelReject: () => void;
+  onApprove: () => void;
+  onReject: () => void;
 }) {
-  if (!rounds.length) {
+  const surfaceView = buildApprovalSurfaceView({
+    plan,
+    summary,
+    planVersion: null,
+    statusLabel:
+      resolution === "approved"
+        ? "\u5df2\u6279\u51c6\u6267\u884c"
+        : resolution === "rejected"
+          ? "\u5df2\u6279\u51c6\u6267\u884c"
+          : "\u5f85\u5ba1\u6279",
+    statusTone:
+      resolution === "approved"
+        ? "success"
+        : resolution === "rejected"
+          ? "danger"
+          : "info",
+  });
+  const resolutionState: ApprovalSurfaceResolution | null =
+    resolution === null
+      ? null
+      : {
+          label: resolution === "approved" ? "\u5df2\u6279\u51c6\u6267\u884c" : "\u5df2\u62d2\u7edd\u6267\u884c",
+          tone: resolution === "approved" ? "success" : "danger",
+          description:
+            resolution === "approved"
+              ? "\u6f14\u793a\u5ba1\u6279\u5df2\u8bb0\u5f55\u901a\u8fc7\uff0c\u540e\u7eed\u4f1a\u7ee7\u7eed\u5c55\u793a\u6267\u884c\u4e0e\u9a8c\u8bc1\u8fdb\u5ea6\u3002"
+              : rejectReason.trim()
+                ? `\u6f14\u793a\u5ba1\u6279\u5df2\u8bb0\u5f55\u62d2\u7edd\uff1a${rejectReason.trim()}`
+                : "\u6f14\u793a\u5ba1\u6279\u5df2\u8bb0\u5f55\u5f53\u524d\u65b9\u6848\u88ab\u62d2\u7edd\u6267\u884c\u3002",
+        };
+
+  return (
+    <ApprovalSurface
+      approveButtonTestId="diagnosis-demo-approve-button"
+      canApprove
+      dataTestId="diagnosis-demo-approval-card"
+      isSubmitting={isSubmitting}
+      onApprove={onApprove}
+      onCancelReject={onCancelReject}
+      onExpandReject={onExpandReject}
+      onReject={onReject}
+      onRejectReasonChange={onRejectReasonChange}
+      open={open}
+      rejectButtonTestId="diagnosis-demo-reject-button"
+      rejectExpanded={rejectExpanded}
+      rejectReason={rejectReason}
+      rejectReasonId="diagnosis-demo-approval-reason"
+      rejectReasonTestId="diagnosis-demo-approval-reason"
+      resolution={resolutionState}
+      surfaceView={surfaceView}
+      variant="floating"
+    />
+  );
+}
+
+function ApprovalSurface({
+  open,
+  surfaceView,
+  resolution,
+  rejectReason,
+  rejectExpanded,
+  canApprove,
+  approvalBlockReason,
+  isSubmitting,
+  onRejectReasonChange,
+  onExpandReject,
+  onCancelReject,
+  onApprove,
+  onReject,
+  dataTestId,
+  rejectButtonTestId,
+  approveButtonTestId,
+  rejectReasonTestId,
+  rejectReasonId,
+  variant,
+}: {
+  open: boolean;
+  surfaceView: ApprovalSurfaceView | null;
+  resolution: ApprovalSurfaceResolution | null;
+  rejectReason: string;
+  rejectExpanded: boolean;
+  canApprove: boolean;
+  approvalBlockReason?: string;
+  isSubmitting: boolean;
+  onRejectReasonChange: (value: string) => void;
+  onExpandReject: () => void;
+  onCancelReject: () => void;
+  onApprove: () => void;
+  onReject: () => void;
+  dataTestId: string;
+  rejectButtonTestId: string;
+  approveButtonTestId: string;
+  rejectReasonTestId: string;
+  rejectReasonId: string;
+  variant: "floating" | "inline";
+}) {
+  const [showTechnicalDetails, setShowTechnicalDetails] = useState(false);
+
+  useEffect(() => {
+    setShowTechnicalDetails(false);
+  }, [surfaceView?.title, resolution?.label]);
+
+  if (!open || !surfaceView) {
     return null;
   }
 
-  const lastCompleteIndex = rounds.reduce(
-    (acc, round, i) => (round.phase === "complete" ? i : acc),
-    -1,
-  );
+  const surfaceTone = resolution?.tone ?? surfaceView.statusTone;
+  const surfaceLabel = resolution?.label ?? surfaceView.statusLabel;
+  const rejectSubmitDisabled =
+    isSubmitting || !canApprove || !rejectReason.trim();
 
   return (
-    <div className="diagnosis-thinking-loop">
-      {/* Round indicator bar */}
-      <div className="diagnosis-thinking-loop__indicator-bar">
-        {rounds.map((round, index) => {
-          const isCompleted = round.phase === "complete";
-          const isActive = round.isActive;
-          const stateClassName = isCompleted
-            ? "completed"
-            : isActive
-              ? "active"
-              : "pending";
+    <section
+      aria-live="polite"
+      className={cn(
+        "diagnosis-workspace-approval-surface",
+        `diagnosis-workspace-approval-surface--${variant}`,
+        resolution?.tone === "success" &&
+          "diagnosis-workspace-approval-surface--approved",
+        resolution?.tone === "danger" &&
+          "diagnosis-workspace-approval-surface--rejected",
+      )}
+      data-testid={dataTestId}
+    >
+      <header className="diagnosis-workspace-approval-surface__header">
+        <div>
+          <div className="diagnosis-workspace-approval-surface__eyebrow">
+            <ToneBadge tone={surfaceTone}>{surfaceLabel}</ToneBadge>
+          </div>
+          <h3 className="diagnosis-workspace-approval-surface__title">
+            {surfaceView.title}
+          </h3>
+          <p className="diagnosis-workspace-approval-surface__description">
+            {surfaceView.description}
+          </p>
+        </div>
+      </header>
 
-          return (
-            <div key={round.roundId} className="diagnosis-thinking-loop__indicator-group">
-              {index > 0 ? <span className="diagnosis-thinking-loop__indicator-line" /> : null}
+      <div className="diagnosis-workspace-approval-surface__body">
+        {surfaceView.metaItems.length > 0 ? (
+          <div className="diagnosis-workspace-approval-surface__meta-row">
+            {surfaceView.metaItems.map((item) => (
               <span
-                className={`diagnosis-thinking-loop__indicator-dot diagnosis-thinking-loop__indicator-dot--${stateClassName}`}
-                title={`第 ${index + 1} 轮`}
+                className="diagnosis-workspace-approval-surface__meta-item"
+                key={item}
               >
-                {isCompleted ? "✓" : index + 1}
+                {item}
               </span>
-            </div>
-          );
-        })}
-      </div>
-
-      {/* Round cards with connectors */}
-      {rounds.map((round, index) => (
-        <div key={round.roundId}>
-          <ThinkingRoundCard round={round} />
-          {index < rounds.length - 1 ? (
-            <div className="diagnosis-thinking-loop__connector" />
-          ) : null}
-        </div>
-      ))}
-
-      {/* Final diagnosis card */}
-      {diagnosisResult ? (
-        <>
-          <div className="diagnosis-thinking-loop__connector" />
-          <div className="diagnosis-session-card">
-            <div className="status-row">
-              <StatusChip tone="success">诊断结论</StatusChip>
-              <StatusChip tone="neutral">{formatTimestamp(new Date().toISOString())}</StatusChip>
-            </div>
-            <p className="diagnosis-chat-state-card__copy">根因：{diagnosisResult.root_cause}</p>
-            <p className="diagnosis-chat-state-card__copy">
-              置信度：{Math.round((diagnosisResult.confidence ?? 0) * 100)}%
-            </p>
-            <p className="diagnosis-chat-state-card__copy">影响：{diagnosisResult.impact_summary}</p>
+            ))}
           </div>
-        </>
-      ) : null}
+        ) : null}
 
-      {/* Remediation plan card */}
-      {effectivePlan ? (
-        <>
-          <div className="diagnosis-thinking-loop__connector" />
-          <div className="diagnosis-session-card">
-            <div className="status-row">
-              <StatusChip tone="warning">修复计划</StatusChip>
-              <StatusChip tone="neutral">{effectivePlan.plan_id}</StatusChip>
-            </div>
-            <p className="diagnosis-chat-state-card__copy">根因：{effectivePlan.root_cause}</p>
-            <p className="diagnosis-chat-state-card__copy">说明：{effectivePlan.description}</p>
-            <p className="diagnosis-chat-state-card__copy">步骤数：{effectivePlan.steps.length}</p>
-          </div>
-        </>
-      ) : null}
-    </div>
-  );
-}
-
-function renderRootCauseCandidatesCard(payload: RootCauseCandidatesPayload) {
-  const defaultActiveKey = payload.candidates.length ? [String(payload.candidates[0].rank)] : [];
-
-  return (
-    <div className="diagnosis-rootcause">
-      <div className="diagnosis-rootcause__header">
-        <p className="diagnosis-rootcause__title">候选根因</p>
-        <span className={`diagnosis-rootcause__certainty diagnosis-rootcause__certainty--${payload.diagnosisCertainty}`}>
-          诊断确定性：{getCertaintyLabel(payload.diagnosisCertainty)}
-        </span>
-      </div>
-      <p className="diagnosis-rootcause__summary">{payload.summary}</p>
-      <Collapse
-        className="diagnosis-rootcause__collapse"
-        defaultActiveKey={defaultActiveKey}
-        ghost
-        items={payload.candidates.map((candidate) => ({
-          key: String(candidate.rank),
-          label: (
-            <div className="diagnosis-rootcause__item-title">
-              <strong>{`#${candidate.rank} ${candidate.rootCause}`}</strong>
-              <span>{`置信度 ${formatConfidence(candidate.confidence)}`}</span>
-            </div>
-          ),
-          children: (
-            <div className="diagnosis-rootcause__item-body">
-              <p>
-                <span>根因层级：</span>
-                {getRootCauseLayerLabel(candidate.rootCauseLayer)}
-              </p>
-              <p>
-                <span>影响实体：</span>
-                {candidate.rootCauseEntities.join("、") || "暂无"}
-              </p>
-              <p>
-                <span>证据摘要：</span>
-                {candidate.evidenceSummary}
-              </p>
-              {candidate.distinguishingVerification ? (
-                <p>
-                  <span>区分性验证：</span>
-                  {candidate.distinguishingVerification}
-                </p>
-              ) : null}
-              <p>
-                <span>方案状态：</span>
-                {candidate.hasRecommendedFix ? "可生成待审批方案" : "暂无推荐方案"}
-              </p>
-            </div>
-          ),
-        }))}
-      />
-    </div>
-  );
-}
-
-
-function renderApprovalPlanCard(payload: ApprovalPlanPayload) {
-  const defaultActiveKey = payload.steps.length ? [String(payload.steps[0].stepId)] : [];
-
-  return (
-    <div className="diagnosis-approval-plan">
-      <div className="diagnosis-approval-plan__header">
-        <p className="diagnosis-approval-plan__title">待审批方案</p>
-        <div className="diagnosis-approval-plan__chips">
-          <span className="diagnosis-approval-plan__chip">候选根因 #{payload.candidateRank}</span>
-          <span className="diagnosis-approval-plan__chip diagnosis-approval-plan__chip--certainty">
-            诊断确定性：{getCertaintyLabel(payload.diagnosisCertainty)}
+        <section className="diagnosis-workspace-approval-surface__impact">
+          <span className="diagnosis-workspace-approval-surface__section-label">
+            {surfaceView.impactLabel}
           </span>
-        </div>
-      </div>
+          <p>{surfaceView.impactSummary}</p>
+        </section>
 
-      <p className="diagnosis-approval-plan__summary">已基于优先级最高的候选根因生成待审批修复方案，请在审批前确认风险边界。</p>
+        <section className="diagnosis-workspace-approval-surface__steps">
+          <span className="diagnosis-workspace-approval-surface__section-label">
+            \u6267\u884c\u6b65\u9aa4
+          </span>
+          <ol className="diagnosis-workspace-approval-surface__actions">
+            {surfaceView.steps.map((step, index) => (
+              <li key={step.id}>
+                <span>{index + 1}</span>
+                <div>
+                  <strong>{step.title}</strong>
+                </div>
+              </li>
+            ))}
+          </ol>
+        </section>
 
-      <div className="diagnosis-approval-plan__facts">
-        <p>
-          <span>方案 ID：</span>
-          <code>{payload.planId}</code>
-        </p>
-        <p>
-          <span>根因：</span>
-          {payload.rootCause}
-        </p>
-        <p>
-          <span>方案描述：</span>
-          {payload.description}
-        </p>
-        <p>
-          <span>预估影响：</span>
-          {payload.estimatedImpact}
-        </p>
-        <p>
-          <span>方案置信度：</span>
-          {formatConfidence(payload.confidence)}
-        </p>
-        <p>
-          <span>优先级：</span>
-          {getPriorityLabel(payload.priority)}
-        </p>
-        <p>
-          <span>安全等级：</span>
-          {getSafetyLevelLabel(payload.safetyLevel)}
-        </p>
-        <p>
-          <span>执行步骤：</span>
-          {payload.steps.length} 步
-        </p>
-      </div>
+        {surfaceView.hasTechnicalDetails ? (
+          <div className="diagnosis-workspace-approval-surface__details">
+            <button
+              className="diagnosis-workspace-approval-surface__details-toggle"
+              onClick={() =>
+                setShowTechnicalDetails((current) => !current)
+              }
+              type="button"
+            >
+              {showTechnicalDetails ? "\u6536\u8d77\u6267\u884c\u7ec6\u8282" : "\u67e5\u770b\u6267\u884c\u7ec6\u8282"}
+            </button>
+            {showTechnicalDetails ? (
+              <div className="diagnosis-workspace-approval-surface__details-body">
+                {surfaceView.steps.map((step, index) => {
+                  const detailLines = getApprovalStepDetailLines(step);
+                  if (detailLines.length === 0) {
+                    return null;
+                  }
 
-      <div className="diagnosis-approval-plan__canary">
-        <p className="diagnosis-approval-plan__canary-title">金丝雀边界</p>
-        <p className="diagnosis-approval-plan__canary-meta">
-          目标流量 {formatRatio(payload.canary.targetPercentage)} · 观察 {payload.canary.monitorDuration} 秒 · 判定模式
-          {payload.canary.criteriaMode === "all" ? " 全部满足" : " 任一满足"}
-        </p>
-        <ul className="diagnosis-approval-plan__canary-list">
-          {payload.canary.successCriteria.map((criterion) => (
-            <li key={criterion}>{criterion}</li>
-          ))}
-        </ul>
-      </div>
+                  return (
+                    <div
+                      className="diagnosis-workspace-approval-surface__details-item"
+                      key={`${step.id}-details`}
+                    >
+                      <strong>{`\u6b65\u9aa4 ${index + 1} ${step.title}`}</strong>
+                      {detailLines.map((line, lineIndex) => (
+                        <p key={`${step.id}-${lineIndex}`}>{line}</p>
+                      ))}
+                    </div>
+                  );
+                })}
+              </div>
+            ) : null}
+          </div>
+        ) : null}
 
-      <Collapse
-        className="diagnosis-approval-plan__steps"
-        defaultActiveKey={defaultActiveKey}
-        ghost
-        items={payload.steps.map((step) => ({
-          key: String(step.stepId),
-          label: (
-            <div className="diagnosis-approval-plan__step-title">
-              <strong>{`步骤 ${step.stepId}：${step.description}`}</strong>
-              <span>{`验证方式 ${step.verificationMethod}`}</span>
-            </div>
-          ),
-          children: (
-            <div className="diagnosis-approval-plan__step-body">
-              <p>
-                <span>执行工具：</span>
-                <code>{step.tool}</code>
+        {isSubmitting ? (
+          <div className="diagnosis-workspace-approval-surface__updating">
+            \u6267\u884c\u6b65\u9aa4??...
+          </div>
+        ) : null}
+
+        {resolution ? (
+          <div className="diagnosis-workspace-approval-surface__resolved">
+            <ToneBadge tone={resolution.tone}>{resolution.label}</ToneBadge>
+            <p>{resolution.description}</p>
+          </div>
+        ) : null}
+
+        {!resolution && rejectExpanded ? (
+          <div className="diagnosis-workspace-approval-surface__editor">
+            <label htmlFor={rejectReasonId}>\u62d2\u7edd\u539f\u56e0\uff08\u62d2\u7edd\u65f6\u5fc5\u586b\uff09</label>
+            <textarea
+              data-testid={rejectReasonTestId}
+              id={rejectReasonId}
+              onChange={(event) => onRejectReasonChange(event.target.value)}
+              placeholder="\u8bf7\u8bf4\u660e\u4e3a\u4ec0\u4e48\u4e0d\u540c\u610f\u6267\u884c\u8be5\u4fee\u590d\u65b9\u6848"
+              rows={3}
+              value={rejectReason}
+            />
+            {approvalBlockReason ? (
+              <p className="diagnosis-workspace-approval-surface__note diagnosis-workspace-approval-surface__note--warning">
+                {approvalBlockReason}
               </p>
-              <p>
-                <span>超时时间：</span>
-                {step.timeout} 秒
-              </p>
-              <p>
-                <span>回滚工具：</span>
-                {step.rollbackTool ?? "无自动回滚"}
-              </p>
-            </div>
-          ),
-        }))}
-      />
+            ) : null}
+          </div>
+        ) : null}
 
-      <p className="diagnosis-approval-plan__rollback">回滚摘要：{payload.rollbackSummary}</p>
-    </div>
+        {!resolution ? (
+          <div className="diagnosis-workspace-approval-surface__footer">
+            {rejectExpanded ? (
+              <button
+                className="diagnosis-workspace-action-btn"
+                onClick={onCancelReject}
+                type="button"
+              >
+                \u53d6\u6d88
+              </button>
+            ) : null}
+            <button
+              className="diagnosis-workspace-action-btn"
+              data-testid={rejectButtonTestId}
+              disabled={
+                rejectExpanded ? rejectSubmitDisabled : isSubmitting || !canApprove
+              }
+              onClick={rejectExpanded ? onReject : onExpandReject}
+              type="button"
+            >
+              {isSubmitting ? "\u6b63\u5728\u63d0\u4ea4..." : rejectExpanded ? "\u786e\u8ba4\u62d2\u7edd" : "\u62d2\u7edd"}
+            </button>
+            <button
+              className="diagnosis-workspace-action-btn diagnosis-workspace-action-btn--primary"
+              data-testid={approveButtonTestId}
+              disabled={isSubmitting || !canApprove}
+              onClick={onApprove}
+              type="button"
+            >
+              {isSubmitting ? "\u6b63\u5728\u63d0\u4ea4..." : "\u540c\u610f\u6267\u884c"}
+            </button>
+          </div>
+        ) : null}
+      </div>
+    </section>
   );
 }
+
+function ApprovalOverlay({
+  open,
+  plan,
+  summary,
+  statusLabel,
+  statusTone,
+  planVersion,
+  rejectReason,
+  rejectExpanded,
+  canApprove,
+  approvalBlockReason,
+  isSubmitting,
+  onRejectReasonChange,
+  onExpandReject,
+  onCancelReject,
+  onApprove,
+  onReject,
+}: {
+  open: boolean;
+  plan?: DiagnosisPlanView;
+  summary?: DiagnosisSummaryView;
+  statusLabel: string;
+  statusTone: BadgeTone;
+  planVersion: number | null;
+  rejectReason: string;
+  rejectExpanded: boolean;
+  canApprove: boolean;
+  approvalBlockReason?: string;
+  isSubmitting: boolean;
+  onRejectReasonChange: (value: string) => void;
+  onExpandReject: () => void;
+  onCancelReject: () => void;
+  onApprove: () => void;
+  onReject: () => void;
+}) {
+  const surfaceView = buildApprovalSurfaceView({
+    plan,
+    summary,
+    planVersion,
+    statusLabel,
+    statusTone,
+  });
+
+  return (
+    <ApprovalSurface
+      approvalBlockReason={approvalBlockReason}
+      approveButtonTestId="diagnosis-approve-button"
+      canApprove={canApprove}
+      dataTestId="diagnosis-approval-overlay"
+      isSubmitting={isSubmitting}
+      onApprove={onApprove}
+      onCancelReject={onCancelReject}
+      onExpandReject={onExpandReject}
+      onReject={onReject}
+      onRejectReasonChange={onRejectReasonChange}
+      open={open}
+      rejectButtonTestId="diagnosis-reject-button"
+      rejectExpanded={rejectExpanded}
+      rejectReason={rejectReason}
+      rejectReasonId="diagnosis-approval-reason"
+      rejectReasonTestId="diagnosis-approval-reason"
+      resolution={null}
+      surfaceView={surfaceView}
+      variant="floating"
+    />
+  );
+}
+
 function DiagnosisPage() {
   const params = useParams<{ sessionId?: string }>();
+  const routeSessionId = (params.sessionId ?? "").trim();
+  const shouldBootstrapLiveSession = routeSessionId.length > 0;
   const [draft, setDraft] = useState("");
-  const [planInstruction, setPlanInstruction] = useState("");
-  const [demoActiveStep, setDemoActiveStep] = useState(0);
-  const [isExecutingDemoStep, setIsExecutingDemoStep] = useState(false);
-  const [demoMessages, setDemoMessages] = useState<DisplayMessage[]>([]);
-  const demoStepTimerRef = useRef<number | undefined>(undefined);
+  const [demoTimeline, setDemoTimeline] = useState<
+    DiagnosisTimelineItem[]
+  >([]);
+  const [demoCandidates, setDemoCandidates] = useState<
+    DiagnosisCandidateView[]
+  >([]);
+  const [demoSummary, setDemoSummary] = useState<
+    DiagnosisSummaryView | undefined
+  >();
+  const [demoPlan, setDemoPlan] = useState<
+    DiagnosisPlanView | undefined
+  >();
+  const [demoHypotheses, setDemoHypotheses] = useState<
+    DiagnosisHypothesisView[]
+  >([]);
+  const [demoPropagationChain, setDemoPropagationChain] = useState<
+    DiagnosisPropagationStepView[]
+  >([]);
+  const [demoState, setDemoState] = useState<"idle" | "running" | "complete">(
+    "idle",
+  );
+  const [lastDemoPrompt, setLastDemoPrompt] = useState("");
+  const [demoApprovalCardOpen, setDemoApprovalCardOpen] = useState(false);
+  const [demoApprovalReason, setDemoApprovalReason] = useState("");
+  const [demoRejectEditorOpen, setDemoRejectEditorOpen] = useState(false);
+  const [demoApprovalDecision, setDemoApprovalDecision] =
+    useState<DemoApprovalDecision | null>(null);
+  const [isSubmittingDemoApproval, setIsSubmittingDemoApproval] =
+    useState(false);
+  const [approvalReason, setApprovalReason] = useState("");
+  const [approvalRejectEditorOpen, setApprovalRejectEditorOpen] =
+    useState(false);
+  const [activeStreamingMessageId, setActiveStreamingMessageId] = useState<
+    string | null
+  >(null);
+  const [liveTimeline, setLiveTimeline] = useState<
+    DiagnosisTimelineItem[]
+  >([]);
+
+  const feedRef = useRef<HTMLDivElement | null>(null);
+  const pendingAutoScrollFrameRef = useRef<number | null>(null);
+  const autoScrollEnabledRef = useRef(true);
+  const demoTimerRef = useRef<number[]>([]);
+  const demoRunTokenRef = useRef(0);
+  const demoApprovalRevealTimerRef = useRef<number | null>(null);
+  const demoApprovalSubmitTimerRef = useRef<number | null>(null);
+
+  const messageStreamResolversRef = useRef<Map<string, () => void>>(new Map());
+  const messageStreamFallbackTimersRef = useRef<Map<string, number>>(new Map());
+
+  const thinkingStreamResolversRef = useRef<Map<string, () => void>>(new Map());
+  const thinkingStreamFallbackTimersRef = useRef<Map<string, number>>(
+    new Map(),
+  );
+  const demoThinkingStartedAtRef = useRef<Map<string, number>>(new Map());
+  const demoToolLoadingStartedAtRef = useRef<Map<string, number>>(new Map());
+
+  const liveToolWaiterResolversRef = useRef<Map<string, () => void>>(new Map());
+  const liveToolTimeoutTimersRef = useRef<Map<string, number>>(new Map());
+
+  const liveTimelineRef = useRef<DiagnosisTimelineItem[]>([]);
+  const liveQueuedItemsRef = useRef<DiagnosisTimelineItem[]>([]);
+  const liveQueuedIdsRef = useRef<Set<string>>(new Set());
+  const liveDisplayedIdsRef = useRef<Set<string>>(new Set());
+  const liveQueueProcessingRef = useRef(false);
+  const liveQueueTokenRef = useRef(0);
+  const latestLiveSourceByIdRef = useRef<
+    Map<string, DiagnosisTimelineItem>
+  >(new Map());
+  const initializedLiveSessionIdRef = useRef<string | null>(null);
 
   const {
     session,
     activeSessionId,
     messages,
     events,
-    isLoadingSession,
+    localAuditRecords,
     bootstrapStatus,
     traceStatus,
+    isLoadingSession,
     isSendingMessage,
-    isRevisingPlan,
-    isApprovingPlan,
-    canApprove,
-    approvalBlockReason,
-    currentPlanVersion,
-    latestPlanVersion,
-    approvedPlanVersion,
-    hasPlan,
-    planMissingReason,
-    effectiveReviseInstruction,
-    chatContextApplied,
-    chatContextMeta,
     connectionState,
     error,
+    isApprovingPlan,
+    approvalOverlayOpen,
+    latestPlanVersion,
+    canApprove,
+    approvalBlockReason,
     bootstrapSession,
     sendMessage,
-    revisePlan,
     approvePlan,
     applyEvent,
     setConnectionState,
   } = useDiagnosisStore();
 
+  const liveView = useMemo(
+    () => buildDiagnosisLiveView(session, messages, events, localAuditRecords),
+    [events, localAuditRecords, messages, session],
+  );
+  const hasLiveSession =
+    shouldBootstrapLiveSession &&
+    bootstrapStatus === "ready" &&
+    Boolean(session) &&
+    Boolean(activeSessionId);
+
   useEffect(() => {
-    void bootstrapSession(params.sessionId);
-  }, [bootstrapSession, params.sessionId]);
+    if (!shouldBootstrapLiveSession) {
+      return;
+    }
+    void bootstrapSession(routeSessionId);
+  }, [bootstrapSession, routeSessionId, shouldBootstrapLiveSession]);
+
+  useEffect(() => {
+    setApprovalReason("");
+    setApprovalRejectEditorOpen(false);
+  }, [activeSessionId, latestPlanVersion]);
+
+  const handleApprovePlan = useCallback(async () => {
+    try {
+      await approvePlan({ approved: true });
+      setApprovalReason("");
+      setApprovalRejectEditorOpen(false);
+    } catch {
+      // Store error state handles UI recovery.
+    }
+  }, [approvePlan]);
+
+  const handleRejectPlan = useCallback(async () => {
+    const reason = approvalReason.trim();
+    if (!reason) {
+      return;
+    }
+
+    try {
+      await approvePlan({ approved: false, reason });
+      setApprovalReason("");
+      setApprovalRejectEditorOpen(false);
+    } catch {
+      // Store error state handles UI recovery.
+    }
+  }, [approvalReason, approvePlan]);
+
+  const clearDemoTimers = useCallback(() => {
+    demoTimerRef.current.forEach((timerId) => window.clearTimeout(timerId));
+    demoTimerRef.current = [];
+  }, []);
+
+  const clearDemoApprovalTimers = useCallback(() => {
+    if (demoApprovalRevealTimerRef.current) {
+      window.clearTimeout(demoApprovalRevealTimerRef.current);
+      demoApprovalRevealTimerRef.current = null;
+    }
+    if (demoApprovalSubmitTimerRef.current) {
+      window.clearTimeout(demoApprovalSubmitTimerRef.current);
+      demoApprovalSubmitTimerRef.current = null;
+    }
+  }, []);
+
+  const clearPendingMessageStreams = useCallback(() => {
+    for (const timerId of messageStreamFallbackTimersRef.current.values()) {
+      window.clearTimeout(timerId);
+    }
+    messageStreamFallbackTimersRef.current.clear();
+
+    for (const resolver of messageStreamResolversRef.current.values()) {
+      resolver();
+    }
+    messageStreamResolversRef.current.clear();
+    setActiveStreamingMessageId(null);
+  }, []);
+  const clearPendingThinkingStreams = useCallback(() => {
+    for (const timerId of thinkingStreamFallbackTimersRef.current.values()) {
+      window.clearTimeout(timerId);
+    }
+    thinkingStreamFallbackTimersRef.current.clear();
+
+    for (const resolver of thinkingStreamResolversRef.current.values()) {
+      resolver();
+    }
+    thinkingStreamResolversRef.current.clear();
+    demoThinkingStartedAtRef.current.clear();
+  }, []);
+
+  const clearDemoToolLoadingStates = useCallback(() => {
+    demoToolLoadingStartedAtRef.current.clear();
+  }, []);
+
+  const clearLiveToolWaiters = useCallback(() => {
+    for (const timeoutId of liveToolTimeoutTimersRef.current.values()) {
+      window.clearTimeout(timeoutId);
+    }
+    liveToolTimeoutTimersRef.current.clear();
+
+    for (const resolver of liveToolWaiterResolversRef.current.values()) {
+      resolver();
+    }
+    liveToolWaiterResolversRef.current.clear();
+  }, []);
 
   useEffect(
     () => () => {
-      if (demoStepTimerRef.current !== undefined) {
-        window.clearTimeout(demoStepTimerRef.current);
+      clearDemoTimers();
+      clearDemoApprovalTimers();
+      clearPendingMessageStreams();
+      clearPendingThinkingStreams();
+      clearDemoToolLoadingStates();
+      clearLiveToolWaiters();
+    },
+    [
+      clearDemoApprovalTimers,
+      clearDemoTimers,
+      clearDemoToolLoadingStates,
+      clearLiveToolWaiters,
+      clearPendingMessageStreams,
+      clearPendingThinkingStreams,
+    ],
+  );
+
+  const resolveMessageStream = useCallback((messageId: string) => {
+    const resolver = messageStreamResolversRef.current.get(messageId);
+    resolver?.();
+  }, []);
+
+  const waitForMessageStream = useCallback(
+    (messageId: string, content: string) => {
+      if (!content.length) {
+        return Promise.resolve();
+      }
+
+      return new Promise<void>((resolve) => {
+        let settled = false;
+        const settle = () => {
+          if (settled) {
+            return;
+          }
+          settled = true;
+
+          const fallbackTimerId =
+            messageStreamFallbackTimersRef.current.get(messageId);
+          if (fallbackTimerId) {
+            window.clearTimeout(fallbackTimerId);
+            messageStreamFallbackTimersRef.current.delete(messageId);
+          }
+
+          messageStreamResolversRef.current.delete(messageId);
+          setActiveStreamingMessageId((current) =>
+            current === messageId ? null : current,
+          );
+          resolve();
+        };
+
+        messageStreamResolversRef.current.set(messageId, settle);
+        setActiveStreamingMessageId(messageId);
+
+        const fallbackDelay = Math.max(
+          STREAM_COMPLETION_BUFFER_MS,
+          content.length * DEMO_TEXT_SPEED_MS + STREAM_COMPLETION_BUFFER_MS,
+        );
+        const fallbackTimerId = window.setTimeout(settle, fallbackDelay);
+        messageStreamFallbackTimersRef.current.set(messageId, fallbackTimerId);
+      });
+    },
+    [],
+  );
+
+  const resolveThinkingStream = useCallback((thinkingId: string) => {
+    const resolver = thinkingStreamResolversRef.current.get(thinkingId);
+    resolver?.();
+  }, []);
+
+  const waitForThinkingStream = useCallback(
+    (thinkingId: string, content: string) => {
+      if (!content.length) {
+        return Promise.resolve();
+      }
+
+      return new Promise<void>((resolve) => {
+        let settled = false;
+        const settle = () => {
+          if (settled) {
+            return;
+          }
+          settled = true;
+
+          const fallbackTimerId =
+            thinkingStreamFallbackTimersRef.current.get(thinkingId);
+          if (fallbackTimerId) {
+            window.clearTimeout(fallbackTimerId);
+            thinkingStreamFallbackTimersRef.current.delete(thinkingId);
+          }
+
+          thinkingStreamResolversRef.current.delete(thinkingId);
+          resolve();
+        };
+
+        thinkingStreamResolversRef.current.set(thinkingId, settle);
+        const fallbackDelay = Math.max(
+          STREAM_COMPLETION_BUFFER_MS,
+          content.length * DEMO_TEXT_SPEED_MS + STREAM_COMPLETION_BUFFER_MS,
+        );
+        const fallbackTimerId = window.setTimeout(settle, fallbackDelay);
+        thinkingStreamFallbackTimersRef.current.set(
+          thinkingId,
+          fallbackTimerId,
+        );
+      });
+    },
+    [],
+  );
+
+  const resolveLiveToolWaitersIfReady = useCallback(
+    (timelineItems: DiagnosisTimelineItem[]) => {
+      for (const [toolId, resolver] of [
+        ...liveToolWaiterResolversRef.current.entries(),
+      ]) {
+        const toolItem = timelineItems.find(
+          (
+            item,
+          ): item is Extract<DiagnosisTimelineItem, { kind: "tool" }> =>
+            item.kind === "tool" && item.id === toolId,
+        );
+        if (toolItem && toolItem.status !== "loading") {
+          resolver();
+        }
       }
     },
     [],
   );
 
-  const websocketEnabled = import.meta.env.VITE_WS_ENABLED === "true" && Boolean(activeSessionId);
+  useEffect(() => {
+    liveTimelineRef.current = liveTimeline;
+    resolveLiveToolWaitersIfReady(liveTimeline);
+  }, [liveTimeline, resolveLiveToolWaitersIfReady]);
 
+  const waitForLiveToolTerminal = useCallback((toolId: string) => {
+    return new Promise<void>((resolve) => {
+      const existingTool = liveTimelineRef.current.find(
+        (
+          item,
+        ): item is Extract<DiagnosisTimelineItem, { kind: "tool" }> =>
+          item.kind === "tool" && item.id === toolId,
+      );
+      if (existingTool && existingTool.status !== "loading") {
+        resolve();
+        return;
+      }
+
+      let settled = false;
+      const settle = (timedOut: boolean) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+
+        const timeoutTimerId = liveToolTimeoutTimersRef.current.get(toolId);
+        if (timeoutTimerId) {
+          window.clearTimeout(timeoutTimerId);
+          liveToolTimeoutTimersRef.current.delete(toolId);
+        }
+
+        liveToolWaiterResolversRef.current.delete(toolId);
+
+        if (timedOut) {
+          setLiveTimeline((current) =>
+            current.map((item) => {
+              if (
+                item.kind !== "tool" ||
+                item.id !== toolId ||
+                item.status !== "loading"
+              ) {
+                return item;
+              }
+
+              const timeoutSummary =
+                "Timed out after 15s waiting for tool_result.";
+              return {
+                ...item,
+                status: "timeout",
+                summaryLines: item.summaryLines.includes(timeoutSummary)
+                  ? item.summaryLines
+                  : [...item.summaryLines, timeoutSummary],
+              };
+            }),
+          );
+        }
+
+        resolve();
+      };
+
+      liveToolWaiterResolversRef.current.set(toolId, () => settle(false));
+      const timeoutTimerId = window.setTimeout(
+        () => settle(true),
+        TOOL_RESULT_TIMEOUT_MS,
+      );
+      liveToolTimeoutTimersRef.current.set(toolId, timeoutTimerId);
+    });
+  }, []);
+
+  const processLiveQueue = useCallback(async () => {
+    if (liveQueueProcessingRef.current) {
+      return;
+    }
+
+    const queueToken = liveQueueTokenRef.current;
+    liveQueueProcessingRef.current = true;
+
+    try {
+      while (
+        liveQueuedItemsRef.current.length > 0 &&
+        queueToken === liveQueueTokenRef.current
+      ) {
+        const queuedItem = liveQueuedItemsRef.current.shift();
+        if (!queuedItem) {
+          continue;
+        }
+
+        liveQueuedIdsRef.current.delete(queuedItem.id);
+        const nextItem =
+          latestLiveSourceByIdRef.current.get(queuedItem.id) ?? queuedItem;
+
+        liveDisplayedIdsRef.current.add(nextItem.id);
+        setLiveTimeline((current) => [...current, nextItem]);
+
+        if (nextItem.kind === "message" && nextItem.role === "assistant") {
+          await waitForMessageStream(nextItem.id, nextItem.content);
+          continue;
+        }
+
+        if (nextItem.kind === "tool" && nextItem.status === "loading") {
+          await waitForLiveToolTerminal(nextItem.id);
+        }
+      }
+    } finally {
+      liveQueueProcessingRef.current = false;
+    }
+  }, [waitForLiveToolTerminal, waitForMessageStream]);
+
+  useEffect(() => {
+    if (!hasLiveSession) {
+      initializedLiveSessionIdRef.current = null;
+      liveQueueTokenRef.current += 1;
+      liveQueuedItemsRef.current = [];
+      liveQueuedIdsRef.current = new Set();
+      liveDisplayedIdsRef.current = new Set();
+      latestLiveSourceByIdRef.current = new Map();
+      clearLiveToolWaiters();
+      setLiveTimeline([]);
+      return;
+    }
+
+    const currentSessionId =
+      activeSessionId ?? session?.session_id ?? routeSessionId;
+    const sourceTimeline = liveView.timeline;
+    const sourceById = new Map(sourceTimeline.map((item) => [item.id, item]));
+    latestLiveSourceByIdRef.current = sourceById;
+
+    if (initializedLiveSessionIdRef.current !== currentSessionId) {
+      initializedLiveSessionIdRef.current = currentSessionId;
+      liveQueueTokenRef.current += 1;
+      liveQueuedItemsRef.current = [];
+      liveQueuedIdsRef.current = new Set();
+      liveDisplayedIdsRef.current = new Set(
+        sourceTimeline.map((item) => item.id),
+      );
+      clearLiveToolWaiters();
+      setLiveTimeline(sourceTimeline);
+      return;
+    }
+
+    setLiveTimeline((current) =>
+      current.map((item) => {
+        const latest = sourceById.get(item.id);
+        if (!latest) {
+          return item;
+        }
+
+        if (
+          item.kind === "tool" &&
+          latest.kind === "tool" &&
+          item.status === "timeout" &&
+          latest.status === "loading"
+        ) {
+          return item;
+        }
+
+        return latest;
+      }),
+    );
+
+    const queuedItems = sourceTimeline.filter(
+      (item) =>
+        !liveDisplayedIdsRef.current.has(item.id) &&
+        !liveQueuedIdsRef.current.has(item.id),
+    );
+
+    if (queuedItems.length > 0) {
+      queuedItems.forEach((item) => {
+        liveQueuedIdsRef.current.add(item.id);
+      });
+      liveQueuedItemsRef.current.push(...queuedItems);
+      void processLiveQueue();
+    }
+  }, [
+    activeSessionId,
+    clearLiveToolWaiters,
+    hasLiveSession,
+    liveView.timeline,
+    processLiveQueue,
+    routeSessionId,
+    session?.session_id,
+  ]);
+
+  const waitForDemoDelay = useCallback((delayMs: number, runToken: number) => {
+    if (delayMs <= 0 || runToken !== demoRunTokenRef.current) {
+      return Promise.resolve();
+    }
+
+    return new Promise<void>((resolve) => {
+      const timerId = window.setTimeout(() => {
+        resolve();
+      }, delayMs);
+      demoTimerRef.current.push(timerId);
+    });
+  }, []);
+
+  const startDemo = useCallback(
+    (prompt: string) => {
+      const normalizedPrompt = prompt.trim();
+      if (!normalizedPrompt) {
+        return;
+      }
+
+      demoRunTokenRef.current += 1;
+      const runToken = demoRunTokenRef.current;
+
+      clearDemoTimers();
+      clearDemoApprovalTimers();
+      clearPendingMessageStreams();
+      clearPendingThinkingStreams();
+      clearDemoToolLoadingStates();
+
+      const scenario = buildDiagnosisDemoScenario(normalizedPrompt);
+      setDemoTimeline(scenario.initialTimeline);
+      setDemoCandidates([]);
+      setDemoHypotheses([]);
+      setDemoPropagationChain([]);
+      setDemoSummary(undefined);
+      setDemoPlan(undefined);
+      setDemoState("running");
+      setDemoApprovalCardOpen(false);
+      setDemoApprovalReason("");
+      setDemoRejectEditorOpen(false);
+      setDemoApprovalDecision(null);
+      setIsSubmittingDemoApproval(false);
+      setLastDemoPrompt(normalizedPrompt);
+      setDraft("");
+
+      void (async () => {
+        let previousDelay = 0;
+        const activeDemoThinkingIds = new Set<string>();
+        const activeDemoToolIds = new Set<string>();
+        const knownDemoThinkingIds = new Set<string>();
+        const knownDemoToolIds = new Set<string>();
+        const deferredDemoEvents: DiagnosisDemoEvent[] = [];
+
+        const canProcessDemoEvent = (event: DiagnosisDemoEvent) => {
+          if (activeDemoThinkingIds.size > 0) {
+            return (
+              event.type === "update_thinking" &&
+              activeDemoThinkingIds.has(event.targetId)
+            );
+          }
+
+          if (activeDemoToolIds.size > 0) {
+            return (
+              event.type === "update_tool" &&
+              activeDemoToolIds.has(event.targetId)
+            );
+          }
+
+          if (event.type === "update_thinking") {
+            return knownDemoThinkingIds.has(event.targetId);
+          }
+
+          if (event.type === "update_tool") {
+            return knownDemoToolIds.has(event.targetId);
+          }
+
+          return true;
+        };
+
+        const applyDemoEvent = async (
+          event: DiagnosisDemoEvent,
+        ): Promise<boolean> => {
+          if (event.type === "append") {
+            if (
+              event.item.kind === "thinking" &&
+              event.item.status === "thinking"
+            ) {
+              knownDemoThinkingIds.add(event.item.id);
+              activeDemoThinkingIds.add(event.item.id);
+              demoThinkingStartedAtRef.current.set(event.item.id, Date.now());
+              setDemoTimeline((current) => [...current, event.item]);
+
+              await waitForThinkingStream(event.item.id, event.item.content);
+
+              const startedAt = demoThinkingStartedAtRef.current.get(
+                event.item.id,
+              );
+              const elapsedSec = startedAt
+                ? Math.max(1, Math.round((Date.now() - startedAt) / 1000))
+                : estimateThoughtDurationSecFromContent(event.item.content);
+
+              setDemoTimeline((current) =>
+                current.map((item) => {
+                  if (item.kind !== "thinking" || item.id !== event.item.id) {
+                    return item;
+                  }
+
+                  return {
+                    ...item,
+                    status: "completed",
+                    thoughtDurationSec: elapsedSec,
+                  };
+                }),
+              );
+              activeDemoThinkingIds.delete(event.item.id);
+              demoThinkingStartedAtRef.current.delete(event.item.id);
+              return true;
+            }
+
+            if (
+              event.item.kind === "message" &&
+              event.item.role === "assistant"
+            ) {
+              const { thinking, conclusion } = splitThinkingAndConclusion(
+                event.item.content,
+              );
+
+              if (thinking) {
+                const thoughtId = `${event.item.id}-thought`;
+                knownDemoThinkingIds.add(thoughtId);
+                activeDemoThinkingIds.add(thoughtId);
+                demoThinkingStartedAtRef.current.set(thoughtId, Date.now());
+
+                setDemoTimeline((current) => [
+                  ...current,
+                  {
+                    id: thoughtId,
+                    kind: "thinking",
+                    title: "Reasoning",
+                    content: thinking,
+                    timestamp: event.item.timestamp,
+                    status: "thinking",
+                  },
+                ]);
+
+                await waitForThinkingStream(thoughtId, thinking);
+
+                const startedAt =
+                  demoThinkingStartedAtRef.current.get(thoughtId);
+                const elapsedSec = startedAt
+                  ? Math.max(1, Math.round((Date.now() - startedAt) / 1000))
+                  : estimateThoughtDurationSecFromContent(thinking);
+
+                setDemoTimeline((current) =>
+                  current.map((item) => {
+                    if (item.kind !== "thinking" || item.id !== thoughtId) {
+                      return item;
+                    }
+
+                    return {
+                      ...item,
+                      status: "completed",
+                      thoughtDurationSec: elapsedSec,
+                    };
+                  }),
+                );
+                activeDemoThinkingIds.delete(thoughtId);
+                demoThinkingStartedAtRef.current.delete(thoughtId);
+              }
+
+              if (conclusion.length > 0) {
+                const conclusionItem =
+                  thinking !== null
+                    ? {
+                        ...event.item,
+                        id: `${event.item.id}-answer`,
+                        content: conclusion,
+                      }
+                    : { ...event.item, content: conclusion };
+
+                setDemoTimeline((current) => [...current, conclusionItem]);
+                await waitForMessageStream(
+                  conclusionItem.id,
+                  conclusionItem.content,
+                );
+              }
+              return true;
+            }
+
+            setDemoTimeline((current) => [...current, event.item]);
+
+            if (event.item.kind === "thinking") {
+              knownDemoThinkingIds.add(event.item.id);
+              if (event.item.status === "thinking") {
+                activeDemoThinkingIds.add(event.item.id);
+              } else {
+                activeDemoThinkingIds.delete(event.item.id);
+              }
+            }
+
+            if (event.item.kind === "tool") {
+              knownDemoToolIds.add(event.item.id);
+              if (event.item.status === "loading") {
+                activeDemoToolIds.add(event.item.id);
+                demoToolLoadingStartedAtRef.current.set(
+                  event.item.id,
+                  Date.now(),
+                );
+              } else {
+                activeDemoToolIds.delete(event.item.id);
+                demoToolLoadingStartedAtRef.current.delete(event.item.id);
+              }
+            }
+            return true;
+          }
+
+          if (event.type === "update_tool") {
+            if (!knownDemoToolIds.has(event.targetId)) {
+              return false;
+            }
+
+            const toolLoadingStartedAt =
+              demoToolLoadingStartedAtRef.current.get(event.targetId);
+            if (typeof toolLoadingStartedAt === "number") {
+              const elapsedMs = Date.now() - toolLoadingStartedAt;
+              const remainingMs = Math.max(
+                0,
+                DEMO_MIN_TOOL_LOADING_DWELL_MS - elapsedMs,
+              );
+              await waitForDemoDelay(remainingMs, runToken);
+
+              if (runToken !== demoRunTokenRef.current) {
+                return false;
+              }
+            }
+
+            setDemoTimeline((current) =>
+              current.map((item) => {
+                if (item.kind !== "tool" || item.id !== event.targetId) {
+                  return item;
+                }
+
+                return {
+                  ...item,
+                  status: "success",
+                  summaryLines: event.summaryLines,
+                  rawResult: event.rawResult,
+                };
+              }),
+            );
+            activeDemoToolIds.delete(event.targetId);
+            demoToolLoadingStartedAtRef.current.delete(event.targetId);
+            return true;
+          }
+
+          if (event.type === "update_thinking") {
+            if (!knownDemoThinkingIds.has(event.targetId)) {
+              return false;
+            }
+
+            const startedAt = demoThinkingStartedAtRef.current.get(
+              event.targetId,
+            );
+            const elapsedSec = startedAt
+              ? Math.max(1, Math.round((Date.now() - startedAt) / 1000))
+              : undefined;
+
+            setDemoTimeline((current) =>
+              current.map((item) => {
+                if (item.kind !== "thinking" || item.id !== event.targetId) {
+                  return item;
+                }
+
+                return {
+                  ...item,
+                  status: event.status,
+                  thoughtDurationSec:
+                    event.status === "completed"
+                      ? (event.thoughtDurationSec ??
+                        elapsedSec ??
+                        item.thoughtDurationSec ??
+                        estimateThoughtDurationSecFromContent(item.content))
+                      : item.thoughtDurationSec,
+                };
+              }),
+            );
+
+            if (event.status === "completed") {
+              activeDemoThinkingIds.delete(event.targetId);
+              demoThinkingStartedAtRef.current.delete(event.targetId);
+            } else {
+              activeDemoThinkingIds.add(event.targetId);
+            }
+            return true;
+          }
+
+          setDemoCandidates(scenario.candidates);
+          setDemoHypotheses(scenario.hypotheses ?? []);
+          setDemoPropagationChain(scenario.propagationChain ?? []);
+          setDemoSummary(scenario.summary);
+          setDemoPlan(scenario.plan);
+          clearDemoToolLoadingStates();
+          setDemoState("complete");
+          return true;
+        };
+
+        const flushDeferredDemoEventsIfUnblocked = async () => {
+          while (deferredDemoEvents.length > 0) {
+            if (runToken !== demoRunTokenRef.current) {
+              return;
+            }
+
+            const deferredEvent = deferredDemoEvents[0];
+            if (!deferredEvent || !canProcessDemoEvent(deferredEvent)) {
+              return;
+            }
+
+            deferredDemoEvents.shift();
+            const applied = await applyDemoEvent(deferredEvent);
+            if (!applied) {
+              deferredDemoEvents.unshift(deferredEvent);
+              return;
+            }
+          }
+        };
+
+        for (const event of scenario.events) {
+          if (runToken !== demoRunTokenRef.current) {
+            return;
+          }
+
+          const deltaMs = Math.max(0, event.delayMs - previousDelay);
+          previousDelay = event.delayMs;
+          await waitForDemoDelay(
+            Math.round(deltaMs * DEMO_EVENT_SLOWDOWN),
+            runToken,
+          );
+
+          if (runToken !== demoRunTokenRef.current) {
+            return;
+          }
+
+          if (!canProcessDemoEvent(event)) {
+            deferredDemoEvents.push(event);
+            continue;
+          }
+
+          const applied = await applyDemoEvent(event);
+          if (!applied) {
+            deferredDemoEvents.push(event);
+            continue;
+          }
+
+          await flushDeferredDemoEventsIfUnblocked();
+        }
+
+        await flushDeferredDemoEventsIfUnblocked();
+      })();
+    },
+    [
+      clearDemoApprovalTimers,
+      clearDemoTimers,
+      clearDemoToolLoadingStates,
+      clearPendingMessageStreams,
+      clearPendingThinkingStreams,
+      waitForDemoDelay,
+      waitForMessageStream,
+      waitForThinkingStream,
+    ],
+  );
+
+  const handleSubmit = useCallback(() => {
+    const content = draft.trim();
+    if (!content) {
+      return;
+    }
+
+    if (hasLiveSession && activeSessionId) {
+      setDraft("");
+      void sendMessage(content);
+      return;
+    }
+
+    startDemo(content);
+  }, [activeSessionId, draft, hasLiveSession, sendMessage, startDemo]);
+
+  const handleInputKeyDown = useCallback(
+    (event: KeyboardEvent<HTMLTextAreaElement>) => {
+      if (event.key === "Enter" && !event.shiftKey) {
+        event.preventDefault();
+        handleSubmit();
+      }
+    },
+    [handleSubmit],
+  );
+
+  const handleRealtimeEvent = useCallback(
+    (event: Parameters<typeof applyEvent>[0]) => {
+      applyEvent(event);
+    },
+    [applyEvent],
+  );
+
+  const websocketEnabled =
+    shouldBootstrapLiveSession &&
+    import.meta.env.VITE_WS_ENABLED === "true" &&
+    Boolean(activeSessionId);
   const websocketUrl = useMemo(
     () =>
       buildBackendWsUrl(`/ws/thinking-trace/${activeSessionId ?? "pending"}`, {
         token: import.meta.env.VITE_API_TOKEN ?? "",
       }),
     [activeSessionId],
-  );
-
-  const handleRealtimeEvent = useCallback(
-    (event: WSEvent) => {
-      applyEvent(event);
-    },
-    [applyEvent],
   );
 
   const ws = useWebSocket(websocketUrl, handleRealtimeEvent, {
@@ -1356,852 +2170,427 @@ function DiagnosisPage() {
     setConnectionState(ws.state);
   }, [setConnectionState, ws.state]);
 
-  const handleSubmit = useCallback(
-    (value: string) => {
-      const nextDraft = value.trim();
-      if (!nextDraft || !activeSessionId || isSendingMessage) {
+  const activeTimeline = hasLiveSession ? liveTimeline : demoTimeline;
+  const activeCandidates = hasLiveSession
+    ? liveView.candidates
+    : demoCandidates;
+  const activeHypotheses = hasLiveSession
+    ? (liveView.hypotheses ?? [])
+    : demoHypotheses;
+  const activePropagationChain = hasLiveSession
+    ? (liveView.propagationChain ?? [])
+    : demoPropagationChain;
+  const activeSummary = hasLiveSession ? liveView.summary : demoSummary;
+  const activePlan = hasLiveSession ? liveView.plan : demoPlan;
+  const activeApprovalStatusLabel =
+    hasLiveSession && session ? formatWorkflowStatus(session.status) : "\u5f85\u5ba1\u6279";
+  const approvalSurfaceOpen =
+    Boolean(activePlan) &&
+    (hasLiveSession ? approvalOverlayOpen : demoApprovalCardOpen);
+
+  const isFeedNearBottom = useCallback((element: HTMLDivElement) => {
+    const distanceFromBottom =
+      element.scrollHeight - element.scrollTop - element.clientHeight;
+    return distanceFromBottom <= AUTO_SCROLL_BOTTOM_THRESHOLD_PX;
+  }, []);
+
+  const scrollFeedToBottom = useCallback(() => {
+    const feedElement = feedRef.current;
+    if (!feedElement) {
+      return;
+    }
+
+    feedElement.scrollTop = feedElement.scrollHeight;
+  }, []);
+
+  const scheduleFeedScrollToBottom = useCallback(() => {
+    if (!autoScrollEnabledRef.current) {
+      return;
+    }
+
+    if (pendingAutoScrollFrameRef.current !== null) {
+      window.cancelAnimationFrame(pendingAutoScrollFrameRef.current);
+    }
+
+    pendingAutoScrollFrameRef.current = window.requestAnimationFrame(() => {
+      pendingAutoScrollFrameRef.current = null;
+      if (!autoScrollEnabledRef.current) {
         return;
       }
 
-      setDraft("");
-      void sendMessage(nextDraft);
+      scrollFeedToBottom();
+    });
+  }, [scrollFeedToBottom]);
+
+  const handleFeedScroll = useCallback(
+    (event: UIEvent<HTMLDivElement>) => {
+      autoScrollEnabledRef.current = isFeedNearBottom(event.currentTarget);
     },
-    [activeSessionId, isSendingMessage, sendMessage],
+    [isFeedNearBottom],
   );
 
-  const runStepOneImpactScope = useCallback(() => {
-    if (isExecutingDemoStep) {
+  useEffect(() => {
+    if (
+      hasLiveSession ||
+      demoState !== "complete" ||
+      !demoSummary ||
+      !demoPlan
+    ) {
+      clearDemoApprovalTimers();
+      setDemoApprovalCardOpen(false);
+      setDemoApprovalReason("");
+      setDemoRejectEditorOpen(false);
+      setDemoApprovalDecision(null);
+      setIsSubmittingDemoApproval(false);
       return;
     }
 
-    const now = new Date();
-    const baseId = String(now.getTime());
-    const stepLabel = "Step 1 · 确认影响范围";
-    const toolMessageId = `demo-step1-tool-${baseId}`;
+    clearDemoApprovalTimers();
+    demoApprovalRevealTimerRef.current = window.setTimeout(() => {
+      setDemoApprovalCardOpen(true);
+      demoApprovalRevealTimerRef.current = null;
+    }, DEMO_APPROVAL_CARD_DELAY_MS);
 
-    setIsExecutingDemoStep(true);
-    setDemoMessages((prev) => [
-      ...prev,
-      {
-        id: `demo-step1-assistant-${baseId}`,
-        role: "assistant",
-        content: "先确认影响半径，定位受影响节点与服务，再进入后续观测。",
-        createdAt: now.toISOString(),
-      },
-      {
-        id: toolMessageId,
-        role: "assistant",
-        createdAt: now.toISOString(),
-        content: {
-          kind: "tool_event",
-          toolName: "topology.get_blast_radius",
-          status: "loading",
-          stepLabel,
-          toolParams: {
-            entry_entity: "node-gpu-01",
-            service_scope: ["vllm-latency", "chat-serving"],
-            depth: 2,
-          },
-        },
-      },
-    ]);
-
-    demoStepTimerRef.current = window.setTimeout(() => {
-      setDemoMessages((prev) =>
-        prev.map((message) => {
-          if (message.id !== toolMessageId || !isToolEventPayload(message.content)) {
-            return message;
-          }
-
-          return {
-            ...message,
-            createdAt: new Date().toISOString(),
-            content: {
-              ...message.content,
-              status: "success",
-              summaryLines: [
-                "受影响节点：node-gpu-01（局部热点）",
-                "受影响服务：vllm-latency、chat-serving",
-                "当前未观察到跨机房扩散信号",
-              ],
-            },
-          };
-        }),
-      );
-
-      setDemoActiveStep((prev) => Math.min(prev + 1, DEMO_STEP_LABELS.length));
-      setIsExecutingDemoStep(false);
-      demoStepTimerRef.current = undefined;
-    }, 250);
-  }, [isExecutingDemoStep]);
-
-  const runStepTwoThinkingPlan = useCallback(() => {
-    if (isExecutingDemoStep) {
-      return;
-    }
-
-    const now = new Date();
-    const baseId = String(now.getTime());
-    const thinkingMessageId = `demo-step2-thinking-${baseId}`;
-
-    setIsExecutingDemoStep(true);
-
-    setDemoMessages((prev) => [
-      ...prev,
-      {
-        id: thinkingMessageId,
-        role: "assistant",
-        createdAt: now.toISOString(),
-        content: {
-          kind: "thinking_plan",
-          summary: "规划开始：先展示思考闪烁状态，再逐步吐出推理内容与结论。",
-          thinkTitle: "Deep Thinking 正在规划观测动作",
-          thinkingText: `The user wants me to diagnose a 'KubePodNotReady' alert with critical severity.
-The topology blast radius shows no affected entities, which is unusual. Let me start
-by gathering evidence about what pods might be not ready in the Kubernetes
-cluster.
-
-Let me begin by:
-
-1. Listing pods across namespaces to find not-ready pods
-2. Looking for OOMKilled or pending pods
-3. Checking service status
-4. Querying logs for any errors
-
-Let me start with multiple parallel queries to understand the state of the cluster.`,
-          conclusionText: `I'll start by gathering evidence about the cluster state. Let me query multiple
-sources in parallel to identify the affected pods and their conditions.`,
-          toolName: "k8s.list_pods",
-          toolParams: { kwargs: { all_namespaces: true } },
-          typingStage: "thinking",
-          blink: true,
-          items: [
-            {
-              key: "step2-plan-1",
-              title: "检查 Pod 就绪状态",
-              description: "先在所有命名空间里找出 NotReady 的 Pod。",
-              toolName: "k8s.list_pods",
-              checkTarget: "定位真实受影响的 Pod 与命名空间。",
-              nextToolName: "k8s.list_events",
-              status: "loading",
-              blink: true,
-            },
-            {
-              key: "step2-plan-2",
-              title: "补充异常事件与重启原因",
-              description: "确认是否存在 OOMKilled、Pending 或镜像拉取失败。",
-              toolName: "k8s.list_events",
-              checkTarget: "补齐 Pod 不就绪背后的直接异常信号。",
-              nextToolName: "k8s.query_logs",
-            },
-            {
-              key: "step2-plan-3",
-              title: "并行抓取服务与日志",
-              description: "把服务状态和错误日志一起纳入后续证据链。",
-              toolName: "k8s.query_logs",
-              checkTarget: "为 Step 3 的关键观测采集准备工具路径。",
-              nextToolName: "Step 3: 收集关键观测（按规划依次执行）",
-            },
-          ],
-        },
-      },
-    ]);
-
-    const updateThinkingPlan = (updater: (payload: ThinkingPlanPayload) => ThinkingPlanPayload) => {
-      setDemoMessages((prev) =>
-        prev.map((message) => {
-          if (message.id !== thinkingMessageId || !isThinkingPlanPayload(message.content)) {
-            return message;
-          }
-
-          return {
-            ...message,
-            createdAt: new Date().toISOString(),
-            content: updater(message.content),
-          };
-        }),
-      );
+    return () => {
+      clearDemoApprovalTimers();
     };
+  }, [
+    clearDemoApprovalTimers,
+    demoPlan,
+    demoState,
+    demoSummary,
+    hasLiveSession,
+  ]);
 
-    demoStepTimerRef.current = window.setTimeout(() => {
-      updateThinkingPlan((payload) => ({
-        ...payload,
-        summary: "思考内容已流式输出完成，开始吐出结论与首个工具调用。",
-        typingStage: "conclusion",
-        blink: true,
-        items: payload.items.map((item) => {
-          if (item.key === "step2-plan-1") {
-            return { ...item, status: "success", blink: false };
-          }
-          if (item.key === "step2-plan-2") {
-            return { ...item, status: "loading", blink: true };
-          }
-          return { ...item, blink: false };
-        }),
-      }));
+  const handleApproveDemoPlan = useCallback(() => {
+    clearDemoApprovalTimers();
+    setDemoRejectEditorOpen(false);
+    setIsSubmittingDemoApproval(true);
+    demoApprovalSubmitTimerRef.current = window.setTimeout(() => {
+      setIsSubmittingDemoApproval(false);
+      setDemoApprovalDecision("approved");
+      demoApprovalSubmitTimerRef.current = null;
+    }, DEMO_APPROVAL_SUBMIT_DELAY_MS);
+  }, [clearDemoApprovalTimers]);
 
-      demoStepTimerRef.current = window.setTimeout(() => {
-        updateThinkingPlan((payload) => ({
-          ...payload,
-          summary: "结论已输出，继续展示后续观测动作编排。",
-          typingStage: "complete",
-          blink: false,
-          items: payload.items.map((item) => {
-            if (item.key === "step2-plan-2") {
-              return { ...item, status: "success", blink: false };
-            }
-            if (item.key === "step2-plan-3") {
-              return { ...item, status: "loading", blink: true };
-            }
-            return { ...item, blink: false };
-          }),
-        }));
-
-        demoStepTimerRef.current = window.setTimeout(() => {
-          updateThinkingPlan((payload) => ({
-            ...payload,
-            summary: "规划完成：观测动作与工具调用顺序已明确，thinking 与结论输出均已结束。",
-            typingStage: "complete",
-            blink: false,
-            items: payload.items.map((item) => ({
-              ...item,
-              status: "success",
-              blink: false,
-            })),
-          }));
-
-          setDemoActiveStep((prev) => Math.min(prev + 1, DEMO_STEP_LABELS.length));
-          setIsExecutingDemoStep(false);
-          demoStepTimerRef.current = undefined;
-        }, 250);
-      }, 450);
-    }, 500);
-  }, [isExecutingDemoStep]);
-
-  
-const runStepTwoPointOneDeepThink = useCallback(() => {
-    if (isExecutingDemoStep) {
+  const handleRejectDemoPlan = useCallback(() => {
+    if (!demoApprovalReason.trim()) {
       return;
     }
 
-    const now = new Date();
-    const baseId = String(now.getTime());
+    clearDemoApprovalTimers();
+    setDemoRejectEditorOpen(false);
+    setIsSubmittingDemoApproval(true);
+    demoApprovalSubmitTimerRef.current = window.setTimeout(() => {
+      setIsSubmittingDemoApproval(false);
+      setDemoApprovalDecision("rejected");
+      demoApprovalSubmitTimerRef.current = null;
+    }, DEMO_APPROVAL_SUBMIT_DELAY_MS);
+  }, [clearDemoApprovalTimers, demoApprovalReason]);
 
-    setIsExecutingDemoStep(true);
-    setDemoMessages((prev) => [
-      ...prev,
-      {
-        id: `demo-step21-banner-${baseId}`,
-        role: "assistant",
-        createdAt: now.toISOString(),
-        content:
-          "Step 2.1 已切换到全新 DeepThink 演示：这一段会先闪烁，再逐字输出 thinking，随后再输出结论和工具调用。",
-      },
-      {
-        id: `demo-step21-thinking-${baseId}`,
-        role: "assistant",
-        createdAt: new Date(now.getTime() + 10).toISOString(),
-        content: {
-          kind: "thinking_plan",
-          summary: "Step 2.1：这是独立于原 Step 2 的新版 DeepThink 演示卡片。",
-          thinkTitle: "Step 2.1 · DeepThink Streaming Demo",
-          thinkingText: `The user wants me to diagnose a 'KubePodNotReady' alert with critical severity.
-The topology blast radius shows no affected entities, which is unusual. Let me start
-by gathering evidence about what pods might be not ready in the Kubernetes
-cluster.
+  useLayoutEffect(() => {
+    autoScrollEnabledRef.current = true;
+    scheduleFeedScrollToBottom();
+  }, [activeSessionId, hasLiveSession, scheduleFeedScrollToBottom]);
 
-Let me begin by:
+  useLayoutEffect(() => {
+    scheduleFeedScrollToBottom();
+  }, [
+    activePlan,
+    activeSummary,
+    activeTimeline,
+    demoApprovalCardOpen,
+    scheduleFeedScrollToBottom,
+  ]);
 
-1. Listing pods across namespaces to find not-ready pods
-2. Looking for OOMKilled or pending pods
-3. Checking service status
-4. Querying logs for any errors
-
-Let me start with multiple parallel queries to understand the state of the cluster.`,
-          conclusionText: `I'll start by gathering evidence about the cluster state. Let me query multiple
-sources in parallel to identify the affected pods and their conditions.`,
-          toolName: "k8s.list_pods",
-          toolParams: { kwargs: { all_namespaces: true } },
-          typingStage: "thinking",
-          blink: true,
-          items: [
-            {
-              key: "step21-plan-1",
-              title: "Step 2.1 / Thinking 闪烁",
-              description: "顶部 Think 状态先进入 blink 和 loading。",
-              toolName: "@ant-design/x Think",
-              checkTarget: "明确告诉用户当前处于思考阶段。",
-              status: "loading",
-              blink: true,
-            },
-            {
-              key: "step21-plan-2",
-              title: "Step 2.1 / 流式吐字",
-              description: "thinking 与 conclusion 分阶段逐字输出。",
-              toolName: "StreamingBlock",
-              checkTarget: "避免 thinking 一次性整段出现。",
-            },
-          ],
-        },
-      },
-    ]);
-
-    demoStepTimerRef.current = window.setTimeout(() => {
-      setDemoMessages((prev) =>
-        prev.map((message) => {
-          if (message.id !== `demo-step21-thinking-${baseId}` || !isThinkingPlanPayload(message.content)) {
-            return message;
-          }
-
-          return {
-            ...message,
-            createdAt: new Date().toISOString(),
-            content: {
-              ...message.content,
-              summary: "Step 2.1：thinking 已经输出完成，开始吐出结论和工具参数。",
-              typingStage: "conclusion",
-              items: message.content.items.map((item) => ({
-                ...item,
-                status: item.key === "step21-plan-1" ? "success" : "loading",
-                blink: item.key === "step21-plan-2",
-              })),
-            },
-          };
-        }),
-      );
-
-      demoStepTimerRef.current = window.setTimeout(() => {
-        setDemoMessages((prev) =>
-          prev.map((message) => {
-            if (message.id !== `demo-step21-thinking-${baseId}` || !isThinkingPlanPayload(message.content)) {
-              return message;
-            }
-
-            return {
-              ...message,
-              createdAt: new Date().toISOString(),
-              content: {
-                ...message.content,
-                summary: "Step 2.1：新版 DeepThink 演示完成，现在可以继续走后续诊断步骤。",
-                typingStage: "complete",
-                blink: false,
-                items: message.content.items.map((item) => ({
-                  ...item,
-                  status: "success",
-                  blink: false,
-                })),
-              },
-            };
-          }),
-        );
-
-        setDemoActiveStep((prev) => Math.min(prev + 1, DEMO_STEP_LABELS.length));
-        setIsExecutingDemoStep(false);
-        demoStepTimerRef.current = undefined;
-      }, 2400);
-    }, 500);
-  }, [isExecutingDemoStep]);
-
-const runStepFiveRootCauseCandidates = useCallback(() => {
-    if (isExecutingDemoStep) {
+  useEffect(() => {
+    const feedElement = feedRef.current;
+    if (!feedElement || typeof MutationObserver === "undefined") {
       return;
     }
 
-    const now = new Date();
-    const baseId = String(now.getTime());
+    const observer = new MutationObserver(() => {
+      scheduleFeedScrollToBottom();
+    });
 
-    setDemoMessages((prev) => [
-      ...prev,
-      {
-        id: `demo-step5-candidates-${baseId}`,
-        role: "assistant",
-        createdAt: now.toISOString(),
-        content: {
-          kind: "ranked_candidates",
-          diagnosisCertainty: "ambiguous",
-          summary: "当前诊断仍存在歧义，以下给出按证据强度排序的候选根因。",
-          candidates: [
-            {
-              rank: 1,
-              rootCause: "异常基准测试进程导致 GPU 资源争用",
-              rootCauseLayer: "hardware",
-              confidence: 0.62,
-              rootCauseEntities: ["gpu-01", "node-gpu-01"],
-              evidenceSummary: "GPU 利用率持续高位，影响集中在单节点，且已有异常 GPU 进程线索。",
-              distinguishingVerification: "检查 node-gpu-01 的 GPU 进程列表，并观察终止异常进程后 p95 延迟是否回落。",
-              hasRecommendedFix: true,
-            },
-            {
-              rank: 2,
-              rootCause: "推理分片负载倾斜导致单节点过载",
-              rootCauseLayer: "service",
-              confidence: 0.54,
-              rootCauseEntities: ["svc-vllm", "node-gpu-01"],
-              evidenceSummary: "单节点长期承压，但暂缺直接证明是调度策略或分片权重异常。",
-              distinguishingVerification: "核查分片权重、实例负载分布以及最近变更记录。",
-              hasRecommendedFix: false,
-            },
-            {
-              rank: 3,
-              rootCause: "网络侧瞬时拥塞放大了推理链路时延",
-              rootCauseLayer: "network",
-              confidence: 0.33,
-              rootCauseEntities: ["sw-01", "node-gpu-01"],
-              evidenceSummary: "网络路径不能完全排除，但当前证据不足以成为首要根因。",
-              distinguishingVerification: "查看交换机队列深度、ECN 与链路丢包摘要。",
-              hasRecommendedFix: false,
-            },
-          ],
-        },
-      },
-    ]);
+    observer.observe(feedElement, {
+      childList: true,
+      subtree: true,
+      characterData: true,
+    });
 
-    setDemoActiveStep((prev) => Math.min(prev + 1, DEMO_STEP_LABELS.length));
-  }, [isExecutingDemoStep]);
+    return () => observer.disconnect();
+  }, [scheduleFeedScrollToBottom]);
 
-  const runStepSixGenerateApprovalPlan = useCallback(() => {
-    if (isExecutingDemoStep) {
-      return;
-    }
-
-    const now = new Date();
-    const baseId = String(now.getTime());
-
-    setDemoMessages((prev) => [
-      ...prev,
-      {
-        id: `demo-step6-assistant-${baseId}`,
-        role: "assistant",
-        createdAt: now.toISOString(),
-        content: "已基于候选根因 #1 生成待审批方案，建议先确认影响范围与回滚边界，再进入人工审批。",
-      },
-      {
-        id: `demo-step6-approval-plan-${baseId}`,
-        role: "assistant",
-        createdAt: new Date(now.getTime() + 10).toISOString(),
-        content: STEP6_APPROVAL_PLAN,
-      },
-    ]);
-
-    setDemoActiveStep((prev) => Math.min(prev + 1, DEMO_STEP_LABELS.length));
-  }, [isExecutingDemoStep]);
-  const effectivePlan = useMemo(() => extractRecommendedPlan(session), [session]);
-  const sessionCards = useMemo(() => buildSessionCards(session, effectivePlan), [session, effectivePlan]);
-  const thinkingRounds = useMemo(
-    () => buildThinkingRounds(session?.trace?.steps ?? []),
-    [session?.trace?.steps],
-  );
-  const lastUpdatedAt = useMemo(() => {
-    const lastEventAt = events.length > 0 ? events[events.length - 1]?.timestamp : undefined;
-    if (lastEventAt) {
-      return lastEventAt;
-    }
-    const traceSteps = session?.trace?.steps ?? [];
-    if (traceSteps.length > 0) {
-      return traceSteps[traceSteps.length - 1]?.timestamp ?? undefined;
-    }
-    return undefined;
-  }, [events, session?.trace?.steps]);
-  const timelineMessages = useMemo<DisplayMessage[]>(
-    () => {
-      const chatMessages: DisplayMessage[] = messages.map((message) => ({
-        id: message.id,
-        role: message.role,
-        content:
-          message.role === "assistant" && message.display?.answer
-            ? {
-                kind: "chat_answer",
-                answer: message.display.answer,
-                thinkingRaw: message.display.thinking_raw ?? undefined,
-              }
-            : message.content,
-        createdAt: message.created_at,
-        toolName: message.tool_name,
-      }));
-
-      return [...chatMessages, ...demoMessages];
+  useEffect(
+    () => () => {
+      if (pendingAutoScrollFrameRef.current !== null) {
+        window.cancelAnimationFrame(pendingAutoScrollFrameRef.current);
+      }
     },
-    [messages, demoMessages],
-  );
-
-  const bubbleItems = useMemo<BubbleItemType[]>(
-    () =>
-      timelineMessages.map((message) => ({
-        key: message.id,
-        role: message.role,
-        content: message.content,
-        extraInfo: {
-          createdAt: message.createdAt,
-          toolName: message.toolName,
-        } satisfies BubbleMeta,
-      })),
-    [timelineMessages],
-  );
-
-  const bubbleRoles = useMemo<BubbleRoleType>(
-    () => ({
-      assistant: {
-        placement: "start",
-        variant: "shadow",
-        rootClassName: "diagnosis-bubble diagnosis-bubble--assistant",
-        contentRender: (content: unknown) => {
-          if (isToolEventPayload(content)) {
-            return renderToolEventCard(content);
-          }
-          if (isThinkingPlanPayload(content)) {
-            return renderThinkingPlanCard(content);
-          }
-          if (isRootCauseCandidatesPayload(content)) {
-            return renderRootCauseCandidatesCard(content);
-          }
-          if (isApprovalPlanPayload(content)) {
-            return renderApprovalPlanCard(content);
-          }
-          if (isChatAnswerPayload(content)) {
-            return renderChatAnswerCard(content);
-          }
-          if (isValidElement(content)) {
-            return content;
-          }
-          return <div className="diagnosis-bubble__content">{String(content ?? "")}</div>;
-        },
-        footer: (_, info) => renderBubbleMeta(info?.extraInfo as BubbleMeta | undefined),
-      },
-      user: {
-        placement: "end",
-        variant: "filled",
-        rootClassName: "diagnosis-bubble diagnosis-bubble--user",
-        contentRender: (content: unknown) => {
-          if (isToolEventPayload(content)) {
-            return renderToolEventCard(content);
-          }
-          if (isThinkingPlanPayload(content)) {
-            return renderThinkingPlanCard(content);
-          }
-          if (isRootCauseCandidatesPayload(content)) {
-            return renderRootCauseCandidatesCard(content);
-          }
-          if (isApprovalPlanPayload(content)) {
-            return renderApprovalPlanCard(content);
-          }
-          if (isChatAnswerPayload(content)) {
-            return renderChatAnswerCard(content);
-          }
-          if (isValidElement(content)) {
-            return content;
-          }
-          return <div className="diagnosis-bubble__content">{String(content ?? "")}</div>;
-        },
-        footer: (_, info) => renderBubbleMeta(info?.extraInfo as BubbleMeta | undefined),
-      },
-      tool: {
-        placement: "start",
-        variant: "outlined",
-        shape: "corner",
-        rootClassName: "diagnosis-bubble diagnosis-bubble--tool",
-        contentRender: (content: unknown) => {
-          if (isToolEventPayload(content)) {
-            return renderToolEventCard(content);
-          }
-          if (isThinkingPlanPayload(content)) {
-            return renderThinkingPlanCard(content);
-          }
-          if (isRootCauseCandidatesPayload(content)) {
-            return renderRootCauseCandidatesCard(content);
-          }
-          if (isApprovalPlanPayload(content)) {
-            return renderApprovalPlanCard(content);
-          }
-          if (isValidElement(content)) {
-            return content;
-          }
-          return <pre className="diagnosis-bubble__content diagnosis-bubble__content--tool">{String(content ?? "")}</pre>;
-        },
-        footer: (_, info) => renderBubbleMeta(info?.extraInfo as BubbleMeta | undefined),
-      },
-    }),
     [],
   );
 
-  const senderDisabled = isLoadingSession || !activeSessionId;
-  const traceStepsUsed = Number(chatContextMeta?.["trace_steps_used"] ?? 0);
-
-  const handleDemoStepClick = useCallback<NonNullable<MenuProps["onClick"]>>(
-    ({ key }) => {
-      const clickedStep = Number(key) - 1;
-      if (!Number.isInteger(clickedStep) || clickedStep !== demoActiveStep || isExecutingDemoStep) {
-        return;
-      }
-
-      if (clickedStep === 0) {
-        runStepOneImpactScope();
-        return;
-      }
-
-      if (clickedStep === 1) {
-        runStepTwoThinkingPlan();
-        return;
-      }
-
-      if (clickedStep === 2) {
-        runStepTwoPointOneDeepThink();
-        return;
-      }
-
-      if (clickedStep === 3) {
-        setDemoActiveStep((prev) => Math.min(prev + 2, DEMO_STEP_LABELS.length));
-        return;
-      }
-
-      if (clickedStep === 5) {
-        runStepFiveRootCauseCandidates();
-        return;
-      }
-
-      if (clickedStep === 6) {
-        runStepSixGenerateApprovalPlan();
-        return;
-      }
-
-      setDemoActiveStep((prev) => Math.min(prev + 1, DEMO_STEP_LABELS.length));
-    },
-    [
-      demoActiveStep,
-      isExecutingDemoStep,
-      runStepOneImpactScope,
-      runStepTwoThinkingPlan,
-      runStepTwoPointOneDeepThink,
-      runStepFiveRootCauseCandidates,
-      runStepSixGenerateApprovalPlan,
-    ],
+  const inlineError = useMemo(
+    () => (shouldBootstrapLiveSession ? resolveInlineError(error) : null),
+    [error, shouldBootstrapLiveSession],
   );
 
-  const demoMenuItems = useMemo<MenuProps["items"]>(
-    () =>
-      DEMO_STEP_LABELS.map((step, index) => {
-        const isDone = index < demoActiveStep;
-        const isActive = index === demoActiveStep;
-        const isActiveAndBusy = isActive && isExecutingDemoStep;
-        const stateClassName = isDone ? "done" : isActive ? "active" : "locked";
-        const stateText = isDone ? "已完成" : isActiveAndBusy ? "执行中..." : isActive ? "点击推进" : "未解锁";
-
-        return {
-          key: String(index + 1),
-          disabled: !isActive || isActiveAndBusy,
-          label: (
-            <div className={`diagnosis-demo-menu__item diagnosis-demo-menu__item--${stateClassName}`}>
-              <strong>{`${getDemoStepDisplayLabel(index)}、${step.title}`}</strong>
-              <span>{stateText}</span>
-            </div>
-          ),
-        };
-      }),
-    [demoActiveStep, isExecutingDemoStep],
-  );
-
-  const demoMenu = useMemo<MenuProps>(
-    () => ({
-      items: demoMenuItems,
-      onClick: handleDemoStepClick,
-    }),
-    [demoMenuItems, handleDemoStepClick],
-  );
+  const composerDisabled =
+    (shouldBootstrapLiveSession ? isLoadingSession : false) ||
+    isSendingMessage ||
+    demoState === "running";
+  const introCopy = hasLiveSession
+    ? "\u5f53\u524d\u9875\u9762\u6b63\u5728\u6d88\u8d39\u771f\u5b9e\u8bca\u65ad\u4f1a\u8bdd\uff0c\u5e76\u6309\u7edf\u4e00\u6d41\u7a0b\u5448\u73b0\u601d\u8003\u3001\u5de5\u5177\u8c03\u7528\u3001\u6839\u56e0\u5206\u6790\u4e0e\u5ba1\u6279\u6267\u884c\u3002"
+    : demoState === "idle"
+      ? "\u8f93\u5165\u8bca\u65ad\u95ee\u9898\u540e\uff0c\u9875\u9762\u4f1a\u6309\u8f83\u6162\u8282\u594f\u56de\u653e\u5b8c\u6574\u8bca\u65ad\u8fc7\u7a0b\uff0c\u65b9\u4fbf\u9010\u6b65\u67e5\u770b\u6bcf\u4e00\u6b21\u601d\u8003\u4e0e\u5de5\u5177\u8c03\u7528\u3002"
+      : "\u5f53\u524d\u6b63\u5728\u6309\u6162\u901f\u56de\u653e\u8bca\u65ad\u6d41\u7a0b\u3002";
 
   return (
-    <div className="diagnosis-chat-page">
-      <div className="diagnosis-chat-page__content">
-        <div className="page-intro diagnosis-chat-page__intro">
-          <SectionHeader
-            title="诊断对话"
-            description="会话先创建后流式推送，诊断过程按循环卡片分段展示。"
-          />
-          <div className="status-row">
-            <StatusChip tone={connectionState === "open" ? "success" : "info"}>WebSocket {connectionState}</StatusChip>
-            {activeSessionId ? <StatusChip tone="neutral">会话 {activeSessionId}</StatusChip> : null}
-            <StatusChip tone="accent">状态 {session?.status ?? "unknown"}</StatusChip>
-            {lastUpdatedAt ? <StatusChip tone="neutral">更新 {formatTimestamp(lastUpdatedAt)}</StatusChip> : null}
-            {activeSessionId ? (
-              <StatusChip tone={chatContextApplied ? "success" : "info"}>
-                上下文 {chatContextApplied ? "已加载" : "待加载"}
-              </StatusChip>
-            ) : null}
+    <div className="page-grid diagnosis-workspace-page">
+      <section className="page-stage diagnosis-workspace-stage">
+        <div className="page-stage__panel diagnosis-workspace-shell">
+          <div className="diagnosis-workspace-shell__statusbar">
+            <div className="diagnosis-workspace-shell__badges">
+              {hasLiveSession && session ? (
+                <>
+                  <ToneBadge tone="accent">{session.alert.alert_name}</ToneBadge>
+                  <ToneBadge tone={getDiagnosisStatusBadgeTone(session.status)}>
+                    {formatWorkflowStatus(session.status)}
+                  </ToneBadge>
+                  <ToneBadge
+                    tone={getSeverityBadgeTone(session.alert.severity)}
+                  >
+                    {formatSeverity(session.alert.severity)}
+                  </ToneBadge>
+                </>
+              ) : (
+                <>
+                  <ToneBadge tone={hasLiveSession ? "success" : "accent"}>
+                    {hasLiveSession
+                      ? "\u5b9e\u65f6\u4f1a\u8bdd"
+                      : "\u6f14\u793a\u6a21\u5f0f"}
+                  </ToneBadge>
+                  {hasLiveSession && activeSessionId ? (
+                    <ToneBadge tone="neutral">{activeSessionId}</ToneBadge>
+                  ) : null}
+                  {hasLiveSession ? (
+                    <ToneBadge
+                      tone={connectionState === "open" ? "success" : "warning"}
+                    >{`\u5b9e\u65f6\u94fe\u8def ${connectionState}`}</ToneBadge>
+                  ) : null}
+                </>
+              )}
+            </div>
           </div>
-        </div>
 
-        <div className="diagnosis-chat-workspace">
-          <SurfaceCard bodyClassName="diagnosis-chat-shell__body" className="diagnosis-chat-shell">
-            {isLoadingSession ? (
-              <div className="diagnosis-chat-state-card">
-                <p className="diagnosis-chat-state-card__title">正在加载会话</p>
-                <p className="diagnosis-chat-state-card__copy">正在同步当前诊断会话与消息历史。</p>
-              </div>
-            ) : null}
+          <div className="diagnosis-workspace-shell__body">
+            <div
+              className="diagnosis-workspace-feed"
+              onScroll={handleFeedScroll}
+              ref={feedRef}
+            >
+              <div className="diagnosis-workspace-feed__content">
+                {activeTimeline.length === 0 ? (
+                <div className="diagnosis-workspace-empty-state">
+                  <div className="diagnosis-workspace-empty-state__icon">
+                    <AppIcon name="aiChat" size={18} />
+                  </div>
+                  <h2>Welcome to the RCA Agent</h2>
+                  <p>
+                    Type your request below to trigger the ReAct diagnostic
+                    process, or use the pre-filled example.
+                  </p>
+                </div>
+              ) : (
+                activeTimeline.map((item) => {
+                  if (item.kind === "message") {
+                    const shouldAnimateAssistantMessage =
+                      item.role === "assistant" &&
+                      activeStreamingMessageId === item.id;
 
-            {bootstrapStatus === "error" && error ? (
-              <div className="diagnosis-chat-state-card diagnosis-chat-state-card--error">
-                <p className="diagnosis-chat-state-card__title">诊断请求失败</p>
-                <p className="diagnosis-chat-state-card__copy">{error}</p>
-              </div>
-            ) : null}
+                    return (
+                      <MessageRow
+                        animate={shouldAnimateAssistantMessage}
+                        item={item}
+                        key={item.id}
+                        onStreamComplete={
+                          shouldAnimateAssistantMessage
+                            ? () => {
+                                resolveMessageStream(item.id);
+                              }
+                            : undefined
+                        }
+                      />
+                    );
+                  }
 
-            {bootstrapStatus === "ready" && error ? (
-              <div className="diagnosis-chat-state-card diagnosis-chat-state-card--error">
-                <p className="diagnosis-chat-state-card__title">追问发送失败</p>
-                <p className="diagnosis-chat-state-card__copy">{error}</p>
-              </div>
-            ) : null}
+                  if (item.kind === "thinking") {
+                    const shouldAnimateThinking =
+                      !hasLiveSession && item.status === "thinking";
+                    return (
+                      <ThinkingBlock
+                        animate={shouldAnimateThinking}
+                        item={item}
+                        key={item.id}
+                        onStreamComplete={
+                          shouldAnimateThinking
+                            ? () => {
+                                resolveThinkingStream(item.id);
+                              }
+                            : undefined
+                        }
+                      />
+                    );
+                  }
 
-            {bootstrapStatus === "empty" ? (
-              <div className="diagnosis-chat-state-card">
-                <p className="diagnosis-chat-state-card__title">暂无诊断会话</p>
-                <p className="diagnosis-chat-state-card__copy">请前往告警页面选择一条告警并发起诊断。</p>
-              </div>
-            ) : null}
+                  if (item.kind === "system") {
+                    return <SystemEventBlock item={item} key={item.id} />;
+                  }
 
-            {bootstrapStatus === "ready" && traceStatus === "empty" ? (
-              <div className="diagnosis-chat-state-card">
-                <p className="diagnosis-chat-state-card__title">会话已创建，等待推理轨迹</p>
-                <p className="diagnosis-chat-state-card__copy">当前会话尚未产出 Thinking Trace，可稍后刷新或从告警页重新触发诊断。</p>
-              </div>
-            ) : null}
+                  return <ToolCard item={item} key={item.id} />;
+                })
+              )}
 
-            {bootstrapStatus === "ready" && !isLoadingSession && !bubbleItems.length && !thinkingRounds.length && !sessionCards.length ? (
-              <div className="diagnosis-chat-state-card">
-                <p className="diagnosis-chat-state-card__title">暂无消息</p>
-                <p className="diagnosis-chat-state-card__copy">当前会话还没有可展示的对话内容。</p>
-              </div>
-            ) : null}
-
-            {thinkingRounds.length > 0 ? (
-              <ThinkingLoopVisualization
-                rounds={thinkingRounds}
-                diagnosisResult={session?.diagnosis_result ?? null}
-                effectivePlan={effectivePlan}
-              />
-            ) : sessionCards.length > 0 ? (
-              <div className="diagnosis-session-card-list">
-                {sessionCards.map((card) => renderSessionCard(card))}
-              </div>
-            ) : null}
-
-            <Bubble.List autoScroll className="diagnosis-bubble-list" items={bubbleItems} role={bubbleRoles} />
-
-            <div className="diagnosis-chat-state-card">
-              <p className="diagnosis-chat-state-card__title">修复审批</p>
-              <p className="diagnosis-chat-state-card__copy">可直接点击“修改方案”，未输入时将使用默认优化指令。</p>
-              <p className="diagnosis-chat-state-card__copy">
-                当前状态：{session?.status ?? "unknown"}，当前版本：v{currentPlanVersion ?? "-"}，最新版本：v
-                {latestPlanVersion ?? "-"}，已审批版本：v{approvedPlanVersion ?? "-"}。
-              </p>
-              {approvalBlockReason ? <p className="diagnosis-chat-state-card__copy">{approvalBlockReason}</p> : null}
-              {hasPlan && effectivePlan
-                ? renderPlanDetails(effectivePlan)
-                : <p className="diagnosis-chat-state-card__copy">{planMissingReason}</p>}
-              <textarea
-                className="diagnosis-plan-instruction"
-                disabled={isRevisingPlan || isApprovingPlan}
-                onChange={(event) => setPlanInstruction(event.target.value)}
-                placeholder="例如：把第2步改为先观察再执行，观察窗口30秒。"
-                rows={3}
-                value={planInstruction}
-              />
-              <div className="diagnosis-sender-actions">
-                <Button
-                  disabled={isRevisingPlan || isApprovingPlan}
-                  loading={isRevisingPlan}
-                  onClick={() => {
-                    const text = planInstruction.trim();
-                    setPlanInstruction("");
-                    void revisePlan(text);
-                  }}
-                >
-                  修改方案
-                </Button>
-                <Button
-                  danger
-                  disabled={!canApprove || isApprovingPlan || isRevisingPlan}
-                  onClick={() => {
-                    void approvePlan(false);
-                  }}
-                >
-                  拒绝
-                </Button>
-                <Button
-                  disabled={!canApprove || isApprovingPlan || isRevisingPlan}
-                  loading={isApprovingPlan}
-                  onClick={() => {
-                    void approvePlan(true);
-                  }}
-                  type="primary"
-                >
-                  审批通过
-                </Button>
-              </div>
-              {!planInstruction.trim() ? (
-                <p className="diagnosis-chat-state-card__copy">
-                  未填写指令时，将使用默认优化指令：
-                  {effectiveReviseInstruction ?? "请优化当前修复方案，补充更稳妥步骤与验证"}
-                </p>
+              {hasLiveSession && traceStatus === "empty" ? (
+                <div className="diagnosis-workspace-inline-note">
+                  The live session has not produced trace entries yet. The input
+                  remains available while waiting for incremental diagnosis
+                  events.
+                </div>
               ) : null}
-            </div>
 
-            <div className="diagnosis-chat-composer">
-              <Sender
-                autoSize={{ minRows: 2, maxRows: 6 }}
-                className="diagnosis-sender"
-                disabled={senderDisabled}
-                footer={
-                  <div className="diagnosis-sender-footer">
-                    <p className="diagnosis-chat-composer__hint">
-                      按 Enter 发送追问。实时事件会继续通过 WebSocket 被消费。
-                      {chatContextApplied
-                        ? ` 当前会话上下文已注入（trace片段 ${String(traceStepsUsed)} 条）。`
-                        : " 尚未注入会话上下文，请确认会话有效后重试。"}
-                    </p>
-                  </div>
-                }
-                loading={isSendingMessage}
-                onChange={(value) => setDraft(value)}
-                onSubmit={handleSubmit}
-                placeholder={activeSessionId ? "继续追问当前诊断" : "请先选择一个诊断会话"}
-                submitType="enter"
-                suffix={
-                  <div className="diagnosis-sender-actions">
-                    <Dropdown menu={demoMenu} placement="topRight" trigger={["click"]}>
-                      <Button className="diagnosis-demo-trigger">模拟演示</Button>
-                    </Dropdown>
-                    <Button
-                      className="diagnosis-send-trigger"
-                      disabled={senderDisabled || !draft.trim() || isSendingMessage}
-                      onClick={() => handleSubmit(draft)}
-                      type="primary"
-                    >
-                      发送
-                    </Button>
-                  </div>
-                }
-                value={draft}
-              />
+              {inlineError ? (
+                <div
+                  className={cn(
+                    "diagnosis-workspace-inline-note",
+                    inlineError.tone === "error"
+                      ? "diagnosis-workspace-inline-note--error"
+                      : "diagnosis-workspace-inline-note--warning",
+                  )}
+                >
+                  {inlineError.message}
+                </div>
+              ) : null}
+
+              {activeSummary ? (
+                <RCAReportCard
+                  candidates={activeCandidates}
+                  hypotheses={activeHypotheses}
+                  propagationChain={activePropagationChain}
+                  summary={activeSummary}
+                />
+              ) : null}
+              </div>
             </div>
-          </SurfaceCard>
+          </div>
+
+          <footer className="diagnosis-workspace-shell__footer">
+            <div
+              className={cn(
+                "diagnosis-workspace-composer-anchor",
+                approvalSurfaceOpen &&
+                  "diagnosis-workspace-composer-anchor--with-approval",
+              )}
+            >
+              {!hasLiveSession ? (
+                <DemoApprovalCard
+                  isSubmitting={isSubmittingDemoApproval}
+                  onApprove={handleApproveDemoPlan}
+                  onCancelReject={() => {
+                    setDemoApprovalReason("");
+                    setDemoRejectEditorOpen(false);
+                  }}
+                  onExpandReject={() => setDemoRejectEditorOpen(true)}
+                  onReject={handleRejectDemoPlan}
+                  onRejectReasonChange={setDemoApprovalReason}
+                  open={demoApprovalCardOpen}
+                  plan={activePlan}
+                  rejectExpanded={demoRejectEditorOpen}
+                  rejectReason={demoApprovalReason}
+                  resolution={demoApprovalDecision}
+                  summary={activeSummary}
+                />
+              ) : null}
+              <ApprovalOverlay
+                approvalBlockReason={approvalBlockReason}
+                canApprove={canApprove}
+                isSubmitting={isApprovingPlan}
+                onApprove={() => void handleApprovePlan()}
+                onCancelReject={() => {
+                  setApprovalReason("");
+                  setApprovalRejectEditorOpen(false);
+                }}
+                onExpandReject={() => setApprovalRejectEditorOpen(true)}
+                onReject={() => void handleRejectPlan()}
+                onRejectReasonChange={setApprovalReason}
+                open={hasLiveSession && approvalOverlayOpen}
+                plan={activePlan}
+                planVersion={latestPlanVersion}
+                rejectExpanded={approvalRejectEditorOpen}
+                rejectReason={approvalReason}
+                statusLabel={activeApprovalStatusLabel}
+                statusTone={getDiagnosisStatusBadgeTone(session?.status)}
+                summary={activeSummary}
+              />
+              <div className="diagnosis-workspace-composer">
+                <textarea
+                  className="diagnosis-workspace-composer__input"
+                  disabled={composerDisabled}
+                  onChange={(event) => setDraft(event.target.value)}
+                  onKeyDown={handleInputKeyDown}
+                  placeholder={
+                    hasLiveSession
+                      ? "Continue the current diagnosis session, for example: explain why these root-cause candidates were selected."
+                      : "Ask the agent to diagnose an issue... (Press Enter to start)"
+                  }
+                  rows={1}
+                  value={draft}
+                />
+                <div className="diagnosis-workspace-composer__actions">
+                  <p className="diagnosis-workspace-composer__hint">
+                    {hasLiveSession
+                      ? "The live data stream is preserved and rendered with Toolcall pacing and hierarchy."
+                      : "Without an active session, local demo mode runs and replays a slower Toolcall-style diagnosis flow."}
+                  </p>
+                  <div className="diagnosis-workspace-composer__buttons">
+                    {!hasLiveSession && demoTimeline.length > 0 ? (
+                      <button
+                        className="diagnosis-workspace-send-btn diagnosis-workspace-send-btn--secondary"
+                        onClick={() =>
+                          startDemo(
+                            lastDemoPrompt ||
+                              draft ||
+                              "Analyze auth-svc latency and error-rate spike in the past hour",
+                          )
+                        }
+                        type="button"
+                      >
+                        Replay
+                      </button>
+                    ) : null}
+                    <button
+                      className="diagnosis-workspace-send-btn"
+                      disabled={composerDisabled || !draft.trim()}
+                      onClick={handleSubmit}
+                      type="button"
+                    >
+                      <AppIcon name="send" size={14} />
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <p className="diagnosis-workspace-shell__footer-note">
+              Agent can make mistakes. Consider verifying important information.
+            </p>
+          </footer>
         </div>
-      </div>
+      </section>
     </div>
   );
 }
-
 export default DiagnosisPage;
-
-
-
-
-
-
-
-
-
-
-
 
 
 
