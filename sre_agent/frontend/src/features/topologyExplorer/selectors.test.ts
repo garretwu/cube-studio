@@ -1,10 +1,14 @@
+import { topologyExplorerOnlineMock } from "../../mocks/topologyExplorerOnlineMock";
 import { topologyExplorerMock } from "../../mocks/topologyExplorerData";
 import {
-  buildTopologyTree,
+  GLOBAL_TOPOLOGY_SERVICE_NODE_LIMIT,
+  getGlobalTopologyDisplayData,
   getImpactPathIdForNode,
   getImpactTopology,
   getNeighborDepths,
+  getObjectTopologyDetail,
   getPrimaryImpactPathId,
+  getStageTopology,
   getVisibleTopology,
   searchTopologyObjects,
 } from "./selectors";
@@ -49,74 +53,77 @@ describe("topology explorer selectors", () => {
     expect(depths.get("gpu-03")).toBe(1);
   });
 
-  it("keeps non-default namespace workloads in the tree and search results", () => {
-    const response = {
-      site: {
-        id: "aidc-site",
-        name: "AIDC Site",
-        region: "AIDC-CN",
-        zone: "zone-a",
-        domain: "aidc",
-        summary: "test",
-      },
-      nodes: [
-        {
-          id: "k8s:lab-cluster",
-          name: "lab-cluster",
-          type: "cluster",
-          status: "healthy",
-          layer: "physical",
-          domain: "aidc",
-          region: "AIDC-CN",
-          zone: "zone-a",
-          summary: "cluster",
-          tags: [],
-          updatedAt: "2026-04-08T00:00:00Z",
-          attributes: {},
-        },
-        {
-          id: "svc:team-a:demo",
-          name: "team-a/demo",
-          type: "service",
-          status: "healthy",
-          layer: "service",
-          domain: "aidc",
-          region: "AIDC-CN",
-          zone: "zone-a",
-          cluster: "k8s:lab-cluster",
-          summary: "team-a demo service",
-          tags: ["team-a"],
-          updatedAt: "2026-04-08T00:00:00Z",
-          attributes: { namespace: "team-a" },
-        },
-        {
-          id: "pod:team-a:demo-0",
-          name: "team-a/demo-0",
-          type: "pod",
-          status: "healthy",
-          layer: "service",
-          domain: "aidc",
-          region: "AIDC-CN",
-          zone: "zone-a",
-          cluster: "k8s:lab-cluster",
-          summary: "team-a demo pod",
-          tags: ["team-a"],
-          updatedAt: "2026-04-08T00:00:00Z",
-          attributes: { namespace: "team-a" },
-        },
-      ],
-      edges: [],
-      paths: [],
-      lastUpdated: "2026-04-08T00:00:00Z",
-    } as const;
+  it("builds a stage topology that narrows to search hits and their direct neighbors", () => {
+    const stage = getStageTopology(topologyExplorerMock, {
+      layerFilter: "all",
+      searchQuery: "svc-vllm-online",
+    });
 
-    const tree = buildTopologyTree(response);
-    const searchResults = searchTopologyObjects(response.nodes, "team-a");
+    expect(stage.searchResultIds).toEqual(["svc-vllm-online"]);
+    expect(stage.nodes.some((node) => node.id === "svc-vllm-online")).toBe(true);
+    expect(stage.nodes.some((node) => node.id === "node-h100-02")).toBe(true);
+    expect(stage.nodes.some((node) => node.id === "gpu-03")).toBe(true);
+    expect(stage.edges.some((edge) => edge.id === "edge-service-node")).toBe(true);
+  });
 
-    expect(tree?.children?.[1]?.children?.[0]?.children?.map((node) => node.label)).toEqual([
-      "team-a/demo",
-      "team-a/demo-0",
-    ]);
-    expect(searchResults.map((node) => node.id)).toEqual(["svc:team-a:demo", "pod:team-a:demo-0"]);
+  it("limits service-layer nodes in the global topology data while keeping non-service nodes intact", () => {
+    const limited = getGlobalTopologyDisplayData(topologyExplorerOnlineMock)!;
+    const originalServiceLayerNodes = topologyExplorerOnlineMock.nodes.filter((node) => node.layer === "service");
+    const limitedServiceLayerNodes = limited.nodes.filter((node) => node.layer === "service");
+    const originalNonServiceNodes = topologyExplorerOnlineMock.nodes.filter((node) => node.layer !== "service");
+    const limitedNodeIds = new Set(limited.nodes.map((node) => node.id));
+    const hiddenServiceNodeIds = new Set(
+      originalServiceLayerNodes.slice(GLOBAL_TOPOLOGY_SERVICE_NODE_LIMIT).map((node) => node.id),
+    );
+
+    expect(limitedServiceLayerNodes).toHaveLength(GLOBAL_TOPOLOGY_SERVICE_NODE_LIMIT);
+    expect(limited.nodes.filter((node) => node.layer !== "service")).toHaveLength(originalNonServiceNodes.length);
+    expect(limited.edges.every((edge) => limitedNodeIds.has(edge.source) && limitedNodeIds.has(edge.target))).toBe(true);
+    expect(limited.edges.some((edge) => hiddenServiceNodeIds.has(edge.source) || hiddenServiceNodeIds.has(edge.target))).toBe(false);
+  });
+
+  it("keeps hidden service-layer nodes out of the global stage but still allows full object detail", () => {
+    const originalServiceLayerNodes = topologyExplorerOnlineMock.nodes.filter((node) => node.layer === "service");
+    const hiddenNode = originalServiceLayerNodes[GLOBAL_TOPOLOGY_SERVICE_NODE_LIMIT];
+
+    expect(hiddenNode).toBeTruthy();
+
+    const fullStage = getStageTopology(topologyExplorerOnlineMock, {
+      layerFilter: "all",
+      searchQuery: "",
+    });
+    const hiddenNodeSearch = getStageTopology(topologyExplorerOnlineMock, {
+      layerFilter: "all",
+      searchQuery: hiddenNode!.name,
+    });
+    const detail = getObjectTopologyDetail(topologyExplorerOnlineMock, hiddenNode!.id);
+
+    expect(fullStage.nodes.filter((node) => node.layer === "service")).toHaveLength(GLOBAL_TOPOLOGY_SERVICE_NODE_LIMIT);
+    expect(fullStage.nodes.some((node) => node.id === hiddenNode!.id)).toBe(false);
+    expect(hiddenNodeSearch.searchResultIds).toEqual([]);
+    expect(detail.notFound).toBe(false);
+    expect(detail.focalNode?.id).toBe(hiddenNode!.id);
+  });
+
+  it("returns a focused single-object topology with only direct relations", () => {
+    const detail = getObjectTopologyDetail(topologyExplorerMock, "svc-vllm-online");
+
+    expect(detail.notFound).toBe(false);
+    expect(detail.focalNode?.id).toBe("svc-vllm-online");
+    expect(detail.nodes.map((node) => node.id).sort()).toEqual(
+      ["cluster-infer-01", "gpu-03", "node-h100-02", "svc-vllm-online", "switch-leaf-a1"].sort(),
+    );
+    expect(detail.edges).toHaveLength(4);
+    expect(detail.edges.map((edge) => edge.id).sort()).toEqual(
+      ["edge-service-cluster", "edge-service-gpu", "edge-service-node", "edge-switch-service"].sort(),
+    );
+  });
+
+  it("returns an explicit notFound state when the object id is unknown", () => {
+    const detail = getObjectTopologyDetail(topologyExplorerMock, "missing-node");
+
+    expect(detail.notFound).toBe(true);
+    expect(detail.nodes).toHaveLength(0);
+    expect(detail.edges).toHaveLength(0);
   });
 });

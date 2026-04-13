@@ -2,6 +2,8 @@ import type { ReactNode } from "react";
 
 import { cn } from "./cn";
 
+type SurfaceCardVariant = "stage" | "panel" | "card" | "soft" | "hero";
+
 type SurfaceCardProps = {
   children: ReactNode;
   className?: string;
@@ -9,7 +11,7 @@ type SurfaceCardProps = {
   title?: ReactNode;
   description?: ReactNode;
   actions?: ReactNode;
-  variant?: "panel" | "hero" | "soft";
+  variant?: SurfaceCardVariant;
 };
 
 function SurfaceCard({

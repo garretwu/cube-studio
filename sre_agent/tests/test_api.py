@@ -776,6 +776,11 @@ class TestAPIUnit:
 
         assert config.global_.blocked_alert_names == list(DEFAULT_BLOCKED_ALERT_NAMES)
 
+    def test_unit_default_auto_diagnose_alert_names_is_empty(self) -> None:
+        config = SREAgentConfig.model_validate({})
+
+        assert config.global_.auto_diagnose_alert_names == []
+
     def test_unit_default_remediation_execution_mode_is_real(self) -> None:
         config = SREAgentConfig.model_validate({})
 
@@ -2577,6 +2582,82 @@ class TestAPIE2E:
             diagnose = client.post("/api/diagnose", json=_kube_client_errors_alert_payload(), headers=_auth_headers(token))
             assert diagnose.status_code == 200
             assert diagnose.json()["success"] is True
+
+    def test_e2e_alert_poller_default_empty_whitelist_does_not_auto_diagnose_single_alert(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        monkeypatch.setenv("JWT_SECRET", "secret")
+        registry, context = _registry()
+        runner = _CountingDiagnosisRunner()
+        target_alert = Alert.model_validate(_cube_web_latency_alert_payload())
+        channel = _MutableAlertChannel([target_alert])
+        context.channels["alert"] = channel
+        config = SREAgentConfig.model_validate(
+            {
+                "global": {
+                    "aidc_id": "test-aidc",
+                    "alert_poll_interval_seconds": 0.05,
+                    "auto_diagnose_delay_seconds": 0.05,
+                },
+                "ontology": {"db_path": str(tmp_path / "ontology.db")},
+                "memory": {"db_dir": str(tmp_path / "memory")},
+            }
+        )
+
+        with TestClient(
+            create_app(
+                config=config,
+                diagnosis_runner=runner,
+                ontology=OntologyGraph(),
+                memory=_FakeMemory(),
+                knowledge=_FakeKnowledge(),
+                tool_registry=registry,
+                execution_context=context,
+            )
+        ):
+            time.sleep(0.4)
+            assert len(runner.calls) == 0
+
+    def test_e2e_alert_poller_entity_correlation_still_auto_diagnoses_when_whitelist_default_is_empty(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        monkeypatch.setenv("JWT_SECRET", "secret")
+        registry, context = _registry()
+        runner = _CountingDiagnosisRunner()
+        alert_a = Alert.model_validate(_alert_payload())
+        alert_b = Alert.model_validate(_cube_web_latency_alert_payload())
+        channel = _MutableAlertChannel([alert_a, alert_b])
+        context.channels["alert"] = channel
+        config = SREAgentConfig.model_validate(
+            {
+                "global": {
+                    "aidc_id": "test-aidc",
+                    "alert_poll_interval_seconds": 0.05,
+                    "auto_diagnose_delay_seconds": 0.05,
+                    "auto_diagnose_entity_correlation_count": 2,
+                },
+                "ontology": {"db_path": str(tmp_path / "ontology.db")},
+                "memory": {"db_dir": str(tmp_path / "memory")},
+            }
+        )
+
+        with TestClient(
+            create_app(
+                config=config,
+                diagnosis_runner=runner,
+                ontology=OntologyGraph(),
+                memory=_FakeMemory(),
+                knowledge=_FakeKnowledge(),
+                tool_registry=registry,
+                execution_context=context,
+            )
+        ):
+            for _ in range(60):
+                if len(runner.calls) >= 2:
+                    break
+                time.sleep(0.05)
+
+            assert set(runner.calls) == {alert_a.fingerprint, alert_b.fingerprint}
 
     def test_e2e_alert_poller_auto_diagnoses_target_alert_and_creates_session(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path

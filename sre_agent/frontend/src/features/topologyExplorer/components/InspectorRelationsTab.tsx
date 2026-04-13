@@ -1,13 +1,17 @@
-import type { TopologyObject, TopologyPath } from "../../../api/types";
+﻿import type { TopologyObject, TopologyPath } from "../../../api/types";
 import { AppButton, StatusChip } from "../../../components/ui";
-import { formatImpactLevel, formatTopologyStatus, formatTopologyType, getStatusTone } from "../formatters";
+import {
+  formatImpactLevel,
+  formatTopologyStatus,
+  formatTopologyType,
+} from "../formatters";
 
 type InspectorRelationsTabProps = {
   upstream: TopologyObject[];
   downstream: TopologyObject[];
   neighbors: TopologyObject[];
   paths: TopologyPath[];
-  onHighlightInGraph: () => void;
+  onHighlightInGraph?: () => void;
   onSelectNode: (nodeId: string) => void;
 };
 
@@ -56,9 +60,11 @@ function InspectorRelationsTab({
     <div className="topology-modified-inspector-tab">
       <div className="topology-modified-inspector-row">
         <StatusChip tone="accent">依赖关系 {upstream.length + downstream.length}</StatusChip>
-        <AppButton size="sm" variant="secondary" onClick={onHighlightInGraph}>
-          在图中高亮
-        </AppButton>
+        {onHighlightInGraph ? (
+          <AppButton size="sm" variant="secondary" onClick={onHighlightInGraph}>
+            在图中居中
+          </AppButton>
+        ) : null}
       </div>
       <RelationList items={upstream} onSelectNode={onSelectNode} title="上游对象" />
       <RelationList items={downstream} onSelectNode={onSelectNode} title="下游对象" />

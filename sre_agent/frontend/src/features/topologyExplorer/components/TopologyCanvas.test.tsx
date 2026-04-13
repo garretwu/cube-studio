@@ -1,5 +1,5 @@
 import { render, waitFor } from "@testing-library/react";
-import { createRef } from "react";
+import { createRef, type ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { topologyExplorerMock } from "../../../mocks/topologyExplorerData";
@@ -65,7 +65,7 @@ vi.mock("@xyflow/react", async () => {
         }
       }, [props]);
 
-      return React.createElement("div", { "data-testid": "mock-react-flow" }, props.children);
+      return React.createElement("div", { "data-testid": "mock-react-flow" }, props.children as ReactNode);
     },
   };
 });

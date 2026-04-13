@@ -1,4 +1,4 @@
-﻿import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Select } from "antd";
 import { useNavigate, useParams } from "react-router-dom";
 
@@ -244,54 +244,56 @@ function KnowledgeDetailPage() {
 
       {!errorMessage && !isLoading && detail ? (
         <>
-          <div className="knowledge-detail-page__intro">
-            <div className="knowledge-detail-page__intro-head">
-              <div className="knowledge-detail-page__intro-copy">
-                <button type="button" className="knowledge-detail-page__back-link" onClick={() => navigate("/knowledge")}>
-                  <AppIcon name="arrowLeft" size={16} />
-                  <span>{"\u8fd4\u56de\u77e5\u8bc6\u5e93"}</span>
-                </button>
-                <p className="knowledge-detail-page__eyebrow">{"\u77e5\u8bc6\u5e93\u8be6\u60c5"}</p>
-                <div className="knowledge-detail-page__title-row">
-                  <h1 className="knowledge-detail-page__title">{detail.name}</h1>
-                  <div className="knowledge-detail-page__chips">
-                    <StatusChip tone={getKnowledgeStatusTone(detail.status)}>{formatKnowledgeStatusLabel(detail.status)}</StatusChip>
-                    <StatusChip tone={getKnowledgeIndexStatusTone(detail.index_status)}>{formatKnowledgeIndexStatusLabel(detail.index_status)}</StatusChip>
-                    <StatusChip tone="neutral">{formatKnowledgeScopeLabel(detail.scope)}</StatusChip>
-                  </div>
-                </div>
-                <p className="knowledge-detail-page__description">{detail.description}</p>
-              </div>
-              <div className="knowledge-detail-page__header-actions">
-                <AppButton iconLeft="refresh" loading={isRefreshing} onClick={() => void loadKnowledgeBaseDetail(true)} variant="secondary">
-                  {"\u5237\u65b0\u8be6\u60c5"}
-                </AppButton>
-              </div>
+          <section className="page-stage knowledge-detail-page__stage">
+            <div className="page-stage__summary knowledge-detail-page__summary">
+              <div className="knowledge-detail-page__intro">
+                          <div className="knowledge-detail-page__intro-head">
+                            <div className="knowledge-detail-page__intro-copy">
+                              <button type="button" className="knowledge-detail-page__back-link" onClick={() => navigate("/knowledge")}>
+                                <AppIcon name="arrowLeft" size={16} />
+                                <span>{"\u8fd4\u56de\u77e5\u8bc6\u5e93"}</span>
+                              </button>
+                              <p className="knowledge-detail-page__eyebrow">{"\u77e5\u8bc6\u5e93\u8be6\u60c5"}</p>
+                              <div className="knowledge-detail-page__title-row">
+                                <h1 className="knowledge-detail-page__title">{detail.name}</h1>
+                                <div className="knowledge-detail-page__chips">
+                                  <StatusChip tone={getKnowledgeStatusTone(detail.status)}>{formatKnowledgeStatusLabel(detail.status)}</StatusChip>
+                                  <StatusChip tone={getKnowledgeIndexStatusTone(detail.index_status)}>{formatKnowledgeIndexStatusLabel(detail.index_status)}</StatusChip>
+                                  <StatusChip tone="neutral">{formatKnowledgeScopeLabel(detail.scope)}</StatusChip>
+                                </div>
+                              </div>
+                              <p className="knowledge-detail-page__description">{detail.description}</p>
+                            </div>
+                            <div className="knowledge-detail-page__header-actions">
+                              <AppButton iconLeft="refresh" loading={isRefreshing} onClick={() => void loadKnowledgeBaseDetail(true)} variant="secondary">
+                                {"\u5237\u65b0\u8be6\u60c5"}
+                              </AppButton>
+                            </div>
+                          </div>
+              
+                          <div className="knowledge-detail-page__meta-bar">
+                            {detailMeta.map((item) => (
+                              <div key={item.label} className="knowledge-detail-page__meta-item">
+                                <p className="knowledge-detail-summary-card__label">{item.label}</p>
+                                <p className="knowledge-detail-page__meta-value">{item.value}</p>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+
+              <div className="knowledge-detail-metric-grid">
+                          {detailMetrics.map((item) => (
+                            <article key={item.label} className="knowledge-detail-metric-card">
+                              <p className="knowledge-detail-summary-card__label">{item.label}</p>
+                              <p className="knowledge-detail-metric-card__value">{item.value}</p>
+                              <p className="knowledge-detail-summary-card__hint">{item.hint}</p>
+                            </article>
+                          ))}
+                        </div>
             </div>
-
-            <div className="knowledge-detail-page__meta-bar">
-              {detailMeta.map((item) => (
-                <div key={item.label} className="knowledge-detail-page__meta-item">
-                  <p className="knowledge-detail-summary-card__label">{item.label}</p>
-                  <p className="knowledge-detail-page__meta-value">{item.value}</p>
-                </div>
-              ))}
-            </div>
-          </div>
-
-          <div className="knowledge-detail-metric-grid">
-            {detailMetrics.map((item) => (
-              <article key={item.label} className="knowledge-detail-metric-card">
-                <p className="knowledge-detail-summary-card__label">{item.label}</p>
-                <p className="knowledge-detail-metric-card__value">{item.value}</p>
-                <p className="knowledge-detail-summary-card__hint">{item.hint}</p>
-              </article>
-            ))}
-          </div>
-
-          <div className="knowledge-detail-workspace">
-            <SurfaceCard className="knowledge-detail-workspace__table-card" description={"\u6309\u6765\u6e90\u7c7b\u578b\u3001\u542f\u7528\u72b6\u6001\u548c\u7d22\u5f15\u72b6\u6001\u8fc7\u6ee4\u5f53\u524d\u77e5\u8bc6\u5e93\u4e2d\u7684\u6587\u6863\u3002"} title={`\u5f53\u524d\u77e5\u8bc6\u5e93\u4e0b\u5171 ${detail.document_count} \u6761\u6587\u6863`}>
-              <div className="knowledge-toolbar knowledge-toolbar--detail">
+            <div className="page-stage__panels page-stage__panels--split knowledge-detail-workspace">
+            <SurfaceCard className="page-stage__panel knowledge-detail-workspace__table-card" variant="panel" description={"\u6309\u6765\u6e90\u7c7b\u578b\u3001\u542f\u7528\u72b6\u6001\u548c\u7d22\u5f15\u72b6\u6001\u8fc7\u6ee4\u5f53\u524d\u77e5\u8bc6\u5e93\u4e2d\u7684\u6587\u6863\u3002"} title={`\u5f53\u524d\u77e5\u8bc6\u5e93\u4e0b\u5171 ${detail.document_count} \u6761\u6587\u6863`}>
+              <div className="page-stage__toolbar knowledge-toolbar knowledge-toolbar--detail">
                 <label className="knowledge-toolbar__field">
                   <span className="knowledge-toolbar__label">{"\u6765\u6e90\u7c7b\u578b"}</span>
                   <Select
@@ -344,7 +346,7 @@ function KnowledgeDetailPage() {
                   <p className="skills-empty__description">{"\u53ef\u4ee5\u8c03\u6574\u7b5b\u9009\u6761\u4ef6\uff0c\u6216\u5207\u6362\u56de\u77e5\u8bc6\u5e93\u5217\u8868\u67e5\u770b\u5176\u4ed6\u77e5\u8bc6\u5e93\u3002"}</p>
                 </div>
               ) : (
-                <div className="knowledge-document-table-shell">
+                <div className="page-stage__table-shell knowledge-document-table-shell">
                   <table className="knowledge-document-table">
                     <colgroup>
                       <col className="knowledge-document-table__column knowledge-document-table__column--title" />
@@ -400,10 +402,11 @@ function KnowledgeDetailPage() {
               )}
             </SurfaceCard>
 
-            <SurfaceCard className="knowledge-detail-workspace__preview-card" description={"\u7edf\u4e00\u53ea\u8bfb\u9884\u89c8\u5f53\u524d\u9009\u4e2d\u6587\u6863\u7684\u6765\u6e90\u3001\u6807\u7b7e\u3001\u8bf4\u660e\u548c\u6b63\u6587\u7247\u6bb5\u3002"} title={"\u6587\u6863\u9884\u89c8"}>
+            <SurfaceCard className="page-stage__panel knowledge-detail-workspace__preview-card" variant="panel" description={"\u7edf\u4e00\u53ea\u8bfb\u9884\u89c8\u5f53\u524d\u9009\u4e2d\u6587\u6863\u7684\u6765\u6e90\u3001\u6807\u7b7e\u3001\u8bf4\u660e\u548c\u6b63\u6587\u7247\u6bb5\u3002"} title={"\u6587\u6863\u9884\u89c8"}>
               {renderPreviewPanel(selectedDocument)}
             </SurfaceCard>
-          </div>
+            </div>
+          </section>
         </>
       ) : null}
     </div>

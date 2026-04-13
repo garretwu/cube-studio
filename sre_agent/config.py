@@ -35,7 +35,7 @@ class GlobalConfig(BaseModel):
         default_factory=lambda: list(DEFAULT_BLOCKED_ALERT_NAMES)
     )
     auto_diagnose_alert_names: list[str] = Field(
-        default_factory=lambda: ["CubeStudioWebLatencyP95High", "NetworkLatencyHigh100ms"]
+        default_factory=lambda: []
     )
     auto_diagnose_delay_seconds: float = 10.0
     auto_diagnose_entity_correlation_count: int = 2

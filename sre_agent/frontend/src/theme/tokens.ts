@@ -28,39 +28,39 @@ const BRAND = {
 
 const NEUTRAL = {
   0: "#ffffff",
-  25: "#f9fbff",
-  50: "#f6f8fa",
-  100: "#f1f4f9",
-  200: "#e6e9ef",
-  300: "#d7dde8",
-  400: "#c4cad6",
-  500: "#8b8fa3",
-  600: "#6f7173",
-  700: "#525662",
-  800: "#1f2937",
-  950: "#0d0d12",
+  25: "#fafbfc",
+  50: "#f5f6f8",
+  100: "#f2f3f5",
+  200: "#e5e6eb",
+  300: "#d9dde4",
+  400: "#c9ced6",
+  500: "#86909c",
+  600: "#4e5969",
+  700: "#3a4554",
+  800: "#2a313a",
+  950: "#1f2329",
 } as const;
 
 const STATUS = {
   success: {
-    100: "#dff7ea",
-    600: "#12b76a",
-    700: "#0f8f51",
+    100: "#eef7f1",
+    600: "#4f8f72",
+    700: "#3b6f59",
   },
   warning: {
-    100: "#fff0cf",
-    600: "#f59e0b",
-    700: "#b46900",
+    100: "#fdf4e7",
+    600: "#b88230",
+    700: "#8d6420",
   },
   danger: {
-    100: "#ffe0dd",
-    600: "#f04438",
-    700: "#d92d20",
+    100: "#fbecec",
+    600: "#c85656",
+    700: "#9d3f3f",
   },
   info: {
-    100: "#def4ff",
-    600: "#0ea5e9",
-    700: "#0376b8",
+    100: "#edf3f8",
+    600: "#5a86a8",
+    700: "#436783",
   },
 } as const;
 
@@ -85,10 +85,10 @@ export const foundationTokens = {
   fontSize: {
     caption: "12px",
     body: "14px",
-    bodyLg: "15px",
-    sectionTitle: "24px",
-    pageTitle: "34px",
-    metric: "34px",
+    bodyLg: "14px",
+    sectionTitle: "18px",
+    pageTitle: "28px",
+    metric: "28px",
     mono: "12px",
   },
   fontWeight: {
@@ -100,15 +100,15 @@ export const foundationTokens = {
   lineHeight: {
     caption: "16px",
     body: "22px",
-    bodyLg: "24px",
-    sectionTitle: "28px",
+    bodyLg: "22px",
+    sectionTitle: "26px",
     pageTitle: "36px",
-    metric: "34px",
+    metric: "30px",
     mono: "18px",
   },
   letterSpacing: {
-    tight: "-0.04em",
-    section: "-0.03em",
+    tight: "-0.02em",
+    section: "-0.015em",
     label: "0.08em",
     normal: "0",
   },
@@ -126,25 +126,25 @@ export const foundationTokens = {
   },
   radius: {
     xs: "8px",
-    sm: "12px",
-    md: "14px",
-    lg: "16px",
-    xl: "20px",
+    sm: "10px",
+    md: "12px",
+    lg: "12px",
+    xl: "12px",
     full: "999px",
   },
   shadow: {
-    sm: "0 8px 24px rgba(15, 23, 42, 0.04)",
-    md: "0 18px 40px rgba(15, 23, 42, 0.08)",
-    lg: "0 28px 80px rgba(80, 61, 255, 0.12)",
-    inset: "inset 0 1px 0 rgba(255, 255, 255, 0.7)",
+    sm: "0 1px 2px rgba(31, 35, 41, 0.04)",
+    md: "0 6px 18px rgba(31, 35, 41, 0.05)",
+    lg: "0 12px 30px rgba(31, 35, 41, 0.08)",
+    inset: "inset 0 1px 0 rgba(255, 255, 255, 0.4)",
   },
   layout: {
     sidebarWidth: "272px",
     contentMaxWidth: "1280px",
-    metricTileMinHeight: "130px",
+    metricTileMinHeight: "112px",
     controlHeightSm: "32px",
     controlHeightMd: "40px",
-    controlHeightLg: "48px",
+    controlHeightLg: "44px",
   },
   motion: {
     fast: "180ms ease",
@@ -175,33 +175,37 @@ export const semanticTokens = {
   background: {
     pageBase: NEUTRAL[50],
     pageAlt: NEUTRAL[25],
-    pageDepth: "#eef2f6",
-    ambientBrand: BRAND[100],
-    ambientInfo: STATUS.info[100],
+    pageDepth: NEUTRAL[100],
+    ambientBrand: "#f7f6ff",
+    ambientInfo: "#f5f7fa",
   },
   surface: {
+    stage: NEUTRAL[0],
     panel: NEUTRAL[0],
-    panelMuted: NEUTRAL[50],
+    panelMuted: NEUTRAL[25],
     panelSoft: NEUTRAL[100],
-    panelStrong: NEUTRAL[200],
-    panelBrand: BRAND[100],
-    panelOverlay: "rgba(255, 255, 255, 0.92)",
-    glass: "rgba(255, 255, 255, 0.84)",
+    panelStrong: NEUTRAL[25],
+    panelBrand: "#f4f3ff",
+    card: NEUTRAL[0],
+    workplane: NEUTRAL[25],
+    floating: "rgba(255, 255, 255, 0.98)",
+    panelOverlay: "rgba(255, 255, 255, 0.96)",
+    glass: "rgba(255, 255, 255, 0.96)",
   },
   border: {
     default: NEUTRAL[200],
     strong: NEUTRAL[300],
-    subtle: "rgba(15, 23, 42, 0.08)",
-    accent: "rgba(80, 61, 255, 0.2)",
+    subtle: "rgba(31, 35, 41, 0.08)",
+    accent: "rgba(80, 61, 255, 0.18)",
     inverse: "rgba(255, 255, 255, 0.12)",
   },
   action: {
     primary: BRAND[600],
     primaryHover: BRAND[500],
     primaryActive: BRAND[700],
-    subtle: "rgba(80, 61, 255, 0.08)",
-    subtleHover: "rgba(80, 61, 255, 0.12)",
-    selected: NEUTRAL[200],
+    subtle: "rgba(31, 35, 41, 0.04)",
+    subtleHover: "rgba(31, 35, 41, 0.06)",
+    selected: NEUTRAL[100],
     disabledSurface: NEUTRAL[200],
     disabledText: NEUTRAL[500],
   },
@@ -220,9 +224,9 @@ export const semanticTokens = {
     infoStrong: STATUS.info[700],
   },
   focus: {
-    outline: "rgba(80, 61, 255, 0.32)",
-    ring: "rgba(80, 61, 255, 0.24)",
-    ringSoft: "rgba(80, 61, 255, 0.12)",
+    outline: "rgba(80, 61, 255, 0.26)",
+    ring: "rgba(80, 61, 255, 0.18)",
+    ringSoft: "rgba(80, 61, 255, 0.1)",
   },
   icon: {
     default: NEUTRAL[950],
@@ -288,15 +292,14 @@ export const componentTokens = {
     fontWeight: foundationTokens.fontWeight.semibold,
     primary: {
       text: semanticTokens.text.inverse,
-      border: semanticTokens.border.inverse,
-      background:
-        "linear-gradient(180deg, rgba(255, 255, 255, 0.16) 0%, rgba(255, 255, 255, 0) 100%), linear-gradient(90deg, #503dff 0%, #6658ff 100%)",
-      shadow: "0 1px 2px rgba(14, 18, 27, 0.24), 0 0 0 1px rgba(80, 61, 255, 0.16)",
+      border: semanticTokens.action.primary,
+      background: semanticTokens.action.primary,
+      shadow: "0 1px 2px rgba(31, 35, 41, 0.12)",
     },
     secondary: {
       text: semanticTokens.text.primary,
-      border: semanticTokens.border.default,
-      background: semanticTokens.surface.glass,
+      border: "transparent",
+      background: semanticTokens.surface.panelMuted,
     },
     tertiary: {
       text: semanticTokens.text.secondary,
@@ -304,9 +307,9 @@ export const componentTokens = {
       background: "transparent",
     },
     danger: {
-      text: semanticTokens.status.danger,
-      border: "rgba(240, 68, 56, 0.18)",
-      background: "rgba(240, 68, 56, 0.08)",
+      text: semanticTokens.status.dangerStrong,
+      border: "rgba(200, 86, 86, 0.18)",
+      background: "rgba(200, 86, 86, 0.08)",
     },
     disabledOpacity: "0.55",
   },
@@ -315,28 +318,28 @@ export const componentTokens = {
     radius: foundationTokens.radius.sm,
     background: semanticTokens.surface.panel,
     border: semanticTokens.border.default,
-    shadow: foundationTokens.shadow.sm,
+    shadow: "none",
     text: semanticTokens.text.primary,
     adornment: semanticTokens.text.secondary,
     placeholder: semanticTokens.text.tertiary,
     focusBorder: semanticTokens.action.primaryHover,
-    focusRing: `0 0 0 4px ${semanticTokens.focus.ringSoft}`,
+    focusRing: `0 0 0 3px ${semanticTokens.focus.ringSoft}`,
     textareaMinHeight: "120px",
   },
   statusChip: {
-    minHeight: "28px",
-    paddingInline: "10px",
+    minHeight: "24px",
+    paddingInline: "8px",
     gap: "6px",
-    radius: foundationTokens.radius.full,
+    radius: "6px",
     fontSize: foundationTokens.fontSize.caption,
-    fontWeight: foundationTokens.fontWeight.semibold,
+    fontWeight: foundationTokens.fontWeight.medium,
     neutral: {
       text: semanticTokens.text.secondary,
       background: semanticTokens.surface.panelSoft,
     },
     accent: {
       text: semanticTokens.icon.accent,
-      background: "rgba(80, 61, 255, 0.1)",
+      background: "rgba(80, 61, 255, 0.08)",
       border: "rgba(80, 61, 255, 0.12)",
     },
     success: {
@@ -358,39 +361,44 @@ export const componentTokens = {
   },
   surfaceCard: {
     radius: foundationTokens.radius.xl,
-    border: "rgba(230, 233, 239, 0.88)",
+    border: semanticTokens.border.default,
     background: semanticTokens.surface.panel,
-    shadow: foundationTokens.shadow.md,
+    shadow: "none",
+    stageBackground: semanticTokens.surface.stage,
+    stageBorder: "transparent",
+    panelBackground: semanticTokens.surface.panel,
+    panelBorder: semanticTokens.border.default,
+    cardBackground: semanticTokens.surface.card,
+    cardBorder: semanticTokens.border.strong,
     heroGlow: "none",
-    softBackground: semanticTokens.surface.panelSoft,
+    softBackground: semanticTokens.surface.panelMuted,
     headerGap: foundationTokens.space[4],
-    sectionPadding: foundationTokens.space[6],
+    sectionPadding: foundationTokens.space[5],
   },
   sidebarNav: {
-    brandMarkBackground:
-      "linear-gradient(180deg, rgba(255, 255, 255, 0.16) 0%, rgba(255, 255, 255, 0) 100%), linear-gradient(90deg, #503dff 0%, #7266ff 100%)",
-    brandMarkShadow: `${foundationTokens.shadow.inset}, 0 0 0 1px rgba(255, 255, 255, 0.12)`,
-    sectionLabelColor: semanticTokens.text.primary,
+    brandMarkBackground: semanticTokens.surface.panel,
+    brandMarkShadow: "none",
+    sectionLabelColor: semanticTokens.text.secondary,
     itemRadius: foundationTokens.radius.xs,
     itemText: semanticTokens.text.secondary,
     itemHoverText: semanticTokens.text.primary,
     itemHoverBackground: semanticTokens.action.subtle,
     itemActiveText: semanticTokens.text.primary,
-    itemActiveBackground: semanticTokens.surface.panelStrong,
+    itemActiveBackground: semanticTokens.surface.panelSoft,
   },
   topbar: {
     compactHeight: foundationTokens.layout.controlHeightSm,
     compactPaddingInline: "12px",
-    userBackground: "rgba(255, 255, 255, 0.9)",
+    userBackground: semanticTokens.surface.panel,
     userBorder: semanticTokens.border.default,
-    avatarBackground: "linear-gradient(135deg, #7cc4ff, #503dff)",
+    avatarBackground: "#e9edf4",
   },
   metricTile: {
     minHeight: foundationTokens.layout.metricTileMinHeight,
     radius: foundationTokens.radius.lg,
-    border: "rgba(230, 233, 239, 0.88)",
+    border: semanticTokens.border.default,
     background: semanticTokens.surface.panel,
-    shadow: foundationTokens.shadow.sm,
+    shadow: "none",
   },
   sectionHeader: {
     eyebrowColor: semanticTokens.text.secondary,
@@ -417,9 +425,21 @@ type LayerConfig = {
 };
 
 const LAYER_CONFIGS: LayerConfig[] = [
-  { layer: "foundation", prefix: "foundation", tokens: foundationTokens as ThemeTokenTree },
-  { layer: "semantic", prefix: "semantic", tokens: semanticTokens as ThemeTokenTree },
-  { layer: "component", prefix: "component", tokens: componentTokens as ThemeTokenTree },
+  {
+    layer: "foundation",
+    prefix: "foundation",
+    tokens: foundationTokens as ThemeTokenTree,
+  },
+  {
+    layer: "semantic",
+    prefix: "semantic",
+    tokens: semanticTokens as ThemeTokenTree,
+  },
+  {
+    layer: "component",
+    prefix: "component",
+    tokens: componentTokens as ThemeTokenTree,
+  },
   { layer: "icon", prefix: "icon", tokens: iconTokens as ThemeTokenTree },
 ];
 
@@ -434,7 +454,10 @@ const legacyVariableMap: Record<`--${string}`, string> = {
   "--color-background-ambient-brand": semanticTokens.background.ambientBrand,
   "--color-background-ambient-info": semanticTokens.background.ambientInfo,
   "--color-surface": semanticTokens.surface.panel,
+  "--color-surface-stage": semanticTokens.surface.stage,
+  "--color-surface-panel": semanticTokens.surface.panel,
   "--color-surface-card": semanticTokens.surface.panel,
+  "--color-surface-object": semanticTokens.surface.card,
   "--color-surface-muted": semanticTokens.surface.panelMuted,
   "--color-surface-card-muted": semanticTokens.surface.panelMuted,
   "--color-surface-soft": semanticTokens.surface.panelSoft,
@@ -442,12 +465,15 @@ const legacyVariableMap: Record<`--${string}`, string> = {
   "--color-surface-strong": semanticTokens.surface.panelStrong,
   "--color-surface-card-strong": semanticTokens.surface.panelStrong,
   "--color-surface-brand": semanticTokens.surface.panelBrand,
+  "--color-surface-workplane": semanticTokens.surface.workplane,
+  "--color-surface-floating": semanticTokens.surface.floating,
   "--color-surface-card-overlay": semanticTokens.surface.panelOverlay,
   "--color-text": semanticTokens.text.primary,
   "--color-text-secondary": semanticTokens.text.secondary,
   "--color-text-tertiary": semanticTokens.text.tertiary,
   "--color-text-inverse": semanticTokens.text.inverse,
   "--color-border": semanticTokens.border.default,
+  "--color-border-subtle": semanticTokens.border.subtle,
   "--color-border-strong": semanticTokens.border.strong,
   "--color-border-brand": semanticTokens.border.accent,
   "--color-brand-700": BRAND[700],
@@ -515,7 +541,9 @@ function toLabel(path: string[]) {
     .join(" / ");
 }
 
-function isTokenTree(value: ThemeTokenTree | ThemeTokenValue): value is ThemeTokenTree {
+function isTokenTree(
+  value: ThemeTokenTree | ThemeTokenValue,
+): value is ThemeTokenTree {
   return typeof value === "object" && value !== null;
 }
 
@@ -535,7 +563,8 @@ function flattenTokenTree(
       continue;
     }
 
-    const name = `--${[prefix, ...nextPath].map(toKebabCase).join("-")}` as const;
+    const name =
+      `--${[prefix, ...nextPath].map(toKebabCase).join("-")}` as const;
     variables.push({
       name,
       value: toCssValue(value),
@@ -548,27 +577,32 @@ function flattenTokenTree(
   return variables;
 }
 
-const layeredThemeTokenDefinitions = LAYER_CONFIGS.flatMap(({ layer, prefix, tokens }) =>
-  flattenTokenTree(layer, prefix, tokens),
+const layeredThemeTokenDefinitions = LAYER_CONFIGS.flatMap(
+  ({ layer, prefix, tokens }) => flattenTokenTree(layer, prefix, tokens),
 );
 
-const legacyThemeTokenDefinitions: ThemeVariableDefinition[] = Object.entries(legacyVariableMap).map(
-  ([name, value]) => ({
-    name: name as `--${string}`,
-    value,
-    layer: "foundation",
-    path: [name],
-    label: name,
-    isAlias: true,
-  }),
-);
+const legacyThemeTokenDefinitions: ThemeVariableDefinition[] = Object.entries(
+  legacyVariableMap,
+).map(([name, value]) => ({
+  name: name as `--${string}`,
+  value,
+  layer: "foundation",
+  path: [name],
+  label: name,
+  isAlias: true,
+}));
 
-export const themeTokenDefinitions = [...layeredThemeTokenDefinitions, ...legacyThemeTokenDefinitions];
+export const themeTokenDefinitions = [
+  ...layeredThemeTokenDefinitions,
+  ...legacyThemeTokenDefinitions,
+];
 
 export const runtimeThemeTokenDefinitions = layeredThemeTokenDefinitions;
 
 export function createThemeVariables(includeAliases = true): ThemeVariables {
-  const definitions = includeAliases ? themeTokenDefinitions : runtimeThemeTokenDefinitions;
+  const definitions = includeAliases
+    ? themeTokenDefinitions
+    : runtimeThemeTokenDefinitions;
 
   return definitions.reduce<ThemeVariables>(
     (variables, definition) => ({
@@ -581,7 +615,10 @@ export function createThemeVariables(includeAliases = true): ThemeVariables {
 
 export const themeVariables = createThemeVariables();
 
-export function serializeThemeVars(variables: ThemeVariables = themeVariables, selector = ":root") {
+export function serializeThemeVars(
+  variables: ThemeVariables = themeVariables,
+  selector = ":root",
+) {
   const body = Object.entries(variables)
     .sort(([left], [right]) => left.localeCompare(right))
     .map(([name, value]) => `  ${name}: ${value};`)
@@ -605,7 +642,9 @@ export function injectThemeVariables(doc: Document = document) {
   const cssText = cachedSerializedThemeVars ?? serializeThemeVars();
   cachedSerializedThemeVars = cssText;
 
-  let styleElement = targetDocument.getElementById(THEME_STYLE_ELEMENT_ID) as HTMLStyleElement | null;
+  let styleElement = targetDocument.getElementById(
+    THEME_STYLE_ELEMENT_ID,
+  ) as HTMLStyleElement | null;
 
   if (!styleElement) {
     styleElement = targetDocument.createElement("style");
