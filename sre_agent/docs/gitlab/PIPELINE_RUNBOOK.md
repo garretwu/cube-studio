@@ -141,7 +141,9 @@ Preview 规则：
 
 - [sre_agent/VERSION](/home/kevin/project/cube-studio/sre_agent/VERSION)
 
-如果手动触发时提供了 `RELEASE_VERSION`，就以传入值为准。
+如果手动运行 `promote_sre_agent_release` job 时提供了 `RELEASE_VERSION`，就以传入值为准。
+这个变量用于“提交前忘记更新版本文件”的补救场景：不要重跑整条 pipeline，直接打开当前 pipeline 中已经等待的 `promote_sre_agent_release` 手动 job，在 job 页面填写 `RELEASE_VERSION=1.0.1` 后点击 `Run job`。正式镜像 tag 会使用 `1.0.1-YYYYMMDDHHMM`，不会反向修改仓库里的 [sre_agent/VERSION](/home/kevin/project/cube-studio/sre_agent/VERSION)。
+版本号会在 promote 阶段校验，支持 `1.0.1`、`v1.0.1`、`1.0.1-rc.1` 这类格式。
 
 ## 5. GitLab 配置清单
 
@@ -184,7 +186,7 @@ Preview 规则：
 - `PREVIEW_PUBLIC_HOST`：填写浏览器可访问的主机 IP 或域名，例如 `10.11.4.5`
 - `PREVIEW_DOCKER_HOST`：仅在需要通过远端 Docker API 起 preview 容器时填写，例如 `tcp://10.11.4.5:2375`
 - `SRE_OPENAI_API_KEY`：填写真实 LLM `API key` 明文值，不是字段名，不是路径，也不是 `config.yaml` 中的键名
-- `RELEASE_VERSION`：手动正式发版时填写版本号，例如 `1.0.1`
+- `RELEASE_VERSION`：手动正式发版时填写版本号，例如 `1.0.1`；如果提交前忘记更新 [sre_agent/VERSION](/home/kevin/project/cube-studio/sre_agent/VERSION)，可在当前 pipeline 的 `promote_sre_agent_release` job 页面用这个变量临时覆盖，无需重跑整条 pipeline
 
 ### 5.2 Runner 要求
 

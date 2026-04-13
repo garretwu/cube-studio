@@ -20,12 +20,22 @@ require_local_docker_image "${WEB_IMAGE_REF}"
 
 mkdir -p "${REPO_ROOT}/dist"
 
-release_version="${RELEASE_VERSION:-$(read_default_release_version)}"
+default_release_version="$(read_default_release_version)"
+if [ -n "${RELEASE_VERSION:-}" ]; then
+  release_version="${RELEASE_VERSION}"
+  release_version_source="RELEASE_VERSION"
+else
+  release_version="${default_release_version}"
+  release_version_source="sre_agent/VERSION"
+fi
+validate_release_version "${release_version}"
 release_timestamp="${RELEASE_TIMESTAMP:-${IMAGE_TIMESTAMP:-$(timestamp_now)}}"
 release_tag="${release_version}-${release_timestamp}"
 release_web_image_name="$(app_image_name_for_lane release)"
 release_base_image_name="$(base_image_name_for_lane release)"
 release_image_ref="$(registry_image_ref "${release_web_image_name}" "${release_tag}")"
+
+log "release version: ${release_version} (source: ${release_version_source})"
 
 docker tag "${WEB_IMAGE_REF}" "${release_image_ref}"
 docker push "${release_image_ref}"
@@ -49,6 +59,8 @@ release_web_pull="docker pull ${release_image_ref}"
 echo "${release_web_pull}"
 
 cat > "${REPO_ROOT}/dist/release.env" <<EOF
+RELEASE_VERSION=${release_version}
+RELEASE_VERSION_SOURCE=${release_version_source}
 RELEASE_TAG=${release_tag}
 RELEASE_BASE_IMAGE_REF=${release_base_image_ref}
 RELEASE_WEB_IMAGE_REF=${release_image_ref}
@@ -57,6 +69,7 @@ EOF
 log "promoted release image ${release_image_ref}"
 echo
 echo "========== 正式发布已完成 =========="
+echo "Version      : ${release_version} (${release_version_source})"
 echo "Release Tag  : ${release_tag}"
 if [ -n "${release_base_image_ref}" ]; then
   echo "Base Release : ${release_base_image_ref}"

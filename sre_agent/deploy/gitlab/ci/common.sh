@@ -162,6 +162,16 @@ read_default_release_version() {
   echo "0.1.0"
 }
 
+validate_release_version() {
+  local version="$1"
+  if [[ "${version}" =~ ^v?[0-9]+(\.[0-9]+){2}([._-][0-9A-Za-z][0-9A-Za-z._-]*)?$ ]]; then
+    return 0
+  fi
+  echo "invalid release version: ${version}" >&2
+  echo "expected format like 1.0.1, v1.0.1, or 1.0.1-rc.1" >&2
+  return 1
+}
+
 require_local_docker_image() {
   local image_ref="$1"
   if docker image inspect "${image_ref}" >/dev/null 2>&1; then

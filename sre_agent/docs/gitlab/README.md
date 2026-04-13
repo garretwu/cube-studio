@@ -120,6 +120,7 @@
 - `publish_preview_snapshot`：在 preview 成功后自动把 commit 或 weekly 镜像推送到 Nexus，供内部测试和联调共享。
 - `promote_sre_agent_release`：手动执行，把已验证通过的业务镜像重新打成 `VERSION-YYYYMMDDHHMM`。
 - 如果手动触发时没有提供 `RELEASE_VERSION`，就读取 `sre_agent/VERSION` 里的默认版本。
+- 如果提交前忘记更新 `sre_agent/VERSION`，可以直接打开当前 pipeline 中的 `promote_sre_agent_release` 手动 job，在 job 页面填写 `RELEASE_VERSION=1.0.1` 临时覆盖；该变量只影响本次正式镜像 tag，不会自动提交版本文件，也不需要重跑整条 pipeline。
 
 镜像获取说明：
 
