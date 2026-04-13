@@ -84,17 +84,12 @@ def _parse_iso_utc(value: Any) -> datetime | None:
         return None
 
 
-def _build_trace_next_action(action_type: str, tool_name: str | None, tool_params: dict[str, Any]) -> str:
-    normalized_action = action_type.strip().lower()
-    if normalized_action == "tool_call":
-        service_hint = ""
-        service = tool_params.get("service")
-        if isinstance(service, str) and service.strip():
-            service_hint = f" for {service.strip()}"
-        return f"Next action: call {tool_name or 'tool'}{service_hint} to validate this hypothesis."
-    if normalized_action == "conclude":
-        return "Next action: synthesize the current evidence and provide the root-cause conclusion."
-    return "Next action: continue gathering discriminative evidence to narrow the root cause."
+def _build_thought_key(run_id: str | None, node: str | None) -> str | None:
+    normalized_run_id = (run_id or "").strip()
+    normalized_node = (node or "").strip()
+    if normalized_run_id and normalized_node:
+        return f"{normalized_run_id}:{normalized_node}"
+    return None
 
 
 def _normalize_stream_trace_items(
@@ -102,10 +97,11 @@ def _normalize_stream_trace_items(
     session_id: str,
     trace_items: list[dict[str, Any]],
     thought_duration_sec: int | None = None,
+    thought_key: str | None = None,
 ) -> list[dict[str, Any]]:
     normalized: list[dict[str, Any]] = []
     for item in trace_items:
-        event = _normalize_trace_item_event(session_id=session_id, item=item)
+        event = _normalize_trace_item_event(session_id=session_id, item=item, thought_key=thought_key)
         if not event:
             continue
         payload = _to_dict(event.get("data"))
@@ -136,7 +132,12 @@ def _is_context_window_exceeded_error(exc: Exception) -> bool:
     )
 
 
-def _normalize_trace_item_event(*, session_id: str, item: dict[str, Any]) -> dict[str, Any] | None:
+def _normalize_trace_item_event(
+    *,
+    session_id: str,
+    item: dict[str, Any],
+    thought_key: str | None = None,
+) -> dict[str, Any] | None:
     item_type = str(item.get("type", "")).strip().lower()
     if item_type == "thought":
         action = str(item.get("action", "tool_call")).strip().lower()
@@ -145,16 +146,19 @@ def _normalize_trace_item_event(*, session_id: str, item: dict[str, Any]) -> dic
             event_type = EventType.TOOL_CALL.value
         tool_params = _to_dict(item.get("tool_params"))
         thought = str(item.get("content", "")).strip() or "diagnosis step"
+        next_action = item.get("next_action")
         payload = {
             "step": int(item.get("step", 1)),
             "timestamp": _to_iso_utc(item.get("timestamp")),
             "thought": thought,
             "action_type": action if action in {"tool_call", "conclude", "remediate"} else "tool_call",
+            "thought_key": thought_key or item.get("thought_key"),
             "tool_name": item.get("tool_name"),
             "tool_params": tool_params,
             "confidence": item.get("confidence"),
-            "next_action": _build_trace_next_action(action, item.get("tool_name"), tool_params),
         }
+        if isinstance(next_action, str) and next_action.strip():
+            payload["next_action"] = next_action.strip()
         return {
             "type": event_type,
             "session_id": session_id,
@@ -603,11 +607,14 @@ async def run_diagnosis_stream(
                 node_name = _event_node(event)
                 active_run_id = active_node_runs.get(node_name, "")
                 token_run_id = active_run_id or _event_run_id(event)
+                thought_key = _build_thought_key(token_run_id, node_name)
                 token_payload: dict[str, Any] = {"content": text}
                 if node_name:
                     token_payload["node"] = node_name
                 if token_run_id:
                     token_payload["run_id"] = token_run_id
+                if thought_key:
+                    token_payload["thought_key"] = thought_key
                 yield {
                     "type": EventType.TOKEN_DELTA.value,
                     "session_id": active_session_id,
@@ -621,12 +628,14 @@ async def run_diagnosis_stream(
                 started_at = datetime.now(UTC)
                 active_node_runs[name] = run_id
                 node_started_at[(run_id, name)] = started_at
+                thought_key = _build_thought_key(run_id, name)
                 yield {
                     "type": EventType.NODE_STARTED.value,
                     "session_id": active_session_id,
                     "data": {
                         "node": name,
                         "run_id": run_id,
+                        "thought_key": thought_key,
                         "started_at": started_at.isoformat(),
                     },
                 }
@@ -652,6 +661,7 @@ async def run_diagnosis_stream(
                 if started_at is not None:
                     elapsed = (completed_at - started_at).total_seconds()
                     duration_sec = max(1, int(round(elapsed)))
+                thought_key = _build_thought_key(run_id, name)
 
                 event_data: dict[str, Any] = {
                     "node": name,
@@ -659,6 +669,8 @@ async def run_diagnosis_stream(
                 }
                 if run_id:
                     event_data["run_id"] = run_id
+                if thought_key:
+                    event_data["thought_key"] = thought_key
                 if started_at is not None:
                     event_data["started_at"] = started_at.isoformat()
                 if duration_sec is not None:
@@ -677,6 +689,7 @@ async def run_diagnosis_stream(
                             session_id=active_session_id,
                             trace_items=trace_delta,
                             thought_duration_sec=duration_sec,
+                            thought_key=thought_key,
                         )
                         if normalized_trace_items:
                             event_data["new_trace_items"] = normalized_trace_items

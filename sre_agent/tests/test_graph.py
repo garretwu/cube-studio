@@ -580,9 +580,11 @@ description: Diagnose vLLM latency with a Claude-style skill.
                                 "timestamp": "2026-04-13T13:00:00+00:00",
                                 "content": "Inspecting service latency and queue depth.",
                                 "action": "tool_call",
+                                "thought_key": "run-reason-1:reason",
                                 "tool_name": "query_metrics",
                                 "tool_params": {"service": "auth-svc"},
                                 "confidence": 0.74,
+                                "next_action": "Next action: call query_metrics for auth-svc and compare p95 with baseline.",
                             }
                         ],
                     }
@@ -603,9 +605,11 @@ description: Diagnose vLLM latency with a Claude-style skill.
                                 "timestamp": "2026-04-13T13:00:00+00:00",
                                 "content": "Inspecting service latency and queue depth.",
                                 "action": "tool_call",
+                                "thought_key": "run-reason-1:reason",
                                 "tool_name": "query_metrics",
                                 "tool_params": {"service": "auth-svc"},
                                 "confidence": 0.74,
+                                "next_action": "Next action: call query_metrics for auth-svc and compare p95 with baseline.",
                             }
                         ],
                         "diagnosis_result": {
@@ -640,15 +644,18 @@ description: Diagnose vLLM latency with a Claude-style skill.
         token_event = next(item for item in emitted if item["type"] == "token_delta")
         self.assertEqual(token_event["data"]["node"], "reason")
         self.assertEqual(token_event["data"]["run_id"], "run-reason-1")
+        self.assertEqual(token_event["data"]["thought_key"], "run-reason-1:reason")
 
         node_started = next(item for item in emitted if item["type"] == "node_started")
         self.assertEqual(node_started["data"]["run_id"], "run-reason-1")
+        self.assertEqual(node_started["data"]["thought_key"], "run-reason-1:reason")
         self.assertIn("started_at", node_started["data"])
 
         node_completed_events = [item for item in emitted if item["type"] == "node_completed"]
         self.assertGreaterEqual(len(node_completed_events), 2)
         reason_completed = next(item for item in node_completed_events if item["data"].get("node") == "reason")
         self.assertEqual(reason_completed["data"]["run_id"], "run-reason-1")
+        self.assertEqual(reason_completed["data"]["thought_key"], "run-reason-1:reason")
         self.assertIn("completed_at", reason_completed["data"])
         self.assertGreaterEqual(int(reason_completed["data"]["thought_duration_sec"]), 1)
         self.assertIn("new_trace_items", reason_completed["data"])
@@ -656,12 +663,61 @@ description: Diagnose vLLM latency with a Claude-style skill.
         new_trace_items = reason_completed["data"]["new_trace_items"]
         self.assertEqual(len(new_trace_items), 1)
         self.assertEqual(new_trace_items[0]["event_type"], "tool_call")
-        self.assertIsInstance(new_trace_items[0].get("next_action"), str)
-        self.assertGreater(len(str(new_trace_items[0]["next_action"])), 0)
+        self.assertEqual(new_trace_items[0]["thought_key"], "run-reason-1:reason")
+        self.assertEqual(
+            new_trace_items[0]["next_action"],
+            "Next action: call query_metrics for auth-svc and compare p95 with baseline.",
+        )
         self.assertGreaterEqual(int(new_trace_items[0]["thought_duration_sec"]), 1)
 
         finalize_completed = next(item for item in node_completed_events if item["data"].get("node") == "finalize")
         self.assertNotIn("new_trace_items", finalize_completed["data"])
+
+    async def test_run_diagnosis_stream_keeps_next_action_missing_when_trace_item_does_not_provide_it(self) -> None:
+        stream_events = [
+            {
+                "event": "on_chain_start",
+                "name": "reason",
+                "run_id": "run-reason-2",
+                "data": {},
+            },
+            {
+                "event": "on_chain_end",
+                "name": "reason",
+                "run_id": "run-reason-2",
+                "data": {
+                    "output": {
+                        "status": "diagnosing",
+                        "step_count": 1,
+                        "trace_items": [
+                            {
+                                "type": "thought",
+                                "step": 1,
+                                "timestamp": "2026-04-13T13:10:00+00:00",
+                                "content": "Inspecting error budget burn before concluding.",
+                                "action": "conclude",
+                            }
+                        ],
+                    }
+                },
+            },
+        ]
+
+        with patch("sre_agent.agent.graph.create_sre_graph", return_value=_FakeStreamGraph(stream_events)):
+            emitted: list[dict[str, Any]] = []
+            async for event in run_diagnosis_stream(
+                query="Diagnose error budget burn",
+                context=_happy_context(),
+                variables={},
+                checkpoint_dir=None,
+                total_timeout_sec=10.0,
+            ):
+                emitted.append(event)
+
+        reason_completed = next(item for item in emitted if item["type"] == "node_completed")
+        new_trace_items = reason_completed["data"]["new_trace_items"]
+        self.assertEqual(len(new_trace_items), 1)
+        self.assertNotIn("next_action", new_trace_items[0])
 
     async def test_step_timeout_returns_step_timeout_state(self) -> None:
         result = await run_diagnosis(

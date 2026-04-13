@@ -7,9 +7,11 @@ import type {
   DiagnosisLocalAuditRecord,
   DiagnosisSession,
   DiagnosisStartedData,
+  LiveThinkingBlock,
   Observation,
   RemediationPlan,
   SessionEvent,
+  StreamingToolCall,
   ThinkingStep,
   WSEvent,
 } from "../api/types";
@@ -52,10 +54,11 @@ type DiagnosisState = {
   effectiveReviseInstruction?: string;
   alertSnapshot: DiagnosisStartedData["alert"] | null;
   topologyContext: DiagnosisStartedData["topology"] | null;
+  liveThinking: LiveThinkingBlock | null;
   streamingText: string;
   streamingNode: string | null;
   isStreamingDiagnosis: boolean;
-  activeStreamingTools: Array<{ tool: string; params: Record<string, unknown> }>;
+  activeStreamingTools: StreamingToolCall[];
   streamingAbortController: AbortController | null;
   bootstrapSession: (sessionId?: string) => Promise<void>;
   sendMessage: (content: string) => Promise<ChatMessage | undefined>;
@@ -85,6 +88,41 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+function normalizeNonEmptyString(value: unknown): string | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+  const text = value.trim();
+  return text.length > 0 ? text : null;
+}
+
+function buildThoughtKey(runId: string | null, node: string | null): string | null {
+  if (!runId || !node) {
+    return null;
+  }
+  return `${runId}:${node}`;
+}
+
+function getThoughtKeyFromData(data: Record<string, unknown>): string | null {
+  const direct = normalizeNonEmptyString(data.thought_key);
+  if (direct) {
+    return direct;
+  }
+  return buildThoughtKey(normalizeNonEmptyString(data.run_id), normalizeNonEmptyString(data.node));
+}
+
+function toStreamingFields(
+  liveThinking: LiveThinkingBlock | null,
+  activeStreamingTools: StreamingToolCall[],
+): Pick<DiagnosisState, "liveThinking" | "streamingText" | "streamingNode" | "activeStreamingTools"> {
+  return {
+    liveThinking,
+    streamingText: liveThinking?.content ?? "",
+    streamingNode: liveThinking?.node ?? null,
+    activeStreamingTools,
+  };
+}
+
 function toThinkingStep(event: WSEvent, fallbackStep: number): ThinkingStep | null {
   if (event.type !== "thinking_step" && event.type !== "tool_call") {
     return null;
@@ -104,6 +142,7 @@ function toThinkingStep(event: WSEvent, fallbackStep: number): ThinkingStep | nu
       actionType === "tool_call" || actionType === "remediate" || actionType === "conclude"
         ? actionType
         : "conclude",
+    thought_key: normalizeNonEmptyString(data.thought_key),
     tool_name: typeof data.tool_name === "string" ? data.tool_name : null,
     tool_params: isRecord(data.tool_params) ? data.tool_params : null,
     confidence: typeof data.confidence === "number" ? data.confidence : null,
@@ -208,6 +247,7 @@ function toTraceEntryFromNodeSnapshot(
         actionType === "tool_call" || actionType === "remediate" || actionType === "conclude"
           ? actionType
           : "conclude",
+      thought_key: normalizeNonEmptyString(item.thought_key),
       tool_name: typeof item.tool_name === "string" ? item.tool_name : null,
       tool_params: isRecord(item.tool_params) ? item.tool_params : null,
       confidence: typeof item.confidence === "number" ? item.confidence : null,
@@ -699,6 +739,7 @@ export const useDiagnosisStore = create<DiagnosisState>((set, get) => ({
   effectiveReviseInstruction: undefined,
   alertSnapshot: null,
   topologyContext: null,
+  liveThinking: null,
   streamingText: "",
   streamingNode: null,
   isStreamingDiagnosis: false,
@@ -734,6 +775,7 @@ export const useDiagnosisStore = create<DiagnosisState>((set, get) => ({
       chatContextMeta: undefined,
       alertSnapshot: null,
       topologyContext: null,
+      liveThinking: null,
       streamingText: "",
       streamingNode: null,
       isStreamingDiagnosis: false,
@@ -793,6 +835,7 @@ export const useDiagnosisStore = create<DiagnosisState>((set, get) => ({
           chatContextMeta: undefined,
           alertSnapshot: null,
           topologyContext: null,
+          liveThinking: null,
           streamingText: "",
           streamingNode: null,
           isStreamingDiagnosis: false,
@@ -832,6 +875,7 @@ export const useDiagnosisStore = create<DiagnosisState>((set, get) => ({
         chatContextMeta: undefined,
         alertSnapshot: historicalAlert,
         topologyContext: historicalTopology,
+        liveThinking: null,
         error: undefined,
       });
     } catch (error) {
@@ -858,6 +902,7 @@ export const useDiagnosisStore = create<DiagnosisState>((set, get) => ({
         chatContextMeta: undefined,
         alertSnapshot: null,
         topologyContext: null,
+        liveThinking: null,
         streamingText: "",
         streamingNode: null,
         isStreamingDiagnosis: false,
@@ -1020,47 +1065,132 @@ export const useDiagnosisStore = create<DiagnosisState>((set, get) => ({
       let nextSession = appendTraceEntries(state.session, nextEntries);
       let nextAlertSnapshot = state.alertSnapshot;
       let nextTopologyContext = state.topologyContext;
+      let nextLiveThinking = state.liveThinking;
+      let nextActiveStreamingTools = state.activeStreamingTools;
+      const data = isRecord(event.data) ? event.data : {};
+      const eventSource = normalizeNonEmptyString(data._stream_source);
+      const thoughtKey = getThoughtKeyFromData(data);
+      const runId = normalizeNonEmptyString(data.run_id);
+      const node = normalizeNonEmptyString(data.node);
 
       if (event.type === "diagnosis_started") {
-        const data = isRecord(event.data) ? event.data : {};
         nextAlertSnapshot = (data.alert as DiagnosisStartedData["alert"]) ?? null;
         nextTopologyContext = (data.topology as DiagnosisStartedData["topology"]) ?? null;
       }
       if (event.type === "token_delta") {
-        if (state.streamingAbortController) {
+        if (state.streamingAbortController && eventSource !== "sse") {
           return state;
         }
-        const data = isRecord(event.data) ? event.data : {};
+        const content = String(data.content ?? "");
+        if (!content) {
+          return {
+            ...state,
+            isStreamingDiagnosis: true,
+          };
+        }
+
+        const resolvedThoughtKey = thoughtKey ?? nextLiveThinking?.thought_key ?? buildThoughtKey(runId, node);
+        if (!resolvedThoughtKey) {
+          return {
+            ...state,
+            isStreamingDiagnosis: true,
+          };
+        }
+
+        const isSameThought = nextLiveThinking?.thought_key === resolvedThoughtKey;
+        nextLiveThinking = {
+          thought_key: resolvedThoughtKey,
+          run_id: runId ?? nextLiveThinking?.run_id ?? null,
+          node: node ?? nextLiveThinking?.node ?? null,
+          timestamp: nextLiveThinking?.timestamp ?? event.timestamp,
+          content: `${isSameThought ? nextLiveThinking?.content ?? "" : ""}${content}`,
+          status: "thinking",
+          thought_duration_sec: null,
+          next_action: isSameThought ? nextLiveThinking?.next_action ?? null : null,
+          tool_name: isSameThought ? nextLiveThinking?.tool_name ?? null : null,
+          active_tools: nextActiveStreamingTools,
+        };
         return {
           ...state,
-          streamingText: state.streamingText + String(data.content ?? ""),
           isStreamingDiagnosis: true,
+          ...toStreamingFields(nextLiveThinking, nextActiveStreamingTools),
         };
       }
       if (event.type === "node_started") {
-        if (state.streamingAbortController) {
+        if (state.streamingAbortController && eventSource !== "sse") {
           return state;
         }
-        const data = isRecord(event.data) ? event.data : {};
+        const resolvedThoughtKey = thoughtKey ?? buildThoughtKey(runId, node);
+        nextActiveStreamingTools =
+          nextLiveThinking?.thought_key === resolvedThoughtKey ? nextLiveThinking.active_tools : [];
+        nextLiveThinking = resolvedThoughtKey
+          ? {
+              thought_key: resolvedThoughtKey,
+              run_id: runId,
+              node,
+              timestamp: normalizeNonEmptyString(data.started_at) ?? event.timestamp,
+              content: "",
+              status: "thinking",
+              thought_duration_sec: null,
+              next_action: null,
+              tool_name: null,
+              active_tools: nextActiveStreamingTools,
+            }
+          : null;
         return {
           ...state,
-          streamingNode: String(data.node ?? ""),
           isStreamingDiagnosis: true,
+          ...toStreamingFields(nextLiveThinking, nextActiveStreamingTools),
         };
       }
       if (event.type === "node_completed") {
-        const data = isRecord(event.data) ? event.data : {};
+        if (state.streamingAbortController && eventSource !== "sse") {
+          return state;
+        }
         const snapshotItems = Array.isArray(data.new_trace_items)
           ? data.new_trace_items.filter(isRecord)
           : [];
+        const existingThoughtKeys = new Set(
+          currentTrace.flatMap((entry) =>
+            "thought" in entry && typeof entry.thought_key === "string" ? [entry.thought_key] : [],
+          ),
+        );
         const snapshotEntries = snapshotItems
           .map((item, index) => toTraceEntryFromNodeSnapshot(item, currentTrace.length + index + 1))
-          .filter((entry): entry is ThinkingStep | Observation => Boolean(entry));
+          .filter((entry): entry is ThinkingStep | Observation => Boolean(entry))
+          .filter((entry) => {
+            if (!("thought" in entry) || typeof entry.thought_key !== "string") {
+              return true;
+            }
+            if (existingThoughtKeys.has(entry.thought_key)) {
+              return false;
+            }
+            existingThoughtKeys.add(entry.thought_key);
+            return true;
+          });
         const mergedEntries = [...nextEntries, ...snapshotEntries];
         nextSession = appendTraceEntries(nextSession, snapshotEntries);
         const nextEvents = mergeSessionEvents(state.events, [event as SessionEvent]);
         const approvalState = deriveApprovalState(nextSession, nextEvents);
         const completionError = getEventError(event) ?? state.error;
+        const completedThoughtKey = thoughtKey ?? nextLiveThinking?.thought_key;
+        const snapshotHasCompletedThought = snapshotEntries.some(
+          (entry) =>
+            "thought" in entry &&
+            typeof entry.thought_key === "string" &&
+            entry.thought_key === completedThoughtKey,
+        );
+        if (!snapshotHasCompletedThought && nextLiveThinking && nextLiveThinking.thought_key === completedThoughtKey) {
+          nextLiveThinking = {
+            ...nextLiveThinking,
+            status: "completed",
+            thought_duration_sec:
+              typeof data.thought_duration_sec === "number" ? data.thought_duration_sec : nextLiveThinking.thought_duration_sec,
+            active_tools: [],
+          };
+        } else {
+          nextLiveThinking = null;
+        }
 
         return {
           session: nextSession,
@@ -1076,61 +1206,89 @@ export const useDiagnosisStore = create<DiagnosisState>((set, get) => ({
           error: completionError,
           traceStatus:
             mergedEntries.length > 0 ? "ready" : state.traceStatus,
-          streamingText: "",
-          streamingNode: null,
           isStreamingDiagnosis: true,
-          activeStreamingTools: state.activeStreamingTools,
+          ...toStreamingFields(nextLiveThinking, []),
           streamingAbortController: state.streamingAbortController,
         };
       }
       if (event.type === "tool_started") {
-        if (state.streamingAbortController) {
+        if (state.streamingAbortController && eventSource !== "sse") {
           return state;
         }
-        const data = isRecord(event.data) ? event.data : {};
         const tool = String(data.tool ?? "");
         if (!tool) {
           return state;
         }
+        const resolvedThoughtKey = thoughtKey ?? nextLiveThinking?.thought_key ?? buildThoughtKey(runId, node);
+        const nextTool: StreamingToolCall = {
+          tool,
+          params: isRecord(data.params) ? data.params : {},
+          thought_key: resolvedThoughtKey,
+          run_id: runId,
+          node,
+        };
+        const toolExists = nextActiveStreamingTools.some(
+          (item) => item.tool === nextTool.tool && item.thought_key === nextTool.thought_key,
+        );
+        nextActiveStreamingTools = toolExists ? nextActiveStreamingTools : [...nextActiveStreamingTools, nextTool];
+        if (nextLiveThinking && (!resolvedThoughtKey || nextLiveThinking.thought_key === resolvedThoughtKey)) {
+          nextLiveThinking = {
+            ...nextLiveThinking,
+            tool_name: nextLiveThinking.tool_name ?? tool,
+            active_tools: nextActiveStreamingTools,
+          };
+        }
         return {
           ...state,
           isStreamingDiagnosis: true,
-          activeStreamingTools: [
-            ...state.activeStreamingTools,
-            { tool, params: isRecord(data.params) ? data.params : {} },
-          ],
+          ...toStreamingFields(nextLiveThinking, nextActiveStreamingTools),
         };
       }
       if (event.type === "tool_completed") {
-        if (state.streamingAbortController) {
+        if (state.streamingAbortController && eventSource !== "sse") {
           return state;
         }
-        const data = isRecord(event.data) ? event.data : {};
         const tool = String(data.tool ?? "");
+        const resolvedThoughtKey = thoughtKey ?? nextLiveThinking?.thought_key ?? buildThoughtKey(runId, node);
+        nextActiveStreamingTools = nextActiveStreamingTools.filter((item) => {
+          if (item.tool !== tool) {
+            return true;
+          }
+          if (resolvedThoughtKey && item.thought_key && item.thought_key !== resolvedThoughtKey) {
+            return true;
+          }
+          return false;
+        });
+        if (nextLiveThinking && (!resolvedThoughtKey || nextLiveThinking.thought_key === resolvedThoughtKey)) {
+          nextLiveThinking = {
+            ...nextLiveThinking,
+            active_tools: nextActiveStreamingTools,
+          };
+        }
         return {
           ...state,
-          activeStreamingTools: tool
-            ? state.activeStreamingTools.filter((item) => item.tool !== tool)
-            : state.activeStreamingTools,
+          ...toStreamingFields(nextLiveThinking, nextActiveStreamingTools),
         };
       }
       if (event.type === "done") {
-        if (state.streamingAbortController) {
+        if (state.streamingAbortController && eventSource !== "sse") {
           return state;
         }
         return {
           ...state,
           isStreamingDiagnosis: false,
-          streamingText: "",
-          streamingNode: null,
-          activeStreamingTools: [],
+          ...toStreamingFields(null, []),
           streamingAbortController: null,
         };
       }
       if (event.type === "error" && !nextSession) {
+        if (state.streamingAbortController && eventSource !== "sse") {
+          return state;
+        }
         return {
           ...state,
           isStreamingDiagnosis: false,
+          ...toStreamingFields(null, []),
           streamingAbortController: null,
           error: getEventError(event) ?? state.error,
         };
@@ -1229,6 +1387,7 @@ export const useDiagnosisStore = create<DiagnosisState>((set, get) => ({
         messages: mergeEventMessages(state.messages, [event], targetSessionId),
         alertSnapshot: nextAlertSnapshot,
         topologyContext: nextTopologyContext,
+        ...toStreamingFields(nextLiveThinking, nextActiveStreamingTools),
         error: getEventError(event) ?? state.error,
         traceStatus:
           nextEntries.length > 0 || event.type === "diagnosis_result"
@@ -1244,6 +1403,7 @@ export const useDiagnosisStore = create<DiagnosisState>((set, get) => ({
   startStreamingDiagnosis: (alert, extraAlertFingerprints = [], onSessionReady) => {
     const controller = new AbortController();
     set({
+      liveThinking: null,
       streamingText: "",
       streamingNode: null,
       isStreamingDiagnosis: true,
@@ -1274,6 +1434,11 @@ export const useDiagnosisStore = create<DiagnosisState>((set, get) => ({
                 "tool_call",
                 "tool_result",
                 "diagnosis_started",
+                "token_delta",
+                "node_started",
+                "node_completed",
+                "tool_started",
+                "tool_completed",
                 "diagnosis_result",
                 "approval_required",
                 "plan_revised",
@@ -1282,6 +1447,7 @@ export const useDiagnosisStore = create<DiagnosisState>((set, get) => ({
                 "observation_result",
                 "error",
                 "execution_mocked",
+                "done",
               ].includes(event.type)
             ) {
               get().applyEvent({
@@ -1289,55 +1455,10 @@ export const useDiagnosisStore = create<DiagnosisState>((set, get) => ({
                 type: event.type as WSEvent["type"],
                 session_id: event.session_id,
                 timestamp,
-                data,
-              });
-            }
-
-            if (event.type === "token_delta") {
-              set((state) => ({
-                streamingText: state.streamingText + String(data.content ?? ""),
-              }));
-              return;
-            }
-            if (event.type === "node_started") {
-              set({ streamingNode: String(data.node ?? "") });
-              return;
-            }
-            if (event.type === "node_completed") {
-              set({ streamingText: "", streamingNode: null });
-              return;
-            }
-            if (event.type === "tool_started") {
-              set((state) => ({
-                activeStreamingTools: [
-                  ...state.activeStreamingTools,
-                  { tool: String(data.tool ?? ""), params: (data.params as Record<string, unknown>) ?? {} },
-                ],
-              }));
-              return;
-            }
-            if (event.type === "tool_completed") {
-              set((state) => ({
-                activeStreamingTools: state.activeStreamingTools.filter(
-                  (item) => item.tool !== String(data.tool ?? ""),
-                ),
-              }));
-              return;
-            }
-            if (event.type === "done") {
-              set({
-                isStreamingDiagnosis: false,
-                streamingNode: null,
-                activeStreamingTools: [],
-                streamingAbortController: null,
-              });
-              return;
-            }
-            if (event.type === "error") {
-              set({
-                isStreamingDiagnosis: false,
-                streamingAbortController: null,
-                error: String(data.message ?? "streaming diagnosis error"),
+                data: {
+                  ...data,
+                  _stream_source: "sse",
+                },
               });
             }
           },
@@ -1347,6 +1468,7 @@ export const useDiagnosisStore = create<DiagnosisState>((set, get) => ({
         if ((error as Error).name !== "AbortError") {
           set({
             isStreamingDiagnosis: false,
+            liveThinking: null,
             streamingAbortController: null,
             error: error instanceof Error ? error.message : "streaming diagnosis failed",
           });
@@ -1360,6 +1482,7 @@ export const useDiagnosisStore = create<DiagnosisState>((set, get) => ({
     controller?.abort();
     set({
       isStreamingDiagnosis: false,
+      liveThinking: null,
       streamingText: "",
       streamingNode: null,
       activeStreamingTools: [],

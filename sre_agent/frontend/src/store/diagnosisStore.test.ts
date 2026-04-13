@@ -30,6 +30,12 @@ describe("useDiagnosisStore", () => {
       hasPlan: false,
       planMissingReason: undefined,
       effectiveReviseInstruction: undefined,
+      liveThinking: null,
+      streamingText: "",
+      streamingNode: null,
+      isStreamingDiagnosis: false,
+      activeStreamingTools: [],
+      streamingAbortController: null,
       connectionState: "closed",
       error: undefined,
     });
@@ -118,6 +124,114 @@ describe("useDiagnosisStore", () => {
     expect(state.session?.trace?.steps?.at(-1)).toMatchObject({
       tool: "metrics.query",
     });
+  });
+
+  it("aggregates live node events into a single streaming thinking block and keeps backend-only semantics", async () => {
+    await useDiagnosisStore.getState().bootstrapSession();
+
+    const nodeStarted: WSEvent = {
+      schema_version: "1",
+      type: "node_started",
+      session_id: diagnosisSession.session_id,
+      timestamp: "2026-03-18T12:07:00Z",
+      data: {
+        node: "reason",
+        run_id: "run-reason-1",
+        thought_key: "run-reason-1:reason",
+        started_at: "2026-03-18T12:07:00Z",
+      },
+    };
+    const tokenOne: WSEvent = {
+      schema_version: "1",
+      type: "token_delta",
+      session_id: diagnosisSession.session_id,
+      timestamp: "2026-03-18T12:07:01Z",
+      data: {
+        node: "reason",
+        run_id: "run-reason-1",
+        thought_key: "run-reason-1:reason",
+        content: "Investigating queue depth. ",
+      },
+    };
+    const toolStarted: WSEvent = {
+      schema_version: "1",
+      type: "tool_started",
+      session_id: diagnosisSession.session_id,
+      timestamp: "2026-03-18T12:07:01Z",
+      data: {
+        tool: "query_metrics",
+        params: { service: "auth-svc" },
+        node: "reason",
+        run_id: "run-reason-1",
+        thought_key: "run-reason-1:reason",
+      },
+    };
+    const tokenTwo: WSEvent = {
+      schema_version: "1",
+      type: "token_delta",
+      session_id: diagnosisSession.session_id,
+      timestamp: "2026-03-18T12:07:02Z",
+      data: {
+        node: "reason",
+        run_id: "run-reason-1",
+        thought_key: "run-reason-1:reason",
+        content: "Comparing p95 against baseline.",
+      },
+    };
+    const nodeCompleted: WSEvent = {
+      schema_version: "1",
+      type: "node_completed",
+      session_id: diagnosisSession.session_id,
+      timestamp: "2026-03-18T12:07:03Z",
+      data: {
+        node: "reason",
+        run_id: "run-reason-1",
+        thought_key: "run-reason-1:reason",
+        thought_duration_sec: 3,
+        new_trace_items: [
+          {
+            event_type: "tool_call",
+            step: 3,
+            timestamp: "2026-03-18T12:07:03Z",
+            thought: "Investigating queue depth. Comparing p95 against baseline.",
+            action_type: "tool_call",
+            thought_key: "run-reason-1:reason",
+            tool_name: "query_metrics",
+            tool_params: { service: "auth-svc" },
+            thought_duration_sec: 3,
+          },
+        ],
+      },
+    };
+
+    useDiagnosisStore.getState().applyEvent(nodeStarted);
+    useDiagnosisStore.getState().applyEvent(tokenOne);
+    useDiagnosisStore.getState().applyEvent(toolStarted);
+    useDiagnosisStore.getState().applyEvent(tokenTwo);
+
+    let state = useDiagnosisStore.getState();
+    expect(state.liveThinking).toMatchObject({
+      thought_key: "run-reason-1:reason",
+      node: "reason",
+      content: "Investigating queue depth. Comparing p95 against baseline.",
+    });
+    expect(state.activeStreamingTools).toHaveLength(1);
+    expect(state.activeStreamingTools[0]).toMatchObject({
+      tool: "query_metrics",
+      thought_key: "run-reason-1:reason",
+    });
+
+    useDiagnosisStore.getState().applyEvent(nodeCompleted);
+
+    state = useDiagnosisStore.getState();
+    expect(state.liveThinking).toBeNull();
+    expect(state.activeStreamingTools).toEqual([]);
+    expect(state.session?.trace?.steps?.at(-1)).toMatchObject({
+      thought: "Investigating queue depth. Comparing p95 against baseline.",
+      thought_key: "run-reason-1:reason",
+      thought_duration_sec: 3,
+    });
+    expect(state.session?.trace?.steps?.at(-1)).not.toHaveProperty("next_action");
   });
 
   it("uses default instruction when revising plan without input", async () => {

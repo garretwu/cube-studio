@@ -94,6 +94,7 @@ class ThinkingStep(StrictFrozenModel):
     timestamp: datetime = Field(default_factory=lambda: datetime.now(UTC))
     thought: str = Field(min_length=1)
     action_type: ActionType
+    thought_key: str | None = None
     tool_name: str | None = None
     tool_params: dict[str, Any] | None = None
     confidence: float | None = Field(default=None, ge=0.0, le=1.0)
@@ -139,6 +140,7 @@ class ThinkingTrace(StrictFrozenModel):
                     step=int(item.get("step", next_step)),
                     thought=str(item.get("content", "")),
                     action_type=str(item.get("action", "tool_call")),  # type: ignore[arg-type]
+                    thought_key=item.get("thought_key"),
                     tool_name=item.get("tool_name"),
                     tool_params=item.get("tool_params"),
                     confidence=item.get("confidence"),

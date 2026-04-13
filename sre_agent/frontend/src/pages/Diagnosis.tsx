@@ -565,57 +565,6 @@ function ToolCard({
   );
 }
 
-function RealtimeStreamingCard({
-  streamingNode,
-  streamingText,
-  activeStreamingTools,
-}: {
-  streamingNode: string | null;
-  streamingText: string;
-  activeStreamingTools: Array<{ tool: string; params: Record<string, unknown> }>;
-}) {
-  const hasNode = Boolean(streamingNode && streamingNode.trim().length > 0);
-  const hasText = Boolean(streamingText.trim().length > 0);
-  const hasTools = activeStreamingTools.length > 0;
-  if (!hasNode && !hasText && !hasTools) {
-    return null;
-  }
-
-  return (
-    <article className="diagnosis-workspace-process-row diagnosis-workspace-process-row--tool">
-      <div className="diagnosis-workspace-process-row__body">
-        <div className="diagnosis-workspace-tool-card diagnosis-workspace-tool-card--loading">
-          <div className="diagnosis-workspace-tool-card__header">
-            <span className="diagnosis-workspace-tool-card__title">
-              Live stream
-            </span>
-            <span className="diagnosis-workspace-tool-card__status">
-              streaming
-            </span>
-          </div>
-          {hasNode ? (
-            <div className="diagnosis-workspace-tool-card__results">
-              <p>{`Node: ${streamingNode}`}</p>
-            </div>
-          ) : null}
-          {hasText ? (
-            <div className="diagnosis-workspace-tool-card__results">
-              <p>{streamingText}</p>
-            </div>
-          ) : null}
-          {hasTools ? (
-            <div className="diagnosis-workspace-tool-card__results">
-              {activeStreamingTools.map((tool, index) => (
-                <p key={`${tool.tool}-${index}`}>{`Running tool: ${tool.tool}`}</p>
-              ))}
-            </div>
-          ) : null}
-        </div>
-      </div>
-    </article>
-  );
-}
-
 function RCAReportCard({
   summary,
   candidates,
@@ -1380,10 +1329,7 @@ function DiagnosisPage() {
     latestPlanVersion,
     canApprove,
     approvalBlockReason,
-    streamingText,
-    streamingNode,
-    isStreamingDiagnosis,
-    activeStreamingTools,
+    liveThinking,
     bootstrapSession,
     sendMessage,
     approvePlan,
@@ -1392,8 +1338,8 @@ function DiagnosisPage() {
   } = useDiagnosisStore();
 
   const liveView = useMemo(
-    () => buildDiagnosisLiveView(session, messages, events, localAuditRecords),
-    [events, localAuditRecords, messages, session],
+    () => buildDiagnosisLiveView(session, messages, events, localAuditRecords, liveThinking),
+    [events, liveThinking, localAuditRecords, messages, session],
   );
   const hasLiveSession =
     shouldBootstrapLiveSession &&
@@ -2529,7 +2475,7 @@ function DiagnosisPage() {
                 })
               )}
 
-              {hasLiveSession && traceStatus === "empty" ? (
+              {hasLiveSession && traceStatus === "empty" && !liveThinking ? (
                 <div className="diagnosis-workspace-inline-note">
                   The live session has not produced trace entries yet. The input
                   remains available while waiting for incremental diagnosis
@@ -2548,14 +2494,6 @@ function DiagnosisPage() {
                 >
                   {inlineError.message}
                 </div>
-              ) : null}
-
-              {hasLiveSession && isStreamingDiagnosis ? (
-                <RealtimeStreamingCard
-                  activeStreamingTools={activeStreamingTools}
-                  streamingNode={streamingNode}
-                  streamingText={streamingText}
-                />
               ) : null}
 
               {activeSummary ? (
@@ -2676,8 +2614,5 @@ function DiagnosisPage() {
   );
 }
 export default DiagnosisPage;
-
-
-
 
 

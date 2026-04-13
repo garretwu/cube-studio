@@ -265,10 +265,12 @@ function MessageRow({
 function ThinkingBlock({
   item,
   animate,
+  autoCollapseOnComplete,
   onStreamComplete,
 }: {
   item: Extract<DiagnosisModifiedTimelineItem, { kind: "thinking" }>;
   animate: boolean;
+  autoCollapseOnComplete: boolean;
   onStreamComplete?: () => void;
 }) {
   const isThinking = item.status === "thinking";
@@ -280,9 +282,13 @@ function ThinkingBlock({
       return;
     }
 
+    if (!autoCollapseOnComplete) {
+      return;
+    }
+
     const timer = window.setTimeout(() => setIsExpanded(false), DEMO_THINKING_COLLAPSE_DELAY_MS);
     return () => window.clearTimeout(timer);
-  }, [isThinking, item.id]);
+  }, [autoCollapseOnComplete, isThinking, item.id]);
 
   return (
     <article className="diagnosis-modified-process-row">
@@ -306,7 +312,7 @@ function ThinkingBlock({
               </span>
             ) : null}
             <span className={cn("diagnosis-modified-thinking__label", isThinking && "diagnosis-modified-thinking__label--thinking")}>
-              {isThinking ? "思考中..." : formatThoughtDurationLabel(item.thoughtDurationSec ?? estimateThoughtDurationSecFromContent(item.content))}
+              {isThinking ? "思考中..." : formatThoughtDurationLabel(item.thoughtDurationSec)}
             </span>
           </span>
           {item.toolName ? <span className="diagnosis-modified-thinking__tool">{item.toolName}</span> : null}
@@ -976,14 +982,12 @@ function DiagnosisModifiedPage() {
     isApprovingPlan,
     isRevisingPlan,
     latestPlanVersion,
-    streamingText,
-    streamingNode,
+    liveThinking,
     isStreamingDiagnosis,
-    activeStreamingTools,
     cancelStreamingDiagnosis,
   } = useDiagnosisStore();
 
-  const liveView = useMemo(() => buildDiagnosisModifiedLiveView(session, messages), [messages, session]);
+  const liveView = useMemo(() => buildDiagnosisModifiedLiveView(session, messages, liveThinking), [liveThinking, messages, session]);
   const hasLiveSession =
     shouldBootstrapLiveSession && bootstrapStatus === "ready" && Boolean(session) && Boolean(activeSessionId);
 
@@ -1761,6 +1765,7 @@ function DiagnosisModifiedPage() {
                   const shouldAnimateThinking = !hasLiveSession && item.status === "thinking";
                   return (
                     <ThinkingBlock
+                      autoCollapseOnComplete={!hasLiveSession}
                       animate={shouldAnimateThinking}
                       item={item}
                       key={item.id}
@@ -1779,44 +1784,9 @@ function DiagnosisModifiedPage() {
               })
             )}
 
-            {hasLiveSession && traceStatus === "empty" ? (
+            {hasLiveSession && traceStatus === "empty" && !liveThinking ? (
               <div className="diagnosis-modified-inline-note">
                 当前实时会话还没有产出 trace 条目。等待增量诊断事件期间，输入框仍可继续使用。
-              </div>
-            ) : null}
-
-            {isStreamingDiagnosis ? (
-              <div className="diagnosis-modified-streaming-indicator">
-                {streamingNode ? (
-                  <div className="diagnosis-modified-streaming-indicator__node">
-                    <span className="diagnosis-modified-streaming-indicator__spinner" aria-hidden="true" />
-                    {"执行中："}{streamingNode}
-                  </div>
-                ) : null}
-                {streamingText ? (
-                  <ThinkingBlock
-                    animate={false}
-                    item={{
-                      id: "sse-streaming-live",
-                      kind: "thinking",
-                      title: "实时推理",
-                      content: streamingText,
-                      timestamp: new Date().toISOString(),
-                      status: "thinking",
-                    }}
-                    onStreamComplete={undefined}
-                  />
-                ) : null}
-                {activeStreamingTools.length > 0 ? (
-                  <div className="diagnosis-modified-streaming-indicator__tools">
-                    {activeStreamingTools.map((t) => (
-                      <div key={t.tool} className="diagnosis-modified-streaming-indicator__tool">
-                        <span className="diagnosis-modified-streaming-indicator__spinner" aria-hidden="true" />
-                        {t.tool}
-                      </div>
-                    ))}
-                  </div>
-                ) : null}
               </div>
             ) : null}
 

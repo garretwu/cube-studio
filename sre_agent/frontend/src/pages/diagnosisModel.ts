@@ -1,4 +1,4 @@
-import type { ChatMessage, DiagnosisLocalAuditRecord, DiagnosisResult, DiagnosisSession, Observation, SessionEvent, ThinkingStep } from "../api/types";
+import type { ChatMessage, DiagnosisLocalAuditRecord, DiagnosisResult, DiagnosisSession, LiveThinkingBlock, Observation, SessionEvent, ThinkingStep } from "../api/types";
 import { formatDateTime, formatDateTimeParts } from "../utils/format";
 
 type ChipTone = "neutral" | "accent" | "success" | "warning" | "danger" | "info";
@@ -623,6 +623,23 @@ function buildTraceNextAction(entry: ThinkingStep): string | undefined {
   return undefined;
 }
 
+function getThinkingBaseKey(entry: ThinkingStep, fallback: string): string {
+  if (typeof entry.thought_key === "string" && entry.thought_key.trim().length > 0) {
+    return entry.thought_key.trim();
+  }
+  return fallback;
+}
+
+function buildThinkingTitle(actionType: ThinkingStep["action_type"], node?: string | null) {
+  if (node === "finalize" || actionType === "conclude") {
+    return "Agent is converging on the diagnosis";
+  }
+  if (actionType === "tool_call") {
+    return "Agent is planning a tool call";
+  }
+  return "Agent is expanding diagnostic context";
+}
+
 function isSyntheticRemediationMessage(message: ChatMessage) {
   const eventType = String(message.metadata?.["event_type"] ?? "").trim().toLowerCase();
   return [
@@ -822,6 +839,7 @@ export function buildDiagnosisLiveView(
   messages: ChatMessage[],
   events: SessionEvent[] = [],
   localAuditRecords: DiagnosisLocalAuditRecord[] = [],
+  liveThinking?: LiveThinkingBlock | null,
 ): DiagnosisLiveView {
   const timelineItems: TimelineSortItem[] = [];
   const traceEntries = session?.trace?.steps ?? [];
@@ -834,18 +852,14 @@ export function buildDiagnosisLiveView(
     }
 
     if (isThinkingStep(entry)) {
+      const baseKey = getThinkingBaseKey(entry, `${index + 1}-${entry.timestamp}`);
       timelineItems.push({
         order: timelineItems.length,
         timestamp: entry.timestamp,
         item: {
-          id: `trace-thinking-${index + 1}-${entry.timestamp}`,
+          id: `trace-thinking-${baseKey}`,
           kind: "thinking",
-          title:
-            entry.action_type === "tool_call"
-              ? "Agent is planning a tool call"
-              : entry.action_type === "conclude"
-                ? "Agent is converging on the diagnosis"
-                : "Agent is expanding diagnostic context",
+          title: buildThinkingTitle(entry.action_type),
           content: entry.thought,
           timestamp: entry.timestamp,
           toolName: entry.tool_name,
@@ -863,7 +877,7 @@ export function buildDiagnosisLiveView(
           order: timelineItems.length,
           timestamp: entry.timestamp,
           item: {
-            id: `trace-next-action-${index + 1}-${entry.timestamp}`,
+            id: `trace-next-action-${baseKey}`,
             kind: "message",
             role: "assistant",
             content: backendNextAction,
@@ -875,7 +889,7 @@ export function buildDiagnosisLiveView(
 
       if (entry.action_type === "tool_call" && entry.tool_name) {
         const toolItem: Extract<DiagnosisTimelineItem, { kind: "tool" }> = {
-          id: `trace-tool-${index + 1}-${entry.timestamp}`,
+          id: `trace-tool-${baseKey}-${entry.tool_name}`,
           kind: "tool",
           toolName: entry.tool_name,
           params: entry.tool_params ?? {},
@@ -915,7 +929,7 @@ export function buildDiagnosisLiveView(
       order: timelineItems.length,
       timestamp: entry.timestamp,
       item: {
-        id: `trace-orphan-tool-${index + 1}-${entry.timestamp}`,
+        id: `trace-orphan-tool-${index + 1}-${entry.timestamp}-${entry.tool}`,
         kind: "tool",
         toolName: entry.tool,
         params: entry.params,
@@ -978,6 +992,62 @@ export function buildDiagnosisLiveView(
     });
   });
 
+  if (liveThinking && liveThinking.thought_key.trim().length > 0) {
+    const baseKey = liveThinking.thought_key.trim();
+    timelineItems.push({
+      order: timelineItems.length,
+      timestamp: liveThinking.timestamp,
+      item: {
+        id: `trace-thinking-${baseKey}`,
+        kind: "thinking",
+        title: buildThinkingTitle(
+          liveThinking.tool_name ? "tool_call" : liveThinking.node === "finalize" ? "conclude" : "remediate",
+          liveThinking.node,
+        ),
+        content: liveThinking.content,
+        timestamp: liveThinking.timestamp,
+        toolName: liveThinking.tool_name,
+        status: liveThinking.status,
+        thoughtDurationSec:
+          typeof liveThinking.thought_duration_sec === "number" && Number.isFinite(liveThinking.thought_duration_sec)
+            ? Math.max(1, Math.round(liveThinking.thought_duration_sec))
+            : undefined,
+      },
+    });
+
+    if (typeof liveThinking.next_action === "string" && liveThinking.next_action.trim().length > 0) {
+      timelineItems.push({
+        order: timelineItems.length,
+        timestamp: liveThinking.timestamp,
+        item: {
+          id: `trace-next-action-${baseKey}`,
+          kind: "message",
+          role: "assistant",
+          content: liveThinking.next_action.trim(),
+          timestamp: liveThinking.timestamp,
+          label: "Next action",
+        },
+      });
+    }
+
+    liveThinking.active_tools.forEach((tool) => {
+      timelineItems.push({
+        order: timelineItems.length,
+        timestamp: liveThinking.timestamp,
+        item: {
+          id: `trace-tool-${baseKey}-${tool.tool}`,
+          kind: "tool",
+          toolName: tool.tool,
+          params: tool.params,
+          timestamp: liveThinking.timestamp,
+          status: "loading",
+          summaryLines: ["Waiting for tool result..."],
+          rawResult: undefined,
+        },
+      });
+    });
+  }
+
   buildSystemRecords(session, events, localAuditRecords).forEach((record, index) => {
     timelineItems.push({
       order: timelineItems.length + index,
@@ -996,7 +1066,15 @@ export function buildDiagnosisLiveView(
     });
   });
 
-  const sortedTimeline = [...timelineItems]
+  const dedupedTimeline = new Map<string, TimelineSortItem>();
+  timelineItems.forEach((entry, index) => {
+    dedupedTimeline.set(entry.item.id, {
+      ...entry,
+      order: index,
+    });
+  });
+
+  const sortedTimeline = [...dedupedTimeline.values()]
     .sort((left, right) => {
       const timeGap = new Date(left.timestamp).getTime() - new Date(right.timestamp).getTime();
       if (timeGap !== 0) {

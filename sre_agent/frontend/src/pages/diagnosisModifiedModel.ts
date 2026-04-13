@@ -1,4 +1,4 @@
-import type { ChatMessage, DiagnosisResult, DiagnosisSession, Observation, ThinkingStep } from "../api/types";
+import type { ChatMessage, DiagnosisResult, DiagnosisSession, LiveThinkingBlock, Observation, ThinkingStep } from "../api/types";
 
 type ChipTone = "neutral" | "accent" | "success" | "warning" | "danger" | "info";
 
@@ -160,6 +160,23 @@ export type DiagnosisModifiedDemoScenario = {
 
 function isThinkingStep(entry: ThinkingStep | Observation): entry is ThinkingStep {
   return "thought" in entry;
+}
+
+function getThinkingBaseKey(entry: ThinkingStep, fallback: string): string {
+  if (typeof entry.thought_key === "string" && entry.thought_key.trim().length > 0) {
+    return entry.thought_key.trim();
+  }
+  return fallback;
+}
+
+function buildThinkingTitle(actionType: ThinkingStep["action_type"], node?: string | null) {
+  if (node === "finalize" || actionType === "conclude") {
+    return "Agent 正在收敛诊断结论";
+  }
+  if (actionType === "tool_call") {
+    return "Agent 正在规划工具调用";
+  }
+  return "Agent 正在扩展诊断上下文";
 }
 
 function formatValue(value: unknown): string {
@@ -474,26 +491,11 @@ function buildPlan(session: DiagnosisSession | undefined): DiagnosisModifiedPlan
 export function buildDiagnosisModifiedLiveView(
   session: DiagnosisSession | undefined,
   messages: ChatMessage[],
+  liveThinking?: LiveThinkingBlock | null,
 ): DiagnosisModifiedLiveView {
   const timelineItems: TimelineSortItem[] = [];
   const traceEntries = session?.trace?.steps ?? [];
   const pendingTools: Array<Extract<DiagnosisModifiedTimelineItem, { kind: "tool" }>> = [];
-
-  const buildTraceNextAction = (entry: ThinkingStep) => {
-    if (entry.action_type === "tool_call" && entry.tool_name) {
-      const serviceHint =
-        typeof entry.tool_params?.service === "string" && entry.tool_params.service.trim().length > 0
-          ? `，目标 service=${entry.tool_params.service}`
-          : "";
-      return `下一步：调用 ${entry.tool_name}${serviceHint}，验证当前假设。`;
-    }
-
-    if (entry.action_type === "conclude") {
-      return "下一步：汇总当前证据，给出根因结论。";
-    }
-
-    return "下一步：继续收集区分性证据，进一步缩小根因范围。";
-  };
 
   for (let index = 0; index < traceEntries.length; index += 1) {
     const entry = traceEntries[index];
@@ -502,41 +504,43 @@ export function buildDiagnosisModifiedLiveView(
     }
 
     if (isThinkingStep(entry)) {
+      const baseKey = getThinkingBaseKey(entry, `${index + 1}-${entry.timestamp}`);
       timelineItems.push({
         order: timelineItems.length,
         timestamp: entry.timestamp,
         item: {
-          id: `trace-thinking-${index + 1}-${entry.timestamp}`,
+          id: `trace-thinking-${baseKey}`,
           kind: "thinking",
-          title:
-            entry.action_type === "tool_call"
-              ? "Agent 正在规划工具调用"
-              : entry.action_type === "conclude"
-                ? "Agent 正在收敛诊断结论"
-                : "Agent 正在扩展诊断上下文",
+          title: buildThinkingTitle(entry.action_type),
           content: entry.thought,
           timestamp: entry.timestamp,
           toolName: entry.tool_name,
           status: "completed",
+          thoughtDurationSec:
+            typeof entry.thought_duration_sec === "number" && Number.isFinite(entry.thought_duration_sec)
+              ? Math.max(1, Math.round(entry.thought_duration_sec))
+              : undefined,
         },
       });
 
-      timelineItems.push({
-        order: timelineItems.length,
-        timestamp: entry.timestamp,
-        item: {
-          id: `trace-next-action-${index + 1}-${entry.timestamp}`,
-          kind: "message",
-          role: "assistant",
-          content: buildTraceNextAction(entry),
+      if (typeof entry.next_action === "string" && entry.next_action.trim().length > 0) {
+        timelineItems.push({
+          order: timelineItems.length,
           timestamp: entry.timestamp,
-          label: "下一步行动",
-        },
-      });
+          item: {
+            id: `trace-next-action-${baseKey}`,
+            kind: "message",
+            role: "assistant",
+            content: entry.next_action.trim(),
+            timestamp: entry.timestamp,
+            label: "下一步行动",
+          },
+        });
+      }
 
       if (entry.action_type === "tool_call" && entry.tool_name) {
         const toolItem: Extract<DiagnosisModifiedTimelineItem, { kind: "tool" }> = {
-          id: `trace-tool-${index + 1}-${entry.timestamp}`,
+          id: `trace-tool-${baseKey}-${entry.tool_name}`,
           kind: "tool",
           toolName: entry.tool_name,
           params: entry.tool_params ?? {},
@@ -576,7 +580,7 @@ export function buildDiagnosisModifiedLiveView(
       order: timelineItems.length,
       timestamp: entry.timestamp,
       item: {
-        id: `trace-orphan-tool-${index + 1}-${entry.timestamp}`,
+        id: `trace-orphan-tool-${index + 1}-${entry.timestamp}-${entry.tool}`,
         kind: "tool",
         toolName: entry.tool,
         params: entry.params,
@@ -585,6 +589,62 @@ export function buildDiagnosisModifiedLiveView(
         summaryLines: summarizeResult(entry.result),
         rawResult: entry.result,
       },
+    });
+  }
+
+  if (liveThinking && liveThinking.thought_key.trim().length > 0) {
+    const baseKey = liveThinking.thought_key.trim();
+    timelineItems.push({
+      order: timelineItems.length,
+      timestamp: liveThinking.timestamp,
+      item: {
+        id: `trace-thinking-${baseKey}`,
+        kind: "thinking",
+        title: buildThinkingTitle(
+          liveThinking.tool_name ? "tool_call" : liveThinking.node === "finalize" ? "conclude" : "remediate",
+          liveThinking.node,
+        ),
+        content: liveThinking.content,
+        timestamp: liveThinking.timestamp,
+        toolName: liveThinking.tool_name,
+        status: liveThinking.status,
+        thoughtDurationSec:
+          typeof liveThinking.thought_duration_sec === "number" && Number.isFinite(liveThinking.thought_duration_sec)
+            ? Math.max(1, Math.round(liveThinking.thought_duration_sec))
+            : undefined,
+      },
+    });
+
+    if (typeof liveThinking.next_action === "string" && liveThinking.next_action.trim().length > 0) {
+      timelineItems.push({
+        order: timelineItems.length,
+        timestamp: liveThinking.timestamp,
+        item: {
+          id: `trace-next-action-${baseKey}`,
+          kind: "message",
+          role: "assistant",
+          content: liveThinking.next_action.trim(),
+          timestamp: liveThinking.timestamp,
+          label: "下一步行动",
+        },
+      });
+    }
+
+    liveThinking.active_tools.forEach((tool) => {
+      timelineItems.push({
+        order: timelineItems.length,
+        timestamp: liveThinking.timestamp,
+        item: {
+          id: `trace-tool-${baseKey}-${tool.tool}`,
+          kind: "tool",
+          toolName: tool.tool,
+          params: tool.params,
+          timestamp: liveThinking.timestamp,
+          status: "loading",
+          summaryLines: ["等待 tool_result 返回..."],
+          rawResult: undefined,
+        },
+      });
     });
   }
 
@@ -635,7 +695,15 @@ export function buildDiagnosisModifiedLiveView(
     });
   });
 
-  const sortedTimeline = [...timelineItems]
+  const dedupedTimeline = new Map<string, TimelineSortItem>();
+  timelineItems.forEach((entry, index) => {
+    dedupedTimeline.set(entry.item.id, {
+      ...entry,
+      order: index,
+    });
+  });
+
+  const sortedTimeline = [...dedupedTimeline.values()]
     .sort((left, right) => {
       const timeGap = new Date(left.timestamp).getTime() - new Date(right.timestamp).getTime();
       if (timeGap !== 0) {

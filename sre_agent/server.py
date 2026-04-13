@@ -1053,6 +1053,7 @@ class StreamingDiagnosisRunner:
                 "timestamp": item.get("timestamp"),
                 "content": thought,
                 "action": action,
+                "thought_key": item.get("thought_key"),
                 "tool_name": item.get("tool_name"),
                 "tool_params": item.get("tool_params") if isinstance(item.get("tool_params"), dict) else {},
                 "confidence": item.get("confidence"),

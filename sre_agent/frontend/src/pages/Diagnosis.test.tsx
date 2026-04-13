@@ -121,6 +121,12 @@ function resetDiagnosisStore(overrides: Partial<ReturnType<typeof useDiagnosisSt
     hasPlan: false,
     planMissingReason: undefined,
     effectiveReviseInstruction: undefined,
+    liveThinking: null,
+    streamingText: "",
+    streamingNode: null,
+    isStreamingDiagnosis: false,
+    activeStreamingTools: [],
+    streamingAbortController: null,
     bootstrapSession: vi.fn().mockResolvedValue(undefined),
     sendMessage: vi.fn().mockResolvedValue(undefined),
     revisePlan: vi.fn().mockResolvedValue(undefined),
@@ -1083,26 +1089,61 @@ describe("DiagnosisPage status badges", () => {
     expect(screen.queryByText(/\u5b9e\u65f6\u94fe\u8def/u)).not.toBeInTheDocument();
   });
 
-  it("renders realtime streaming block when backend stream is active", () => {
+  it("renders the live thinking block inside the main timeline when backend stream is active", () => {
+    mockedBuildLiveView.mockImplementation((_session, _messages, _events, _localAuditRecords, liveThinking) => ({
+      timeline: liveThinking
+        ? [
+            {
+              id: `trace-thinking-${liveThinking.thought_key}`,
+              kind: "thinking",
+              title: "Agent is planning a tool call",
+              content: liveThinking.content,
+              timestamp: liveThinking.timestamp,
+              toolName: liveThinking.tool_name,
+              status: "thinking",
+            },
+            ...liveThinking.active_tools.map((tool) => ({
+              id: `trace-tool-${liveThinking.thought_key}-${tool.tool}`,
+              kind: "tool" as const,
+              toolName: tool.tool,
+              params: tool.params,
+              timestamp: liveThinking.timestamp,
+              status: "loading" as const,
+              summaryLines: ["Waiting for tool result..."],
+            })),
+          ]
+        : [],
+      candidates: [],
+      summary: undefined,
+      plan: undefined,
+    }));
+
     resetDiagnosisStore({
       session: createLiveSession("sess-live-stream"),
       activeSessionId: "sess-live-stream",
       bootstrapStatus: "ready",
       traceStatus: "ready",
       isStreamingDiagnosis: true,
-      streamingNode: "reason",
-      streamingText: "partial token output",
-      activeStreamingTools: [{ tool: "query_metrics", params: { service: "auth-svc" } }],
+      liveThinking: {
+        thought_key: "run-reason-1:reason",
+        node: "reason",
+        run_id: "run-reason-1",
+        timestamp: "2026-04-08T10:20:01.000Z",
+        content: "partial token output",
+        status: "thinking",
+        tool_name: "query_metrics",
+        active_tools: [{ tool: "query_metrics", params: { service: "auth-svc" } }],
+      },
       messages: [],
       bootstrapSession: vi.fn().mockResolvedValue(undefined),
     });
 
     renderLivePage("/diagnosis/sess-live-stream");
 
-    expect(screen.getByText("Live stream")).toBeInTheDocument();
-    expect(screen.getByText(/Node: reason/)).toBeInTheDocument();
+    expect(screen.queryByText("Live stream")).not.toBeInTheDocument();
+    expect(screen.getByText("Thinking...")).toBeInTheDocument();
     expect(screen.getByText(/partial token output/)).toBeInTheDocument();
-    expect(screen.getByText(/Running tool: query_metrics/)).toBeInTheDocument();
+    expect(screen.getByText("query_metrics")).toBeInTheDocument();
   });
 
   it("keeps the demo badge without live business fields", () => {
@@ -1287,8 +1328,6 @@ describe("DiagnosisPage RCA report card", () => {
     expect(screen.getByText("\u6682\u65e0\u4f20\u64ad\u94fe\u8def\u6570\u636e\u3002")).toBeInTheDocument();
   });
 });
-
-
 
 
 
