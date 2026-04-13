@@ -23,8 +23,11 @@ class TestSkillsUnit(unittest.IsolatedAsyncioTestCase):
         self.assertIn("builtin-vllm-diagnosis", ids)
         self.assertIn("gpu-fault-sop", ids)
         self.assertIn("builtin-gpu-thermal-diagnosis", ids)
+        self.assertIn("builtin-gpu-drop-diagnosis", ids)
         gpu_fault = registry.get("gpu-fault-sop")
         self.assertIn("gpu_health_check.sh", gpu_fault.scripts)
+        gpu_drop = registry.get("builtin-gpu-drop-diagnosis")
+        self.assertIn("gpu_drop_recover.sh", gpu_drop.scripts)
 
     async def test_registry_supports_claude_style_skill_with_scripts_and_references(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
