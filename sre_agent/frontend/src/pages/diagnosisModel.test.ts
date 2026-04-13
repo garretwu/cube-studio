@@ -229,6 +229,40 @@ describe("buildDiagnosisLiveView next-action narration", () => {
   });
 });
 
+describe("buildDiagnosisLiveView live thinking merge", () => {
+  it("reuses the same timeline ids for a live thinking block and its active tool", () => {
+    const view = buildDiagnosisLiveView(
+      createSession([]),
+      [],
+      [],
+      [],
+      {
+        thought_key: "run-reason-1:reason",
+        node: "reason",
+        run_id: "run-reason-1",
+        timestamp: "2026-04-08T11:00:01.000Z",
+        content: "Streaming reasoning",
+        status: "thinking",
+        tool_name: "query_metrics",
+        active_tools: [{ tool: "query_metrics", params: { service: "auth-svc" } }],
+      },
+    );
+
+    expect(view.timeline[0]).toMatchObject({
+      id: "trace-thinking-run-reason-1:reason",
+      kind: "thinking",
+      status: "thinking",
+      content: "Streaming reasoning",
+    });
+    expect(view.timeline[1]).toMatchObject({
+      id: "trace-tool-run-reason-1:reason-query_metrics",
+      kind: "tool",
+      status: "loading",
+      toolName: "query_metrics",
+    });
+  });
+});
+
 describe("buildDiagnosisLiveView summary timing", () => {
   it("does not create an RCA summary before a diagnosis result exists", () => {
     const session = createSession([

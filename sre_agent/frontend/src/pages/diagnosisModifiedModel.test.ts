@@ -150,39 +150,35 @@ describe("buildDiagnosisModifiedLiveView tool matching", () => {
 });
 
 describe("buildDiagnosisModifiedLiveView next-action narration", () => {
-  it("injects a next-action assistant message right after tool-call thinking", () => {
+  it("prefers backend-provided next_action and thought_duration_sec fields", () => {
     const session = createSession([
       {
         step: 1,
         timestamp: "2026-04-08T10:40:01.000Z",
-        thought: "Call metrics before deciding",
-        action_type: "tool_call",
-        tool_name: "query_metrics",
-        tool_params: { service: "auth-svc" },
-      },
-      {
-        tool: "query_metrics",
-        params: { service: "auth-svc" },
-        result: { p95: "5.2s" },
-        timestamp: "2026-04-08T10:40:03.000Z",
+        thought: "Inspect queue depth before concluding",
+        action_type: "conclude",
+        next_action: "下一步：使用后端返回的行动建议。",
+        thought_duration_sec: 9,
       },
     ]);
 
     const view = buildDiagnosisModifiedLiveView(session, []);
-
-    expect(view.timeline[0]?.kind).toBe("thinking");
-    expect(view.timeline[1]?.kind).toBe("message");
-    expect(view.timeline[2]?.kind).toBe("tool");
-
+    const thinking = view.timeline[0];
     const nextAction = view.timeline[1];
+
+    expect(thinking?.kind).toBe("thinking");
+    if (thinking?.kind === "thinking") {
+      expect(thinking.thoughtDurationSec).toBe(9);
+    }
+    expect(nextAction?.kind).toBe("message");
     if (nextAction?.kind === "message") {
       expect(nextAction.role).toBe("assistant");
       expect(nextAction.label).toBe("下一步行动");
-      expect(nextAction.content).toContain("query_metrics");
+      expect(nextAction.content).toBe("下一步：使用后端返回的行动建议。");
     }
   });
 
-  it("injects a next-action assistant message after conclude thinking", () => {
+  it("does not inject next-action narration when backend next_action is missing", () => {
     const session = createSession([
       {
         step: 1,
@@ -194,16 +190,9 @@ describe("buildDiagnosisModifiedLiveView next-action narration", () => {
 
     const view = buildDiagnosisModifiedLiveView(session, []);
 
-    expect(view.timeline).toHaveLength(2);
+    expect(view.timeline).toHaveLength(1);
     expect(view.timeline[0]?.kind).toBe("thinking");
-    expect(view.timeline[1]?.kind).toBe("message");
-
-    const nextAction = view.timeline[1];
-    if (nextAction?.kind === "message") {
-      expect(nextAction.role).toBe("assistant");
-      expect(nextAction.label).toBe("下一步行动");
-      expect(nextAction.content).toContain("根因结论");
-    }
+    expect(view.timeline[0]?.kind).not.toBe("message");
   });
 });
 describe("buildDiagnosisModifiedDemoScenario ReAct cadence", () => {

@@ -102,6 +102,12 @@ function resetDiagnosisStore(overrides: Partial<ReturnType<typeof useDiagnosisSt
     hasPlan: false,
     planMissingReason: undefined,
     effectiveReviseInstruction: undefined,
+    liveThinking: null,
+    streamingText: "",
+    streamingNode: null,
+    isStreamingDiagnosis: false,
+    activeStreamingTools: [],
+    streamingAbortController: null,
     bootstrapSession: vi.fn().mockResolvedValue(undefined),
     sendMessage: vi.fn().mockResolvedValue(undefined),
     revisePlan: vi.fn().mockResolvedValue(undefined),
@@ -851,6 +857,7 @@ describe("DiagnosisModifiedPage sequential playback", () => {
 
     await advance(5000);
 
-    expect(screen.getAllByText("下一步：调用 query_metrics，目标 service=auth-svc，验证当前假设。")).toHaveLength(1);
+    expect(screen.queryByText("下一步：调用 query_metrics，目标 service=auth-svc，验证当前假设。")).not.toBeInTheDocument();
+    expect(screen.getAllByText("Verify auth service metrics before concluding")).toHaveLength(1);
   });
 });
