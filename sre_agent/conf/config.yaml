@@ -6,7 +6,7 @@ global:
   auto_diagnose_entity_correlation_count: 2
 
 llm:
-  api_key: "sk-api-Ml_dsXwgRtYGuBgoQJEfWZ3K1RConiku0CH7OOhRAFHQNk3J3ybKQtUyxwnB_euGb-l1sIDZMB0kNIcYVjzWhNKbQ8Lq8p8gXekaHKviVXw1CFP8pudEY8U"
+  api_key: "sk-cp-QbQw-Zy-mlZTwXXD3nC6MX17TDtze2xQafHqLgipC-fe4wL1NHKmXC1aGFmgVTns8_erpRmmQcBDhcxdvIMDeavvvS5McU6-QDGja8vmZ8wI75YQLZq0X2k"
   base_url: "https://api.minimax.chat/v1"
   model: "MiniMax-M2.7"
 

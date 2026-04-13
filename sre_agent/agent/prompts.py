@@ -36,6 +36,11 @@ Rules:
 - Every remediation step `params` object must explicitly contain all required fields from that tool's `params_schema`. Do not leave required values only in `description` or `command`.
 - If the intended action does not match any safe write tool in the schema reference, set `remediation_plan` to null instead of forcing an approximate tool call.
 - For tc qdisc/netem cleanup actions, use `network.clear_tc_qdisc` and provide `node`, `iface`, and `parent` when the command targets a parent qdisc.
+- For `NetworkLatencyHigh100ms`/Network Jitter style incidents, prioritize evidence in this order:
+  1. `network.get_tc_qdisc`
+  2. `network.find_process` (pattern: `tc|netem|fault_injector|fi_`)
+  3. then NIC/RDMA tools as supporting evidence only when needed.
+- When `tc/netem` evidence is present, do not conclude with "证据不足" or equivalent no-evidence language.
 - After enough evidence is collected, return JSON only.
 
 Final JSON shape:

@@ -36,6 +36,7 @@ from sre_agent.ontology.graph import OntologyGraph
 from sre_agent.diagnosis_start import DiagnosisStartCoordinator
 from sre_agent.remediation import ApprovalGate, IncidentHandler, LoopConfig, LoopOrchestrator, PlanValidator, RemediationEngine, RollbackJournal
 from sre_agent.runtime import bootstrap_tool_channels, register_remediation_channel
+from sre_agent.runtime.node_mapping import map_internal_to_external_ip
 from sre_agent.topology.discovery import discover_hybrid_snapshot, discover_live_snapshot, discover_static_snapshot
 from sre_agent.tools import ToolExecutionContext, build_default_registry
 
@@ -1110,6 +1111,8 @@ def _build_runtime_diagnosis_variables(
     node = _resolve_inventory_node_for_alert(labels=labels, cfg=cfg)
     namespace = str(labels.get("namespace") or "service").strip() or "service"
     iface = str(labels.get("interface") or labels.get("device") or "").strip()
+    if iface.lower() in {"unknown", "n/a", "none", "-", "--", "null"}:
+        iface = ""
     promql = _infer_default_promql(alert_name=alert.alert_name, labels=labels)
     payload: dict[str, Any] = {
         "alert_name": alert.alert_name,
@@ -1141,14 +1144,7 @@ def _infer_default_promql(*, alert_name: str, labels: dict[str, Any]) -> str:
 
 
 def _map_internal_to_external_ip(ip: str) -> str | None:
-    value = str(ip or "").strip()
-    matched = re.fullmatch(r"10\.11\.0\.(\d{1,3})", value)
-    if not matched:
-        return None
-    tail = int(matched.group(1))
-    if tail < 0 or tail > 255:
-        return None
-    return f"10.11.4.{tail}"
+    return map_internal_to_external_ip(ip)
 
 
 def _load_inventory_workers(*, cfg: SREAgentConfig) -> list[dict[str, Any]]:

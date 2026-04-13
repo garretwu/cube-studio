@@ -1804,6 +1804,7 @@ class TestAPIE2E:
             )
             updated_diagnosis = session.diagnosis_result.model_copy(update={"recommended_fix": replacement_plan})
             services.session_store.put(session.model_copy(update={"diagnosis_result": updated_diagnosis}))
+            services.remediation_engine.register_plan(session_id, replacement_plan)
 
             _set_tool_channel_health(client, "prometheus", health="ready")
             _set_tool_channel_health(client, "ssh", health="unavailable", last_error="ssh channel offline")
@@ -1821,6 +1822,56 @@ class TestAPIE2E:
             assert details["execution_mode"] == "real"
             assert "ssh" in details["required_channels"]
             assert {item["name"] for item in details["unready_channels"]} >= {"ssh"}
+        finally:
+            client.close()
+
+    def test_e2e_approve_route_real_mode_blocks_placeholder_iface_before_execution(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        client, token = _build_real_client(monkeypatch)
+        try:
+            diagnose = client.post("/api/diagnose", json=_alert_payload(), headers=_auth_headers(token)).json()
+            session_id = diagnose["data"]["session_id"]
+
+            services = client.app.state.services
+            session = services.session_store.get(session_id)
+            assert session is not None
+            assert session.diagnosis_result is not None
+            assert session.diagnosis_result.recommended_fix is not None
+
+            invalid_plan = session.diagnosis_result.recommended_fix.model_copy(
+                update={
+                    "steps": [
+                        RemediationStep(
+                            step_id=1,
+                            description="clear netem qdisc with placeholder iface",
+                            tool="network.clear_tc_qdisc",
+                            params={"node": "worker-03", "iface": "", "parent": ":3f"},
+                            verification=VerificationConfig(method="wait", wait_seconds=1),
+                        )
+                    ]
+                }
+            )
+            services.remediation_engine.register_plan(session_id, invalid_plan)
+
+            _set_tool_channel_health(client, "k8s", health="ready")
+            _set_tool_channel_health(client, "prometheus", health="ready")
+            _set_tool_channel_health(client, "ssh", health="ready")
+
+            approve = client.post(
+                f"/api/remediate/{session_id}/approve",
+                json={"approved": True, "user": "alice"},
+                headers=_auth_headers(token),
+            )
+            assert approve.status_code == 200
+            payload = approve.json()
+            assert payload["success"] is False
+            assert payload["error"]["code"] == ErrorCode.VALIDATION_ERROR.value
+            assert "placeholder value" in payload["error"]["message"]
+
+            session_resp = client.get(f"/api/sessions/{session_id}", headers=_auth_headers(token))
+            assert session_resp.status_code == 200
+            assert session_resp.json()["data"]["status"] == "approval_required"
         finally:
             client.close()
 

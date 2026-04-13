@@ -384,6 +384,43 @@ class TestToolRegistryUnit(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(ssh.calls[0]["command"], "tc qdisc show")
         self.assertEqual(ssh.calls[1]["command"], "tc qdisc show dev eth0")
 
+    async def test_unit_network_find_process_returns_structured_matches(self) -> None:
+        class _ProcessSSHChannel(_FakeSSHChannel):
+            async def run_command(self, node: str, command: str, use_sudo: bool = False) -> _FakeChannelResult:
+                self.calls.append({"node": node, "command": command, "use_sudo": use_sudo})
+                return _FakeChannelResult(
+                    output=(
+                        "1234 tc tc qdisc add dev roce root netem delay 120ms\n"
+                        "2233 fault_injector /usr/local/bin/fault_injector --scene network-jitter\n"
+                    )
+                )
+
+        registry = build_default_registry()
+        ssh = _ProcessSSHChannel()
+        context = ToolExecutionContext(channels={"ssh": ssh})
+        result = await registry.execute(
+            "network.find_process",
+            {"node": "worker-03", "pattern": "tc|netem|fault_injector|fi_"},
+            context,
+        )
+
+        self.assertTrue(result.success)
+        self.assertEqual(result.data["node"], "worker-03")
+        self.assertEqual(result.data["count"], 2)
+        self.assertEqual(result.data["matches"][0]["pid"], 1234)
+        self.assertIn("grep -E --", ssh.calls[0]["command"])
+        self.assertFalse(ssh.calls[0]["use_sudo"])
+
+    async def test_unit_network_find_process_requires_node_and_pattern(self) -> None:
+        registry = build_default_registry()
+        missing_pattern = await registry.execute(
+            "network.find_process",
+            {"node": "worker-03"},
+            ToolExecutionContext(channels={"ssh": _FakeSSHChannel()}),
+        )
+        self.assertFalse(missing_pattern.success)
+        self.assertIn("parameter 'pattern' is required", missing_pattern.error)
+
     async def test_unit_network_clear_tc_qdisc_dispatches_expected_commands(self) -> None:
         registry = build_default_registry()
         ssh = _FakeSSHChannel()
