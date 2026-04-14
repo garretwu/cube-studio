@@ -8,6 +8,9 @@ import { useDiagnosisStore } from "./diagnosisStore";
 
 describe("useDiagnosisStore", () => {
   beforeEach(() => {
+    server.use(
+      http.post("/api/diagnose/start", async () => HttpResponse.json(diagnosisSession)),
+    );
     window.localStorage.removeItem("sre_session_id");
     useDiagnosisStore.setState({
       session: undefined,
@@ -35,6 +38,7 @@ describe("useDiagnosisStore", () => {
       streamingText: "",
       streamingNode: null,
       isStreamingDiagnosis: false,
+      streamingPhase: "idle",
       activeStreamingTools: [],
       streamingAbortController: null,
       connectionState: "closed",
@@ -265,6 +269,118 @@ describe("useDiagnosisStore", () => {
     });
   });
 
+  it("marks live thinking as completed and sets streamingPhase=error on error event", () => {
+    useDiagnosisStore.setState({
+      session: diagnosisSession,
+      activeSessionId: diagnosisSession.session_id,
+      isStreamingDiagnosis: true,
+      streamingPhase: "streaming_thought",
+      liveThinking: {
+        thought_key: "run-reason-error:reason",
+        run_id: "run-reason-error",
+        node: "reason",
+        timestamp: "2026-03-18T12:08:10Z",
+        content: "",
+        status: "thinking",
+        tool_name: null,
+        active_tools: [],
+      },
+      activeStreamingTools: [],
+    });
+
+    useDiagnosisStore.getState().applyEvent({
+      schema_version: "1",
+      type: "error",
+      session_id: diagnosisSession.session_id,
+      timestamp: "2026-03-18T12:08:11Z",
+      data: {
+        message: "reason step timed out",
+      },
+    });
+
+    const state = useDiagnosisStore.getState();
+    expect(state.isStreamingDiagnosis).toBe(false);
+    expect(state.streamingPhase).toBe("error");
+    expect(state.liveThinking?.status).toBe("completed");
+    expect(state.liveThinking?.content).toContain("reason step timed out");
+  });
+
+  it("closes streaming and keeps liveThinking non-thinking when done event arrives", () => {
+    useDiagnosisStore.setState({
+      session: diagnosisSession,
+      activeSessionId: diagnosisSession.session_id,
+      isStreamingDiagnosis: true,
+      streamingPhase: "streaming_thought",
+      liveThinking: {
+        thought_key: "run-reason-done:reason",
+        run_id: "run-reason-done",
+        node: "reason",
+        timestamp: "2026-03-18T12:08:12Z",
+        content: "Investigating impact scope",
+        status: "thinking",
+        tool_name: null,
+        active_tools: [],
+      },
+      activeStreamingTools: [],
+    });
+
+    useDiagnosisStore.getState().applyEvent({
+      schema_version: "1",
+      type: "done",
+      session_id: diagnosisSession.session_id,
+      timestamp: "2026-03-18T12:08:13Z",
+      data: {
+        status: "diagnosed",
+        summary: "诊断完成",
+      },
+    });
+
+    const state = useDiagnosisStore.getState();
+    expect(state.isStreamingDiagnosis).toBe(false);
+    expect(state.streamingPhase).toBe("completed");
+    expect(state.liveThinking?.status).toBe("completed");
+    expect(state.liveThinking?.content).toBe("Investigating impact scope");
+  });
+
+  it("does not keep spinner on node_completed step_timeout terminal event", () => {
+    useDiagnosisStore.setState({
+      session: diagnosisSession,
+      activeSessionId: diagnosisSession.session_id,
+      isStreamingDiagnosis: true,
+      streamingPhase: "streaming_thought",
+      liveThinking: {
+        thought_key: "run-reason-timeout:reason",
+        run_id: "run-reason-timeout",
+        node: "reason",
+        timestamp: "2026-03-18T12:08:14Z",
+        content: "",
+        status: "thinking",
+        tool_name: null,
+        active_tools: [],
+      },
+      activeStreamingTools: [],
+    });
+
+    useDiagnosisStore.getState().applyEvent({
+      schema_version: "1",
+      type: "node_completed",
+      session_id: diagnosisSession.session_id,
+      timestamp: "2026-03-18T12:08:15Z",
+      data: {
+        node: "reason",
+        run_id: "run-reason-timeout",
+        thought_key: "run-reason-timeout:reason",
+        status: "step_timeout",
+      },
+    });
+
+    const state = useDiagnosisStore.getState();
+    expect(state.isStreamingDiagnosis).toBe(false);
+    expect(state.streamingPhase).toBe("error");
+    expect(state.liveThinking?.status).toBe("completed");
+    expect(state.liveThinking?.content).toContain("超时");
+  });
+
   it("captures plan_unavailable reason for sessions without remediation plan", () => {
     const sessionWithoutPlan = {
       ...diagnosisSession,
@@ -334,7 +450,113 @@ describe("useDiagnosisStore", () => {
       thought_key: "run-reason-placeholder:reason",
       status: "thinking",
     });
-    expect(state.liveThinking?.content).toContain("诊断引擎正在分析当前证据并规划下一步行动");
+    expect(state.liveThinking?.content).toBe("");
+  });
+
+  it("creates a bootstrap thinking block immediately when streaming diagnosis starts", async () => {
+    server.use(
+      http.post("/api/diagnose/stream", async () =>
+        new HttpResponse("", {
+          status: 200,
+          headers: { "Content-Type": "text/event-stream" },
+        }),
+      ),
+    );
+
+    const pendingSessionId = useDiagnosisStore.getState().startStreamingDiagnosis(diagnosisSession.alert);
+    const state = useDiagnosisStore.getState();
+
+    expect(pendingSessionId).toMatch(/^pending-/);
+    expect(state.activeSessionId).toBe(pendingSessionId);
+    expect(state.session?.session_id).toBe(pendingSessionId);
+    expect(state.streamingPhase).toBe("bootstrapping");
+    expect(state.isStreamingDiagnosis).toBe(true);
+    expect(state.liveThinking).toMatchObject({
+      thought_key: `bootstrap:${pendingSessionId}`,
+      node: "bootstrap",
+      status: "thinking",
+      content: "",
+    });
+
+    useDiagnosisStore.getState().cancelStreamingDiagnosis();
+  });
+
+  it("adopts the real session id when the first streaming event arrives for a pending session", () => {
+    useDiagnosisStore.setState({
+      session: {
+        ...diagnosisSession,
+        session_id: "pending-123",
+        trace: { steps: [] },
+      },
+      activeSessionId: "pending-123",
+      bootstrapStatus: "ready",
+      traceStatus: "empty",
+      isStreamingDiagnosis: true,
+      streamingPhase: "bootstrapping",
+      liveThinking: {
+        thought_key: "bootstrap:pending-123",
+        node: "bootstrap",
+        run_id: null,
+        timestamp: "2026-03-18T12:09:30Z",
+        content: "",
+        status: "thinking",
+        tool_name: null,
+        active_tools: [],
+      },
+    });
+
+    useDiagnosisStore.getState().applyEvent({
+      schema_version: "1",
+      type: "diagnosis_started",
+      session_id: "sess-real-001",
+      timestamp: "2026-03-18T12:09:31Z",
+      data: {
+        alert: {
+          alert_name: diagnosisSession.alert.alert_name,
+          severity: diagnosisSession.alert.severity,
+          labels: diagnosisSession.alert.labels,
+        },
+        topology: null,
+        variables: {},
+        bootstrap_state: "thinking",
+      },
+    });
+
+    const state = useDiagnosisStore.getState();
+    expect(state.activeSessionId).toBe("sess-real-001");
+    expect(state.session?.session_id).toBe("sess-real-001");
+    expect(state.streamingPhase).toBe("waiting_first_content");
+  });
+
+  it("does not reset active streaming session during bootstrap for the same session id", async () => {
+    useDiagnosisStore.setState({
+      session: {
+        ...diagnosisSession,
+        session_id: "sess-live-001",
+      },
+      activeSessionId: "sess-live-001",
+      bootstrapStatus: "ready",
+      isStreamingDiagnosis: true,
+      streamingPhase: "streaming_thought",
+      liveThinking: {
+        thought_key: "run-live:reason",
+        node: "reason",
+        run_id: "run-live",
+        timestamp: "2026-03-18T12:10:01Z",
+        content: "streaming...",
+        status: "thinking",
+        tool_name: null,
+        active_tools: [],
+      },
+    });
+
+    await useDiagnosisStore.getState().bootstrapSession("sess-live-001");
+
+    const state = useDiagnosisStore.getState();
+    expect(state.activeSessionId).toBe("sess-live-001");
+    expect(state.isStreamingDiagnosis).toBe(true);
+    expect(state.streamingPhase).toBe("streaming_thought");
+    expect(state.liveThinking?.content).toBe("streaming...");
   });
 
   it("uses default instruction when revising plan without input", async () => {

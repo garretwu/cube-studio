@@ -551,21 +551,46 @@ export async function streamDiagnosis(
     headers.Authorization = `Bearer ${token}`;
   }
 
-  const response = await fetch(url, {
-    method: "POST",
-    headers,
-    body: JSON.stringify(alert),
-    signal,
-  });
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(alert),
+      signal,
+    });
+  } catch (error) {
+    if ((error as Error).name === "AbortError") {
+      throw error;
+    }
+    const session = await apiClient.startDiagnoseAlert(alert, extraAlertFingerprints);
+    onEvent({
+      type: "diagnosis_started",
+      session_id: session.session_id,
+      data: {
+        alert,
+        topology: null,
+        variables: {},
+        bootstrap_state: "thinking",
+        degraded_start: true,
+      },
+    });
+    return;
+  }
 
   if (response.status === 404 || response.status === 405 || response.status === 500) {
     const session = await apiClient.startDiagnoseAlert(alert, extraAlertFingerprints);
     onEvent({
       type: "diagnosis_started",
       session_id: session.session_id,
-      data: { alert, topology: null, variables: {} },
+      data: {
+        alert,
+        topology: null,
+        variables: {},
+        bootstrap_state: "thinking",
+        degraded_start: true,
+      },
     });
-    onEvent({ type: "done", session_id: session.session_id, data: {} });
     return;
   }
 

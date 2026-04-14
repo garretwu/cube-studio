@@ -85,3 +85,31 @@ def test_resolve_llm_runtime_settings_env_override_provider_defaults() -> None:
     assert resolved["model"] == "glm-override"
     assert resolved["fallback_models"] == ["glm-5-turbo", "glm-4.7"]
     assert resolved["api_key_source"] == "SRE_OPENAI_API_KEY"
+
+
+def test_load_config_applies_reason_timeout_tuning_values(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        "\n".join(
+            [
+                "global:",
+                "  aidc_id: aidc-timeout-tuning",
+                "agent:",
+                '  reasoning_model_family: "glm-5.1"',
+                "  reasoning_context_strategy: transcript_compact",
+                "  reasoning_overflow_behavior: compact",
+                "  reasoning_input_target_tokens: 32000",
+                "  step_timeout_sec: 240",
+                "  total_timeout_sec: 900",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    config = load_config(config_path)
+    assert config.agent.reasoning_model_family == "glm-5.1"
+    assert config.agent.reasoning_context_strategy == "transcript_compact"
+    assert config.agent.reasoning_overflow_behavior == "compact"
+    assert config.agent.reasoning_input_target_tokens == 32000
+    assert config.agent.step_timeout_sec == 240
+    assert config.agent.total_timeout_sec == 900

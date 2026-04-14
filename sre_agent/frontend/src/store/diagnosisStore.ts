@@ -21,6 +21,14 @@ import { formatDateTime } from "../utils/format";
 type ConnectionState = "connecting" | "open" | "closed" | "error";
 type BootstrapStatus = "idle" | "loading" | "ready" | "empty" | "error";
 type TraceStatus = "unknown" | "empty" | "ready";
+type StreamingPhase =
+  | "idle"
+  | "bootstrapping"
+  | "waiting_first_content"
+  | "streaming_thought"
+  | "streaming_final"
+  | "completed"
+  | "error";
 
 export type ApprovalDecisionInput = {
   approved: boolean;
@@ -60,6 +68,7 @@ type DiagnosisState = {
   streamingText: string;
   streamingNode: string | null;
   isStreamingDiagnosis: boolean;
+  streamingPhase: StreamingPhase;
   activeStreamingTools: StreamingToolCall[];
   streamingAbortController: AbortController | null;
   bootstrapSession: (sessionId?: string) => Promise<void>;
@@ -73,7 +82,7 @@ type DiagnosisState = {
     alert: Alert,
     extraAlertFingerprints?: string[],
     onSessionReady?: (sessionId: string) => void,
-  ) => void;
+  ) => string;
   cancelStreamingDiagnosis: () => void;
 };
 
@@ -81,6 +90,7 @@ const DEFAULT_REVISE_INSTRUCTION = "请优化当前修复方案，补充更稳�
 const DEFAULT_APPROVER = "alice";
 const LOCAL_AUDIT_STORAGE_KEY = "sre_diagnosis_local_audit_v1";
 const SESSION_BACKFILL_THROTTLE_MS = 1200;
+const PENDING_SESSION_PREFIX = "pending-";
 const sessionBackfillLastRunAt = new Map<string, number>();
 const sessionBackfillInFlight = new Set<string>();
 
@@ -103,6 +113,24 @@ function buildThoughtKey(runId: string | null, node: string | null): string | nu
     return null;
   }
   return `${runId}:${node}`;
+}
+
+function isPendingSessionId(value: string | null | undefined): value is string {
+  return typeof value === "string" && value.startsWith(PENDING_SESSION_PREFIX);
+}
+
+function buildPendingSession(alert: Alert, sessionId: string): DiagnosisSession {
+  return {
+    session_id: sessionId,
+    alert,
+    status: "diagnosing",
+    diagnosis_result: null,
+    trace: { steps: [] },
+    bootstrap: null,
+    duration_seconds: 0,
+    outcome: null,
+    remediation_evidence: null,
+  };
 }
 
 function getThoughtKeyFromData(data: Record<string, unknown>): string | null {
@@ -203,6 +231,93 @@ function getEventError(event: WSEvent) {
     return data.error;
   }
   return "The diagnosis engine returned an error event.";
+}
+
+type TerminalReason = "done" | "error" | "timeout" | "diagnosis_result";
+
+const TERMINAL_NODE_STATUSES = new Set(["failed", "timeout", "step_timeout", "diagnosed"]);
+
+function normalizeTerminalReason(value: unknown): TerminalReason | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+  const normalized = value.trim().toLowerCase();
+  if (normalized === "done" || normalized === "error" || normalized === "timeout" || normalized === "diagnosis_result") {
+    return normalized;
+  }
+  return null;
+}
+
+function resolveTerminalReasonFromStatus(status: string | null): TerminalReason | null {
+  const normalized = status?.trim().toLowerCase() ?? "";
+  if (!normalized) {
+    return null;
+  }
+  if (normalized === "failed") {
+    return "error";
+  }
+  if (normalized === "timeout" || normalized === "step_timeout") {
+    return "timeout";
+  }
+  if (normalized === "diagnosed") {
+    return "diagnosis_result";
+  }
+  return null;
+}
+
+function resolveTerminalPhase(reason: TerminalReason): Extract<StreamingPhase, "completed" | "error"> {
+  return reason === "error" || reason === "timeout" ? "error" : "completed";
+}
+
+function buildTerminalThinkingSummary({
+  reason,
+  status,
+  summary,
+  error,
+}: {
+  reason: TerminalReason;
+  status?: string | null;
+  summary?: string | null;
+  error?: string | null;
+}): string {
+  const normalizedSummary = normalizeNonEmptyString(summary);
+  if (normalizedSummary) {
+    return normalizedSummary;
+  }
+  const normalizedError = normalizeNonEmptyString(error);
+  if (reason === "error" && normalizedError) {
+    return `诊断失败：${normalizedError}`;
+  }
+  if (reason === "timeout") {
+    const normalizedStatus = (status ?? "").trim().toLowerCase();
+    if (normalizedStatus === "step_timeout") {
+      return "推理步骤超时，已基于当前证据结束。";
+    }
+    return "诊断超时，已基于当前证据结束。";
+  }
+  if (reason === "diagnosis_result") {
+    return "诊断结果已生成。";
+  }
+  if (normalizedError) {
+    return `诊断结束：${normalizedError}`;
+  }
+  return "思考完成。";
+}
+
+function completeLiveThinking(
+  liveThinking: LiveThinkingBlock | null,
+  fallbackSummary: string,
+): LiveThinkingBlock | null {
+  if (!liveThinking) {
+    return null;
+  }
+  const existingContent = liveThinking.content.trim();
+  return {
+    ...liveThinking,
+    status: "completed",
+    content: existingContent.length > 0 ? liveThinking.content : fallbackSummary,
+    active_tools: [],
+  };
 }
 
 function parsePlanVersionFromPlanId(planId: string | undefined): number | null {
@@ -757,12 +872,24 @@ export const useDiagnosisStore = create<DiagnosisState>((set, get) => ({
   streamingText: "",
   streamingNode: null,
   isStreamingDiagnosis: false,
+  streamingPhase: "idle",
   activeStreamingTools: [],
   streamingAbortController: null,
   connectionState: "closed",
   error: undefined,
   bootstrapSession: async (sessionId) => {
     const explicitSessionId = sessionId?.trim();
+    const snapshot = get();
+    const currentActiveSessionId = snapshot.activeSessionId ?? snapshot.session?.session_id;
+    const hasMatchingLiveSession =
+      Boolean(explicitSessionId) &&
+      Boolean(currentActiveSessionId) &&
+      (explicitSessionId === currentActiveSessionId ||
+        (isPendingSessionId(explicitSessionId) && isPendingSessionId(currentActiveSessionId)));
+
+    if (snapshot.isStreamingDiagnosis && (!explicitSessionId || hasMatchingLiveSession)) {
+      return;
+    }
 
     set({
       activeSessionId: explicitSessionId ?? get().activeSessionId,
@@ -794,6 +921,7 @@ export const useDiagnosisStore = create<DiagnosisState>((set, get) => ({
       streamingText: "",
       streamingNode: null,
       isStreamingDiagnosis: false,
+      streamingPhase: "idle",
       activeStreamingTools: [],
       streamingAbortController: null,
     });
@@ -855,6 +983,7 @@ export const useDiagnosisStore = create<DiagnosisState>((set, get) => ({
           streamingText: "",
           streamingNode: null,
           isStreamingDiagnosis: false,
+          streamingPhase: "idle",
           activeStreamingTools: [],
           streamingAbortController: null,
           error: undefined,
@@ -893,6 +1022,7 @@ export const useDiagnosisStore = create<DiagnosisState>((set, get) => ({
         topologyContext: historicalTopology,
         liveThinking: null,
         liveFinalAnswer: null,
+        streamingPhase: "idle",
         error: undefined,
       });
     } catch (error) {
@@ -924,6 +1054,7 @@ export const useDiagnosisStore = create<DiagnosisState>((set, get) => ({
         streamingText: "",
         streamingNode: null,
         isStreamingDiagnosis: false,
+        streamingPhase: "error",
         activeStreamingTools: [],
         streamingAbortController: null,
       });
@@ -1072,20 +1203,34 @@ export const useDiagnosisStore = create<DiagnosisState>((set, get) => ({
     const targetSessionId = event.session_id || get().activeSessionId;
     set((state) => {
       const activeSessionId = state.activeSessionId ?? state.session?.session_id;
-      if (activeSessionId && targetSessionId && targetSessionId !== activeSessionId) {
+      const canAdoptStreamSession =
+        state.isStreamingDiagnosis &&
+        isPendingSessionId(activeSessionId) &&
+        Boolean(targetSessionId) &&
+        !isPendingSessionId(targetSessionId);
+
+      if (activeSessionId && targetSessionId && targetSessionId !== activeSessionId && !canAdoptStreamSession) {
         return state;
       }
+      const resolvedSessionId = canAdoptStreamSession ? targetSessionId : activeSessionId ?? targetSessionId;
 
       const currentTrace = state.session?.trace?.steps ?? [];
       const nextEntries = [toThinkingStep(event, currentTrace.length + 1), toObservation(event)].filter(
         (entry): entry is ThinkingStep | Observation => Boolean(entry),
       );
       let nextSession = appendTraceEntries(state.session, nextEntries);
+      if (canAdoptStreamSession && nextSession) {
+        nextSession = {
+          ...nextSession,
+          session_id: resolvedSessionId ?? nextSession.session_id,
+        };
+      }
       let nextAlertSnapshot = state.alertSnapshot;
       let nextTopologyContext = state.topologyContext;
       let nextLiveThinking = state.liveThinking;
       let nextLiveFinalAnswer = state.liveFinalAnswer;
       let nextActiveStreamingTools = state.activeStreamingTools;
+      let nextStreamingPhase = state.streamingPhase;
       const data = isRecord(event.data) ? event.data : {};
       const eventSource = normalizeNonEmptyString(data._stream_source);
       const thoughtKey = getThoughtKeyFromData(data);
@@ -1095,6 +1240,7 @@ export const useDiagnosisStore = create<DiagnosisState>((set, get) => ({
       if (event.type === "diagnosis_started") {
         nextAlertSnapshot = (data.alert as DiagnosisStartedData["alert"]) ?? null;
         nextTopologyContext = (data.topology as DiagnosisStartedData["topology"]) ?? null;
+        nextStreamingPhase = "waiting_first_content";
       }
       if (event.type === "token_delta") {
         if (state.streamingAbortController && eventSource !== "sse") {
@@ -1106,7 +1252,10 @@ export const useDiagnosisStore = create<DiagnosisState>((set, get) => ({
         if (!content) {
           return {
             ...state,
+            session: nextSession,
+            activeSessionId: resolvedSessionId,
             isStreamingDiagnosis: true,
+            streamingPhase: nextStreamingPhase,
           };
         }
 
@@ -1120,8 +1269,11 @@ export const useDiagnosisStore = create<DiagnosisState>((set, get) => ({
           };
           return {
             ...state,
+            session: nextSession,
+            activeSessionId: resolvedSessionId,
             liveFinalAnswer: nextLiveFinalAnswer,
             isStreamingDiagnosis: true,
+            streamingPhase: "streaming_final",
           };
         }
 
@@ -1129,19 +1281,21 @@ export const useDiagnosisStore = create<DiagnosisState>((set, get) => ({
         if (!resolvedThoughtKey) {
           return {
             ...state,
+            session: nextSession,
+            activeSessionId: resolvedSessionId,
             isStreamingDiagnosis: true,
+            streamingPhase: nextStreamingPhase,
           };
         }
 
         const isSameThought = nextLiveThinking?.thought_key === resolvedThoughtKey;
         const previousContent = isSameThought ? nextLiveThinking?.content ?? "" : "";
-        const shouldReplacePlaceholder = previousContent.includes("诊断引擎正在分析当前证据");
         nextLiveThinking = {
           thought_key: resolvedThoughtKey,
           run_id: runId ?? nextLiveThinking?.run_id ?? null,
           node: node ?? nextLiveThinking?.node ?? null,
           timestamp: nextLiveThinking?.timestamp ?? event.timestamp,
-          content: `${isSameThought && !shouldReplacePlaceholder ? previousContent : ""}${content}`,
+          content: `${isSameThought ? previousContent : ""}${content}`,
           status: "thinking",
           thought_duration_sec: null,
           next_action: isSameThought ? nextLiveThinking?.next_action ?? null : null,
@@ -1150,7 +1304,10 @@ export const useDiagnosisStore = create<DiagnosisState>((set, get) => ({
         };
         return {
           ...state,
+          session: nextSession,
+          activeSessionId: resolvedSessionId,
           isStreamingDiagnosis: true,
+          streamingPhase: "streaming_thought",
           ...toStreamingFields(nextLiveThinking, nextActiveStreamingTools),
         };
       }
@@ -1159,10 +1316,6 @@ export const useDiagnosisStore = create<DiagnosisState>((set, get) => ({
           return state;
         }
         const resolvedThoughtKey = thoughtKey ?? buildThoughtKey(runId, node);
-        const thoughtPlaceholder =
-          normalizeNonEmptyString(data.thought_placeholder) ??
-          normalizeNonEmptyString(data.message) ??
-          "诊断引擎正在分析当前证据并规划下一步行动。";
         nextActiveStreamingTools =
           nextLiveThinking?.thought_key === resolvedThoughtKey ? nextLiveThinking.active_tools : [];
         nextLiveThinking = resolvedThoughtKey
@@ -1171,7 +1324,7 @@ export const useDiagnosisStore = create<DiagnosisState>((set, get) => ({
               run_id: runId,
               node,
               timestamp: normalizeNonEmptyString(data.started_at) ?? event.timestamp,
-              content: thoughtPlaceholder,
+              content: nextLiveThinking?.thought_key === resolvedThoughtKey ? nextLiveThinking.content : "",
               status: "thinking",
               thought_duration_sec: null,
               next_action: null,
@@ -1181,7 +1334,11 @@ export const useDiagnosisStore = create<DiagnosisState>((set, get) => ({
           : null;
         return {
           ...state,
+          session: nextSession,
+          activeSessionId: resolvedSessionId,
           isStreamingDiagnosis: true,
+          streamingPhase:
+            state.streamingPhase === "bootstrapping" ? "waiting_first_content" : state.streamingPhase,
           ...toStreamingFields(nextLiveThinking, nextActiveStreamingTools),
         };
       }
@@ -1215,6 +1372,7 @@ export const useDiagnosisStore = create<DiagnosisState>((set, get) => ({
         const nextEvents = mergeSessionEvents(state.events, [event as SessionEvent]);
         const approvalState = deriveApprovalState(nextSession, nextEvents);
         const completionError = getEventError(event) ?? state.error;
+        const nodeStatus = normalizeNonEmptyString(data.status)?.toLowerCase() ?? null;
         const completedThoughtKey = thoughtKey ?? nextLiveThinking?.thought_key;
         const snapshotHasCompletedThought = snapshotEntries.some(
           (entry) =>
@@ -1233,9 +1391,32 @@ export const useDiagnosisStore = create<DiagnosisState>((set, get) => ({
         } else {
           nextLiveThinking = null;
         }
+        const terminalReason =
+          normalizeTerminalReason(data.terminal_reason) ??
+          (nodeStatus && TERMINAL_NODE_STATUSES.has(nodeStatus)
+            ? resolveTerminalReasonFromStatus(nodeStatus)
+            : null);
+        const isTerminalNodeEvent = terminalReason !== null;
+        const terminalPhase = isTerminalNodeEvent ? resolveTerminalPhase(terminalReason) : null;
+        if (
+          isTerminalNodeEvent &&
+          nextLiveThinking &&
+          (nextLiveThinking.status === "thinking" || nextLiveThinking.content.trim().length === 0)
+        ) {
+          nextLiveThinking = completeLiveThinking(
+            nextLiveThinking,
+            buildTerminalThinkingSummary({
+              reason: terminalReason,
+              status: nodeStatus,
+              summary: normalizeNonEmptyString(data.summary),
+              error: completionError,
+            }),
+          );
+        }
 
         return {
           session: nextSession,
+          activeSessionId: resolvedSessionId,
           events: nextEvents,
           localAuditRecords: state.localAuditRecords,
           ...approvalState,
@@ -1249,9 +1430,11 @@ export const useDiagnosisStore = create<DiagnosisState>((set, get) => ({
           error: completionError,
           traceStatus:
             mergedEntries.length > 0 ? "ready" : state.traceStatus,
-          isStreamingDiagnosis: true,
+          isStreamingDiagnosis: !isTerminalNodeEvent,
+          streamingPhase:
+            terminalPhase ?? (nextLiveFinalAnswer ? "streaming_final" : "streaming_thought"),
           ...toStreamingFields(nextLiveThinking, []),
-          streamingAbortController: state.streamingAbortController,
+          streamingAbortController: isTerminalNodeEvent ? null : state.streamingAbortController,
         };
       }
       if (event.type === "tool_started") {
@@ -1283,7 +1466,10 @@ export const useDiagnosisStore = create<DiagnosisState>((set, get) => ({
         }
         return {
           ...state,
+          session: nextSession,
+          activeSessionId: resolvedSessionId,
           isStreamingDiagnosis: true,
+          streamingPhase: state.streamingPhase === "bootstrapping" ? "waiting_first_content" : state.streamingPhase,
           ...toStreamingFields(nextLiveThinking, nextActiveStreamingTools),
         };
       }
@@ -1310,6 +1496,8 @@ export const useDiagnosisStore = create<DiagnosisState>((set, get) => ({
         }
         return {
           ...state,
+          session: nextSession,
+          activeSessionId: resolvedSessionId,
           ...toStreamingFields(nextLiveThinking, nextActiveStreamingTools),
         };
       }
@@ -1317,40 +1505,121 @@ export const useDiagnosisStore = create<DiagnosisState>((set, get) => ({
         if (state.streamingAbortController && eventSource !== "sse") {
           return state;
         }
+        const doneStatus = normalizeNonEmptyString(data.status)?.toLowerCase() ?? null;
+        const terminalReason =
+          normalizeTerminalReason(data.terminal_reason) ?? resolveTerminalReasonFromStatus(doneStatus) ?? "done";
+        const terminalPhase = resolveTerminalPhase(terminalReason);
+        const completionError =
+          terminalPhase === "error"
+            ? normalizeNonEmptyString(data.summary) ?? state.error
+            : state.error;
+        const finalizedLiveThinking =
+          state.liveThinking &&
+          (state.liveThinking.status === "thinking" || state.liveThinking.content.trim().length === 0)
+            ? completeLiveThinking(
+                state.liveThinking,
+                buildTerminalThinkingSummary({
+                  reason: terminalReason,
+                  status: doneStatus,
+                  summary: normalizeNonEmptyString(data.summary),
+                  error: completionError,
+                }),
+              )
+            : state.liveThinking;
         return {
           ...state,
+          session: nextSession,
+          activeSessionId: resolvedSessionId,
           isStreamingDiagnosis: false,
+          streamingPhase: terminalPhase,
           liveFinalAnswer: state.liveFinalAnswer
             ? { ...state.liveFinalAnswer, status: "completed" }
             : state.liveFinalAnswer,
-          ...toStreamingFields(null, []),
+          ...toStreamingFields(finalizedLiveThinking, []),
           streamingAbortController: null,
+          error: completionError,
         };
       }
-      if (event.type === "error" && !nextSession) {
+      if (event.type === "error") {
         if (state.streamingAbortController && eventSource !== "sse") {
           return state;
         }
+        const errorMessage = getEventError(event) ?? state.error ?? "streaming diagnosis failed";
+        const finalizedLiveThinking =
+          state.liveThinking &&
+          (state.liveThinking.status === "thinking" || state.liveThinking.content.trim().length === 0)
+            ? completeLiveThinking(
+                state.liveThinking,
+                buildTerminalThinkingSummary({
+                  reason: "error",
+                  error: errorMessage,
+                }),
+              )
+            : state.liveThinking;
         return {
           ...state,
+          session: nextSession,
+          activeSessionId: resolvedSessionId,
           isStreamingDiagnosis: false,
-          ...toStreamingFields(null, []),
+          streamingPhase: "error",
+          ...toStreamingFields(finalizedLiveThinking, []),
           streamingAbortController: null,
-          liveFinalAnswer: null,
-          error: getEventError(event) ?? state.error,
+          liveFinalAnswer: state.liveFinalAnswer
+            ? { ...state.liveFinalAnswer, status: "completed" }
+            : state.liveFinalAnswer,
+          error: errorMessage,
         };
       }
 
-      if (event.type === "diagnosis_result" && nextSession) {
-        const diagnosisResult = event.data as DiagnosisSession["diagnosis_result"];
-        nextSession = {
-          ...nextSession,
-          diagnosis_result: diagnosisResult,
-          status: diagnosisResultHasRecommendedPlan(diagnosisResult)
-            ? "approval_required"
-            : nextSession.status === "diagnosing"
-              ? "diagnosed"
-              : nextSession.status,
+      if (event.type === "diagnosis_result") {
+        if (nextSession) {
+          const diagnosisResult = event.data as DiagnosisSession["diagnosis_result"];
+          nextSession = {
+            ...nextSession,
+            diagnosis_result: diagnosisResult,
+            status: diagnosisResultHasRecommendedPlan(diagnosisResult)
+              ? "approval_required"
+              : nextSession.status === "diagnosing"
+                ? "diagnosed"
+                : nextSession.status,
+          };
+        }
+        const nextEvents = mergeSessionEvents(state.events, [event as SessionEvent]);
+        const approvalState = deriveApprovalState(nextSession, nextEvents);
+        const finalizedLiveThinking =
+          nextLiveThinking &&
+          (nextLiveThinking.status === "thinking" || nextLiveThinking.content.trim().length === 0)
+            ? completeLiveThinking(
+                nextLiveThinking,
+                buildTerminalThinkingSummary({
+                  reason: "diagnosis_result",
+                }),
+              )
+            : nextLiveThinking;
+        return {
+          session: nextSession,
+          activeSessionId: resolvedSessionId,
+          events: nextEvents,
+          localAuditRecords: state.localAuditRecords,
+          ...approvalState,
+          approvalOverlayOpen:
+            nextSession?.status === "approval_required" ? state.approvalOverlayOpen : false,
+          effectiveReviseInstruction: state.effectiveReviseInstruction,
+          messages: mergeEventMessages(state.messages, [event], resolvedSessionId),
+          alertSnapshot: nextAlertSnapshot,
+          topologyContext: nextTopologyContext,
+          liveFinalAnswer: nextLiveFinalAnswer
+            ? { ...nextLiveFinalAnswer, status: "completed" }
+            : nextLiveFinalAnswer,
+          ...toStreamingFields(finalizedLiveThinking, []),
+          error: state.error,
+          isStreamingDiagnosis: false,
+          streamingPhase: "completed",
+          traceStatus:
+            nextEntries.length > 0 || event.type === "diagnosis_result"
+              ? "ready"
+              : state.traceStatus,
+          streamingAbortController: null,
         };
       }
       if (event.type === "approval_required" && nextSession) {
@@ -1426,17 +1695,19 @@ export const useDiagnosisStore = create<DiagnosisState>((set, get) => ({
 
       return {
         session: nextSession,
+        activeSessionId: resolvedSessionId,
         events: nextEvents,
         localAuditRecords: state.localAuditRecords,
         ...approvalState,
         approvalOverlayOpen,
         effectiveReviseInstruction: state.effectiveReviseInstruction,
-        messages: mergeEventMessages(state.messages, [event], targetSessionId),
+        messages: mergeEventMessages(state.messages, [event], resolvedSessionId),
         alertSnapshot: nextAlertSnapshot,
         topologyContext: nextTopologyContext,
         liveFinalAnswer: nextLiveFinalAnswer,
         ...toStreamingFields(nextLiveThinking, nextActiveStreamingTools),
         error: getEventError(event) ?? state.error,
+        streamingPhase: nextStreamingPhase,
         traceStatus:
           nextEntries.length > 0 || event.type === "diagnosis_result"
             ? "ready"
@@ -1444,18 +1715,65 @@ export const useDiagnosisStore = create<DiagnosisState>((set, get) => ({
       };
     });
 
-    if (targetSessionId && shouldTriggerSessionBackfill(event)) {
-      scheduleSessionBackfill(targetSessionId);
+    const backfillSessionId =
+      targetSessionId && !isPendingSessionId(targetSessionId) ? targetSessionId : get().activeSessionId;
+    if (backfillSessionId && !isPendingSessionId(backfillSessionId) && shouldTriggerSessionBackfill(event)) {
+      scheduleSessionBackfill(backfillSessionId);
     }
   },
   startStreamingDiagnosis: (alert, extraAlertFingerprints = [], onSessionReady) => {
     const controller = new AbortController();
+    const pendingSessionId = `${PENDING_SESSION_PREFIX}${Date.now()}`;
+    const bootstrapThinkingKey = `bootstrap:${pendingSessionId}`;
     set({
-      liveThinking: null,
+      session: buildPendingSession(alert, pendingSessionId),
+      activeSessionId: pendingSessionId,
+      bootstrapStatus: "ready",
+      traceStatus: "empty",
+      alertSnapshot: {
+        alert_name: alert.alert_name,
+        severity: alert.severity,
+        labels: alert.labels ?? {},
+        annotations: alert.annotations ?? {},
+        fingerprint: alert.fingerprint,
+        summary: alert.summary,
+        description: alert.description,
+        source: alert.source,
+        status: alert.status,
+      },
+      topologyContext: null,
+      events: [],
+      messages: [],
+      localAuditRecords: [],
+      approvalOverlayOpen: false,
+      currentPlanVersion: null,
+      latestPlanVersion: null,
+      approvedPlanVersion: null,
+      canApprove: false,
+      approvalBlockReason: undefined,
+      hasPlan: false,
+      planMissingReason: undefined,
+      effectiveReviseInstruction: undefined,
+      chatContextApplied: false,
+      chatContextMeta: undefined,
+      isLoadingSession: false,
+      liveThinking: {
+        thought_key: bootstrapThinkingKey,
+        run_id: null,
+        node: "bootstrap",
+        timestamp: new Date().toISOString(),
+        content: "",
+        status: "thinking",
+        thought_duration_sec: null,
+        next_action: null,
+        tool_name: null,
+        active_tools: [],
+      },
       liveFinalAnswer: null,
       streamingText: "",
-      streamingNode: null,
+      streamingNode: "bootstrap",
       isStreamingDiagnosis: true,
+      streamingPhase: "bootstrapping",
       activeStreamingTools: [],
       streamingAbortController: controller,
       error: undefined,
@@ -1515,17 +1833,37 @@ export const useDiagnosisStore = create<DiagnosisState>((set, get) => ({
         );
       } catch (error) {
         if ((error as Error).name !== "AbortError") {
-          set({
-            isStreamingDiagnosis: false,
-            liveThinking: null,
-            liveFinalAnswer: null,
-            streamingAbortController: null,
-            error: error instanceof Error ? error.message : "streaming diagnosis failed",
+          const errorMessage = error instanceof Error ? error.message : "streaming diagnosis failed";
+          set((state) => {
+            const finalizedLiveThinking =
+              state.liveThinking &&
+              (state.liveThinking.status === "thinking" || state.liveThinking.content.trim().length === 0)
+                ? completeLiveThinking(
+                    state.liveThinking,
+                    buildTerminalThinkingSummary({
+                      reason: "error",
+                      error: errorMessage,
+                    }),
+                  )
+                : state.liveThinking;
+            return {
+              isStreamingDiagnosis: false,
+              liveThinking: finalizedLiveThinking,
+              liveFinalAnswer: state.liveFinalAnswer
+                ? { ...state.liveFinalAnswer, status: "completed" }
+                : state.liveFinalAnswer,
+              ...toStreamingFields(finalizedLiveThinking, []),
+              streamingPhase: "error",
+              streamingAbortController: null,
+              error: errorMessage,
+              activeStreamingTools: [],
+            };
           });
         }
       }
     };
     void run();
+    return pendingSessionId;
   },
   cancelStreamingDiagnosis: () => {
     const controller = get().streamingAbortController;
@@ -1538,6 +1876,7 @@ export const useDiagnosisStore = create<DiagnosisState>((set, get) => ({
       streamingNode: null,
       activeStreamingTools: [],
       streamingAbortController: null,
+      streamingPhase: "idle",
     });
   },
 }));

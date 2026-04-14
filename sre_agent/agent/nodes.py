@@ -28,6 +28,8 @@ _llm_logger.setLevel(logging.DEBUG)
 _llm_logger.addHandler(logging.NullHandler())  # 默认空 handler，避免警告
 
 LLM_LOG_DIR = Path("./data/llm_logs")
+_TTFT_PROMETHEUS_TOTAL_BUDGET = 2
+_TTFT_PROMETHEUS_FAMILY_BUDGET = 1
 
 
 class FinalDiagnosisEnvelope(BaseModel):
@@ -40,6 +42,12 @@ class ReasoningEnvelope(BaseModel):
     thought: str = Field(min_length=1)
     diagnosis: dict[str, Any] | None = None
     remediation_plan: dict[str, Any] | None = None
+
+
+class ReasonStepTimeoutError(asyncio.TimeoutError):
+    def __init__(self, *, retry_record: dict[str, Any]) -> None:
+        super().__init__("reason step timed out")
+        self.reason_timeout_retry = retry_record
 
 
 def initialize_state(
@@ -223,6 +231,32 @@ async def _invoke_llm_message(llm: Any, messages: list[Any], *, timeout: float) 
     return await asyncio.wait_for(_run(), timeout=timeout)
 
 
+def _extract_reason_prompt_metadata_snapshot(prompt_metadata: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "prompt_mode": str(prompt_metadata.get("prompt_mode", "") or "").strip() or None,
+        "estimated_input_tokens": int(prompt_metadata.get("estimated_input_tokens") or 0),
+        "reasoning_context_strategy": str(prompt_metadata.get("reasoning_context_strategy", "") or "").strip() or None,
+        "reasoning_overflow_behavior": str(prompt_metadata.get("reasoning_overflow_behavior", "") or "").strip() or None,
+        "reasoning_input_target_tokens": int(prompt_metadata.get("reasoning_input_target_tokens") or 0),
+        "prompt_fallback_used": bool(prompt_metadata.get("prompt_fallback_used")),
+    }
+
+
+def _build_reason_timeout_retry_record(
+    *,
+    retry_count: int,
+    timeout_sec: float,
+    previous_prompt_metadata: dict[str, Any],
+    retry_prompt_metadata: dict[str, Any],
+) -> dict[str, Any]:
+    return {
+        "retry_count": max(0, int(retry_count)),
+        "timeout_sec": float(timeout_sec),
+        "previous_prompt_metadata": _extract_reason_prompt_metadata_snapshot(previous_prompt_metadata),
+        "retry_prompt_metadata": _extract_reason_prompt_metadata_snapshot(retry_prompt_metadata),
+    }
+
+
 async def reason_node(
     state: SREAgentState,
     *,
@@ -252,11 +286,65 @@ async def reason_node(
     prompt_fallback_used = False
     bound_tool_names: list[str] = []
     tool_choice = "auto"
+    step_index = state.get("step_count", 0) + 1
+    timeout_retry_record: dict[str, Any] | None = None
     final_turn = bool(state.get("force_final_turn", False)) or (
         bool(state.get("tool_runs")) and state.get("step_count", 0) >= max(state.get("max_steps", 10) - 1, 1)
     )
     llm_supports_message_invocation = hasattr(llm, "ainvoke") or hasattr(llm, "astream")
     interaction_mode = "final_json" if final_turn else "tool_bound"
+
+    async def _invoke_reason_with_timeout_retry(call_model: Any) -> AIMessage:
+        nonlocal invoked_messages
+        nonlocal prompt_metadata
+        nonlocal prompt_fallback_used
+        nonlocal interaction_mode
+        nonlocal tool_choice
+        nonlocal bound_tool_names
+        nonlocal timeout_retry_record
+
+        step_timeout_sec = float(state["step_timeout_sec"])
+        try:
+            return await _invoke_llm_message(call_model, invoked_messages, timeout=step_timeout_sec)
+        except asyncio.TimeoutError:
+            if not llm_supports_message_invocation:
+                raise
+
+            retry_messages, retry_prompt_metadata = _build_transcript_compact_reason_messages(
+                system_prompt=system_prompt,
+                state=state,
+                final_turn=True,
+                tool_binding_fallback=True,
+            )
+            retry_prompt_metadata = {
+                **retry_prompt_metadata,
+                "reasoning_context_strategy": "transcript_compact",
+                "reasoning_overflow_behavior": "compact",
+                "reason_timeout_retry": True,
+                "reason_timeout_retry_count": 1,
+                "reason_timeout_retry_timeout_sec": step_timeout_sec,
+                "reason_timeout_retry_trigger_mode": interaction_mode,
+                "reason_timeout_retry_trigger_tool_choice": tool_choice,
+            }
+            timeout_retry_record = _build_reason_timeout_retry_record(
+                retry_count=1,
+                timeout_sec=step_timeout_sec,
+                previous_prompt_metadata=prompt_metadata,
+                retry_prompt_metadata=retry_prompt_metadata,
+            )
+            try:
+                retry_response = await _invoke_llm_message(llm, retry_messages, timeout=step_timeout_sec)
+            except asyncio.TimeoutError as retry_exc:
+                raise ReasonStepTimeoutError(retry_record=timeout_retry_record) from retry_exc
+
+            invoked_messages = retry_messages
+            prompt_metadata = retry_prompt_metadata
+            prompt_fallback_used = bool(prompt_metadata.get("prompt_fallback_used"))
+            interaction_mode = "timeout_retry_final_compact"
+            tool_choice = "none"
+            bound_tool_names = []
+            return retry_response
+
     if final_turn and llm_supports_message_invocation:
         invoked_messages, prompt_metadata, overflow_failed = _prepare_reason_prompt_messages_for_invocation(
             system_prompt=system_prompt,
@@ -274,7 +362,7 @@ async def reason_node(
                 tool_choice="none",
             )
         tool_choice = "none"
-        response = await _invoke_llm_message(llm, invoked_messages, timeout=state["step_timeout_sec"])
+        response = await _invoke_reason_with_timeout_retry(llm)
     else:
         invoked_messages, prompt_metadata, overflow_failed = _prepare_reason_prompt_messages_for_invocation(
             system_prompt=system_prompt,
@@ -301,7 +389,7 @@ async def reason_node(
                 bound_tools,
                 tool_choice=tool_choice,
             )
-            response = await _invoke_llm_message(call_model, invoked_messages, timeout=state["step_timeout_sec"])
+            response = await _invoke_reason_with_timeout_retry(call_model)
         except Exception as exc:  # noqa: BLE001
             if llm_supports_message_invocation and _is_reason_prompt_empty_error(exc):
                 invoked_messages, prompt_metadata, overflow_failed = _prepare_reason_prompt_messages_for_invocation(
@@ -329,7 +417,7 @@ async def reason_node(
                         bound_tools,
                         tool_choice=tool_choice,
                     )
-                    response = await _invoke_llm_message(call_model, invoked_messages, timeout=state["step_timeout_sec"])
+                    response = await _invoke_reason_with_timeout_retry(call_model)
                 except Exception as retry_exc:  # noqa: BLE001
                     exc = retry_exc
             if not llm_supports_message_invocation or not (
@@ -355,13 +443,27 @@ async def reason_node(
                     interaction_mode=interaction_mode,
                     tool_choice=tool_choice,
                 )
-            response = await _invoke_llm_message(llm, invoked_messages, timeout=state["step_timeout_sec"])
+            response = await _invoke_reason_with_timeout_retry(llm)
     if not isinstance(response, AIMessage):
         raise RuntimeError(f"expected AIMessage from LLM, got {type(response).__name__}")
 
     updated_messages = [*messages, response]
     updated_trace = list(state.get("trace_items", []))
     updated_interactions = list(state.get("llm_interactions", []))
+    if timeout_retry_record is not None:
+        updated_trace.append(
+            {
+                "type": "thought",
+                "step": step_index,
+                "content": "reason step hit timeout; retried once with compact final prompt",
+                "action": "conclude",
+                "confidence": None,
+                "tool_params": {
+                    "kind": "reason_timeout_retry",
+                    **_safe_jsonable(timeout_retry_record),
+                },
+            }
+        )
     pending_tool_calls = _auto_load_high_score_skill(
         state,
         list(response.tool_calls or []),
@@ -371,7 +473,6 @@ async def reason_node(
         pending_tool_calls,
     )
     raw_response_text = _extract_text(response.content)
-    step_index = state.get("step_count", 0) + 1
 
     # 记录 LLM 交互到日志文件
     _log_llm_interaction(
@@ -2049,6 +2150,47 @@ def _tool_family_fingerprint(item: dict[str, Any]) -> str:
     return tool
 
 
+def _is_ttft_alert_state(state: SREAgentState) -> bool:
+    snapshot = state.get("alert_snapshot")
+    if not isinstance(snapshot, dict):
+        return False
+    alert_name = str(snapshot.get("alert_name", "") or "").strip().lower()
+    return "ttft" in alert_name or alert_name.startswith("aiservicettft")
+
+
+def _count_tool_runs(tool_runs: list[dict[str, Any]], tool_name: str) -> int:
+    return sum(1 for run in tool_runs if isinstance(run, dict) and str(run.get("tool", "")).strip() == tool_name)
+
+
+def _count_tool_family_runs(tool_runs: list[dict[str, Any]], family_fingerprint: str) -> int:
+    if not family_fingerprint:
+        return 0
+    return sum(
+        1
+        for run in tool_runs
+        if isinstance(run, dict) and _tool_family_fingerprint(run) == family_fingerprint
+    )
+
+
+def _find_latest_successful_tool_run(
+    tool_runs: list[dict[str, Any]],
+    *,
+    tool_name: str,
+    family_fingerprint: str | None = None,
+) -> dict[str, Any] | None:
+    for run in reversed(tool_runs):
+        if not isinstance(run, dict):
+            continue
+        if str(run.get("tool", "")).strip() != tool_name:
+            continue
+        if family_fingerprint and _tool_family_fingerprint(run) != family_fingerprint:
+            continue
+        if not bool(run.get("success", False)):
+            continue
+        return run
+    return None
+
+
 def _extract_evidence_signals(tool_runs: list[dict[str, Any]]) -> dict[str, Any]:
     signals: dict[str, Any] = {
         "tc_netem_present": False,
@@ -2609,9 +2751,11 @@ async def act_node(
         minimum=200,
     )
     allowed_tool_names_for_turn = set(_select_bound_tool_names_for_turn(state) or [])
+    is_ttft_alert = _is_ttft_alert_state(state)
     deduped_pending: list[dict[str, Any]] = []
     seen_pending_keys: set[str] = set()
     suppressed_in_round = 0
+    suppressed_reasons: list[dict[str, Any]] = []
     for raw_call in pending:
         if not isinstance(raw_call, dict):
             continue
@@ -2669,6 +2813,106 @@ async def act_node(
                     error="",
                 )
                 serialized_source = "cooldown_cache"
+            elif is_ttft_alert and tool_name == "prometheus.query_instant":
+                family_fingerprint = _tool_family_fingerprint(
+                    {
+                        "tool": tool_name,
+                        "params": tool_args,
+                    }
+                )
+                total_prometheus_calls = _count_tool_runs(tool_runs, "prometheus.query_instant")
+                family_prometheus_calls = _count_tool_family_runs(tool_runs, family_fingerprint)
+                latest_family_success = _find_latest_successful_tool_run(
+                    tool_runs,
+                    tool_name="prometheus.query_instant",
+                    family_fingerprint=family_fingerprint,
+                )
+                latest_any_success = _find_latest_successful_tool_run(
+                    tool_runs,
+                    tool_name="prometheus.query_instant",
+                )
+
+                if family_prometheus_calls >= _TTFT_PROMETHEUS_FAMILY_BUDGET:
+                    force_final_turn = True
+                    if latest_family_success is not None:
+                        result = ToolResult(
+                            tool=tool_name,
+                            success=True,
+                            data=_safe_jsonable(latest_family_success.get("data")),
+                            error="",
+                        )
+                        serialized_source = "ttft_family_cache_reuse"
+                        suppressed_reasons.append(
+                            {
+                                "reason": "family_budget_exceeded",
+                                "family_fingerprint": family_fingerprint,
+                                "family_calls": family_prometheus_calls,
+                                "total_calls": total_prometheus_calls,
+                                "reused": True,
+                            }
+                        )
+                    else:
+                        result = ToolResult(
+                            tool=tool_name,
+                            success=False,
+                            data=None,
+                            error="prometheus.query_instant suppressed by TTFT family budget (no cached success)",
+                        )
+                        serialized_source = "ttft_family_budget_blocked"
+                        suppressed_reasons.append(
+                            {
+                                "reason": "family_budget_exceeded",
+                                "family_fingerprint": family_fingerprint,
+                                "family_calls": family_prometheus_calls,
+                                "total_calls": total_prometheus_calls,
+                                "reused": False,
+                            }
+                        )
+                elif total_prometheus_calls >= _TTFT_PROMETHEUS_TOTAL_BUDGET:
+                    force_final_turn = True
+                    if latest_any_success is not None:
+                        result = ToolResult(
+                            tool=tool_name,
+                            success=True,
+                            data=_safe_jsonable(latest_any_success.get("data")),
+                            error="",
+                        )
+                        serialized_source = "ttft_total_cache_reuse"
+                        suppressed_reasons.append(
+                            {
+                                "reason": "total_budget_exceeded",
+                                "family_fingerprint": family_fingerprint,
+                                "family_calls": family_prometheus_calls,
+                                "total_calls": total_prometheus_calls,
+                                "reused": True,
+                            }
+                        )
+                    else:
+                        result = ToolResult(
+                            tool=tool_name,
+                            success=False,
+                            data=None,
+                            error="prometheus.query_instant suppressed by TTFT total budget (no cached success)",
+                        )
+                        serialized_source = "ttft_total_budget_blocked"
+                        suppressed_reasons.append(
+                            {
+                                "reason": "total_budget_exceeded",
+                                "family_fingerprint": family_fingerprint,
+                                "family_calls": family_prometheus_calls,
+                                "total_calls": total_prometheus_calls,
+                                "reused": False,
+                            }
+                        )
+                else:
+                    try:
+                        result = await asyncio.wait_for(
+                            registry.execute(tool_name, tool_args, context),
+                            timeout=state["step_timeout_sec"],
+                        )
+                    except asyncio.TimeoutError:
+                        result = ToolResult(tool=tool_name, success=False, data=None, error=f"tool timed out after {state['step_timeout_sec']}s")
+                    serialized_source = "tool"
             else:
                 try:
                     result = await asyncio.wait_for(
@@ -2785,6 +3029,29 @@ async def act_node(
                 "tool_params": {
                     "kind": "duplicate_tool_suppressed",
                     "count": suppressed_in_round,
+                },
+            }
+        )
+    for suppressed in suppressed_reasons:
+        reason = str(suppressed.get("reason", "budget_exceeded")).strip()
+        reused = bool(suppressed.get("reused", False))
+        updated_trace_items.append(
+            {
+                "type": "thought",
+                "step": state.get("step_count", 0) + 1,
+                "content": (
+                    "Suppressed prometheus.query_instant in TTFT path due to budget "
+                    f"({reason}); reused cached result={reused}."
+                ),
+                "action": "conclude",
+                "confidence": None,
+                "tool_params": {
+                    "kind": "prometheus_query_suppressed",
+                    "reason": reason,
+                    "reused": reused,
+                    "family_fingerprint": suppressed.get("family_fingerprint"),
+                    "family_calls": suppressed.get("family_calls"),
+                    "total_calls": suppressed.get("total_calls"),
                 },
             }
         )

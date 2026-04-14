@@ -296,6 +296,8 @@ export type DiagnosisStartedData = {
     summary: string;
   } | null;
   variables: Record<string, unknown>;
+  bootstrap_state?: "thinking";
+  degraded_start?: boolean;
 };
 
 export type SessionSummary = {

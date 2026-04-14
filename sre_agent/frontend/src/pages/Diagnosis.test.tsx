@@ -126,6 +126,7 @@ function resetDiagnosisStore(overrides: Partial<ReturnType<typeof useDiagnosisSt
     streamingText: "",
     streamingNode: null,
     isStreamingDiagnosis: false,
+    streamingPhase: "idle",
     activeStreamingTools: [],
     streamingAbortController: null,
     bootstrapSession: vi.fn().mockResolvedValue(undefined),
@@ -1150,6 +1151,167 @@ describe("DiagnosisPage status badges", () => {
     expect(screen.getByText("思考中")).toBeInTheDocument();
     expect(screen.getByText(/partial token output/)).toBeInTheDocument();
     expect(screen.getAllByText("query_metrics").length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("does not render thinking spinner after timeout/error terminal state", () => {
+    mockedBuildLiveView.mockImplementation((_session, _messages, _events, _localAuditRecords, liveThinking) => ({
+      timeline: liveThinking
+        ? [
+            {
+              id: `trace-thinking-${liveThinking.thought_key}`,
+              kind: "thinking",
+              title: "Agent terminal summary",
+              content: liveThinking.content,
+              timestamp: liveThinking.timestamp,
+              toolName: liveThinking.tool_name,
+              status: liveThinking.status,
+            },
+          ]
+        : [],
+      candidates: [],
+      summary: undefined,
+      plan: undefined,
+    }));
+
+    resetDiagnosisStore({
+      session: createLiveSession("sess-live-timeout-summary"),
+      activeSessionId: "sess-live-timeout-summary",
+      bootstrapStatus: "ready",
+      traceStatus: "ready",
+      isStreamingDiagnosis: false,
+      streamingPhase: "error",
+      liveThinking: {
+        thought_key: "run-reason-timeout:reason",
+        node: "reason",
+        run_id: "run-reason-timeout",
+        timestamp: "2026-04-08T10:20:05.000Z",
+        content: "Timeout while reasoning; compact final summary applied.",
+        status: "completed",
+        tool_name: null,
+        active_tools: [],
+      },
+      messages: [],
+      bootstrapSession: vi.fn().mockResolvedValue(undefined),
+    });
+
+    const { container } = renderLivePage("/diagnosis/sess-live-timeout-summary");
+
+    expect(container.querySelector(".diagnosis-workspace-thinking__pulse")).toBeNull();
+    expect(screen.queryByText(/\u601d\u8003\u4e2d/u)).not.toBeInTheDocument();
+    expect(screen.getByText(/\u601d\u8003\u5b8c\u6210/u)).toBeInTheDocument();
+    expect(screen.getByText("Timeout while reasoning; compact final summary applied.")).toBeInTheDocument();
+  });
+
+  it("keeps startup view clean while waiting for the first live content", () => {
+    mockedBuildLiveView.mockImplementation((_session, _messages, _events, _localAuditRecords, liveThinking) => ({
+      timeline: liveThinking
+        ? [
+            {
+              id: `trace-thinking-${liveThinking.thought_key}`,
+              kind: "thinking",
+              title: "bootstrap",
+              content: liveThinking.content,
+              timestamp: liveThinking.timestamp,
+              toolName: liveThinking.tool_name,
+              status: "thinking",
+            },
+          ]
+        : [],
+      candidates: [],
+      summary: undefined,
+      plan: undefined,
+    }));
+
+    const bootstrapSession = vi.fn().mockResolvedValue(undefined);
+    resetDiagnosisStore({
+      session: createLiveSession("pending-123"),
+      activeSessionId: "pending-123",
+      bootstrapStatus: "ready",
+      traceStatus: "empty",
+      isStreamingDiagnosis: true,
+      streamingPhase: "bootstrapping",
+      planMissingReason: "当前会话尚未产出修复计划，请先完成诊断或切换会话。",
+      liveThinking: {
+        thought_key: "bootstrap:pending-123",
+        node: "bootstrap",
+        run_id: null,
+        timestamp: "2026-04-08T10:20:01.000Z",
+        content: "",
+        status: "thinking",
+        tool_name: null,
+        active_tools: [],
+      },
+      messages: [],
+      bootstrapSession,
+    });
+
+    renderLivePage("/diagnosis/pending-123");
+    expect(bootstrapSession).not.toHaveBeenCalled();
+
+    expect(screen.getByText("思考中")).toBeInTheDocument();
+    expect(screen.queryByText("The live session has not produced trace entries yet.")).not.toBeInTheDocument();
+    expect(screen.queryByText("当前会话尚未产出修复计划，请先完成诊断或切换会话。")).not.toBeInTheDocument();
+  });
+
+  it("redirects stale pending sessions to /diagnosis after timeout", async () => {
+    resetDiagnosisStore({
+      session: undefined,
+      activeSessionId: undefined,
+      bootstrapStatus: "idle",
+      traceStatus: "unknown",
+      isStreamingDiagnosis: false,
+      bootstrapSession: vi.fn().mockResolvedValue(undefined),
+    });
+
+    render(
+      <MemoryRouter initialEntries={["/diagnosis/pending-stale-1"]}>
+        <Routes>
+          <Route path="/diagnosis/:sessionId" element={<DiagnosisPage />} />
+          <Route path="/diagnosis" element={<div>fallback-diagnosis-route</div>} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    expect(screen.queryByText("fallback-diagnosis-route")).not.toBeInTheDocument();
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 1700));
+    });
+    await waitFor(() => {
+      expect(screen.getByText("fallback-diagnosis-route")).toBeInTheDocument();
+    });
+  });
+
+  it("localizes tool loading copy in the live timeline", () => {
+    mockedBuildLiveView.mockReturnValue({
+      timeline: [
+        {
+          id: "tool-live-1",
+          kind: "tool",
+          toolName: "query_metrics",
+          params: { service: "auth-svc" },
+          timestamp: "2026-04-08T10:20:03.000Z",
+          status: "loading",
+          summaryLines: [],
+        },
+      ],
+      candidates: [],
+      summary: undefined,
+      plan: undefined,
+    });
+
+    resetDiagnosisStore({
+      session: createLiveSession("sess-live-tool-loading"),
+      activeSessionId: "sess-live-tool-loading",
+      bootstrapStatus: "ready",
+      traceStatus: "ready",
+      messages: [],
+      bootstrapSession: vi.fn().mockResolvedValue(undefined),
+    });
+
+    renderLivePage("/diagnosis/sess-live-tool-loading");
+
+    expect(screen.getByText("正在连接诊断遥测流...")).toBeInTheDocument();
+    expect(screen.getByText("正在查询诊断上下文...")).toBeInTheDocument();
   });
 
   it("renders live final answer content from backend content tokens", () => {

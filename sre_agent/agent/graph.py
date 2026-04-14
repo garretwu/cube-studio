@@ -317,6 +317,21 @@ def _build_thought_key(run_id: str | None, node: str | None) -> str | None:
     return None
 
 
+def _resolve_terminal_reason_from_status(
+    status: Any,
+    *,
+    has_diagnosis_result: bool = False,
+) -> str | None:
+    normalized = str(status or "").strip().lower()
+    if normalized in {"failed"}:
+        return "error"
+    if normalized in {"timeout", "step_timeout"}:
+        return "timeout"
+    if has_diagnosis_result or normalized in {"diagnosed"}:
+        return "diagnosis_result"
+    return None
+
+
 def _normalize_stream_trace_items(
     *,
     session_id: str,
@@ -506,8 +521,23 @@ def create_sre_graph(
                 next_state=next_state,
             )
             return next_state
-        except asyncio.TimeoutError:
+        except asyncio.TimeoutError as exc:
             trace_items = list(state.get("trace_items", []))
+            retry_record = _to_dict(getattr(exc, "reason_timeout_retry", {}))
+            if retry_record:
+                trace_items.append(
+                    {
+                        "type": "thought",
+                        "step": state.get("step_count", 0) + 1,
+                        "content": "reason timeout retry exhausted after compact final retry",
+                        "action": "conclude",
+                        "confidence": None,
+                        "tool_params": {
+                            "kind": "reason_timeout_retry",
+                            **retry_record,
+                        },
+                    }
+                )
             trace_items.append(
                 {
                     "type": "thought",
@@ -786,6 +816,7 @@ async def run_diagnosis_stream(
             "topology": topology_context,
             "variables": variables or {},
             "extra_alerts": extra_alerts or [],
+            "bootstrap_state": "thinking",
         },
     }
 
@@ -868,6 +899,7 @@ async def run_diagnosis_stream(
                         "run_id": run_id,
                         "thought_key": thought_key,
                         "started_at": started_at.isoformat(),
+                        "display_mode": "thinking_only",
                     },
                 }
 
@@ -907,7 +939,8 @@ async def run_diagnosis_stream(
                 if duration_sec is not None:
                     event_data["thought_duration_sec"] = duration_sec
                 if isinstance(output, dict):
-                    event_data["status"] = output.get("status")
+                    output_status = output.get("status")
+                    event_data["status"] = output_status
                     event_data["step_count"] = output.get("step_count")
                     trace_items = output.get("trace_items") or []
                     if trace_items:
@@ -928,6 +961,12 @@ async def run_diagnosis_stream(
                         event_data["diagnosis_result"] = output["diagnosis_result"]
                     if output.get("remediation_plan") is not None:
                         event_data["remediation_plan"] = output["remediation_plan"]
+                    terminal_reason = _resolve_terminal_reason_from_status(
+                        output_status,
+                        has_diagnosis_result=output.get("diagnosis_result") is not None,
+                    )
+                    if terminal_reason is not None:
+                        event_data["terminal_reason"] = terminal_reason
                 active_node_runs.pop(name, None)
                 yield {
                     "type": EventType.NODE_COMPLETED.value,
@@ -965,14 +1004,25 @@ async def run_diagnosis_stream(
         yield {
             "type": EventType.ERROR.value,
             "session_id": active_session_id,
-            "data": {"message": "diagnosis session timed out"},
+            "data": {
+                "message": "diagnosis session timed out",
+                "terminal_reason": "timeout",
+            },
         }
 
     # Yield the final done event.
     final_status = final_state.get("status", "completed")
     final_summary = final_state.get("summary")
+    final_terminal_reason = _resolve_terminal_reason_from_status(
+        final_status,
+        has_diagnosis_result=final_state.get("diagnosis_result") is not None,
+    ) or "done"
     yield {
         "type": "done",
         "session_id": active_session_id,
-        "data": {"status": final_status, "summary": final_summary},
+        "data": {
+            "status": final_status,
+            "summary": final_summary,
+            "terminal_reason": final_terminal_reason,
+        },
     }

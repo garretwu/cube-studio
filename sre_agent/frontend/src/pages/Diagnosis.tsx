@@ -9,7 +9,7 @@ import {
   type ReactNode,
   type UIEvent,
 } from "react";
-import { useParams } from "react-router-dom";
+import { useNavigate, useParams } from "react-router-dom";
 
 import { buildBackendWsUrl } from "../api/ws";
 import { AppIcon } from "../components/ui";
@@ -68,6 +68,11 @@ type ApprovalSurfaceView = {
 function cn(...parts: Array<string | false | null | undefined>) {
   return parts.filter(Boolean).join(" ");
 }
+
+function isPendingSessionId(value: string | null | undefined): value is string {
+  return typeof value === "string" && value.startsWith("pending-");
+}
+
 const THINK_TAG_BLOCK_PATTERN = /<think>([\s\S]*?)<\/think>/i;
 
 function estimateThoughtDurationSecFromContent(content: string) {
@@ -554,11 +559,11 @@ function ToolCard({
                 <div className="diagnosis-workspace-tool-card__loading">
                   <div>
                     <span className="diagnosis-workspace-tool-card__loading-indicator" />
-                    <span>Connecting to telemetry stream...</span>
+                    <span>正在连接诊断遥测流...</span>
                   </div>
                   <div>
                     <span className="diagnosis-workspace-tool-card__loading-indicator" />
-                    <span>Querying diagnostics context...</span>
+                    <span>正在查询诊断上下文...</span>
                   </div>
                 </div>
               ) : (
@@ -1277,6 +1282,7 @@ function ApprovalOverlay({
 }
 
 function DiagnosisPage() {
+  const navigate = useNavigate();
   const params = useParams<{ sessionId?: string }>();
   const routeSessionId = (params.sessionId ?? "").trim();
   const shouldBootstrapLiveSession = routeSessionId.length > 0;
@@ -1360,7 +1366,6 @@ function DiagnosisPage() {
     events,
     localAuditRecords,
     bootstrapStatus,
-    traceStatus,
     isLoadingSession,
     isSendingMessage,
     connectionState,
@@ -1373,6 +1378,7 @@ function DiagnosisPage() {
     planMissingReason,
     liveThinking,
     liveFinalAnswer,
+    isStreamingDiagnosis,
     bootstrapSession,
     sendMessage,
     approvePlan,
@@ -1385,6 +1391,13 @@ function DiagnosisPage() {
     () => buildDiagnosisLiveView(session, messages, events, localAuditRecords, liveThinking, liveFinalAnswer),
     [events, liveFinalAnswer, liveThinking, localAuditRecords, messages, session],
   );
+  const resolvedLiveSessionId = activeSessionId ?? session?.session_id ?? "";
+  const routeIsPendingSession = isPendingSessionId(routeSessionId);
+  const shouldSkipBootstrapForStreamingSession =
+    shouldBootstrapLiveSession &&
+    isStreamingDiagnosis &&
+    (routeSessionId === resolvedLiveSessionId ||
+      (routeIsPendingSession && isPendingSessionId(resolvedLiveSessionId)));
   const hasLiveSession =
     shouldBootstrapLiveSession &&
     bootstrapStatus === "ready" &&
@@ -1395,8 +1408,27 @@ function DiagnosisPage() {
     if (!shouldBootstrapLiveSession) {
       return;
     }
+    if (routeIsPendingSession || shouldSkipBootstrapForStreamingSession) {
+      return;
+    }
     void bootstrapSession(routeSessionId);
-  }, [bootstrapSession, routeSessionId, shouldBootstrapLiveSession]);
+  }, [
+    bootstrapSession,
+    routeIsPendingSession,
+    routeSessionId,
+    shouldBootstrapLiveSession,
+    shouldSkipBootstrapForStreamingSession,
+  ]);
+
+  useEffect(() => {
+    if (!shouldBootstrapLiveSession || !routeIsPendingSession || isStreamingDiagnosis) {
+      return;
+    }
+    const timerId = window.setTimeout(() => {
+      navigate("/diagnosis", { replace: true });
+    }, 1500);
+    return () => window.clearTimeout(timerId);
+  }, [isStreamingDiagnosis, navigate, routeIsPendingSession, shouldBootstrapLiveSession]);
 
   useEffect(() => {
     setApprovalReason("");
@@ -2204,7 +2236,8 @@ function DiagnosisPage() {
   const websocketEnabled =
     shouldBootstrapLiveSession &&
     import.meta.env.VITE_WS_ENABLED === "true" &&
-    Boolean(activeSessionId);
+    Boolean(activeSessionId) &&
+    !isPendingSessionId(activeSessionId);
   const websocketUrl = useMemo(
     () =>
       buildBackendWsUrl(`/ws/thinking-trace/${activeSessionId ?? "pending"}`, {
@@ -2233,7 +2266,8 @@ function DiagnosisPage() {
     : demoPropagationChain;
   const activeSummary = hasLiveSession ? liveView.summary : demoSummary;
   const activePlan = hasLiveSession ? liveView.plan : demoPlan;
-  const activePlanMissingReason = hasLiveSession ? planMissingReason : undefined;
+  const activePlanMissingReason =
+    hasLiveSession && !isStreamingDiagnosis ? planMissingReason : undefined;
   const activeApprovalStatusLabel =
     hasLiveSession && session ? formatWorkflowStatus(session.status) : "\u5f85\u5ba1\u6279";
   const approvalSurfaceOpen =
@@ -2404,8 +2438,20 @@ function DiagnosisPage() {
   );
 
   const inlineError = useMemo(
-    () => (shouldBootstrapLiveSession ? resolveInlineError(error) : null),
-    [error, shouldBootstrapLiveSession],
+    () =>
+      shouldBootstrapLiveSession &&
+      !isStreamingDiagnosis &&
+      !routeIsPendingSession &&
+      bootstrapStatus !== "loading"
+        ? resolveInlineError(error)
+        : null,
+    [
+      bootstrapStatus,
+      error,
+      isStreamingDiagnosis,
+      routeIsPendingSession,
+      shouldBootstrapLiveSession,
+    ],
   );
 
   const composerDisabled =
@@ -2524,14 +2570,6 @@ function DiagnosisPage() {
                   return <ToolCard item={item} key={item.id} />;
                 })
               )}
-
-              {hasLiveSession && traceStatus === "empty" && !liveThinking ? (
-                <div className="diagnosis-workspace-inline-note">
-                  The live session has not produced trace entries yet. The input
-                  remains available while waiting for incremental diagnosis
-                  events.
-                </div>
-              ) : null}
 
               {inlineError ? (
                 <div

@@ -17,10 +17,12 @@ llm:
   model: "glm-5.1"
 
 agent:
-  reasoning_context_strategy: state_rebuilt
-  reasoning_overflow_behavior: fail
-  reasoning_input_target_tokens: 180000
-  reasoning_model_family: "MiniMax-M2.5"
+  reasoning_context_strategy: transcript_compact
+  reasoning_overflow_behavior: compact
+  reasoning_input_target_tokens: 32000
+  reasoning_model_family: "glm-5.1"
+  step_timeout_sec: 240
+  total_timeout_sec: 900
 
 knowledge_base:
   provider: dify

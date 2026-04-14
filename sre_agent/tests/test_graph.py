@@ -158,6 +158,62 @@ class _SlowLLM:
         return AIMessage(content="{}")
 
 
+class _TimeoutThenSuccessBoundLLM:
+    def __init__(self, parent: "_TimeoutThenSuccessLLM", tool_choice: str) -> None:
+        self._parent = parent
+        self._tool_choice = tool_choice
+
+    async def ainvoke(self, messages: list[Any]) -> AIMessage:
+        return await self._parent._ainvoke(messages, tool_choice=self._tool_choice)  # noqa: SLF001
+
+
+class _TimeoutThenSuccessLLM:
+    def __init__(self, response: AIMessage) -> None:
+        self._response = response
+        self.calls: list[dict[str, Any]] = []
+
+    async def _ainvoke(self, messages: list[Any], *, tool_choice: str) -> AIMessage:
+        self.calls.append({"messages": messages, "tool_choice": tool_choice})
+        if len(self.calls) == 1:
+            import asyncio
+
+            await asyncio.sleep(0.2)
+        return self._response
+
+    async def ainvoke(self, messages: list[Any]) -> AIMessage:
+        return await self._ainvoke(messages, tool_choice="none")
+
+    def bind_tools(self, _tools: list[Any], tool_choice: str = "auto") -> _TimeoutThenSuccessBoundLLM:
+        return _TimeoutThenSuccessBoundLLM(self, tool_choice)
+
+
+class _TimeoutAlwaysBoundLLM:
+    def __init__(self, parent: "_TimeoutAlwaysLLM", tool_choice: str) -> None:
+        self._parent = parent
+        self._tool_choice = tool_choice
+
+    async def ainvoke(self, messages: list[Any]) -> AIMessage:
+        return await self._parent._ainvoke(messages, tool_choice=self._tool_choice)  # noqa: SLF001
+
+
+class _TimeoutAlwaysLLM:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, Any]] = []
+
+    async def _ainvoke(self, messages: list[Any], *, tool_choice: str) -> AIMessage:
+        self.calls.append({"messages": messages, "tool_choice": tool_choice})
+        import asyncio
+
+        await asyncio.sleep(0.2)
+        return AIMessage(content="{}")
+
+    async def ainvoke(self, messages: list[Any]) -> AIMessage:
+        return await self._ainvoke(messages, tool_choice="none")
+
+    def bind_tools(self, _tools: list[Any], tool_choice: str = "auto") -> _TimeoutAlwaysBoundLLM:
+        return _TimeoutAlwaysBoundLLM(self, tool_choice)
+
+
 class _FakeStreamChunk:
     def __init__(self, content: str | None = None, *, reasoning_content: str | None = None) -> None:
         self.content = content
@@ -1146,6 +1202,89 @@ tags:
             self.assertTrue(result["loop_guard"]["triggered"])
             self.assertEqual(llm.calls[-1]["tool_choice"], "none")
 
+    async def test_ttft_prometheus_budget_limits_real_execution_and_reuses_cached_results(self) -> None:
+        llm = _FakeLLM(
+            [
+                AIMessage(
+                    content="Verify TTFT baseline metric.",
+                    tool_calls=[
+                        {
+                            "name": "prometheus.query_instant",
+                            "args": {"promql": "histogram_quantile(0.99, sum(rate(http_request_duration_seconds_bucket{service=\"svc-a\"}[5m])) by (le))"},
+                            "id": "call-prom-a",
+                            "type": "tool_call",
+                        }
+                    ],
+                ),
+                AIMessage(
+                    content="Cross-check with second query.",
+                    tool_calls=[
+                        {
+                            "name": "prometheus.query_instant",
+                            "args": {"promql": "histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket{service=\"svc-b\"}[5m])) by (le))"},
+                            "id": "call-prom-b",
+                            "type": "tool_call",
+                        }
+                    ],
+                ),
+                AIMessage(
+                    content="Try one more query that should be budget-suppressed.",
+                    tool_calls=[
+                        {
+                            "name": "prometheus.query_instant",
+                            "args": {"promql": "histogram_quantile(0.90, sum(rate(http_request_duration_seconds_bucket{service=\"svc-c\"}[5m])) by (le))"},
+                            "id": "call-prom-c",
+                            "type": "tool_call",
+                        }
+                    ],
+                ),
+                AIMessage(
+                    content=json.dumps(
+                        {
+                            "thought": "TTFT query budget reached; conclude with existing evidence.",
+                            "diagnosis": {
+                                "root_cause": "TTFT increase observed with stable GPU evidence.",
+                                "root_cause_layer": "service",
+                                "root_cause_entities": ["svc-a"],
+                                "confidence": 0.66,
+                                "impact_summary": "Suppressed redundant prometheus queries after budget reached.",
+                                "affected_services": ["svc-a"],
+                                "triage_priority": "P2",
+                                "diagnosis_certainty": "probable",
+                            },
+                            "remediation_plan": None,
+                        }
+                    )
+                ),
+            ]
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            result = await run_diagnosis(
+                query="Diagnose AIServiceTTFT with deterministic query budget.",
+                context=_happy_context(),
+                variables={},
+                llm=llm,
+                alert_snapshot={"alert_name": "AIServiceTTFTP99High"},
+                step_timeout_sec=5.0,
+                total_timeout_sec=10.0,
+                checkpoint_dir=tmpdir,
+                allowed_tool_names=["prometheus.query_instant"],
+                max_steps=8,
+            )
+
+            prom_runs = [item for item in result["tool_runs"] if item.get("tool") == "prometheus.query_instant"]
+            real_exec_runs = [item for item in prom_runs if str(item.get("source", "tool")) == "tool"]
+            reuse_runs = [item for item in prom_runs if "reuse" in str(item.get("source", ""))]
+            self.assertLessEqual(len(real_exec_runs), 2)
+            self.assertGreaterEqual(len(reuse_runs), 1)
+            trace_items = [item for item in result.get("trace_items", []) if isinstance(item, dict)]
+            self.assertTrue(
+                any(
+                    str((item.get("tool_params") or {}).get("kind", "")) == "prometheus_query_suppressed"
+                    for item in trace_items
+                )
+            )
+
     async def test_run_diagnosis_stream_emits_real_duration_and_backend_next_action_without_trace_duplicates(self) -> None:
         stream_events = [
             {
@@ -1242,10 +1381,14 @@ tags:
         self.assertEqual(token_event["data"]["run_id"], "run-reason-1")
         self.assertEqual(token_event["data"]["thought_key"], "run-reason-1:reason")
 
+        diagnosis_started = next(item for item in emitted if item["type"] == "diagnosis_started")
+        self.assertEqual(diagnosis_started["data"]["bootstrap_state"], "thinking")
+
         node_started = next(item for item in emitted if item["type"] == "node_started")
         self.assertEqual(node_started["data"]["run_id"], "run-reason-1")
         self.assertEqual(node_started["data"]["thought_key"], "run-reason-1:reason")
         self.assertIn("started_at", node_started["data"])
+        self.assertEqual(node_started["data"]["display_mode"], "thinking_only")
 
         node_completed_events = [item for item in emitted if item["type"] == "node_completed"]
         self.assertGreaterEqual(len(node_completed_events), 2)
@@ -1375,6 +1518,77 @@ tags:
             self.assertTrue(diagnostics["fallback_used"])
             self.assertGreaterEqual(int(diagnostics["retry_count"]), 1)
             self.assertEqual(str(diagnostics["last_error_code"]), "1305")
+
+    async def test_reason_timeout_retries_once_with_compact_final_prompt_and_succeeds(self) -> None:
+        llm = _TimeoutThenSuccessLLM(
+            AIMessage(
+                content=json.dumps(
+                    {
+                        "thought": "Retry completed with compact final evidence.",
+                        "diagnosis": {
+                            "root_cause": "Transient LLM latency during reason step",
+                            "root_cause_layer": "service",
+                            "root_cause_entities": ["service:test"],
+                            "confidence": 0.63,
+                            "impact_summary": "Retry succeeded after first reason timeout.",
+                            "affected_services": ["service:test"],
+                            "triage_priority": "P2",
+                            "diagnosis_certainty": "probable",
+                        },
+                        "remediation_plan": None,
+                    }
+                )
+            )
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            result = await run_diagnosis(
+                query="Diagnose with a temporary reason timeout and retry once.",
+                context=_happy_context(),
+                variables={},
+                llm=llm,
+                step_timeout_sec=0.05,
+                total_timeout_sec=1.0,
+                allowed_tool_names=["prometheus.query_instant"],
+                checkpoint_dir=tmpdir,
+            )
+
+        self.assertEqual(result["status"], "diagnosed")
+        self.assertGreaterEqual(len(llm.calls), 2)
+        self.assertEqual(llm.calls[-1]["tool_choice"], "none")
+        trace_items = [item for item in result.get("trace_items", []) if isinstance(item, dict)]
+        self.assertTrue(
+            any(
+                str((item.get("tool_params") or {}).get("kind", "")) == "reason_timeout_retry"
+                for item in trace_items
+            )
+        )
+
+    async def test_reason_timeout_retry_exhausted_keeps_step_timeout_and_retry_trace(self) -> None:
+        llm = _TimeoutAlwaysLLM()
+        result = await run_diagnosis(
+            query="Diagnose with persistent reason timeout.",
+            context=_happy_context(),
+            variables={},
+            llm=llm,
+            step_timeout_sec=0.05,
+            total_timeout_sec=1.0,
+            allowed_tool_names=["prometheus.query_instant"],
+            checkpoint_dir=None,
+        )
+        self.assertEqual(result["status"], "step_timeout")
+        trace_items = [item for item in result.get("trace_items", []) if isinstance(item, dict)]
+        self.assertTrue(
+            any(
+                str((item.get("tool_params") or {}).get("kind", "")) == "reason_timeout_retry"
+                for item in trace_items
+            )
+        )
+        self.assertTrue(
+            any(
+                str((item.get("tool_params") or {}).get("kind", "")) == "reason_timeout"
+                for item in trace_items
+            )
+        )
 
     async def test_step_timeout_returns_step_timeout_state(self) -> None:
         result = await run_diagnosis(
