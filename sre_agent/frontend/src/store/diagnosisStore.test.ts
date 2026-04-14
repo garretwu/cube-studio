@@ -31,6 +31,7 @@ describe("useDiagnosisStore", () => {
       planMissingReason: undefined,
       effectiveReviseInstruction: undefined,
       liveThinking: null,
+      liveFinalAnswer: null,
       streamingText: "",
       streamingNode: null,
       isStreamingDiagnosis: false,
@@ -232,6 +233,108 @@ describe("useDiagnosisStore", () => {
       thought_duration_sec: 3,
     });
     expect(state.session?.trace?.steps?.at(-1)).not.toHaveProperty("next_action");
+  });
+
+  it("routes final content token deltas into the live final answer buffer", async () => {
+    await useDiagnosisStore.getState().bootstrapSession();
+
+    useDiagnosisStore.getState().applyEvent({
+      schema_version: "1",
+      type: "token_delta",
+      session_id: diagnosisSession.session_id,
+      timestamp: "2026-03-18T12:08:00Z",
+      data: {
+        content: "诊断结论：Node contention。",
+        stream_channel: "content",
+        phase: "final",
+      },
+    });
+    useDiagnosisStore.getState().applyEvent({
+      schema_version: "1",
+      type: "done",
+      session_id: diagnosisSession.session_id,
+      timestamp: "2026-03-18T12:08:01Z",
+      data: {},
+    });
+
+    const state = useDiagnosisStore.getState();
+    expect(state.liveThinking).toBeNull();
+    expect(state.liveFinalAnswer).toMatchObject({
+      content: "诊断结论：Node contention。",
+      status: "completed",
+    });
+  });
+
+  it("captures plan_unavailable reason for sessions without remediation plan", () => {
+    const sessionWithoutPlan = {
+      ...diagnosisSession,
+      session_id: "sess-no-plan",
+      status: "diagnosed" as const,
+      diagnosis_result: diagnosisSession.diagnosis_result
+        ? {
+            ...diagnosisSession.diagnosis_result,
+            recommended_fix: undefined,
+            ranked_candidates: (diagnosisSession.diagnosis_result.ranked_candidates ?? []).map((candidate) => ({
+              ...candidate,
+              recommended_fix: undefined,
+            })),
+          }
+        : undefined,
+    };
+
+    useDiagnosisStore.setState({
+      session: sessionWithoutPlan,
+      activeSessionId: "sess-no-plan",
+      events: [],
+      messages: [],
+      hasPlan: false,
+      planMissingReason: undefined,
+    });
+
+    useDiagnosisStore.getState().applyEvent({
+      schema_version: "1",
+      type: "remediation_progress",
+      session_id: "sess-no-plan",
+      timestamp: "2026-03-18T12:08:02Z",
+      data: {
+        stage: "plan_unavailable",
+        message: "证据不足，暂不生成可执行修复计划。",
+      },
+    });
+
+    const state = useDiagnosisStore.getState();
+    expect(state.hasPlan).toBe(false);
+    expect(state.planMissingReason).toBe("证据不足，暂不生成可执行修复计划。");
+  });
+
+  it("shows a thinking placeholder immediately on node_started before token deltas arrive", () => {
+    useDiagnosisStore.setState({
+      session: diagnosisSession,
+      activeSessionId: diagnosisSession.session_id,
+      events: [],
+      messages: [],
+      liveThinking: null,
+      activeStreamingTools: [],
+    });
+
+    useDiagnosisStore.getState().applyEvent({
+      schema_version: "1",
+      type: "node_started",
+      session_id: diagnosisSession.session_id,
+      timestamp: "2026-03-18T12:09:00Z",
+      data: {
+        node: "reason",
+        run_id: "run-reason-placeholder",
+        thought_key: "run-reason-placeholder:reason",
+      },
+    });
+
+    const state = useDiagnosisStore.getState();
+    expect(state.liveThinking).toMatchObject({
+      thought_key: "run-reason-placeholder:reason",
+      status: "thinking",
+    });
+    expect(state.liveThinking?.content).toContain("诊断引擎正在分析当前证据并规划下一步行动");
   });
 
   it("uses default instruction when revising plan without input", async () => {

@@ -13,12 +13,12 @@
 | `ci/common.sh` | 提供日志、仓库认证、镜像命名、时间戳解析等公共函数。 |
 | `ci/generate_metadata.sh` | 生成镜像时间戳、tag 和 `dist/pipeline.env` 元数据文件。 |
 | `ci/resolve_latest_base_tag.sh` | 从 Nexus 查询最新的 `base-YYYYMMDDHHMM` 基础镜像 tag。 |
-| `ci/build_base_image.sh` | 构建基础镜像并导出为 tar 制品。 |
-| `ci/build_web_image.sh` | 基于最新可用基础镜像构建业务镜像并导出为 tar 制品。 |
+| `ci/build_base_image.sh` | 构建基础镜像。 |
+| `ci/build_web_image.sh` | 基于最新可用基础镜像构建业务镜像。 |
 | `ci/run_preview_container.sh` | 启动 preview 容器，自动规避端口和容器名冲突，并等待健康检查通过。 |
 | `ci/validate_runtime_smoke.sh` | 执行容器启动、健康检查、后端 OpenAPI 和前端首页的环境验收。 |
 | `ci/validate_business_suite.sh` | 在基础镜像环境中执行选定的后端与故障注入业务测试。 |
-| `ci/push_images.sh` | 将生成的镜像 tar 推送到 Nexus，并输出 `docker pull` 地址。 |
+| `ci/push_images.sh` | 将生成的镜像推送到 Nexus，并输出 `docker pull` 地址。 |
 | `ci/promote_release.sh` | 手动把已验证通过的业务镜像提升为正式 release tag。 |
 | `ci/notify_feishu.sh` | 在满足条件时向飞书群机器人发送失败通知卡片。 |
 | `ci/cleanup_docker_state.sh` | 清理过期 preview 容器、旧镜像和旧缓存，并保留关键最新版本。 |
@@ -56,25 +56,45 @@
 
 ## 必要 CI 变量
 
-| 变量 | 用途 |
-| --- | --- |
-| `NEXUS_REGISTRY` | Nexus Docker 仓库地址，例如 `10.11.4.5:5000`。 |
-| `NEXUS_USERNAME` | Docker 登录和 tag 查询 API 使用的用户名，建议作为受保护变量维护。 |
-| `NEXUS_PASSWORD` | Docker 登录和 tag 查询 API 使用的密码或 token，建议作为 masked + protected 变量维护。 |
-| `PREVIEW_DOCKER_HOST` | 可选，用于承载 preview 容器的远端 Docker 主机，例如 `tcp://10.10.10.20:2375`。 |
-| `PREVIEW_PUBLIC_HOST` | 可选，用于在日志中输出对外可访问的 preview 地址。 |
-| `SRE_OPENAI_API_KEY` | 可选，preview 运行时使用的 LLM key；未显式配置时允许从 `sre_agent/conf/config.yaml` 的 `llm.api_key` fallback。 |
-| `FORCE_BASE_BUILD` | 可选，设为 `1` 时即使依赖未变化也强制重建基础镜像。 |
-| `FORCE_FULL_PIPELINE` | 可选，设为 `1` 时即使当前改动不在业务相关路径中，也强制创建并执行完整流水线。 |
-| `RELEASE_VERSION` | 可选，手动发版时指定版本号，例如 `1.0.1`；未指定时读取 `sre_agent/VERSION`。 |
-| `FEISHU_WEBHOOK_URL` | 可选，飞书群机器人 webhook 地址，建议作为 masked + protected 变量维护。 |
-| `FEISHU_NOTIFY_ON_COMMIT_FAILURE` | 可选，设为 `1` 时普通 commit 流水线失败也通知飞书；默认只通知非 commit 流程。 |
+| 变量 | Visibility | 用途 |
+| --- | --- | --- |
+| `NEXUS_REGISTRY` | `Visible` | Nexus Docker 仓库地址，例如 `10.11.4.5:5000`。 |
+| `NEXUS_USERNAME` | `Visible` | Docker 登录和 tag 查询 API 使用的用户名。 |
+| `NEXUS_PASSWORD` | `Masked and hidden` | Docker 登录和 tag 查询 API 使用的密码或 token。 |
+| `PREVIEW_DOCKER_HOST` | `Visible` | 可选，用于承载 preview 容器的远端 Docker 主机，例如 `tcp://10.10.10.20:2375`。 |
+| `PREVIEW_PUBLIC_HOST` | `Visible` | 可选，用于在日志中输出对外可访问的 preview 地址。 |
+| `SRE_OPENAI_API_KEY` | `Masked and hidden` | 可选，preview 运行时使用的 LLM key；未显式配置时允许从 `sre_agent/conf/config.yaml` 的 `llm.api_key` fallback。 |
+| `FORCE_BASE_BUILD` | `Visible` | 可选，设为 `1` 时即使依赖未变化也强制重建基础镜像。 |
+| `FORCE_FULL_PIPELINE` | `Visible` | 可选，设为 `1` 时即使当前改动不在业务相关路径中，也强制创建并执行完整流水线。 |
+| `RELEASE_VERSION` | `Visible` | 可选，手动发版时指定版本号，例如 `1.0.1`；填写 `auto` 时基于 Nexus 最新正式版本自动递增 patch；未指定时读取 `sre_agent/VERSION`。 |
+| `ALLOW_RELEASE_VERSION_REUSE` | `Visible` | 可选，默认 `0`；只有确实要重建已发布版本时设置为 `1`。 |
+| `FEISHU_WEBHOOK_URL` | `Masked and hidden` | 可选，飞书群机器人 webhook 地址。 |
+| `FEISHU_NOTIFY_ON_COMMIT_FAILURE` | `Visible` | 可选，设为 `1` 时普通 commit 流水线失败也通知飞书；默认只通知非 commit 流程。 |
+| `FEISHU_NOTIFY_ON_SUCCESS` | `Visible` | 可选，设为 `1` 时对 `preview`、`snapshot`、`release` 成功发送飞书卡片；默认开启。 |
 
 补充说明：
 
 - 只有 `SRE_OPENAI_API_KEY` 支持在未显式声明时 fallback 到 [config.yaml](/home/kevin/project/cube-studio/sre_agent/conf/config.yaml) 中的 `llm.api_key`
 - `NEXUS_USERNAME`、`NEXUS_PASSWORD`、`FEISHU_WEBHOOK_URL` 这类 CI/CD 凭证仍然必须显式配置在 GitLab Variables 中
 - 如果设置了 `PREVIEW_PUBLIC_HOST`，即使 preview 因 `PREVIEW_DOCKER_HOST` 不可达而回退到 runner 本地 Docker，日志中仍优先输出 `PREVIEW_PUBLIC_HOST:随机端口` 作为浏览器访问地址
+- 普通提交 preview 默认保留最近 `3` 个实例，避免测试或评审中的版本被新提交立即替换
+- `weekly_build` 会额外创建一个 `weekly preview`，默认仅保留最新 `1` 个实例，作为相对稳定的周版本预览入口
+- 默认镜像命名空间为 `sre_agent`，并按用途分目录：
+  - preview：`10.11.4.5:5000/sre_agent/sre-agent-web-preview:<tag>`
+  - weekly：`10.11.4.5:5000/sre_agent/sre-agent-web-weekly:<tag>`
+  - release：`10.11.4.5:5000/sre_agent/sre-agent-web-release:<tag>`
+  - 对应基础镜像同理，分别使用 `sre-agent-base-preview`、`sre-agent-base-weekly`、`sre-agent-base-release`
+
+变量填写说明：
+
+- `NEXUS_REGISTRY`：填写仓库地址本身，例如 `10.11.4.5:5000`
+- `NEXUS_USERNAME`：填写真实仓库用户名，例如 `kevin`
+- `NEXUS_PASSWORD`：填写真实仓库密码或 token 明文值
+- `PREVIEW_PUBLIC_HOST`：填写浏览器可访问的主机 IP 或域名，例如 `10.11.4.5`
+- `PREVIEW_DOCKER_HOST`：仅在需要通过远端 Docker API 起 preview 容器时填写，例如 `tcp://10.11.4.5:2375`
+- `SRE_OPENAI_API_KEY`：填写真实 LLM `API key` 明文值，不是字段名，不是路径，也不是 `config.yaml` 中的键名
+- `RELEASE_VERSION`：手动正式发版时填写版本号，例如 `1.0.1`；如果不确定该发哪个版本，填写 `auto`
+- `ALLOW_RELEASE_VERSION_REUSE`：默认保持 `0`；只有明确需要重建已发布版本时才设置为 `1`
 
 ## Schedule 变量
 
@@ -99,9 +119,23 @@
 
 当前流水线把“快照发布”和“正式发版”拆成两层：
 
-- `publish_sre_agent_snapshot`：自动把已验证通过的 commit 或 weekly 镜像推送到 Nexus。
+- `publish_preview_snapshot`：在 preview 成功后自动把 commit 或 weekly 镜像推送到 Nexus，供内部测试和联调共享。
 - `promote_sre_agent_release`：手动执行，把已验证通过的业务镜像重新打成 `VERSION-YYYYMMDDHHMM`。
-- 如果手动触发时没有提供 `RELEASE_VERSION`，就读取 `sre_agent/VERSION` 里的默认版本。
+- 如果手动触发时没有提供 `RELEASE_VERSION`，就读取 `sre_agent/VERSION` 里的默认版本，并要求它大于 Nexus 中最新的正式版本。
+- 如果提交前忘记更新 `sre_agent/VERSION`，可以直接打开当前 pipeline 中的 `promote_sre_agent_release` 手动 job，在 job 页面填写 `RELEASE_VERSION=1.0.1` 临时覆盖；该变量只影响本次正式镜像 tag，不会自动提交版本文件，也不需要重跑整条 pipeline。
+- 如果不确定当前应发布哪个版本，可以填写 `RELEASE_VERSION=auto`，promote job 会基于 Nexus 中最新正式版本自动取下一个 patch 版本；多个 preview pipeline 不会导致版本跳跃，因为正式版本只看 release 仓库历史。
+- 如果已发布 `1.0.1-*`，再次发布 `1.0.1-*` 会失败；只有明确重建同一正式版本时才设置 `ALLOW_RELEASE_VERSION_REUSE=1`。
+
+镜像获取说明：
+
+- 预览对应的候选镜像：查看 `publish_preview_snapshot` job 日志中的 `docker pull ...`
+- 正式 release 镜像：查看 `promote_sre_agent_release` job 日志末尾的发布 summary，其中会直接输出 `Base Pull` 和 `Web Pull`
+- `weekly_build` 对应镜像：同样查看 `publish_preview_snapshot` job 日志，其中会输出 `weekly` 目录下的 `docker pull ...`
+- `weekly preview` 页面地址：查看 `weekly_preview_sre_agent_web` job 日志末尾的 `Frontend URL`
+- 如果已配置 `FEISHU_WEBHOOK_URL`，成功时也会自动发送飞书卡片：
+  - `preview_sre_agent_web` / `weekly_preview_sre_agent_web`：包含页面 URL 和镜像拉取命令
+  - `publish_preview_snapshot`：包含候选镜像拉取命令，并尽量附带 preview 地址
+  - `promote_sre_agent_release`：包含正式 release 的 `Web Pull` / `Base Pull`
 
 ## 验证范围
 

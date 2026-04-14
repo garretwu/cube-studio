@@ -98,7 +98,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Inject low fan PWM plus 4-GPU gpu_burn before waiting for the alert.",
     )
     parser.add_argument("--inject-fan-index", type=int, default=0, help="Fan index to set during injection.")
-    parser.add_argument("--inject-fan-pwm", type=int, default=80, help="Injected manual PWM percentage.")
+    parser.add_argument("--inject-fan-pwm", type=int, default=10, help="Injected manual PWM percentage.")
     parser.add_argument("--inject-fan-bp-index", type=int, default=0xFF, help="Backplane fan index passed to the BMC API.")
     parser.add_argument("--gpu-burn-command", default=DEFAULT_GPU_BURN_COMMAND, help="gpu_burn command to start on the target node.")
     parser.add_argument("--gpu-burn-workdir", default=DEFAULT_GPU_BURN_WORKDIR, help="Working directory that contains gpu_burn.")
@@ -491,6 +491,48 @@ def _select_firing_alert(current: list[Alert], history: list[Alert]) -> Alert | 
     return None
 
 
+def _alert_event_key(alert: Alert) -> str:
+    return f"{alert.fingerprint}|{alert.starts_at.isoformat()}"
+
+
+def _select_new_firing_alert(
+    current: list[Alert],
+    history: list[Alert],
+    *,
+    excluded_keys: set[str] | None = None,
+) -> Alert | None:
+    excluded = excluded_keys or set()
+    for alert in current:
+        if alert.status.value == "firing" and _alert_event_key(alert) not in excluded:
+            return alert
+    for alert in history:
+        if alert.status.value == "firing" and _alert_event_key(alert) not in excluded:
+            return alert
+    return None
+
+
+async def snapshot_firing_alert_keys(
+    *,
+    prometheus_url: str,
+    alert_name: str,
+    lookback: str,
+) -> set[str]:
+    backend = PrometheusHttpBackend(base_url=prometheus_url, timeout=30.0, retries=3)
+    channel = AlertChannel(alertmanager_url="", prometheus_url=prometheus_url, metrics_backend=backend)
+    try:
+        await channel.connect()
+        current = await channel.get_alerts(filter_labels={"alertname": alert_name})
+        history = await channel.get_alert_history(alert_name, lookback=lookback)
+    finally:
+        await channel.disconnect()
+        await backend.aclose()
+    keys: set[str] = set()
+    for alert in [*current, *history]:
+        if alert.status.value == "firing":
+            keys.add(_alert_event_key(alert))
+    return keys
+
+
 async def wait_for_current_alert(
     *,
     prometheus_url: str,
@@ -498,9 +540,11 @@ async def wait_for_current_alert(
     lookback: str,
     timeout_sec: float,
     poll_interval_sec: float,
+    excluded_firing_keys: set[str] | None = None,
 ) -> tuple[Alert, list[Alert], list[Alert]]:
     deadline = asyncio.get_running_loop().time() + max(timeout_sec, 1.0)
     last_history: list[Alert] = []
+    excluded = excluded_firing_keys or set()
     while True:
         backend = PrometheusHttpBackend(base_url=prometheus_url, timeout=30.0, retries=3)
         channel = AlertChannel(alertmanager_url="", prometheus_url=prometheus_url, metrics_backend=backend)
@@ -509,18 +553,18 @@ async def wait_for_current_alert(
             current = await channel.get_alerts(filter_labels={"alertname": alert_name})
             history = await channel.get_alert_history(alert_name, lookback=lookback)
             last_history = history
-            selected = _select_firing_alert(current, history)
+            selected = _select_new_firing_alert(current, history, excluded_keys=excluded)
             if selected is not None:
                 return selected, current, history
         finally:
             await channel.disconnect()
             await backend.aclose()
         if asyncio.get_running_loop().time() >= deadline:
-            historical_firing = _select_firing_alert([], last_history)
+            historical_firing = _select_new_firing_alert([], last_history, excluded_keys=excluded)
             if historical_firing is not None:
                 return historical_firing, [], last_history
             raise SystemExit(
-                f"Timed out waiting for firing alert {alert_name} after {int(timeout_sec)}s"
+                f"Timed out waiting for a new firing alert {alert_name} after {int(timeout_sec)}s"
             )
         await asyncio.sleep(max(poll_interval_sec, 1.0))
 
@@ -868,6 +912,25 @@ async def start_gpu_burn(
 ) -> dict[str, Any]:
     log_path = "/tmp/gpu_thermal_skill_demo_gpu_burn.log"
     probe_command = "ps -eo pid=,comm= | awk '$2 == \"gpu_burn\" {print $1}'"
+    argv = shlex.split(command)
+    if not argv:
+        raise RuntimeError("gpu_burn command is empty")
+    executable = argv[0]
+    preflight_parts = [
+        f"cd {shlex.quote(workdir)}",
+        "[ -d . ]",
+    ]
+    if "/" in executable:
+        preflight_parts.append(f"[ -x {shlex.quote(executable)} ]")
+    else:
+        preflight_parts.append(f"command -v {shlex.quote(executable)} >/dev/null 2>&1")
+    preflight = "bash -lc " + shlex.quote(" && ".join(preflight_parts))
+    preflight_result = await channel.run_command(node, preflight, use_sudo=False)
+    if not preflight_result.success:
+        executable_hint = executable if "/" in executable else f"$PATH:{executable}"
+        raise RuntimeError(
+            f"gpu_burn preflight failed: workdir '{workdir}' or executable '{executable_hint}' is unavailable on node {node}"
+        )
     wrapped = (
         "bash -lc "
         + shlex.quote(
@@ -881,15 +944,23 @@ async def start_gpu_burn(
         probe_output = str(probe.output or "").strip()
         if not probe.success or not probe_output:
             raise RuntimeError(str(result.error or result.output or "failed to start gpu_burn"))
-    probe = await channel.run_command(node, probe_command, use_sudo=False)
     pid_list: list[int] = []
-    for line in str(probe.output or "").splitlines():
-        value = line.strip()
-        if value.isdigit():
-            pid_list.append(int(value))
+    for _ in range(6):
+        probe = await channel.run_command(node, probe_command, use_sudo=False)
+        pid_list = []
+        for line in str(probe.output or "").splitlines():
+            value = line.strip()
+            if value.isdigit():
+                pid_list.append(int(value))
+        if pid_list:
+            break
+        await asyncio.sleep(1.0)
+    if not pid_list:
+        raise RuntimeError("gpu_burn did not stay running after launch")
+    primary_pid = int(pid_text) if pid_text.isdigit() and int(pid_text) in pid_list else pid_list[0]
     return {
         "node": node,
-        "pid": int(pid_text) if pid_text.isdigit() else None,
+        "pid": primary_pid,
         "pids": pid_list,
         "log_path": log_path,
         "command": command,
@@ -1171,6 +1242,17 @@ async def main_async(args: argparse.Namespace) -> int:
     remediation_execution: dict[str, Any] = {"executed": False, "reason": "not started"}
     try:
         if args.inject_faults:
+            preexisting_firing_keys = await snapshot_firing_alert_keys(
+                prometheus_url=prometheus_url,
+                alert_name=args.alert_name,
+                lookback=args.lookback,
+            )
+            append_trace(
+                trace_path,
+                "preexisting_firing_snapshot",
+                alert_name=args.alert_name,
+                count=len(preexisting_firing_keys),
+            )
             append_trace(trace_path, "inject_faults_begin", node=node)
             if node == "":
                 raise SystemExit("Fault injection requires --node or an alert name that can be mapped to a node")
@@ -1211,6 +1293,7 @@ async def main_async(args: argparse.Namespace) -> int:
                 lookback=args.lookback,
                 timeout_sec=args.alert_wait_timeout,
                 poll_interval_sec=args.alert_poll_interval,
+                excluded_firing_keys=preexisting_firing_keys,
             )
             append_trace(
                 trace_path,

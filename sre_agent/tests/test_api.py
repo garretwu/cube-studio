@@ -1543,6 +1543,21 @@ class TestAPIIntegration:
         assert response.status_code == 200
         assert response.headers.get("access-control-allow-origin") == "http://127.0.0.1:5173"
 
+    def test_integration_get_skill_detail_returns_real_skill_markdown(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        client, token = _build_client(monkeypatch)
+
+        response = client.get("/api/skills/builtin-gpu-drop-diagnosis", headers=_auth_headers(token))
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["success"] is True
+        assert payload["data"]["id"] == "builtin-gpu-drop-diagnosis"
+        assert payload["data"]["file_name"] == "SKILL.md"
+        assert payload["data"]["lifecycle_status"] == "published"
+        assert "Paste the full SKILL.md content here" not in payload["data"]["markdown_content"]
+        assert "# GPU 掉卡诊断与恢复" in payload["data"]["markdown_content"]
+        assert "bash scripts/gpu_drop_recover.sh" in payload["data"]["markdown_content"]
+
     def test_integration_post_ontology_query_returns_filtered_entities(self, monkeypatch: pytest.MonkeyPatch) -> None:
         client, token = _build_client(monkeypatch)
 

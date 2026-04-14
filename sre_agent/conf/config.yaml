@@ -3,18 +3,20 @@ global:
   prometheus_url: "http://10.11.4.3:31260"
   alertmanager_url: "http://10.11.4.3:31013/"
   loki_url: "http://10.11.4.2:30628"
+  auto_diagnose_alert_names:
+    - GPUCardMissing
   auto_diagnose_entity_correlation_count: 2
 
 llm:
-  api_key: "sk-cp-QbQw-Zy-mlZTwXXD3nC6MX17TDtze2xQafHqLgipC-fe4wL1NHKmXC1aGFmgVTns8_erpRmmQcBDhcxdvIMDeavvvS5McU6-QDGja8vmZ8wI75YQLZq0X2k"
-  base_url: "https://api.minimax.chat/v1"
-  model: "MiniMax-M2.7"
+  api_key: "sk-sp-4d2bf2aafa0e4ba9a9839bbfef78b6e2"
+  base_url: "https://coding.dashscope.aliyuncs.com/v1"
+  model: "MiniMax-M2.5"
 
 agent:
   reasoning_context_strategy: state_rebuilt
   reasoning_overflow_behavior: fail
   reasoning_input_target_tokens: 180000
-  reasoning_model_family: "MiniMax-M2.7"
+  reasoning_model_family: "MiniMax-M2.5"
 
 knowledge_base:
   provider: dify
@@ -167,4 +169,3 @@ lab_seed:
       switch: sw-200g
       port: 200GE1/0/6
       gpu_ids: []
-

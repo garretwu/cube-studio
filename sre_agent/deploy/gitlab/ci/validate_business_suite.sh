@@ -16,7 +16,7 @@ fi
 if ! docker image inspect "${BASE_IMAGE_REF}" >/dev/null 2>&1; then
   latest_base_tag="$("${SCRIPT_DIR}/resolve_latest_base_tag.sh")"
   BASE_IMAGE_TAG="${latest_base_tag}"
-  BASE_IMAGE_REF="$(registry_image_ref "${BASE_NAME}" "${BASE_IMAGE_TAG}")"
+  BASE_IMAGE_REF="$(registry_image_ref "${BASE_IMAGE_NAME}" "${BASE_IMAGE_TAG}")"
   docker pull "${BASE_IMAGE_REF}"
 fi
 
@@ -35,7 +35,7 @@ container_id="$(
       pytest -q \
         sre_agent/tests/test_start_frontend_backend.py \
         fault_injector/tests/unit/features/scenarios/test_scenarios.py
-      python -m fault_injector list-scenarios >/tmp/fault-scenarios.txt
+      python -m fault_injector list-scenarios >/tmp/fault-scenarios.txt 2>&1
       grep -q "rdma_link_flap" /tmp/fault-scenarios.txt
     '
 )"

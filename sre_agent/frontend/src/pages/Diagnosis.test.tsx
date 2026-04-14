@@ -122,6 +122,7 @@ function resetDiagnosisStore(overrides: Partial<ReturnType<typeof useDiagnosisSt
     planMissingReason: undefined,
     effectiveReviseInstruction: undefined,
     liveThinking: null,
+    liveFinalAnswer: null,
     streamingText: "",
     streamingNode: null,
     isStreamingDiagnosis: false,
@@ -252,7 +253,7 @@ describe("DiagnosisPage sequential playback", () => {
     expect(container.querySelectorAll(".diagnosis-workspace-message-row")).toHaveLength(3);
   });
 
-  it("collapses finished thinking into a unified Thought for x seconds label", async () => {
+  it("collapses finished thinking into a unified 思考完成（Xs） label", async () => {
     mockedBuildDemoScenario.mockReturnValue({
       initialTimeline: [
         {
@@ -294,11 +295,11 @@ describe("DiagnosisPage sequential playback", () => {
 
     await flushPendingTimers();
 
-    expect(screen.getByText(/Thought for \d+ seconds?/i)).toBeInTheDocument();
+    expect(screen.getByText(/思考完成（\d+s）/)).toBeInTheDocument();
     expect(screen.queryByText("Agent is understanding the request")).not.toBeInTheDocument();
   });
 
-  it("keeps live completed thinking expanded and avoids local thought-duration estimation", async () => {
+  it("collapses live completed thinking by default and avoids local thought-duration estimation", async () => {
     let timelineSource: DiagnosisTimelineItem[] = [
       {
         id: "live-thinking-no-duration",
@@ -329,12 +330,17 @@ describe("DiagnosisPage sequential playback", () => {
     renderLivePage("/diagnosis/sess-live-thinking-no-duration");
     await advance(120);
 
-    expect(screen.getByText("Thought completed")).toBeInTheDocument();
-    expect(screen.queryByText(/Thought for \d+ seconds?/i)).not.toBeInTheDocument();
+    expect(screen.getByText("思考完成")).toBeInTheDocument();
+    expect(screen.queryByText(/思考完成（\d+s）/)).not.toBeInTheDocument();
     expect(screen.getByText("Live reasoning content should remain visible.")).toBeInTheDocument();
 
-    await advance(2000);
+    await advance(1200);
 
+    expect(
+      screen.queryByText("Live reasoning content should remain visible."),
+    ).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByText("思考完成"));
     expect(screen.getByText("Live reasoning content should remain visible.")).toBeInTheDocument();
   });
 
@@ -1141,9 +1147,49 @@ describe("DiagnosisPage status badges", () => {
     renderLivePage("/diagnosis/sess-live-stream");
 
     expect(screen.queryByText("Live stream")).not.toBeInTheDocument();
-    expect(screen.getByText("Thinking...")).toBeInTheDocument();
+    expect(screen.getByText("思考中")).toBeInTheDocument();
     expect(screen.getByText(/partial token output/)).toBeInTheDocument();
-    expect(screen.getByText("query_metrics")).toBeInTheDocument();
+    expect(screen.getAllByText("query_metrics").length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("renders live final answer content from backend content tokens", () => {
+    mockedBuildLiveView.mockImplementation((_session, _messages, _events, _localAuditRecords, _liveThinking, liveFinalAnswer) => ({
+      timeline: liveFinalAnswer
+        ? [
+            {
+              id: liveFinalAnswer.id,
+              kind: "message",
+              role: "assistant",
+              content: liveFinalAnswer.content,
+              timestamp: liveFinalAnswer.timestamp,
+              label: liveFinalAnswer.status === "streaming" ? "诊断结论生成中" : "诊断结论",
+            },
+          ]
+        : [],
+      candidates: [],
+      summary: undefined,
+      plan: undefined,
+    }));
+
+    resetDiagnosisStore({
+      session: createLiveSession("sess-live-final"),
+      activeSessionId: "sess-live-final",
+      bootstrapStatus: "ready",
+      traceStatus: "ready",
+      isStreamingDiagnosis: true,
+      liveFinalAnswer: {
+        id: "live-final-sess-live-final",
+        timestamp: "2026-04-08T10:21:01.000Z",
+        content: "诊断结论：Node contention。",
+        status: "streaming",
+      },
+      messages: [],
+      bootstrapSession: vi.fn().mockResolvedValue(undefined),
+    });
+
+    renderLivePage("/diagnosis/sess-live-final");
+
+    expect(screen.getByText("诊断结论：Node contention。")).toBeInTheDocument();
   });
 
   it("keeps the demo badge without live business fields", () => {

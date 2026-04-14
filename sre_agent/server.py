@@ -970,6 +970,8 @@ class StreamingDiagnosisRunner:
         final_session_id: str | None = None
         final_state: dict[str, Any] = {}
         final_trace_items: list[dict[str, Any]] = []
+        buffered_done_event: dict[str, Any] | None = None
+        emitted_event_types: set[str] = set()
 
         async for event in run_diagnosis_stream(
             query=query,
@@ -986,6 +988,11 @@ class StreamingDiagnosisRunner:
             if final_session_id is None:
                 final_session_id = event.get("session_id")
 
+            event_type = str(event.get("type", "")).strip().lower()
+            if event_type == EventType.DONE.value:
+                buffered_done_event = dict(event) if isinstance(event, dict) else None
+                continue
+
             # Track state from node_completed events for session persistence.
             if event.get("type") == "node_completed" and isinstance(event.get("data"), dict):
                 data = event["data"]
@@ -997,6 +1004,8 @@ class StreamingDiagnosisRunner:
                     final_state["status"] = data["status"]
                 if data.get("step_count") is not None:
                     final_state["step_count"] = data["step_count"]
+                if data.get("plan_missing_reason") is not None:
+                    final_state["plan_missing_reason"] = data["plan_missing_reason"]
                 raw_trace_items = data.get("new_trace_items")
                 if isinstance(raw_trace_items, list):
                     for raw_item in raw_trace_items:
@@ -1016,13 +1025,13 @@ class StreamingDiagnosisRunner:
                 EventType.TOOL_STARTED.value,
                 EventType.TOOL_COMPLETED.value,
                 EventType.ERROR.value,
-                "done",
             }:
                 try:
                     await self._trace_publisher.publish(event)
                 except Exception:  # noqa: BLE001
                     pass
 
+            emitted_event_types.add(event_type)
             yield event
 
         # Persist the completed session.
@@ -1033,10 +1042,70 @@ class StreamingDiagnosisRunner:
                 final_state["trace_items"] = final_trace_items
             completed = _diagnosis_session_from_state(alert=enriched_alert, state=final_state)
             completed = completed.model_copy(update={"session_id": final_session_id})
-            self._session_store.put(completed)
             plan = self._extract_recommended_fix(completed)
             if plan is not None:
                 self._remediation_engine.register_plan(final_session_id, plan)
+                completed = completed.model_copy(update={"status": "approval_required"})
+            elif completed.status == "diagnosing":
+                completed = completed.model_copy(update={"status": "diagnosed"})
+            self._session_store.put(completed)
+
+            supplemental_events: list[dict[str, Any]] = []
+            if completed.diagnosis_result is not None and EventType.DIAGNOSIS_RESULT.value not in emitted_event_types:
+                supplemental_events.append(
+                    {
+                        "type": EventType.DIAGNOSIS_RESULT.value,
+                        "session_id": final_session_id,
+                        "data": completed.diagnosis_result.model_dump(mode="json"),
+                    }
+                )
+            if plan is not None and EventType.APPROVAL_REQUIRED.value not in emitted_event_types:
+                plan_version = self._remediation_engine.get_latest_plan_version(final_session_id)
+                supplemental_events.append(
+                    {
+                        "type": EventType.APPROVAL_REQUIRED.value,
+                        "session_id": final_session_id,
+                        "data": {
+                            "plan_id": plan.plan_id,
+                            "plan_version": plan_version,
+                        },
+                    }
+                )
+            if plan is None:
+                supplemental_events.append(
+                    {
+                        "type": EventType.REMEDIATION_PROGRESS.value,
+                        "session_id": final_session_id,
+                        "data": {
+                            "stage": "plan_unavailable",
+                            "message": self._build_plan_unavailable_reason(
+                                completed,
+                                final_state.get("plan_missing_reason"),
+                            ),
+                        },
+                    }
+                )
+
+            for supplemental in supplemental_events:
+                emitted_event_types.add(str(supplemental.get("type", "")).strip().lower())
+                try:
+                    await self._trace_publisher.publish(supplemental)
+                except Exception:  # noqa: BLE001
+                    pass
+                yield supplemental
+
+        done_event = buffered_done_event or {
+            "type": EventType.DONE.value,
+            "session_id": final_session_id or "",
+            "data": {},
+        }
+        if final_session_id and not str(done_event.get("session_id", "")).strip():
+            done_event = {**done_event, "session_id": final_session_id}
+        try:
+            await self._trace_publisher.publish(done_event)
+        except Exception:  # noqa: BLE001
+            pass
+        yield done_event
 
     @staticmethod
     def _trace_item_from_stream_snapshot(item: dict[str, Any]) -> dict[str, Any] | None:
@@ -1084,6 +1153,22 @@ class StreamingDiagnosisRunner:
             if candidate.recommended_fix is not None:
                 return candidate.recommended_fix
         return None
+
+    @staticmethod
+    def _build_plan_unavailable_reason(session: DiagnosisSession, explicit_reason: Any = None) -> str:
+        explicit = str(explicit_reason or "").strip()
+        if explicit:
+            return explicit
+        diagnosis = session.diagnosis_result
+        if diagnosis is None:
+            return "诊断已结束，但未产出可审批修复计划。"
+        certainty = str(diagnosis.diagnosis_certainty or "").strip().lower()
+        if certainty == "ambiguous":
+            return "诊断结论仍不确定，暂不自动生成修复方案，请先人工确认主根因。"
+        confidence = float(diagnosis.confidence or 0.0)
+        if confidence < 0.55:
+            return f"当前置信度 {confidence:.2f} 偏低，暂不自动生成修复方案，请先补充证据。"
+        return "当前诊断未形成满足执行约束的修复计划（可能缺少可用写工具或关键参数）。"
 
 
 class DefaultReDiagnoseRunner:

@@ -171,6 +171,13 @@ export type LiveThinkingBlock = {
   active_tools: StreamingToolCall[];
 };
 
+export type LiveFinalAnswerBlock = {
+  id: string;
+  timestamp: string;
+  content: string;
+  status: "streaming" | "completed";
+};
+
 export type Observation = {
   tool: string;
   params: Record<string, unknown>;

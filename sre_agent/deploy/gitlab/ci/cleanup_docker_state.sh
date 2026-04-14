@@ -15,29 +15,54 @@ cutoff_epoch="$(( $(date +%s) - 7 * 24 * 3600 ))"
 managed_label="com.cube_studio.sre_agent.ci.managed=true"
 branch_label="com.cube_studio.sre_agent.ci.branch=${SRE_CI_BRANCH:-feature/sre-c-core-infra}"
 
-while read -r container_id; do
-  [ -n "${container_id}" ] || continue
-  created_epoch="$(
-    docker inspect --format '{{.Created}}' "${container_id}" \
-      | xargs -I{} date -d "{}" +%s
-  )"
-  expires_at_epoch="$(docker inspect --format '{{ index .Config.Labels "com.cube_studio.sre_agent.ci.expires_at" }}' "${container_id}" 2>/dev/null || true)"
-  if [ -n "${expires_at_epoch}" ] && [ "${expires_at_epoch}" -lt "$(date +%s)" ]; then
-    log "removing expired preview container ${container_id}"
+cleanup_preview_containers_for_kind() {
+  local kind="$1"
+  local keep_count="$2"
+  local ranked_ids=()
+  local ranked_id=""
+  while read -r ranked_id; do
+    [ -n "${ranked_id}" ] || continue
+    ranked_ids+=("${ranked_id}")
+  done < <(
+    docker ps -a \
+      --filter "label=${managed_label}" \
+      --filter "label=com.cube_studio.sre_agent.ci.kind=${kind}" \
+      --filter "label=${branch_label}" \
+      --format '{{.ID}} {{.CreatedAt}}' \
+      | while read -r container_id created_at_1 created_at_2 created_at_3 created_at_4 created_at_5; do
+          [ -n "${container_id}" ] || continue
+          created_epoch="$(date -d "${created_at_1} ${created_at_2} ${created_at_3} ${created_at_4} ${created_at_5}" +%s 2>/dev/null || true)"
+          [ -n "${created_epoch}" ] || continue
+          echo "${created_epoch} ${container_id}"
+        done \
+      | sort -nr \
+      | awk '{print $2}'
+  )
+
+  local now_epoch
+  now_epoch="$(date +%s)"
+  local index=0
+  local container_id=""
+  local expires_at_epoch=""
+  for container_id in "${ranked_ids[@]}"; do
+    index=$((index + 1))
+    expires_at_epoch="$(docker inspect --format '{{ index .Config.Labels "com.cube_studio.sre_agent.ci.expires_at" }}' "${container_id}" 2>/dev/null || true)"
+    if [ -n "${expires_at_epoch}" ] && [ "${expires_at_epoch}" -lt "${now_epoch}" ]; then
+      log "removing expired ${kind} container ${container_id}"
+      docker rm -f "${container_id}" >/dev/null 2>&1 || true
+      continue
+    fi
+    if [ "${index}" -le "${keep_count}" ]; then
+      log "preserving ${kind} container ${container_id}"
+      continue
+    fi
+    log "removing stale ${kind} container ${container_id}"
     docker rm -f "${container_id}" >/dev/null 2>&1 || true
-    continue
-  fi
-  if [ "${created_epoch}" -lt "${cutoff_epoch}" ]; then
-    log "removing preview container ${container_id}"
-    docker rm -f "${container_id}" >/dev/null 2>&1 || true
-  fi
-done < <(
-  docker ps -a \
-    --filter "label=${managed_label}" \
-    --filter "label=com.cube_studio.sre_agent.ci.kind=preview" \
-    --filter "label=${branch_label}" \
-    --format '{{.ID}}'
-)
+  done
+}
+
+cleanup_preview_containers_for_kind preview "${PREVIEW_KEEP_RECENT_COUNT:-3}"
+cleanup_preview_containers_for_kind weekly-preview "${WEEKLY_PREVIEW_KEEP_RECENT_COUNT:-1}"
 
 preserve_latest_image_id() {
   local role="$1"

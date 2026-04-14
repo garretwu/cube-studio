@@ -1,8 +1,52 @@
 ﻿import { http, HttpResponse } from "msw";
 import { describe, expect, it } from "vitest";
 
-import { apiClient } from "./client";
+import { apiClient, streamDiagnosis } from "./client";
 import { server } from "../test/server";
+
+const streamAlert = {
+  alert_name: "LatencyHigh",
+  severity: "warning" as const,
+  labels: { service: "auth-svc" },
+  annotations: {},
+  starts_at: "2026-03-26T00:00:00Z",
+  fingerprint: "fp-stream",
+  status: "firing" as const,
+};
+
+describe("streamDiagnosis", () => {
+  it("passes through token semantic fields from SSE events", async () => {
+    server.use(
+      http.post("/api/diagnose/stream", async () =>
+        HttpResponse.text(
+          [
+            "event: token_delta",
+            'data: {"type":"token_delta","session_id":"sess-stream","data":{"content":"诊断结论","stream_channel":"content","phase":"final"}}',
+            "",
+            "event: done",
+            'data: {"type":"done","session_id":"sess-stream","data":{}}',
+            "",
+          ].join("\n"),
+          { headers: { "Content-Type": "text/event-stream" } },
+        ),
+      ),
+    );
+
+    const events: Array<{ type: string; session_id?: string; data?: Record<string, unknown> }> = [];
+    await streamDiagnosis(streamAlert, [], (event) => events.push(event));
+
+    expect(events[0]).toMatchObject({
+      type: "token_delta",
+      session_id: "sess-stream",
+      data: {
+        content: "诊断结论",
+        stream_channel: "content",
+        phase: "final",
+      },
+    });
+    expect(events[1]).toMatchObject({ type: "done", session_id: "sess-stream" });
+  });
+});
 
 describe("apiClient.getTopology", () => {
   it("unwraps SREResponse topology payloads", async () => {

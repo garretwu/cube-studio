@@ -10,7 +10,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage, messages_to_dict
+from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage, SystemMessage, ToolMessage, message_chunk_to_message, messages_to_dict
 from pydantic import BaseModel, Field
 
 from sre_agent.agent.checkpoint import persist_state_snapshot
@@ -180,6 +180,41 @@ def _log_llm_interaction(
         _llm_logger.exception("Failed to log LLM interaction")
 
 
+async def _invoke_llm_message(llm: Any, messages: list[Any], *, timeout: float) -> AIMessage:
+    async def _run() -> AIMessage:
+        stream = getattr(llm, "astream", None)
+        if callable(stream):
+            accumulated: AIMessageChunk | None = None
+            fallback_text_parts: list[str] = []
+            async for chunk in stream(messages):
+                if isinstance(chunk, AIMessage):
+                    return chunk
+                if isinstance(chunk, AIMessageChunk):
+                    accumulated = chunk if accumulated is None else accumulated + chunk
+                    continue
+                text = _extract_text(getattr(chunk, "content", chunk))
+                if text:
+                    fallback_text_parts.append(text)
+
+            if accumulated is not None:
+                message = message_chunk_to_message(accumulated)
+                if isinstance(message, AIMessage):
+                    return message
+                return AIMessage(content=_extract_text(getattr(message, "content", message)))
+            if fallback_text_parts:
+                return AIMessage(content="".join(fallback_text_parts))
+
+        invoke = getattr(llm, "ainvoke", None)
+        if not callable(invoke):
+            raise RuntimeError(f"LLM object {type(llm).__name__} does not support ainvoke or astream")
+        response = await invoke(messages)
+        if not isinstance(response, AIMessage):
+            raise RuntimeError(f"expected AIMessage from LLM, got {type(response).__name__}")
+        return response
+
+    return await asyncio.wait_for(_run(), timeout=timeout)
+
+
 async def reason_node(
     state: SREAgentState,
     *,
@@ -212,8 +247,9 @@ async def reason_node(
     final_turn = bool(state.get("force_final_turn", False)) or (
         bool(state.get("tool_runs")) and state.get("step_count", 0) >= max(state.get("max_steps", 10) - 1, 1)
     )
+    llm_supports_message_invocation = hasattr(llm, "ainvoke") or hasattr(llm, "astream")
     interaction_mode = "final_json" if final_turn else "tool_bound"
-    if final_turn and hasattr(llm, "ainvoke"):
+    if final_turn and llm_supports_message_invocation:
         invoked_messages, prompt_metadata, overflow_failed = _prepare_reason_prompt_messages_for_invocation(
             system_prompt=system_prompt,
             state=state,
@@ -230,7 +266,7 @@ async def reason_node(
                 tool_choice="none",
             )
         tool_choice = "none"
-        response = await asyncio.wait_for(llm.ainvoke(invoked_messages), timeout=state["step_timeout_sec"])
+        response = await _invoke_llm_message(llm, invoked_messages, timeout=state["step_timeout_sec"])
     else:
         invoked_messages, prompt_metadata, overflow_failed = _prepare_reason_prompt_messages_for_invocation(
             system_prompt=system_prompt,
@@ -248,7 +284,7 @@ async def reason_node(
                 tool_choice=tool_choice,
             )
         bound_tools = registry.get_langchain_tools(
-            tool_names=state.get("allowed_tool_names"),
+            tool_names=_select_bound_tool_names_for_turn(state),
         )
         bound_tool_names = [str(getattr(tool, "name", "")) for tool in bound_tools]
         tool_choice = "required" if not state.get("tool_runs") else "auto"
@@ -257,9 +293,9 @@ async def reason_node(
                 bound_tools,
                 tool_choice=tool_choice,
             )
-            response = await asyncio.wait_for(call_model.ainvoke(invoked_messages), timeout=state["step_timeout_sec"])
+            response = await _invoke_llm_message(call_model, invoked_messages, timeout=state["step_timeout_sec"])
         except Exception as exc:  # noqa: BLE001
-            if hasattr(llm, "ainvoke") and _is_reason_prompt_empty_error(exc):
+            if llm_supports_message_invocation and _is_reason_prompt_empty_error(exc):
                 invoked_messages, prompt_metadata, overflow_failed = _prepare_reason_prompt_messages_for_invocation(
                     system_prompt=system_prompt,
                     state=state,
@@ -285,10 +321,10 @@ async def reason_node(
                         bound_tools,
                         tool_choice=tool_choice,
                     )
-                    response = await asyncio.wait_for(call_model.ainvoke(invoked_messages), timeout=state["step_timeout_sec"])
+                    response = await _invoke_llm_message(call_model, invoked_messages, timeout=state["step_timeout_sec"])
                 except Exception as retry_exc:  # noqa: BLE001
                     exc = retry_exc
-            if not hasattr(llm, "ainvoke") or not (
+            if not llm_supports_message_invocation or not (
                 _is_tool_binding_incompatible_error(exc) or _is_reason_prompt_empty_error(exc)
             ):
                 raise
@@ -311,14 +347,21 @@ async def reason_node(
                     interaction_mode=interaction_mode,
                     tool_choice=tool_choice,
                 )
-            response = await asyncio.wait_for(llm.ainvoke(invoked_messages), timeout=state["step_timeout_sec"])
+            response = await _invoke_llm_message(llm, invoked_messages, timeout=state["step_timeout_sec"])
     if not isinstance(response, AIMessage):
         raise RuntimeError(f"expected AIMessage from LLM, got {type(response).__name__}")
 
     updated_messages = [*messages, response]
     updated_trace = list(state.get("trace_items", []))
     updated_interactions = list(state.get("llm_interactions", []))
-    pending_tool_calls = list(response.tool_calls or [])
+    pending_tool_calls = _auto_load_high_score_skill(
+        state,
+        list(response.tool_calls or []),
+    )
+    pending_tool_calls = _auto_run_single_script_skill(
+        state,
+        pending_tool_calls,
+    )
     raw_response_text = _extract_text(response.content)
     step_index = state.get("step_count", 0) + 1
 
@@ -421,9 +464,9 @@ async def reason_node(
         corrected_payload: dict[str, Any] | None = None
         corrected_remediation_plan: dict[str, Any] | None = None
         corrected_thought = ""
-        if hasattr(llm, "ainvoke"):
+        if llm_supports_message_invocation:
             try:
-                retry_response = await asyncio.wait_for(llm.ainvoke(correction_messages), timeout=state["step_timeout_sec"])
+                retry_response = await _invoke_llm_message(llm, correction_messages, timeout=state["step_timeout_sec"])
                 if isinstance(retry_response, AIMessage):
                     correction_response = retry_response
                     correction_raw_response_text = _extract_text(retry_response.content)
@@ -450,7 +493,7 @@ async def reason_node(
             prompt_metadata={
                 "evidence_signals": _safe_jsonable(evidence_signals),
                 "correction_error": correction_error or None,
-                "provider_invocation_skipped": not hasattr(llm, "ainvoke"),
+                "provider_invocation_skipped": not llm_supports_message_invocation,
             },
         )
         updated_interactions.append(
@@ -465,7 +508,7 @@ async def reason_node(
                 "prompt_metadata": {
                     "evidence_signals": _safe_jsonable(evidence_signals),
                     "correction_error": correction_error or None,
-                    "provider_invocation_skipped": not hasattr(llm, "ainvoke"),
+                    "provider_invocation_skipped": not llm_supports_message_invocation,
                 },
                 "response_message": messages_to_dict([correction_response])[0] if correction_response is not None else None,
                 "raw_response_text": correction_raw_response_text,
@@ -498,6 +541,89 @@ async def reason_node(
         tool_runs=list(state.get("tool_runs", []) or []),
         variables=dict(state.get("variables", {}) or {}),
     )
+    plan_missing_reason: str | None = None
+    if remediation_plan is None:
+        plan_completion_messages = _build_plan_completion_messages(
+            system_prompt=system_prompt,
+            query=str(state.get("query", "") or "").strip(),
+            diagnosis_payload=diagnosis_payload,
+            tool_runs=list(state.get("tool_runs", []) or []),
+        )
+        plan_completion_stats = _build_prompt_message_stats(plan_completion_messages)
+        plan_completion_response: AIMessage | None = None
+        plan_completion_raw_response_text = ""
+        plan_completion_error = ""
+        completion_raw_plan: dict[str, Any] | None = None
+
+        if llm_supports_message_invocation:
+            try:
+                retry_response = await _invoke_llm_message(llm, plan_completion_messages, timeout=state["step_timeout_sec"])
+                if isinstance(retry_response, AIMessage):
+                    plan_completion_response = retry_response
+                    plan_completion_raw_response_text = _extract_text(retry_response.content)
+                    completion_parsed = _parse_reasoning_output(plan_completion_raw_response_text)
+                    completion_raw_plan = completion_parsed.remediation_plan
+                else:
+                    plan_completion_raw_response_text = _extract_text(getattr(retry_response, "content", retry_response))
+            except Exception as exc:  # noqa: BLE001
+                plan_completion_error = _normalized_exception_message(exc)
+
+        _log_llm_interaction(
+            session_id=str(state.get("session_id", "unknown")),
+            step=step_index,
+            prompt_messages=plan_completion_messages,
+            response=plan_completion_response,
+            mode="plan_completion_retry",
+            tool_choice="none",
+            tool_calls=[],
+            prompt_message_stats=plan_completion_stats,
+            prompt_fallback_used=False,
+            prompt_metadata={
+                "top_candidate": _safe_jsonable(_select_top_ranked_candidate(diagnosis_payload) or {}),
+                "provider_invocation_skipped": not llm_supports_message_invocation,
+                "plan_completion_error": plan_completion_error or None,
+            },
+        )
+        updated_interactions.append(
+            {
+                "step": step_index,
+                "mode": "plan_completion_retry",
+                "tool_choice": "none",
+                "bound_tool_names": [],
+                "prompt_messages": messages_to_dict(plan_completion_messages),
+                "prompt_message_stats": plan_completion_stats,
+                "prompt_fallback_used": False,
+                "prompt_metadata": {
+                    "top_candidate": _safe_jsonable(_select_top_ranked_candidate(diagnosis_payload) or {}),
+                    "provider_invocation_skipped": not llm_supports_message_invocation,
+                    "plan_completion_error": plan_completion_error or None,
+                },
+                "response_message": messages_to_dict([plan_completion_response])[0] if plan_completion_response is not None else None,
+                "raw_response_text": plan_completion_raw_response_text,
+                "tool_calls": [],
+            }
+        )
+
+        if completion_raw_plan is not None:
+            remediation_plan = _normalize_remediation_plan_payload(
+                raw_plan=completion_raw_plan,
+                diagnosis=diagnosis,
+                session_id=str(state.get("session_id", "")),
+                registry=registry,
+                tool_runs=list(state.get("tool_runs", []) or []),
+                variables=dict(state.get("variables", {}) or {}),
+            )
+            if remediation_plan is not None:
+                diagnosis = diagnosis.model_copy(update={"recommended_fix": remediation_plan})
+                final_thought = f"{final_thought}\n已基于主根因补全 proposal-only 修复方案，等待人工审批。"
+            else:
+                plan_missing_reason = "诊断已完成，但自动补全修复方案未通过参数/安全校验。"
+        else:
+            if plan_completion_error:
+                plan_missing_reason = f"诊断已完成，但自动补全修复方案失败：{plan_completion_error}"
+            else:
+                plan_missing_reason = "诊断已完成，但模型未返回可执行修复方案。"
+
     if remediation_plan is not None:
         diagnosis = diagnosis.model_copy(update={"recommended_fix": remediation_plan})
     updated_trace.append(
@@ -523,6 +649,7 @@ async def reason_node(
         "error": None,
         "evidence_signals": evidence_signals,
         "force_final_turn": False,
+        "plan_missing_reason": plan_missing_reason,
     }
     persist_state_snapshot(updated.get("checkpoint_dir"), updated["session_id"], "reason", updated)
     return updated
@@ -565,6 +692,180 @@ def _normalize_positive_int(value: Any, *, default: int, minimum: int) -> int:
     if parsed < minimum:
         return minimum
     return parsed
+
+
+def _select_bound_tool_names_for_turn(state: SREAgentState) -> list[str] | None:
+    allowed_tool_names = state.get("allowed_tool_names")
+    if not allowed_tool_names:
+        return None
+
+    names = [str(name).strip() for name in allowed_tool_names if str(name).strip()]
+    if not names:
+        return None
+
+    if not state.get("tool_runs"):
+        skill_names = [name for name in names if name.startswith("skills.")]
+        if skill_names:
+            return skill_names
+    return names
+
+
+def _find_latest_successful_skill_listing(tool_runs: list[dict[str, Any]]) -> dict[str, Any] | None:
+    for run in reversed(tool_runs):
+        if not isinstance(run, dict):
+            continue
+        if str(run.get("tool", "")).strip() != "skills.list_skills":
+            continue
+        if not bool(run.get("success", False)):
+            continue
+        data = run.get("data")
+        if not isinstance(data, dict):
+            continue
+        skills = data.get("skills")
+        if isinstance(skills, list) and skills:
+            return run
+    return None
+
+
+_AUTO_LOAD_SKILL_MATCH_THRESHOLD = 0.6
+
+
+def _choose_skill_id_to_load_from_listing(listing_run: dict[str, Any], tool_runs: list[dict[str, Any]]) -> str:
+    data = listing_run.get("data")
+    if not isinstance(data, dict):
+        return ""
+    skills = data.get("skills")
+    if not isinstance(skills, list):
+        return ""
+
+    attempted = {
+        str((run.get("params") or {}).get("skill_id") or "").strip()
+        for run in tool_runs
+        if isinstance(run, dict) and str(run.get("tool", "")).strip() == "skills.load_skill"
+    }
+
+    for item in skills:
+        if not isinstance(item, dict):
+            continue
+        skill_id = str(item.get("skill_id") or "").strip()
+        if not skill_id or skill_id in attempted:
+            continue
+        try:
+            match_score = float(item.get("match_score", 0.0) or 0.0)
+        except Exception:  # noqa: BLE001
+            match_score = 0.0
+        if match_score < _AUTO_LOAD_SKILL_MATCH_THRESHOLD:
+            continue
+        return skill_id
+    return ""
+
+
+def _auto_load_high_score_skill(
+    state: SREAgentState,
+    pending_tool_calls: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    if any(
+        str(call.get("name", "")).strip() in {"skills.load_skill", "skills.read_skill_ref", "skills.run_skill"}
+        for call in pending_tool_calls
+        if isinstance(call, dict)
+    ):
+        return pending_tool_calls
+
+    tool_runs = [dict(item) for item in list(state.get("tool_runs", []) or []) if isinstance(item, dict)]
+    latest_listing = _find_latest_successful_skill_listing(tool_runs)
+    if latest_listing is None:
+        return pending_tool_calls
+
+    skill_id = _choose_skill_id_to_load_from_listing(latest_listing, tool_runs)
+    if not skill_id:
+        return pending_tool_calls
+
+    call_id = ""
+    if pending_tool_calls:
+        call_id = str((pending_tool_calls[0] or {}).get("id", "")).strip()
+    call_id = call_id or "call-skill-load"
+    return [
+        {
+            "name": "skills.load_skill",
+            "args": {"skill_id": skill_id},
+            "id": call_id,
+            "type": "tool_call",
+        }
+    ]
+
+
+def _find_latest_successful_skill_load(tool_runs: list[dict[str, Any]]) -> dict[str, Any] | None:
+    for run in reversed(tool_runs):
+        if not isinstance(run, dict):
+            continue
+        if str(run.get("tool", "")).strip() != "skills.load_skill":
+            continue
+        if not bool(run.get("success", False)):
+            continue
+        data = run.get("data")
+        if isinstance(data, dict):
+            return run
+    return None
+
+
+def _choose_skill_script_to_run(load_run: dict[str, Any], tool_runs: list[dict[str, Any]]) -> tuple[str, str]:
+    data = load_run.get("data")
+    if not isinstance(data, dict):
+        return "", ""
+
+    skill_id = str(data.get("skill_id") or "").strip() or str((load_run.get("params") or {}).get("skill_id") or "").strip()
+    scripts = data.get("scripts")
+    if not skill_id or not isinstance(scripts, list) or len(scripts) != 1:
+        return "", ""
+
+    script = str(scripts[0] or "").strip()
+    if not script:
+        return "", ""
+
+    already_ran = any(
+        isinstance(run, dict)
+        and str(run.get("tool", "")).strip() == "skills.run_skill"
+        and str((run.get("params") or {}).get("skill_id") or "").strip() == skill_id
+        and str((run.get("params") or {}).get("script") or "").strip() == script
+        for run in tool_runs
+    )
+    if already_ran:
+        return "", ""
+    return skill_id, script
+
+
+def _auto_run_single_script_skill(
+    state: SREAgentState,
+    pending_tool_calls: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    if any(
+        str(call.get("name", "")).strip() in {"skills.read_skill_ref", "skills.run_skill"}
+        for call in pending_tool_calls
+        if isinstance(call, dict)
+    ):
+        return pending_tool_calls
+
+    tool_runs = [dict(item) for item in list(state.get("tool_runs", []) or []) if isinstance(item, dict)]
+    latest_load = _find_latest_successful_skill_load(tool_runs)
+    if latest_load is None:
+        return pending_tool_calls
+
+    skill_id, script = _choose_skill_script_to_run(latest_load, tool_runs)
+    if not skill_id or not script:
+        return pending_tool_calls
+
+    call_id = ""
+    if pending_tool_calls:
+        call_id = str((pending_tool_calls[0] or {}).get("id", "")).strip()
+    call_id = call_id or "call-skill-run"
+    return [
+        {
+            "name": "skills.run_skill",
+            "args": {"skill_id": skill_id, "script": script},
+            "id": call_id,
+            "type": "tool_call",
+        }
+    ]
 
 
 def _is_minimax_m27_family(model_family: str | None) -> bool:
@@ -1775,6 +2076,50 @@ def _build_tc_consistency_retry_messages(
     ]
 
 
+def _select_top_ranked_candidate(diagnosis_payload: dict[str, Any]) -> dict[str, Any] | None:
+    raw_candidates = diagnosis_payload.get("ranked_candidates")
+    if not isinstance(raw_candidates, list):
+        return None
+    candidates = [item for item in raw_candidates if isinstance(item, dict)]
+    if not candidates:
+        return None
+    candidates.sort(key=lambda item: int(item.get("rank", 9999) or 9999))
+    return candidates[0]
+
+
+def _build_plan_completion_messages(
+    *,
+    system_prompt: str,
+    query: str,
+    diagnosis_payload: dict[str, Any],
+    tool_runs: list[dict[str, Any]],
+) -> list[Any]:
+    top_candidate = _select_top_ranked_candidate(diagnosis_payload) or {}
+    root_cause = str(top_candidate.get("root_cause") or diagnosis_payload.get("root_cause") or "").strip()
+    root_layer = str(top_candidate.get("root_cause_layer") or diagnosis_payload.get("root_cause_layer") or "").strip()
+    confidence = top_candidate.get("confidence", diagnosis_payload.get("confidence"))
+    prompt_lines = [
+        "Plan completion request:",
+        f"query={query or '<empty>'}",
+        f"root_cause={root_cause or '<unknown>'}",
+        f"root_cause_layer={root_layer or '<unknown>'}",
+        f"confidence={confidence if confidence is not None else '<unknown>'}",
+        f"diagnosis={_json_line(diagnosis_payload)}",
+        f"tool_evidence={_json_line(tool_runs[-5:]) if tool_runs else 'none'}",
+        "",
+        "Rules:",
+        "- Keep diagnosis unchanged; only complete remediation_plan.",
+        "- Prefer one conservative proposal-only step first.",
+        "- Use a real write-tool name from schema and include all required params.",
+        "- If no safe executable proposal can be formed, set remediation_plan to null.",
+        "- Return JSON only with keys: thought, diagnosis, remediation_plan.",
+    ]
+    return [
+        SystemMessage(content=system_prompt),
+        HumanMessage(content="\n".join(prompt_lines)),
+    ]
+
+
 def _build_tc_fallback_diagnosis_payload(
     *,
     original: dict[str, Any],
@@ -2195,23 +2540,38 @@ async def act_node(
         default=1200,
         minimum=200,
     )
+    allowed_tool_names_for_turn = set(_select_bound_tool_names_for_turn(state) or [])
     observation_entries: list[dict[str, Any]] = []
     for tool_call in pending:
         tool_name = str(tool_call.get("name", "")).strip()
-        raw_tool_args = tool_call.get("args", {})
-        tool_args = _merge_tool_args(
-            registry=registry,
-            tool_name=tool_name,
-            tool_args=raw_tool_args if isinstance(raw_tool_args, dict) else {},
-            variables=variables,
-        )
-        try:
-            result = await asyncio.wait_for(
-                registry.execute(tool_name, tool_args, context),
-                timeout=state["step_timeout_sec"],
+        if allowed_tool_names_for_turn and tool_name not in allowed_tool_names_for_turn:
+            result = ToolResult(
+                tool=tool_name,
+                success=False,
+                data=None,
+                error=(
+                    f"tool {tool_name} is not allowed in the current turn; "
+                    f"allowed tools: {sorted(allowed_tool_names_for_turn)}"
+                ),
             )
-        except asyncio.TimeoutError:
-            result = ToolResult(tool=tool_name, success=False, data=None, error=f"tool timed out after {state['step_timeout_sec']}s")
+            tool_args = raw_tool_args = tool_call.get("args", {})
+            if not isinstance(tool_args, dict):
+                tool_args = {}
+        else:
+            raw_tool_args = tool_call.get("args", {})
+            tool_args = _merge_tool_args(
+                registry=registry,
+                tool_name=tool_name,
+                tool_args=raw_tool_args if isinstance(raw_tool_args, dict) else {},
+                variables=variables,
+            )
+            try:
+                result = await asyncio.wait_for(
+                    registry.execute(tool_name, tool_args, context),
+                    timeout=state["step_timeout_sec"],
+                )
+            except asyncio.TimeoutError:
+                result = ToolResult(tool=tool_name, success=False, data=None, error=f"tool timed out after {state['step_timeout_sec']}s")
         serialized = _canonicalize_tool_run(
             {
                 "step": len(tool_runs) + 1,
@@ -2325,6 +2685,51 @@ def decide_node(state: SREAgentState) -> SREAgentState:
     return state
 
 
+def _build_step_timeout_evidence_summary(
+    tool_runs: list[dict[str, Any]],
+    *,
+    sample_limit: int = 3,
+    per_item_chars: int = 160,
+    total_chars: int = 380,
+) -> str:
+    successful_runs: list[dict[str, Any]] = []
+    for run in tool_runs:
+        if not isinstance(run, dict):
+            continue
+        if bool(run.get("success")):
+            successful_runs.append(run)
+
+    sampled_runs = successful_runs[-max(1, sample_limit) :]
+    evidence_parts: list[str] = []
+    for run in sampled_runs:
+        tool_name = str(run.get("tool", "unknown") or "").strip() or "unknown"
+        prompt_summary = _truncate_prompt_note(
+            str(run.get("prompt_summary", "") or "").strip(),
+            max_chars=max(80, per_item_chars),
+        )
+        key_fields = run.get("key_fields")
+        key_summary = ""
+        if isinstance(key_fields, dict) and key_fields:
+            compact_fields = _compact_prompt_value(_safe_jsonable(key_fields))
+            key_summary = _truncate_prompt_note(
+                json.dumps(compact_fields, ensure_ascii=False, sort_keys=True),
+                max_chars=max(80, per_item_chars - 20),
+            )
+
+        if prompt_summary and key_summary:
+            evidence_parts.append(f"{tool_name}: {prompt_summary}; key={key_summary}")
+        elif prompt_summary:
+            evidence_parts.append(f"{tool_name}: {prompt_summary}")
+        elif key_summary:
+            evidence_parts.append(f"{tool_name}: key={key_summary}")
+        else:
+            evidence_parts.append(f"{tool_name}: success")
+
+    if not evidence_parts:
+        return "no successful tool evidence collected before timeout"
+    return _truncate_prompt_note("; ".join(evidence_parts), max_chars=max(120, total_chars))
+
+
 def finalize_node(state: SREAgentState) -> SREAgentState:
     trace = ThinkingTrace.from_langraph_state(state.get("trace_items", []))
     summary = state.get("summary")
@@ -2362,16 +2767,10 @@ def finalize_node(state: SREAgentState) -> SREAgentState:
     }
     # 当步骤超时且没有诊断结果时，从已收集的证据合成部分诊断
     if updated.get("status") == "step_timeout" and updated.get("diagnosis_result") is None:
-        tool_runs = updated.get("tool_runs", [])
-        skill_runs = updated.get("skill_runs", [])
-        evidence_parts: list[str] = []
-        for tr in tool_runs:
-            if tr.get("success"):
-                tool_name = tr.get("tool", "unknown")
-                data = tr.get("data")
-                if data:
-                    evidence_parts.append(f"{tool_name}: {_safe_jsonable(data)}")
-        evidence_summary = "; ".join(evidence_parts)[:500] if evidence_parts else "no tool evidence collected"
+        raw_tool_runs = updated.get("tool_runs", [])
+        tool_runs = [run for run in raw_tool_runs if isinstance(run, dict)]
+        evidence_summary = _build_step_timeout_evidence_summary(tool_runs)
+        summary_preview = _truncate_prompt_note(evidence_summary, max_chars=220)
         partial_diagnosis = {
             "root_cause": "Diagnosis timed out during analysis; partial evidence collected",
             "root_cause_layer": "service",
@@ -2385,14 +2784,14 @@ def finalize_node(state: SREAgentState) -> SREAgentState:
                 {
                     "description": "Diagnosis was interrupted by step timeout",
                     "status": "testing",
-                    "evidence_for": [evidence_summary] if evidence_parts else [],
+                    "evidence_for": [evidence_summary] if tool_runs else [],
                     "evidence_against": [],
                     "confidence": 0.45,
                 },
             ],
         }
         updated["diagnosis_result"] = partial_diagnosis
-        updated["summary"] = f"Diagnosis timed out; partial evidence: {evidence_summary[:200]}"
+        updated["summary"] = f"Diagnosis timed out; partial evidence: {summary_preview}"
     persist_state_snapshot(updated.get("checkpoint_dir"), updated["session_id"], "finalize", updated)
     return updated
 

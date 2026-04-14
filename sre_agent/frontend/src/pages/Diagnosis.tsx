@@ -75,13 +75,29 @@ function estimateThoughtDurationSecFromContent(content: string) {
 }
 
 function formatThoughtDurationLabel(durationSec?: number) {
-  if (typeof durationSec !== "number" || !Number.isFinite(durationSec) || durationSec <= 0) {
-    return "Thought completed";
+  if (
+    typeof durationSec !== "number" ||
+    !Number.isFinite(durationSec) ||
+    durationSec <= 0
+  ) {
+    return "\u601d\u8003\u5b8c\u6210";
   }
   const safeDuration = Math.max(1, Math.round(durationSec));
-  return `Thought for ${safeDuration} second${safeDuration === 1 ? "" : "s"}`;
+  return `\u601d\u8003\u5b8c\u6210\uff08${safeDuration}s\uff09`;
 }
 
+function buildThinkingSummary(content: string) {
+  const normalized = content.trim().replace(/\s+/g, " ");
+  if (!normalized) {
+    return "\u6458\u8981\uff1a\u5df2\u5b8c\u6210\u5f53\u524d\u601d\u8003\u9636\u6bb5\u3002";
+  }
+  const sentence = normalized.split(/[。！？!?]/u)[0]?.trim() ?? normalized;
+  if (!sentence) {
+    return "\u6458\u8981\uff1a\u5df2\u5b8c\u6210\u5f53\u524d\u601d\u8003\u9636\u6bb5\u3002";
+  }
+  const summary = sentence.length > 96 ? `${sentence.slice(0, 93)}...` : sentence;
+  return `\u6458\u8981\uff1a${summary}`;
+}
 function splitThinkingAndConclusion(content: string): {
   thinking: string | null;
   conclusion: string;
@@ -438,7 +454,7 @@ function ThinkingBlock({
               )}
             >
               {isThinking
-                ? "Thinking..."
+                ? "\u601d\u8003\u4e2d"
                 : formatThoughtDurationLabel(item.thoughtDurationSec)}
             </span>
           </span>
@@ -463,6 +479,10 @@ function ThinkingBlock({
               </p>
             </div>
           </div>
+        ) : !isThinking ? (
+          <p className="diagnosis-workspace-thinking__summary">
+            {buildThinkingSummary(item.content)}
+          </p>
         ) : null}
       </div>
     </article>
@@ -570,11 +590,17 @@ function RCAReportCard({
   candidates,
   hypotheses,
   propagationChain,
+  approvalCtaLabel,
+  planMissingReason,
+  onOpenApproval,
 }: {
   summary: DiagnosisSummaryView;
   candidates: DiagnosisCandidateView[];
   hypotheses?: DiagnosisHypothesisView[];
   propagationChain?: DiagnosisPropagationStepView[];
+  approvalCtaLabel?: string;
+  planMissingReason?: string;
+  onOpenApproval?: () => void;
 }) {
   const primaryCandidate = candidates[0];
   const hypothesisRows = hypotheses ?? [];
@@ -607,8 +633,23 @@ function RCAReportCard({
         <div className="diagnosis-workspace-report-card__meta">
           {summary.sessionLabel ? <span>{summary.sessionLabel}</span> : null}
           <span>{summary.updatedDateTimeLabel ?? "--"}</span>
+          {approvalCtaLabel ? (
+            <button
+              className="diagnosis-workspace-send-btn diagnosis-workspace-send-btn--secondary"
+              disabled={!onOpenApproval}
+              onClick={() => onOpenApproval?.()}
+              type="button"
+            >
+              {approvalCtaLabel}
+            </button>
+          ) : null}
         </div>
       </header>
+      {planMissingReason ? (
+        <p className="diagnosis-workspace-report-card__section-copy">
+          {"\u6682\u65e0\u53ef\u5ba1\u6279\u4fee\u590d\u8ba1\u5212\uff1a" + planMissingReason}
+        </p>
+      ) : null}
 
       <div className="diagnosis-workspace-report-card__grid">
         <div>
@@ -1329,17 +1370,20 @@ function DiagnosisPage() {
     latestPlanVersion,
     canApprove,
     approvalBlockReason,
+    planMissingReason,
     liveThinking,
+    liveFinalAnswer,
     bootstrapSession,
     sendMessage,
     approvePlan,
     applyEvent,
     setConnectionState,
+    setApprovalOverlayOpen,
   } = useDiagnosisStore();
 
   const liveView = useMemo(
-    () => buildDiagnosisLiveView(session, messages, events, localAuditRecords, liveThinking),
-    [events, liveThinking, localAuditRecords, messages, session],
+    () => buildDiagnosisLiveView(session, messages, events, localAuditRecords, liveThinking, liveFinalAnswer),
+    [events, liveFinalAnswer, liveThinking, localAuditRecords, messages, session],
   );
   const hasLiveSession =
     shouldBootstrapLiveSession &&
@@ -2189,11 +2233,17 @@ function DiagnosisPage() {
     : demoPropagationChain;
   const activeSummary = hasLiveSession ? liveView.summary : demoSummary;
   const activePlan = hasLiveSession ? liveView.plan : demoPlan;
+  const activePlanMissingReason = hasLiveSession ? planMissingReason : undefined;
   const activeApprovalStatusLabel =
     hasLiveSession && session ? formatWorkflowStatus(session.status) : "\u5f85\u5ba1\u6279";
   const approvalSurfaceOpen =
     Boolean(activePlan) &&
     (hasLiveSession ? approvalOverlayOpen : demoApprovalCardOpen);
+  const approvalCtaLabel = hasLiveSession
+    ? session?.status === "approval_required"
+      ? "\u5ba1\u6279\u4fee\u590d"
+      : "\u67e5\u770b\u5ba1\u6279"
+    : "\u67e5\u770b\u5ba1\u6279";
 
   const isFeedNearBottom = useCallback((element: HTMLDivElement) => {
     const distanceFromBottom =
@@ -2452,7 +2502,7 @@ function DiagnosisPage() {
                       !hasLiveSession && item.status === "thinking";
                     return (
                       <ThinkingBlock
-                        autoCollapseOnComplete={!hasLiveSession}
+                        autoCollapseOnComplete
                         animate={shouldAnimateThinking}
                         item={item}
                         key={item.id}
@@ -2502,7 +2552,19 @@ function DiagnosisPage() {
                   hypotheses={activeHypotheses}
                   propagationChain={activePropagationChain}
                   summary={activeSummary}
+                  approvalCtaLabel={approvalCtaLabel}
+                  onOpenApproval={
+                    hasLiveSession && activePlan
+                      ? () => setApprovalOverlayOpen(true)
+                      : undefined
+                  }
+                  planMissingReason={activePlanMissingReason}
                 />
+              ) : null}
+              {hasLiveSession && !activePlan && activePlanMissingReason ? (
+                <div className="diagnosis-workspace-inline-note diagnosis-workspace-inline-note--warning">
+                  {activePlanMissingReason}
+                </div>
               ) : null}
               </div>
             </div>
@@ -2614,5 +2676,3 @@ function DiagnosisPage() {
   );
 }
 export default DiagnosisPage;
-
-
