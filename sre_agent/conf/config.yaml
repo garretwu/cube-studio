@@ -8,19 +8,22 @@ global:
   auto_diagnose_entity_correlation_count: 2
 
 llm:
-#  api_key: "sk-sp-4d2bf2aafa0e4ba9a9839bbfef78b6e2"
-#  base_url: "https://coding.dashscope.aliyuncs.com/v1"
-#  model: "MiniMax-M2.5"
-  provider: glm
-  api_key: "904d43af670c4e87bbfdca55d502520a.wH2jArRDuTGwa6xw"
-  base_url: "https://open.bigmodel.cn/api/coding/paas/v4"
-  model: "glm-5.1"
+  api_key: "sk-sp-4d2bf2aafa0e4ba9a9839bbfef78b6e2"
+  base_url: "https://coding.dashscope.aliyuncs.com/v1"
+  model: "MiniMax-M2.5"
+
+# Another config for backup and testing, using a different model and provider to ensure flexibility and robustness of the agent.
+#  provider: glm
+#  api_key: "904d43af670c4e87bbfdca55d502520a.wH2jArRDuTGwa6xw"
+#  base_url: "https://open.bigmodel.cn/api/coding/paas/v4"
+#  model: "glm-5.1"
 
 agent:
   reasoning_context_strategy: transcript_compact
   reasoning_overflow_behavior: compact
   reasoning_input_target_tokens: 32000
-  reasoning_model_family: "glm-5.1"
+  reasoning_model_family: "MiniMax-M2.5"
+  #reasoning_model_family: "glm-5.1"
   step_timeout_sec: 240
   total_timeout_sec: 900
 
