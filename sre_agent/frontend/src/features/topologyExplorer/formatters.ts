@@ -4,8 +4,9 @@ import topologyClusterIcon from "../../assets/topology-icons/topology-cluster.sv
 import topologyGpuIcon from "../../assets/topology-icons/topology-gpu.svg";
 import topologyRackIcon from "../../assets/topology-icons/topology-rack.svg";
 import topologyServerIcon from "../../assets/topology-icons/topology-server.svg";
-import topologyServiceIcon from "../../assets/topology-icons/topology-service.svg";
+import topologyPodIcon from "../../assets/topology-icons/topology-pod.svg";
 import topologySwitchIcon from "../../assets/topology-icons/topology-switch.svg";
+import topologyServiceIcon from "../../assets/topology-icons/topology-service.svg";
 
 export function formatTopologyType(value: TopologyObject["type"]) {
   const labels: Record<TopologyObject["type"], string> = {
@@ -13,7 +14,8 @@ export function formatTopologyType(value: TopologyObject["type"]) {
     gpu: "GPU",
     node: "\u8282\u70b9",
     rack: "\u673a\u67dc",
-    service: "\u670d\u52a1",
+    service: "\u670d\u52a1\u7ec4",
+    pod: "Pod",
     switch: "\u4ea4\u6362\u673a",
     port: "\u7aef\u53e3",
     bmc: "BMC",
@@ -29,6 +31,7 @@ export function getTopologyTypeIconAsset(value: TopologyObject["type"]) {
     node: topologyServerIcon,
     rack: topologyRackIcon,
     service: topologyServiceIcon,
+    pod: topologyPodIcon,
     switch: topologySwitchIcon,
     port: topologySwitchIcon,
     bmc: topologyServerIcon,
@@ -44,6 +47,7 @@ export function getTopologyTypeIconName(value: TopologyObject["type"]): AppIconN
     node: "serverNode",
     rack: "serverRack",
     service: "servicePulse",
+    pod: "servicePulse",
     switch: "networkSwitch",
     port: "networkSwitch",
     bmc: "serverNode",
@@ -173,8 +177,8 @@ export function getNodeMetricSummary(node: TopologyObject) {
     return `\u5229\u7528\u7387 ${formatTopologyMetricValue(node.metrics.utilization)} / \u6e29\u5ea6 ${formatTopologyMetricValue(node.metrics.temperature)} C`;
   }
 
-  if (node.type === "service") {
-    return `P95 ${formatTopologyMetricValue(node.metrics.p95LatencyMs)} ms / QPS ${formatTopologyMetricValue(node.metrics.qps)}`;
+  if (node.type === "pod") {
+    return `Phase ${formatTopologyAttributeValue(node.metrics?.phase ?? node.attributes.phase)} / Restarts ${formatTopologyAttributeValue(node.metrics?.restartCount ?? node.attributes.restartCount)}`;
   }
 
   if (node.type === "switch") {

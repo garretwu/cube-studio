@@ -80,6 +80,16 @@ function getStructuralEdges(edges: TopologyRelation[]) {
 }
 
 function getPrimaryHostId(node: TopologyObject, outgoingEdges: Map<string, TopologyRelation[]>) {
+  const aggregateHostId =
+    typeof node.attributes.aggregateHostId === "string" ? node.attributes.aggregateHostId : undefined;
+  if (aggregateHostId) {
+    const serviceHostEdge = (outgoingEdges.get(aggregateHostId) ?? []).find(
+      (edge) => edge.relationType === "runs_on",
+    );
+    if (serviceHostEdge?.target) {
+      return serviceHostEdge.target;
+    }
+  }
   const hostEdge = (outgoingEdges.get(node.id) ?? []).find((edge) => edge.relationType === "runs_on");
   return hostEdge?.target ?? node.cluster ?? node.rack ?? node.domain;
 }
@@ -90,7 +100,8 @@ function getGroupKey(
   outgoingEdges: Map<string, TopologyRelation[]>,
 ) {
   if (node.layer === "service") {
-    return `service:${getPrimaryHostId(node, outgoingEdges)}:${getRawType(node)}`;
+    // Keep namespace services and their pod groups close to their compute hosts.
+    return `service:${getPrimaryHostId(node, outgoingEdges)}:${node.type}`;
   }
 
   if (node.layer === "compute") {
@@ -216,7 +227,19 @@ function sortGroupNodes(
 
 function getGroupTileColumns(layer: TopologyObject["layer"], size: number) {
   if (layer === "service") {
-    return size >= 7 ? 3 : size >= 3 ? 2 : 1;
+    if (size >= 30) {
+      return 10;
+    }
+    if (size >= 20) {
+      return 8;
+    }
+    if (size >= 14) {
+      return 6;
+    }
+    if (size >= 9) {
+      return 5;
+    }
+    return size >= 7 ? 4 : size >= 3 ? 3 : 1;
   }
 
   if (layer === "compute") {
@@ -414,11 +437,11 @@ function createLayeredTargets(
   placeGroupedLayer(positions, serviceGroups, {
     baseX: serviceX,
     startY: metrics.layerYOffset,
-    groupColumns: 3,
-    groupXGap: Math.round(metrics.nodeWidth * 1.45),
-    groupRowGap: Math.round(metrics.nodeHeight * 1.1),
-    localXGap: Math.round(metrics.nodeWidth * 0.84),
-    localYGap: Math.round(metrics.nodeHeight * 0.9),
+    groupColumns: 8,
+    groupXGap: Math.round(metrics.nodeWidth * 1.25),
+    groupRowGap: Math.round(metrics.nodeHeight * 0.82),
+    localXGap: Math.round(metrics.nodeWidth * 0.78),
+    localYGap: Math.round(metrics.nodeHeight * 0.74),
     incomingEdges,
     outgoingEdges,
   });

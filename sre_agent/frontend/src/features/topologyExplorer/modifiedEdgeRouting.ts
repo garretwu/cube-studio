@@ -158,7 +158,7 @@ export function deriveModifiedEdgeRouting({
 }: RoutingInput): ModifiedEdgeRouting {
   if (!sourceNode || !targetNode) {
     return {
-      edgeType: "straight",
+      edgeType: "smoothstep",
       sourceHandle: MODIFIED_EDGE_HANDLE_IDS.source.right,
       targetHandle: MODIFIED_EDGE_HANDLE_IDS.target.left,
     };
@@ -167,7 +167,7 @@ export function deriveModifiedEdgeRouting({
   const { sourceDirection, targetDirection } = getPreferredDirection(sourceNode, targetNode, metrics);
 
   return {
-    edgeType: "straight",
+    edgeType: "smoothstep",
     sourceHandle: getSourceHandleId(sourceDirection),
     targetHandle: getTargetHandleId(targetDirection),
   };

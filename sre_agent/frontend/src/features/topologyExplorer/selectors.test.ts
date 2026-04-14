@@ -6,6 +6,7 @@ import {
   getModifiedSearchResultIds,
   getModifiedStageTopology,
   getStageTopology,
+  isSyntheticGpuAggregateNode,
   isSyntheticServiceAggregateNode,
 } from "./selectors";
 
@@ -18,22 +19,36 @@ describe("topology modified selectors", () => {
     expect(portNodes).toHaveLength(6);
     expect(portNodes.every((node) => node.type === "port")).toBe(true);
   });
+
+  it("connects the cluster to the switch for ingress context", () => {
+    const clusterNode = topologyExplorerOnlineMock.nodes.find((node) => node.type === "cluster");
+    const switchNode = topologyExplorerOnlineMock.nodes.find((node) => node.type === "switch");
+    expect(clusterNode).toBeDefined();
+    expect(switchNode).toBeDefined();
+
+    const hasEdge = topologyExplorerOnlineMock.edges.some((edge) => {
+      const isPair =
+        (edge.source === clusterNode!.id && edge.target === switchNode!.id) ||
+        (edge.source === switchNode!.id && edge.target === clusterNode!.id);
+      return isPair && edge.relationType === "connects_to";
+    });
+    expect(hasEdge).toBe(true);
+  });
   it("keeps BMC endpoints separate from worker server nodes", () => {
     const bmcNodes = topologyExplorerOnlineMock.nodes.filter((node) => node.id.startsWith("bmc:worker-"));
-    const workerNodes = topologyExplorerOnlineMock.nodes.filter((node) => /^worker-\d+$/.test(node.id));
+    const canonicalNodes = topologyExplorerOnlineMock.nodes.filter((node) => node.id.startsWith("wj-lab-"));
 
     expect(bmcNodes).toHaveLength(6);
-    expect(workerNodes).toHaveLength(6);
+    expect(canonicalNodes).toHaveLength(7);
     expect(bmcNodes.every((node) => node.type === "bmc")).toBe(true);
-    expect(workerNodes.every((node) => node.type === "node")).toBe(true);
-    expect(bmcNodes.map((node) => node.id.replace("bmc:", ""))).toEqual(workerNodes.map((node) => node.id));
+    expect(canonicalNodes.every((node) => node.type === "node")).toBe(true);
   });
   it("keeps the default global topology service cap unchanged", () => {
     const scoped = getGlobalTopologyDisplayData(topologyExplorerOnlineMock);
     expect(scoped).toBeDefined();
 
-    const serviceNodes = scoped?.nodes.filter((node) => node.layer === "service") ?? [];
-    expect(serviceNodes.length).toBeLessThanOrEqual(20);
+    const serviceLayerNodes = scoped?.nodes.filter((node) => node.layer === "service") ?? [];
+    expect(serviceLayerNodes.length).toBeLessThanOrEqual(20);
 
     const defaultStage = getStageTopology(scoped, {
       layerFilter: "all",
@@ -73,25 +88,45 @@ describe("topology modified selectors", () => {
     expect(expandedStage.nodes.some((node) => aggregateMemberIds.includes(node.id))).toBe(true);
   });
 
+  it("aggregates GPU nodes per host node on the modified stage", () => {
+    const stage = getModifiedStageTopology(topologyExplorerOnlineMock, {
+      layerFilter: "all",
+      searchQuery: "",
+    });
+
+    const gpuAggregate = stage.nodes.find((node) => isSyntheticGpuAggregateNode(node));
+    expect(gpuAggregate).toBeDefined();
+    expect(gpuAggregate?.type).toBe("gpu");
+    expect(gpuAggregate?.layer).toBe("compute");
+
+    const memberIds = Array.isArray(gpuAggregate?.attributes.aggregateMemberIds)
+      ? (gpuAggregate?.attributes.aggregateMemberIds as string[])
+      : [];
+    expect(memberIds.length).toBeGreaterThan(0);
+
+    // At least one healthy member GPU should be hidden by default.
+    expect(stage.nodes.some((node) => memberIds.includes(node.id))).toBe(false);
+  });
+
   it("returns real search hits and keeps them visible even when their siblings stay aggregated", () => {
-    const firstServiceNode = topologyExplorerOnlineMock.nodes.find((node) => node.layer === "service");
-    expect(firstServiceNode).toBeDefined();
+    const firstPodNode = topologyExplorerOnlineMock.nodes.find((node) => String(node.attributes.rawType ?? "").toLowerCase() === "pod");
+    expect(firstPodNode).toBeDefined();
 
     const searchResultIds = getModifiedSearchResultIds(
       topologyExplorerOnlineMock,
       "all",
-      firstServiceNode?.name ?? "",
+      firstPodNode?.name ?? "",
     );
 
-    expect(searchResultIds).toContain(firstServiceNode!.id);
+    expect(searchResultIds).toContain(firstPodNode!.id);
 
     const stage = getModifiedStageTopology(topologyExplorerOnlineMock, {
       layerFilter: "all",
-      searchQuery: firstServiceNode?.name ?? "",
+      searchQuery: firstPodNode?.name ?? "",
       searchResultIds,
     });
 
-    expect(stage.nodes.some((node) => node.id === firstServiceNode!.id)).toBe(true);
+    expect(stage.nodes.some((node) => node.id === firstPodNode!.id)).toBe(true);
     expect(searchResultIds.every((id) => stage.searchResultIds.includes(id))).toBe(true);
   });
 });

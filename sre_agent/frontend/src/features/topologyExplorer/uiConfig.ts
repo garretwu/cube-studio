@@ -31,6 +31,7 @@ export const topologyLegendTypeOrder = [
   "node",
   "gpu",
   "service",
+  "pod",
   "switch",
   "port",
   "bmc",

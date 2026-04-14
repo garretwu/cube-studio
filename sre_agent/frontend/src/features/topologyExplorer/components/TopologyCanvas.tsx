@@ -20,7 +20,7 @@ import {
   formatTopologyType,
   getTopologyTypeIconAsset,
 } from "../formatters";
-import { isSyntheticServiceAggregateNode } from "../selectors";
+import { isSyntheticGpuAggregateNode, isSyntheticServiceAggregateNode } from "../selectors";
 import {
   DEFAULT_FIT_PADDING,
   FOCUSED_FIT_PADDING,
@@ -109,11 +109,14 @@ function getAggregateCount(node: TopologyObject) {
 
 function getAggregateTypeLabel(node: TopologyObject) {
   const rawType = String(node.attributes.aggregateRawType ?? node.attributes.rawType ?? node.type);
-  return rawType === "pod" ? "Pod" : "服务";
+  if (rawType === "gpu") {
+    return "GPU";
+  }
+  return rawType === "pod" ? "Pod" : "服务组";
 }
 
 function getNodeSummary(node: TopologyObject) {
-  if (isSyntheticServiceAggregateNode(node)) {
+  if (isSyntheticServiceAggregateNode(node) || isSyntheticGpuAggregateNode(node)) {
     return `聚合 ${getAggregateCount(node)} 个${getAggregateTypeLabel(node)}对象，点击展开查看。`;
   }
 
@@ -199,7 +202,7 @@ function getModifiedHandleStyle(position: Position, metrics: TopologyCanvasMetri
 
 function ExplorerNode({ data }: NodeProps<Node<ExplorerFlowNodeData>>) {
   const { node, selected, searchHit, dimmed, neighborDepth, metrics, variant, onSelectNode } = data;
-  const isAggregate = isSyntheticServiceAggregateNode(node);
+  const isAggregate = isSyntheticServiceAggregateNode(node) || isSyntheticGpuAggregateNode(node);
   const aggregateCount = getAggregateCount(node);
   const handleStyle = { ...HANDLE_STYLE, top: metrics.nodeCircleSize / 2 + 2 };
   const statusLabel = formatTopologyStatus(node.status);
@@ -404,6 +407,9 @@ const TopologyCanvas = forwardRef<TopologyCanvasHandle, TopologyCanvasProps>(fun
         type: routing?.edgeType ?? "default",
         sourceHandle: routing?.sourceHandle,
         targetHandle: routing?.targetHandle,
+        ...(variant === "modified" && routing?.edgeType === "smoothstep"
+          ? { pathOptions: { borderRadius: 26, offset: 14 } }
+          : {}),
         label: shouldShowLabel ? edge.label ?? formatRelationType(edge.relationType) : undefined,
         labelStyle: {
           fill: "#253247",
