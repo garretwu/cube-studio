@@ -33,6 +33,7 @@ describe("useDiagnosisStore", () => {
       hasPlan: false,
       planMissingReason: undefined,
       effectiveReviseInstruction: undefined,
+      completedThinkingRounds: [],
       liveThinking: null,
       liveFinalAnswer: null,
       streamingText: "",
@@ -525,6 +526,116 @@ describe("useDiagnosisStore", () => {
     expect(afterRoundTwoStarted.liveThinking?.content).toBe("");
     expect(afterRoundTwoStarted.liveThinking?.round_id).toBeDefined();
     expect(afterRoundTwoStarted.liveThinking?.round_id).not.toBe(roundOneId);
+  });
+
+  it("starts a fresh round on token_delta when the previous round is already completed", () => {
+    useDiagnosisStore.setState({
+      session: diagnosisSession,
+      activeSessionId: diagnosisSession.session_id,
+      isStreamingDiagnosis: true,
+      streamingPhase: "streaming_thought",
+      completedThinkingRounds: [],
+      liveThinking: {
+        round_id: "run-reason-token@2026-03-18T12:12:00Z",
+        thought_key: "run-reason-token:reason",
+        run_id: "run-reason-token",
+        node: "reason",
+        timestamp: "2026-03-18T12:12:00Z",
+        content: "round-1 done",
+        status: "completed",
+        tool_name: null,
+        active_tools: [],
+      },
+      activeStreamingTools: [],
+    });
+
+    useDiagnosisStore.getState().applyEvent({
+      schema_version: "1",
+      type: "token_delta",
+      session_id: diagnosisSession.session_id,
+      timestamp: "2026-03-18T12:12:03Z",
+      data: {
+        node: "reason",
+        run_id: "run-reason-token",
+        thought_key: "run-reason-token:reason",
+        content: "round-2 thinking",
+      },
+    });
+
+    const state = useDiagnosisStore.getState();
+    expect(state.liveThinking?.status).toBe("thinking");
+    expect(state.liveThinking?.content).toBe("round-2 thinking");
+    expect(state.liveThinking?.timestamp).toBe("2026-03-18T12:12:03Z");
+    expect(state.liveThinking?.round_id).not.toBe("run-reason-token@2026-03-18T12:12:00Z");
+    expect(state.completedThinkingRounds).toHaveLength(1);
+    expect(state.completedThinkingRounds[0]).toMatchObject({
+      thought_key: "run-reason-token:reason",
+      content: "round-1 done",
+      status: "completed",
+    });
+  });
+
+  it("consumes completedThinkingRounds once node_completed snapshot includes the same thought_key", () => {
+    useDiagnosisStore.setState({
+      session: {
+        ...diagnosisSession,
+        trace: { steps: [] },
+      },
+      activeSessionId: diagnosisSession.session_id,
+      isStreamingDiagnosis: true,
+      streamingPhase: "streaming_thought",
+      completedThinkingRounds: [
+        {
+          round_id: "run-reason-snapshot@2026-03-18T12:13:00Z",
+          thought_key: "run-reason-snapshot:reason",
+          run_id: "run-reason-snapshot",
+          node: "reason",
+          timestamp: "2026-03-18T12:13:00Z",
+          content: "pending completed round",
+          status: "completed",
+          tool_name: null,
+          active_tools: [],
+        },
+      ],
+      liveThinking: {
+        round_id: "run-reason-snapshot@2026-03-18T12:13:01Z",
+        thought_key: "run-reason-snapshot:reason",
+        run_id: "run-reason-snapshot",
+        node: "reason",
+        timestamp: "2026-03-18T12:13:01Z",
+        content: "active round",
+        status: "thinking",
+        tool_name: null,
+        active_tools: [],
+      },
+      activeStreamingTools: [],
+    });
+
+    useDiagnosisStore.getState().applyEvent({
+      schema_version: "1",
+      type: "node_completed",
+      session_id: diagnosisSession.session_id,
+      timestamp: "2026-03-18T12:13:05Z",
+      data: {
+        node: "reason",
+        run_id: "run-reason-snapshot",
+        thought_key: "run-reason-snapshot:reason",
+        new_trace_items: [
+          {
+            event_type: "thinking_step",
+            step: 9,
+            timestamp: "2026-03-18T12:13:04Z",
+            thought: "snapshot absorbed this round",
+            action_type: "conclude",
+            thought_key: "run-reason-snapshot:reason",
+            thought_duration_sec: 3,
+          },
+        ],
+      },
+    });
+
+    const state = useDiagnosisStore.getState();
+    expect(state.completedThinkingRounds).toEqual([]);
   });
 
   it("creates a bootstrap thinking block immediately when streaming diagnosis starts", async () => {

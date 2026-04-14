@@ -63,12 +63,15 @@ type DiagnosisState = {
   effectiveReviseInstruction?: string;
   alertSnapshot: DiagnosisStartedData["alert"] | null;
   topologyContext: DiagnosisStartedData["topology"] | null;
+  completedThinkingRounds: LiveThinkingBlock[];
   liveThinking: LiveThinkingBlock | null;
   liveFinalAnswer: LiveFinalAnswerBlock | null;
   streamingText: string;
   streamingNode: string | null;
   isStreamingDiagnosis: boolean;
   streamingPhase: StreamingPhase;
+  streamSequenceCounter: number;
+  roundSequenceCounter: number;
   activeStreamingTools: StreamingToolCall[];
   streamingAbortController: AbortController | null;
   bootstrapSession: (sessionId?: string) => Promise<void>;
@@ -215,6 +218,74 @@ function buildTraceEntryDedupeKey(entry: ThinkingStep | Observation): string {
   return `observation:${entry.tool}:${entry.timestamp}`;
 }
 
+function buildThinkingRoundDedupeKey(round: LiveThinkingBlock): string {
+  const roundId = normalizeNonEmptyString(round.round_id);
+  if (roundId) {
+    return roundId;
+  }
+  return `${round.thought_key}@${round.timestamp}`;
+}
+
+function appendCompletedThinkingRound(
+  rounds: LiveThinkingBlock[],
+  round: LiveThinkingBlock | null,
+): LiveThinkingBlock[] {
+  if (!round || round.status !== "completed") {
+    return rounds;
+  }
+  if ((round.node ?? "").trim().toLowerCase() === "bootstrap") {
+    return rounds;
+  }
+  if (round.content.trim().length === 0) {
+    return rounds;
+  }
+  const dedupeKey = buildThinkingRoundDedupeKey(round);
+  const baseRound: LiveThinkingBlock = {
+    ...round,
+    status: "completed",
+    active_tools: [],
+  };
+  const next = [...rounds.filter((item) => buildThinkingRoundDedupeKey(item) !== dedupeKey), baseRound];
+  return sortCompletedThinkingRounds(next);
+}
+
+function consumeCompletedRoundsBySnapshot(
+  rounds: LiveThinkingBlock[],
+  snapshotEntries: Array<ThinkingStep | Observation>,
+): LiveThinkingBlock[] {
+  if (rounds.length === 0 || snapshotEntries.length === 0) {
+    return rounds;
+  }
+  const snapshotThinkingCounts = new Map<string, number>();
+  snapshotEntries.forEach((entry) => {
+    if (!("thought" in entry) || typeof entry.thought_key !== "string") {
+      return;
+    }
+    const normalizedThoughtKey = entry.thought_key.trim();
+    if (!normalizedThoughtKey) {
+      return;
+    }
+    snapshotThinkingCounts.set(
+      normalizedThoughtKey,
+      (snapshotThinkingCounts.get(normalizedThoughtKey) ?? 0) + 1,
+    );
+  });
+  if (snapshotThinkingCounts.size === 0) {
+    return rounds;
+  }
+
+  const nextRounds: LiveThinkingBlock[] = [];
+  rounds.forEach((round) => {
+    const remaining = snapshotThinkingCounts.get(round.thought_key) ?? 0;
+    if (remaining > 0) {
+      snapshotThinkingCounts.set(round.thought_key, remaining - 1);
+      return;
+    }
+    nextRounds.push(round);
+  });
+  return nextRounds;
+}
+
 function toStreamingFields(
   liveThinking: LiveThinkingBlock | null,
   activeStreamingTools: StreamingToolCall[],
@@ -225,6 +296,21 @@ function toStreamingFields(
     streamingNode: liveThinking?.node ?? null,
     activeStreamingTools,
   };
+}
+
+function sortCompletedThinkingRounds(
+  rounds: LiveThinkingBlock[],
+): LiveThinkingBlock[] {
+  const next = [...rounds];
+  next.sort((left, right) => {
+    const leftRoundSeq = typeof left.round_seq === "number" ? left.round_seq : null;
+    const rightRoundSeq = typeof right.round_seq === "number" ? right.round_seq : null;
+    if (leftRoundSeq !== null && rightRoundSeq !== null && leftRoundSeq !== rightRoundSeq) {
+      return leftRoundSeq - rightRoundSeq;
+    }
+    return new Date(left.timestamp).getTime() - new Date(right.timestamp).getTime();
+  });
+  return next;
 }
 
 function toThinkingStep(event: WSEvent, fallbackStep: number): ThinkingStep | null {
@@ -941,12 +1027,15 @@ export const useDiagnosisStore = create<DiagnosisState>((set, get) => ({
   effectiveReviseInstruction: undefined,
   alertSnapshot: null,
   topologyContext: null,
+  completedThinkingRounds: [],
   liveThinking: null,
   liveFinalAnswer: null,
   streamingText: "",
   streamingNode: null,
   isStreamingDiagnosis: false,
   streamingPhase: "idle",
+  streamSequenceCounter: 0,
+  roundSequenceCounter: 0,
   activeStreamingTools: [],
   streamingAbortController: null,
   connectionState: "closed",
@@ -990,12 +1079,15 @@ export const useDiagnosisStore = create<DiagnosisState>((set, get) => ({
       chatContextMeta: undefined,
       alertSnapshot: null,
       topologyContext: null,
+      completedThinkingRounds: [],
       liveThinking: null,
       liveFinalAnswer: null,
       streamingText: "",
       streamingNode: null,
       isStreamingDiagnosis: false,
       streamingPhase: "idle",
+      streamSequenceCounter: 0,
+      roundSequenceCounter: 0,
       activeStreamingTools: [],
       streamingAbortController: null,
     });
@@ -1052,12 +1144,15 @@ export const useDiagnosisStore = create<DiagnosisState>((set, get) => ({
           chatContextMeta: undefined,
           alertSnapshot: null,
           topologyContext: null,
+          completedThinkingRounds: [],
           liveThinking: null,
           liveFinalAnswer: null,
           streamingText: "",
           streamingNode: null,
           isStreamingDiagnosis: false,
           streamingPhase: "idle",
+          streamSequenceCounter: 0,
+          roundSequenceCounter: 0,
           activeStreamingTools: [],
           streamingAbortController: null,
           error: undefined,
@@ -1094,9 +1189,12 @@ export const useDiagnosisStore = create<DiagnosisState>((set, get) => ({
         chatContextMeta: undefined,
         alertSnapshot: historicalAlert,
         topologyContext: historicalTopology,
+        completedThinkingRounds: [],
         liveThinking: null,
         liveFinalAnswer: null,
         streamingPhase: "idle",
+        streamSequenceCounter: 0,
+        roundSequenceCounter: 0,
         error: undefined,
       });
     } catch (error) {
@@ -1123,12 +1221,15 @@ export const useDiagnosisStore = create<DiagnosisState>((set, get) => ({
         chatContextMeta: undefined,
         alertSnapshot: null,
         topologyContext: null,
+        completedThinkingRounds: [],
         liveThinking: null,
         liveFinalAnswer: null,
         streamingText: "",
         streamingNode: null,
         isStreamingDiagnosis: false,
         streamingPhase: "error",
+        streamSequenceCounter: 0,
+        roundSequenceCounter: 0,
         activeStreamingTools: [],
         streamingAbortController: null,
       });
@@ -1301,10 +1402,12 @@ export const useDiagnosisStore = create<DiagnosisState>((set, get) => ({
       }
       let nextAlertSnapshot = state.alertSnapshot;
       let nextTopologyContext = state.topologyContext;
+      let nextCompletedThinkingRounds = state.completedThinkingRounds;
       let nextLiveThinking = state.liveThinking;
       let nextLiveFinalAnswer = state.liveFinalAnswer;
       let nextActiveStreamingTools = state.activeStreamingTools;
       let nextStreamingPhase = state.streamingPhase;
+      let nextRoundSequenceCounter = state.roundSequenceCounter;
       const data = isRecord(event.data) ? event.data : {};
       const eventSource = normalizeNonEmptyString(data._stream_source);
       const thoughtKey = getThoughtKeyFromData(data);
@@ -1331,6 +1434,7 @@ export const useDiagnosisStore = create<DiagnosisState>((set, get) => ({
             activeSessionId: resolvedSessionId,
             isStreamingDiagnosis: true,
             streamingPhase: nextStreamingPhase,
+            roundSequenceCounter: nextRoundSequenceCounter,
           };
         }
 
@@ -1349,6 +1453,7 @@ export const useDiagnosisStore = create<DiagnosisState>((set, get) => ({
             liveFinalAnswer: nextLiveFinalAnswer,
             isStreamingDiagnosis: true,
             streamingPhase: "streaming_final",
+            roundSequenceCounter: nextRoundSequenceCounter,
           };
         }
 
@@ -1360,6 +1465,7 @@ export const useDiagnosisStore = create<DiagnosisState>((set, get) => ({
             activeSessionId: resolvedSessionId,
             isStreamingDiagnosis: true,
             streamingPhase: nextStreamingPhase,
+            roundSequenceCounter: nextRoundSequenceCounter,
           };
         }
 
@@ -1373,10 +1479,28 @@ export const useDiagnosisStore = create<DiagnosisState>((set, get) => ({
           },
           true,
         );
+        const canAppendToLiveRound = Boolean(nextLiveThinking && nextLiveThinking.status === "thinking" && isSameRound);
+        if (!canAppendToLiveRound && nextLiveThinking) {
+          const finalizedPreviousRound =
+            nextLiveThinking.status === "thinking"
+              ? completeLiveThinking(nextLiveThinking, "思考完成。")
+              : nextLiveThinking;
+          nextCompletedThinkingRounds = appendCompletedThinkingRound(
+            nextCompletedThinkingRounds,
+            finalizedPreviousRound,
+          );
+        }
         const roundTimestamp = normalizeNonEmptyString(data.started_at) ?? event.timestamp;
+        if (!canAppendToLiveRound) {
+          nextRoundSequenceCounter += 1;
+        }
+        const resolvedRoundSeq =
+          canAppendToLiveRound
+            ? nextLiveThinking?.round_seq ?? null
+            : nextRoundSequenceCounter;
         const resolvedRoundId =
           roundId ??
-          (isSameRound
+          (canAppendToLiveRound
             ? nextLiveThinking?.round_id ??
               buildFallbackRoundId({
                 thoughtKey: resolvedThoughtKey,
@@ -1390,19 +1514,21 @@ export const useDiagnosisStore = create<DiagnosisState>((set, get) => ({
                 node,
                 timestamp: roundTimestamp,
               }));
-        const previousContent = isSameRound ? nextLiveThinking?.content ?? "" : "";
-        nextActiveStreamingTools = isSameRound ? nextActiveStreamingTools : [];
+        const previousContent = canAppendToLiveRound ? nextLiveThinking?.content ?? "" : "";
+        nextActiveStreamingTools = canAppendToLiveRound ? nextActiveStreamingTools : [];
         nextLiveThinking = {
           round_id: resolvedRoundId,
+          round_seq: resolvedRoundSeq,
           thought_key: resolvedThoughtKey,
-          run_id: runId ?? (isSameRound ? nextLiveThinking?.run_id ?? null : null),
-          node: node ?? (isSameRound ? nextLiveThinking?.node ?? null : null),
-          timestamp: isSameRound ? nextLiveThinking?.timestamp ?? roundTimestamp : roundTimestamp,
+          run_id: runId ?? (canAppendToLiveRound ? nextLiveThinking?.run_id ?? null : null),
+          node: node ?? (canAppendToLiveRound ? nextLiveThinking?.node ?? null : null),
+          timestamp: canAppendToLiveRound ? nextLiveThinking?.timestamp ?? roundTimestamp : roundTimestamp,
           content: `${previousContent}${content}`,
           status: "thinking",
+          stream_seq: (canAppendToLiveRound ? nextLiveThinking?.stream_seq ?? 0 : 0) + 1,
           thought_duration_sec: null,
-          next_action: isSameRound ? nextLiveThinking?.next_action ?? null : null,
-          tool_name: isSameRound ? nextLiveThinking?.tool_name ?? null : null,
+          next_action: canAppendToLiveRound ? nextLiveThinking?.next_action ?? null : null,
+          tool_name: canAppendToLiveRound ? nextLiveThinking?.tool_name ?? null : null,
           active_tools: nextActiveStreamingTools,
         };
         return {
@@ -1411,6 +1537,8 @@ export const useDiagnosisStore = create<DiagnosisState>((set, get) => ({
           activeSessionId: resolvedSessionId,
           isStreamingDiagnosis: true,
           streamingPhase: "streaming_thought",
+          completedThinkingRounds: nextCompletedThinkingRounds,
+          roundSequenceCounter: nextRoundSequenceCounter,
           ...toStreamingFields(nextLiveThinking, nextActiveStreamingTools),
         };
       }
@@ -1418,9 +1546,22 @@ export const useDiagnosisStore = create<DiagnosisState>((set, get) => ({
         if (state.streamingAbortController && eventSource !== "sse") {
           return state;
         }
+        if (nextLiveThinking) {
+          const finalizedPreviousRound =
+            nextLiveThinking.status === "thinking"
+              ? completeLiveThinking(nextLiveThinking, "思考完成。")
+              : nextLiveThinking;
+          nextCompletedThinkingRounds = appendCompletedThinkingRound(
+            nextCompletedThinkingRounds,
+            finalizedPreviousRound,
+          );
+        }
         const resolvedThoughtKey = thoughtKey ?? buildThoughtKey(runId, node);
         const roundTimestamp = normalizeNonEmptyString(data.started_at) ?? event.timestamp;
         nextActiveStreamingTools = [];
+        if (resolvedThoughtKey) {
+          nextRoundSequenceCounter += 1;
+        }
         nextLiveThinking = resolvedThoughtKey
           ? {
               round_id:
@@ -1431,12 +1572,14 @@ export const useDiagnosisStore = create<DiagnosisState>((set, get) => ({
                   node,
                   timestamp: roundTimestamp,
                 }) ?? null,
+              round_seq: nextRoundSequenceCounter,
               thought_key: resolvedThoughtKey,
               run_id: runId,
               node,
               timestamp: roundTimestamp,
               content: "",
               status: "thinking",
+              stream_seq: 1,
               thought_duration_sec: null,
               next_action: null,
               tool_name: null,
@@ -1450,6 +1593,8 @@ export const useDiagnosisStore = create<DiagnosisState>((set, get) => ({
           isStreamingDiagnosis: true,
           streamingPhase:
             state.streamingPhase === "bootstrapping" ? "waiting_first_content" : state.streamingPhase,
+          completedThinkingRounds: nextCompletedThinkingRounds,
+          roundSequenceCounter: nextRoundSequenceCounter,
           ...toStreamingFields(nextLiveThinking, nextActiveStreamingTools),
         };
       }
@@ -1474,6 +1619,10 @@ export const useDiagnosisStore = create<DiagnosisState>((set, get) => ({
           });
         const mergedEntries = [...nextEntries, ...snapshotEntries];
         nextSession = appendTraceEntries(nextSession, snapshotEntries);
+        nextCompletedThinkingRounds = consumeCompletedRoundsBySnapshot(
+          nextCompletedThinkingRounds,
+          snapshotEntries,
+        );
         const nextEvents = mergeSessionEvents(state.events, [event as SessionEvent]);
         const approvalState = deriveApprovalState(nextSession, nextEvents);
         const completionError = getEventError(event) ?? state.error;
@@ -1501,15 +1650,16 @@ export const useDiagnosisStore = create<DiagnosisState>((set, get) => ({
           : false;
         if (liveMatchesCompletedRound && nextLiveThinking) {
           if (!snapshotHasCompletedThought) {
-            nextLiveThinking = {
-              ...nextLiveThinking,
-              status: "completed",
-              thought_duration_sec:
-                typeof data.thought_duration_sec === "number"
-                  ? data.thought_duration_sec
-                  : nextLiveThinking.thought_duration_sec,
-              active_tools: [],
-            };
+          nextLiveThinking = {
+            ...nextLiveThinking,
+            status: "completed",
+            thought_duration_sec:
+              typeof data.thought_duration_sec === "number"
+                ? data.thought_duration_sec
+                : nextLiveThinking.thought_duration_sec,
+            stream_seq: (nextLiveThinking.stream_seq ?? 0) + 1,
+            active_tools: [],
+          };
           } else {
             nextLiveThinking = null;
           }
@@ -1556,6 +1706,8 @@ export const useDiagnosisStore = create<DiagnosisState>((set, get) => ({
           isStreamingDiagnosis: !isTerminalNodeEvent,
           streamingPhase:
             terminalPhase ?? (nextLiveFinalAnswer ? "streaming_final" : "streaming_thought"),
+          completedThinkingRounds: nextCompletedThinkingRounds,
+          roundSequenceCounter: nextRoundSequenceCounter,
           ...toStreamingFields(nextLiveThinking, []),
           streamingAbortController: isTerminalNodeEvent ? null : state.streamingAbortController,
         };
@@ -1606,6 +1758,7 @@ export const useDiagnosisStore = create<DiagnosisState>((set, get) => ({
           tool,
           params: isRecord(data.params) ? data.params : {},
           round_id: resolvedRoundId,
+          round_seq: nextLiveThinking.round_seq,
           thought_key: resolvedThoughtKey,
           run_id: runId,
           node,
@@ -1630,6 +1783,7 @@ export const useDiagnosisStore = create<DiagnosisState>((set, get) => ({
           activeSessionId: resolvedSessionId,
           isStreamingDiagnosis: true,
           streamingPhase: state.streamingPhase === "bootstrapping" ? "waiting_first_content" : state.streamingPhase,
+          roundSequenceCounter: nextRoundSequenceCounter,
           ...toStreamingFields(nextLiveThinking, nextActiveStreamingTools),
         };
       }
@@ -1692,6 +1846,7 @@ export const useDiagnosisStore = create<DiagnosisState>((set, get) => ({
           ...state,
           session: nextSession,
           activeSessionId: resolvedSessionId,
+          roundSequenceCounter: nextRoundSequenceCounter,
           ...toStreamingFields(nextLiveThinking, nextActiveStreamingTools),
         };
       }
@@ -1732,6 +1887,7 @@ export const useDiagnosisStore = create<DiagnosisState>((set, get) => ({
           ...toStreamingFields(finalizedLiveThinking, []),
           streamingAbortController: null,
           error: completionError,
+          roundSequenceCounter: nextRoundSequenceCounter,
         };
       }
       if (event.type === "error") {
@@ -1762,6 +1918,7 @@ export const useDiagnosisStore = create<DiagnosisState>((set, get) => ({
             ? { ...state.liveFinalAnswer, status: "completed" }
             : state.liveFinalAnswer,
           error: errorMessage,
+          roundSequenceCounter: nextRoundSequenceCounter,
         };
       }
 
@@ -1814,6 +1971,7 @@ export const useDiagnosisStore = create<DiagnosisState>((set, get) => ({
               ? "ready"
               : state.traceStatus,
           streamingAbortController: null,
+          roundSequenceCounter: nextRoundSequenceCounter,
         };
       }
       if (event.type === "approval_required" && nextSession) {
@@ -1902,6 +2060,7 @@ export const useDiagnosisStore = create<DiagnosisState>((set, get) => ({
         ...toStreamingFields(nextLiveThinking, nextActiveStreamingTools),
         error: getEventError(event) ?? state.error,
         streamingPhase: nextStreamingPhase,
+        roundSequenceCounter: nextRoundSequenceCounter,
         traceStatus:
           nextEntries.length > 0 || event.type === "diagnosis_result"
             ? "ready"
@@ -1952,14 +2111,17 @@ export const useDiagnosisStore = create<DiagnosisState>((set, get) => ({
       chatContextApplied: false,
       chatContextMeta: undefined,
       isLoadingSession: false,
+      completedThinkingRounds: [],
       liveThinking: {
         round_id: `${bootstrapThinkingKey}@${bootstrapTimestamp}`,
+        round_seq: 0,
         thought_key: bootstrapThinkingKey,
         run_id: null,
         node: "bootstrap",
         timestamp: bootstrapTimestamp,
         content: "",
         status: "thinking",
+        stream_seq: 1,
         thought_duration_sec: null,
         next_action: null,
         tool_name: null,
@@ -1970,6 +2132,8 @@ export const useDiagnosisStore = create<DiagnosisState>((set, get) => ({
       streamingNode: "bootstrap",
       isStreamingDiagnosis: true,
       streamingPhase: "bootstrapping",
+      streamSequenceCounter: 0,
+      roundSequenceCounter: 0,
       activeStreamingTools: [],
       streamingAbortController: controller,
       error: undefined,
@@ -1977,13 +2141,18 @@ export const useDiagnosisStore = create<DiagnosisState>((set, get) => ({
 
     const run = async () => {
       let sessionFired = false;
+      let streamSeq = 0;
       try {
         await streamDiagnosis(
           alert,
           extraAlertFingerprints,
           (event) => {
             const data = isRecord(event.data) ? event.data : {};
-            const timestamp = new Date().toISOString();
+            streamSeq += 1;
+            const timestamp =
+              typeof event.timestamp === "string" && event.timestamp.trim().length > 0
+                ? event.timestamp
+                : new Date().toISOString();
             if (!sessionFired && event.session_id) {
               sessionFired = true;
               set({ activeSessionId: event.session_id });
@@ -2021,6 +2190,7 @@ export const useDiagnosisStore = create<DiagnosisState>((set, get) => ({
                 data: {
                   ...data,
                   _stream_source: "sse",
+                  _stream_seq: streamSeq,
                 },
               });
             }
@@ -2052,6 +2222,7 @@ export const useDiagnosisStore = create<DiagnosisState>((set, get) => ({
               streamingPhase: "error",
               streamingAbortController: null,
               error: errorMessage,
+              roundSequenceCounter: state.roundSequenceCounter,
               activeStreamingTools: [],
             };
           });
@@ -2066,6 +2237,7 @@ export const useDiagnosisStore = create<DiagnosisState>((set, get) => ({
     controller?.abort();
     set({
       isStreamingDiagnosis: false,
+      completedThinkingRounds: [],
       liveThinking: null,
       liveFinalAnswer: null,
       streamingText: "",
@@ -2073,6 +2245,8 @@ export const useDiagnosisStore = create<DiagnosisState>((set, get) => ({
       activeStreamingTools: [],
       streamingAbortController: null,
       streamingPhase: "idle",
+      streamSequenceCounter: 0,
+      roundSequenceCounter: 0,
     });
   },
 }));

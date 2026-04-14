@@ -249,7 +249,7 @@ describe("buildDiagnosisLiveView live thinking merge", () => {
     );
 
     expect(view.timeline[0]).toMatchObject({
-      id: "trace-thinking-run-reason-1:reason-2026-04-08T11:00:01.000Z",
+      id: "stream-thinking-run-reason-1:reason-2026-04-08T11:00:01.000Z",
       kind: "thinking",
       status: "thinking",
       content: "Streaming reasoning",
@@ -282,7 +282,7 @@ describe("buildDiagnosisLiveView live thinking merge", () => {
     );
 
     expect(view.timeline[0]).toMatchObject({
-      id: "trace-thinking-round-reason-2",
+      id: "stream-thinking-round-reason-2",
       kind: "thinking",
       status: "thinking",
     });
@@ -324,6 +324,55 @@ describe("buildDiagnosisLiveView live thinking merge", () => {
       kind: "message",
       label: "诊断结论生成中",
       content: "诊断结论：Node contention。",
+    });
+  });
+
+  it("places completedThinkingRounds before the active liveThinking round", () => {
+    const view = buildDiagnosisLiveView(
+      createSession([]),
+      [],
+      [],
+      [],
+      {
+        round_id: "round-live-2",
+        thought_key: "run-live:reason",
+        node: "reason",
+        run_id: "run-live",
+        timestamp: "2026-04-08T11:20:04.000Z",
+        content: "round 2 thinking",
+        status: "thinking",
+        tool_name: null,
+        active_tools: [],
+      },
+      null,
+      [
+        {
+          round_id: "round-live-1",
+          thought_key: "run-live:reason",
+          node: "reason",
+          run_id: "run-live",
+          timestamp: "2026-04-08T11:20:02.000Z",
+          content: "round 1 completed",
+          status: "completed",
+          tool_name: null,
+          active_tools: [],
+        },
+      ],
+    );
+
+    const thinkingItems = view.timeline.filter(
+      (item): item is Extract<DiagnosisTimelineItem, { kind: "thinking" }> => item.kind === "thinking",
+    );
+    expect(thinkingItems).toHaveLength(2);
+    expect(thinkingItems[0]).toMatchObject({
+      id: "stream-thinking-round-live-1",
+      status: "completed",
+      content: "round 1 completed",
+    });
+    expect(thinkingItems[1]).toMatchObject({
+      id: "stream-thinking-round-live-2",
+      status: "thinking",
+      content: "round 2 thinking",
     });
   });
 });

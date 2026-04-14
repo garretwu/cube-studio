@@ -25,7 +25,7 @@ from sre_agent.tools import ToolExecutionContext, ToolRegistry, ToolResult
 # LLM 交互日志记录器
 _llm_logger = logging.getLogger("sre_agent.llm")
 _llm_logger.setLevel(logging.DEBUG)
-_llm_logger.addHandler(logging.NullHandler())  # 默认空 handler，避免警告
+_llm_logger.addHandler(logging.NullHandler())  # default null handler to avoid warnings
 
 LLM_LOG_DIR = Path("./data/llm_logs")
 _TTFT_PROMETHEUS_TOTAL_BUDGET = 2
@@ -116,10 +116,10 @@ def _log_tool_execution(
     tool_args: dict[str, Any],
     result: dict[str, Any],
 ) -> None:
-    """将工具执行结果写入日志文件。
+    """Write tool execution results to a log file.
 
-    日志格式: JSONL (每行一个 JSON 对象)
-    日志路径: ./data/llm_logs/{session_id}.jsonl
+    Log format: JSONL (one JSON object per line)
+    Log path: ./data/llm_logs/{session_id}.jsonl
     """
     try:
         LLM_LOG_DIR.mkdir(parents=True, exist_ok=True)
@@ -156,16 +156,16 @@ def _log_llm_interaction(
     prompt_fallback_used: bool = False,
     prompt_metadata: dict[str, Any] | None = None,
 ) -> None:
-    """将 LLM 交互日志写入文件，便于调试和分析。
+    """Write LLM interaction logs to file for debugging and analysis.
 
-    日志格式: JSONL (每行一个 JSON 对象)
-    日志路径: ./data/llm_logs/{session_id}.jsonl
+    Log format: JSONL (one JSON object per line)
+    Log path: ./data/llm_logs/{session_id}.jsonl
     """
     try:
         LLM_LOG_DIR.mkdir(parents=True, exist_ok=True)
         log_file = LLM_LOG_DIR / f"{session_id}.jsonl"
 
-        # 构建日志内容
+        # 构建日志内容
         log_entry = {
             "timestamp": datetime.now(UTC).isoformat(),
             "session_id": session_id,
@@ -724,7 +724,9 @@ async def reason_node(
             )
             if remediation_plan is not None:
                 diagnosis = diagnosis.model_copy(update={"recommended_fix": remediation_plan})
-                final_thought = f"{final_thought}\n已基于主根因补全 proposal-only 修复方案，等待人工审批。"
+                final_thought = (
+                    f"{final_thought}\n已基于主根因补全 proposal-only 修复方案，等待人工审批。"
+                )
             else:
                 plan_missing_reason = "诊断已完成，但自动补全修复方案未通过参数/安全校验。"
         else:
@@ -732,6 +734,30 @@ async def reason_node(
                 plan_missing_reason = f"诊断已完成，但自动补全修复方案失败：{plan_completion_error}"
             else:
                 plan_missing_reason = "诊断已完成，但模型未返回可执行修复方案。"
+    if remediation_plan is None and _is_ttft_alert_state(state):
+        auto_ttft_plan = _build_ttft_kill_process_plan_candidate(
+            diagnosis=diagnosis,
+            evidence_signals=evidence_signals,
+            session_id=str(state.get("session_id", "")),
+            tool_runs=list(state.get("tool_runs", []) or []),
+            variables=dict(state.get("variables", {}) or {}),
+        )
+        if auto_ttft_plan is not None:
+            remediation_plan = _normalize_remediation_plan_payload(
+                raw_plan=auto_ttft_plan,
+                diagnosis=diagnosis,
+                session_id=str(state.get("session_id", "")),
+                registry=registry,
+                tool_runs=list(state.get("tool_runs", []) or []),
+                variables=dict(state.get("variables", {}) or {}),
+            )
+            if remediation_plan is not None:
+                diagnosis = diagnosis.model_copy(update={"recommended_fix": remediation_plan})
+                plan_missing_reason = None
+                final_thought = (
+                    f"{final_thought}\n已根据 GPU 进程证据进入处置阶段："
+                    "已生成 kill_process proposal（需审批后执行）。"
+                )
 
     if remediation_plan is not None:
         diagnosis = diagnosis.model_copy(update={"recommended_fix": remediation_plan})
@@ -1395,7 +1421,7 @@ def _summarize_tc_qdisc(data: Any) -> tuple[str, dict[str, Any] | None]:
     if handle_match:
         findings.append(f"handle={_truncate_prompt_note(handle_match.group(1), max_chars=24)}")
 
-    # 提取 iface：优先 data.iface，fallback 到文本中的 dev <iface>
+    # Extract iface: prefer data.iface, fallback to dev <iface> in text
     raw_iface = data.get("iface") if isinstance(data, dict) else None
     iface_match = re.search(r"\bdev\s+([a-zA-Z0-9_.:-]+)", text, flags=re.IGNORECASE)
     resolved_iface = str(raw_iface or "").strip() or (iface_match.group(1).strip() if iface_match else None) or None
@@ -1451,6 +1477,123 @@ def _summarize_find_process(data: Any) -> tuple[str, dict[str, Any] | None]:
         "sample_pids": sample_pids[:6],
         "tc_process_present": tc_process_present,
     }
+
+
+def _parse_gpu_process_rows(text: str, *, max_rows: int = 32) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        parts = [segment.strip() for segment in stripped.split(",")]
+        if len(parts) < 2:
+            continue
+        pid_text = parts[0]
+        process_name = parts[1] if len(parts) > 1 else ""
+        memory_text = parts[3] if len(parts) > 3 else ""
+        try:
+            pid = int(pid_text)
+        except Exception:  # noqa: BLE001
+            continue
+        memory_match = re.search(r"([0-9]+(?:\.[0-9]+)?)", memory_text)
+        memory_mib = float(memory_match.group(1)) if memory_match else None
+        rows.append(
+            {
+                "pid": pid,
+                "process_name": process_name,
+                "memory_mib": memory_mib,
+            }
+        )
+        if len(rows) >= max_rows:
+            break
+    return rows
+
+
+def _is_ttft_suspect_load_process(process_name: str) -> bool:
+    normalized = str(process_name or "").strip().lower()
+    if not normalized:
+        return False
+    suspicious_tokens = (
+        "stress",
+        "stress-ng",
+        "benchmark",
+        "bench",
+        "wrk",
+        "hey",
+        "ab ",
+        "apachebench",
+        "locust",
+        "load",
+        "simulator",
+        "simulate",
+        "mock",
+        "perf",
+        "iperf",
+        "fio",
+        "jmeter",
+    )
+    return any(token in normalized for token in suspicious_tokens)
+
+
+def _summarize_gpu_processes(data: Any) -> tuple[str, dict[str, Any] | None]:
+    text = _extract_output_blob(data)
+    rows = _parse_gpu_process_rows(text)
+    if not rows:
+        return (
+            "process_count=0; suspicious_load_present=false",
+            {
+                "process_count": 0,
+                "sample_pids": [],
+                "sample_process_names": [],
+                "suspicious_load_present": False,
+                "suspicious_load_processes": [],
+            },
+        )
+
+    sorted_rows = sorted(rows, key=lambda item: float(item.get("memory_mib") or 0.0), reverse=True)
+    suspicious_rows = [
+        item
+        for item in sorted_rows
+        if _is_ttft_suspect_load_process(str(item.get("process_name", "")))
+    ]
+    sample_names = [
+        _truncate_prompt_note(str(item.get("process_name", "")), max_chars=48)
+        for item in sorted_rows[:4]
+        if str(item.get("process_name", "")).strip()
+    ]
+    summary_parts = [
+        f"process_count={len(sorted_rows)}",
+        f"suspicious_load_present={str(bool(suspicious_rows)).lower()}",
+    ]
+    if sample_names:
+        summary_parts.append(f"top_processes={','.join(sample_names)}")
+    if suspicious_rows:
+        suspicious_preview = ",".join(
+            f"{item.get('pid')}:{_truncate_prompt_note(str(item.get('process_name', '')), max_chars=36)}"
+            for item in suspicious_rows[:3]
+        )
+        summary_parts.append(f"suspicious={suspicious_preview}")
+    return (
+        "; ".join(summary_parts),
+        {
+            "process_count": len(sorted_rows),
+            "sample_pids": [int(item.get("pid", 0) or 0) for item in sorted_rows[:8]],
+            "sample_process_names": [
+                str(item.get("process_name", "")).strip()
+                for item in sorted_rows[:8]
+                if str(item.get("process_name", "")).strip()
+            ],
+            "suspicious_load_present": bool(suspicious_rows),
+            "suspicious_load_processes": [
+                {
+                    "pid": int(item.get("pid", 0) or 0),
+                    "process_name": str(item.get("process_name", "")).strip(),
+                    "memory_mib": item.get("memory_mib"),
+                }
+                for item in suspicious_rows[:6]
+            ],
+        },
+    )
 
 
 def _summarize_link_state(data: Any) -> tuple[str, dict[str, Any] | None]:
@@ -1524,6 +1667,8 @@ def _build_tool_prompt_fields(
         prompt_summary, key_fields = _summarize_counter_text(data, label="rdma")
     elif tool == "network.find_process":
         prompt_summary, key_fields = _summarize_find_process(data)
+    elif tool == "gpu.get_processes":
+        prompt_summary, key_fields = _summarize_gpu_processes(data)
     else:
         prompt_summary, item_count, key_fields = _summarize_generic_data(data)
     if item_count is None:
@@ -2191,6 +2336,29 @@ def _find_latest_successful_tool_run(
     return None
 
 
+def _build_tool_run_dedupe_key(run: dict[str, Any]) -> str:
+    tool_name = str(run.get("tool", "") or "").strip()
+    params = run.get("params", {})
+    if not isinstance(params, dict):
+        params = {}
+    return _build_pending_tool_call_dedupe_key(tool_name, params)
+
+
+def _find_latest_tool_run_by_dedupe_key(
+    tool_runs: list[dict[str, Any]],
+    dedupe_key: str,
+) -> dict[str, Any] | None:
+    if not dedupe_key:
+        return None
+    for run in reversed(tool_runs):
+        if not isinstance(run, dict):
+            continue
+        if _build_tool_run_dedupe_key(run) != dedupe_key:
+            continue
+        return run
+    return None
+
+
 def _extract_evidence_signals(tool_runs: list[dict[str, Any]]) -> dict[str, Any]:
     signals: dict[str, Any] = {
         "tc_netem_present": False,
@@ -2201,6 +2369,9 @@ def _extract_evidence_signals(tool_runs: list[dict[str, Any]]) -> dict[str, Any]
         "tc_iface_candidates": [],
         "qdisc_evidence_steps": [],
         "process_evidence_steps": [],
+        "ttft_suspect_process_present": False,
+        "ttft_suspect_processes": [],
+        "ttft_gpu_process_steps": [],
     }
     for run in tool_runs:
         if not isinstance(run, dict) or not bool(run.get("success", False)):
@@ -2243,6 +2414,57 @@ def _extract_evidence_signals(tool_runs: list[dict[str, Any]]) -> dict[str, Any]
             if tc_process_present:
                 signals["tc_process_present"] = True
                 signals["process_evidence_steps"].append(int(run.get("step", 0) or 0))
+        elif tool == "gpu.get_processes":
+            suspect_items: list[dict[str, Any]] = []
+            key_suspects = fields.get("suspicious_load_processes")
+            if isinstance(key_suspects, list):
+                for item in key_suspects[:6]:
+                    if not isinstance(item, dict):
+                        continue
+                    process_name = str(item.get("process_name", "") or "").strip()
+                    if not process_name:
+                        continue
+                    suspect_items.append(
+                        {
+                            "pid": item.get("pid"),
+                            "process_name": process_name,
+                            "memory_mib": item.get("memory_mib"),
+                        }
+                    )
+            if not suspect_items:
+                sample_names = fields.get("sample_process_names")
+                names = sample_names if isinstance(sample_names, list) else []
+                sample_pids = fields.get("sample_pids")
+                pids = sample_pids if isinstance(sample_pids, list) else []
+                for idx, raw_name in enumerate(names[:6]):
+                    name = str(raw_name or "").strip()
+                    if not name or not _is_ttft_suspect_load_process(name):
+                        continue
+                    suspect_items.append(
+                        {
+                            "pid": pids[idx] if idx < len(pids) else None,
+                            "process_name": name,
+                            "memory_mib": None,
+                        }
+                    )
+            if not suspect_items and any(token in summary for token in ("stress", "benchmark", "load", "simulator")):
+                suspect_items.append(
+                    {
+                        "pid": None,
+                        "process_name": "suspected_load_process",
+                        "memory_mib": None,
+                    }
+                )
+            if suspect_items:
+                signals["ttft_suspect_process_present"] = True
+                signals["ttft_gpu_process_steps"].append(int(run.get("step", 0) or 0))
+                target = signals.get("ttft_suspect_processes")
+                if not isinstance(target, list):
+                    target = []
+                    signals["ttft_suspect_processes"] = target
+                for item in suspect_items:
+                    if item not in target:
+                        target.append(item)
     return signals
 
 
@@ -2279,7 +2501,7 @@ def _build_tc_consistency_retry_messages(
                 f"current_diagnosis={_json_line(diagnosis_payload)}\n\n"
                 "Rules:\n"
                 "- If tc/netem evidence exists, diagnosis root cause and hypotheses must explicitly reflect tc/netem.\n"
-                "- Do not output '证据不足' when tc/netem evidence is present.\n"
+                "- Do not output '璇佹嵁涓嶈冻' when tc/netem evidence is present.\n"
                 "- Return JSON only with keys: thought, diagnosis, remediation_plan."
             )
         ),
@@ -2338,7 +2560,7 @@ def _build_tc_fallback_diagnosis_payload(
 ) -> dict[str, Any]:
     fallback = dict(original)
     delay_value = evidence_signals.get("tc_delay_value")
-    delay_text = f"{delay_value}ms" if delay_value is not None else "未知"
+    delay_text = f"{delay_value}ms" if delay_value is not None else "鏈煡"
     entities: list[str] = []
     for run in tool_runs:
         if not isinstance(run, dict):
@@ -2804,6 +3026,14 @@ async def act_node(
                     listing_data = latest_listing.get("data")
                     if isinstance(listing_data, dict):
                         cached_skill_listing = listing_data
+            merged_call_key = _build_pending_tool_call_dedupe_key(tool_name, tool_args)
+            latest_same_call = _find_latest_tool_run_by_dedupe_key(tool_runs, merged_call_key)
+            latest_tool_run = next((item for item in reversed(tool_runs) if isinstance(item, dict)), None)
+            can_reuse_consecutive_call = (
+                latest_same_call is not None
+                and latest_tool_run is latest_same_call
+                and bool(latest_same_call.get("success", False))
+            )
 
             if cached_skill_listing is not None:
                 result = ToolResult(
@@ -2813,6 +3043,23 @@ async def act_node(
                     error="",
                 )
                 serialized_source = "cooldown_cache"
+            elif can_reuse_consecutive_call:
+                result = ToolResult(
+                    tool=tool_name,
+                    success=True,
+                    data=_safe_jsonable(latest_same_call.get("data")),
+                    error="",
+                )
+                serialized_source = "repeat_cache_reuse"
+                force_final_turn = True
+                suppressed_reasons.append(
+                    {
+                        "reason": "cross_round_duplicate",
+                        "tool": tool_name,
+                        "fingerprint": _build_tool_call_fingerprint(latest_same_call),
+                        "reused": True,
+                    }
+                )
             elif is_ttft_alert and tool_name == "prometheus.query_instant":
                 family_fingerprint = _tool_family_fingerprint(
                     {
@@ -2934,7 +3181,7 @@ async def act_node(
             session_id=str(state.get("session_id", "unknown")),
             source=serialized_source,
         )
-        # 记录工具执行结果到日志文件
+        # 璁板綍宸ュ叿鎵ц缁撴灉鍒版棩蹇楁枃浠?
         _log_tool_execution(
             session_id=str(state.get("session_id", "unknown")),
             step=serialized["step"],
@@ -2947,30 +3194,37 @@ async def act_node(
             },
         )
         tool_runs.append(serialized)
-        fingerprint = _build_tool_call_fingerprint(serialized)
-        if fingerprint and fingerprint == loop_guard.get("recent_fingerprint"):
-            loop_guard["repeat_count"] = int(loop_guard.get("repeat_count", 0) or 0) + 1
-        else:
-            loop_guard["recent_fingerprint"] = fingerprint
-            loop_guard["repeat_count"] = 1
-        family_fingerprint = _tool_family_fingerprint(serialized)
-        if family_fingerprint and family_fingerprint == loop_guard.get("recent_family_fingerprint"):
-            loop_guard["family_repeat_count"] = int(loop_guard.get("family_repeat_count", 0) or 0) + 1
-        else:
-            loop_guard["recent_family_fingerprint"] = family_fingerprint
-            loop_guard["family_repeat_count"] = 1
-        if int(loop_guard.get("repeat_count", 0) or 0) > int(loop_guard.get("threshold", 2) or 2):
-            if not bool(loop_guard.get("triggered", False)):
-                loop_guard["triggered"] = True
-                loop_guard["trigger_step"] = serialized["step"]
-                loop_guard_triggered = True
-            force_final_turn = True
-        if int(loop_guard.get("family_repeat_count", 0) or 0) > int(loop_guard.get("family_threshold", 2) or 2):
-            if not bool(loop_guard.get("triggered", False)):
-                loop_guard["triggered"] = True
-                loop_guard["trigger_step"] = serialized["step"]
-                loop_guard_triggered = True
-            force_final_turn = True
+        counts_for_loop_guard = str(serialized_source).strip() not in {
+            "cooldown_cache",
+            "repeat_cache_reuse",
+            "ttft_family_cache_reuse",
+            "ttft_total_cache_reuse",
+        }
+        if counts_for_loop_guard:
+            fingerprint = _build_tool_call_fingerprint(serialized)
+            if fingerprint and fingerprint == loop_guard.get("recent_fingerprint"):
+                loop_guard["repeat_count"] = int(loop_guard.get("repeat_count", 0) or 0) + 1
+            else:
+                loop_guard["recent_fingerprint"] = fingerprint
+                loop_guard["repeat_count"] = 1
+            family_fingerprint = _tool_family_fingerprint(serialized)
+            if family_fingerprint and family_fingerprint == loop_guard.get("recent_family_fingerprint"):
+                loop_guard["family_repeat_count"] = int(loop_guard.get("family_repeat_count", 0) or 0) + 1
+            else:
+                loop_guard["recent_family_fingerprint"] = family_fingerprint
+                loop_guard["family_repeat_count"] = 1
+            if int(loop_guard.get("repeat_count", 0) or 0) > int(loop_guard.get("threshold", 2) or 2):
+                if not bool(loop_guard.get("triggered", False)):
+                    loop_guard["triggered"] = True
+                    loop_guard["trigger_step"] = serialized["step"]
+                    loop_guard_triggered = True
+                force_final_turn = True
+            if int(loop_guard.get("family_repeat_count", 0) or 0) > int(loop_guard.get("family_threshold", 2) or 2):
+                if not bool(loop_guard.get("triggered", False)):
+                    loop_guard["triggered"] = True
+                    loop_guard["trigger_step"] = serialized["step"]
+                    loop_guard_triggered = True
+                force_final_turn = True
         messages.append(
             ToolMessage(
                 tool_call_id=str(tool_call.get("id", "")),
@@ -3001,10 +3255,7 @@ async def act_node(
             {
                 "type": "thought",
                 "step": state.get("step_count", 0) + 1,
-                "content": (
-                    "检测到同参同摘要工具调用重复超过阈值，已触发 loop_guard，"
-                    "下一轮将强制进入总结阶段。"
-                ),
+                "content": "已停止重复查询，进入总结阶段。",
                 "action": "conclude",
                 "confidence": None,
                 "tool_params": {
@@ -3023,7 +3274,7 @@ async def act_node(
             {
                 "type": "thought",
                 "step": state.get("step_count", 0) + 1,
-                "content": f"本轮抑制了 {suppressed_in_round} 次重复工具调用（同 tool + 同 params）。",
+                "content": f"已停止 {suppressed_in_round} 次重复查询，进入总结阶段。",
                 "action": "conclude",
                 "confidence": None,
                 "tool_params": {
@@ -3035,13 +3286,31 @@ async def act_node(
     for suppressed in suppressed_reasons:
         reason = str(suppressed.get("reason", "budget_exceeded")).strip()
         reused = bool(suppressed.get("reused", False))
+        if reason == "cross_round_duplicate":
+            updated_trace_items.append(
+                {
+                    "type": "thought",
+                    "step": state.get("step_count", 0) + 1,
+                    "content": "已停止重复查询，进入总结阶段。",
+                    "action": "conclude",
+                    "confidence": None,
+                    "tool_params": {
+                        "kind": "duplicate_tool_suppressed",
+                        "reason": reason,
+                        "tool": suppressed.get("tool"),
+                        "fingerprint": suppressed.get("fingerprint"),
+                        "reused": reused,
+                    },
+                }
+            )
+            continue
         updated_trace_items.append(
             {
                 "type": "thought",
                 "step": state.get("step_count", 0) + 1,
                 "content": (
-                    "Suppressed prometheus.query_instant in TTFT path due to budget "
-                    f"({reason}); reused cached result={reused}."
+                    "TTFT 路径下已抑制额外 Prometheus 查询，"
+                    f"原因={reason}，复用缓存={reused}。"
                 ),
                 "action": "conclude",
                 "confidence": None,
@@ -3167,7 +3436,7 @@ def finalize_node(state: SREAgentState) -> SREAgentState:
         "trace_items": serialized_trace,
         "summary": summary,
     }
-    # 当步骤超时且没有诊断结果时，从已收集的证据合成部分诊断
+    # When step times out with no diagnosis result, synthesize partial diagnosis from collected evidence
     if updated.get("status") == "step_timeout" and updated.get("diagnosis_result") is None:
         raw_tool_runs = updated.get("tool_runs", [])
         tool_runs = [run for run in raw_tool_runs if isinstance(run, dict)]
@@ -3551,6 +3820,102 @@ def _normalize_plan_priority(value: str) -> str:
     return "P2"
 
 
+def _resolve_ttft_target_node(
+    *,
+    tool_runs: list[dict[str, Any]] | None = None,
+    variables: dict[str, Any] | None = None,
+) -> str:
+    source_runs = list(tool_runs or [])
+    for run in reversed(source_runs):
+        if not isinstance(run, dict):
+            continue
+        if str(run.get("tool", "")).strip() != "gpu.get_processes":
+            continue
+        params = run.get("params", {})
+        if not isinstance(params, dict):
+            continue
+        node = str(params.get("node", "") or "").strip()
+        if node:
+            return node
+    source_variables = dict(variables or {})
+    for key in ("node", "node_ip", "instance"):
+        value = str(source_variables.get(key, "") or "").strip()
+        if value and value.lower() not in _PLACEHOLDER_VALUES:
+            return value
+    return ""
+
+
+def _build_ttft_kill_process_plan_candidate(
+    *,
+    diagnosis: DiagnosisResult,
+    evidence_signals: dict[str, Any],
+    session_id: str,
+    tool_runs: list[dict[str, Any]] | None = None,
+    variables: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    suspect_present = bool(evidence_signals.get("ttft_suspect_process_present"))
+    suspect_raw = evidence_signals.get("ttft_suspect_processes")
+    suspect_processes = suspect_raw if isinstance(suspect_raw, list) else []
+    if not suspect_present or not suspect_processes:
+        return None
+
+    node = _resolve_ttft_target_node(tool_runs=tool_runs, variables=variables)
+    if not node:
+        return None
+
+    selected: dict[str, Any] | None = None
+    for item in suspect_processes:
+        if not isinstance(item, dict):
+            continue
+        process_name = str(item.get("process_name", "") or "").strip()
+        if not process_name:
+            continue
+        selected = item
+        break
+    if selected is None:
+        return None
+
+    process_name = str(selected.get("process_name", "") or "").strip()
+    pid_raw = selected.get("pid")
+    pid: int | None
+    try:
+        parsed_pid = int(pid_raw)
+        pid = parsed_pid if parsed_pid > 0 else None
+    except Exception:  # noqa: BLE001
+        pid = None
+
+    step_params: dict[str, Any] = {
+        "node": node,
+        "signal": "TERM",
+    }
+    if pid is not None:
+        step_params["pid"] = pid
+        target_label = f"PID {pid}"
+    else:
+        step_params["pid_or_name"] = process_name
+        target_label = process_name
+
+    return {
+        "plan_id": f"proposal-{(session_id or 'session')[:8]}-ttft-kill",
+        "root_cause": diagnosis.root_cause,
+        "description": "识别到可疑 GPU 负载进程，先终止疑似压测/模拟负载并复核 TTFT 与告警状态。",
+        "steps": [
+            {
+                "step_id": 1,
+                "description": f"在节点 {node} 终止可疑负载进程 {target_label}",
+                "tool": "kill_process",
+                "params": step_params,
+                "verification": {"method": "wait", "wait_seconds": 60},
+                "timeout": 60,
+            }
+        ],
+        "estimated_impact": "释放异常争用，预期 TTFT 回落并推动告警恢复。",
+        "confidence": _normalize_plan_confidence(max(0.55, float(diagnosis.confidence))),
+        "priority": _normalize_plan_priority(diagnosis.triage_priority),
+        "safety_level": "high",
+    }
+
+
 def _normalize_step_params_in_place(
     step: dict[str, Any],
     *,
@@ -3577,12 +3942,12 @@ def _normalize_step_params_in_place(
 
     if tool_name == "network.clear_tc_qdisc":
         iface = params.get("iface")
-        # 占位值视为缺失
+        # 鍗犱綅鍊艰涓虹己澶?
         if _is_placeholder_param(iface):
             params.pop("iface", None)
 
         if not params.get("iface"):
-            # 推断顺序：step 文本 → tc qdisc tool run 的 key_fields → 运行时变量
+            # Inference order: step text -> tc qdisc tool run key_fields -> runtime variables
             candidates = _collect_tc_iface_candidates(
                 step,
                 diagnosis=diagnosis,
@@ -3705,7 +4070,7 @@ def _collect_tc_iface_candidates(
             seen.add(iface)
             candidates.append(iface)
 
-    # 来源 1：step 文本中的 dev <iface>
+    # 鏉ユ簮 1锛歴tep 鏂囨湰涓殑 dev <iface>
     _add(_infer_tc_iface(step))
     if candidates:
         return candidates

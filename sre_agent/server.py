@@ -1337,13 +1337,13 @@ def _build_diagnosis_query(
         diagnosis_goal=(
             "This is AIServiceTTFT diagnosis; prioritize deterministic service->pod->node->gpu evidence chain "
             "before broad exploration. Use prometheus.query_instant only for verification and keep it within "
-            "two calls unless absolutely required for contradiction resolution."
+            "two calls unless absolutely required for contradiction resolution. If gpu.get_processes reveals suspicious synthetic/load-generator processes, summarize the evidence and prepare a proposal-only kill_process remediation step (approval-gated, not auto-executed)."
         ),
         investigation_steps=[
-            "定位受影响 service 对应 pod（resolve_service_pods/list_pods）",
-            "定位 pod 所在 node 与 node_ip（resolve_pod_node_ip + inventory mapping）",
-            "在目标 node 采集 GPU metrics/processes（gpu.get_metrics + gpu.get_processes）",
-            "校验 TTFT/请求时延指标并形成结论（prometheus.query_instant）",
+            "定位受影响 service 对应的 pod（k8s.resolve_service_pods / k8s.list_pods）。",
+            "定位 pod 所在 node 与 node_ip（k8s.resolve_pod_node_ip + inventory mapping）。",
+            "在目标 node 采集 GPU metrics/processes（gpu.get_metrics + gpu.get_processes），识别异常负载进程。",
+            "用 prometheus.query_instant 复核 TTFT 与请求时延变化，并给出处置结论。",
         ],
         context_hints=context_hints,
         history_count=len(extra_alerts or []),

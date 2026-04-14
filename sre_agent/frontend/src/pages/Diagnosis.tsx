@@ -1376,6 +1376,7 @@ function DiagnosisPage() {
     canApprove,
     approvalBlockReason,
     planMissingReason,
+    completedThinkingRounds,
     liveThinking,
     liveFinalAnswer,
     isStreamingDiagnosis,
@@ -1388,8 +1389,17 @@ function DiagnosisPage() {
   } = useDiagnosisStore();
 
   const liveView = useMemo(
-    () => buildDiagnosisLiveView(session, messages, events, localAuditRecords, liveThinking, liveFinalAnswer),
-    [events, liveFinalAnswer, liveThinking, localAuditRecords, messages, session],
+    () =>
+      buildDiagnosisLiveView(
+        session,
+        messages,
+        events,
+        localAuditRecords,
+        liveThinking,
+        liveFinalAnswer,
+        completedThinkingRounds,
+      ),
+    [completedThinkingRounds, events, liveFinalAnswer, liveThinking, localAuditRecords, messages, session],
   );
   const resolvedLiveSessionId = activeSessionId ?? session?.session_id ?? "";
   const routeIsPendingSession = isPendingSessionId(routeSessionId);

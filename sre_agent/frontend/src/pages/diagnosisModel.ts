@@ -41,6 +41,7 @@ export type DiagnosisTimelineItem =
       toolName?: string | null;
       status: "thinking" | "completed";
       thoughtDurationSec?: number;
+      roundSeq?: number;
     }
   | DiagnosisSystemEventView
   | {
@@ -883,6 +884,7 @@ export function buildDiagnosisLiveView(
   localAuditRecords: DiagnosisLocalAuditRecord[] = [],
   liveThinking?: LiveThinkingBlock | null,
   liveFinalAnswer?: LiveFinalAnswerBlock | null,
+  completedThinkingRounds: LiveThinkingBlock[] = [],
 ): DiagnosisLiveView {
   const timelineItems: TimelineSortItem[] = [];
   const traceEntries = session?.trace?.steps ?? [];
@@ -1035,13 +1037,41 @@ export function buildDiagnosisLiveView(
     });
   });
 
+  completedThinkingRounds.forEach((round) => {
+    if (round.thought_key.trim().length === 0) {
+      return;
+    }
+    const idSuffix = buildLiveThinkingIdSuffix(round);
+    timelineItems.push({
+      order: timelineItems.length,
+      timestamp: round.timestamp,
+      item: {
+        id: `stream-thinking-${idSuffix}`,
+        kind: "thinking",
+        title: buildThinkingTitle(
+          round.tool_name ? "tool_call" : round.node === "finalize" ? "conclude" : "remediate",
+          round.node,
+        ),
+        content: round.content,
+        timestamp: round.timestamp,
+        toolName: round.tool_name,
+        status: "completed",
+        roundSeq: typeof round.round_seq === "number" ? round.round_seq : undefined,
+        thoughtDurationSec:
+          typeof round.thought_duration_sec === "number" && Number.isFinite(round.thought_duration_sec)
+            ? Math.max(1, Math.round(round.thought_duration_sec))
+            : undefined,
+      },
+    });
+  });
+
   if (liveThinking && liveThinking.thought_key.trim().length > 0) {
     const idSuffix = buildLiveThinkingIdSuffix(liveThinking);
     timelineItems.push({
       order: timelineItems.length,
       timestamp: liveThinking.timestamp,
       item: {
-        id: `trace-thinking-${idSuffix}`,
+        id: `stream-thinking-${idSuffix}`,
         kind: "thinking",
         title: buildThinkingTitle(
           liveThinking.tool_name ? "tool_call" : liveThinking.node === "finalize" ? "conclude" : "remediate",
@@ -1051,6 +1081,7 @@ export function buildDiagnosisLiveView(
         timestamp: liveThinking.timestamp,
         toolName: liveThinking.tool_name,
         status: liveThinking.status,
+        roundSeq: typeof liveThinking.round_seq === "number" ? liveThinking.round_seq : undefined,
         thoughtDurationSec:
           typeof liveThinking.thought_duration_sec === "number" && Number.isFinite(liveThinking.thought_duration_sec)
             ? Math.max(1, Math.round(liveThinking.thought_duration_sec))
@@ -1134,6 +1165,17 @@ export function buildDiagnosisLiveView(
 
   const sortedTimeline = [...dedupedTimeline.values()]
     .sort((left, right) => {
+      const leftRoundSeq =
+        left.item.kind === "thinking" && typeof left.item.roundSeq === "number"
+          ? left.item.roundSeq
+          : null;
+      const rightRoundSeq =
+        right.item.kind === "thinking" && typeof right.item.roundSeq === "number"
+          ? right.item.roundSeq
+          : null;
+      if (leftRoundSeq !== null && rightRoundSeq !== null && leftRoundSeq !== rightRoundSeq) {
+        return leftRoundSeq - rightRoundSeq;
+      }
       const timeGap = new Date(left.timestamp).getTime() - new Date(right.timestamp).getTime();
       if (timeGap !== 0) {
         return timeGap;

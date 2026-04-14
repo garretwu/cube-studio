@@ -121,6 +121,7 @@ function resetDiagnosisStore(overrides: Partial<ReturnType<typeof useDiagnosisSt
     hasPlan: false,
     planMissingReason: undefined,
     effectiveReviseInstruction: undefined,
+    completedThinkingRounds: [],
     liveThinking: null,
     liveFinalAnswer: null,
     streamingText: "",
@@ -1151,6 +1152,98 @@ describe("DiagnosisPage status badges", () => {
     expect(screen.getByText("思考中")).toBeInTheDocument();
     expect(screen.getByText(/partial token output/)).toBeInTheDocument();
     expect(screen.getAllByText("query_metrics").length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("renders per-round thinking transitions in-order instead of reusing one top card", () => {
+    let timelineSource: DiagnosisTimelineItem[] = [
+      {
+        id: "round-1-thinking",
+        kind: "thinking",
+        title: "round 1",
+        content: "round-1 reasoning",
+        timestamp: "2026-04-08T10:21:01.000Z",
+        status: "thinking",
+      },
+    ];
+
+    mockedBuildLiveView.mockImplementation(() => ({
+      timeline: timelineSource,
+      candidates: [],
+      summary: undefined,
+      plan: undefined,
+    }));
+
+    resetDiagnosisStore({
+      session: createLiveSession("sess-live-round-transition"),
+      activeSessionId: "sess-live-round-transition",
+      bootstrapStatus: "ready",
+      traceStatus: "ready",
+      isStreamingDiagnosis: true,
+      messages: [],
+      bootstrapSession: vi.fn().mockResolvedValue(undefined),
+    });
+
+    const { container } = renderLivePage("/diagnosis/sess-live-round-transition");
+    const labelSelector = ".diagnosis-workspace-thinking__label";
+    const pulseSelector = ".diagnosis-workspace-thinking__pulse";
+    const getThinkingLabels = () =>
+      Array.from(container.querySelectorAll(labelSelector)).map((node) => (node.textContent ?? "").trim());
+
+    expect(getThinkingLabels()).toEqual(["思考中"]);
+    expect(container.querySelectorAll(pulseSelector)).toHaveLength(1);
+
+    timelineSource = [
+      {
+        id: "round-1-thinking",
+        kind: "thinking",
+        title: "round 1",
+        content: "round-1 reasoning done",
+        timestamp: "2026-04-08T10:21:01.000Z",
+        status: "completed",
+      },
+      {
+        id: "round-2-thinking",
+        kind: "thinking",
+        title: "round 2",
+        content: "round-2 reasoning",
+        timestamp: "2026-04-08T10:21:03.000Z",
+        status: "thinking",
+      },
+    ];
+    act(() => {
+      const state = useDiagnosisStore.getState();
+      useDiagnosisStore.setState({ ...state, messages: [...state.messages] });
+    });
+
+    expect(getThinkingLabels()).toEqual(["思考完成", "思考中"]);
+    expect(container.querySelectorAll(".diagnosis-workspace-process-row")).toHaveLength(2);
+    expect(container.querySelectorAll(pulseSelector)).toHaveLength(1);
+
+    timelineSource = [
+      {
+        id: "round-1-thinking",
+        kind: "thinking",
+        title: "round 1",
+        content: "round-1 reasoning done",
+        timestamp: "2026-04-08T10:21:01.000Z",
+        status: "completed",
+      },
+      {
+        id: "round-2-thinking",
+        kind: "thinking",
+        title: "round 2",
+        content: "round-2 reasoning done",
+        timestamp: "2026-04-08T10:21:03.000Z",
+        status: "completed",
+      },
+    ];
+    act(() => {
+      const state = useDiagnosisStore.getState();
+      useDiagnosisStore.setState({ ...state, messages: [...state.messages] });
+    });
+
+    expect(getThinkingLabels()).toEqual(["思考完成", "思考完成"]);
+    expect(container.querySelectorAll(pulseSelector)).toHaveLength(0);
   });
 
   it("does not render thinking spinner after timeout/error terminal state", () => {
