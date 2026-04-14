@@ -39,10 +39,10 @@
 
 | 目标 | 命令 |
 | --- | --- |
-| 安装或升级 | `helm upgrade --install sre-agent-web /home/kevin/project/cube-studio/sre_agent/deploy/helm/sre-agent-web --set image.repository=registry.example.com/cube-studio/sre-agent-web --set image.tag=202604100930 --set secret.create=true --set secret.sreOpenaiApiKey=your-real-key` |
+| 安装或升级 | `helm upgrade --install sre-agent-web /home/kevin/project/cube-studio/sre_agent/deploy/helm/sre-agent-web --set image.repository=registry.example.com/sre_agent/sre-agent-web --set image.tag=202604100930 --set secret.create=true --set secret.sreOpenaiApiKey=your-real-key` |
 | 查看 releases | `helm list` |
 | 查看 release 状态 | `helm status sre-agent-web` |
-| 本地渲染 chart | `helm template sre-agent-web /home/kevin/project/cube-studio/sre_agent/deploy/helm/sre-agent-web --set image.repository=registry.example.com/cube-studio/sre-agent-web --set image.tag=202604100930 --set secret.create=true --set secret.sreOpenaiApiKey=dummy-key` |
+| 本地渲染 chart | `helm template sre-agent-web /home/kevin/project/cube-studio/sre_agent/deploy/helm/sre-agent-web --set image.repository=registry.example.com/sre_agent/sre-agent-web --set image.tag=202604100930 --set secret.create=true --set secret.sreOpenaiApiKey=dummy-key` |
 
 ## 2. 本地运行常见问题
 

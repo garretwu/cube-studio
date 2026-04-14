@@ -284,7 +284,7 @@ async def reason_node(
                 tool_choice=tool_choice,
             )
         bound_tools = registry.get_langchain_tools(
-            tool_names=state.get("allowed_tool_names"),
+            tool_names=_select_bound_tool_names_for_turn(state),
         )
         bound_tool_names = [str(getattr(tool, "name", "")) for tool in bound_tools]
         tool_choice = "required" if not state.get("tool_runs") else "auto"
@@ -354,7 +354,14 @@ async def reason_node(
     updated_messages = [*messages, response]
     updated_trace = list(state.get("trace_items", []))
     updated_interactions = list(state.get("llm_interactions", []))
-    pending_tool_calls = list(response.tool_calls or [])
+    pending_tool_calls = _auto_load_high_score_skill(
+        state,
+        list(response.tool_calls or []),
+    )
+    pending_tool_calls = _auto_run_single_script_skill(
+        state,
+        pending_tool_calls,
+    )
     raw_response_text = _extract_text(response.content)
     step_index = state.get("step_count", 0) + 1
 
@@ -685,6 +692,180 @@ def _normalize_positive_int(value: Any, *, default: int, minimum: int) -> int:
     if parsed < minimum:
         return minimum
     return parsed
+
+
+def _select_bound_tool_names_for_turn(state: SREAgentState) -> list[str] | None:
+    allowed_tool_names = state.get("allowed_tool_names")
+    if not allowed_tool_names:
+        return None
+
+    names = [str(name).strip() for name in allowed_tool_names if str(name).strip()]
+    if not names:
+        return None
+
+    if not state.get("tool_runs"):
+        skill_names = [name for name in names if name.startswith("skills.")]
+        if skill_names:
+            return skill_names
+    return names
+
+
+def _find_latest_successful_skill_listing(tool_runs: list[dict[str, Any]]) -> dict[str, Any] | None:
+    for run in reversed(tool_runs):
+        if not isinstance(run, dict):
+            continue
+        if str(run.get("tool", "")).strip() != "skills.list_skills":
+            continue
+        if not bool(run.get("success", False)):
+            continue
+        data = run.get("data")
+        if not isinstance(data, dict):
+            continue
+        skills = data.get("skills")
+        if isinstance(skills, list) and skills:
+            return run
+    return None
+
+
+_AUTO_LOAD_SKILL_MATCH_THRESHOLD = 0.6
+
+
+def _choose_skill_id_to_load_from_listing(listing_run: dict[str, Any], tool_runs: list[dict[str, Any]]) -> str:
+    data = listing_run.get("data")
+    if not isinstance(data, dict):
+        return ""
+    skills = data.get("skills")
+    if not isinstance(skills, list):
+        return ""
+
+    attempted = {
+        str((run.get("params") or {}).get("skill_id") or "").strip()
+        for run in tool_runs
+        if isinstance(run, dict) and str(run.get("tool", "")).strip() == "skills.load_skill"
+    }
+
+    for item in skills:
+        if not isinstance(item, dict):
+            continue
+        skill_id = str(item.get("skill_id") or "").strip()
+        if not skill_id or skill_id in attempted:
+            continue
+        try:
+            match_score = float(item.get("match_score", 0.0) or 0.0)
+        except Exception:  # noqa: BLE001
+            match_score = 0.0
+        if match_score < _AUTO_LOAD_SKILL_MATCH_THRESHOLD:
+            continue
+        return skill_id
+    return ""
+
+
+def _auto_load_high_score_skill(
+    state: SREAgentState,
+    pending_tool_calls: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    if any(
+        str(call.get("name", "")).strip() in {"skills.load_skill", "skills.read_skill_ref", "skills.run_skill"}
+        for call in pending_tool_calls
+        if isinstance(call, dict)
+    ):
+        return pending_tool_calls
+
+    tool_runs = [dict(item) for item in list(state.get("tool_runs", []) or []) if isinstance(item, dict)]
+    latest_listing = _find_latest_successful_skill_listing(tool_runs)
+    if latest_listing is None:
+        return pending_tool_calls
+
+    skill_id = _choose_skill_id_to_load_from_listing(latest_listing, tool_runs)
+    if not skill_id:
+        return pending_tool_calls
+
+    call_id = ""
+    if pending_tool_calls:
+        call_id = str((pending_tool_calls[0] or {}).get("id", "")).strip()
+    call_id = call_id or "call-skill-load"
+    return [
+        {
+            "name": "skills.load_skill",
+            "args": {"skill_id": skill_id},
+            "id": call_id,
+            "type": "tool_call",
+        }
+    ]
+
+
+def _find_latest_successful_skill_load(tool_runs: list[dict[str, Any]]) -> dict[str, Any] | None:
+    for run in reversed(tool_runs):
+        if not isinstance(run, dict):
+            continue
+        if str(run.get("tool", "")).strip() != "skills.load_skill":
+            continue
+        if not bool(run.get("success", False)):
+            continue
+        data = run.get("data")
+        if isinstance(data, dict):
+            return run
+    return None
+
+
+def _choose_skill_script_to_run(load_run: dict[str, Any], tool_runs: list[dict[str, Any]]) -> tuple[str, str]:
+    data = load_run.get("data")
+    if not isinstance(data, dict):
+        return "", ""
+
+    skill_id = str(data.get("skill_id") or "").strip() or str((load_run.get("params") or {}).get("skill_id") or "").strip()
+    scripts = data.get("scripts")
+    if not skill_id or not isinstance(scripts, list) or len(scripts) != 1:
+        return "", ""
+
+    script = str(scripts[0] or "").strip()
+    if not script:
+        return "", ""
+
+    already_ran = any(
+        isinstance(run, dict)
+        and str(run.get("tool", "")).strip() == "skills.run_skill"
+        and str((run.get("params") or {}).get("skill_id") or "").strip() == skill_id
+        and str((run.get("params") or {}).get("script") or "").strip() == script
+        for run in tool_runs
+    )
+    if already_ran:
+        return "", ""
+    return skill_id, script
+
+
+def _auto_run_single_script_skill(
+    state: SREAgentState,
+    pending_tool_calls: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    if any(
+        str(call.get("name", "")).strip() in {"skills.read_skill_ref", "skills.run_skill"}
+        for call in pending_tool_calls
+        if isinstance(call, dict)
+    ):
+        return pending_tool_calls
+
+    tool_runs = [dict(item) for item in list(state.get("tool_runs", []) or []) if isinstance(item, dict)]
+    latest_load = _find_latest_successful_skill_load(tool_runs)
+    if latest_load is None:
+        return pending_tool_calls
+
+    skill_id, script = _choose_skill_script_to_run(latest_load, tool_runs)
+    if not skill_id or not script:
+        return pending_tool_calls
+
+    call_id = ""
+    if pending_tool_calls:
+        call_id = str((pending_tool_calls[0] or {}).get("id", "")).strip()
+    call_id = call_id or "call-skill-run"
+    return [
+        {
+            "name": "skills.run_skill",
+            "args": {"skill_id": skill_id, "script": script},
+            "id": call_id,
+            "type": "tool_call",
+        }
+    ]
 
 
 def _is_minimax_m27_family(model_family: str | None) -> bool:
@@ -2359,23 +2540,38 @@ async def act_node(
         default=1200,
         minimum=200,
     )
+    allowed_tool_names_for_turn = set(_select_bound_tool_names_for_turn(state) or [])
     observation_entries: list[dict[str, Any]] = []
     for tool_call in pending:
         tool_name = str(tool_call.get("name", "")).strip()
-        raw_tool_args = tool_call.get("args", {})
-        tool_args = _merge_tool_args(
-            registry=registry,
-            tool_name=tool_name,
-            tool_args=raw_tool_args if isinstance(raw_tool_args, dict) else {},
-            variables=variables,
-        )
-        try:
-            result = await asyncio.wait_for(
-                registry.execute(tool_name, tool_args, context),
-                timeout=state["step_timeout_sec"],
+        if allowed_tool_names_for_turn and tool_name not in allowed_tool_names_for_turn:
+            result = ToolResult(
+                tool=tool_name,
+                success=False,
+                data=None,
+                error=(
+                    f"tool {tool_name} is not allowed in the current turn; "
+                    f"allowed tools: {sorted(allowed_tool_names_for_turn)}"
+                ),
             )
-        except asyncio.TimeoutError:
-            result = ToolResult(tool=tool_name, success=False, data=None, error=f"tool timed out after {state['step_timeout_sec']}s")
+            tool_args = raw_tool_args = tool_call.get("args", {})
+            if not isinstance(tool_args, dict):
+                tool_args = {}
+        else:
+            raw_tool_args = tool_call.get("args", {})
+            tool_args = _merge_tool_args(
+                registry=registry,
+                tool_name=tool_name,
+                tool_args=raw_tool_args if isinstance(raw_tool_args, dict) else {},
+                variables=variables,
+            )
+            try:
+                result = await asyncio.wait_for(
+                    registry.execute(tool_name, tool_args, context),
+                    timeout=state["step_timeout_sec"],
+                )
+            except asyncio.TimeoutError:
+                result = ToolResult(tool=tool_name, success=False, data=None, error=f"tool timed out after {state['step_timeout_sec']}s")
         serialized = _canonicalize_tool_run(
             {
                 "step": len(tool_runs) + 1,

@@ -18,7 +18,7 @@ fi
 if ! docker image inspect "${BASE_IMAGE_REF}" >/dev/null 2>&1; then
   if latest_base_tag="$("${SCRIPT_DIR}/resolve_latest_base_tag.sh" 2>/dev/null)"; then
     BASE_IMAGE_TAG="${latest_base_tag}"
-    BASE_IMAGE_REF="$(registry_image_ref "${BASE_NAME}" "${BASE_IMAGE_TAG}")"
+    BASE_IMAGE_REF="$(registry_image_ref "${BASE_IMAGE_NAME}" "${BASE_IMAGE_TAG}")"
     log "pulling latest published base image ${BASE_IMAGE_REF}"
     docker pull "${BASE_IMAGE_REF}"
   else

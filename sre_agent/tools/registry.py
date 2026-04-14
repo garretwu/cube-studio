@@ -602,9 +602,17 @@ def build_default_registry() -> ToolRegistry:
     registry.register(
         ToolDefinition(
             name="skills.list_skills",
-            description="List discovered skills and available scripts/references.",
+            description="List discovered skills ranked by a required non-empty query, including available scripts/references.",
             safety_level=SafetyLevel.READ_ONLY,
-            params_schema={"type": "object"},
+            params_schema={
+                "type": "object",
+                "required": ["query"],
+                "properties": {
+                    "query": {"type": "string"},
+                    "refresh": {"type": "boolean"},
+                    "top_k": {"type": "integer"},
+                },
+            },
             tags=("skills", "readonly"),
         ),
         skills.list_skills,

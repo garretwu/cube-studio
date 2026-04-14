@@ -10,7 +10,7 @@ if [ -f "${SCRIPT_DIR}/image.env" ]; then
 fi
 
 IMAGE_REGISTRY="${IMAGE_REGISTRY:-}"
-IMAGE_NAMESPACE="${IMAGE_NAMESPACE:-cube-studio}"
+IMAGE_NAMESPACE="${IMAGE_NAMESPACE:-sre_agent}"
 APP_NAME="${APP_NAME:-sre-agent-web}"
 IMAGE_TAG="${IMAGE_TAG:-${IMAGE_TIMESTAMP:-}}"
 CONTAINER_NAME="${CONTAINER_NAME:-sre-agent-web}"

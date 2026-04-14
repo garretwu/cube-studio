@@ -14,7 +14,7 @@ spec:
     spec:
       containers:
         - name: sre-agent-web
-          image: cube-studio/sre-agent-web:202604092359
+          image: sre_agent/sre-agent-web:202604092359
           imagePullPolicy: IfNotPresent
           envFrom:
             - configMapRef:

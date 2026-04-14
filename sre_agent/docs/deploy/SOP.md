@@ -123,8 +123,8 @@ bash sre_agent/docker/build_images.sh
 
 会生成类似这样的 tag：
 
-- `cube-studio/sre-agent-base:202604100930`
-- `cube-studio/sre-agent-web:202604100930`
+- `sre_agent/sre-agent-base:202604100930`
+- `sre_agent/sre-agent-web:202604100930`
 
 同时会把元数据写到：
 
@@ -269,7 +269,7 @@ bash sre_agent/docker/run_container.sh
 ```bash
 cd /home/kevin/project/cube-studio
 IMAGE_REGISTRY=registry.example.com \
-IMAGE_NAMESPACE=cube-studio \
+IMAGE_NAMESPACE=sre_agent \
 bash sre_agent/docker/build_images.sh
 ```
 
@@ -323,7 +323,7 @@ bash apply.sh
 ```bash
 helm upgrade --install sre-agent-web \
   /home/kevin/project/cube-studio/sre_agent/deploy/helm/sre-agent-web \
-  --set image.repository=registry.example.com/cube-studio/sre-agent-web \
+  --set image.repository=registry.example.com/sre_agent/sre-agent-web \
   --set image.tag=202604100930 \
   --set secret.create=true \
   --set secret.sreOpenaiApiKey=your-real-key
@@ -334,7 +334,7 @@ helm upgrade --install sre-agent-web \
 ```bash
 helm template sre-agent-web \
   /home/kevin/project/cube-studio/sre_agent/deploy/helm/sre-agent-web \
-  --set image.repository=registry.example.com/cube-studio/sre-agent-web \
+  --set image.repository=registry.example.com/sre_agent/sre-agent-web \
   --set image.tag=202604100930 \
   --set secret.create=true \
   --set secret.sreOpenaiApiKey=dummy-key

@@ -21,7 +21,7 @@ def main() -> int:
             image_env[key.strip()] = value.strip()
 
     image_registry = str(os.environ.get("IMAGE_REGISTRY", image_env.get("IMAGE_REGISTRY", ""))).strip()
-    image_namespace = str(os.environ.get("IMAGE_NAMESPACE", image_env.get("IMAGE_NAMESPACE", "cube-studio"))).strip() or "cube-studio"
+    image_namespace = str(os.environ.get("IMAGE_NAMESPACE", image_env.get("IMAGE_NAMESPACE", "sre_agent"))).strip() or "sre_agent"
     app_name = str(os.environ.get("APP_NAME", image_env.get("APP_NAME", "sre-agent-web"))).strip() or "sre-agent-web"
     image_tag = str(os.environ.get("IMAGE_TAG", image_env.get("IMAGE_TIMESTAMP", ""))).strip()
 

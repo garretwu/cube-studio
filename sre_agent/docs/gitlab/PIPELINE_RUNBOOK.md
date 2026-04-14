@@ -13,7 +13,7 @@
 - 分支：`feature/sre-c-core-infra`
 - 镜像地址格式：`10.11.4.5:5000/<namespace>/<image-name>:<tag>`
 - 目标：
-  自动构建 `sre_agent` Web 工程镜像，提供 preview 容器，执行环境与业务验收，将验证通过的镜像发布到 Nexus，并支持手动提升为正式 release
+  自动构建 `sre_agent` Web 工程镜像，提供 preview 容器，自动发布可共享的 snapshot 镜像，执行手动验收，并支持手动提升为正式 release
 
 其他分支不会命中这套流程，入口限制由 [`.gitlab-ci.yml`](/home/kevin/project/cube-studio/.gitlab-ci.yml) 中的 `workflow: rules` 控制。
 
@@ -32,9 +32,9 @@
 2. 仅在依赖输入变化时重建基础镜像
 3. 使用最新可用基础镜像构建业务镜像
 4. 启动 preview 容器并输出访问地址
-5. 执行环境验收和业务验收
-6. 将验证通过的快照镜像推送到 Nexus
-7. 如有需要，再手动把本次验证通过的版本提升为正式 release
+5. preview 成功后自动将 snapshot 镜像推送到 Nexus，供内部测试和调试共享
+6. 如有需要，再手动执行环境验收和业务验收
+7. 最后按需手动把本次确认通过的版本提升为正式 release
 
 普通提交默认只在“业务相关改动”发生时才会进入这套完整流程。
 
@@ -42,7 +42,7 @@
 
 定时流程：
 
-- `weekly_build`：构建周镜像，验证通过后发布
+- `weekly_build`：构建周镜像，创建稳定的 weekly preview，并在验证通过后发布
 - `base_refresh`：强制刷新基础镜像，再重建业务镜像并验证发布
 - `cleanup`：清理过期 preview 容器与陈旧 Docker 资源
 
@@ -71,6 +71,7 @@
 | Job | 作用 | 触发方式 |
 | --- | --- | --- |
 | `preview_sre_agent_web` | 启动 preview 容器，规避容器名和端口冲突，并等待健康检查通过。 | 普通提交 |
+| `weekly_preview_sre_agent_web` | 启动 weekly preview 容器，提供每周稳定版本的预览入口。 | `weekly_build` 定时任务 |
 
 Preview 规则：
 
@@ -78,6 +79,8 @@ Preview 规则：
 - 后端和前端端口从可配置范围内随机选择
 - preview TTL 默认 72 小时
 - TTL 到期后由 cleanup 统一清理
+- 普通提交 preview 默认保留最近 `3` 个实例，避免测试或评审中的版本被新提交立即替换
+- weekly preview 默认仅保留最新 `1` 个实例，作为相对稳定的周版本评审入口
 
 ### 3.3 Release 阶段
 
@@ -85,7 +88,7 @@ Preview 规则：
 | --- | --- | --- |
 | `validate_sre_agent_runtime` | 验证环境可用性，包括容器启动、后端接口和前端页面。 | 普通提交、`weekly_build`、`base_refresh` |
 | `validate_sre_agent_business` | 验证后端和故障注入模块的核心业务行为。 | 普通提交、`weekly_build`、`base_refresh` |
-| `publish_sre_agent_snapshot` | 将验证通过的快照镜像推送到 Nexus，并输出 `docker pull` 地址。 | 两类验收全部通过后 |
+| `publish_preview_snapshot` | 在 preview 成功后自动将快照镜像推送到 Nexus，并输出 `docker pull` 地址。 | preview 成功后 |
 | `promote_sre_agent_release` | 手动提升为正式 release 镜像。 | 手动触发 |
 
 当前 release 门禁拆成两层：
@@ -105,6 +108,8 @@ Preview 规则：
 
 - 删除 TTL 已过期的 preview 容器
 - 删除 7 天前的受管 Docker 资源
+- 保留最近 `3` 个普通提交 preview 容器
+- 保留最新 `1` 个 weekly preview 容器
 - 保留最新的基础镜像
 - 保留最新的普通提交快照镜像
 - 保留最新的 weekly 镜像
@@ -119,6 +124,15 @@ Preview 规则：
 | 周构建业务镜像 | `weekly-YYYYMMDDHHMM` | `weekly-202604101700` |
 | 手动正式发布镜像 | `VERSION-YYYYMMDDHHMM` | `1.0.1-202604101800` |
 
+镜像目录规划：
+
+- preview 业务镜像：`10.11.4.5:5000/sre_agent/sre-agent-web-preview:<tag>`
+- weekly 业务镜像：`10.11.4.5:5000/sre_agent/sre-agent-web-weekly:<tag>`
+- release 业务镜像：`10.11.4.5:5000/sre_agent/sre-agent-web-release:<tag>`
+- preview 基础镜像：`10.11.4.5:5000/sre_agent/sre-agent-base-preview:<tag>`
+- weekly 基础镜像：`10.11.4.5:5000/sre_agent/sre-agent-base-weekly:<tag>`
+- release 基础镜像：`10.11.4.5:5000/sre_agent/sre-agent-base-release:<tag>`
+
 短 commit ID 使用 GitLab 预定义变量：
 
 `CI_COMMIT_SHORT_SHA`
@@ -127,7 +141,11 @@ Preview 规则：
 
 - [sre_agent/VERSION](/home/kevin/project/cube-studio/sre_agent/VERSION)
 
-如果手动触发时提供了 `RELEASE_VERSION`，就以传入值为准。
+如果手动运行 `promote_sre_agent_release` job 时提供了 `RELEASE_VERSION`，就以传入值为准。
+这个变量用于“提交前忘记更新版本文件”的补救场景：不要重跑整条 pipeline，直接打开当前 pipeline 中已经等待的 `promote_sre_agent_release` 手动 job，在 job 页面填写 `RELEASE_VERSION=1.0.1` 后点击 `Run job`。正式镜像 tag 会使用 `1.0.1-YYYYMMDDHHMM`，不会反向修改仓库里的 [sre_agent/VERSION](/home/kevin/project/cube-studio/sre_agent/VERSION)。
+如果忘记这次应该发布哪个版本，可填写 `RELEASE_VERSION=auto`，流水线会读取 Nexus 中最新的正式 release tag，并自动取下一个 patch 版本。
+版本号会在 promote 阶段校验，必须大于 Nexus 中最新正式版本；如果已发布 `1.0.1-*`，再次发布 `1.0.1-*` 会失败，从而避免重复版本和版本倒退。
+只有确实要重建同一个正式版本时，才允许额外设置 `ALLOW_RELEASE_VERSION_REUSE=1`。
 
 ## 5. GitLab 配置清单
 
@@ -135,19 +153,21 @@ Preview 规则：
 
 请在 GitLab 的 `Settings -> CI/CD -> Variables` 中创建这些变量。
 
-| 变量 | 是否必需 | 建议值 | 用途 |
-| --- | --- | --- | --- |
-| `NEXUS_REGISTRY` | 是 | `10.11.4.5:5000` | Nexus Docker 仓库地址 |
-| `NEXUS_USERNAME` | 是 | `kevin` | Nexus 登录用户名 |
-| `NEXUS_PASSWORD` | 是 | masked + protected | Nexus 登录密码或 token |
-| `PREVIEW_DOCKER_HOST` | 推荐 | runner 可访问的 Docker 主机 | 让 preview 容器在 job 结束后仍可继续使用 |
-| `PREVIEW_PUBLIC_HOST` | 推荐 | preview 主机 IP 或域名 | 用于输出对外访问地址 |
-| `SRE_OPENAI_API_KEY` | 可选 | masked | 如果希望 preview 真正连通 LLM，可在这里配置运行时 key；未显式配置时允许 fallback 到 `sre_agent/conf/config.yaml` 的 `llm.api_key` |
-| `FORCE_BASE_BUILD` | 可选 | `1` | 即使依赖未变化也强制重建基础镜像 |
-| `FORCE_FULL_PIPELINE` | 可选 | `1` | 即使当前提交不在业务相关路径中，也强制创建并执行完整流水线 |
-| `RELEASE_VERSION` | 可选 | 手动输入 | 手动 release promotion 时使用 |
-| `FEISHU_WEBHOOK_URL` | 推荐 | masked + protected | 飞书群机器人 webhook 地址 |
-| `FEISHU_NOTIFY_ON_COMMIT_FAILURE` | 可选 | `0` | 设为 `1` 时普通提交失败也发飞书通知 |
+| 变量 | 是否必需 | 建议值 | Visibility | 用途 |
+| --- | --- | --- | --- | --- |
+| `NEXUS_REGISTRY` | 是 | `10.11.4.5:5000` | `Visible` | Nexus Docker 仓库地址 |
+| `NEXUS_USERNAME` | 是 | `kevin` | `Visible` | Nexus 登录用户名 |
+| `NEXUS_PASSWORD` | 是 | 真实密码或 token | `Masked and hidden` | Nexus 登录密码或 token |
+| `PREVIEW_DOCKER_HOST` | 推荐 | runner 可访问的 Docker 主机 | `Visible` | 让 preview 容器在 job 结束后仍可继续使用 |
+| `PREVIEW_PUBLIC_HOST` | 推荐 | preview 主机 IP 或域名 | `Visible` | 用于输出对外访问地址 |
+| `SRE_OPENAI_API_KEY` | 可选 | 真实 LLM `API key` | `Masked and hidden` | 如果希望 preview 真正连通 LLM，可在这里配置运行时 key；未显式配置时允许 fallback 到 `sre_agent/conf/config.yaml` 的 `llm.api_key` |
+| `FORCE_BASE_BUILD` | 可选 | `1` | `Visible` | 即使依赖未变化也强制重建基础镜像 |
+| `FORCE_FULL_PIPELINE` | 可选 | `1` | `Visible` | 即使当前提交不在业务相关路径中，也强制创建并执行完整流水线 |
+| `RELEASE_VERSION` | 可选 | 手动输入或 `auto` | `Visible` | 手动 release promotion 时使用；`auto` 表示基于 Nexus 最新正式版本自动递增 patch |
+| `ALLOW_RELEASE_VERSION_REUSE` | 可选 | `0` | `Visible` | 仅在确实要重建已发布版本时设为 `1` |
+| `FEISHU_WEBHOOK_URL` | 推荐 | 真实 webhook 地址 | `Masked and hidden` | 飞书群机器人 webhook 地址 |
+| `FEISHU_NOTIFY_ON_COMMIT_FAILURE` | 可选 | `0` | `Visible` | 设为 `1` 时普通提交失败也发飞书通知 |
+| `FEISHU_NOTIFY_ON_SUCCESS` | 可选 | `1` | `Visible` | 设为 `1` 时对 preview、snapshot、release 成功发送飞书卡片；设为 `0` 可关闭成功通知 |
 
 安全建议：
 
@@ -160,6 +180,17 @@ Preview 规则：
 - 只有 `SRE_OPENAI_API_KEY` 支持在未显式声明时，从 [config.yaml](/home/kevin/project/cube-studio/sre_agent/conf/config.yaml) 的 `llm.api_key` fallback
 - `NEXUS_USERNAME`、`NEXUS_PASSWORD`、`FEISHU_WEBHOOK_URL` 等 CI/CD 凭证必须始终显式配置在 GitLab Variables 中
 - 如果已配置 `PREVIEW_PUBLIC_HOST`，即使 preview 因 `PREVIEW_DOCKER_HOST` 不可达而回退到 runner 本地 Docker，流水线日志也会优先输出 `PREVIEW_PUBLIC_HOST:随机端口` 作为浏览器访问地址
+
+变量取值填写建议：
+
+- `NEXUS_REGISTRY`：填写仓库地址本身，例如 `10.11.4.5:5000`
+- `NEXUS_USERNAME`：填写真实仓库用户名，例如 `kevin`
+- `NEXUS_PASSWORD`：填写真实仓库密码或 token 明文值
+- `PREVIEW_PUBLIC_HOST`：填写浏览器可访问的主机 IP 或域名，例如 `10.11.4.5`
+- `PREVIEW_DOCKER_HOST`：仅在需要通过远端 Docker API 起 preview 容器时填写，例如 `tcp://10.11.4.5:2375`
+- `SRE_OPENAI_API_KEY`：填写真实 LLM `API key` 明文值，不是字段名，不是路径，也不是 `config.yaml` 中的键名
+- `RELEASE_VERSION`：手动正式发版时填写版本号，例如 `1.0.1`；如果提交前忘记更新 [sre_agent/VERSION](/home/kevin/project/cube-studio/sre_agent/VERSION)，可在当前 pipeline 的 `promote_sre_agent_release` job 页面用这个变量临时覆盖，无需重跑整条 pipeline；如果不确定该发哪个版本，填写 `auto`
+- `ALLOW_RELEASE_VERSION_REUSE`：默认保持 `0`；只有明确需要重建已发布版本时才设置为 `1`
 
 ### 5.2 Runner 要求
 
@@ -199,6 +230,19 @@ Preview 规则：
 - `weekly_build` 失败时通知
 - `base_refresh` 失败时通知
 - `cleanup` 失败时通知
+
+成功通知：
+
+- `preview_sre_agent_web` 成功时发送 preview ready 卡片，包含 `Frontend URL`、`Backend URL` 和镜像拉取命令
+- `weekly_preview_sre_agent_web` 成功时发送 weekly preview ready 卡片，便于团队直接打开周版本页面
+- `publish_preview_snapshot` 成功时发送候选镜像发布卡片，包含 `docker pull ...`
+- `promote_sre_agent_release` 成功时发送正式发布卡片，包含 `Release Tag`、`Web Pull`、`Base Pull`
+- 不同类型的成功卡片使用不同 header 颜色与中文标题，便于在飞书消息流中快速区分 preview、snapshot 和 release
+
+说明：
+
+- 成功卡片用于“直接看地址和镜像”，日志里的 summary 仍然保留，便于回查
+- 如果不希望发送成功通知，可将 `FEISHU_NOTIFY_ON_SUCCESS` 设置为 `0`
 - release 阶段里的验证失败、快照发布失败、手动发版失败都通知
 - 普通 commit 流水线默认不通知，除非设置 `FEISHU_NOTIFY_ON_COMMIT_FAILURE=1`
 
@@ -259,7 +303,7 @@ Preview 规则：
 
 ### 8.1 普通提交流程
 
-适用于日常在 `feature/sre-c-core-infra` 上开发时的自动构建与发布。
+适用于日常在 `feature/sre-c-core-infra` 上开发时的自动构建、预览与快照共享。
 
 预期行为：
 
@@ -267,8 +311,9 @@ Preview 规则：
 2. 如果改动命中业务相关路径，流水线自动启动
 3. 构建业务快照镜像
 4. 创建 preview 容器
-5. 执行环境与业务验收
-6. 把验证通过的快照镜像推送到 Nexus
+5. 在 `preview_sre_agent_web` 日志末尾查看 `Frontend URL`
+6. preview 成功后自动推送 `snapshot` 镜像到 Nexus
+7. 由人工确认页面和服务效果
 
 如果只是文档改动或轻量无关改动，这条重流水线默认不会创建。
 
@@ -278,10 +323,22 @@ Preview 规则：
 FORCE_FULL_PIPELINE=1
 ```
 
+说明：
+
+- 普通提交场景下，`publish_preview_snapshot` 会在 preview 成功后自动执行
+- `validate_sre_agent_runtime`、`validate_sre_agent_business`、`promote_sre_agent_release` 仍然保留为手动触发
+- 也就是说，开发提交流水线会自动生成 preview 并上传候选镜像，但正式 release 仍需人工确认
+
+预览访问形式：
+
+```bash
+http://10.11.4.5:<frontend-port>
+```
+
 快照镜像拉取形式：
 
 ```bash
-docker pull 10.11.4.5:5000/cube-studio/sre-agent-web:<shortsha-yyyymmddhhmm>
+docker pull 10.11.4.5:5000/sre_agent/sre-agent-web-preview:<shortsha-yyyymmddhhmm>
 ```
 
 ### 8.2 周构建流程
@@ -292,13 +349,21 @@ docker pull 10.11.4.5:5000/cube-studio/sre-agent-web:<shortsha-yyyymmddhhmm>
 
 1. GitLab schedule 触发 `PIPELINE_KIND=weekly_build`
 2. 生成 `weekly-YYYYMMDDHHMM` 业务镜像
-3. 执行验收
-4. 推送到 Nexus
+3. 创建 `weekly_preview_sre_agent_web`
+4. 在 `weekly_preview_sre_agent_web` 日志末尾查看 `Frontend URL`
+5. 执行验收
+6. 推送到 Nexus
 
 周构建镜像拉取形式：
 
 ```bash
-docker pull 10.11.4.5:5000/cube-studio/sre-agent-web:weekly-<yyyymmddhhmm>
+docker pull 10.11.4.5:5000/sre_agent/sre-agent-web-weekly:weekly-<yyyymmddhhmm>
+```
+
+周构建预览访问形式：
+
+```bash
+http://10.11.4.5:<frontend-port>
 ```
 
 ### 8.3 基础镜像刷新流程
@@ -315,20 +380,69 @@ docker pull 10.11.4.5:5000/cube-studio/sre-agent-web:weekly-<yyyymmddhhmm>
 
 ### 8.4 手动正式发布流程
 
-适用于把某次已验证通过的快照版本提升为正式 release。
+适用于在 preview 和自动生成的 snapshot 确认无误后，由人工执行验收，并按需提升为正式 release。
 
 操作方式：
 
-1. 打开 `feature/sre-c-core-infra` 上一条成功的 pipeline
-2. 手动执行 `promote_sre_agent_release`
-3. 可选地传入 `RELEASE_VERSION`
-4. 如果不传，CI 会读取 [sre_agent/VERSION](/home/kevin/project/cube-studio/sre_agent/VERSION)
+1. 打开 `feature/sre-c-core-infra` 上一条 preview 成功的 pipeline
+2. 先手动执行 `validate_sre_agent_runtime`
+3. 再手动执行 `validate_sre_agent_business`
+4. 如果这次只需要候选镜像，preview 成功并自动完成 `publish_preview_snapshot` 后即可结束
+5. 如果这次要做正式发版，再最后手动执行 `promote_sre_agent_release`
+6. 如需指定正式版本号，在手动执行 `promote_sre_agent_release` 时传入 `RELEASE_VERSION`
+7. 如果不传，CI 会读取 [sre_agent/VERSION](/home/kevin/project/cube-studio/sre_agent/VERSION)
+
+推荐顺序：
+
+1. `validate_sre_agent_runtime`
+2. `validate_sre_agent_business`
+3. `promote_sre_agent_release`
 
 正式发布镜像拉取形式：
 
 ```bash
-docker pull 10.11.4.5:5000/cube-studio/sre-agent-web:<version-yyyymmddhhmm>
+docker pull 10.11.4.5:5000/sre_agent/sre-agent-web-release:<version-yyyymmddhhmm>
 ```
+
+正式 release 获取方式：
+
+- 手动执行 `promote_sre_agent_release` 成功后，job 日志末尾会输出正式发布 summary
+- 其中 `Base Pull` 和 `Web Pull` 就是可直接复制的镜像获取命令
+
+### 8.5 `snapshot` 与正式 `release` 的区别
+
+`snapshot` 用于候选版本验证，正式 `release` 用于确定版本交付。
+
+`snapshot` 特点：
+
+- 与本次提交或周构建直接绑定
+- 适合测试、联调、回看某次提交
+- 代表“当前镜像已通过现有验收，可以继续验证”
+- 不代表正式对外交付版本
+
+正式 `release` 特点：
+
+- 由人工在 preview 和验收完成后手动提升
+- 使用 `VERSION-YYYYMMDDHHMM` 形式的版本 tag
+- 更适合写入发布记录、变更单、部署单和回滚清单
+- 代表“这个版本被明确选中，作为正式交付版本”
+
+建议理解方式：
+
+- `publish_preview_snapshot`：在 preview 成功后自动发布候选镜像
+- `promote_sre_agent_release`：发布正式版本
+
+### 8.6 夜间或值班场景建议
+
+如果在夜间或值班窗口执行发布，建议严格按这个顺序操作：
+
+1. 先确认 preview 页面和接口访问正常
+2. 执行 `validate_sre_agent_runtime`
+3. 执行 `validate_sre_agent_business`
+4. 确认两类验收都通过
+5. 执行 `publish_preview_snapshot`
+6. 如果需要正式发版，再执行 `promote_sre_agent_release`
+7. 记录最终的 `docker pull` 地址、版本 tag 和 pipeline 链接
 
 ## 9. 成功运行后应看到什么
 
@@ -339,7 +453,7 @@ docker pull 10.11.4.5:5000/cube-studio/sre-agent-web:<version-yyyymmddhhmm>
 - 验证通过日志
 - 发布后的 `docker pull` 地址
 
-如果手动 release promotion 成功，还应该看到正式 release 镜像的拉取命令。
+如果手动 release promotion 成功，还应该看到正式发布 summary，包括 `Release Tag`、`Base Pull` 和 `Web Pull`。
 
 如果启用了飞书通知，且被监控的 job 失败，对应飞书卡片里还应该带有 pipeline 和 job 的跳转链接。
 
@@ -348,7 +462,7 @@ docker pull 10.11.4.5:5000/cube-studio/sre-agent-web:<version-yyyymmddhhmm>
 - 如果 preview 不要求在 job 结束后继续访问，可以不配置 `PREVIEW_DOCKER_HOST`
 - 如果 preview 要供团队共享，建议同时配置 `PREVIEW_DOCKER_HOST` 和 `PREVIEW_PUBLIC_HOST`
 - 如果基础依赖变化频繁，优先继续使用“依赖变化触发重建”，`base_refresh` 作为周期兜底
-- 如果后续发布策略继续演进，建议在 `publish_sre_agent_snapshot` 之后追加环境部署 job，而不是把部署逻辑混进 build job
+- 如果后续发布策略继续演进，建议在 `publish_preview_snapshot` 之后追加环境部署 job，而不是把部署逻辑混进 build job
 
 ## 11. 相关文件索引
 
