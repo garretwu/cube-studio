@@ -3467,9 +3467,50 @@ def build_api_router() -> APIRouter:
                 "references": item.references,
                 "permissions": item.permissions,
                 "match_score": item.match_score,
+                "status": "available",
+                "updated_at": datetime.fromtimestamp(item.skill_file.stat().st_mtime, UTC).isoformat().replace("+00:00", "Z"),
+                "lifecycle_status": "published" if item.scope == "builtin" else "draft",
+                "file_name": item.skill_file.name,
             }
             for item in skills
         ]
+        return SREResponse(success=True, data=payload, trace_id=_trace_id(request))
+
+    @router.get("/skills/{skill_id}")
+    async def get_skill_detail(
+        skill_id: str,
+        request: Request,
+        user: CurrentUser = Depends(get_current_user),
+    ) -> SREResponse[dict[str, Any]]:
+        _ = user
+        target_id = str(skill_id).strip()
+        if not target_id:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="skill not found")
+
+        registry = SkillRegistry()
+        try:
+            skill, markdown_content = registry.load_skill(target_id)
+        except Exception as exc:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+
+        payload = {
+            "id": skill.id,
+            "name": skill.name,
+            "scope": skill.scope,
+            "description": skill.description,
+            "summary": skill.summary,
+            "source": skill.source,
+            "path": skill.path,
+            "scripts": skill.scripts,
+            "references": skill.references,
+            "permissions": skill.permissions,
+            "match_score": skill.match_score,
+            "status": "available",
+            "updated_at": datetime.fromtimestamp(skill.skill_file.stat().st_mtime, UTC).isoformat().replace("+00:00", "Z"),
+            "lifecycle_status": "published" if skill.scope == "builtin" else "draft",
+            "file_name": skill.skill_file.name,
+            "markdown_content": markdown_content,
+        }
         return SREResponse(success=True, data=payload, trace_id=_trace_id(request))
 
     @router.get("/tools/channels/status")
@@ -3483,4 +3524,3 @@ def build_api_router() -> APIRouter:
         return SREResponse(success=True, data=payload, trace_id=_trace_id(request))
 
     return router
-

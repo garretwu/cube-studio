@@ -73,16 +73,83 @@ def _coerce_string_list(value: Any, *, key: str) -> list[str]:
     raise ToolValidationError(f"parameter {key!r} must be a list of strings")
 
 
+def _flatten_text_parts(value: Any) -> list[str]:
+    parts: list[str] = []
+    if isinstance(value, str):
+        text = value.strip()
+        if text:
+            parts.append(text)
+        return parts
+    if isinstance(value, dict):
+        for key, item in value.items():
+            key_text = str(key).strip()
+            if key_text:
+                parts.append(key_text)
+            parts.extend(_flatten_text_parts(item))
+        return parts
+    if isinstance(value, list):
+        for item in value:
+            parts.extend(_flatten_text_parts(item))
+        return parts
+    if value is None:
+        return parts
+    text = str(value).strip()
+    if text:
+        parts.append(text)
+    return parts
+
+
+def _dedupe_terms(parts: list[str]) -> list[str]:
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for item in parts:
+        text = " ".join(str(item).strip().split())
+        if not text:
+            continue
+        key = text.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        ordered.append(text)
+    return ordered
+
+
+def _build_skill_query(params: dict[str, Any], context: ToolExecutionContext) -> str:
+    explicit_query = str(params.get("query", "") or "").strip()
+    if explicit_query:
+        return explicit_query
+
+    parts: list[str] = []
+    alert_name = str(params.get("alert_name", "") or "").strip()
+    if alert_name:
+        parts.append(alert_name)
+
+    labels = params.get("labels")
+    annotations = params.get("annotations")
+    parts.extend(_flatten_text_parts(labels))
+    parts.extend(_flatten_text_parts(annotations))
+
+    structured_query = " ".join(_dedupe_terms(parts)).strip()
+    if structured_query:
+        return structured_query
+
+    metadata_query = str(context.metadata.get("query", "") or "").strip()
+    if metadata_query:
+        return metadata_query
+    return ""
+
+
 async def list_skills(params: dict[str, Any], context: ToolExecutionContext) -> Any:
     registry = _get_skill_registry(context)
     refresh = bool(params.get("refresh", False))
-    query = str(params.get("query", "") or "").strip()
+    query = _build_skill_query(params, context)
+    if not query:
+        raise ToolValidationError(
+            "parameter 'query' is required; or provide alert_name/labels/annotations so a query can be derived"
+        )
     top_k = max(1, int(params.get("top_k", 20)))
     skills = registry.discover(refresh=refresh)
-    if query:
-        skills = rank_skills(query, skills, top_k=top_k)
-    else:
-        skills = skills[:top_k]
+    skills = rank_skills(query, skills, top_k=top_k)
     return {
         "skills": [_serialize_skill(skill) for skill in skills],
         "warnings": registry.warnings,

@@ -10,7 +10,28 @@
 
 set -euo pipefail
 
-PYTHON_BIN="${PYTHON_BIN:-/root/workspace/.cube/bin/python}"
+resolve_python_bin() {
+  if [[ -n "${PYTHON_BIN:-}" && -x "${PYTHON_BIN}" ]]; then
+    printf '%s\n' "${PYTHON_BIN}"
+    return 0
+  fi
+  if [[ -n "${VIRTUAL_ENV:-}" && -x "${VIRTUAL_ENV}/bin/python" ]]; then
+    printf '%s\n' "${VIRTUAL_ENV}/bin/python"
+    return 0
+  fi
+  if command -v python3 >/dev/null 2>&1; then
+    command -v python3
+    return 0
+  fi
+  if command -v python >/dev/null 2>&1; then
+    command -v python
+    return 0
+  fi
+  printf 'No usable Python interpreter found. Set PYTHON_BIN explicitly.\n' >&2
+  return 1
+}
+
+PYTHON_BIN="$(resolve_python_bin)"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SKILL_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 REPO_ROOT="$(cd "${SKILL_DIR}/../../../.." && pwd)"
@@ -21,6 +42,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import importlib.util
 import json
 import os
 import re
@@ -149,6 +171,17 @@ class CommandResult:
     command: str
 
 
+def _load_ssh_channel_class():
+    repo_root = Path(os.environ["PYTHONPATH"].split(":", 1)[0])
+    module_path = repo_root / "lib" / "channels" / "ssh.py"
+    spec = importlib.util.spec_from_file_location("cube_studio_lib_channels_ssh", module_path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"failed to load SSHChannel module from {module_path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.SSHChannel
+
+
 class TargetExecutor:
     def __init__(self, args: argparse.Namespace) -> None:
         self.args = args
@@ -179,7 +212,7 @@ class TargetExecutor:
         )
 
     async def _run_remote(self, command: str, *, use_sudo: bool) -> CommandResult:
-        from lib.channels.ssh import SSHChannel
+        SSHChannel = _load_ssh_channel_class()
 
         if self._ssh_channel is None:
             inventory = {

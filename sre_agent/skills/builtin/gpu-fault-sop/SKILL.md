@@ -1,6 +1,6 @@
 ---
 id: gpu-fault-sop
-name: gpu-fault-sop
+name: GPU Fault SOP
 description: >
   AIDC GPU故障诊断与恢复的标准操作流程(SOP)，专为消费级GPU(RTX 5090/4090等)组建的
   推理/训练集群设计。当用户报告GPU相关故障、XID错误、GPU掉卡、显存错误、温度异常、

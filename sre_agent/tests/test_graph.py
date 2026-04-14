@@ -319,6 +319,436 @@ description: Diagnose vLLM latency with a Claude-style skill.
             self.assertEqual(llm.calls[-1]["tool_choice"], "auto")
             self.assertEqual(result["tool_runs"][-1]["data"]["status"], "success")
 
+    async def test_first_round_binds_only_skill_tools_when_available(self) -> None:
+        llm = _FakeLLM(
+            [
+                AIMessage(
+                    content="Discover matching skills first.",
+                    tool_calls=[
+                        {
+                            "name": "skills.list_skills",
+                            "args": {"query": "gpu missing card diagnosis"},
+                            "id": "call-1",
+                            "type": "tool_call",
+                        }
+                    ],
+                ),
+                AIMessage(
+                    content="Load the discovered skill details.",
+                    tool_calls=[
+                        {
+                            "name": "skills.load_skill",
+                            "args": {"skill_id": "builtin-gpu-drop-diagnosis"},
+                            "id": "call-2",
+                            "type": "tool_call",
+                        }
+                    ],
+                ),
+                AIMessage(
+                    content="Run the discovered skill script.",
+                    tool_calls=[
+                        {
+                            "name": "skills.run_skill",
+                            "args": {"skill_id": "builtin-gpu-drop-diagnosis", "script": "gpu_drop_recover.sh"},
+                            "id": "call-3",
+                            "type": "tool_call",
+                        }
+                    ],
+                ),
+                AIMessage(
+                    content=json.dumps(
+                        {
+                            "thought": "Skill-first round completed.",
+                            "diagnosis": {
+                                "root_cause": "Skill discovery completed",
+                                "root_cause_layer": "service",
+                                "root_cause_entities": ["service:test"],
+                                "confidence": 0.6,
+                                "impact_summary": "The first round was restricted to skill tools.",
+                                "affected_services": ["service:test"],
+                                "triage_priority": "P2",
+                                "diagnosis_certainty": "probable",
+                            },
+                            "remediation_plan": None,
+                        }
+                    )
+                ),
+            ]
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            skill_root = Path(tmpdir) / "skills"
+            skill_dir = skill_root / "gpu-drop-diagnosis"
+            (skill_dir / "scripts").mkdir(parents=True, exist_ok=True)
+            (skill_dir / "SKILL.md").write_text(
+                """---
+id: builtin-gpu-drop-diagnosis
+name: GPU Drop Diagnosis
+description: Diagnose missing GPU and fallen-off-bus incidents.
+tags:
+  - gpu
+  - missing
+  - gpucardmissing
+---
+
+# GPU Drop Diagnosis
+""",
+                encoding="utf-8",
+            )
+            (skill_dir / "scripts" / "gpu_drop_recover.sh").write_text(
+                "#!/usr/bin/env bash\necho ok\n",
+                encoding="utf-8",
+            )
+
+            from sre_agent.skills import SkillRegistry
+
+            result = await run_diagnosis(
+                query="Diagnose GPUCardMissing using skills first.",
+                context=_happy_context(),
+                variables={"alert_name": "GPUCardMissing"},
+                llm=llm,
+                step_timeout_sec=5.0,
+                total_timeout_sec=10.0,
+                checkpoint_dir=None,
+                allowed_tool_names=[
+                    "skills.list_skills",
+                    "skills.load_skill",
+                    "skills.read_skill_ref",
+                    "skills.run_skill",
+                    "gpu.get_metrics",
+                    "gpu.get_processes",
+                ],
+                skill_registry=SkillRegistry(root=skill_root),
+            )
+
+        self.assertEqual(result["status"], "diagnosed")
+        first_bound_tool_names = [str(getattr(tool, "name", "")) for tool in llm.calls[0]["tools"]]
+        self.assertEqual(
+            first_bound_tool_names,
+            ["skills.list_skills", "skills.load_skill", "skills.read_skill_ref", "skills.run_skill"],
+        )
+        self.assertEqual(result["tool_runs"][0]["tool"], "skills.list_skills")
+
+    async def test_first_round_rejects_unbound_tool_calls_from_provider(self) -> None:
+        llm = _FakeLLM(
+            [
+                AIMessage(
+                    content="I will inspect GPU metrics first.",
+                    tool_calls=[
+                        {
+                            "name": "gpu.get_metrics",
+                            "args": {"node": "10.11.4.13", "namespace": "monitoring"},
+                            "id": "call-1",
+                            "type": "tool_call",
+                        }
+                    ],
+                ),
+                AIMessage(
+                    content=json.dumps(
+                        {
+                            "thought": "The provider returned an out-of-policy tool call, so execution was rejected.",
+                            "diagnosis": {
+                                "root_cause": "Tool policy violation from provider tool call",
+                                "root_cause_layer": "service",
+                                "root_cause_entities": ["service:test"],
+                                "confidence": 0.7,
+                                "impact_summary": "The first turn rejected a non-skill tool call.",
+                                "affected_services": ["service:test"],
+                                "triage_priority": "P2",
+                                "diagnosis_certainty": "probable",
+                            },
+                            "remediation_plan": None,
+                        }
+                    )
+                ),
+            ]
+        )
+
+        result = await run_diagnosis(
+            query="Diagnose GPUCardMissing using skills first.",
+            context=_happy_context(),
+            variables={"alert_name": "GPUCardMissing"},
+            llm=llm,
+            step_timeout_sec=5.0,
+            total_timeout_sec=10.0,
+            checkpoint_dir=None,
+            allowed_tool_names=[
+                "skills.list_skills",
+                "skills.load_skill",
+                "skills.read_skill_ref",
+                "skills.run_skill",
+                "gpu.get_metrics",
+                "gpu.get_processes",
+            ],
+        )
+
+        self.assertEqual(result["status"], "diagnosed")
+        self.assertEqual(result["tool_runs"][0]["tool"], "gpu.get_metrics")
+        self.assertFalse(result["tool_runs"][0]["success"])
+        self.assertIn("not allowed in the current turn", result["tool_runs"][0]["error"])
+        self.assertIn("skills.list_skills", result["tool_runs"][0]["error"])
+
+    async def test_repeated_skill_list_is_promoted_to_load_skill(self) -> None:
+        llm = _FakeLLM(
+            [
+                AIMessage(
+                    content="Discover matching skills first.",
+                    tool_calls=[
+                        {
+                            "name": "skills.list_skills",
+                            "args": {"query": "gpu missing card diagnosis"},
+                            "id": "call-1",
+                            "type": "tool_call",
+                        }
+                    ],
+                ),
+                AIMessage(
+                    content="List matching skills again.",
+                    tool_calls=[
+                        {
+                            "name": "skills.list_skills",
+                            "args": {"query": "gpu missing card diagnosis"},
+                            "id": "call-2",
+                            "type": "tool_call",
+                        }
+                    ],
+                ),
+                AIMessage(
+                    content=json.dumps(
+                        {
+                            "thought": "The system promoted repeated discovery to skill loading.",
+                            "diagnosis": {
+                                "root_cause": "已命中高相关 skill，并自动推进到加载详情阶段",
+                                "root_cause_layer": "service",
+                                "root_cause_entities": ["service:test"],
+                                "confidence": 0.78,
+                                "impact_summary": "重复的 skills.list_skills 已被改写为 skills.load_skill。",
+                                "affected_services": ["service:test"],
+                                "triage_priority": "P2",
+                                "diagnosis_certainty": "probable",
+                            },
+                            "remediation_plan": None,
+                        }
+                    )
+                ),
+            ]
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            skill_root = Path(tmpdir) / "skills"
+            skill_dir = skill_root / "gpu-drop-diagnosis"
+            skill_dir.mkdir(parents=True, exist_ok=True)
+            (skill_dir / "SKILL.md").write_text(
+                """---
+name: GPU Drop Diagnosis
+description: Diagnose missing GPU and fallen-off-bus incidents.
+tags:
+  - gpu
+  - missing
+  - gpucardmissing
+---
+
+# GPU Drop Diagnosis
+""",
+                encoding="utf-8",
+            )
+
+            from sre_agent.skills import SkillRegistry
+
+            result = await run_diagnosis(
+                query="Diagnose GPUCardMissing using skills first.",
+                context=_happy_context(),
+                variables={"alert_name": "GPUCardMissing"},
+                llm=llm,
+                step_timeout_sec=5.0,
+                total_timeout_sec=10.0,
+                checkpoint_dir=None,
+                allowed_tool_names=[
+                    "skills.list_skills",
+                    "skills.load_skill",
+                    "skills.read_skill_ref",
+                    "skills.run_skill",
+                ],
+                skill_registry=SkillRegistry(root=skill_root),
+            )
+
+        self.assertEqual(result["status"], "diagnosed")
+        self.assertEqual([item["tool"] for item in result["tool_runs"][:2]], ["skills.list_skills", "skills.load_skill"])
+        self.assertEqual(result["tool_runs"][1]["params"]["skill_id"], "gpu-drop-diagnosis")
+
+    async def test_high_score_skill_listing_auto_loads_without_repeat(self) -> None:
+        llm = _FakeLLM(
+            [
+                AIMessage(
+                    content="Discover matching skills first.",
+                    tool_calls=[
+                        {
+                            "name": "skills.list_skills",
+                            "args": {"query": "gpu missing card nvidia-smi node diagnostic"},
+                            "id": "call-1",
+                            "type": "tool_call",
+                        }
+                    ],
+                ),
+                AIMessage(
+                    content="I should continue with GPU evidence gathering.",
+                    tool_calls=[],
+                ),
+                AIMessage(
+                    content=json.dumps(
+                        {
+                            "thought": "The high-score skill was auto-loaded after discovery.",
+                            "diagnosis": {
+                                "root_cause": "已自动加载高分匹配的 skill 详情",
+                                "root_cause_layer": "service",
+                                "root_cause_entities": ["service:test"],
+                                "confidence": 0.8,
+                                "impact_summary": "命中高分 skill 后无需等待模型重复 list_skills。",
+                                "affected_services": ["service:test"],
+                                "triage_priority": "P2",
+                                "diagnosis_certainty": "probable",
+                            },
+                            "remediation_plan": None,
+                        }
+                    ),
+                ),
+            ]
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            skill_root = Path(tmpdir) / "skills"
+            skill_dir = skill_root / "gpu-drop-diagnosis"
+            skill_dir.mkdir(parents=True, exist_ok=True)
+            (skill_dir / "SKILL.md").write_text(
+                """---
+id: builtin-gpu-drop-diagnosis
+name: GPU Drop Diagnosis
+description: Diagnose missing GPU and fallen-off-bus incidents.
+tags:
+  - gpu
+  - missing
+  - gpucardmissing
+---
+
+# GPU Drop Diagnosis
+""",
+                encoding="utf-8",
+            )
+
+            from sre_agent.skills import SkillRegistry
+
+            result = await run_diagnosis(
+                query="Diagnose GPUCardMissing using skills first.",
+                context=_happy_context(),
+                variables={"alert_name": "GPUCardMissing"},
+                llm=llm,
+                step_timeout_sec=5.0,
+                total_timeout_sec=10.0,
+                checkpoint_dir=None,
+                allowed_tool_names=[
+                    "skills.list_skills",
+                    "skills.load_skill",
+                    "skills.read_skill_ref",
+                    "skills.run_skill",
+                ],
+                skill_registry=SkillRegistry(root=skill_root),
+            )
+
+        self.assertEqual(result["status"], "diagnosed")
+        self.assertEqual([item["tool"] for item in result["tool_runs"][:2]], ["skills.list_skills", "skills.load_skill"])
+        self.assertEqual(result["tool_runs"][1]["params"]["skill_id"], "builtin-gpu-drop-diagnosis")
+
+    async def test_single_script_skill_auto_runs_after_load(self) -> None:
+        llm = _FakeLLM(
+            [
+                AIMessage(
+                    content="Discover matching skills first.",
+                    tool_calls=[
+                        {
+                            "name": "skills.list_skills",
+                            "args": {"query": "gpu missing card nvidia-smi node diagnostic"},
+                            "id": "call-1",
+                            "type": "tool_call",
+                        }
+                    ],
+                ),
+                AIMessage(
+                    content="I should inspect the loaded skill details.",
+                    tool_calls=[],
+                ),
+                AIMessage(
+                    content="I should continue investigating.",
+                    tool_calls=[],
+                ),
+                AIMessage(
+                    content=json.dumps(
+                        {
+                            "thought": "The single-script skill was auto-executed after loading.",
+                            "diagnosis": {
+                                "root_cause": "已自动执行单脚本 skill",
+                                "root_cause_layer": "service",
+                                "root_cause_entities": ["service:test"],
+                                "confidence": 0.82,
+                                "impact_summary": "load_skill 成功且只有一个脚本时，系统会自动推进到 run_skill。",
+                                "affected_services": ["service:test"],
+                                "triage_priority": "P2",
+                                "diagnosis_certainty": "probable",
+                            },
+                            "remediation_plan": None,
+                        }
+                    ),
+                ),
+            ]
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            skill_root = Path(tmpdir) / "skills"
+            skill_dir = skill_root / "gpu-drop-diagnosis"
+            (skill_dir / "scripts").mkdir(parents=True, exist_ok=True)
+            (skill_dir / "SKILL.md").write_text(
+                """---
+id: builtin-gpu-drop-diagnosis
+name: GPU Drop Diagnosis
+description: Diagnose missing GPU and fallen-off-bus incidents.
+tags:
+  - gpu
+  - missing
+  - gpucardmissing
+---
+
+# GPU Drop Diagnosis
+""",
+                encoding="utf-8",
+            )
+            (skill_dir / "scripts" / "gpu_drop_recover.sh").write_text(
+                "#!/usr/bin/env bash\necho auto-run\n",
+                encoding="utf-8",
+            )
+
+            from sre_agent.skills import SkillRegistry
+
+            result = await run_diagnosis(
+                query="Diagnose GPUCardMissing using skills first.",
+                context=_happy_context(),
+                variables={"alert_name": "GPUCardMissing"},
+                llm=llm,
+                step_timeout_sec=5.0,
+                total_timeout_sec=10.0,
+                checkpoint_dir=None,
+                allowed_tool_names=[
+                    "skills.list_skills",
+                    "skills.load_skill",
+                    "skills.read_skill_ref",
+                    "skills.run_skill",
+                ],
+                skill_registry=SkillRegistry(root=skill_root),
+            )
+
+        self.assertEqual(result["status"], "diagnosed")
+        self.assertEqual(
+            [item["tool"] for item in result["tool_runs"][:3]],
+            ["skills.list_skills", "skills.load_skill", "skills.run_skill"],
+        )
+        self.assertEqual(result["tool_runs"][2]["params"]["skill_id"], "builtin-gpu-drop-diagnosis")
+        self.assertEqual(result["tool_runs"][2]["params"]["script"], "gpu_drop_recover.sh")
+
     async def test_react_happy_path_generates_trace_and_diagnosis(self) -> None:
         llm = _FakeLLM(
             [

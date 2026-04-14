@@ -175,6 +175,22 @@ Read the reference first and then run the script.
             self.assertTrue(listed.success)
             self.assertEqual(listed.data["skills"][0]["skill_id"], "doc-skill")
 
+            missing_query = await tool_registry.execute("skills.list_skills", {}, context)
+            self.assertFalse(missing_query.success)
+            self.assertIn("parameter 'query' is required", missing_query.error)
+
+            derived_query = await tool_registry.execute(
+                "skills.list_skills",
+                {
+                    "alert_name": "doc-skill",
+                    "labels": {"category": "scripted"},
+                    "annotations": {"summary": "diagnosis skill"},
+                },
+                context,
+            )
+            self.assertTrue(derived_query.success)
+            self.assertEqual(derived_query.data["skills"][0]["skill_id"], "doc-skill")
+
             loaded = await tool_registry.execute("skills.load_skill", {"skill_id": "doc-skill"}, context)
             self.assertTrue(loaded.success)
             self.assertIn("Doc Skill", loaded.data["content"])

@@ -1,6 +1,6 @@
 ---
 id: builtin-gpu-drop-diagnosis
-name: gpu-drop-diagnosis
+name: GPU Drop Diagnosis
 description: >
   Diagnose GPU fallen-off-bus and missing-GPU incidents, including the partial
   recovery case where a PCIe device is still present but NVIDIA has not brought
@@ -23,6 +23,12 @@ tags:
 # GPU 掉卡诊断与恢复
 
 这个 skill 用于处理 GPU 掉卡、`nvidia-smi` 少卡、XID 79、PCIe 设备消失等场景。
+
+## Script Name
+
+- This skill exposes exactly one runnable script: `gpu_drop_recover.sh`
+- When calling `skills.run_skill`, the `script` field must be exactly `gpu_drop_recover.sh`
+- Do not invent alternate names such as `diagnose_gpu_missing`
 
 默认只需要运行一次脚本：
 
