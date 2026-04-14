@@ -7,6 +7,7 @@ import type {
   DiagnosisLocalAuditRecord,
   DiagnosisSession,
   DiagnosisStartedData,
+  LiveFinalAnswerBlock,
   LiveThinkingBlock,
   Observation,
   RemediationPlan,
@@ -55,6 +56,7 @@ type DiagnosisState = {
   alertSnapshot: DiagnosisStartedData["alert"] | null;
   topologyContext: DiagnosisStartedData["topology"] | null;
   liveThinking: LiveThinkingBlock | null;
+  liveFinalAnswer: LiveFinalAnswerBlock | null;
   streamingText: string;
   streamingNode: string | null;
   isStreamingDiagnosis: boolean;
@@ -236,7 +238,7 @@ function toTraceEntryFromNodeSnapshot(
 
   if (eventType === "tool_call" || eventType === "thinking_step") {
     const actionType = item.action_type;
-    return {
+    const entry: ThinkingStep = {
       step: typeof item.step === "number" ? item.step : fallbackStep,
       timestamp: typeof item.timestamp === "string" ? item.timestamp : new Date().toISOString(),
       thought:
@@ -251,9 +253,12 @@ function toTraceEntryFromNodeSnapshot(
       tool_name: typeof item.tool_name === "string" ? item.tool_name : null,
       tool_params: isRecord(item.tool_params) ? item.tool_params : null,
       confidence: typeof item.confidence === "number" ? item.confidence : null,
-      next_action: typeof item.next_action === "string" ? item.next_action : null,
       thought_duration_sec: typeof item.thought_duration_sec === "number" ? item.thought_duration_sec : null,
     };
+    if (typeof item.next_action === "string" && item.next_action.trim().length > 0) {
+      entry.next_action = item.next_action;
+    }
+    return entry;
   }
 
   return null;
@@ -671,6 +676,7 @@ function deriveApprovalState(
   const currentPlanVersion = parsePlanVersionFromPlanId(plan?.plan_id) ?? 1;
   let latestPlanVersion = currentPlanVersion;
   let approvedPlanVersion: number | null = null;
+  let latestPlanMissingReason: string | undefined;
 
   events.forEach((event) => {
     const data = isRecord(event.data) ? event.data : {};
@@ -685,6 +691,13 @@ function deriveApprovalState(
       return;
     }
     const stage = String(data.stage ?? "").trim().toLowerCase();
+    if (stage === "plan_unavailable") {
+      const message = normalizeNonEmptyString(data.message);
+      if (message) {
+        latestPlanMissingReason = message;
+      }
+      return;
+    }
     if (stage === "execution_started" && explicitVersion) {
       approvedPlanVersion = explicitVersion;
       if (explicitVersion > latestPlanVersion) {
@@ -701,7 +714,7 @@ function deriveApprovalState(
       : "仅最新版本可审批，请先刷新或重新生成最新方案。";
   const planMissingReason = hasPlan
     ? undefined
-    : "当前会话尚未产出修复计划，请先完成诊断或切换会话。";
+    : latestPlanMissingReason ?? "当前会话尚未产出修复计划，请先完成诊断或切换会话。";
 
   return {
     currentPlanVersion,
@@ -740,6 +753,7 @@ export const useDiagnosisStore = create<DiagnosisState>((set, get) => ({
   alertSnapshot: null,
   topologyContext: null,
   liveThinking: null,
+  liveFinalAnswer: null,
   streamingText: "",
   streamingNode: null,
   isStreamingDiagnosis: false,
@@ -776,6 +790,7 @@ export const useDiagnosisStore = create<DiagnosisState>((set, get) => ({
       alertSnapshot: null,
       topologyContext: null,
       liveThinking: null,
+      liveFinalAnswer: null,
       streamingText: "",
       streamingNode: null,
       isStreamingDiagnosis: false,
@@ -836,6 +851,7 @@ export const useDiagnosisStore = create<DiagnosisState>((set, get) => ({
           alertSnapshot: null,
           topologyContext: null,
           liveThinking: null,
+          liveFinalAnswer: null,
           streamingText: "",
           streamingNode: null,
           isStreamingDiagnosis: false,
@@ -876,6 +892,7 @@ export const useDiagnosisStore = create<DiagnosisState>((set, get) => ({
         alertSnapshot: historicalAlert,
         topologyContext: historicalTopology,
         liveThinking: null,
+        liveFinalAnswer: null,
         error: undefined,
       });
     } catch (error) {
@@ -903,6 +920,7 @@ export const useDiagnosisStore = create<DiagnosisState>((set, get) => ({
         alertSnapshot: null,
         topologyContext: null,
         liveThinking: null,
+        liveFinalAnswer: null,
         streamingText: "",
         streamingNode: null,
         isStreamingDiagnosis: false,
@@ -1066,6 +1084,7 @@ export const useDiagnosisStore = create<DiagnosisState>((set, get) => ({
       let nextAlertSnapshot = state.alertSnapshot;
       let nextTopologyContext = state.topologyContext;
       let nextLiveThinking = state.liveThinking;
+      let nextLiveFinalAnswer = state.liveFinalAnswer;
       let nextActiveStreamingTools = state.activeStreamingTools;
       const data = isRecord(event.data) ? event.data : {};
       const eventSource = normalizeNonEmptyString(data._stream_source);
@@ -1082,9 +1101,26 @@ export const useDiagnosisStore = create<DiagnosisState>((set, get) => ({
           return state;
         }
         const content = String(data.content ?? "");
+        const phase = normalizeNonEmptyString(data.phase);
+        const streamChannel = normalizeNonEmptyString(data.stream_channel);
         if (!content) {
           return {
             ...state,
+            isStreamingDiagnosis: true,
+          };
+        }
+
+        if (phase === "final" && streamChannel === "content") {
+          const currentFinal = nextLiveFinalAnswer;
+          nextLiveFinalAnswer = {
+            id: currentFinal?.id ?? `live-final-${event.session_id || targetSessionId || event.timestamp}`,
+            timestamp: currentFinal?.timestamp ?? event.timestamp,
+            content: `${currentFinal?.content ?? ""}${content}`,
+            status: "streaming",
+          };
+          return {
+            ...state,
+            liveFinalAnswer: nextLiveFinalAnswer,
             isStreamingDiagnosis: true,
           };
         }
@@ -1098,12 +1134,14 @@ export const useDiagnosisStore = create<DiagnosisState>((set, get) => ({
         }
 
         const isSameThought = nextLiveThinking?.thought_key === resolvedThoughtKey;
+        const previousContent = isSameThought ? nextLiveThinking?.content ?? "" : "";
+        const shouldReplacePlaceholder = previousContent.includes("诊断引擎正在分析当前证据");
         nextLiveThinking = {
           thought_key: resolvedThoughtKey,
           run_id: runId ?? nextLiveThinking?.run_id ?? null,
           node: node ?? nextLiveThinking?.node ?? null,
           timestamp: nextLiveThinking?.timestamp ?? event.timestamp,
-          content: `${isSameThought ? nextLiveThinking?.content ?? "" : ""}${content}`,
+          content: `${isSameThought && !shouldReplacePlaceholder ? previousContent : ""}${content}`,
           status: "thinking",
           thought_duration_sec: null,
           next_action: isSameThought ? nextLiveThinking?.next_action ?? null : null,
@@ -1121,6 +1159,10 @@ export const useDiagnosisStore = create<DiagnosisState>((set, get) => ({
           return state;
         }
         const resolvedThoughtKey = thoughtKey ?? buildThoughtKey(runId, node);
+        const thoughtPlaceholder =
+          normalizeNonEmptyString(data.thought_placeholder) ??
+          normalizeNonEmptyString(data.message) ??
+          "诊断引擎正在分析当前证据并规划下一步行动。";
         nextActiveStreamingTools =
           nextLiveThinking?.thought_key === resolvedThoughtKey ? nextLiveThinking.active_tools : [];
         nextLiveThinking = resolvedThoughtKey
@@ -1129,7 +1171,7 @@ export const useDiagnosisStore = create<DiagnosisState>((set, get) => ({
               run_id: runId,
               node,
               timestamp: normalizeNonEmptyString(data.started_at) ?? event.timestamp,
-              content: "",
+              content: thoughtPlaceholder,
               status: "thinking",
               thought_duration_sec: null,
               next_action: null,
@@ -1203,6 +1245,7 @@ export const useDiagnosisStore = create<DiagnosisState>((set, get) => ({
           messages: state.messages,
           alertSnapshot: nextAlertSnapshot,
           topologyContext: nextTopologyContext,
+          liveFinalAnswer: nextLiveFinalAnswer,
           error: completionError,
           traceStatus:
             mergedEntries.length > 0 ? "ready" : state.traceStatus,
@@ -1277,6 +1320,9 @@ export const useDiagnosisStore = create<DiagnosisState>((set, get) => ({
         return {
           ...state,
           isStreamingDiagnosis: false,
+          liveFinalAnswer: state.liveFinalAnswer
+            ? { ...state.liveFinalAnswer, status: "completed" }
+            : state.liveFinalAnswer,
           ...toStreamingFields(null, []),
           streamingAbortController: null,
         };
@@ -1290,6 +1336,7 @@ export const useDiagnosisStore = create<DiagnosisState>((set, get) => ({
           isStreamingDiagnosis: false,
           ...toStreamingFields(null, []),
           streamingAbortController: null,
+          liveFinalAnswer: null,
           error: getEventError(event) ?? state.error,
         };
       }
@@ -1387,6 +1434,7 @@ export const useDiagnosisStore = create<DiagnosisState>((set, get) => ({
         messages: mergeEventMessages(state.messages, [event], targetSessionId),
         alertSnapshot: nextAlertSnapshot,
         topologyContext: nextTopologyContext,
+        liveFinalAnswer: nextLiveFinalAnswer,
         ...toStreamingFields(nextLiveThinking, nextActiveStreamingTools),
         error: getEventError(event) ?? state.error,
         traceStatus:
@@ -1404,6 +1452,7 @@ export const useDiagnosisStore = create<DiagnosisState>((set, get) => ({
     const controller = new AbortController();
     set({
       liveThinking: null,
+      liveFinalAnswer: null,
       streamingText: "",
       streamingNode: null,
       isStreamingDiagnosis: true,
@@ -1469,6 +1518,7 @@ export const useDiagnosisStore = create<DiagnosisState>((set, get) => ({
           set({
             isStreamingDiagnosis: false,
             liveThinking: null,
+            liveFinalAnswer: null,
             streamingAbortController: null,
             error: error instanceof Error ? error.message : "streaming diagnosis failed",
           });
@@ -1483,6 +1533,7 @@ export const useDiagnosisStore = create<DiagnosisState>((set, get) => ({
     set({
       isStreamingDiagnosis: false,
       liveThinking: null,
+      liveFinalAnswer: null,
       streamingText: "",
       streamingNode: null,
       activeStreamingTools: [],

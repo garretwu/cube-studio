@@ -261,6 +261,40 @@ describe("buildDiagnosisLiveView live thinking merge", () => {
       toolName: "query_metrics",
     });
   });
+
+  it("places live final answer content after the active thinking/tool stream", () => {
+    const view = buildDiagnosisLiveView(
+      createSession([]),
+      [],
+      [],
+      [],
+      {
+        thought_key: "run-reason-1:reason",
+        node: "reason",
+        run_id: "run-reason-1",
+        timestamp: "2026-04-08T11:00:01.000Z",
+        content: "Streaming reasoning",
+        status: "thinking",
+        tool_name: "query_metrics",
+        active_tools: [{ tool: "query_metrics", params: { service: "auth-svc" } }],
+      },
+      {
+        id: "live-final-sess-1",
+        timestamp: "2026-04-08T11:00:04.000Z",
+        content: "诊断结论：Node contention。",
+        status: "streaming",
+      },
+    );
+
+    expect(view.timeline.map((item) => item.kind)).toEqual(["thinking", "tool", "message"]);
+    const finalMessage = view.timeline[2];
+    expect(finalMessage).toMatchObject({
+      id: "live-final-sess-1",
+      kind: "message",
+      label: "诊断结论生成中",
+      content: "诊断结论：Node contention。",
+    });
+  });
 });
 
 describe("buildDiagnosisLiveView summary timing", () => {
@@ -426,6 +460,77 @@ describe("diagnosis summary metadata", () => {
     expect(scenario.summary.updatedTimeLabel).not.toBe("--");
     expect(scenario.summary.updatedDateTimeLabel).not.toBe("--");
     expect(scenario.summary.title).toBe("\u6839\u56e0\u8bca\u65ad");
+  });
+});
+
+describe("diagnosis plan extraction", () => {
+  it("falls back to the top-ranked candidate recommended_fix when diagnosis_result.recommended_fix is missing", () => {
+    const session: DiagnosisSession = {
+      session_id: "sess-plan-fallback",
+      alert: baseAlert,
+      status: "approval_required",
+      duration_seconds: 0,
+      diagnosis_result: {
+        root_cause: "GPU contention",
+        root_cause_layer: "platform",
+        root_cause_entities: ["node:worker-03"],
+        confidence: 0.78,
+        hypotheses: [],
+        impact_summary: "impact",
+        affected_services: ["auth-svc"],
+        triage_priority: "P2",
+        diagnosis_certainty: "probable",
+        ranked_candidates: [
+          {
+            rank: 2,
+            root_cause: "Secondary candidate",
+            root_cause_layer: "service",
+            root_cause_entities: [],
+            confidence: 0.61,
+            evidence_summary: "secondary",
+          },
+          {
+            rank: 1,
+            root_cause: "Primary candidate",
+            root_cause_layer: "platform",
+            root_cause_entities: ["node:worker-03"],
+            confidence: 0.78,
+            evidence_summary: "primary",
+            recommended_fix: {
+              plan_id: "plan-primary-v1",
+              root_cause: "Primary candidate",
+              description: "Drain worker-03",
+              steps: [
+                {
+                  step_id: 1,
+                  description: "Drain canary",
+                  tool: "kubectl",
+                  params: { node: "worker-03" },
+                  verification: { method: "wait", wait_seconds: 60 },
+                  timeout: 120,
+                },
+              ],
+              estimated_impact: "low",
+              confidence: 0.78,
+              priority: "P2",
+            },
+          },
+        ],
+      },
+    };
+
+    const view = buildDiagnosisLiveView(session, []);
+
+    expect(view.plan).toMatchObject({
+      title: "Primary candidate",
+      description: "Drain worker-03",
+      priorityLabel: "P2",
+    });
+    expect(view.plan?.steps).toHaveLength(1);
+    expect(view.plan?.steps[0]).toMatchObject({
+      title: "Drain canary",
+      toolName: "kubectl",
+    });
   });
 });
 

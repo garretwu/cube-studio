@@ -1,4 +1,4 @@
-import type { ChatMessage, DiagnosisLocalAuditRecord, DiagnosisResult, DiagnosisSession, LiveThinkingBlock, Observation, SessionEvent, ThinkingStep } from "../api/types";
+import type { ChatMessage, DiagnosisLocalAuditRecord, DiagnosisResult, DiagnosisSession, LiveFinalAnswerBlock, LiveThinkingBlock, Observation, SessionEvent, ThinkingStep } from "../api/types";
 import { formatDateTime, formatDateTimeParts } from "../utils/format";
 
 type ChipTone = "neutral" | "accent" | "success" | "warning" | "danger" | "info";
@@ -590,7 +590,7 @@ function buildPropagationChain(session: DiagnosisSession | undefined): Diagnosis
 }
 
 function buildPlan(session: DiagnosisSession | undefined): DiagnosisPlanView | undefined {
-  const plan = session?.diagnosis_result?.recommended_fix;
+  const plan = extractRecommendedPlan(session);
   if (!plan) {
     return undefined;
   }
@@ -614,6 +614,26 @@ function buildPlan(session: DiagnosisSession | undefined): DiagnosisPlanView | u
       status: isResolved && index === 0 ? "done" : "pending",
     })),
   };
+}
+
+function extractRecommendedPlan(session: DiagnosisSession | undefined) {
+  if (!session?.diagnosis_result) {
+    return null;
+  }
+  if (session.diagnosis_result.recommended_fix) {
+    return session.diagnosis_result.recommended_fix;
+  }
+  const ranked = [...(session.diagnosis_result.ranked_candidates ?? [])].sort((left, right) => {
+    const lhs = Number(left.rank ?? Number.POSITIVE_INFINITY);
+    const rhs = Number(right.rank ?? Number.POSITIVE_INFINITY);
+    return lhs - rhs;
+  });
+  for (const candidate of ranked) {
+    if (candidate.recommended_fix) {
+      return candidate.recommended_fix;
+    }
+  }
+  return null;
 }
 
 function buildTraceNextAction(entry: ThinkingStep): string | undefined {
@@ -840,6 +860,7 @@ export function buildDiagnosisLiveView(
   events: SessionEvent[] = [],
   localAuditRecords: DiagnosisLocalAuditRecord[] = [],
   liveThinking?: LiveThinkingBlock | null,
+  liveFinalAnswer?: LiveFinalAnswerBlock | null,
 ): DiagnosisLiveView {
   const timelineItems: TimelineSortItem[] = [];
   const traceEntries = session?.trace?.steps ?? [];
@@ -1045,6 +1066,21 @@ export function buildDiagnosisLiveView(
           rawResult: undefined,
         },
       });
+    });
+  }
+
+  if (liveFinalAnswer && liveFinalAnswer.content.trim().length > 0) {
+    timelineItems.push({
+      order: timelineItems.length,
+      timestamp: liveFinalAnswer.timestamp,
+      item: {
+        id: liveFinalAnswer.id,
+        kind: "message",
+        role: "assistant",
+        content: liveFinalAnswer.content,
+        timestamp: liveFinalAnswer.timestamp,
+        label: liveFinalAnswer.status === "streaming" ? "诊断结论生成中" : "诊断结论",
+      },
     });
   }
 
