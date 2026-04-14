@@ -82,6 +82,7 @@ export type DiagnosisRunTimelineItem = {
   kind: "run";
   runId: string;
   title: string;
+  timestamp: string;
   status: DiagnosisRunStatus;
   progress: {
     label: string;
@@ -1384,16 +1385,24 @@ function buildRunTimelineItem(
   const status = getRunStatusFromSteps(steps);
   const latestStep = steps[steps.length - 1];
   const hasCanary = steps.some((step) => step.eventKind === "canary_progress");
+  const startedAt =
+    steps[0]?.timestamp ?? tools[0]?.timestamp ?? new Date(0).toISOString();
+  const updatedAt =
+    latestStep?.timestamp ??
+    tools[tools.length - 1]?.timestamp ??
+    steps[0]?.timestamp ??
+    new Date(0).toISOString();
   return {
     id: `execution-run-${runId}`,
     kind: "run",
     runId,
     title: hasCanary ? "\u7070\u5ea6\u6267\u884c\u8fd0\u884c\u5757" : "\u6267\u884c\u8fd0\u884c\u5757",
+    timestamp: updatedAt,
     status,
     progress: getRunProgress(steps, status),
     currentStageLabel: latestStep?.title ?? "\u6267\u884c\u8fdb\u5ea6",
-    startedAt: steps[0]?.timestamp ?? tools[0]?.timestamp ?? new Date(0).toISOString(),
-    updatedAt: latestStep?.timestamp ?? tools[tools.length - 1]?.timestamp ?? steps[0]?.timestamp ?? new Date(0).toISOString(),
+    startedAt,
+    updatedAt,
     steps,
     tools,
     metrics: dedupeRunLines(steps.flatMap((step) => step.metricLines)).slice(0, 8),

@@ -63,6 +63,7 @@ function createRunItem(
     kind: "run",
     runId: overrides.runId ?? "sess-live-execution-run",
     title: overrides.title ?? "\u7070\u5ea6\u6267\u884c\u8fd0\u884c\u5757",
+    timestamp: overrides.timestamp ?? (overrides.updatedAt ?? "2026-04-08T11:02:00.000Z"),
     status: overrides.status ?? "running",
     progress: overrides.progress ?? { label: "\u7070\u5ea6\u8fdb\u5ea6", value: 45 },
     currentStageLabel: overrides.currentStageLabel ?? "\u7070\u5ea6\u6267\u884c\u4e2d",
