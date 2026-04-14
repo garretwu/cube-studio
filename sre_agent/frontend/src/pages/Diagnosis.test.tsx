@@ -6,7 +6,7 @@ import type { DiagnosisLocalAuditRecord, DiagnosisSession } from "../api/types";
 import { useDiagnosisStore } from "../store/diagnosisStore";
 import DiagnosisPage from "./Diagnosis";
 import * as diagnosisModel from "./diagnosisModel";
-import type { DiagnosisDemoScenario, DiagnosisTimelineItem } from "./diagnosisModel";
+import type { DiagnosisCandidateView, DiagnosisDemoScenario, DiagnosisHypothesisView, DiagnosisPropagationStepView, DiagnosisTimelineItem } from "./diagnosisModel";
 
 vi.mock("../hooks/useWebSocket", () => ({
   useWebSocket: () => ({ state: "closed" as const }),
@@ -38,6 +38,55 @@ const basePlan: DiagnosisDemoScenario["plan"] = {
   confidenceLabel: "80%",
   steps: [],
 };
+
+function createReportItem(
+  overrides: Partial<Extract<DiagnosisTimelineItem, { kind: "report" }>> = {},
+): Extract<DiagnosisTimelineItem, { kind: "report" }> {
+  return {
+    id: overrides.id ?? "report-1",
+    kind: "report",
+    timestamp: overrides.timestamp ?? "2026-04-08T10:25:02.000Z",
+    summary: overrides.summary ?? baseSummary,
+    candidates: overrides.candidates ?? [],
+    hypotheses: overrides.hypotheses ?? [],
+    propagationChain: overrides.propagationChain ?? [],
+    planStatusLabel: overrides.planStatusLabel,
+    planStatusTone: overrides.planStatusTone ?? "info",
+  };
+}
+
+function createRunItem(
+  overrides: Partial<Extract<DiagnosisTimelineItem, { kind: "run" }>> = {},
+): Extract<DiagnosisTimelineItem, { kind: "run" }> {
+  return {
+    id: overrides.id ?? "run-sess-1",
+    kind: "run",
+    runId: overrides.runId ?? "sess-live-execution-run",
+    title: overrides.title ?? "\u7070\u5ea6\u6267\u884c\u8fd0\u884c\u5757",
+    status: overrides.status ?? "running",
+    progress: overrides.progress ?? { label: "\u7070\u5ea6\u8fdb\u5ea6", value: 45 },
+    currentStageLabel: overrides.currentStageLabel ?? "\u7070\u5ea6\u6267\u884c\u4e2d",
+    startedAt: overrides.startedAt ?? "2026-04-08T11:00:00.000Z",
+    updatedAt: overrides.updatedAt ?? "2026-04-08T11:02:00.000Z",
+    metrics: overrides.metrics ?? ["\u5f53\u524d p95\uff1a1.72s", "\u9519\u8bef\u7387\uff1a0.4%"],
+    tools: overrides.tools ?? [],
+    steps: overrides.steps ?? [
+      {
+        id: "run-step-1",
+        eventKind: "canary_progress",
+        title: "\u7070\u5ea6\u6267\u884c\u4e2d",
+        summary: "[\u7cfb\u7edf] \u7070\u5ea6\u6267\u884c\u4e2d\uff1a\u9996\u6279\u5b9e\u4f8b\u5df2\u5b8c\u6210\u5207\u6362",
+        details: ["\u7070\u5ea6\u8fdb\u5ea6\uff1a45%", "\u5f53\u524d p95\uff1a1.72s"],
+        timestamp: "2026-04-08T11:02:00.000Z",
+        status: "running",
+        statusTone: "warning",
+        progress: { label: "\u7070\u5ea6\u8fdb\u5ea6", value: 45 },
+        metricLines: ["\u5f53\u524d p95\uff1a1.72s"],
+        toolIds: [],
+      },
+    ],
+  };
+}
 
 function createLiveSession(sessionId: string): DiagnosisSession {
   return {
@@ -525,6 +574,16 @@ describe("DiagnosisPage sequential playback", () => {
         },
         {
           delayMs: 1,
+          type: "append",
+          item: createReportItem({
+            id: "demo-report-approval",
+            timestamp: "2026-04-08T10:25:02.000Z",
+            planStatusLabel: "修复方案已生成，等待审批",
+            planStatusTone: "warning",
+          }),
+        },
+        {
+          delayMs: 2,
           type: "complete",
         },
       ],
@@ -556,25 +615,127 @@ describe("DiagnosisPage sequential playback", () => {
     await advance(500);
 
     const approvalCard = screen.getByTestId("diagnosis-demo-approval-card");
-    const composerAnchor = container.querySelector(
-      ".diagnosis-workspace-composer-anchor--with-approval",
-    );
+    const approvalLayer = container.querySelector(".diagnosis-workspace-approval-layer");
+    const composerAnchor = container.querySelector(".diagnosis-workspace-composer-anchor");
+    const feed = container.querySelector(".diagnosis-workspace-feed");
 
     expect(approvalCard).toHaveClass(
       "diagnosis-workspace-approval-surface--floating",
     );
-    expect(composerAnchor).not.toBeNull();
+    expect(approvalLayer).not.toBeNull();
+    expect(feed).toHaveClass("diagnosis-workspace-feed--with-approval");
     expect(
       container.querySelector(".diagnosis-workspace-feed .diagnosis-workspace-approval-surface"),
     ).toBeNull();
+    expect(composerAnchor).not.toHaveClass(
+      "diagnosis-workspace-composer-anchor--with-approval",
+    );
     expect(
       composerAnchor?.querySelector('[data-testid="diagnosis-demo-approval-card"]'),
+    ).toBeNull();
+    expect(
+      approvalLayer?.querySelector('[data-testid="diagnosis-demo-approval-card"]'),
     ).toBe(approvalCard);
     expect(screen.queryByText("kubectl | wait 120s | verify wait")).not.toBeInTheDocument();
     expect(screen.getByText("Drain canary first")).toBeInTheDocument();
     expect(screen.getByTestId("diagnosis-demo-approve-button")).toBeInTheDocument();
   });
 
+
+  it("continues the demo loop after approval through canary, rollout, recovery, and closure", async () => {
+    mockedBuildDemoScenario.mockReturnValue({
+      initialTimeline: [
+        {
+          id: "demo-user-approved-loop",
+          kind: "message",
+          role: "user",
+          content: "run approved remediation loop",
+          timestamp: "2026-04-08T10:30:00.000Z",
+        },
+      ],
+      events: [
+        {
+          delayMs: 0,
+          type: "append",
+          item: {
+            id: "assistant-demo-approved-loop",
+            kind: "message",
+            role: "assistant",
+            content: "approval ready",
+            timestamp: "2026-04-08T10:30:01.000Z",
+          },
+        },
+        {
+          delayMs: 1,
+          type: "append",
+          item: createReportItem({
+            id: "demo-report-approved-loop",
+            timestamp: "2026-04-08T10:30:02.000Z",
+            planStatusLabel: "修复方案已生成，等待审批",
+            planStatusTone: "warning",
+          }),
+        },
+        {
+          delayMs: 2,
+          type: "complete",
+        },
+      ],
+      candidates: [],
+      summary: baseSummary,
+      plan: {
+        ...basePlan,
+        steps: [
+          {
+            id: "step-1",
+            title: "Drain canary first",
+            detail: "kubectl | wait 120s | verify wait",
+            status: "pending",
+          },
+        ],
+      },
+    });
+
+    const { container } = renderDemoPage();
+
+    const input = screen.getByPlaceholderText(/Ask the agent to diagnose an issue/i);
+    fireEvent.change(input, { target: { value: "run approved remediation loop" } });
+    fireEvent.keyDown(input, { key: "Enter", code: "Enter" });
+
+    await advance(5000);
+    await flushPendingTimers();
+    await advance(500);
+
+    fireEvent.click(screen.getByTestId("diagnosis-demo-approve-button"));
+
+    for (let step = 0; step < 8; step += 1) {
+      await advance(10000);
+      await flushPendingTimers();
+    }
+
+    expect(screen.queryByTestId("diagnosis-demo-approval-card")).not.toBeInTheDocument();
+    expect(screen.getByTestId("diagnosis-approval-result-thought")).toBeInTheDocument();
+    expect(screen.getByText(/Thought for \d+ seconds?/i)).toBeInTheDocument();
+    expect(screen.queryByText("[\u7cfb\u7edf] \u5df2\u7ecf\u5b8c\u6210\u6267\u884c\u786e\u8ba4")).not.toBeInTheDocument();
+
+    const runBlock = screen.getByTestId("diagnosis-execution-run-block");
+    expect(runBlock).toBeInTheDocument();
+    expect(container.querySelectorAll(".diagnosis-workspace-run-block")).toHaveLength(1);
+    expect(container.querySelectorAll(".diagnosis-workspace-system-event__toggle")).toHaveLength(0);
+    expect(screen.getByText("\u7070\u5ea6\u6267\u884c\u8fd0\u884c\u5757")).toBeInTheDocument();
+    expect(screen.getByText("\u8bca\u65ad\u5df2\u5173\u95ed")).toBeInTheDocument();
+    expect(screen.getByText("\u6267\u884c\u8fdb\u5ea6")).toBeInTheDocument();
+    expect(screen.getAllByText("100%").length).toBeGreaterThan(0);
+    expect(screen.getByText(/\u5f00\u59cb\u7070\u5ea6/u)).toBeInTheDocument();
+    expect(screen.getByText(/\u6307\u6807\u53cd\u9988\u5df2\u786e\u8ba4/u)).toBeInTheDocument();
+    expect(screen.getByText(/\u62a5\u8b66\u5df2\u6062\u590d/u)).toBeInTheDocument();
+    expect(screen.getAllByText("run_skill").length).toBeGreaterThanOrEqual(2);
+    expect(screen.getAllByText(/builtin-vllm-diagnosis/).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/builtin-platform-health/).length).toBeGreaterThan(0);
+    expect(screen.queryByText("skill builtin-vllm-diagnosis \u6267\u884c\u5b8c\u6210")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getAllByRole("button", { name: /run_skill/ })[0]);
+    expect(screen.getByText("skill builtin-vllm-diagnosis \u6267\u884c\u5b8c\u6210")).toBeInTheDocument();
+  });
   it("marks a live loading tool as timeout after 15 seconds and continues the queue", async () => {
     let timelineSource: DiagnosisTimelineItem[] = [];
     mockedBuildLiveView.mockImplementation(() => ({
@@ -596,15 +757,36 @@ describe("DiagnosisPage sequential playback", () => {
     renderLivePage("/diagnosis/sess-live-timeout");
 
     timelineSource = [
-      {
-        id: "live-tool-1",
-        kind: "tool",
-        toolName: "query_slow_backend",
-        params: { service: "auth-svc" },
-        timestamp: "2026-04-08T11:00:01.000Z",
-        status: "loading",
-        summaryLines: ["Waiting for tool result..."],
-      },
+      createRunItem({
+        id: "live-run-timeout",
+        runId: "rollout-timeout",
+        tools: [
+          {
+            id: "live-tool-1",
+            toolName: "query_slow_backend",
+            params: { service: "auth-svc" },
+            timestamp: "2026-04-08T11:00:01.000Z",
+            status: "loading",
+            summaryLines: ["Waiting for tool result..."],
+            stepId: "run-step-1",
+          },
+        ],
+        steps: [
+          {
+            id: "run-step-1",
+            eventKind: "canary_progress",
+            title: "\u7070\u5ea6\u6267\u884c\u4e2d",
+            summary: "[\u7cfb\u7edf] \u7070\u5ea6\u6267\u884c\u4e2d\uff1a\u7b49\u5f85\u6162\u67e5\u8be2\u8fd4\u56de",
+            details: ["\u7070\u5ea6\u8fdb\u5ea6\uff1a45%"],
+            timestamp: "2026-04-08T11:00:01.000Z",
+            status: "running",
+            statusTone: "warning",
+            progress: { label: "\u7070\u5ea6\u8fdb\u5ea6", value: 45 },
+            metricLines: [],
+            toolIds: ["live-tool-1"],
+          },
+        ],
+      }),
       {
         id: "live-msg-after-timeout",
         kind: "message",
@@ -873,9 +1055,25 @@ describe("DiagnosisPage approval overlay", () => {
 
   it("shows the approval overlay above the composer for approval_required sessions", () => {
     mockedBuildLiveView.mockReturnValue({
-      timeline: [],
+      timeline: [
+        createReportItem({
+          id: "live-report-approval",
+          timestamp: "2026-04-08T11:59:59.000Z",
+          summary: {
+            ...baseSummary,
+            title: "根因诊断",
+            subtitle: "Live approval summary",
+          },
+          planStatusLabel: "修复方案已生成，等待审批",
+          planStatusTone: "warning",
+        }),
+      ],
       candidates: [],
-      summary: undefined,
+      summary: {
+        ...baseSummary,
+        title: "根因诊断",
+        subtitle: "Live approval summary",
+      },
       plan: {
         ...basePlan,
         steps: [
@@ -903,24 +1101,123 @@ describe("DiagnosisPage approval overlay", () => {
     const { container } = renderLivePage("/diagnosis/sess-live-approval");
 
     expect(screen.getByTestId("diagnosis-approval-overlay")).toBeInTheDocument();
+    expect(container.querySelector(".diagnosis-workspace-approval-layer")).not.toBeNull();
+    expect(container.querySelector(".diagnosis-workspace-feed--with-approval")).not.toBeNull();
     expect(container.querySelector(".diagnosis-workspace-approval-card")).toBeNull();
+    expect(
+      container.querySelector(".diagnosis-workspace-composer-anchor--with-approval"),
+    ).toBeNull();
+  });
+
+  it("renders approval results as a lightweight thought row with filtered details", () => {
+    mockedBuildLiveView.mockReturnValue({
+      timeline: [
+        createReportItem({
+          id: "live-report-approval-thought",
+          timestamp: "2026-04-08T11:59:59.000Z",
+          summary: {
+            ...baseSummary,
+            title: "Root cause diagnosis",
+            subtitle: "Live approval summary",
+          },
+          planStatusLabel: "Ready for approval",
+          planStatusTone: "warning",
+        }),
+        {
+          id: "live-approval-result-thought",
+          kind: "system",
+          eventKind: "approval_result",
+          summary: "[system] approval confirmed (v3, approver alice)",
+          details: [
+            "approval time: 2026/04/08 20:00:00",
+            "approval feedback: execution confirmed",
+            "execution boundary: canary first",
+            "plan title: Drain canary first",
+            "extra detail: hidden",
+          ],
+          timestamp: "2026-04-08T12:00:00.000Z",
+          statusTone: "success",
+          source: "local_audit",
+          dedupeKey: "approval-result-approved-v3",
+        },
+      ],
+      candidates: [],
+      summary: {
+        ...baseSummary,
+        title: "Root cause diagnosis",
+        subtitle: "Live approval summary",
+      },
+      plan: {
+        ...basePlan,
+        steps: [
+          {
+            id: "step-1",
+            title: "Drain canary first",
+            detail: "kubectl | wait 120s | verify wait",
+            status: "pending",
+          },
+        ],
+      },
+    });
+
+    resetDiagnosisStore({
+      session: createLiveSession("sess-live-approval-result"),
+      activeSessionId: "sess-live-approval-result",
+      bootstrapStatus: "ready",
+      traceStatus: "ready",
+      bootstrapSession: vi.fn().mockResolvedValue(undefined),
+    });
+
+    const { container } = renderLivePage("/diagnosis/sess-live-approval-result");
+
+    const approvalThought = screen.getByTestId("diagnosis-approval-result-thought");
+    expect(approvalThought).toBeInTheDocument();
+    expect(screen.getByText(/Thought for \d+ seconds?/i)).toBeInTheDocument();
+    expect(screen.queryByText(/approval confirmed/i)).not.toBeInTheDocument();
+    expect(container.querySelector(".diagnosis-workspace-system-event__toggle")).toBeNull();
+
+    fireEvent.click(approvalThought);
+
+    expect(screen.getByText("Approver: alice")).toBeInTheDocument();
+    expect(screen.getByText("approval feedback: execution confirmed")).toBeInTheDocument();
+    expect(screen.getByText("execution boundary: canary first")).toBeInTheDocument();
+    expect(screen.getByText("plan title: Drain canary first")).toBeInTheDocument();
+    expect(screen.queryByText(/approval time:/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/extra detail:/i)).not.toBeInTheDocument();
   });
 
   it("requires a reject reason and appends a system audit item after rejection", async () => {
     mockedBuildLiveView.mockImplementation((_, __, ___, localAuditRecords = []) => ({
-      timeline: (localAuditRecords as DiagnosisLocalAuditRecord[]).map((record) => ({
-        id: record.id,
-        kind: "system" as const,
-        eventKind: record.eventKind,
-        summary: record.summary,
-        details: record.details,
-        timestamp: record.timestamp,
-        statusTone: record.statusTone,
-        source: record.source,
-        dedupeKey: record.dedupeKey,
-      })),
+      timeline: [
+        createReportItem({
+          id: "live-report-reject",
+          timestamp: "2026-04-08T11:59:59.000Z",
+          summary: {
+            ...baseSummary,
+            title: "根因诊断",
+            subtitle: "Live approval summary",
+          },
+          planStatusLabel: "修复方案已生成，等待审批",
+          planStatusTone: "warning",
+        }),
+        ...(localAuditRecords as DiagnosisLocalAuditRecord[]).map((record) => ({
+          id: record.id,
+          kind: "system" as const,
+          eventKind: record.eventKind,
+          summary: record.summary,
+          details: record.details,
+          timestamp: record.timestamp,
+          statusTone: record.statusTone,
+          source: record.source,
+          dedupeKey: record.dedupeKey,
+        })),
+      ],
       candidates: [],
-      summary: undefined,
+      summary: {
+        ...baseSummary,
+        title: "根因诊断",
+        subtitle: "Live approval summary",
+      },
       plan: {
         ...basePlan,
         steps: [
@@ -1003,8 +1300,15 @@ describe("DiagnosisPage approval overlay", () => {
 
     await waitFor(() => {
       expect(screen.queryByTestId("diagnosis-approval-overlay")).not.toBeInTheDocument();
-      expect(screen.getByText(/\[system\] approval rejected \(reason:/)).toBeInTheDocument();
+      expect(screen.getByTestId("diagnosis-approval-result-thought")).toBeInTheDocument();
+      expect(screen.getByText(/Thought for \d+ seconds?/i)).toBeInTheDocument();
+      expect(screen.queryByText(/\[system\] approval rejected \(reason:/i)).not.toBeInTheDocument();
     });
+
+    fireEvent.click(screen.getByTestId("diagnosis-approval-result-thought"));
+
+    expect(screen.getByText(/reject reason:/i)).toBeInTheDocument();
+    expect(screen.queryByText(/approval time:/i)).not.toBeInTheDocument();
   });
 });
 
@@ -1088,130 +1392,167 @@ describe("DiagnosisPage RCA report card", () => {
   });
 
   it("renders the restructured RCA card sections with localized labels", () => {
-    mockedBuildLiveView.mockReturnValue({
-      timeline: [],
-      candidates: [
-        {
-          id: "candidate-1",
-          title: "GPU \u4e89\u7528",
-          summary: "GPU util \u6301\u7eed 99%",
-          confidence: 0.91,
-          confidenceLabel: "91%",
-          statusLabel: "\u5df2\u786e\u8ba4",
-          statusTone: "success",
-          evidenceFor: ["GPU util \u6301\u7eed 99%"],
-          evidenceAgainst: [],
-          layer: "\u5e73\u53f0",
-          entities: ["node:worker-03", "gpu:0"],
-          rank: 1,
-          evidenceSummary: "GPU util \u6301\u7eed 99%\uff0c\u8bf7\u6c42\u6392\u961f\u65f6\u957f\u540c\u6b65\u62ac\u5347\u3002",
-          distinguishingVerification: "\u68c0\u67e5 worker-03 GPU \u8fdb\u7a0b\u662f\u5426\u5f02\u5e38\u5360\u7528\u3002",
-          isPrimary: true,
-        },
-      ],
-      hypotheses: [
-        {
-          id: "hyp-1",
-          description: "GPU \u4e89\u7528",
-          statusLabel: "\u5df2\u786e\u8ba4",
-          statusTone: "success",
-          evidenceForCount: 2,
-          evidenceAgainstCount: 0,
-          confidence: 0.91,
-        },
-      ],
-      propagationChain: [
-        {
-          id: "chain-1",
-          entityId: "node:worker-03",
-          entityType: "node",
-          metric: "gpu_util",
-          valueBefore: "82%",
-          valueAfter: "99%",
-          description: "\u5ef6\u8fdf\u5347\u9ad8",
-        },
-      ],
-      summary: {
-        title: "\u6839\u56e0\u8bca\u65ad",
-        subtitle: "\u57fa\u4e8e\u73b0\u6709\u8bc1\u636e\u6574\u7406\u51fa\u7684\u5f53\u524d\u7ed3\u8bba\u3002",
-        certaintyLabel: "\u5df2\u786e\u8ba4",
-        certaintyTone: "success",
+    const candidates = [
+      {
+        id: "candidate-1",
+        title: "GPU \u4e89\u7528",
+        summary: "GPU util \u6301\u7eed 99%",
+        confidence: 0.91,
         confidenceLabel: "91%",
-        confidenceRawLabel: "0.91",
-        priorityLabel: "P1",
-        sessionLabel: "sess-live-rca",
-        updatedTimeLabel: "11:32:06",
-        updatedDateTimeLabel: "2026/04/08 11:32:06",
-        affectedServices: ["inference-gateway", "vllm-serving"],
-        impactSummary: "vLLM p95 \u5ef6\u8fdf\u6301\u7eed\u8d70\u9ad8\uff0c\u63a8\u7406\u541e\u5410\u51fa\u73b0\u660e\u663e\u4e0b\u964d\u3002",
-        rootCause: "worker-03 \u8282\u70b9 GPU \u4e89\u7528",
-        rootCauseLayer: "platform",
-        rootCauseLayerLabel: "\u5e73\u53f0",
-        rootCauseEntities: ["node:worker-03", "gpu:0"],
+        statusLabel: "\u5df2\u786e\u8ba4",
+        statusTone: "success",
+        evidenceFor: ["GPU util \u6301\u7eed 99%"],
+        evidenceAgainst: [],
+        layer: "\u5e73\u53f0",
+        entities: ["node:worker-03", "gpu:0"],
+        rank: 1,
+        evidenceSummary:
+          "GPU util \u6301\u7eed 99%\uff0c\u8bf7\u6c42\u6392\u961f\u65f6\u957f\u540c\u6b65\u62ac\u5347\u3002",
+        distinguishingVerification:
+          "\u68c0\u67e5 worker-03 GPU \u8fdb\u7a0b\u662f\u5426\u5f02\u5e38\u5360\u7528\u3002",
+        isPrimary: true,
       },
+    ] satisfies DiagnosisCandidateView[];
+    const hypotheses = [
+      {
+        id: "hyp-1",
+        description: "GPU \u4e89\u7528",
+        statusLabel: "\u5df2\u786e\u8ba4",
+        statusTone: "success",
+        evidenceForCount: 2,
+        evidenceAgainstCount: 0,
+        confidence: 0.91,
+      },
+    ] satisfies DiagnosisHypothesisView[];
+    const propagationChain = [
+      {
+        id: "chain-1",
+        entityId: "node:worker-03",
+        entityType: "node",
+        metric: "gpu_util",
+        valueBefore: "82%",
+        valueAfter: "99%",
+        description: "\u5ef6\u8fdf\u5347\u9ad8",
+      },
+    ] satisfies DiagnosisPropagationStepView[];
+    const summary = {
+      title: "\u6839\u56e0\u8bca\u65ad",
+      subtitle: "\u57fa\u4e8e\u73b0\u6709\u8bc1\u636e\u6574\u7406\u51fa\u7684\u5f53\u524d\u7ed3\u8bba\u3002",
+      certaintyLabel: "\u5df2\u786e\u8ba4",
+      certaintyTone: "success",
+      confidenceLabel: "91%",
+      confidenceRawLabel: "0.91",
+      priorityLabel: "P1",
+      sessionLabel: "sess-live-rca",
+      updatedTimeLabel: "11:32:06",
+      updatedDateTimeLabel: "2026/04/08 11:32:06",
+      affectedServices: ["inference-gateway", "vllm-serving"],
+      impactSummary:
+        "vLLM p95 \u5ef6\u8fdf\u6301\u7eed\u8d70\u9ad8\uff0c\u63a8\u7406\u541e\u5410\u51fa\u73b0\u660e\u663e\u4e0b\u964d\u3002",
+      rootCause: "worker-03 \u8282\u70b9 GPU \u4e89\u7528",
+      rootCauseLayer: "platform",
+      rootCauseLayerLabel: "\u5e73\u53f0",
+      rootCauseEntities: ["node:worker-03", "gpu:0"],
+    } satisfies DiagnosisDemoScenario["summary"];
+
+    mockedBuildLiveView.mockReturnValue({
+      timeline: [
+        createReportItem({
+          id: "live-report-rca",
+          timestamp: "2026-04-08T11:32:06.000Z",
+          summary,
+          candidates,
+          hypotheses,
+          propagationChain,
+        }),
+      ],
+      candidates,
+      hypotheses,
+      propagationChain,
+      summary,
       plan: undefined,
     });
 
     renderLivePage("/diagnosis/sess-live-rca");
 
-    expect(screen.getAllByText("\u6839\u56e0\u8bca\u65ad").length).toBeGreaterThan(0);
+    expect(screen.getByTestId("diagnosis-report-card")).toBeInTheDocument();
+    expect(screen.getAllByText(/根因诊断/u).length).toBeGreaterThan(0);
     expect(screen.getByText("\u5f53\u524d\u7ed3\u8bba")).toBeInTheDocument();
-    expect(screen.getByText("\u5019\u9009\u6839\u56e0\uff081\uff09")).toBeInTheDocument();
-    expect(screen.getByText("\u5047\u8bbe\u4e0e\u8bc1\u636e")).toBeInTheDocument();
-    expect(screen.getByText("\u4f20\u64ad\u94fe\u8def\uff08\u6298\u53e0\uff09")).toBeInTheDocument();
+    expect(screen.getByText("\u5019\u9009\u6839\u56e0")).toBeInTheDocument();
+    expect(screen.getByText("\u5f71\u54cd\u8303\u56f4")).toBeInTheDocument();
     expect(screen.getByText("worker-03 \u8282\u70b9 GPU \u4e89\u7528")).toBeInTheDocument();
-    expect(screen.getByText(/GPU util \u6301\u7eed 99%\uff0c\u8bf7\u6c42\u6392\u961f\u65f6\u957f\u540c\u6b65\u62ac\u5347\u3002/u)).toBeInTheDocument();
-    expect(screen.getByText(/\u533a\u5206\u9a8c\u8bc1\uff1a.*worker-03 GPU \u8fdb\u7a0b/u)).toBeInTheDocument();
+    expect(screen.getAllByText(/GPU util 持续 99%，请求排队时长同步抬升。/u).length).toBeGreaterThan(0);
+
+    fireEvent.click(screen.getByText("\u5c55\u5f00\u8bc1\u636e\u3001\u5047\u8bbe\u4e0e\u4f20\u64ad\u94fe\u8def"));
+
+    expect(screen.getByText("\u5047\u8bbe\u4e0e\u8bc1\u636e")).toBeInTheDocument();
+    expect(screen.getByText("\u4f20\u64ad\u94fe\u8def")).toBeInTheDocument();
+    expect(
+      screen.getByText(/\u533a\u5206\u9a8c\u8bc1\uff1a.*worker-03 GPU \u8fdb\u7a0b/u),
+    ).toBeInTheDocument();
   });
 
   it("omits optional distinguishing verification and shows empty propagation copy", () => {
+    const candidates = [
+      {
+        id: "candidate-2",
+        title: "ECN \u914d\u7f6e\u4e0d\u4e00\u81f4",
+        summary: "ECN \u95f4\u6b47\u6027\u6ce2\u52a8",
+        confidence: 0.62,
+        confidenceLabel: "62%",
+        statusLabel: "\u9a8c\u8bc1\u4e2d",
+        statusTone: "warning",
+        evidenceFor: [],
+        evidenceAgainst: [],
+        entities: ["switch:tor-07"],
+        rank: 1,
+        evidenceSummary: "ECN \u6ce2\u52a8\u5b58\u5728\u95f4\u6b47\u6027\u5f02\u5e38\u3002",
+        distinguishingVerification: null,
+        isPrimary: true,
+      },
+    ] satisfies DiagnosisCandidateView[];
+    const summary = {
+      title: "\u6839\u56e0\u8bca\u65ad",
+      subtitle: "demo",
+      certaintyLabel: "\u5f85\u786e\u8ba4",
+      certaintyTone: "warning",
+      confidenceLabel: "62%",
+      confidenceRawLabel: "0.62",
+      priorityLabel: "P2",
+      updatedTimeLabel: "11:40:00",
+      updatedDateTimeLabel: "2026/04/08 11:40:00",
+      affectedServices: [],
+      impactSummary: "impact",
+      rootCause: "ECN \u914d\u7f6e\u4e0d\u4e00\u81f4",
+    } satisfies DiagnosisDemoScenario["summary"];
+
     mockedBuildLiveView.mockReturnValue({
-      timeline: [],
-      candidates: [
-        {
-          id: "candidate-2",
-          title: "ECN \u914d\u7f6e\u4e0d\u4e00\u81f4",
-          summary: "ECN \u95f4\u6b47\u6027\u6ce2\u52a8",
-          confidence: 0.62,
-          confidenceLabel: "62%",
-          statusLabel: "\u9a8c\u8bc1\u4e2d",
-          statusTone: "warning",
-          evidenceFor: [],
-          evidenceAgainst: [],
-          entities: ["switch:tor-07"],
-          rank: 1,
-          evidenceSummary: "ECN \u6ce2\u52a8\u5b58\u5728\u95f4\u6b47\u6027\u5f02\u5e38\u3002",
-          distinguishingVerification: null,
-          isPrimary: true,
-        },
+      timeline: [
+        createReportItem({
+          id: "live-report-rca-empty",
+          timestamp: "2026-04-08T11:40:00.000Z",
+          summary,
+          candidates,
+          hypotheses: [],
+          propagationChain: [],
+        }),
       ],
+      candidates,
       hypotheses: [],
       propagationChain: [],
-      summary: {
-        title: "\u6839\u56e0\u8bca\u65ad",
-        subtitle: "demo",
-        certaintyLabel: "\u5f85\u786e\u8ba4",
-        certaintyTone: "warning",
-        confidenceLabel: "62%",
-        confidenceRawLabel: "0.62",
-        priorityLabel: "P2",
-        updatedTimeLabel: "11:40:00",
-        updatedDateTimeLabel: "2026/04/08 11:40:00",
-        affectedServices: [],
-        impactSummary: "impact",
-        rootCause: "ECN \u914d\u7f6e\u4e0d\u4e00\u81f4",
-      },
+      summary,
       plan: undefined,
     });
 
     renderLivePage("/diagnosis/sess-live-rca");
 
     expect(screen.queryByText(/\u533a\u5206\u9a8c\u8bc1/u)).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByText("\u5c55\u5f00\u8bc1\u636e\u3001\u5047\u8bbe\u4e0e\u4f20\u64ad\u94fe\u8def"));
+
     expect(screen.getByText("\u6682\u65e0\u4f20\u64ad\u94fe\u8def\u6570\u636e\u3002")).toBeInTheDocument();
   });
 });
-
-
 
 
 

@@ -83,11 +83,10 @@ describe("App shell", () => {
     expect(container.querySelectorAll(".nav-section")).toHaveLength(2);
   });
 
-  it("keeps topology active when the legacy modified route is opened", async () => {
-    const topologyLabel = appRoutes.find((route) => route.key === "topology")?.label;
+  it("renders the standalone modified topology route", async () => {
+    const topologyModifiedLabel = appRoutes.find((route) => route.key === "topologyModified")?.label;
 
-    expect(topologyLabel).toBeTruthy();
-    expect(appRoutes.some((route) => route.key === "topologyModified")).toBe(false);
+    expect(topologyModifiedLabel).toBe("拓扑（修改）");
 
     render(
       <MemoryRouter initialEntries={["/topology-modified"]}>
@@ -95,8 +94,9 @@ describe("App shell", () => {
       </MemoryRouter>,
     );
 
-    const topologyButton = await screen.findByRole("button", { name: topologyLabel! });
-    expect(topologyButton.className).toContain("nav-item--active");
+    const topologyModifiedButton = await screen.findByRole("button", { name: topologyModifiedLabel! });
+    expect(topologyModifiedButton.className).toContain("nav-item--active");
+    expect(await screen.findByRole("heading", { level: 2, name: "拓扑（修改）" })).toBeInTheDocument();
   });
 
   it("keeps topology active when an object topology detail route is opened", async () => {

@@ -77,9 +77,16 @@ function pickMostCommon(values: Array<string | null | undefined>, fallback: stri
   return winner ?? fallback;
 }
 
-function mapNodeType(type: string): TopologyObjectType {
-  const normalized = type.trim().toLowerCase();
+function mapNodeType(node: RawTopologyCanvasNode): TopologyObjectType {
+  const normalized = node.type.trim().toLowerCase();
+  const normalizedSummary = String(node.summary ?? "").trim().toLowerCase();
 
+  if (normalized.includes("bmc") || normalizedSummary.includes("bmc_endpoint")) {
+    return "bmc";
+  }
+  if (normalized.includes("port") || normalizedSummary.includes("switch_port")) {
+    return "port";
+  }
   if (normalized === "pod" || normalized === "service") {
     return "service";
   }
@@ -180,7 +187,7 @@ const site: TopologySite = {
 const nodes: TopologyObject[] = rawNodes.map((node) => ({
   id: node.id,
   name: node.name ?? node.id,
-  type: mapNodeType(node.type),
+  type: mapNodeType(node),
   status: mapStatus(node.status),
   layer: node.layer,
   domain: node.domain ?? site.domain,

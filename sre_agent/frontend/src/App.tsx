@@ -1,4 +1,4 @@
-﻿import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   Navigate,
   Route,
@@ -29,6 +29,12 @@ const rootPageChrome: Record<
   "/topology": {
     title: "拓扑",
     subtitle: "展示实体关系与依赖路径",
+    contentSpacing: "compact",
+    contentMode: "workspace",
+  },
+  "/topology-modified": {
+    title: "拓扑（修改）",
+    subtitle: "沿用当前拓扑数据的新视觉版本",
     contentSpacing: "compact",
     contentMode: "workspace",
   },
@@ -164,10 +170,6 @@ function AppRoutes() {
       />
       <Route path="/topology/object/:nodeId" element={<TopologyObjectPage />} />
       <Route
-        path="/topology-modified"
-        element={<Navigate to="/topology" replace />}
-      />
-      <Route
         path="/alerts-modified"
         element={<Navigate to="/alerts" replace />}
       />
@@ -270,7 +272,6 @@ function App() {
       contentSpacing={pageChrome.contentSpacing}
       helpLabel="帮助中心"
       sections={sections}
-      siteLabel="AIDC-001"
       subtitle={pageChrome.subtitle}
       title={pageChrome.title}
       userMeta="站点值班 / 智能运维"
@@ -284,3 +285,4 @@ function App() {
 
 export default App;
 export { resolveActiveRouteKey, resolvePageChrome };
+

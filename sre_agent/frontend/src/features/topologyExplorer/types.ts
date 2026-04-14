@@ -1,5 +1,6 @@
 import type { TopologyObject } from "../../api/types";
 
+export type TopologyScopeMode = "overview" | "room";
 export type ExplorerViewMode = "graph" | "tree" | "impact";
 export type ExplorerStatusFilter = "all" | "abnormal";
 export type ExplorerLayerFilter = "all" | TopologyObject["layer"];

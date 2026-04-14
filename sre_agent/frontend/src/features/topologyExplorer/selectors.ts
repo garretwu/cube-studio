@@ -40,7 +40,21 @@ export type ImpactTopology = {
 };
 
 export const GLOBAL_TOPOLOGY_SERVICE_NODE_LIMIT = 20;
+export const MODIFIED_SERVICE_AGGREGATE_MIN_MEMBERS = 4;
+export const SYNTHETIC_SERVICE_AGGREGATE_KIND = "serviceAggregate";
 
+export function isSyntheticTopologyNode(node: TopologyObject) {
+  return typeof node.attributes.syntheticKind === "string";
+}
+
+export function isSyntheticServiceAggregateNode(node: TopologyObject) {
+  return node.attributes.syntheticKind === SYNTHETIC_SERVICE_AGGREGATE_KIND;
+}
+
+export function getSyntheticAggregateGroupId(node: TopologyObject) {
+  const value = node.attributes.aggregateGroupId;
+  return typeof value === "string" ? value : undefined;
+}
 function isGlobalTopologyCappedNode(node: TopologyObject) {
   return node.layer === "service";
 }
@@ -103,6 +117,15 @@ function impactRank(level: TopologyRelation["impactLevel"]) {
   return rank[level];
 }
 
+function getRawType(node: TopologyObject) {
+  return String(node.attributes.rawType ?? node.type);
+}
+
+function getHighestStatus(nodes: TopologyObject[]) {
+  return nodes.reduce<TopologyObjectStatus>((winner, node) => {
+    return statusRank(node.status) > statusRank(winner) ? node.status : winner;
+  }, "healthy");
+}
 function pathStatusRank(status: TopologyPath["status"]) {
   return status === "active" ? 1 : 0;
 }
@@ -152,6 +175,170 @@ function getOutgoing(edges: TopologyRelation[]) {
   return outgoing;
 }
 
+function getAggregateHostId(
+  node: TopologyObject,
+  outgoingEdges: Map<string, TopologyRelation[]>,
+) {
+  const hostEdge = (outgoingEdges.get(node.id) ?? []).find(
+    (edge) => edge.relationType === "runs_on",
+  );
+  return hostEdge?.target ?? node.cluster ?? node.rack ?? node.domain;
+}
+
+type ModifiedAggregationOptions = {
+  expandedAggregateIds?: string[];
+  priorityNodeIds?: string[];
+};
+
+function buildModifiedAggregatedTopology(
+  response: TopologyExplorerResponse,
+  options: ModifiedAggregationOptions = {},
+) {
+  const nodeMap = toLookupMap(response.nodes);
+  const outgoing = getOutgoing(response.edges);
+  const expandedAggregateIds = new Set(options.expandedAggregateIds ?? []);
+  const priorityNodeIds = new Set(options.priorityNodeIds ?? []);
+  const groupedMembers = new Map<string, TopologyObject[]>();
+
+  response.nodes.forEach((node) => {
+    if (node.layer !== "service") {
+      return;
+    }
+
+    const aggregateHostId = getAggregateHostId(node, outgoing);
+    const aggregateGroupId = `aggregate:${aggregateHostId ?? "unassigned"}:${getRawType(node)}`;
+    const list = groupedMembers.get(aggregateGroupId) ?? [];
+    list.push(node);
+    groupedMembers.set(aggregateGroupId, list);
+  });
+
+  const replacementMap = new Map<string, string>();
+  const aggregateNodes: TopologyObject[] = [];
+
+  groupedMembers.forEach((members, aggregateGroupId) => {
+    const fixedMembers = members.filter(
+      (node) => node.status !== "healthy" || priorityNodeIds.has(node.id),
+    );
+    const hiddenMembers = members.filter((node) => !fixedMembers.includes(node));
+
+    if (
+      hiddenMembers.length < MODIFIED_SERVICE_AGGREGATE_MIN_MEMBERS ||
+      expandedAggregateIds.has(aggregateGroupId)
+    ) {
+      return;
+    }
+
+    const aggregateHostId = getAggregateHostId(hiddenMembers[0], outgoing);
+    const rawType = getRawType(hiddenMembers[0]);
+    const hostLabel = aggregateHostId
+      ? nodeMap.get(aggregateHostId)?.name ?? aggregateHostId
+      : "unassigned";
+    const aggregateName = `${rawType === "pod" ? "Pod group" : "Service group"} / ${hostLabel}`;
+    const aggregateStatus = getHighestStatus(hiddenMembers);
+    const latestUpdatedAt = hiddenMembers
+      .map((node) => node.updatedAt)
+      .sort((left, right) => right.localeCompare(left))[0] ?? response.lastUpdated;
+    const sharedTags = unique(hiddenMembers.flatMap((node) => node.tags));
+    const cluster = hiddenMembers.find((node) => Boolean(node.cluster))?.cluster;
+    const rack = hiddenMembers.find((node) => Boolean(node.rack))?.rack;
+
+    hiddenMembers.forEach((node) => {
+      replacementMap.set(node.id, aggregateGroupId);
+    });
+
+    aggregateNodes.push({
+      id: aggregateGroupId,
+      name: aggregateName,
+      type: "service",
+      status: aggregateStatus,
+      layer: "service",
+      domain: hiddenMembers[0].domain,
+      region: hiddenMembers[0].region,
+      zone: hiddenMembers[0].zone,
+      cluster,
+      rack,
+      summary: `Aggregated ${hiddenMembers.length}${rawType === "pod" ? " Pod" : " service"} objects.`,
+      tags: sharedTags,
+      updatedAt: latestUpdatedAt,
+      metrics: {
+        aggregatedObjects: hiddenMembers.length,
+        abnormalObjects: hiddenMembers.filter((node) => node.status === "abnormal").length,
+        impactedObjects: hiddenMembers.filter((node) => node.status === "impacted").length,
+      },
+      attributes: {
+        syntheticKind: SYNTHETIC_SERVICE_AGGREGATE_KIND,
+        aggregateGroupId,
+        aggregateCount: hiddenMembers.length,
+        aggregateHostId,
+        aggregateRawType: rawType,
+        aggregateMemberIds: hiddenMembers.map((node) => node.id),
+        aggregateExpanded: false,
+      },
+    });
+  });
+
+  const visibleNodes = response.nodes.filter((node) => !replacementMap.has(node.id));
+  const mergedEdges = new Map<string, TopologyRelation & { __count: number; __syntheticEndpoint: boolean }>();
+
+  response.edges.forEach((edge) => {
+    const source = replacementMap.get(edge.source) ?? edge.source;
+    const target = replacementMap.get(edge.target) ?? edge.target;
+    if (source === target) {
+      return;
+    }
+
+    const key = `${source}:${target}`;
+    const syntheticEndpoint =
+      source.startsWith("aggregate:") || target.startsWith("aggregate:");
+    const existing = mergedEdges.get(key);
+
+    if (!existing) {
+      mergedEdges.set(key, {
+        ...edge,
+        id: syntheticEndpoint ? `aggregated-${key}` : edge.id,
+        source,
+        target,
+        relationType: syntheticEndpoint ? "aggregated" : edge.relationType,
+        label: syntheticEndpoint ? "1 relation" : edge.label,
+        isAggregated: syntheticEndpoint || edge.isAggregated,
+        __count: 1,
+        __syntheticEndpoint: syntheticEndpoint,
+      });
+      return;
+    }
+
+    existing.__count += 1;
+    existing.__syntheticEndpoint = existing.__syntheticEndpoint || syntheticEndpoint;
+    existing.status =
+      statusRank(edge.status) > statusRank(existing.status)
+        ? edge.status
+        : existing.status;
+    existing.impactLevel =
+      impactRank(edge.impactLevel) > impactRank(existing.impactLevel)
+        ? edge.impactLevel
+        : existing.impactLevel;
+    existing.isCritical = existing.isCritical || edge.isCritical;
+    existing.isAggregated = true;
+    existing.relationType = "aggregated";
+  });
+
+  const edges = Array.from(mergedEdges.values()).map(
+    ({ __count, __syntheticEndpoint, ...edge }) => ({
+      ...edge,
+      label:
+        __count > 1 || __syntheticEndpoint
+          ? `${__count} 个关系`
+          : edge.label ?? edge.relationType,
+      isAggregated: edge.isAggregated || __count > 1 || __syntheticEndpoint,
+    }),
+  );
+
+  return {
+    ...response,
+    nodes: [...visibleNodes, ...aggregateNodes],
+    edges,
+  };
+}
 function getUndirected(edges: TopologyRelation[]) {
   const neighbors = new Map<string, string[]>();
 
@@ -463,7 +650,7 @@ function buildAggregatedEdges(
             status: withNodeStatus,
             isCritical: traversedEdges.some((edge) => edge.isCritical),
             impactLevel,
-            label: "鐠恒劌鐪伴懕姘値",
+            label: "????",
             isAggregated: true,
           });
           return;
@@ -667,13 +854,25 @@ export function buildTopologyTree(
             objectType: service.type,
           }));
 
+        const bmcEndpoints = containsEdges
+          .filter((edge) => edge.target === node.id)
+          .map((edge) => nodeMap.get(edge.source))
+          .filter((bmc): bmc is TopologyObject => bmc?.type === "bmc")
+          .map<TopologyTreeNode>((bmc) => ({
+            id: bmc.id,
+            label: bmc.name,
+            type: "object",
+            objectId: bmc.id,
+            objectType: bmc.type,
+          }));
+
         return {
           id: node.id,
           label: node.name,
           type: "object",
           objectId: node.id,
           objectType: node.type,
-          children: [...gpus, ...services],
+          children: [...bmcEndpoints, ...gpus, ...services],
         };
       });
 
@@ -737,7 +936,7 @@ export function buildTopologyTree(
       },
       {
         id: `${response.site.id}-network`,
-        label: "缂冩垹绮剁拋鐐煢",
+        label: "Network / Switches / Ports",
         type: "group",
         children: switchNodes,
       },
@@ -751,6 +950,10 @@ export type TopologyStageFilters = {
   searchResultIds?: string[];
 };
 
+export type ModifiedTopologyStageOptions = {
+  expandedAggregateIds?: string[];
+  priorityNodeIds?: string[];
+};
 export type ObjectTopologyDetail = {
   focalNode?: TopologyObject;
   nodes: TopologyObject[];
@@ -829,6 +1032,76 @@ export function getStageTopology(
   };
 }
 
+export function getModifiedSearchResultIds(
+  response: TopologyExplorerResponse | undefined,
+  layerFilter: ExplorerLayerFilter,
+  searchQuery: string,
+) {
+  if (!response) {
+    return [];
+  }
+
+  const searchNodes =
+    layerFilter === "all"
+      ? response.nodes
+      : response.nodes.filter((node) => node.layer === layerFilter);
+
+  return searchTopologyObjects(searchNodes, searchQuery)
+    .filter((node) => !isSyntheticTopologyNode(node))
+    .map((node) => node.id);
+}
+
+export function getModifiedStageTopology(
+  response: TopologyExplorerResponse | undefined,
+  filters: TopologyStageFilters,
+  options: ModifiedTopologyStageOptions = {},
+) {
+  if (!response) {
+    return {
+      nodes: [] as TopologyObject[],
+      edges: [] as TopologyRelation[],
+      contextIds: new Set<string>(),
+      visibleNodeIds: new Set<string>(),
+      searchResultIds: [] as string[],
+    };
+  }
+
+  const searchResultIds =
+    filters.searchResultIds ??
+    getModifiedSearchResultIds(response, filters.layerFilter, filters.searchQuery);
+  const priorityNodeIds = unique([
+    ...searchResultIds,
+    ...(options.priorityNodeIds ?? []),
+  ]);
+  const aggregatedResponse = buildModifiedAggregatedTopology(response, {
+    expandedAggregateIds: options.expandedAggregateIds,
+    priorityNodeIds,
+  });
+  const contextIds = filters.searchQuery.trim()
+    ? getDirectNeighborContextIds(aggregatedResponse, new Set(searchResultIds))
+    : new Set(aggregatedResponse.nodes.map((node) => node.id));
+  const visibleNodes = filterByLayer(
+    aggregatedResponse.nodes.filter((node) => contextIds.has(node.id)),
+    filters.layerFilter,
+  );
+  const visibleNodeIds = new Set(visibleNodes.map((node) => node.id));
+  const directEdges = aggregatedResponse.edges.filter(
+    (edge) =>
+      visibleNodeIds.has(edge.source) && visibleNodeIds.has(edge.target),
+  );
+  const aggregatedEdges =
+    filters.layerFilter === "all"
+      ? []
+      : buildAggregatedEdges(aggregatedResponse, visibleNodeIds, contextIds);
+
+  return {
+    nodes: visibleNodes,
+    edges: [...directEdges, ...aggregatedEdges],
+    contextIds,
+    visibleNodeIds,
+    searchResultIds,
+  };
+}
 export function getObjectTopologyDetail(
   response: TopologyExplorerResponse | undefined,
   nodeId?: string,

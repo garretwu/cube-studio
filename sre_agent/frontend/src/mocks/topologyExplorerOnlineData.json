@@ -20,7 +20,7 @@
     {
       "id": "bmc:worker-01",
       "name": "BMC worker-01",
-      "type": "node",
+      "type": "bmc_endpoint",
       "status": "healthy",
       "layer": "compute",
       "domain": "aidc",
@@ -50,7 +50,7 @@
     {
       "id": "bmc:worker-02",
       "name": "BMC worker-02",
-      "type": "node",
+      "type": "bmc_endpoint",
       "status": "healthy",
       "layer": "compute",
       "domain": "aidc",
@@ -80,7 +80,7 @@
     {
       "id": "bmc:worker-03",
       "name": "BMC worker-03",
-      "type": "node",
+      "type": "bmc_endpoint",
       "status": "healthy",
       "layer": "compute",
       "domain": "aidc",
@@ -110,7 +110,7 @@
     {
       "id": "bmc:worker-04",
       "name": "BMC worker-04",
-      "type": "node",
+      "type": "bmc_endpoint",
       "status": "healthy",
       "layer": "compute",
       "domain": "aidc",
@@ -140,7 +140,7 @@
     {
       "id": "bmc:worker-05",
       "name": "BMC worker-05",
-      "type": "node",
+      "type": "bmc_endpoint",
       "status": "healthy",
       "layer": "compute",
       "domain": "aidc",
@@ -170,7 +170,7 @@
     {
       "id": "bmc:worker-06",
       "name": "BMC worker-06",
-      "type": "node",
+      "type": "bmc_endpoint",
       "status": "healthy",
       "layer": "compute",
       "domain": "aidc",
@@ -12804,7 +12804,7 @@
     {
       "id": "sw-200g:200GE1/0/1",
       "name": "200GE1/0/1",
-      "type": "switch",
+      "type": "switch_port",
       "status": "healthy",
       "layer": "network",
       "domain": "aidc",
@@ -12837,7 +12837,7 @@
     {
       "id": "sw-200g:200GE1/0/2",
       "name": "200GE1/0/2",
-      "type": "switch",
+      "type": "switch_port",
       "status": "healthy",
       "layer": "network",
       "domain": "aidc",
@@ -12870,7 +12870,7 @@
     {
       "id": "sw-200g:200GE1/0/3",
       "name": "200GE1/0/3",
-      "type": "switch",
+      "type": "switch_port",
       "status": "healthy",
       "layer": "network",
       "domain": "aidc",
@@ -12903,7 +12903,7 @@
     {
       "id": "sw-200g:200GE1/0/4",
       "name": "200GE1/0/4",
-      "type": "switch",
+      "type": "switch_port",
       "status": "healthy",
       "layer": "network",
       "domain": "aidc",
@@ -12936,7 +12936,7 @@
     {
       "id": "sw-200g:200GE1/0/5",
       "name": "200GE1/0/5",
-      "type": "switch",
+      "type": "switch_port",
       "status": "healthy",
       "layer": "network",
       "domain": "aidc",
@@ -12969,7 +12969,7 @@
     {
       "id": "sw-200g:200GE1/0/6",
       "name": "200GE1/0/6",
-      "type": "switch",
+      "type": "switch_port",
       "status": "healthy",
       "layer": "network",
       "domain": "aidc",

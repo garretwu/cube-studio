@@ -20,6 +20,7 @@ import { formatTimestamp } from "../utils/format";
 import {
   buildDiagnosisDemoScenario,
   buildDiagnosisLiveView,
+  groupExecutionRunTimeline,
   type DiagnosisCandidateView,
   type DiagnosisDemoEvent,
   type DiagnosisPlanView,
@@ -45,6 +46,19 @@ const DEMO_APPROVAL_SUBMIT_DELAY_MS = 720;
 const TOOL_RESULT_TIMEOUT_MS = 15_000;
 const STREAM_COMPLETION_BUFFER_MS = 640;
 const AUTO_SCROLL_BOTTOM_THRESHOLD_PX = 48;
+const SYSTEM_EVENT_PREFIX_PATTERN = /^\[(?:system|\u7cfb\u7edf)\]\s*/i;
+const APPROVAL_KEY_DETAIL_PATTERNS = [
+  /^\u5ba1\u6279\u53cd\u9988\s*[:\uff1a]/i,
+  /^\u6267\u884c\u8fb9\u754c\s*[:\uff1a]/i,
+  /^\u5ba1\u6279\u52a8\u4f5c\s*[:\uff1a]/i,
+  /^\u62d2\u7edd\u539f\u56e0\s*[:\uff1a]/i,
+  /^\u65b9\u6848(?:\u6807\u9898|\u7248\u672c|\s*ID)\s*[:\uff1a]/i,
+  /^approval feedback\s*[:\uff1a]/i,
+  /^execution boundary\s*[:\uff1a]/i,
+  /^approval action\s*[:\uff1a]/i,
+  /^reject reason\s*[:\uff1a]/i,
+  /^plan (?:title|version|id)\s*[:\uff1a]/i,
+];
 
 type DemoApprovalDecision = "approved" | "rejected";
 type ApprovalSurfaceResolution = {
@@ -79,6 +93,72 @@ function formatThoughtDurationLabel(durationSec?: number) {
   return `Thought for ${safeDuration} second${safeDuration === 1 ? "" : "s"}`;
 }
 
+function stripSystemEventPrefix(summary: string) {
+  return summary.replace(SYSTEM_EVENT_PREFIX_PATTERN, "").trim();
+}
+
+function dedupeNonEmptyLines(lines: string[]) {
+  const seen = new Set<string>();
+  const deduped: string[] = [];
+
+  lines.forEach((line) => {
+    const trimmed = line.trim();
+    if (!trimmed || seen.has(trimmed)) {
+      return;
+    }
+
+    seen.add(trimmed);
+    deduped.push(trimmed);
+  });
+
+  return deduped;
+}
+
+function extractApprovalApproverLine(values: string[]): string | null {
+  for (const value of values) {
+    const trimmed = value.trim();
+    if (!trimmed) {
+      continue;
+    }
+
+    let matched =
+      /^(\u5ba1\u6279\u4eba)\s*[:\uff1a]\s*(.+)$/i.exec(trimmed) ??
+      /(\u5ba1\u6279\u4eba)\s+([^\s,\uff0c)\uff09]+)/i.exec(trimmed);
+    if (matched) {
+      return `${matched[1]}\uff1a${matched[2].trim()}`;
+    }
+
+    matched =
+      /^(approver)\s*[:\uff1a]\s*(.+)$/i.exec(trimmed) ??
+      /(approver)\s+([^\s,\uff0c)\uff09]+)/i.exec(trimmed);
+    if (matched) {
+      return `Approver: ${matched[2].trim()}`;
+    }
+  }
+
+  return null;
+}
+
+function extractApprovalResultDetailLines(
+  item: Extract<DiagnosisTimelineItem, { kind: "system" }>,
+) {
+  const summaryLine = stripSystemEventPrefix(item.summary);
+  const approverLine = extractApprovalApproverLine([summaryLine, ...item.details]);
+  const keyLines = item.details.filter((detail) =>
+    APPROVAL_KEY_DETAIL_PATTERNS.some((pattern) => pattern.test(detail.trim())),
+  );
+
+  const detailLines = dedupeNonEmptyLines([
+    ...(approverLine ? [approverLine] : []),
+    ...keyLines,
+  ]);
+
+  if (detailLines.length > 0) {
+    return detailLines;
+  }
+
+  return dedupeNonEmptyLines([summaryLine]);
+}
 function splitThinkingAndConclusion(content: string): {
   thinking: string | null;
   conclusion: string;
@@ -560,27 +640,272 @@ function ToolCard({
   );
 }
 
-function RCAReportCard({
-  summary,
-  candidates,
-  hypotheses,
-  propagationChain,
+function ExecutionRunBlock({
+  item,
 }: {
-  summary: DiagnosisSummaryView;
-  candidates: DiagnosisCandidateView[];
-  hypotheses?: DiagnosisHypothesisView[];
-  propagationChain?: DiagnosisPropagationStepView[];
+  item: Extract<DiagnosisTimelineItem, { kind: "run" }>;
 }) {
+  const activeStep =
+    [...item.steps].reverse().find((step) => step.status === "running") ??
+    item.steps[item.steps.length - 1];
+  const [expandedStepIds, setExpandedStepIds] = useState<Set<string>>(
+    () => new Set(activeStep ? [activeStep.id] : []),
+  );
+  const [expandedToolIds, setExpandedToolIds] = useState<Set<string>>(
+    () => new Set(),
+  );
+
+  useEffect(() => {
+    if (!activeStep) {
+      return;
+    }
+    setExpandedStepIds((current) => {
+      if (current.has(activeStep.id)) {
+        return current;
+      }
+      const next = new Set(current);
+      next.add(activeStep.id);
+      return next;
+    });
+  }, [activeStep?.id]);
+
+  const toolsByStep = useMemo(() => {
+    const grouped = new Map<string, typeof item.tools>();
+    item.tools.forEach((tool) => {
+      const key = tool.stepId ?? "__run";
+      const current = grouped.get(key) ?? [];
+      current.push(tool);
+      grouped.set(key, current);
+    });
+    return grouped;
+  }, [item.tools]);
+
+  const toggleStep = (stepId: string) => {
+    setExpandedStepIds((current) => {
+      const next = new Set(current);
+      if (next.has(stepId)) {
+        next.delete(stepId);
+      } else {
+        next.add(stepId);
+      }
+      return next;
+    });
+  };
+
+  const toggleTool = (toolId: string) => {
+    setExpandedToolIds((current) => {
+      const next = new Set(current);
+      if (next.has(toolId)) {
+        next.delete(toolId);
+      } else {
+        next.add(toolId);
+      }
+      return next;
+    });
+  };
+
+  return (
+    <section
+      className={cn(
+        "diagnosis-workspace-run-block",
+        `diagnosis-workspace-run-block--${item.status}`,
+      )}
+      data-testid="diagnosis-execution-run-block"
+      title={`${formatTimestamp(item.startedAt)} - ${formatTimestamp(item.updatedAt)}`}
+    >
+      <header className="diagnosis-workspace-run-block__header">
+        <div className="diagnosis-workspace-run-block__heading">
+          <span className="diagnosis-workspace-run-block__eyebrow">
+            {item.runId}
+          </span>
+          <div className="diagnosis-workspace-run-block__title-row">
+            <h3>{item.title}</h3>
+            <ToneBadge tone={item.status === "success" ? "success" : item.status === "running" ? "warning" : "danger"}>
+              {item.currentStageLabel}
+            </ToneBadge>
+          </div>
+        </div>
+        <div className="diagnosis-workspace-run-block__meta">
+          <span>{formatTimestamp(item.startedAt)}</span>
+          <span>{formatTimestamp(item.updatedAt)}</span>
+        </div>
+      </header>
+
+      <div className="diagnosis-workspace-run-block__progress">
+        <div className="diagnosis-workspace-run-block__progress-row">
+          <span>{item.progress.label}</span>
+          <strong>{item.progress.value}%</strong>
+        </div>
+        <div className="progress-track remediation-progress-track remediation-progress-track--canary">
+          <div
+            className="progress-track__fill remediation-progress-track__fill remediation-progress-track__fill--canary"
+            style={{ width: `${item.progress.value}%` }}
+          />
+        </div>
+        {item.progress.helper ? <p>{item.progress.helper}</p> : null}
+      </div>
+
+      {item.metrics.length > 0 ? (
+        <div className="diagnosis-workspace-run-block__metrics">
+          {item.metrics.map((metric) => (
+            <span key={metric}>{metric}</span>
+          ))}
+        </div>
+      ) : null}
+
+      <div className="diagnosis-workspace-run-block__steps">
+        {item.steps.map((step, index) => {
+          const isExpanded = expandedStepIds.has(step.id);
+          const stepTools = toolsByStep.get(step.id) ?? [];
+          return (
+            <article
+              className={cn(
+                "diagnosis-workspace-run-step",
+                `diagnosis-workspace-run-step--${step.status}`,
+              )}
+              key={step.id}
+            >
+              <div className="diagnosis-workspace-run-step__rail" aria-hidden="true">
+                <span className="diagnosis-workspace-run-step__dot" />
+                {index < item.steps.length - 1 ? (
+                  <span className="diagnosis-workspace-run-step__line" />
+                ) : null}
+              </div>
+              <div className="diagnosis-workspace-run-step__body">
+                <button
+                  aria-expanded={isExpanded}
+                  className="diagnosis-workspace-run-step__toggle"
+                  onClick={() => toggleStep(step.id)}
+                  type="button"
+                >
+                  <span className="diagnosis-workspace-run-step__title-wrap">
+                    <strong>{step.title}</strong>
+                    <span>{step.summary}</span>
+                  </span>
+                  <span className="diagnosis-workspace-run-step__state">
+                    {step.progress ? `${step.progress.value}%` : step.status}
+                  </span>
+                </button>
+
+                {isExpanded ? (
+                  <div className="diagnosis-workspace-run-step__panel">
+                    {step.details.length > 0 ? (
+                      <div className="diagnosis-workspace-run-step__details">
+                        {step.details.map((detail) => (
+                          <p key={`${step.id}-${detail}`}>{detail}</p>
+                        ))}
+                      </div>
+                    ) : null}
+
+                    {step.metricLines.length > 0 ? (
+                      <div className="diagnosis-workspace-run-step__metric-row">
+                        {step.metricLines.map((metric) => (
+                          <span key={`${step.id}-${metric}`}>{metric}</span>
+                        ))}
+                      </div>
+                    ) : null}
+
+                    {stepTools.length > 0 ? (
+                      <div className="diagnosis-workspace-run-tools">
+                        {stepTools.map((tool) => {
+                          const toolExpanded = expandedToolIds.has(tool.id);
+                          const hasToolDetails =
+                            Object.keys(tool.params).length > 0 ||
+                            tool.summaryLines.length > 0;
+                          return (
+                            <div
+                              className={cn(
+                                "diagnosis-workspace-run-tool",
+                                `diagnosis-workspace-run-tool--${tool.status}`,
+                              )}
+                              key={tool.id}
+                            >
+                              <button
+                                aria-expanded={toolExpanded}
+                                className="diagnosis-workspace-run-tool__toggle"
+                                disabled={!hasToolDetails}
+                                onClick={() => toggleTool(tool.id)}
+                                type="button"
+                              >
+                                <span
+                                  className={cn(
+                                    "diagnosis-workspace-tool-card__status-indicator",
+                                    `diagnosis-workspace-tool-card__status-indicator--${tool.status}`,
+                                  )}
+                                  aria-hidden="true"
+                                />
+                                <span className="diagnosis-workspace-run-tool__copy">
+                                  <strong>{tool.toolName}</strong>
+                                  {Object.keys(tool.params).length > 0 ? (
+                                    <span>{JSON.stringify(tool.params)}</span>
+                                  ) : null}
+                                </span>
+                                <span className="diagnosis-workspace-run-tool__status">
+                                  {tool.status}
+                                </span>
+                              </button>
+                              {toolExpanded ? (
+                                <div className="diagnosis-workspace-run-tool__details">
+                                  {Object.keys(tool.params).length > 0 ? (
+                                    <pre>{JSON.stringify(tool.params, null, 2)}</pre>
+                                  ) : null}
+                                  {tool.summaryLines.map((line) => (
+                                    <p key={`${tool.id}-${line}`}>{line}</p>
+                                  ))}
+                                </div>
+                              ) : null}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    ) : null}
+                  </div>
+                ) : null}
+              </div>
+            </article>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
+function RCAReportCard({
+  item,
+}: {
+  item: Extract<DiagnosisTimelineItem, { kind: "report" }>;
+}) {
+  const {
+    summary,
+    candidates,
+    hypotheses,
+    propagationChain,
+    planStatusLabel,
+    planStatusTone,
+  } = item;
   const primaryCandidate = candidates[0];
+  const previewCandidates = candidates.slice(0, 3);
   const hypothesisRows = hypotheses ?? [];
   const chainRows = propagationChain ?? [];
   const rootCauseEntities =
     summary.rootCauseEntities && summary.rootCauseEntities.length > 0
       ? summary.rootCauseEntities
       : (primaryCandidate?.entities ?? []);
+  const displayedEntities = rootCauseEntities.slice(0, 3);
+  const hiddenEntityCount = Math.max(
+    0,
+    rootCauseEntities.length - displayedEntities.length,
+  );
+  const hiddenCandidateCount = Math.max(
+    0,
+    candidates.length - previewCandidates.length,
+  );
 
   return (
-    <section className="diagnosis-workspace-report-card">
+    <section
+      className="diagnosis-workspace-report-card"
+      data-testid="diagnosis-report-card"
+    >
       <header className="diagnosis-workspace-report-card__header">
         <div>
           <div className="diagnosis-workspace-report-card__eyebrow">
@@ -591,6 +916,11 @@ function RCAReportCard({
             <ToneBadge tone={summary.certaintyTone}>
               {summary.certaintyLabel}
             </ToneBadge>
+            {planStatusLabel ? (
+              <ToneBadge tone={planStatusTone ?? "info"}>
+                {planStatusLabel}
+              </ToneBadge>
+            ) : null}
           </div>
           <h3 className="diagnosis-workspace-report-card__title">
             {summary.title}
@@ -605,198 +935,249 @@ function RCAReportCard({
         </div>
       </header>
 
-      <div className="diagnosis-workspace-report-card__grid">
-        <div>
-          <span>{"\u786e\u5b9a\u6027"}</span>
-          <strong>{summary.certaintyLabel}</strong>
-        </div>
-        <div>
-          <span>{"\u7f6e\u4fe1\u5ea6"}</span>
-          <strong>
-            {summary.confidenceRawLabel ?? summary.confidenceLabel}
-          </strong>
-        </div>
-        <div>
-          <span>{"\u4f18\u5148\u7ea7"}</span>
-          <strong>{summary.priorityLabel ?? "--"}</strong>
-        </div>
-        <div>
-          <span>{"\u66f4\u65b0\u65f6\u95f4"}</span>
-          <strong>{summary.updatedTimeLabel ?? "--"}</strong>
-        </div>
-      </div>
-
-      <div className="diagnosis-workspace-report-card__sections">
-        <section className="diagnosis-workspace-report-card__section">
-          <p className="diagnosis-workspace-report-card__section-label">
-            {"\u5f53\u524d\u7ed3\u8bba"}
-          </p>
-          <div className="diagnosis-workspace-report-card__facts">
-            <div className="diagnosis-workspace-report-card__fact-row">
-              <span className="diagnosis-workspace-report-card__fact-label">
-                {"\u6839\u56e0"}
-              </span>
-              <strong className="diagnosis-workspace-report-card__fact-value">
-                {summary.rootCause ?? primaryCandidate?.title ?? "--"}
-              </strong>
-            </div>
-            <div className="diagnosis-workspace-report-card__fact-row">
-              <span className="diagnosis-workspace-report-card__fact-label">
-                {"\u5c42\u7ea7"}
-              </span>
-              <span className="diagnosis-workspace-report-card__fact-value">
+      <div className="diagnosis-workspace-report-card__body">
+        <section className="diagnosis-workspace-report-card__hero">
+          <div className="diagnosis-workspace-report-card__hero-main">
+            <p className="diagnosis-workspace-report-card__section-label">
+              {"\u5f53\u524d\u7ed3\u8bba"}
+            </p>
+            <h4 className="diagnosis-workspace-report-card__hero-title">
+              {summary.rootCause ?? primaryCandidate?.title ?? "--"}
+            </h4>
+            <p className="diagnosis-workspace-report-card__hero-copy">
+              {summary.impactSummary}
+            </p>
+            <div className="diagnosis-workspace-report-card__chip-row">
+              <span className="diagnosis-workspace-report-card__chip">
                 {summary.rootCauseLayerLabel ??
                   summary.rootCauseLayer ??
                   primaryCandidate?.layer ??
                   "--"}
               </span>
+              {displayedEntities.map((entity) => (
+                <span
+                  className="diagnosis-workspace-report-card__chip"
+                  key={entity}
+                >
+                  {entity}
+                </span>
+              ))}
+              {hiddenEntityCount > 0 ? (
+                <span className="diagnosis-workspace-report-card__chip">
+                  {`+${hiddenEntityCount}`}
+                </span>
+              ) : null}
             </div>
-            <div className="diagnosis-workspace-report-card__fact-row">
-              <span className="diagnosis-workspace-report-card__fact-label">
-                {"\u5b9e\u4f53"}
-              </span>
-              <span className="diagnosis-workspace-report-card__fact-value">
-                {rootCauseEntities.length > 0
-                  ? rootCauseEntities.join("\uFF0C")
-                  : "--"}
-              </span>
+          </div>
+
+          <div className="diagnosis-workspace-report-card__stats">
+            <div className="diagnosis-workspace-report-card__stat">
+              <span>{"\u786e\u5b9a\u6027"}</span>
+              <strong>{summary.certaintyLabel}</strong>
             </div>
-            <div className="diagnosis-workspace-report-card__fact-row">
-              <span className="diagnosis-workspace-report-card__fact-label">
-                {"\u5f71\u54cd"}
-              </span>
-              <span className="diagnosis-workspace-report-card__fact-value">
-                {summary.impactSummary}
-              </span>
+            <div className="diagnosis-workspace-report-card__stat">
+              <span>{"\u7f6e\u4fe1\u5ea6"}</span>
+              <strong>
+                {summary.confidenceRawLabel ?? summary.confidenceLabel}
+              </strong>
             </div>
-            <div className="diagnosis-workspace-report-card__fact-row">
-              <span className="diagnosis-workspace-report-card__fact-label">
-                {"\u53d7\u5f71\u54cd\u670d\u52a1"}
-              </span>
-              <span className="diagnosis-workspace-report-card__fact-value">
-                {summary.affectedServices.length > 0
-                  ? summary.affectedServices.join("\uFF0C")
-                  : "--"}
-              </span>
+            <div className="diagnosis-workspace-report-card__stat">
+              <span>{"\u4f18\u5148\u7ea7"}</span>
+              <strong>{summary.priorityLabel ?? "--"}</strong>
+            </div>
+            <div className="diagnosis-workspace-report-card__stat">
+              <span>{"\u66f4\u65b0\u65f6\u95f4"}</span>
+              <strong>{summary.updatedTimeLabel ?? "--"}</strong>
             </div>
           </div>
         </section>
 
-        <section className="diagnosis-workspace-report-card__section">
-          <p className="diagnosis-workspace-report-card__section-label">
-            {"\u5019\u9009\u6839\u56e0\uff08" + candidates.length + "\uff09"}
-          </p>
-          <div className="diagnosis-workspace-report-card__candidates">
-            {candidates.length > 0 ? (
-              candidates.map((candidate, index) => (
-                <article
-                  key={candidate.id}
-                  className="diagnosis-workspace-report-card__candidate-item"
-                >
-                  <div className="diagnosis-workspace-report-card__candidate-header">
-                    <strong>
-                      {"#" +
-                        (candidate.rank ?? index + 1) +
-                        " " +
-                        candidate.title}
-                    </strong>
-                    <span>
-                      {"\u7f6e\u4fe1\u5ea6 " + candidate.confidence.toFixed(2)}
-                    </span>
-                  </div>
-                  <p className="diagnosis-workspace-report-card__candidate-copy">
-                    {"\u8bc1\u636e\u6458\u8981\uff1a" +
-                      (candidate.evidenceSummary ?? candidate.summary)}
-                  </p>
-                  {candidate.distinguishingVerification ? (
-                    <p className="diagnosis-workspace-report-card__candidate-copy diagnosis-workspace-report-card__candidate-copy--muted">
-                      {"\u533a\u5206\u9a8c\u8bc1\uff1a" +
-                        candidate.distinguishingVerification}
+        <div className="diagnosis-workspace-report-card__snapshot-grid">
+          <section className="diagnosis-workspace-report-card__panel">
+            <p className="diagnosis-workspace-report-card__section-label">
+              {"\u5019\u9009\u6839\u56e0"}
+            </p>
+            {previewCandidates.length > 0 ? (
+              <div className="diagnosis-workspace-report-card__candidate-previews">
+                {previewCandidates.map((candidate, index) => (
+                  <article
+                    className="diagnosis-workspace-report-card__candidate-preview"
+                    key={candidate.id}
+                  >
+                    <div className="diagnosis-workspace-report-card__candidate-preview-header">
+                      <strong>
+                        {`#${candidate.rank ?? index + 1} ${candidate.title}`}
+                      </strong>
+                      <ToneBadge tone={candidate.statusTone}>
+                        {candidate.statusLabel}
+                      </ToneBadge>
+                    </div>
+                    <p className="diagnosis-workspace-report-card__section-copy">
+                      {candidate.evidenceSummary ?? candidate.summary}
                     </p>
-                  ) : null}
-                </article>
-              ))
+                  </article>
+                ))}
+              </div>
             ) : (
               <p className="diagnosis-workspace-report-card__section-copy">
                 {"\u6682\u65e0\u5019\u9009\u6839\u56e0\u3002"}
               </p>
             )}
-          </div>
-        </section>
-
-        <section className="diagnosis-workspace-report-card__section">
-          <p className="diagnosis-workspace-report-card__section-label">
-            {"\u5047\u8bbe\u4e0e\u8bc1\u636e"}
-          </p>
-          <div className="diagnosis-workspace-report-card__hypotheses">
-            {hypothesisRows.length > 0 ? (
-              hypothesisRows.map((item, index) => (
-                <article
-                  key={item.id}
-                  className="diagnosis-workspace-report-card__hypothesis-item"
-                >
-                  <div className="diagnosis-workspace-report-card__hypothesis-header">
-                    <strong>
-                      {String.fromCharCode(65 + index) +
-                        ". " +
-                        item.description}
-                    </strong>
-                    <ToneBadge tone={item.statusTone}>
-                      {item.statusLabel}
-                    </ToneBadge>
-                  </div>
-                  <p className="diagnosis-workspace-report-card__section-copy">
-                    {"\u652f\u6301\u8bc1\u636e " +
-                      item.evidenceForCount +
-                      " \u6761 | \u53cd\u8bc1 " +
-                      item.evidenceAgainstCount +
-                      " \u6761 | \u7f6e\u4fe1\u5ea6 " +
-                      item.confidence.toFixed(2)}
-                  </p>
-                </article>
-              ))
-            ) : (
-              <p className="diagnosis-workspace-report-card__section-copy">
-                {"\u6682\u65e0\u5047\u8bbe\u8bc1\u636e\u6570\u636e\u3002"}
+            {hiddenCandidateCount > 0 ? (
+              <p className="diagnosis-workspace-report-card__footnote">
+                {`\u53e6\u6709 ${hiddenCandidateCount} \u4e2a\u5019\u9009\u5df2\u6298\u53e0\u5230\u8be6\u60c5`}
               </p>
-            )}
-          </div>
-        </section>
+            ) : null}
+          </section>
 
-        <details className="diagnosis-workspace-report-card__propagation">
-          <summary className="diagnosis-workspace-report-card__section-label">
-            {"\u4f20\u64ad\u94fe\u8def\uff08\u6298\u53e0\uff09"}
+          <section className="diagnosis-workspace-report-card__panel">
+            <p className="diagnosis-workspace-report-card__section-label">
+              {"\u5f71\u54cd\u8303\u56f4"}
+            </p>
+            <div className="diagnosis-workspace-report-card__facts-inline">
+              <div>
+                <span>{"\u53d7\u5f71\u54cd\u670d\u52a1"}</span>
+                <strong>
+                  {summary.affectedServices.length > 0
+                    ? summary.affectedServices.join("\uFF0C")
+                    : "--"}
+                </strong>
+              </div>
+              <div>
+                <span>{"\u5b9e\u4f53"}</span>
+                <strong>
+                  {rootCauseEntities.length > 0
+                    ? rootCauseEntities.join("\uFF0C")
+                    : "--"}
+                </strong>
+              </div>
+            </div>
+            <p className="diagnosis-workspace-report-card__section-copy diagnosis-workspace-report-card__section-copy--muted">
+              {planStatusLabel ??
+                "\u4fee\u590d\u65b9\u6848\u5c06\u5728\u5ba1\u6279\u533a\u57df\u5c55\u793a\uff0c\u6b64\u5904\u4f18\u5148\u4fdd\u7559\u8bca\u65ad\u4e0a\u4e0b\u6587\u3002"}
+            </p>
+          </section>
+        </div>
+
+        <details className="diagnosis-workspace-report-card__details">
+          <summary className="diagnosis-workspace-report-card__details-summary">
+            {"\u5c55\u5f00\u8bc1\u636e\u3001\u5047\u8bbe\u4e0e\u4f20\u64ad\u94fe\u8def"}
           </summary>
-          <div className="diagnosis-workspace-report-card__propagation-body">
-            {chainRows.length > 0 ? (
-              chainRows.map((step) => (
-                <article
-                  key={step.id}
-                  className="diagnosis-workspace-report-card__propagation-item"
-                >
-                  <p>
-                    {step.entityId +
-                      " -> " +
-                      step.metric +
-                      " -> " +
-                      step.valueBefore +
-                      " -> " +
-                      step.valueAfter +
-                      " -> " +
-                      step.description}
-                  </p>
-                </article>
-              ))
-            ) : (
-              <p className="diagnosis-workspace-report-card__section-copy">
-                {"\u6682\u65e0\u4f20\u64ad\u94fe\u8def\u6570\u636e\u3002"}
+          <div className="diagnosis-workspace-report-card__details-grid">
+            <section className="diagnosis-workspace-report-card__section">
+              <p className="diagnosis-workspace-report-card__section-label">
+                {"\u5019\u9009\u8be6\u60c5"}
               </p>
-            )}
+              <div className="diagnosis-workspace-report-card__candidates">
+                {candidates.length > 0 ? (
+                  candidates.map((candidate, index) => (
+                    <article
+                      key={candidate.id}
+                      className="diagnosis-workspace-report-card__candidate-item"
+                    >
+                      <div className="diagnosis-workspace-report-card__candidate-header">
+                        <strong>
+                          {`#${candidate.rank ?? index + 1} ${candidate.title}`}
+                        </strong>
+                        <span>{candidate.confidenceLabel}</span>
+                      </div>
+                      <p className="diagnosis-workspace-report-card__section-copy">
+                        {candidate.evidenceSummary ?? candidate.summary}
+                      </p>
+                      {candidate.distinguishingVerification ? (
+                        <p className="diagnosis-workspace-report-card__section-copy diagnosis-workspace-report-card__section-copy--muted">
+                          {`\u533a\u5206\u9a8c\u8bc1\uff1a${candidate.distinguishingVerification}`}
+                        </p>
+                      ) : null}
+                    </article>
+                  ))
+                ) : (
+                  <p className="diagnosis-workspace-report-card__section-copy">
+                    {"\u6682\u65e0\u5019\u9009\u6839\u56e0\u3002"}
+                  </p>
+                )}
+              </div>
+            </section>
+
+            <section className="diagnosis-workspace-report-card__section">
+              <p className="diagnosis-workspace-report-card__section-label">
+                {"\u5047\u8bbe\u4e0e\u8bc1\u636e"}
+              </p>
+              <div className="diagnosis-workspace-report-card__hypotheses">
+                {hypothesisRows.length > 0 ? (
+                  hypothesisRows.map((entry, index) => (
+                    <article
+                      key={entry.id}
+                      className="diagnosis-workspace-report-card__hypothesis-item"
+                    >
+                      <div className="diagnosis-workspace-report-card__hypothesis-header">
+                        <strong>
+                          {`${String.fromCharCode(65 + index)}. ${entry.description}`}
+                        </strong>
+                        <ToneBadge tone={entry.statusTone}>
+                          {entry.statusLabel}
+                        </ToneBadge>
+                      </div>
+                      <p className="diagnosis-workspace-report-card__section-copy">
+                        {`\u652f\u6301\u8bc1\u636e ${entry.evidenceForCount} \u6761 | \u53cd\u8bc1 ${entry.evidenceAgainstCount} \u6761 | \u7f6e\u4fe1\u5ea6 ${entry.confidence.toFixed(2)}`}
+                      </p>
+                    </article>
+                  ))
+                ) : (
+                  <p className="diagnosis-workspace-report-card__section-copy">
+                    {"\u6682\u65e0\u5047\u8bbe\u8bc1\u636e\u6570\u636e\u3002"}
+                  </p>
+                )}
+              </div>
+            </section>
+
+            <section className="diagnosis-workspace-report-card__section">
+              <p className="diagnosis-workspace-report-card__section-label">
+                {"\u4f20\u64ad\u94fe\u8def"}
+              </p>
+              <div className="diagnosis-workspace-report-card__propagation-body">
+                {chainRows.length > 0 ? (
+                  chainRows.map((step) => (
+                    <article
+                      key={step.id}
+                      className="diagnosis-workspace-report-card__propagation-item"
+                    >
+                      <p>
+                        {`${step.entityId} -> ${step.metric} -> ${step.valueBefore} -> ${step.valueAfter} -> ${step.description}`}
+                      </p>
+                    </article>
+                  ))
+                ) : (
+                  <p className="diagnosis-workspace-report-card__section-copy">
+                    {"\u6682\u65e0\u4f20\u64ad\u94fe\u8def\u6570\u636e\u3002"}
+                  </p>
+                )}
+              </div>
+            </section>
           </div>
         </details>
       </div>
     </section>
   );
+}
+
+function getSystemEventCategoryLabel(
+  eventKind: Extract<DiagnosisTimelineItem, { kind: "system" }>["eventKind"],
+) {
+  switch (eventKind) {
+    case "approval_result":
+      return "鎵ц纭";
+    case "canary_progress":
+      return "鐏板害杩涘害";
+    case "metric_feedback":
+      return "鎸囨爣鍙嶉";
+    case "alert_recovery":
+      return "鎶ヨ鎭㈠";
+    case "session_closed":
+      return "璇婃柇鍏抽棴";
+    default:
+      return "鎵ц杩涘害";
+  }
 }
 function SystemEventBlock({
   item,
@@ -805,10 +1186,7 @@ function SystemEventBlock({
 }) {
   const [isExpanded, setIsExpanded] = useState(false);
   const hoverTime = formatTimestamp(item.timestamp);
-  const categoryLabel =
-    item.eventKind === "approval_result"
-      ? "Approval Audit"
-      : "Execution Progress";
+  const categoryLabel = getSystemEventCategoryLabel(item.eventKind);
 
   return (
     <article
@@ -839,11 +1217,87 @@ function SystemEventBlock({
             {hoverTime}
           </span>
         </button>
+        {item.progress ? (
+          <div className="diagnosis-workspace-system-event__progress">
+            <div className="diagnosis-workspace-system-event__progress-row">
+              <span>{item.progress.label}</span>
+              <strong>{item.progress.value}%</strong>
+            </div>
+            <div className="progress-track remediation-progress-track remediation-progress-track--canary">
+              <div
+                className="progress-track__fill remediation-progress-track__fill remediation-progress-track__fill--canary"
+                style={{ width: `${item.progress.value}%` }}
+              />
+            </div>
+            {item.progress.helper ? <p>{item.progress.helper}</p> : null}
+          </div>
+        ) : null}
 
         {isExpanded ? (
           <div className="diagnosis-workspace-system-event__panel">
             <div className="diagnosis-workspace-system-event__content">
               {item.details.map((detail, index) => (
+                <p key={`${item.id}-${index}`}>{detail}</p>
+              ))}
+            </div>
+          </div>
+        ) : null}
+      </div>
+    </article>
+  );
+}
+
+function ApprovalResultThoughtBlock({
+  item,
+}: {
+  item: Extract<DiagnosisTimelineItem, { kind: "system" }>;
+}) {
+  const [isExpanded, setIsExpanded] = useState(false);
+  const hoverTime = formatTimestamp(item.timestamp);
+  const detailLines = useMemo(
+    () => extractApprovalResultDetailLines(item),
+    [item.details, item.summary],
+  );
+  const thoughtDurationLabel = formatThoughtDurationLabel(
+    estimateThoughtDurationSecFromContent(detailLines.join(" ")),
+  );
+
+  return (
+    <article
+      className="diagnosis-workspace-process-row diagnosis-workspace-process-row--system"
+      title={hoverTime}
+    >
+      <div className="diagnosis-workspace-process-row__body">
+        <button
+          aria-expanded={isExpanded}
+          className="diagnosis-workspace-thinking__toggle diagnosis-workspace-thinking__toggle--interactive"
+          data-testid="diagnosis-approval-result-thought"
+          onClick={() => setIsExpanded((current) => !current)}
+          type="button"
+        >
+          <span
+            className="diagnosis-workspace-thinking__icon"
+            aria-hidden="true"
+          >
+            <span
+              className={cn(
+                "diagnosis-workspace-thinking__chevron",
+                isExpanded &&
+                  "diagnosis-workspace-thinking__chevron--expanded",
+              )}
+            />
+          </span>
+          <span className="diagnosis-workspace-thinking__label-wrap">
+            <span className="diagnosis-workspace-thinking__label">
+              {thoughtDurationLabel}
+            </span>
+          </span>
+        </button>
+
+        {isExpanded ? (
+          <div className="diagnosis-workspace-thinking__panel">
+            <div className="diagnosis-workspace-thinking__content">
+              {detailLines.map((detail, index) => (
                 <p key={`${item.id}-${index}`}>{detail}</p>
               ))}
             </div>
@@ -889,7 +1343,7 @@ function DemoApprovalCard({
       resolution === "approved"
         ? "\u5df2\u6279\u51c6\u6267\u884c"
         : resolution === "rejected"
-          ? "\u5df2\u6279\u51c6\u6267\u884c"
+          ? "\u5df2\u62d2\u7edd\u6267\u884c"
           : "\u5f85\u5ba1\u6279",
     statusTone:
       resolution === "approved"
@@ -1094,7 +1548,7 @@ function ApprovalSurface({
 
         {isSubmitting ? (
           <div className="diagnosis-workspace-approval-surface__updating">
-            \u6267\u884c\u6b65\u9aa4??...
+            \u6b63\u5728\u63d0\u4ea4\u786e\u8ba4...
           </div>
         ) : null}
 
@@ -1230,6 +1684,94 @@ function ApprovalOverlay({
   );
 }
 
+function findTimelineToolStatus(
+  timelineItems: DiagnosisTimelineItem[],
+  toolId: string,
+) {
+  for (const item of timelineItems) {
+    if (item.kind === "tool" && item.id === toolId) {
+      return item.status;
+    }
+    if (item.kind === "run") {
+      const tool = item.tools.find((entry) => entry.id === toolId);
+      if (tool) {
+        return tool.status;
+      }
+    }
+  }
+  return undefined;
+}
+
+function getLoadingToolIds(item: DiagnosisTimelineItem) {
+  if (item.kind === "tool" && item.status === "loading") {
+    return [item.id];
+  }
+  if (item.kind === "run") {
+    return item.tools
+      .filter((tool) => tool.status === "loading")
+      .map((tool) => tool.id);
+  }
+  return [];
+}
+
+function markTimelineToolTimeout(
+  timelineItems: DiagnosisTimelineItem[],
+  toolId: string,
+): DiagnosisTimelineItem[] {
+  const timeoutSummary = "Timed out after 15s waiting for tool_result.";
+  return timelineItems.map((item) => {
+    if (item.kind === "tool") {
+      if (item.id !== toolId || item.status !== "loading") {
+        return item;
+      }
+      return {
+        ...item,
+        status: "timeout" as const,
+        summaryLines: item.summaryLines.includes(timeoutSummary)
+          ? item.summaryLines
+          : [...item.summaryLines, timeoutSummary],
+      };
+    }
+
+    if (item.kind !== "run") {
+      return item;
+    }
+
+    let changed = false;
+    const tools = item.tools.map((tool) => {
+      if (tool.id !== toolId || tool.status !== "loading") {
+        return tool;
+      }
+      changed = true;
+      return {
+        ...tool,
+        status: "timeout" as const,
+        summaryLines: tool.summaryLines.includes(timeoutSummary)
+          ? tool.summaryLines
+          : [...tool.summaryLines, timeoutSummary],
+      };
+    });
+
+    if (!changed) {
+      return item;
+    }
+
+    const steps = item.steps.map((step) =>
+      step.toolIds.includes(toolId) && step.status === "running"
+        ? { ...step, status: "timeout" as const, statusTone: "danger" as const }
+        : step,
+    );
+
+    return {
+      ...item,
+      status: "timeout" as const,
+      currentStageLabel: "\u6267\u884c\u8d85\u65f6",
+      tools,
+      steps,
+    };
+  });
+}
+
 function DiagnosisPage() {
   const params = useParams<{ sessionId?: string }>();
   const routeSessionId = (params.sessionId ?? "").trim();
@@ -1238,21 +1780,15 @@ function DiagnosisPage() {
   const [demoTimeline, setDemoTimeline] = useState<
     DiagnosisTimelineItem[]
   >([]);
-  const [demoCandidates, setDemoCandidates] = useState<
-    DiagnosisCandidateView[]
-  >([]);
+  const [, setDemoCandidates] = useState<DiagnosisCandidateView[]>([]);
   const [demoSummary, setDemoSummary] = useState<
     DiagnosisSummaryView | undefined
   >();
   const [demoPlan, setDemoPlan] = useState<
     DiagnosisPlanView | undefined
   >();
-  const [demoHypotheses, setDemoHypotheses] = useState<
-    DiagnosisHypothesisView[]
-  >([]);
-  const [demoPropagationChain, setDemoPropagationChain] = useState<
-    DiagnosisPropagationStepView[]
-  >([]);
+  const [, setDemoHypotheses] = useState<DiagnosisHypothesisView[]>([]);
+  const [, setDemoPropagationChain] = useState<DiagnosisPropagationStepView[]>([]);
   const [demoState, setDemoState] = useState<"idle" | "running" | "complete">(
     "idle",
   );
@@ -1550,13 +2086,8 @@ function DiagnosisPage() {
       for (const [toolId, resolver] of [
         ...liveToolWaiterResolversRef.current.entries(),
       ]) {
-        const toolItem = timelineItems.find(
-          (
-            item,
-          ): item is Extract<DiagnosisTimelineItem, { kind: "tool" }> =>
-            item.kind === "tool" && item.id === toolId,
-        );
-        if (toolItem && toolItem.status !== "loading") {
+        const status = findTimelineToolStatus(timelineItems, toolId);
+        if (status && status !== "loading") {
           resolver();
         }
       }
@@ -1571,13 +2102,11 @@ function DiagnosisPage() {
 
   const waitForLiveToolTerminal = useCallback((toolId: string) => {
     return new Promise<void>((resolve) => {
-      const existingTool = liveTimelineRef.current.find(
-        (
-          item,
-        ): item is Extract<DiagnosisTimelineItem, { kind: "tool" }> =>
-          item.kind === "tool" && item.id === toolId,
+      const existingToolStatus = findTimelineToolStatus(
+        liveTimelineRef.current,
+        toolId,
       );
-      if (existingTool && existingTool.status !== "loading") {
+      if (existingToolStatus && existingToolStatus !== "loading") {
         resolve();
         return;
       }
@@ -1598,27 +2127,7 @@ function DiagnosisPage() {
         liveToolWaiterResolversRef.current.delete(toolId);
 
         if (timedOut) {
-          setLiveTimeline((current) =>
-            current.map((item) => {
-              if (
-                item.kind !== "tool" ||
-                item.id !== toolId ||
-                item.status !== "loading"
-              ) {
-                return item;
-              }
-
-              const timeoutSummary =
-                "Timed out after 15s waiting for tool_result.";
-              return {
-                ...item,
-                status: "timeout",
-                summaryLines: item.summaryLines.includes(timeoutSummary)
-                  ? item.summaryLines
-                  : [...item.summaryLines, timeoutSummary],
-              };
-            }),
-          );
+          setLiveTimeline((current) => markTimelineToolTimeout(current, toolId));
         }
 
         resolve();
@@ -1663,8 +2172,9 @@ function DiagnosisPage() {
           continue;
         }
 
-        if (nextItem.kind === "tool" && nextItem.status === "loading") {
-          await waitForLiveToolTerminal(nextItem.id);
+        const loadingToolIds = getLoadingToolIds(nextItem);
+        for (const loadingToolId of loadingToolIds) {
+          await waitForLiveToolTerminal(loadingToolId);
         }
       }
     } finally {
@@ -1760,6 +2270,294 @@ function DiagnosisPage() {
     });
   }, []);
 
+  const playDemoApprovedRemediationFlow = useCallback(
+    (runToken: number) => {
+      const startedAt = Date.now();
+      const timestampAt = (offsetMs: number) =>
+        new Date(startedAt + offsetMs).toISOString();
+      const appendItem = (item: DiagnosisTimelineItem) => {
+        setDemoTimeline((current) => {
+          if (current.some((existing) => existing.id === item.id)) {
+            return current;
+          }
+          return [...current, item];
+        });
+      };
+      const wait = async (delayMs: number) => {
+        await waitForDemoDelay(delayMs, runToken);
+        return runToken === demoRunTokenRef.current;
+      };
+      const appendAssistantMessage = async (
+        id: string,
+        content: string,
+        offsetMs: number,
+      ) => {
+        if (runToken !== demoRunTokenRef.current) {
+          return false;
+        }
+        const item: DiagnosisTimelineItem = {
+          id,
+          kind: "message",
+          role: "assistant",
+          content,
+          timestamp: timestampAt(offsetMs),
+        };
+        appendItem(item);
+        await waitForMessageStream(id, content);
+        return runToken === demoRunTokenRef.current;
+      };
+      const appendSystemEvent = (
+        id: string,
+        eventKind: Extract<DiagnosisTimelineItem, { kind: "system" }>["eventKind"],
+        summary: string,
+        details: string[],
+        statusTone: BadgeTone,
+        offsetMs: number,
+        progress?: Extract<DiagnosisTimelineItem, { kind: "system" }>["progress"],
+      ) => {
+        appendItem({
+          id,
+          kind: "system",
+          eventKind,
+          summary,
+          details,
+          timestamp: timestampAt(offsetMs),
+          statusTone,
+          progress,
+          source: "optimistic",
+          dedupeKey: id,
+        });
+      };
+      const appendTool = (
+        id: string,
+        toolName: string,
+        params: Record<string, unknown>,
+        summaryLines: string[],
+        offsetMs: number,
+      ) => {
+        appendItem({
+          id,
+          kind: "tool",
+          toolName,
+          params,
+          timestamp: timestampAt(offsetMs),
+          status: "loading",
+          summaryLines,
+        });
+      };
+      const completeTool = (
+        id: string,
+        summaryLines: string[],
+        rawResult?: Record<string, unknown>,
+      ) => {
+        setDemoTimeline((current) =>
+          current.map((item) => {
+            if (item.kind !== "tool" || item.id !== id) {
+              return item;
+            }
+            return {
+              ...item,
+              status: "success",
+              summaryLines,
+              rawResult,
+            };
+          }),
+        );
+      };
+
+      void (async () => {
+        const canarySkillToolId = `demo-post-approval-canary-skill-${startedAt}`;
+        const fullSkillToolId = `demo-post-approval-full-skill-${startedAt}`;
+
+                appendSystemEvent(
+          `demo-approval-confirmed-${startedAt}`,
+          "approval_result",
+          "[系统] 已经完成执行确认",
+          [
+            "审批反馈：已经完成执行确认",
+            "执行边界：先灰度，指标确认后再做全量修复",
+          ],
+          "success",
+          0,
+        );
+        if (!(await wait(420))) return;
+
+        if (!(await appendAssistantMessage(
+          `demo-canary-start-message-${startedAt}`,
+          "已收到确认。现在开始灰度，先调用 vLLM 诊断 skill 观察灰度窗口的延迟、错误率和 GPU 利用率。",
+          420,
+        ))) return;
+        if (!(await wait(360))) return;
+
+        appendSystemEvent(
+          `demo-canary-started-${startedAt}`,
+          "canary_progress",
+          "[系统] 开始灰度：调用 skill 观察灰度窗口",
+          [
+            "调用 skill：builtin-vllm-diagnosis",
+            "灰度范围：10% 流量",
+            "观察对象：vllm_p95_ms / inference_error_rate / GPU util",
+          ],
+          "warning",
+          900,
+          { label: "灰度进度", value: 10, helper: "canary 10%" },
+        );
+        appendTool(
+          canarySkillToolId,
+          "run_skill",
+          {
+            skill_id: "builtin-vllm-diagnosis",
+            phase: "canary",
+            namespace: "service",
+            node: "worker-03",
+          },
+          ["正在调用 builtin-vllm-diagnosis 采集灰度窗口指标..."],
+          980,
+        );
+        if (!(await wait(1250))) return;
+
+        appendSystemEvent(
+          `demo-canary-progress-45-${startedAt}`,
+          "canary_progress",
+          "[系统] 灰度执行中：首批实例已完成切换",
+          ["灰度进度：45%", "当前 p95：1.72s", "错误率：0.4%"],
+          "warning",
+          2150,
+          { label: "灰度进度", value: 45, helper: "首批实例" },
+        );
+        if (!(await wait(900))) return;
+
+        appendSystemEvent(
+          `demo-canary-progress-80-${startedAt}`,
+          "canary_progress",
+          "[系统] 灰度执行中：指标持续收敛",
+          ["灰度进度：80%", "GPU util：99% -> 74%", "队列等待：下降 68%"],
+          "warning",
+          3050,
+          { label: "灰度进度", value: 80, helper: "指标收敛" },
+        );
+        if (!(await wait(860))) return;
+
+        completeTool(
+          canarySkillToolId,
+          [
+            "skill builtin-vllm-diagnosis 执行完成",
+            "vllm_p95_ms: 3.4s -> 1.68s",
+            "inference_error_rate: 2.7% -> 0.4%",
+          ],
+          {
+            skill_id: "builtin-vllm-diagnosis",
+            vllm_p95_ms: 1680,
+            inference_error_rate: 0.004,
+          },
+        );
+        appendSystemEvent(
+          `demo-canary-complete-${startedAt}`,
+          "canary_progress",
+          "[系统] 已完成灰度：等待指标反馈确认灰度效果",
+          [
+            "灰度进度：100%",
+            "下一步：等待指标反馈确认是否继续全量修复",
+          ],
+          "success",
+          3920,
+          { label: "灰度进度", value: 100, helper: "等待指标反馈" },
+        );
+        if (!(await wait(760))) return;
+
+        appendSystemEvent(
+          `demo-canary-feedback-${startedAt}`,
+          "metric_feedback",
+          "[系统] 指标反馈已确认：反馈已确认灰度没有问题，进行全量修复",
+          ["指标反馈：灰度没有问题", "vLLM p95 低于 1.8s", "错误率低于 1%"],
+          "success",
+          4680,
+        );
+        if (!(await wait(640))) return;
+
+        appendSystemEvent(
+          `demo-full-rollout-start-${startedAt}`,
+          "execution_progress",
+          "[系统] 开始全量修复：扩大到剩余实例",
+          ["执行动作：traffic_restore", "策略：gradual", "范围：剩余 90% 流量"],
+          "warning",
+          5320,
+          { label: "全量进度", value: 35, helper: "逐步放量" },
+        );
+        if (!(await wait(720))) return;
+
+        appendTool(
+          fullSkillToolId,
+          "run_skill",
+          {
+            skill_id: "builtin-platform-health",
+            phase: "full_rollout_observation",
+            namespace: "service",
+            node: "worker-03",
+          },
+          ["正在调用 builtin-platform-health 观察全量修复效果..."],
+          6040,
+        );
+        appendSystemEvent(
+          `demo-full-rollout-progress-${startedAt}`,
+          "execution_progress",
+          "[系统] 全量修复中：放量进度稳定推进",
+          ["全量进度：72%", "未观察到错误率反弹"],
+          "warning",
+          6080,
+          { label: "全量进度", value: 72, helper: "全量放量" },
+        );
+        if (!(await wait(1050))) return;
+
+        appendSystemEvent(
+          `demo-full-feedback-wait-${startedAt}`,
+          "metric_feedback",
+          "[系统] 等待指标反馈全量效果",
+          ["观察窗口：全量放量后 3 分钟", "检查项：延迟、错误率、告警状态"],
+          "warning",
+          7130,
+        );
+        if (!(await wait(980))) return;
+
+        completeTool(
+          fullSkillToolId,
+          [
+            "skill builtin-platform-health 执行完成",
+            "vllm_p95_ms: 1.42s",
+            "inference_error_rate: 0.1%",
+            "alert_status: resolved",
+          ],
+          {
+            skill_id: "builtin-platform-health",
+            vllm_p95_ms: 1420,
+            inference_error_rate: 0.001,
+            alert_status: "resolved",
+          },
+        );
+        appendSystemEvent(
+          `demo-alert-recovered-${startedAt}`,
+          "alert_recovery",
+          "[系统] 报警已恢复：相关报警已经恢复",
+          ["报警：vLLM 推理延迟升高", "状态：resolved", "恢复来源：Alertmanager snapshot"],
+          "success",
+          8110,
+          { label: "执行进度", value: 100, helper: "报警恢复" },
+        );
+        if (!(await wait(520))) return;
+
+        appendSystemEvent(
+          `demo-session-closed-${startedAt}`,
+          "session_closed",
+          "[系统] 诊断已关闭：结束并关闭诊断",
+          ["闭环结果：修复完成", "后续动作：保留审计记录与执行明细"],
+          "success",
+          8630,
+          { label: "执行进度", value: 100, helper: "会话关闭" },
+        );
+      })();
+    },
+    [waitForDemoDelay, waitForMessageStream],
+  );
   const startDemo = useCallback(
     (prompt: string) => {
       const normalizedPrompt = prompt.trim();
@@ -2170,22 +2968,25 @@ function DiagnosisPage() {
     setConnectionState(ws.state);
   }, [setConnectionState, ws.state]);
 
-  const activeTimeline = hasLiveSession ? liveTimeline : demoTimeline;
-  const activeCandidates = hasLiveSession
-    ? liveView.candidates
-    : demoCandidates;
-  const activeHypotheses = hasLiveSession
-    ? (liveView.hypotheses ?? [])
-    : demoHypotheses;
-  const activePropagationChain = hasLiveSession
-    ? (liveView.propagationChain ?? [])
-    : demoPropagationChain;
+  const activeRawTimeline = hasLiveSession ? liveTimeline : demoTimeline;
+  const activeTimeline = useMemo(
+    () =>
+      groupExecutionRunTimeline(
+        activeRawTimeline,
+        hasLiveSession
+          ? `${activeSessionId ?? session?.session_id ?? "live"}-execution-run`
+          : "demo-execution-run",
+      ),
+    [activeRawTimeline, activeSessionId, hasLiveSession, session?.session_id],
+  );
   const activeSummary = hasLiveSession ? liveView.summary : demoSummary;
   const activePlan = hasLiveSession ? liveView.plan : demoPlan;
+  const activeReportReady = activeTimeline.some((item) => item.kind === "report");
   const activeApprovalStatusLabel =
     hasLiveSession && session ? formatWorkflowStatus(session.status) : "\u5f85\u5ba1\u6279";
   const approvalSurfaceOpen =
     Boolean(activePlan) &&
+    activeReportReady &&
     (hasLiveSession ? approvalOverlayOpen : demoApprovalCardOpen);
 
   const isFeedNearBottom = useCallback((element: HTMLDivElement) => {
@@ -2234,7 +3035,8 @@ function DiagnosisPage() {
       hasLiveSession ||
       demoState !== "complete" ||
       !demoSummary ||
-      !demoPlan
+      !demoPlan ||
+      !activeReportReady
     ) {
       clearDemoApprovalTimers();
       setDemoApprovalCardOpen(false);
@@ -2255,6 +3057,7 @@ function DiagnosisPage() {
       clearDemoApprovalTimers();
     };
   }, [
+    activeReportReady,
     clearDemoApprovalTimers,
     demoPlan,
     demoState,
@@ -2263,16 +3066,21 @@ function DiagnosisPage() {
   ]);
 
   const handleApproveDemoPlan = useCallback(() => {
+    const runToken = demoRunTokenRef.current;
     clearDemoApprovalTimers();
     setDemoRejectEditorOpen(false);
     setIsSubmittingDemoApproval(true);
     demoApprovalSubmitTimerRef.current = window.setTimeout(() => {
+      if (runToken !== demoRunTokenRef.current) {
+        return;
+      }
       setIsSubmittingDemoApproval(false);
       setDemoApprovalDecision("approved");
+      setDemoApprovalCardOpen(false);
       demoApprovalSubmitTimerRef.current = null;
+      playDemoApprovedRemediationFlow(runToken);
     }, DEMO_APPROVAL_SUBMIT_DELAY_MS);
-  }, [clearDemoApprovalTimers]);
-
+  }, [clearDemoApprovalTimers, playDemoApprovedRemediationFlow]);
   const handleRejectDemoPlan = useCallback(() => {
     if (!demoApprovalReason.trim()) {
       return;
@@ -2386,7 +3194,10 @@ function DiagnosisPage() {
 
           <div className="diagnosis-workspace-shell__body">
             <div
-              className="diagnosis-workspace-feed"
+              className={cn(
+                "diagnosis-workspace-feed",
+                approvalSurfaceOpen && "diagnosis-workspace-feed--with-approval",
+              )}
               onScroll={handleFeedScroll}
               ref={feedRef}
             >
@@ -2444,8 +3255,21 @@ function DiagnosisPage() {
                     );
                   }
 
+                  if (item.kind === "run") {
+                    return <ExecutionRunBlock item={item} key={item.id} />;
+                  }
+
                   if (item.kind === "system") {
+                    if (item.eventKind === "approval_result") {
+                      return (
+                        <ApprovalResultThoughtBlock item={item} key={item.id} />
+                      );
+                    }
                     return <SystemEventBlock item={item} key={item.id} />;
+                  }
+
+                  if (item.kind === "report") {
+                    return <RCAReportCard item={item} key={item.id} />;
                   }
 
                   return <ToolCard item={item} key={item.id} />;
@@ -2473,66 +3297,57 @@ function DiagnosisPage() {
                 </div>
               ) : null}
 
-              {activeSummary ? (
-                <RCAReportCard
-                  candidates={activeCandidates}
-                  hypotheses={activeHypotheses}
-                  propagationChain={activePropagationChain}
-                  summary={activeSummary}
-                />
-              ) : null}
+
               </div>
             </div>
+            {approvalSurfaceOpen ? (
+              <div className="diagnosis-workspace-approval-layer">
+                {!hasLiveSession ? (
+                  <DemoApprovalCard
+                    isSubmitting={isSubmittingDemoApproval}
+                    onApprove={handleApproveDemoPlan}
+                    onCancelReject={() => {
+                      setDemoApprovalReason("");
+                      setDemoRejectEditorOpen(false);
+                    }}
+                    onExpandReject={() => setDemoRejectEditorOpen(true)}
+                    onReject={handleRejectDemoPlan}
+                    onRejectReasonChange={setDemoApprovalReason}
+                    open={demoApprovalCardOpen}
+                    plan={activePlan}
+                    rejectExpanded={demoRejectEditorOpen}
+                    rejectReason={demoApprovalReason}
+                    resolution={demoApprovalDecision}
+                    summary={activeSummary}
+                  />
+                ) : null}
+                <ApprovalOverlay
+                  approvalBlockReason={approvalBlockReason}
+                  canApprove={canApprove}
+                  isSubmitting={isApprovingPlan}
+                  onApprove={() => void handleApprovePlan()}
+                  onCancelReject={() => {
+                    setApprovalReason("");
+                    setApprovalRejectEditorOpen(false);
+                  }}
+                  onExpandReject={() => setApprovalRejectEditorOpen(true)}
+                  onReject={() => void handleRejectPlan()}
+                  onRejectReasonChange={setApprovalReason}
+                  open={hasLiveSession && approvalOverlayOpen}
+                  plan={activePlan}
+                  planVersion={latestPlanVersion}
+                  rejectExpanded={approvalRejectEditorOpen}
+                  rejectReason={approvalReason}
+                  statusLabel={activeApprovalStatusLabel}
+                  statusTone={getDiagnosisStatusBadgeTone(session?.status)}
+                  summary={activeSummary}
+                />
+              </div>
+            ) : null}
           </div>
 
           <footer className="diagnosis-workspace-shell__footer">
-            <div
-              className={cn(
-                "diagnosis-workspace-composer-anchor",
-                approvalSurfaceOpen &&
-                  "diagnosis-workspace-composer-anchor--with-approval",
-              )}
-            >
-              {!hasLiveSession ? (
-                <DemoApprovalCard
-                  isSubmitting={isSubmittingDemoApproval}
-                  onApprove={handleApproveDemoPlan}
-                  onCancelReject={() => {
-                    setDemoApprovalReason("");
-                    setDemoRejectEditorOpen(false);
-                  }}
-                  onExpandReject={() => setDemoRejectEditorOpen(true)}
-                  onReject={handleRejectDemoPlan}
-                  onRejectReasonChange={setDemoApprovalReason}
-                  open={demoApprovalCardOpen}
-                  plan={activePlan}
-                  rejectExpanded={demoRejectEditorOpen}
-                  rejectReason={demoApprovalReason}
-                  resolution={demoApprovalDecision}
-                  summary={activeSummary}
-                />
-              ) : null}
-              <ApprovalOverlay
-                approvalBlockReason={approvalBlockReason}
-                canApprove={canApprove}
-                isSubmitting={isApprovingPlan}
-                onApprove={() => void handleApprovePlan()}
-                onCancelReject={() => {
-                  setApprovalReason("");
-                  setApprovalRejectEditorOpen(false);
-                }}
-                onExpandReject={() => setApprovalRejectEditorOpen(true)}
-                onReject={() => void handleRejectPlan()}
-                onRejectReasonChange={setApprovalReason}
-                open={hasLiveSession && approvalOverlayOpen}
-                plan={activePlan}
-                planVersion={latestPlanVersion}
-                rejectExpanded={approvalRejectEditorOpen}
-                rejectReason={approvalReason}
-                statusLabel={activeApprovalStatusLabel}
-                statusTone={getDiagnosisStatusBadgeTone(session?.status)}
-                summary={activeSummary}
-              />
+            <div className="diagnosis-workspace-composer-anchor">
               <div className="diagnosis-workspace-composer">
                 <textarea
                   className="diagnosis-workspace-composer__input"
@@ -2591,8 +3406,5 @@ function DiagnosisPage() {
   );
 }
 export default DiagnosisPage;
-
-
-
 
 

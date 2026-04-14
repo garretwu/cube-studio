@@ -25,7 +25,7 @@ const workflowStatusLabels: Record<string, string> = {
   approved: "已批准",
   awaiting_approval: "待审批",
   builtin: "内置",
-  closed: "已断开",
+  closed: "已关闭",
   confirmed: "已确认",
   connecting: "连接中",
   custom: "自定义",

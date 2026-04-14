@@ -59,7 +59,7 @@ export type TopologyStatus = {
   scanner_counts: Record<string, { nodes: number; edges: number }>;
 };
 
-export type TopologyObjectType = "rack" | "node" | "gpu" | "switch" | "service" | "cluster";
+export type TopologyObjectType = "rack" | "node" | "gpu" | "switch" | "port" | "bmc" | "service" | "cluster";
 export type TopologyObjectStatus = "healthy" | "abnormal" | "impacted" | "maintenance";
 export type TopologyLayer = "physical" | "network" | "compute" | "service";
 export type TopologyImpactLevel = "low" | "medium" | "high";
@@ -386,7 +386,11 @@ export type ChatDisplayPayload = {
 
 export type DiagnosisAuditEventKind =
   | "approval_result"
-  | "execution_progress";
+  | "canary_progress"
+  | "execution_progress"
+  | "metric_feedback"
+  | "alert_recovery"
+  | "session_closed";
 
 export type DiagnosisAuditSource =
   | "optimistic"
@@ -411,6 +415,11 @@ export type DiagnosisLocalAuditRecord = {
   summary: string;
   details: string[];
   statusTone: DiagnosisAuditTone;
+  progress?: {
+    label: string;
+    value: number;
+    helper?: string;
+  };
 };
 
 export type KnowledgeDocument = {
@@ -562,4 +571,3 @@ export type WSEvent = {
   timestamp: string;
   data: Record<string, unknown>;
 };
-
