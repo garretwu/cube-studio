@@ -230,7 +230,7 @@ describe("buildDiagnosisLiveView next-action narration", () => {
 });
 
 describe("buildDiagnosisLiveView live thinking merge", () => {
-  it("reuses the same timeline ids for a live thinking block and its active tool", () => {
+  it("builds deterministic live ids from thought_key+timestamp when round_id is absent", () => {
     const view = buildDiagnosisLiveView(
       createSession([]),
       [],
@@ -249,16 +249,47 @@ describe("buildDiagnosisLiveView live thinking merge", () => {
     );
 
     expect(view.timeline[0]).toMatchObject({
-      id: "trace-thinking-run-reason-1:reason",
+      id: "trace-thinking-run-reason-1:reason-2026-04-08T11:00:01.000Z",
       kind: "thinking",
       status: "thinking",
       content: "Streaming reasoning",
     });
     expect(view.timeline[1]).toMatchObject({
-      id: "trace-tool-run-reason-1:reason-query_metrics",
+      id: "trace-tool-run-reason-1:reason-2026-04-08T11:00:01.000Z-query_metrics-1",
       kind: "tool",
       status: "loading",
       toolName: "query_metrics",
+    });
+  });
+
+  it("prefers round_id for live thinking/tool ids", () => {
+    const view = buildDiagnosisLiveView(
+      createSession([]),
+      [],
+      [],
+      [],
+      {
+        round_id: "round-reason-2",
+        thought_key: "run-reason-1:reason",
+        node: "reason",
+        run_id: "run-reason-1",
+        timestamp: "2026-04-08T11:00:05.000Z",
+        content: "Streaming reasoning round 2",
+        status: "thinking",
+        tool_name: "query_metrics",
+        active_tools: [{ tool: "query_metrics", params: { service: "auth-svc" }, round_id: "round-reason-2" }],
+      },
+    );
+
+    expect(view.timeline[0]).toMatchObject({
+      id: "trace-thinking-round-reason-2",
+      kind: "thinking",
+      status: "thinking",
+    });
+    expect(view.timeline[1]).toMatchObject({
+      id: "trace-tool-round-reason-2-query_metrics-1",
+      kind: "tool",
+      status: "loading",
     });
   });
 
@@ -294,6 +325,37 @@ describe("buildDiagnosisLiveView live thinking merge", () => {
       label: "诊断结论生成中",
       content: "诊断结论：Node contention。",
     });
+  });
+});
+
+describe("buildDiagnosisLiveView trace thinking ids", () => {
+  it("keeps multiple thinking items when trace reuses the same thought_key across rounds", () => {
+    const session = createSession([
+      {
+        step: 1,
+        timestamp: "2026-04-08T11:10:01.000Z",
+        thought: "round 1",
+        action_type: "conclude",
+        thought_key: "run-reason-dup:reason",
+      },
+      {
+        step: 2,
+        timestamp: "2026-04-08T11:10:03.000Z",
+        thought: "round 2",
+        action_type: "conclude",
+        thought_key: "run-reason-dup:reason",
+      },
+    ]);
+
+    const view = buildDiagnosisLiveView(session, []);
+    const thinkingItems = view.timeline.filter(
+      (item): item is Extract<DiagnosisTimelineItem, { kind: "thinking" }> => item.kind === "thinking",
+    );
+
+    expect(thinkingItems).toHaveLength(2);
+    expect(thinkingItems[0]?.id).not.toBe(thinkingItems[1]?.id);
+    expect(thinkingItems[0]?.content).toBe("round 1");
+    expect(thinkingItems[1]?.content).toBe("round 2");
   });
 });
 

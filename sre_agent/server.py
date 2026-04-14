@@ -2214,6 +2214,16 @@ def create_app(
         ]
         if unmet_core:
             raise RuntimeError(f"tool runtime strict mode startup blocked: unavailable core channels={sorted(set(unmet_core))}")
+    resolved_prometheus = prometheus
+    if resolved_prometheus is None:
+        prometheus_status = bootstrap_result.statuses.get("prometheus")
+        prometheus_channel = context.channels.get("prometheus")
+        if (
+            prometheus_status is not None
+            and prometheus_status.health == "ready"
+            and hasattr(prometheus_channel, "query_instant")
+        ):
+            resolved_prometheus = prometheus_channel
     default_diagnosis_runner: DiagnosisRunnerProtocol | None = None
     default_re_diagnose_runner: ReDiagnoseRunnerProtocol | None = None
     if diagnosis_runner is None or re_diagnose_runner is None:
@@ -2252,7 +2262,7 @@ def create_app(
         registry,
         approval_gate,
         wal,
-        prometheus=prometheus,
+        prometheus=resolved_prometheus,
         validator=validator,
         execution_context=context,
         execution_mode=cfg.remediation.execution_mode,
@@ -2270,7 +2280,7 @@ def create_app(
     alert_store = InMemoryAlertStore()
     loop = LoopOrchestrator(
         engine,
-        prometheus=prometheus,
+        prometheus=resolved_prometheus,
         memory=memory_store,
         config=LoopConfig(
             max_candidates=cfg.loop_orchestrator.max_candidates,

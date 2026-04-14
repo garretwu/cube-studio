@@ -650,6 +650,28 @@ function getThinkingBaseKey(entry: ThinkingStep, fallback: string): string {
   return fallback;
 }
 
+function buildTraceThinkingIdSuffix(entry: ThinkingStep, index: number): string {
+  const baseKey = getThinkingBaseKey(entry, `${index + 1}-${entry.timestamp}`);
+  const stepPart = Number.isFinite(entry.step) ? String(entry.step) : `${index + 1}`;
+  const timestampPart = entry.timestamp || `index-${index + 1}`;
+  return `${baseKey}-${stepPart}-${timestampPart}`;
+}
+
+function buildLiveThinkingIdSuffix(liveThinking: LiveThinkingBlock): string {
+  const explicitRoundId =
+    typeof liveThinking.round_id === "string" && liveThinking.round_id.trim().length > 0
+      ? liveThinking.round_id.trim()
+      : null;
+  if (explicitRoundId) {
+    return explicitRoundId;
+  }
+  const thoughtKey = liveThinking.thought_key.trim();
+  if (thoughtKey.length > 0) {
+    return `${thoughtKey}-${liveThinking.timestamp}`;
+  }
+  return `live-${liveThinking.timestamp}`;
+}
+
 function buildThinkingTitle(actionType: ThinkingStep["action_type"], node?: string | null) {
   if (node === "finalize" || actionType === "conclude") {
     return "Agent is converging on the diagnosis";
@@ -873,12 +895,12 @@ export function buildDiagnosisLiveView(
     }
 
     if (isThinkingStep(entry)) {
-      const baseKey = getThinkingBaseKey(entry, `${index + 1}-${entry.timestamp}`);
+      const idSuffix = buildTraceThinkingIdSuffix(entry, index);
       timelineItems.push({
         order: timelineItems.length,
         timestamp: entry.timestamp,
         item: {
-          id: `trace-thinking-${baseKey}`,
+          id: `trace-thinking-${idSuffix}`,
           kind: "thinking",
           title: buildThinkingTitle(entry.action_type),
           content: entry.thought,
@@ -898,7 +920,7 @@ export function buildDiagnosisLiveView(
           order: timelineItems.length,
           timestamp: entry.timestamp,
           item: {
-            id: `trace-next-action-${baseKey}`,
+            id: `trace-next-action-${idSuffix}`,
             kind: "message",
             role: "assistant",
             content: backendNextAction,
@@ -910,7 +932,7 @@ export function buildDiagnosisLiveView(
 
       if (entry.action_type === "tool_call" && entry.tool_name) {
         const toolItem: Extract<DiagnosisTimelineItem, { kind: "tool" }> = {
-          id: `trace-tool-${baseKey}-${entry.tool_name}`,
+          id: `trace-tool-${idSuffix}-${entry.tool_name}`,
           kind: "tool",
           toolName: entry.tool_name,
           params: entry.tool_params ?? {},
@@ -1014,12 +1036,12 @@ export function buildDiagnosisLiveView(
   });
 
   if (liveThinking && liveThinking.thought_key.trim().length > 0) {
-    const baseKey = liveThinking.thought_key.trim();
+    const idSuffix = buildLiveThinkingIdSuffix(liveThinking);
     timelineItems.push({
       order: timelineItems.length,
       timestamp: liveThinking.timestamp,
       item: {
-        id: `trace-thinking-${baseKey}`,
+        id: `trace-thinking-${idSuffix}`,
         kind: "thinking",
         title: buildThinkingTitle(
           liveThinking.tool_name ? "tool_call" : liveThinking.node === "finalize" ? "conclude" : "remediate",
@@ -1041,7 +1063,7 @@ export function buildDiagnosisLiveView(
         order: timelineItems.length,
         timestamp: liveThinking.timestamp,
         item: {
-          id: `trace-next-action-${baseKey}`,
+          id: `trace-next-action-${idSuffix}`,
           kind: "message",
           role: "assistant",
           content: liveThinking.next_action.trim(),
@@ -1051,12 +1073,12 @@ export function buildDiagnosisLiveView(
       });
     }
 
-    liveThinking.active_tools.forEach((tool) => {
+    liveThinking.active_tools.forEach((tool, toolIndex) => {
       timelineItems.push({
         order: timelineItems.length,
         timestamp: liveThinking.timestamp,
         item: {
-          id: `trace-tool-${baseKey}-${tool.tool}`,
+          id: `trace-tool-${idSuffix}-${tool.tool}-${toolIndex + 1}`,
           kind: "tool",
           toolName: tool.tool,
           params: tool.params,

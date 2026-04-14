@@ -75,6 +75,26 @@ def test_create_app_bootstraps_alert_knowledge_and_log_channels(monkeypatch: pyt
         assert client.app.state.services.knowledge is not None
 
 
+def test_create_app_binds_runtime_prometheus_to_remediation_engine(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    monkeypatch.setenv("JWT_SECRET", "secret")
+    config = SREAgentConfig.model_validate(
+        {
+            "global": {
+                "aidc_id": "test-aidc",
+                "prometheus_url": "http://prometheus.local",
+            },
+            "ontology": {"db_path": str(tmp_path / "ontology.db"), "discovery": {"auto_discovery": False}},
+            "memory": {"db_dir": str(tmp_path / "memory")},
+        }
+    )
+
+    with TestClient(create_app(config=config)) as client:
+        services = client.app.state.services
+        assert services.tool_channel_status["prometheus"]["health"] == "ready"
+        assert services.remediation_engine.prometheus is not None
+        assert hasattr(services.remediation_engine.prometheus, "query_instant")
+
+
 def test_load_redfish_preauth_targets_uses_env_fallback_for_placeholder_password(
     monkeypatch: pytest.MonkeyPatch, tmp_path
 ) -> None:

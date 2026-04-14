@@ -141,6 +141,80 @@ function getThoughtKeyFromData(data: Record<string, unknown>): string | null {
   return buildThoughtKey(normalizeNonEmptyString(data.run_id), normalizeNonEmptyString(data.node));
 }
 
+function getRoundIdFromData(data: Record<string, unknown>): string | null {
+  return (
+    normalizeNonEmptyString(data.round_id) ??
+    normalizeNonEmptyString(data.node_invocation_id) ??
+    normalizeNonEmptyString(data.invocation_id)
+  );
+}
+
+function buildFallbackRoundId({
+  explicitRoundId,
+  thoughtKey,
+  runId,
+  node,
+  timestamp,
+}: {
+  explicitRoundId?: string | null;
+  thoughtKey?: string | null;
+  runId?: string | null;
+  node?: string | null;
+  timestamp: string;
+}): string | null {
+  if (explicitRoundId) {
+    return explicitRoundId;
+  }
+  const base = thoughtKey ?? buildThoughtKey(runId ?? null, node ?? null) ?? node ?? runId;
+  return base ? `${base}@${timestamp}` : null;
+}
+
+type RoundIdentity = {
+  roundId?: string | null;
+  thoughtKey?: string | null;
+  runId?: string | null;
+  node?: string | null;
+};
+
+function hasRoundIdentity(identity: RoundIdentity): boolean {
+  return Boolean(identity.roundId || identity.thoughtKey || identity.runId || identity.node);
+}
+
+function matchesLiveThinkingRound(
+  liveThinking: LiveThinkingBlock | null,
+  identity: RoundIdentity,
+  allowWhenIdentityMissing = true,
+): boolean {
+  if (!liveThinking) {
+    return false;
+  }
+  if (!hasRoundIdentity(identity)) {
+    return allowWhenIdentityMissing;
+  }
+  if (identity.roundId && liveThinking.round_id && identity.roundId !== liveThinking.round_id) {
+    return false;
+  }
+  if (identity.thoughtKey && liveThinking.thought_key !== identity.thoughtKey) {
+    return false;
+  }
+  if (identity.runId && liveThinking.run_id && liveThinking.run_id !== identity.runId) {
+    return false;
+  }
+  if (identity.node && liveThinking.node && liveThinking.node !== identity.node) {
+    return false;
+  }
+  return true;
+}
+
+function buildTraceEntryDedupeKey(entry: ThinkingStep | Observation): string {
+  if ("thought" in entry) {
+    const thoughtKey = normalizeNonEmptyString(entry.thought_key) ?? "no-thought-key";
+    const step = Number.isFinite(entry.step) ? String(entry.step) : "na";
+    return `thinking:${thoughtKey}:${step}:${entry.timestamp}`;
+  }
+  return `observation:${entry.tool}:${entry.timestamp}`;
+}
+
 function toStreamingFields(
   liveThinking: LiveThinkingBlock | null,
   activeStreamingTools: StreamingToolCall[],
@@ -1236,6 +1310,7 @@ export const useDiagnosisStore = create<DiagnosisState>((set, get) => ({
       const thoughtKey = getThoughtKeyFromData(data);
       const runId = normalizeNonEmptyString(data.run_id);
       const node = normalizeNonEmptyString(data.node);
+      const roundId = getRoundIdFromData(data);
 
       if (event.type === "diagnosis_started") {
         nextAlertSnapshot = (data.alert as DiagnosisStartedData["alert"]) ?? null;
@@ -1288,18 +1363,46 @@ export const useDiagnosisStore = create<DiagnosisState>((set, get) => ({
           };
         }
 
-        const isSameThought = nextLiveThinking?.thought_key === resolvedThoughtKey;
-        const previousContent = isSameThought ? nextLiveThinking?.content ?? "" : "";
+        const isSameRound = matchesLiveThinkingRound(
+          nextLiveThinking,
+          {
+            roundId,
+            thoughtKey,
+            runId,
+            node,
+          },
+          true,
+        );
+        const roundTimestamp = normalizeNonEmptyString(data.started_at) ?? event.timestamp;
+        const resolvedRoundId =
+          roundId ??
+          (isSameRound
+            ? nextLiveThinking?.round_id ??
+              buildFallbackRoundId({
+                thoughtKey: resolvedThoughtKey,
+                runId,
+                node,
+                timestamp: roundTimestamp,
+              })
+            : buildFallbackRoundId({
+                thoughtKey: resolvedThoughtKey,
+                runId,
+                node,
+                timestamp: roundTimestamp,
+              }));
+        const previousContent = isSameRound ? nextLiveThinking?.content ?? "" : "";
+        nextActiveStreamingTools = isSameRound ? nextActiveStreamingTools : [];
         nextLiveThinking = {
+          round_id: resolvedRoundId,
           thought_key: resolvedThoughtKey,
-          run_id: runId ?? nextLiveThinking?.run_id ?? null,
-          node: node ?? nextLiveThinking?.node ?? null,
-          timestamp: nextLiveThinking?.timestamp ?? event.timestamp,
-          content: `${isSameThought ? previousContent : ""}${content}`,
+          run_id: runId ?? (isSameRound ? nextLiveThinking?.run_id ?? null : null),
+          node: node ?? (isSameRound ? nextLiveThinking?.node ?? null : null),
+          timestamp: isSameRound ? nextLiveThinking?.timestamp ?? roundTimestamp : roundTimestamp,
+          content: `${previousContent}${content}`,
           status: "thinking",
           thought_duration_sec: null,
-          next_action: isSameThought ? nextLiveThinking?.next_action ?? null : null,
-          tool_name: isSameThought ? nextLiveThinking?.tool_name ?? null : null,
+          next_action: isSameRound ? nextLiveThinking?.next_action ?? null : null,
+          tool_name: isSameRound ? nextLiveThinking?.tool_name ?? null : null,
           active_tools: nextActiveStreamingTools,
         };
         return {
@@ -1316,15 +1419,23 @@ export const useDiagnosisStore = create<DiagnosisState>((set, get) => ({
           return state;
         }
         const resolvedThoughtKey = thoughtKey ?? buildThoughtKey(runId, node);
-        nextActiveStreamingTools =
-          nextLiveThinking?.thought_key === resolvedThoughtKey ? nextLiveThinking.active_tools : [];
+        const roundTimestamp = normalizeNonEmptyString(data.started_at) ?? event.timestamp;
+        nextActiveStreamingTools = [];
         nextLiveThinking = resolvedThoughtKey
           ? {
+              round_id:
+                buildFallbackRoundId({
+                  explicitRoundId: roundId,
+                  thoughtKey: resolvedThoughtKey,
+                  runId,
+                  node,
+                  timestamp: roundTimestamp,
+                }) ?? null,
               thought_key: resolvedThoughtKey,
               run_id: runId,
               node,
-              timestamp: normalizeNonEmptyString(data.started_at) ?? event.timestamp,
-              content: nextLiveThinking?.thought_key === resolvedThoughtKey ? nextLiveThinking.content : "",
+              timestamp: roundTimestamp,
+              content: "",
               status: "thinking",
               thought_duration_sec: null,
               next_action: null,
@@ -1349,22 +1460,16 @@ export const useDiagnosisStore = create<DiagnosisState>((set, get) => ({
         const snapshotItems = Array.isArray(data.new_trace_items)
           ? data.new_trace_items.filter(isRecord)
           : [];
-        const existingThoughtKeys = new Set(
-          currentTrace.flatMap((entry) =>
-            "thought" in entry && typeof entry.thought_key === "string" ? [entry.thought_key] : [],
-          ),
-        );
+        const existingTraceEntryKeys = new Set(currentTrace.map((entry) => buildTraceEntryDedupeKey(entry)));
         const snapshotEntries = snapshotItems
           .map((item, index) => toTraceEntryFromNodeSnapshot(item, currentTrace.length + index + 1))
           .filter((entry): entry is ThinkingStep | Observation => Boolean(entry))
           .filter((entry) => {
-            if (!("thought" in entry) || typeof entry.thought_key !== "string") {
-              return true;
-            }
-            if (existingThoughtKeys.has(entry.thought_key)) {
+            const dedupeKey = buildTraceEntryDedupeKey(entry);
+            if (existingTraceEntryKeys.has(dedupeKey)) {
               return false;
             }
-            existingThoughtKeys.add(entry.thought_key);
+            existingTraceEntryKeys.add(dedupeKey);
             return true;
           });
         const mergedEntries = [...nextEntries, ...snapshotEntries];
@@ -1373,23 +1478,41 @@ export const useDiagnosisStore = create<DiagnosisState>((set, get) => ({
         const approvalState = deriveApprovalState(nextSession, nextEvents);
         const completionError = getEventError(event) ?? state.error;
         const nodeStatus = normalizeNonEmptyString(data.status)?.toLowerCase() ?? null;
-        const completedThoughtKey = thoughtKey ?? nextLiveThinking?.thought_key;
-        const snapshotHasCompletedThought = snapshotEntries.some(
-          (entry) =>
-            "thought" in entry &&
-            typeof entry.thought_key === "string" &&
-            entry.thought_key === completedThoughtKey,
+        const completedThoughtKey = thoughtKey ?? nextLiveThinking?.thought_key ?? null;
+        const liveMatchesCompletedRound = matchesLiveThinkingRound(
+          nextLiveThinking,
+          {
+            roundId,
+            thoughtKey: completedThoughtKey,
+            runId,
+            node,
+          },
+          false,
         );
-        if (!snapshotHasCompletedThought && nextLiveThinking && nextLiveThinking.thought_key === completedThoughtKey) {
-          nextLiveThinking = {
-            ...nextLiveThinking,
-            status: "completed",
-            thought_duration_sec:
-              typeof data.thought_duration_sec === "number" ? data.thought_duration_sec : nextLiveThinking.thought_duration_sec,
-            active_tools: [],
-          };
-        } else {
-          nextLiveThinking = null;
+        const snapshotHasCompletedThought = completedThoughtKey
+          ? snapshotEntries.some(
+              (entry) =>
+                "thought" in entry &&
+                typeof entry.thought_key === "string" &&
+                entry.thought_key === completedThoughtKey &&
+                (!nextLiveThinking ||
+                  new Date(entry.timestamp).getTime() >= new Date(nextLiveThinking.timestamp).getTime()),
+            )
+          : false;
+        if (liveMatchesCompletedRound && nextLiveThinking) {
+          if (!snapshotHasCompletedThought) {
+            nextLiveThinking = {
+              ...nextLiveThinking,
+              status: "completed",
+              thought_duration_sec:
+                typeof data.thought_duration_sec === "number"
+                  ? data.thought_duration_sec
+                  : nextLiveThinking.thought_duration_sec,
+              active_tools: [],
+            };
+          } else {
+            nextLiveThinking = null;
+          }
         }
         const terminalReason =
           normalizeTerminalReason(data.terminal_reason) ??
@@ -1446,24 +1569,61 @@ export const useDiagnosisStore = create<DiagnosisState>((set, get) => ({
           return state;
         }
         const resolvedThoughtKey = thoughtKey ?? nextLiveThinking?.thought_key ?? buildThoughtKey(runId, node);
+        if (!nextLiveThinking) {
+          return {
+            ...state,
+            session: nextSession,
+            activeSessionId: resolvedSessionId,
+          };
+        }
+        const toolRoundMatchesLive = matchesLiveThinkingRound(
+          nextLiveThinking,
+          {
+            roundId,
+            thoughtKey: resolvedThoughtKey,
+            runId,
+            node,
+          },
+          true,
+        );
+        if (!toolRoundMatchesLive) {
+          return {
+            ...state,
+            session: nextSession,
+            activeSessionId: resolvedSessionId,
+          };
+        }
+        const resolvedRoundId =
+          roundId ??
+          nextLiveThinking.round_id ??
+          buildFallbackRoundId({
+            thoughtKey: resolvedThoughtKey,
+            runId,
+            node,
+            timestamp: event.timestamp,
+          });
         const nextTool: StreamingToolCall = {
           tool,
           params: isRecord(data.params) ? data.params : {},
+          round_id: resolvedRoundId,
           thought_key: resolvedThoughtKey,
           run_id: runId,
           node,
         };
         const toolExists = nextActiveStreamingTools.some(
-          (item) => item.tool === nextTool.tool && item.thought_key === nextTool.thought_key,
+          (item) =>
+            item.tool === nextTool.tool &&
+            (nextTool.round_id
+              ? item.round_id === nextTool.round_id
+              : item.thought_key === nextTool.thought_key),
         );
         nextActiveStreamingTools = toolExists ? nextActiveStreamingTools : [...nextActiveStreamingTools, nextTool];
-        if (nextLiveThinking && (!resolvedThoughtKey || nextLiveThinking.thought_key === resolvedThoughtKey)) {
-          nextLiveThinking = {
-            ...nextLiveThinking,
-            tool_name: nextLiveThinking.tool_name ?? tool,
-            active_tools: nextActiveStreamingTools,
-          };
-        }
+        nextLiveThinking = {
+          ...nextLiveThinking,
+          round_id: nextLiveThinking.round_id ?? resolvedRoundId ?? null,
+          tool_name: nextLiveThinking.tool_name ?? tool,
+          active_tools: nextActiveStreamingTools,
+        };
         return {
           ...state,
           session: nextSession,
@@ -1478,22 +1638,56 @@ export const useDiagnosisStore = create<DiagnosisState>((set, get) => ({
           return state;
         }
         const tool = String(data.tool ?? "");
+        if (!nextLiveThinking) {
+          return {
+            ...state,
+            session: nextSession,
+            activeSessionId: resolvedSessionId,
+          };
+        }
         const resolvedThoughtKey = thoughtKey ?? nextLiveThinking?.thought_key ?? buildThoughtKey(runId, node);
+        const toolRoundMatchesLive = matchesLiveThinkingRound(
+          nextLiveThinking,
+          {
+            roundId,
+            thoughtKey: resolvedThoughtKey,
+            runId,
+            node,
+          },
+          true,
+        );
+        if (!toolRoundMatchesLive) {
+          return {
+            ...state,
+            session: nextSession,
+            activeSessionId: resolvedSessionId,
+          };
+        }
+        const resolvedRoundId =
+          roundId ??
+          nextLiveThinking.round_id ??
+          buildFallbackRoundId({
+            thoughtKey: resolvedThoughtKey,
+            runId,
+            node,
+            timestamp: event.timestamp,
+          });
         nextActiveStreamingTools = nextActiveStreamingTools.filter((item) => {
           if (item.tool !== tool) {
             return true;
           }
-          if (resolvedThoughtKey && item.thought_key && item.thought_key !== resolvedThoughtKey) {
+          if (resolvedRoundId && item.round_id && item.round_id !== resolvedRoundId) {
+            return true;
+          }
+          if (!resolvedRoundId && resolvedThoughtKey && item.thought_key && item.thought_key !== resolvedThoughtKey) {
             return true;
           }
           return false;
         });
-        if (nextLiveThinking && (!resolvedThoughtKey || nextLiveThinking.thought_key === resolvedThoughtKey)) {
-          nextLiveThinking = {
-            ...nextLiveThinking,
-            active_tools: nextActiveStreamingTools,
-          };
-        }
+        nextLiveThinking = {
+          ...nextLiveThinking,
+          active_tools: nextActiveStreamingTools,
+        };
         return {
           ...state,
           session: nextSession,
@@ -1725,6 +1919,7 @@ export const useDiagnosisStore = create<DiagnosisState>((set, get) => ({
     const controller = new AbortController();
     const pendingSessionId = `${PENDING_SESSION_PREFIX}${Date.now()}`;
     const bootstrapThinkingKey = `bootstrap:${pendingSessionId}`;
+    const bootstrapTimestamp = new Date().toISOString();
     set({
       session: buildPendingSession(alert, pendingSessionId),
       activeSessionId: pendingSessionId,
@@ -1758,10 +1953,11 @@ export const useDiagnosisStore = create<DiagnosisState>((set, get) => ({
       chatContextMeta: undefined,
       isLoadingSession: false,
       liveThinking: {
+        round_id: `${bootstrapThinkingKey}@${bootstrapTimestamp}`,
         thought_key: bootstrapThinkingKey,
         run_id: null,
         node: "bootstrap",
-        timestamp: new Date().toISOString(),
+        timestamp: bootstrapTimestamp,
         content: "",
         status: "thinking",
         thought_duration_sec: null,

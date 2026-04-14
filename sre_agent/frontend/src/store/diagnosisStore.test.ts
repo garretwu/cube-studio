@@ -453,6 +453,80 @@ describe("useDiagnosisStore", () => {
     expect(state.liveThinking?.content).toBe("");
   });
 
+  it("creates a new round_id for repeated thought_key rounds and resets content on the next round", () => {
+    useDiagnosisStore.setState({
+      session: diagnosisSession,
+      activeSessionId: diagnosisSession.session_id,
+      events: [],
+      messages: [],
+      liveThinking: null,
+      activeStreamingTools: [],
+      isStreamingDiagnosis: true,
+      streamingPhase: "streaming_thought",
+    });
+
+    useDiagnosisStore.getState().applyEvent({
+      schema_version: "1",
+      type: "node_started",
+      session_id: diagnosisSession.session_id,
+      timestamp: "2026-03-18T12:11:00Z",
+      data: {
+        node: "reason",
+        run_id: "run-reason-rounds",
+        thought_key: "run-reason-rounds:reason",
+        started_at: "2026-03-18T12:11:00Z",
+      },
+    });
+    useDiagnosisStore.getState().applyEvent({
+      schema_version: "1",
+      type: "token_delta",
+      session_id: diagnosisSession.session_id,
+      timestamp: "2026-03-18T12:11:01Z",
+      data: {
+        node: "reason",
+        run_id: "run-reason-rounds",
+        thought_key: "run-reason-rounds:reason",
+        content: "round-1 thinking",
+      },
+    });
+    useDiagnosisStore.getState().applyEvent({
+      schema_version: "1",
+      type: "node_completed",
+      session_id: diagnosisSession.session_id,
+      timestamp: "2026-03-18T12:11:02Z",
+      data: {
+        node: "reason",
+        run_id: "run-reason-rounds",
+        thought_key: "run-reason-rounds:reason",
+        thought_duration_sec: 2,
+      },
+    });
+
+    const afterRoundOne = useDiagnosisStore.getState();
+    const roundOneId = afterRoundOne.liveThinking?.round_id;
+    expect(afterRoundOne.liveThinking?.status).toBe("completed");
+    expect(afterRoundOne.liveThinking?.content).toBe("round-1 thinking");
+
+    useDiagnosisStore.getState().applyEvent({
+      schema_version: "1",
+      type: "node_started",
+      session_id: diagnosisSession.session_id,
+      timestamp: "2026-03-18T12:11:03Z",
+      data: {
+        node: "reason",
+        run_id: "run-reason-rounds",
+        thought_key: "run-reason-rounds:reason",
+        started_at: "2026-03-18T12:11:03Z",
+      },
+    });
+
+    const afterRoundTwoStarted = useDiagnosisStore.getState();
+    expect(afterRoundTwoStarted.liveThinking?.status).toBe("thinking");
+    expect(afterRoundTwoStarted.liveThinking?.content).toBe("");
+    expect(afterRoundTwoStarted.liveThinking?.round_id).toBeDefined();
+    expect(afterRoundTwoStarted.liveThinking?.round_id).not.toBe(roundOneId);
+  });
+
   it("creates a bootstrap thinking block immediately when streaming diagnosis starts", async () => {
     server.use(
       http.post("/api/diagnose/stream", async () =>

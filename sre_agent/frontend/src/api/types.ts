@@ -153,12 +153,14 @@ export type ThinkingStep = {
 export type StreamingToolCall = {
   tool: string;
   params: Record<string, unknown>;
+  round_id?: string | null;
   thought_key?: string | null;
   run_id?: string | null;
   node?: string | null;
 };
 
 export type LiveThinkingBlock = {
+  round_id?: string | null;
   thought_key: string;
   run_id?: string | null;
   node?: string | null;

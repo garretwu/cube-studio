@@ -1410,6 +1410,14 @@ def build_api_router() -> APIRouter:
             )
         return reviews, all_improved
 
+    _ALERT_STATUS_ONLY_WHEN_METRICS_UNAVAILABLE = {"aiservicettftp99high"}
+
+    def _normalize_alert_name_for_policy(value: str | None) -> str:
+        return str(value or "").strip().lower()
+
+    def _should_use_alert_status_only_policy(alert_name: str | None) -> bool:
+        return _normalize_alert_name_for_policy(alert_name) in _ALERT_STATUS_ONLY_WHEN_METRICS_UNAVAILABLE
+
     async def _observe_post_remediation(
         services: Any,
         *,
@@ -1440,6 +1448,24 @@ def build_api_router() -> APIRouter:
             )
 
         metric_reviews, metrics_improved = _build_metric_reviews(pre_check, post_check)
+        post_metrics_unavailable_keys = [item.metric_key for item in post_check.metrics if not item.available]
+        use_alert_status_only_policy = _should_use_alert_status_only_policy(post_alert.alert_name) and bool(
+            post_metrics_unavailable_keys
+        )
+        policy_applied = (
+            "alert_status_only_when_post_metrics_unavailable"
+            if use_alert_status_only_policy
+            else "default_alert_and_metrics"
+        )
+        observed_ok = alert_cleared if use_alert_status_only_policy else (alert_cleared and metrics_improved)
+        escalation_reasons: list[str] = []
+        if not observed_ok:
+            if not alert_cleared:
+                escalation_reasons.append("alert_not_cleared")
+            if post_metrics_unavailable_keys:
+                escalation_reasons.append("metrics_unavailable")
+            elif not metrics_improved:
+                escalation_reasons.append("metrics_not_improved")
         evidence = RemediationEvidence(
             pre_check=pre_check,
             post_check=post_check,
@@ -1460,6 +1486,9 @@ def build_api_router() -> APIRouter:
             "post_check": post_check.model_dump(mode="json"),
             "alert_review": alert_review.model_dump(mode="json") if alert_review is not None else None,
             "metric_reviews": [item.model_dump(mode="json") for item in metric_reviews],
+            "policy_applied": policy_applied,
+            "post_metrics_unavailable_keys": post_metrics_unavailable_keys,
+            "escalation_reasons": escalation_reasons,
             "collected_at": evidence.collected_at.isoformat(),
         }
         updated_session = _update_session_evidence(services, session=session, evidence=evidence)
@@ -1469,7 +1498,7 @@ def build_api_router() -> APIRouter:
             stage="observation_result",
             details=details,
         )
-        return alert_cleared and metrics_improved, details, evidence
+        return observed_ok, details, evidence
 
     def _extract_step_results(result: RemediationResult) -> list[dict[str, Any]]:
         payload: list[dict[str, Any]] = []
