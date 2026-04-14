@@ -55,6 +55,10 @@ def initialize_state(
     alert_snapshot: dict[str, Any] | None = None,
     topology_context: dict[str, Any] | None = None,
     extra_alerts: list[dict[str, Any]] | None = None,
+    reasoning_context_strategy: str | None = None,
+    reasoning_overflow_behavior: str | None = None,
+    reasoning_input_target_tokens: int | None = None,
+    reasoning_model_family: str | None = None,
 ) -> SREAgentState:
     return {
         "query": query,
@@ -80,6 +84,10 @@ def initialize_state(
         "alert_snapshot": alert_snapshot,
         "topology_context": topology_context,
         "extra_alerts": extra_alerts,
+        "reasoning_context_strategy": reasoning_context_strategy,
+        "reasoning_overflow_behavior": reasoning_overflow_behavior,
+        "reasoning_input_target_tokens": reasoning_input_target_tokens,
+        "reasoning_model_family": reasoning_model_family,
         "evidence_signals": {},
         "loop_guard": {
             "recent_fingerprint": None,
@@ -728,6 +736,7 @@ def _find_latest_successful_skill_listing(tool_runs: list[dict[str, Any]]) -> di
 
 
 _AUTO_LOAD_SKILL_MATCH_THRESHOLD = 0.6
+_SKILL_LIST_COOLDOWN_STEPS = 6
 
 
 def _choose_skill_id_to_load_from_listing(listing_run: dict[str, Any], tool_runs: list[dict[str, Any]]) -> str:
@@ -1962,10 +1971,15 @@ def _normalize_loop_guard_state(raw: Any, *, threshold_default: int = 2) -> dict
     payload = dict(raw) if isinstance(raw, dict) else {}
     threshold = _normalize_positive_int(payload.get("threshold"), default=threshold_default, minimum=1)
     repeat_count = _normalize_positive_int(payload.get("repeat_count"), default=0, minimum=0)
+    family_threshold = _normalize_positive_int(payload.get("family_threshold"), default=threshold_default, minimum=1)
+    family_repeat_count = _normalize_positive_int(payload.get("family_repeat_count"), default=0, minimum=0)
     return {
         "recent_fingerprint": str(payload.get("recent_fingerprint", "") or "").strip() or None,
         "repeat_count": repeat_count,
         "threshold": threshold,
+        "recent_family_fingerprint": str(payload.get("recent_family_fingerprint", "") or "").strip() or None,
+        "family_repeat_count": family_repeat_count,
+        "family_threshold": family_threshold,
         "triggered": bool(payload.get("triggered", False)),
         "trigger_step": payload.get("trigger_step"),
     }
@@ -1979,6 +1993,60 @@ def _build_tool_call_fingerprint(item: dict[str, Any]) -> str:
     summary = _truncate_prompt_note(str(item.get("prompt_summary", "") or "").strip(), max_chars=200)
     params_json = json.dumps(params, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
     return f"{tool}|{params_json}|{summary}"
+
+
+def _canonicalize_tool_args(tool_name: str, tool_args: dict[str, Any]) -> dict[str, Any]:
+    canonical = _safe_jsonable(tool_args)
+    if not isinstance(canonical, dict):
+        canonical = {}
+    # Normalize wrapped kwargs payload emitted by some providers.
+    nested_kwargs = canonical.get("kwargs")
+    if isinstance(nested_kwargs, dict):
+        merged = dict(canonical)
+        merged.pop("kwargs", None)
+        for key, value in nested_kwargs.items():
+            merged.setdefault(str(key), value)
+        canonical = merged
+    # Reduce noise for skills.list_skills queries so semantically-same calls can be deduped.
+    if tool_name == "skills.list_skills":
+        query = str(canonical.get("query", "") or "").strip().lower()
+        query = re.sub(r"\s+", " ", query)
+        canonical["query"] = query
+    return canonical
+
+
+def _build_pending_tool_call_dedupe_key(tool_name: str, tool_args: dict[str, Any]) -> str:
+    canonical = _canonicalize_tool_args(tool_name, tool_args)
+    canonical_json = json.dumps(canonical, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+    return f"{tool_name}|{canonical_json}"
+
+
+def _normalize_promql_family(promql: str) -> str:
+    text = str(promql or "").strip().lower()
+    if not text:
+        return ""
+    text = re.sub(r'"[^"]*"', '"?"', text)
+    text = re.sub(r"\b\d+(\.\d+)?\b", "?", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
+
+
+def _tool_family_fingerprint(item: dict[str, Any]) -> str:
+    tool = str(item.get("tool", "") or "").strip() or "unknown"
+    params = item.get("params")
+    if not isinstance(params, dict):
+        params = {}
+    if tool == "prometheus.query_instant":
+        promql = _normalize_promql_family(str(params.get("promql", "") or ""))
+        if promql:
+            return f"{tool}|{promql}"
+    if tool == "k8s.list_pods":
+        namespace = str(params.get("namespace", "") or "").strip()
+        selector = str(params.get("label_selector", "") or "").strip()
+        return f"{tool}|ns={namespace}|selector={selector}"
+    if tool == "skills.list_skills":
+        return tool
+    return tool
 
 
 def _extract_evidence_signals(tool_runs: list[dict[str, Any]]) -> dict[str, Any]:
@@ -2541,6 +2609,23 @@ async def act_node(
         minimum=200,
     )
     allowed_tool_names_for_turn = set(_select_bound_tool_names_for_turn(state) or [])
+    deduped_pending: list[dict[str, Any]] = []
+    seen_pending_keys: set[str] = set()
+    suppressed_in_round = 0
+    for raw_call in pending:
+        if not isinstance(raw_call, dict):
+            continue
+        pending_tool_name = str(raw_call.get("name", "")).strip()
+        pending_tool_args = raw_call.get("args", {})
+        if not isinstance(pending_tool_args, dict):
+            pending_tool_args = {}
+        pending_key = _build_pending_tool_call_dedupe_key(pending_tool_name, pending_tool_args)
+        if pending_key in seen_pending_keys:
+            suppressed_in_round += 1
+            continue
+        seen_pending_keys.add(pending_key)
+        deduped_pending.append(raw_call)
+    pending = deduped_pending
     observation_entries: list[dict[str, Any]] = []
     for tool_call in pending:
         tool_name = str(tool_call.get("name", "")).strip()
@@ -2557,6 +2642,7 @@ async def act_node(
             tool_args = raw_tool_args = tool_call.get("args", {})
             if not isinstance(tool_args, dict):
                 tool_args = {}
+            serialized_source = "tool"
         else:
             raw_tool_args = tool_call.get("args", {})
             tool_args = _merge_tool_args(
@@ -2565,13 +2651,33 @@ async def act_node(
                 tool_args=raw_tool_args if isinstance(raw_tool_args, dict) else {},
                 variables=variables,
             )
-            try:
-                result = await asyncio.wait_for(
-                    registry.execute(tool_name, tool_args, context),
-                    timeout=state["step_timeout_sec"],
+            cached_skill_listing: dict[str, Any] | None = None
+            latest_listing = _find_latest_successful_skill_listing([item for item in tool_runs if isinstance(item, dict)])
+            if tool_name == "skills.list_skills" and latest_listing is not None:
+                latest_listing_step = int(latest_listing.get("step", 0) or 0)
+                current_step = len(tool_runs) + 1
+                if latest_listing_step > 0 and current_step - latest_listing_step <= _SKILL_LIST_COOLDOWN_STEPS:
+                    listing_data = latest_listing.get("data")
+                    if isinstance(listing_data, dict):
+                        cached_skill_listing = listing_data
+
+            if cached_skill_listing is not None:
+                result = ToolResult(
+                    tool=tool_name,
+                    success=True,
+                    data=cached_skill_listing,
+                    error="",
                 )
-            except asyncio.TimeoutError:
-                result = ToolResult(tool=tool_name, success=False, data=None, error=f"tool timed out after {state['step_timeout_sec']}s")
+                serialized_source = "cooldown_cache"
+            else:
+                try:
+                    result = await asyncio.wait_for(
+                        registry.execute(tool_name, tool_args, context),
+                        timeout=state["step_timeout_sec"],
+                    )
+                except asyncio.TimeoutError:
+                    result = ToolResult(tool=tool_name, success=False, data=None, error=f"tool timed out after {state['step_timeout_sec']}s")
+                serialized_source = "tool"
         serialized = _canonicalize_tool_run(
             {
                 "step": len(tool_runs) + 1,
@@ -2582,7 +2688,7 @@ async def act_node(
                 "error": result.error,
             },
             session_id=str(state.get("session_id", "unknown")),
-            source="tool",
+            source=serialized_source,
         )
         # 记录工具执行结果到日志文件
         _log_tool_execution(
@@ -2603,7 +2709,19 @@ async def act_node(
         else:
             loop_guard["recent_fingerprint"] = fingerprint
             loop_guard["repeat_count"] = 1
+        family_fingerprint = _tool_family_fingerprint(serialized)
+        if family_fingerprint and family_fingerprint == loop_guard.get("recent_family_fingerprint"):
+            loop_guard["family_repeat_count"] = int(loop_guard.get("family_repeat_count", 0) or 0) + 1
+        else:
+            loop_guard["recent_family_fingerprint"] = family_fingerprint
+            loop_guard["family_repeat_count"] = 1
         if int(loop_guard.get("repeat_count", 0) or 0) > int(loop_guard.get("threshold", 2) or 2):
+            if not bool(loop_guard.get("triggered", False)):
+                loop_guard["triggered"] = True
+                loop_guard["trigger_step"] = serialized["step"]
+                loop_guard_triggered = True
+            force_final_turn = True
+        if int(loop_guard.get("family_repeat_count", 0) or 0) > int(loop_guard.get("family_threshold", 2) or 2):
             if not bool(loop_guard.get("triggered", False)):
                 loop_guard["triggered"] = True
                 loop_guard["trigger_step"] = serialized["step"]
@@ -2650,6 +2768,23 @@ async def act_node(
                     "repeat_count": loop_guard.get("repeat_count"),
                     "threshold": loop_guard.get("threshold"),
                     "fingerprint": loop_guard.get("recent_fingerprint"),
+                    "family_repeat_count": loop_guard.get("family_repeat_count"),
+                    "family_threshold": loop_guard.get("family_threshold"),
+                    "family_fingerprint": loop_guard.get("recent_family_fingerprint"),
+                },
+            }
+        )
+    if suppressed_in_round > 0:
+        updated_trace_items.append(
+            {
+                "type": "thought",
+                "step": state.get("step_count", 0) + 1,
+                "content": f"本轮抑制了 {suppressed_in_round} 次重复工具调用（同 tool + 同 params）。",
+                "action": "conclude",
+                "confidence": None,
+                "tool_params": {
+                    "kind": "duplicate_tool_suppressed",
+                    "count": suppressed_in_round,
                 },
             }
         )

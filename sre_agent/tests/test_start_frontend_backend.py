@@ -40,6 +40,29 @@ def _write_config(tmp_path: Path) -> Path:
     return config
 
 
+def _write_glm_config(tmp_path: Path) -> Path:
+    config = tmp_path / "config_glm.yaml"
+    config.write_text(
+        "\n".join(
+            [
+                "global:",
+                "  aidc_id: test-aidc",
+                "auth:",
+                "  jwt_secret_env: JWT_SECRET",
+                "  jwt_algorithm: HS256",
+                "  audience: sre-agent",
+                "llm:",
+                "  provider: glm",
+                "  api_key: glm-test-key-from-config",
+                "  base_url: https://open.bigmodel.cn/api/coding/paas/v4",
+                "  model: glm-5.1",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    return config
+
+
 def test_build_runtime_env_proxy_mode_clears_api_base_url(monkeypatch, tmp_path: Path) -> None:
     config_path = _write_config(tmp_path)
     monkeypatch.setenv("VITE_API_BASE_URL", "http://stale.example:18090")
@@ -81,6 +104,32 @@ def test_build_runtime_env_direct_mode_sets_api_base_url(tmp_path: Path) -> None
     assert env["VITE_API_BASE_URL"] == "http://127.0.0.1:18090"
     assert info["api_mode"] == "direct"
     assert info["api_base_url"] == "http://127.0.0.1:18090"
+
+
+def test_build_runtime_env_config_always_overrides_existing_llm_env(monkeypatch, tmp_path: Path) -> None:
+    config_path = _write_glm_config(tmp_path)
+    monkeypatch.setenv("SRE_LLM_MODEL", "MiniMax-M2.7")
+    monkeypatch.setenv("SRE_OPENAI_BASE_URL", "https://api.minimax.chat/v1")
+    monkeypatch.setenv("SRE_OPENAI_API_KEY", "minimax-env-key")
+    monkeypatch.setenv("SRE_LLM_PROVIDER", "openai_compatible")
+
+    env, info = build_runtime_env(
+        config_path=str(config_path),
+        backend_host="127.0.0.1",
+        backend_port=18090,
+        frontend_port=5173,
+        api_mode="proxy",
+        role="operator",
+        username="local-ui",
+        token_expire_seconds=3600,
+    )
+
+    assert env["SRE_LLM_MODEL"] == "glm-5.1"
+    assert env["SRE_OPENAI_BASE_URL"] == "https://open.bigmodel.cn/api/coding/paas/v4"
+    assert env["SRE_OPENAI_API_KEY"] == "glm-test-key-from-config"
+    assert env["SRE_LLM_PROVIDER"] == "glm"
+    assert info["llm_model"] == "glm-5.1"
+    assert info["llm_base_url"] == "https://open.bigmodel.cn/api/coding/paas/v4"
 
 
 def test_parser_default_config_path() -> None:

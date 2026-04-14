@@ -646,6 +646,10 @@ async def run_diagnosis(
     checkpoint_dir: str | None = "./data/checkpoints/sre_agent",
     allowed_tool_names: list[str] | None = None,
     trace_callback: TraceEventCallback | None = None,
+    reasoning_context_strategy: str | None = None,
+    reasoning_overflow_behavior: str | None = None,
+    reasoning_input_target_tokens: int | None = None,
+    reasoning_model_family: str | None = None,
 ) -> SREAgentState:
     active_session_id = session_id or uuid4().hex
     graph = create_sre_graph(
@@ -670,6 +674,10 @@ async def run_diagnosis(
         alert_snapshot=alert_snapshot,
         topology_context=topology_context,
         extra_alerts=extra_alerts,
+        reasoning_context_strategy=reasoning_context_strategy,
+        reasoning_overflow_behavior=reasoning_overflow_behavior,
+        reasoning_input_target_tokens=reasoning_input_target_tokens,
+        reasoning_model_family=reasoning_model_family,
     )
 
     # Emit diagnosis_started event so frontend can display alert/topology context immediately.
@@ -731,6 +739,10 @@ async def run_diagnosis_stream(
     max_steps: int = 50,
     checkpoint_dir: str | None = "./data/checkpoints/sre_agent",
     allowed_tool_names: list[str] | None = None,
+    reasoning_context_strategy: str | None = None,
+    reasoning_overflow_behavior: str | None = None,
+    reasoning_input_target_tokens: int | None = None,
+    reasoning_model_family: str | None = None,
 ) -> AsyncIterator[dict[str, Any]]:
     """Stream diagnosis events by iterating over ``graph.astream_events(version='v2')``.
 
@@ -760,6 +772,10 @@ async def run_diagnosis_stream(
         alert_snapshot=alert_snapshot,
         topology_context=topology_context,
         extra_alerts=extra_alerts,
+        reasoning_context_strategy=reasoning_context_strategy,
+        reasoning_overflow_behavior=reasoning_overflow_behavior,
+        reasoning_input_target_tokens=reasoning_input_target_tokens,
+        reasoning_model_family=reasoning_model_family,
     )
 
     yield {

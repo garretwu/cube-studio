@@ -1009,6 +1009,143 @@ tags:
             self.assertTrue(result["force_final_turn"] is False)
             self.assertEqual(llm.calls[-1]["tool_choice"], "none")
 
+    async def test_act_node_deduplicates_same_round_duplicate_tool_calls(self) -> None:
+        llm = _FakeLLM(
+            [
+                AIMessage(
+                    content="Collect pod list once.",
+                    tool_calls=[
+                        {
+                            "name": "k8s.list_pods",
+                            "args": {"namespace": "default"},
+                            "id": "call-1",
+                            "type": "tool_call",
+                        },
+                        {
+                            "name": "k8s.list_pods",
+                            "args": {"namespace": "default"},
+                            "id": "call-2",
+                            "type": "tool_call",
+                        },
+                    ],
+                ),
+                AIMessage(
+                    content=json.dumps(
+                        {
+                            "thought": "已收集到足够证据并完成总结。",
+                            "diagnosis": {
+                                "root_cause": "未发现异常，重复调用已被抑制。",
+                                "root_cause_layer": "service",
+                                "root_cause_entities": ["default"],
+                                "confidence": 0.65,
+                                "impact_summary": "同轮重复工具调用已去重。",
+                                "affected_services": ["demo"],
+                                "triage_priority": "P3",
+                                "diagnosis_certainty": "probable",
+                            },
+                            "remediation_plan": None,
+                        }
+                    )
+                ),
+            ]
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            result = await run_diagnosis(
+                query="Diagnose duplicate list pod calls.",
+                context=_happy_context(),
+                variables={},
+                llm=llm,
+                step_timeout_sec=5.0,
+                total_timeout_sec=10.0,
+                checkpoint_dir=tmpdir,
+                allowed_tool_names=["k8s.list_pods"],
+                max_steps=6,
+            )
+
+            executed_tools = [item["tool"] for item in result["tool_runs"]]
+            self.assertEqual(executed_tools.count("k8s.list_pods"), 1)
+            trace_items = list(result.get("trace_items", []))
+            self.assertTrue(
+                any(
+                    isinstance(item, dict)
+                    and str((item.get("tool_params") or {}).get("kind", "")) == "duplicate_tool_suppressed"
+                    for item in trace_items
+                )
+            )
+
+    async def test_loop_guard_triggers_on_repeated_prometheus_family_calls(self) -> None:
+        llm = _FakeLLM(
+            [
+                AIMessage(
+                    content="Query metric A.",
+                    tool_calls=[
+                        {
+                            "name": "prometheus.query_instant",
+                            "args": {"promql": "sum(rate(http_request_duration_seconds_count{service=\"svc-a\"}[5m]))"},
+                            "id": "call-a",
+                            "type": "tool_call",
+                        }
+                    ],
+                ),
+                AIMessage(
+                    content="Query metric B.",
+                    tool_calls=[
+                        {
+                            "name": "prometheus.query_instant",
+                            "args": {"promql": "sum(rate(http_request_duration_seconds_count{service=\"svc-b\"}[5m]))"},
+                            "id": "call-b",
+                            "type": "tool_call",
+                        }
+                    ],
+                ),
+                AIMessage(
+                    content="Query metric C.",
+                    tool_calls=[
+                        {
+                            "name": "prometheus.query_instant",
+                            "args": {"promql": "sum(rate(http_request_duration_seconds_count{service=\"svc-c\"}[5m]))"},
+                            "id": "call-c",
+                            "type": "tool_call",
+                        }
+                    ],
+                ),
+                AIMessage(
+                    content=json.dumps(
+                        {
+                            "thought": "同类工具调用重复，进入总结。",
+                            "diagnosis": {
+                                "root_cause": "同类 Prometheus 查询未提供新增证据。",
+                                "root_cause_layer": "service",
+                                "root_cause_entities": ["svc-a"],
+                                "confidence": 0.58,
+                                "impact_summary": "触发工具族 loop guard。",
+                                "affected_services": ["svc-a"],
+                                "triage_priority": "P2",
+                                "diagnosis_certainty": "ambiguous",
+                            },
+                            "remediation_plan": None,
+                        }
+                    )
+                ),
+            ]
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            result = await run_diagnosis(
+                query="Diagnose repeated prometheus family calls.",
+                context=_happy_context(),
+                variables={},
+                llm=llm,
+                step_timeout_sec=5.0,
+                total_timeout_sec=10.0,
+                checkpoint_dir=tmpdir,
+                allowed_tool_names=["prometheus.query_instant"],
+                max_steps=8,
+            )
+
+            self.assertEqual(result["status"], "diagnosed")
+            self.assertTrue(result["loop_guard"]["triggered"])
+            self.assertEqual(llm.calls[-1]["tool_choice"], "none")
+
     async def test_run_diagnosis_stream_emits_real_duration_and_backend_next_action_without_trace_duplicates(self) -> None:
         stream_events = [
             {

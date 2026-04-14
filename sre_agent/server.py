@@ -21,6 +21,7 @@ from fastapi import FastAPI
 from lib.channels.alert import AlertChannel
 from lib.channels.knowledge import DifyKnowledgeStoreAdapter
 from sre_agent.agent import ConversationalAgent, run_diagnosis, run_diagnosis_stream
+from sre_agent.agent.prompts import build_alert_diagnosis_prompt
 from sre_agent.agent.graph import get_last_llm_runtime_diagnostics
 from sre_agent.alerts_filter import build_blocked_alert_name_set, filter_blocked_alerts, normalize_alert_name
 from sre_agent.api import build_api_router, build_websocket_router, install_middlewares
@@ -42,6 +43,16 @@ from sre_agent.topology.discovery import discover_hybrid_snapshot, discover_live
 from sre_agent.tools import ToolExecutionContext, build_default_registry
 
 LOGGER = logging.getLogger(__name__)
+
+_TTFT_ALLOWED_READONLY_TOOLS = [
+    "k8s.resolve_service_pods",
+    "k8s.resolve_pod_node_ip",
+    "k8s.describe_pod",
+    "k8s.list_pods",
+    "gpu.get_metrics",
+    "gpu.get_processes",
+    "prometheus.query_instant",
+]
 
 
 class DiagnosisRunnerProtocol(Protocol):
@@ -901,6 +912,19 @@ class DefaultDiagnosisRunner:
             topology_context=topology_context,
             extra_alerts=extra_alerts_payload,
         )
+        runtime_variables = await _apply_ttft_runtime_bootstrap(
+            payload=runtime_variables,
+            alert=enriched_alert,
+            context=self._execution_context,
+            cfg=self._config,
+        )
+        query = _build_diagnosis_query(
+            alert=enriched_alert,
+            variables=runtime_variables,
+            topology_context=topology_context,
+            extra_alerts=extra_alerts,
+        )
+        allowed_tool_names = _select_allowed_tool_names_for_alert(enriched_alert)
         result = await run_diagnosis(
             query=query,
             context=self._execution_context,
@@ -913,6 +937,11 @@ class DefaultDiagnosisRunner:
             alert_snapshot=enriched_alert.model_dump(mode="json"),
             topology_context=topology_context,
             extra_alerts=extra_alerts_payload,
+            allowed_tool_names=allowed_tool_names,
+            reasoning_context_strategy=_resolve_reasoning_context_strategy(self._config),
+            reasoning_overflow_behavior=_resolve_reasoning_overflow_behavior(self._config),
+            reasoning_input_target_tokens=_resolve_reasoning_input_target_tokens(self._config),
+            reasoning_model_family=_resolve_reasoning_model_family(self._config),
         )
         return _diagnosis_session_from_state(alert=enriched_alert, state=result)
 
@@ -966,6 +995,19 @@ class StreamingDiagnosisRunner:
             topology_context=topology_context,
             extra_alerts=extra_alerts_payload,
         )
+        runtime_variables = await _apply_ttft_runtime_bootstrap(
+            payload=runtime_variables,
+            alert=enriched_alert,
+            context=self._execution_context,
+            cfg=self._config,
+        )
+        query = _build_diagnosis_query(
+            alert=enriched_alert,
+            variables=runtime_variables,
+            topology_context=topology_context,
+            extra_alerts=extra_alerts,
+        )
+        allowed_tool_names = _select_allowed_tool_names_for_alert(enriched_alert)
 
         final_session_id: str | None = None
         final_state: dict[str, Any] = {}
@@ -984,6 +1026,11 @@ class StreamingDiagnosisRunner:
             alert_snapshot=enriched_alert.model_dump(mode="json"),
             topology_context=topology_context,
             extra_alerts=extra_alerts_payload,
+            allowed_tool_names=allowed_tool_names,
+            reasoning_context_strategy=_resolve_reasoning_context_strategy(self._config),
+            reasoning_overflow_behavior=_resolve_reasoning_overflow_behavior(self._config),
+            reasoning_input_target_tokens=_resolve_reasoning_input_target_tokens(self._config),
+            reasoning_model_family=_resolve_reasoning_model_family(self._config),
         ):
             if final_session_id is None:
                 final_session_id = event.get("session_id")
@@ -1220,6 +1267,10 @@ class DefaultReDiagnoseRunner:
             trace_callback=trace_callback,
             alert_snapshot=alert.model_dump(mode="json"),
             topology_context=topology_context,
+            reasoning_context_strategy=_resolve_reasoning_context_strategy(self._config),
+            reasoning_overflow_behavior=_resolve_reasoning_overflow_behavior(self._config),
+            reasoning_input_target_tokens=_resolve_reasoning_input_target_tokens(self._config),
+            reasoning_model_family=_resolve_reasoning_model_family(self._config),
         )
         updated = _diagnosis_session_from_state(alert=alert, state=result)
         return updated.model_copy(update={"re_diagnosis_round": session.re_diagnosis_round + 1})
@@ -1230,6 +1281,72 @@ def _build_default_query(alert: Alert) -> str:
         f"Diagnose alert '{alert.alert_name}' with severity '{alert.severity.value}'. "
         f"Summary: {alert.summary or 'n/a'}. Description: {alert.description or 'n/a'}. "
         "Use available tools to identify root cause and produce ranked candidates."
+    )
+
+
+def _is_ttft_alert_name(alert_name: str) -> bool:
+    normalized = str(alert_name or "").strip().lower()
+    return "ttft" in normalized or normalized.startswith("aiservicettft")
+
+
+def _select_allowed_tool_names_for_alert(alert: Alert) -> list[str] | None:
+    if _is_ttft_alert_name(alert.alert_name):
+        return list(_TTFT_ALLOWED_READONLY_TOOLS)
+    return None
+
+
+def _build_diagnosis_query(
+    *,
+    alert: Alert,
+    variables: dict[str, Any],
+    topology_context: dict[str, Any],
+    extra_alerts: list[Alert] | None = None,
+) -> str:
+    if not _is_ttft_alert_name(alert.alert_name):
+        query = f"{_build_default_query(alert)}\n{topology_context['summary']}"
+        if extra_alerts:
+            query += "\n\nAdditional correlated alerts from the same convergence group:"
+            for idx, extra in enumerate(extra_alerts, start=1):
+                query += (
+                    f"\n- Alert {idx + 1}: '{extra.alert_name}' severity={extra.severity.value}"
+                    f" entity={extra.labels.get('instance', extra.labels.get('node', 'unknown'))}"
+                    f" summary={extra.summary or 'n/a'}"
+                )
+            query += "\nConsider all above alerts as context when forming diagnosis hypotheses."
+        return query
+
+    labels = dict(alert.labels or {})
+    namespace = str(variables.get("namespace") or labels.get("exported_namespace") or labels.get("namespace") or "service").strip()
+    service = str(variables.get("service") or labels.get("service") or labels.get("exported_container") or "").strip()
+    selected_pod = str(variables.get("pod") or "").strip()
+    selected_node = str(variables.get("node") or "").strip()
+    node_ip = str(variables.get("node_ip") or "").strip()
+    promql = str(variables.get("promql") or "").strip()
+    context_hints: dict[str, Any] = {
+        "namespace": namespace,
+        "service": service,
+        "selected_pod": selected_pod,
+        "selected_node": selected_node,
+        "selected_node_ip": node_ip,
+        "promql": promql,
+        "target_resolution_chain": variables.get("target_resolution_chain"),
+    }
+    return build_alert_diagnosis_prompt(
+        alert_payload=alert.model_dump(mode="json"),
+        available_tool_names=_TTFT_ALLOWED_READONLY_TOOLS,
+        diagnosis_goal="This is AIServiceTTFT diagnosis; prioritize deterministic service->pod->node->gpu evidence chain before broad exploration.",
+        investigation_steps=[
+            "定位受影响 service 对应 pod（resolve_service_pods/list_pods）",
+            "定位 pod 所在 node 与 node_ip（resolve_pod_node_ip + inventory mapping）",
+            "在目标 node 采集 GPU metrics/processes（gpu.get_metrics + gpu.get_processes）",
+            "校验 TTFT/请求时延指标并形成结论（prometheus.query_instant）",
+        ],
+        context_hints=context_hints,
+        history_count=len(extra_alerts or []),
+        extra_context={
+            "topology_summary": topology_context.get("summary"),
+            "topology_affected_count": topology_context.get("affected_count"),
+        },
     )
 
 
@@ -1244,7 +1361,10 @@ def _build_runtime_diagnosis_variables(
     labels = dict(alert.labels or {})
     annotations = dict(alert.annotations or {})
     node = _resolve_inventory_node_for_alert(labels=labels, cfg=cfg)
-    namespace = str(labels.get("namespace") or "service").strip() or "service"
+    namespace = str(labels.get("exported_namespace") or labels.get("namespace") or "service").strip() or "service"
+    service = str(labels.get("service") or labels.get("exported_container") or "").strip()
+    pod = str(labels.get("exported_pod") or labels.get("pod") or "").strip()
+    instance = str(labels.get("instance") or "").strip()
     iface = str(labels.get("interface") or labels.get("device") or "").strip()
     if iface.lower() in {"unknown", "n/a", "none", "-", "--", "null"}:
         iface = ""
@@ -1260,6 +1380,12 @@ def _build_runtime_diagnosis_variables(
         "namespace": namespace,
         "promql": promql,
     }
+    if service:
+        payload["service"] = service
+    if pod:
+        payload["pod"] = pod
+    if instance:
+        payload["instance"] = instance
     if node:
         payload["node"] = node
     if iface:
@@ -1270,12 +1396,155 @@ def _build_runtime_diagnosis_variables(
 def _infer_default_promql(*, alert_name: str, labels: dict[str, Any]) -> str:
     phase = str(labels.get("phase") or "").strip().lower()
     alert_name_lower = str(alert_name or "").strip().lower()
+    service = str(labels.get("service") or labels.get("exported_container") or "").strip()
     instance = str(labels.get("instance") or "").strip()
+    if _is_ttft_alert_name(alert_name):
+        if service:
+            return (
+                f'histogram_quantile(0.99, '
+                f'sum(rate(http_request_duration_seconds_bucket{{service="{service}"}}[5m])) by (le))'
+            )
+        return "histogram_quantile(0.99, sum(rate(http_request_duration_seconds_bucket[5m])) by (le))"
     if phase == "rtt" or "networklatencyhigh100ms" in alert_name_lower:
         if instance:
             return f'probe_icmp_duration_seconds{{instance="{instance}"}}'
         return "probe_icmp_duration_seconds"
     return "up"
+
+
+async def _apply_ttft_runtime_bootstrap(
+    *,
+    payload: dict[str, Any],
+    alert: Alert,
+    context: ToolExecutionContext,
+    cfg: SREAgentConfig,
+) -> dict[str, Any]:
+    if not _is_ttft_alert_name(alert.alert_name):
+        return payload
+
+    updated = dict(payload)
+    labels = dict(alert.labels or {})
+    namespace = str(updated.get("namespace") or labels.get("exported_namespace") or labels.get("namespace") or "service").strip() or "service"
+    service = str(updated.get("service") or labels.get("service") or labels.get("exported_container") or "").strip()
+    selected_pod = str(updated.get("pod") or labels.get("exported_pod") or labels.get("pod") or "").strip()
+    node = str(updated.get("node") or labels.get("node") or "").strip()
+    instance = str(updated.get("instance") or labels.get("instance") or "").strip()
+    node_ip = str(updated.get("node_ip") or "").strip()
+    resolution_chain: list[str] = []
+
+    if selected_pod:
+        resolution_chain.append(f"alert.pod={selected_pod}")
+    if node:
+        resolution_chain.append(f"alert.node={node}")
+    if instance:
+        resolution_chain.append(f"alert.instance={instance}")
+
+    if not selected_pod and service:
+        selected_pod = await _resolve_ttft_service_pod(
+            context=context,
+            namespace=namespace,
+            service=service,
+        )
+        if selected_pod:
+            resolution_chain.append(f"resolve_service_pods->{selected_pod}")
+
+    if selected_pod and not node_ip:
+        node_ip = await _resolve_ttft_pod_node_ip(
+            context=context,
+            namespace=namespace,
+            pod=selected_pod,
+        )
+        if node_ip:
+            resolution_chain.append(f"resolve_pod_node_ip->{node_ip}")
+
+    if not node and instance:
+        candidate_labels = dict(labels)
+        candidate_labels["instance"] = instance
+        node = _resolve_inventory_node_for_alert(labels=candidate_labels, cfg=cfg)
+        if node:
+            resolution_chain.append(f"inventory.instance->{node}")
+
+    if not node and node_ip:
+        candidate_labels = dict(labels)
+        candidate_labels["instance"] = node_ip
+        node = _resolve_inventory_node_for_alert(labels=candidate_labels, cfg=cfg)
+        if node:
+            resolution_chain.append(f"inventory.node_ip->{node}")
+
+    updated["namespace"] = namespace
+    if service:
+        updated["service"] = service
+    if selected_pod:
+        updated["pod"] = selected_pod
+    if node_ip:
+        updated["node_ip"] = node_ip
+    if node:
+        updated["node"] = node
+    if resolution_chain:
+        updated["target_resolution_chain"] = " -> ".join(resolution_chain)
+    return updated
+
+
+async def _resolve_ttft_service_pod(
+    *,
+    context: ToolExecutionContext,
+    namespace: str,
+    service: str,
+) -> str:
+    if not namespace or not service:
+        return ""
+    channel = context.channels.get("k8s")
+    if channel is None:
+        return ""
+    try:
+        if hasattr(channel, "resolve_pod_names_for_service"):
+            pods = await channel.resolve_pod_names_for_service(namespace, service)
+            if isinstance(pods, list):
+                for item in pods:
+                    candidate = str(item or "").strip()
+                    if candidate:
+                        return candidate
+        if hasattr(channel, "execute"):
+            value = await channel.execute("resolve_service_pods", {"namespace": namespace, "service_name": service})
+            if bool(getattr(value, "success", False)):
+                data = getattr(value, "data", None)
+                if isinstance(data, list):
+                    for item in data:
+                        candidate = str(item or "").strip()
+                        if candidate:
+                            return candidate
+    except Exception:  # noqa: BLE001
+        return ""
+    return ""
+
+
+async def _resolve_ttft_pod_node_ip(
+    *,
+    context: ToolExecutionContext,
+    namespace: str,
+    pod: str,
+) -> str:
+    if not namespace or not pod:
+        return ""
+    channel = context.channels.get("k8s")
+    if channel is None:
+        return ""
+    try:
+        if hasattr(channel, "resolve_node_ip_for_pod"):
+            value = await channel.resolve_node_ip_for_pod(namespace, pod)
+            text = str(value or "").strip()
+            if text:
+                return text
+        if hasattr(channel, "execute"):
+            value = await channel.execute("resolve_pod_node_ip", {"namespace": namespace, "pod_name": pod})
+            if bool(getattr(value, "success", False)):
+                data = getattr(value, "data", None)
+                if isinstance(data, dict):
+                    return str(data.get("node_ip") or data.get("output") or "").strip()
+                return str(data or "").strip()
+    except Exception:  # noqa: BLE001
+        return ""
+    return ""
 
 
 def _map_internal_to_external_ip(ip: str) -> str | None:

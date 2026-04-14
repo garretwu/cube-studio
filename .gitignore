@@ -69,3 +69,4 @@ config.lab.yaml
 /sre_agent/docs/evidence/
 /sre_agent/.devlogs
 .claude/settings.local.json
+/sre_agent/conf/config.yaml

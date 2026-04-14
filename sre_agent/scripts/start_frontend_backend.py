@@ -216,7 +216,7 @@ def build_runtime_env(
     frontend_url = f"http://127.0.0.1:{frontend_port}"
 
     env = dict(os.environ)
-    apply_llm_env_from_config(config, env, only_if_missing=True)
+    apply_llm_env_from_config(config, env, only_if_missing=False)
     raw_llm_mode = str(llm_mode or DEFAULT_LLM_MODE).strip().lower()
     resolved_llm_mode = _LLM_MODE_ALIASES.get(raw_llm_mode)
     if resolved_llm_mode is None:

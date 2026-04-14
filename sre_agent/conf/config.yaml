@@ -8,9 +8,13 @@ global:
   auto_diagnose_entity_correlation_count: 2
 
 llm:
-  api_key: "sk-sp-4d2bf2aafa0e4ba9a9839bbfef78b6e2"
-  base_url: "https://coding.dashscope.aliyuncs.com/v1"
-  model: "MiniMax-M2.5"
+#  api_key: "sk-sp-4d2bf2aafa0e4ba9a9839bbfef78b6e2"
+#  base_url: "https://coding.dashscope.aliyuncs.com/v1"
+#  model: "MiniMax-M2.5"
+  provider: glm
+  api_key: "904d43af670c4e87bbfdca55d502520a.wH2jArRDuTGwa6xw"
+  base_url: "https://open.bigmodel.cn/api/coding/paas/v4"
+  model: "glm-5.1"
 
 agent:
   reasoning_context_strategy: state_rebuilt
