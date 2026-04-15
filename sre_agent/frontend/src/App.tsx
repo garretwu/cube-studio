@@ -27,41 +27,41 @@ const rootPageChrome: Record<
   }
 > = {
   "/topology": {
-    title: "Topology",
-    subtitle: "View service topology and dependency status in real time.",
+    title: "拓扑",
+    subtitle: "实时查看服务拓扑与依赖状态。",
     contentSpacing: "compact",
     contentMode: "workspace",
   },
   "/topology-modified": {
-    title: "Topology (Modified)",
-    subtitle: "Compare routing and layout changes in the modified topology view.",
+    title: "拓扑（改造）",
+    subtitle: "对比改造版拓扑中的路由与布局变化。",
     contentSpacing: "compact",
     contentMode: "workspace",
   },
   "/alerts": {
-    title: "Alerts",
-    subtitle: "Track alert signals, severity, and ownership for ongoing incidents.",
+    title: "告警",
+    subtitle: "跟踪进行中事件的告警信号、级别与责任归属。",
     contentSpacing: "compact",
   },
   "/diagnosis": {
-    title: "Diagnosis",
-    subtitle: "Follow the diagnosis workflow and remediation execution timeline.",
+    title: "诊断",
+    subtitle: "查看诊断流程与修复执行时间线。",
     contentSpacing: "compact",
     contentMode: "workspace",
   },
   "/remediation": {
-    title: "Remediation",
-    subtitle: "Review remediation plans, execution status, and rollback options.",
+    title: "修复",
+    subtitle: "查看修复方案、执行状态与回滚选项。",
     contentSpacing: "compact",
   },
   "/knowledge": {
-    title: "Knowledge",
-    subtitle: "Browse troubleshooting knowledge and reusable incident playbooks.",
+    title: "知识",
+    subtitle: "浏览排障知识与可复用故障手册。",
     contentSpacing: "compact",
   },
   "/skills": {
-    title: "Skills",
-    subtitle: "Manage diagnostic skills and monitor skill execution insights.",
+    title: "技能",
+    subtitle: "管理诊断技能并跟踪技能执行洞察。",
     contentSpacing: "compact",
   },
 };
@@ -103,7 +103,7 @@ function resolvePageChrome(pathname: string): {
 
   if (pathname.startsWith("/history/")) {
     return {
-      title: "Diagnosis",
+      title: "诊断",
       contentSpacing: "compact",
       contentMode: "workspace",
     };
@@ -111,21 +111,21 @@ function resolvePageChrome(pathname: string): {
 
   if (pathname.startsWith("/topology/")) {
     return {
-      title: "Topology",
+      title: "拓扑",
       contentSpacing: "compact",
     };
   }
 
   if (pathname.startsWith("/alerts/")) {
     return {
-      title: "Alerts",
+      title: "告警",
       contentSpacing: "compact",
     };
   }
 
   if (pathname.startsWith("/diagnosis/")) {
     return {
-      title: "Diagnosis",
+      title: "诊断",
       contentSpacing: "compact",
       contentMode: "workspace",
     };
@@ -133,21 +133,21 @@ function resolvePageChrome(pathname: string): {
 
   if (pathname.startsWith("/remediation/")) {
     return {
-      title: "Remediation",
+      title: "修复",
       contentSpacing: "compact",
     };
   }
 
   if (pathname.startsWith("/knowledge/")) {
     return {
-      title: "Knowledge",
+      title: "知识",
       contentSpacing: "compact",
     };
   }
 
   if (pathname.startsWith("/skills/")) {
     return {
-      title: "Skills",
+      title: "技能",
       contentSpacing: "compact",
     };
   }
@@ -209,7 +209,7 @@ function App() {
           setHistorySessions([]);
           setHistoryLoading(false);
           setHistoryLoadError(
-            error instanceof Error ? error.message : "Failed to load diagnosis history.",
+            error instanceof Error ? error.message : "加载诊断历史失败。",
           );
         }
       });
@@ -233,7 +233,7 @@ function App() {
   );
   const sections = [
     {
-      title: "Navigation",
+      title: "导航",
       collapseBehavior: "icon-only" as const,
       items: visibleRoutes.map((route) => ({
         key: route.key,
@@ -244,7 +244,7 @@ function App() {
       })),
     },
     {
-      title: "Diagnosis History",
+      title: "诊断历史",
       collapseBehavior: "hide" as const,
       items: historySessions.map((session) => ({
         key: session.session_id,
@@ -257,24 +257,24 @@ function App() {
         onClick: () => navigate(`/history/${session.session_id}`),
       })),
       emptyLabel: historyLoading
-        ? "Loading diagnosis sessions..."
+        ? "正在加载诊断会话..."
         : historyLoadError
-          ? "Failed to load diagnosis sessions"
-          : "No diagnosis sessions yet",
+          ? "诊断会话加载失败"
+          : "暂无诊断会话",
     },
   ];
 
   return (
     <AppShell
-      adminLabel="SRE Console"
-      brandSubtitle="AIDC Intelligent Ops Workspace"
+      adminLabel="SRE 控制台"
+      brandSubtitle="AIDC 智能运维工作台"
       contentMode={pageChrome.contentMode}
       contentSpacing={pageChrome.contentSpacing}
-      helpLabel="Help & Docs"
+      helpLabel="帮助文档"
       sections={sections}
       subtitle={pageChrome.subtitle}
       title={pageChrome.title}
-      userMeta="Platform Team / Auto-SRE"
+      userMeta="平台团队 / Auto-SRE"
       userName="Miaomiao Zhou"
       onBrandClick={() => navigate("/design-tokens")}
     >
