@@ -65,3 +65,4 @@ class SREAgentState(TypedDict):
     evidence_signals: NotRequired[dict[str, Any]]
     loop_guard: NotRequired[LoopGuardState]
     force_final_turn: NotRequired[bool]
+    _ttft_external_probe_injected: NotRequired[bool]

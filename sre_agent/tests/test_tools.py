@@ -482,6 +482,46 @@ class TestToolRegistryUnit(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(result.success)
         self.assertIn("parameter 'node' is required", result.error)
 
+    def test_unit_merge_tool_args_omits_node_for_process_find(self) -> None:
+        """process.find 不显式传 node 时，_merge_tool_args 不注入 variables.node。"""
+        from sre_agent.agent.nodes import _merge_tool_args
+
+        registry = build_default_registry()
+        merged = _merge_tool_args(
+            registry=registry,
+            tool_name="process.find",
+            tool_args={"pattern": "stress"},
+            variables={"node": "worker-03"},
+        )
+        self.assertNotIn("node", merged)
+        self.assertEqual(merged["pattern"], "stress")
+
+    def test_unit_merge_tool_args_preserves_explicit_node_for_process_find(self) -> None:
+        """process.find 显式传 node 时，_merge_tool_args 保留显式值。"""
+        from sre_agent.agent.nodes import _merge_tool_args
+
+        registry = build_default_registry()
+        merged = _merge_tool_args(
+            registry=registry,
+            tool_name="process.find",
+            tool_args={"pattern": "stress", "node": "10.11.4.13"},
+            variables={"node": "worker-03"},
+        )
+        self.assertEqual(merged["node"], "10.11.4.13")
+
+    def test_unit_merge_tool_args_injects_node_for_other_tools(self) -> None:
+        """非 process.find 工具仍然通过 _normalize_runtime_defaults 注入 node。"""
+        from sre_agent.agent.nodes import _merge_tool_args
+
+        registry = build_default_registry()
+        merged = _merge_tool_args(
+            registry=registry,
+            tool_name="gpu.get_metrics",
+            tool_args={},
+            variables={"node": "worker-03"},
+        )
+        self.assertEqual(merged["node"], "worker-03")
+
     async def test_unit_network_clear_tc_qdisc_dispatches_expected_commands(self) -> None:
         registry = build_default_registry()
         ssh = _FakeSSHChannel()

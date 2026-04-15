@@ -20,7 +20,7 @@ from sre_agent.models.diagnosis import DiagnosisResult, Observation, ThinkingSte
 from sre_agent.models.remediation import RemediationPlan
 from sre_agent.runtime.node_mapping import load_inventory_node_mapping, normalize_node_identifier
 from sre_agent.runtime.token_estimation import estimate_token_count
-from sre_agent.tools import ToolExecutionContext, ToolRegistry, ToolResult
+from sre_agent.tools import SafetyLevel, ToolExecutionContext, ToolRegistry, ToolResult
 
 # LLM 交互日志记录器
 _llm_logger = logging.getLogger("sre_agent.llm")
@@ -758,6 +758,54 @@ async def reason_node(
                     f"{final_thought}\n已根据 GPU 进程证据进入处置阶段："
                     "已生成 kill_process proposal（需审批后执行）。"
                 )
+
+    # ── TTFT forced external node probe (fail-safe) ──
+    # 当 TTFT 诊断在服务节点未发现可疑进程，且尚未探测外部压测源节点时，
+    # 注入合成的 process.find 调用，路由回 act_node 继续诊断。
+    if (
+        remediation_plan is None
+        and _is_ttft_alert_state(state)
+        and not evidence_signals.get("ttft_suspect_process_present")
+        and not state.get("_ttft_external_probe_injected")
+    ):
+        _ext_node = _get_ttft_external_node(state)
+        if _ext_node and not _has_probed_ttft_external_node(
+            list(state.get("tool_runs", []) or []), _ext_node
+        ):
+            updated_trace.append(
+                {
+                    "type": "thought",
+                    "step": step_index,
+                    "content": (
+                        f"TTFT 证据链缺口：服务节点未发现可疑负载进程，"
+                        f"强制探测外部压测源节点 {_ext_node}。"
+                    ),
+                    "action": "tool_call",
+                    "confidence": None,
+                }
+            )
+            forced_call = {
+                "name": "process.find",
+                "args": {"pattern": "stress|benchmark|load_simulator|simulator"},
+                "id": f"ttft-forced-external-probe-{step_index}",
+            }
+            updated = {
+                **state,
+                "messages": updated_messages,
+                "llm_interactions": updated_interactions,
+                "trace_items": updated_trace,
+                "pending_tool_calls": [forced_call],
+                "step_count": step_index,
+                "diagnosis_result": None,
+                "remediation_plan": None,
+                "status": "running",
+                "summary": None,
+                "error": None,
+                "evidence_signals": evidence_signals,
+                "_ttft_external_probe_injected": True,
+            }
+            persist_state_snapshot(updated.get("checkpoint_dir"), updated["session_id"], "reason", updated)
+            return updated
 
     if remediation_plan is not None:
         diagnosis = diagnosis.model_copy(update={"recommended_fix": remediation_plan})
@@ -2378,6 +2426,44 @@ def _is_ttft_alert_state(state: SREAgentState) -> bool:
     return "ttft" in alert_name or alert_name.startswith("aiservicettft")
 
 
+def _get_ttft_external_node(state: SREAgentState) -> str:
+    """从 alert_snapshot 或 variables 获取 TTFT 外部压测源节点地址。"""
+    snapshot = state.get("alert_snapshot")
+    if isinstance(snapshot, dict):
+        node = str(snapshot.get("ttft_external_process_default_node", "") or "").strip()
+        if node:
+            return node
+    variables = state.get("variables")
+    if isinstance(variables, dict):
+        node = str(variables.get("ttft_external_process_default_node", "") or "").strip()
+        if node:
+            return node
+    return ""
+
+
+def _has_probed_ttft_external_node(
+    tool_runs: list[dict[str, Any]],
+    external_node: str,
+) -> bool:
+    """检查是否已对外部节点执行过 process.find。"""
+    for run in tool_runs:
+        if not isinstance(run, dict):
+            continue
+        if str(run.get("tool", "")).strip() != "process.find":
+            continue
+        params = run.get("params")
+        if isinstance(params, dict):
+            run_node = str(params.get("node", "") or "").strip()
+            if run_node == external_node:
+                return True
+        data = run.get("data")
+        if isinstance(data, dict):
+            data_node = str(data.get("node", "") or "").strip()
+            if data_node == external_node:
+                return True
+    return False
+
+
 def _count_tool_runs(tool_runs: list[dict[str, Any]], tool_name: str) -> int:
     return sum(1 for run in tool_runs if isinstance(run, dict) and str(run.get("tool", "")).strip() == tool_name)
 
@@ -3633,7 +3719,7 @@ def _merge_tool_args(
         for key, value in nested_kwargs.items():
             merged.setdefault(str(key), value)
     if not variables:
-        _normalize_runtime_defaults(merged, variables)
+        _normalize_runtime_defaults(merged, variables, tool_name=tool_name)
         return merged
     try:
         tool_def = registry.get_tool(tool_name)
@@ -3650,12 +3736,20 @@ def _merge_tool_args(
     for key, value in variables.items():
         if key not in merged and (not required or key in required):
             merged[key] = value
-    _normalize_runtime_defaults(merged, variables)
+    _normalize_runtime_defaults(merged, variables, tool_name=tool_name)
     return merged
 
 
-def _normalize_runtime_defaults(params: dict[str, Any], variables: dict[str, Any]) -> None:
-    if "node" in variables:
+_NODE_SELF_RESOLVING_TOOLS: frozenset[str] = frozenset({"process.find"})
+
+
+def _normalize_runtime_defaults(
+    params: dict[str, Any],
+    variables: dict[str, Any],
+    *,
+    tool_name: str = "",
+) -> None:
+    if "node" in variables and tool_name not in _NODE_SELF_RESOLVING_TOOLS:
         params["node"] = variables["node"]
     if "namespace" in variables:
         params["namespace"] = variables["namespace"]
@@ -3925,6 +4019,19 @@ def _normalize_remediation_plan_payload(
         for index, step in enumerate(steps, start=1):
             if not isinstance(step, dict):
                 continue
+            step_tool_name = str(step.get("tool", "") or "").strip()
+            if step_tool_name and registry is not None:
+                try:
+                    step_tool_def = registry.get_tool(step_tool_name)
+                    if step_tool_def.safety_level == SafetyLevel.READ_ONLY:
+                        _llm_logger.debug(
+                            "skipping read-only tool %r in remediation plan for session %s",
+                            step_tool_name,
+                            session_id,
+                        )
+                        continue
+                except Exception:  # noqa: BLE001
+                    pass
             normalized_step = dict(step)
             normalized_step.setdefault("step_id", index)
             normalized_step.setdefault(
@@ -3967,6 +4074,10 @@ def _normalize_remediation_plan_payload(
             if normalized_step.get("rollback_tool") is None and normalized_step.get("rollback_params") is not None:
                 normalized_step.pop("rollback_params", None)
             normalized_steps.append(normalized_step)
+
+    # Re-number step_id after filtering (e.g., read-only tool removal may leave gaps).
+    for re_index, step in enumerate(normalized_steps, start=1):
+        step["step_id"] = re_index
 
     candidate["steps"] = normalized_steps
     candidate.pop("actions", None)
@@ -4110,6 +4221,35 @@ def _collect_ttft_suspect_processes(raw_items: Any, *, max_items: int = 6) -> li
     return normalized
 
 
+def _extract_verification_pattern(process_name: str) -> str:
+    """从进程名/命令中提取适合 process.find 的验证模式。"""
+    _verification_tokens = (
+        "load_simulator",
+        "stress-ng",
+        "stress",
+        "benchmark",
+        "simulator",
+        "locust",
+        "jmeter",
+        "hey",
+        "apachebench",
+        "wrk",
+        "iperf",
+        "fio",
+    )
+    lowered = str(process_name or "").lower()
+    for token in _verification_tokens:
+        if token in lowered:
+            return token
+    # Fallback: first meaningful word of the command
+    parts = str(process_name or "").strip().split()
+    for part in parts:
+        clean = part.strip("-_")
+        if clean and len(clean) >= 3:
+            return clean
+    return "unknown_process"
+
+
 def _build_ttft_kill_process_plan_candidate(
     *,
     diagnosis: DiagnosisResult,
@@ -4149,13 +4289,20 @@ def _build_ttft_kill_process_plan_candidate(
         else:
             continue
         step_params["entity_id"] = f"proc:{target_token}"
+        verification_pattern = _extract_verification_pattern(process_name or target_token)
         steps.append(
             {
                 "step_id": index,
                 "description": f"在节点 {step_node} 终止可疑负载进程 {target_label}",
                 "tool": "kill_process",
                 "params": step_params,
-                "verification": {"method": "wait", "wait_seconds": 60},
+                "verification": {
+                    "method": "tool_call",
+                    "tool": "process.find",
+                    "tool_params": {"pattern": verification_pattern, "node": step_node},
+                    "wait_seconds": 30,
+                    "condition": {"field": "count", "operator": "==", "value": 0},
+                },
                 "timeout": 60,
             }
         )

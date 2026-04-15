@@ -1431,6 +1431,54 @@ tags:
         self.assertEqual(len(suspects), 2)
         self.assertEqual(suspects[0]["node"], "10.11.4.13")
 
+    def test_has_probed_ttft_external_node_detects_existing_probe(self) -> None:
+        tool_runs: list[dict[str, Any]] = [
+            {
+                "tool": "process.find",
+                "params": {"pattern": "stress", "node": "10.11.4.13"},
+                "data": {"node": "10.11.4.13"},
+            },
+        ]
+        self.assertTrue(nodes_module._has_probed_ttft_external_node(tool_runs, "10.11.4.13"))
+        self.assertFalse(nodes_module._has_probed_ttft_external_node(tool_runs, "10.11.4.99"))
+
+    def test_has_probed_ttft_external_node_returns_false_for_empty(self) -> None:
+        self.assertFalse(nodes_module._has_probed_ttft_external_node([], "10.11.4.13"))
+
+    def test_has_probed_ttft_external_node_detects_via_data_node(self) -> None:
+        tool_runs: list[dict[str, Any]] = [
+            {
+                "tool": "process.find",
+                "params": {"pattern": "stress"},
+                "data": {"node": "10.11.4.13"},
+            },
+        ]
+        self.assertTrue(nodes_module._has_probed_ttft_external_node(tool_runs, "10.11.4.13"))
+
+    def test_get_ttft_external_node_prefers_alert_snapshot(self) -> None:
+        state: dict[str, Any] = {
+            "alert_snapshot": {
+                "alert_name": "AIServiceTTFTP99High",
+                "ttft_external_process_default_node": "10.11.4.13",
+            },
+            "variables": {"ttft_external_process_default_node": "10.11.4.99"},
+        }
+        self.assertEqual(nodes_module._get_ttft_external_node(state), "10.11.4.13")
+
+    def test_get_ttft_external_node_falls_back_to_variables(self) -> None:
+        state: dict[str, Any] = {
+            "alert_snapshot": {"alert_name": "AIServiceTTFTP99High"},
+            "variables": {"ttft_external_process_default_node": "10.11.4.99"},
+        }
+        self.assertEqual(nodes_module._get_ttft_external_node(state), "10.11.4.99")
+
+    def test_get_ttft_external_node_returns_empty_when_absent(self) -> None:
+        state: dict[str, Any] = {
+            "alert_snapshot": {"alert_name": "AIServiceTTFTP99High"},
+            "variables": {},
+        }
+        self.assertEqual(nodes_module._get_ttft_external_node(state), "")
+
     async def test_run_diagnosis_stream_emits_real_duration_and_backend_next_action_without_trace_duplicates(self) -> None:
         stream_events = [
             {

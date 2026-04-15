@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from datetime import UTC, datetime
 from typing import Any, Literal
 from uuid import uuid4
@@ -41,6 +42,13 @@ class RemediationMetricSnapshot(StrictFrozenModel):
     available: bool = True
     error: str | None = None
 
+    @field_validator("value", mode="before")
+    @classmethod
+    def _sanitize_non_json_float(cls, v: Any) -> Any:
+        if isinstance(v, float) and (math.isnan(v) or math.isinf(v)):
+            return None
+        return v
+
 
 class RemediationCheckSnapshot(StrictFrozenModel):
     """Grouped alert + metric evidence at a specific remediation phase."""
@@ -73,6 +81,13 @@ class RemediationMetricReview(StrictFrozenModel):
     available: bool
     error: str | None = None
     reviewed_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+    @field_validator("before_value", "after_value", mode="before")
+    @classmethod
+    def _sanitize_non_json_float(cls, v: Any) -> Any:
+        if isinstance(v, float) and (math.isnan(v) or math.isinf(v)):
+            return None
+        return v
 
 
 class RemediationEvidence(StrictFrozenModel):
