@@ -52,7 +52,7 @@ class PrometheusChannel(BaseChannel):
         data = self._http_get_json(url)
         result = data.get("data", {}).get("result", [])
         if not result:
-            return 0.0
+            return None
         value = result[0].get("value", [0, "0"])[1]
         return float(value)
 
@@ -117,6 +117,8 @@ class PrometheusChannel(BaseChannel):
             for name, promql in queries.items():
                 try:
                     value = await self.query_instant(promql)
+                    if value is None:
+                        value = 0.0
                     out[name].append(value)
                 except Exception as exc:
                     stats[name]["error_count"] += 1
