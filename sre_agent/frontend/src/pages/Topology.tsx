@@ -15,7 +15,6 @@ import {
 import { useTopologyExplorerStore } from "../features/topologyExplorer/store";
 import type { SearchFeedback } from "../features/topologyExplorer/types";
 import {
-  buildModifiedTopologyObjectPath,
   buildTopologyObjectPath,
 } from "../features/topologyExplorer/topologyObjectRoute";
 import "../features/topologyExplorer/topologyExplorer.css";
@@ -40,7 +39,7 @@ type ExpandedAggregateMeta = {
   memberIds: string[];
 };
 
-function TopologyPage({ variant = "default" }: TopologyPageProps) {
+function TopologyPage({ variant = "modified" }: TopologyPageProps) {
   const canvasRef = useRef<TopologyCanvasHandle | null>(null);
   const navigate = useNavigate();
   const [expandedAggregateIds, setExpandedAggregateIds] = useState<string[]>([]);
@@ -241,16 +240,12 @@ function TopologyPage({ variant = "default" }: TopologyPageProps) {
   };
 
   const handleOpenObjectTopology = (nodeId: string, mode: "default" | "isolate") => {
-    if (isModifiedVariant) {
-      navigate(buildModifiedTopologyObjectPath(nodeId, mode));
-      return;
-    }
     navigate(buildTopologyObjectPath(nodeId, mode));
   };
 
   return (
     <div className={`page-grid topology-modified-page topology-route topology-route--${variant}`}>
-      <h1 className="visually-hidden">{variant === "modified" ? "拓扑（改造）" : "运行拓扑"}</h1>
+      <h1 className="visually-hidden">拓扑</h1>
       <section className="page-stage topology-modified-stage topology-modified-stage--canvas-only">
         <TopologyExplorer
           allNodes={topologyPageData?.nodes ?? []}

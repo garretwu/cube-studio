@@ -2562,6 +2562,45 @@
   margin-bottom: var(--space-4);
 }
 
+.approval-dialog-modal .ant-modal-content {
+  border: 1px solid rgba(15, 23, 42, 0.12);
+  border-radius: 4px;
+  box-shadow: none;
+}
+
+.approval-dialog-modal .ant-modal-header {
+  border-bottom: 1px solid rgba(15, 23, 42, 0.08);
+  margin-bottom: 0;
+  padding-bottom: 12px;
+}
+
+.approval-dialog__summary {
+  border: 1px solid rgba(15, 23, 42, 0.1);
+  border-radius: 4px;
+  background: #fff;
+  padding: 12px;
+}
+
+.approval-dialog__summary-title {
+  margin: 0;
+  color: rgba(15, 23, 42, 0.96);
+  font-size: 13px;
+  line-height: 20px;
+  font-weight: 600;
+}
+
+.approval-dialog__summary-copy {
+  margin: 6px 0 0;
+  color: rgba(51, 65, 85, 0.92);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.approval-dialog-modal .app-button {
+  border-radius: 4px;
+  box-shadow: none;
+}
+
 .ant-descriptions .ant-descriptions-item-label {
   color: var(--color-text-secondary) !important;
 }
@@ -8426,8 +8465,8 @@
   grid-template-rows: auto minmax(0, 1fr) auto;
   background: rgba(255, 255, 255, 0.98);
   border: 1px solid rgba(15, 23, 42, 0.08);
-  border-radius: 20px;
-  box-shadow: 0 24px 60px rgba(15, 23, 42, 0.05);
+  border-radius: 6px;
+  box-shadow: none;
   overflow: hidden;
   min-height: 0;
 }
@@ -8457,16 +8496,16 @@
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  min-height: 24px;
-  padding: 0 8px;
-  border-radius: 999px;
-  border: 1px solid rgba(148, 163, 184, 0.26);
-  background: rgba(248, 250, 252, 0.9);
+  min-height: 20px;
+  padding: 0 6px;
+  border-radius: 4px;
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  background: #fff;
   color: rgba(71, 85, 105, 0.88);
-  font-size: 11px;
-  line-height: 16px;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
+  font-size: 10px;
+  line-height: 14px;
+  letter-spacing: 0.01em;
+  text-transform: none;
 }
 
 .diagnosis-workspace-badge--accent {
@@ -8853,17 +8892,16 @@
 
 .diagnosis-workspace-tool-card {
   width: fit-content;
-  min-width: min(440px, 100%);
+  min-width: min(360px, 100%);
   max-width: 100%;
   padding: 0;
   border: 1px solid rgba(15, 23, 42, 0.1);
-  border-radius: 8px;
-  background: rgba(255, 255, 255, 0.98);
+  border-radius: 4px;
+  background: #fff;
   text-align: left;
   transition:
     border-color var(--transition-base),
-    background var(--transition-base),
-    box-shadow var(--transition-base);
+    background var(--transition-base);
 }
 
 .diagnosis-workspace-tool-card--loading {
@@ -8881,7 +8919,6 @@
 
 .diagnosis-workspace-tool-card--interactive:hover {
   border-color: rgba(15, 23, 42, 0.18);
-  box-shadow: 0 10px 20px rgba(15, 23, 42, 0.04);
 }
 
 .diagnosis-workspace-tool-card__header {
@@ -8889,7 +8926,7 @@
   grid-template-columns: 18px minmax(0, 1fr) auto;
   gap: 10px;
   align-items: center;
-  padding: 10px 12px;
+  padding: 8px 10px;
 }
 
 .diagnosis-workspace-tool-card__header-copy {
@@ -8908,15 +8945,15 @@
 
 .diagnosis-workspace-tool-card__header-copy strong {
   color: rgba(30, 41, 59, 0.94);
-  font-size: 12px;
-  line-height: 18px;
+  font-size: 11px;
+  line-height: 16px;
   font-weight: 600;
 }
 
 .diagnosis-workspace-tool-card__header-copy span {
   color: rgba(148, 163, 184, 0.9);
-  font-size: 11px;
-  line-height: 16px;
+  font-size: 10px;
+  line-height: 14px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -8930,8 +8967,8 @@
 
 .diagnosis-workspace-tool-card__status-indicator {
   position: relative;
-  width: 14px;
-  height: 14px;
+  width: 12px;
+  height: 12px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -8990,22 +9027,22 @@
 
 .diagnosis-workspace-tool-card__status-label {
   color: rgba(148, 163, 184, 0.9);
-  font-size: 10px;
-  line-height: 14px;
+  font-size: 9px;
+  line-height: 12px;
   text-transform: uppercase;
-  letter-spacing: 0.12em;
+  letter-spacing: 0.08em;
 }
 
 .diagnosis-workspace-tool-card__body {
   border-top: 1px solid rgba(226, 232, 240, 0.9);
-  background: rgba(248, 250, 252, 0.84);
+  background: #fff;
 }
 
 .diagnosis-workspace-tool-card__loading,
 .diagnosis-workspace-tool-card__details {
   display: grid;
-  gap: 8px;
-  padding: 12px;
+  gap: 6px;
+  padding: 10px;
 }
 
 .diagnosis-workspace-tool-card__loading > div {
@@ -9013,8 +9050,8 @@
   gap: 8px;
   align-items: center;
   color: rgba(100, 116, 139, 0.9);
-  font-size: 11px;
-  line-height: 16px;
+  font-size: 10px;
+  line-height: 14px;
 }
 
 .diagnosis-workspace-tool-card__loading-indicator {
@@ -9028,12 +9065,13 @@
 
 .diagnosis-workspace-tool-card__params {
   margin: 0;
-  padding: 10px 12px;
-  border-radius: 6px;
-  background: rgba(255, 255, 255, 0.92);
+  padding: 8px 10px;
+  border-radius: 4px;
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  background: #fff;
   color: rgba(71, 85, 105, 0.92);
-  font-size: 11px;
-  line-height: 18px;
+  font-size: 10px;
+  line-height: 15px;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
@@ -9046,8 +9084,8 @@
 .diagnosis-workspace-tool-card__results p {
   margin: 0;
   color: rgba(71, 85, 105, 0.92);
-  font-size: 12px;
-  line-height: 18px;
+  font-size: 11px;
+  line-height: 16px;
 }
 
 .diagnosis-workspace-run-block {
@@ -9056,11 +9094,8 @@
   gap: 14px;
   padding: 16px 18px 18px;
   border: 1px solid rgba(15, 23, 42, 0.09);
-  border-radius: 18px;
-  background:
-    linear-gradient(135deg, rgba(248, 250, 252, 0.98), rgba(255, 255, 255, 0.94)),
-    radial-gradient(circle at 12% 0%, rgba(14, 165, 233, 0.1), transparent 28%);
-  box-shadow: 0 18px 44px rgba(15, 23, 42, 0.07);
+  border-radius: 6px;
+  background: #fff;
 }
 
 .diagnosis-workspace-run-block--running {
@@ -9379,9 +9414,9 @@
 .diagnosis-workspace-approval-card {
   max-width: min(100%, 1280px);
   border: 1px solid rgba(15, 23, 42, 0.1);
-  border-radius: 10px;
-  background: rgba(255, 255, 255, 0.98);
-  box-shadow: 0 16px 30px rgba(15, 23, 42, 0.04);
+  border-radius: 6px;
+  background: #fff;
+  box-shadow: none;
   overflow: hidden;
 }
 
@@ -9404,12 +9439,12 @@
 
 .diagnosis-workspace-report-card__title,
 .diagnosis-workspace-approval-card__title {
-  margin: 10px 0 0;
+  margin: 6px 0 0;
   color: rgba(15, 23, 42, 0.98);
-  font-size: 18px;
-  line-height: 26px;
+  font-size: 15px;
+  line-height: 22px;
   font-weight: 600;
-  letter-spacing: -0.02em;
+  letter-spacing: 0;
 }
 
 .diagnosis-workspace-report-card__meta {
@@ -9462,8 +9497,8 @@
 .diagnosis-workspace-report-card__sections,
 .diagnosis-workspace-approval-card__body {
   display: grid;
-  gap: 16px;
-  padding: 18px;
+  gap: 12px;
+  padding: 14px;
 }
 
 .diagnosis-workspace-report-card__section-copy,
@@ -9503,9 +9538,9 @@
 
 .diagnosis-workspace-report-card__propagation {
   padding: 12px;
-  border-radius: 8px;
+  border-radius: 4px;
   border: 1px solid rgba(15, 23, 42, 0.08);
-  background: rgba(248, 250, 252, 0.78);
+  background: rgba(248, 250, 252, 0.5);
 }
 
 .diagnosis-workspace-report-card__propagation > summary {
@@ -9562,8 +9597,8 @@
 .diagnosis-workspace-report-card__hypothesis-item,
 .diagnosis-workspace-report-card__propagation-item {
   border: 1px solid rgba(15, 23, 42, 0.08);
-  border-radius: 10px;
-  background: rgba(248, 250, 252, 0.78);
+  border-radius: 4px;
+  background: rgba(248, 250, 252, 0.5);
   padding: 12px 14px;
 }
 
@@ -9856,22 +9891,18 @@
   align-items: center;
   padding: 14px 16px;
   border: 1px solid rgba(15, 23, 42, 0.08);
-  border-radius: 16px;
-  background: rgba(248, 250, 252, 0.92);
+  border-radius: 6px;
+  background: #fff;
   color: rgba(30, 41, 59, 0.96);
   text-align: left;
   transition:
     border-color var(--transition-base),
-    background var(--transition-base),
-    box-shadow var(--transition-base),
-    transform var(--transition-base);
+    background var(--transition-base);
 }
 
 .diagnosis-workspace-system-event__toggle:hover {
   border-color: rgba(15, 23, 42, 0.16);
-  background: rgba(255, 255, 255, 0.98);
-  box-shadow: 0 10px 22px rgba(15, 23, 42, 0.06);
-  transform: translateY(-1px);
+  background: rgba(248, 250, 252, 0.55);
 }
 
 .diagnosis-workspace-system-event__label-wrap {
@@ -11014,16 +11045,10 @@
 .diagnosis-workspace-report-card,
 .diagnosis-workspace-approval-card,
 .diagnosis-workspace-run-block {
-  width: min(100%, 1060px);
-  display: grid;
-  gap: 14px;
-  padding: 16px 18px 18px;
-  border: 1px solid rgba(15, 23, 42, 0.09);
-  border-radius: 18px;
-  background:
-    linear-gradient(135deg, rgba(248, 250, 252, 0.98), rgba(255, 255, 255, 0.94)),
-    radial-gradient(circle at 12% 0%, rgba(14, 165, 233, 0.1), transparent 28%);
-  box-shadow: 0 18px 44px rgba(15, 23, 42, 0.07);
+  border: 1px solid rgba(15, 23, 42, 0.1);
+  border-radius: 6px;
+  background: #fff;
+  box-shadow: none;
 }
 
 .diagnosis-workspace-run-block--running {
@@ -11814,16 +11839,16 @@
 .diagnosis-workspace-approval-surface {
   position: relative;
   width: 100%;
-  max-width: 560px;
+  max-width: 520px;
   max-height: min(42vh, 280px);
   display: grid;
   gap: 8px;
   align-self: end;
-  padding: 10px 12px;
+  padding: 8px 10px;
   border: 1px solid rgba(15, 23, 42, 0.1);
-  border-radius: 10px;
-  background: rgba(255, 255, 255, 0.98);
-  box-shadow: 0 8px 22px rgba(15, 23, 42, 0.08);
+  border-radius: 4px;
+  background: #fff;
+  box-shadow: none;
   overflow-y: auto;
   animation: diagnosis-approval-surface-enter 220ms ease-out;
 }
@@ -11857,10 +11882,10 @@
 }
 
 .diagnosis-workspace-approval-surface__title {
-  margin: 4px 0 0;
+  margin: 2px 0 0;
   color: rgba(15, 23, 42, 0.98);
-  font-size: 14px;
-  line-height: 20px;
+  font-size: 13px;
+  line-height: 18px;
   font-weight: 600;
   letter-spacing: 0;
 }
@@ -12076,7 +12101,7 @@
 
 .diagnosis-workspace-report-card {
   max-width: min(100%, 1180px);
-  border-radius: 12px;
+  border-radius: 6px;
 }
 
 .diagnosis-workspace-report-card__header {
@@ -12136,8 +12161,8 @@
 .diagnosis-workspace-report-card__propagation-item,
 .diagnosis-workspace-report-card__details {
   border: 1px solid rgba(15, 23, 42, 0.08);
-  border-radius: 10px;
-  background: rgba(248, 250, 252, 0.8);
+  border-radius: 4px;
+  background: rgba(248, 250, 252, 0.5);
 }
 
 .diagnosis-workspace-report-card__hero-main {
@@ -12457,4 +12482,86 @@
 .diagnosis-workspace-run-block .remediation-progress-track__fill--canary,
 .diagnosis-workspace-run-block .remediation-progress-track__fill--full {
   background: rgba(15, 23, 42, 0.76);
+}
+
+/* Diagnosis card unification: align report with run block */
+.diagnosis-workspace-report-card,
+.diagnosis-workspace-run-block {
+  border: 1px solid rgba(15, 23, 42, 0.1);
+  border-radius: 0;
+  background: #fff;
+  box-shadow: none;
+}
+
+.diagnosis-workspace-report-card__header,
+.diagnosis-workspace-report-card__body {
+  padding-left: 16px;
+  padding-right: 16px;
+}
+
+.diagnosis-workspace-report-card__title {
+  font-size: 15px;
+  line-height: 22px;
+  letter-spacing: 0;
+}
+
+.diagnosis-workspace-report-card__subtitle,
+.diagnosis-workspace-report-card__hero-copy,
+.diagnosis-workspace-report-card__section-copy {
+  font-size: 12px;
+  line-height: 19px;
+}
+
+.diagnosis-workspace-report-card__hero-main,
+.diagnosis-workspace-report-card__panel,
+.diagnosis-workspace-report-card__stat,
+.diagnosis-workspace-report-card__candidate-preview,
+.diagnosis-workspace-report-card__candidate-item,
+.diagnosis-workspace-report-card__hypothesis-item,
+.diagnosis-workspace-report-card__propagation-item,
+.diagnosis-workspace-report-card__details,
+.diagnosis-workspace-report-card__propagation {
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.diagnosis-workspace-report-card__hero-main,
+.diagnosis-workspace-report-card__panel,
+.diagnosis-workspace-report-card__stat,
+.diagnosis-workspace-report-card__candidate-preview,
+.diagnosis-workspace-report-card__candidate-item,
+.diagnosis-workspace-report-card__hypothesis-item,
+.diagnosis-workspace-report-card__propagation-item {
+  padding-left: 0;
+  padding-right: 0;
+}
+
+.diagnosis-workspace-report-card__details {
+  padding-top: 8px;
+}
+
+.diagnosis-workspace-report-card__details-grid {
+  padding: 0;
+}
+
+.diagnosis-workspace-report-card__details-summary {
+  padding: 0;
+}
+
+.diagnosis-workspace-report-card__chip {
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: rgba(71, 85, 105, 0.92);
+  font-size: 11px;
+  line-height: 18px;
+  font-weight: 500;
+}
+
+.diagnosis-workspace-report-card__action-marker,
+.diagnosis-workspace-approval-card__actions li > span {
+  border-radius: 0;
 }

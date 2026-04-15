@@ -16,6 +16,7 @@ type ApprovalDialogProps = {
 function ApprovalDialog({ open, plan, onApprove, onReject, onCancel }: ApprovalDialogProps) {
   return (
     <Modal
+      className="approval-dialog-modal"
       destroyOnClose
       footer={
         <div style={{ display: "flex", justifyContent: "space-between", gap: 12, marginTop: 8 }}>
@@ -42,10 +43,10 @@ function ApprovalDialog({ open, plan, onApprove, onReject, onCancel }: ApprovalD
           {plan?.confidence ? <StatusChip tone="info">{formatPercent(plan.confidence)}</StatusChip> : null}
           {plan?.safety_level ? <StatusChip tone="neutral">{formatWorkflowStatus(plan.safety_level)}</StatusChip> : null}
         </div>
-        <div className="mini-card">
-          <p className="mini-card__title">{plan?.description ?? "当前暂无可审批的修复方案。"}</p>
-          <p className="mini-card__copy">根因：{plan?.root_cause ?? "暂无"}</p>
-          <p className="mini-card__copy">预计影响：{plan?.estimated_impact ?? "暂无"}</p>
+        <div className="approval-dialog__summary">
+          <p className="approval-dialog__summary-title">{plan?.description ?? "当前暂无可审批的修复方案。"}</p>
+          <p className="approval-dialog__summary-copy">根因：{plan?.root_cause ?? "暂无"}</p>
+          <p className="approval-dialog__summary-copy">预计影响：{plan?.estimated_impact ?? "暂无"}</p>
         </div>
       </div>
     </Modal>

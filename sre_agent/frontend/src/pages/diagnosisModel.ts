@@ -296,6 +296,16 @@ const LATIN_MOJIBAKE_PATTERN = /[\u00C0-\u00FF]/;
 const CJK_PATTERN = /[\u3400-\u9FFF]/g;
 const REPLACEMENT_CHAR_PATTERN = /\uFFFD/g;
 
+const ANSI_ESCAPE_PATTERN = /\u001b\[[0-?]*[ -/]*[@-~]/g;
+const UNICODE_FORMAT_CHARS_PATTERN = /[\u200B-\u200F\u202A-\u202E\u2060-\u206F\uFEFF]/g;
+
+function stripControlCharacters(text: string) {
+  return text
+    .replace(ANSI_ESCAPE_PATTERN, "")
+    .replace(UNICODE_FORMAT_CHARS_PATTERN, "")
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, "");
+}
+
 function countMatches(text: string, pattern: RegExp) {
   const matched = text.match(pattern);
   return matched ? matched.length : 0;
@@ -347,7 +357,7 @@ function repairUtf8Mojibake(text: string) {
 }
 
 export function normalizeDiagnosisDisplayText(text: string) {
-  let current = text;
+  let current = stripControlCharacters(text);
 
   for (let index = 0; index < 3; index += 1) {
     const decodedUnicode = decodeUnicodeEscapes(current);
@@ -358,7 +368,7 @@ export function normalizeDiagnosisDisplayText(text: string) {
     current = repairedMojibake;
   }
 
-  return current;
+  return stripControlCharacters(current);
 }
 
 function normalizeStringList(values: string[] | undefined) {
@@ -1426,26 +1436,37 @@ type RunSegment = {
   phase: DiagnosisRunPhase;
   steps: DiagnosisRunStepView[];
   tools: DiagnosisRunToolView[];
+  firstIndex: number;
 };
 
 function splitRunSegments(
-  steps: DiagnosisRunStepView[],
+  stepItems: Array<{ index: number; step: DiagnosisRunStepView }>,
   tools: DiagnosisRunToolView[],
 ): RunSegment[] {
-  if (steps.length === 0) {
+  if (stepItems.length === 0) {
     return [];
   }
 
+  const steps = stepItems.map((item) => item.step);
   const phases = steps.map((step) => getRunPhaseForStep(step));
   const firstFullIndex = phases.findIndex((phase) => phase === "full");
   const hasCanaryPhase = phases.some((phase) => phase === "canary");
 
   if (firstFullIndex <= 0 || !hasCanaryPhase) {
-    return [{ phase: hasCanaryPhase ? "canary" : "single", steps, tools }];
+    return [
+      {
+        phase: hasCanaryPhase ? "canary" : "single",
+        steps,
+        tools,
+        firstIndex: stepItems[0]?.index ?? 0,
+      },
+    ];
   }
 
-  const canarySteps = steps.slice(0, firstFullIndex);
-  const fullSteps = steps.slice(firstFullIndex);
+  const canaryStepItems = stepItems.slice(0, firstFullIndex);
+  const fullStepItems = stepItems.slice(firstFullIndex);
+  const canarySteps = canaryStepItems.map((item) => item.step);
+  const fullSteps = fullStepItems.map((item) => item.step);
   const canaryStepIds = new Set(canarySteps.map((step) => step.id));
   const fullStepIds = new Set(fullSteps.map((step) => step.id));
   const canaryTools: DiagnosisRunToolView[] = [];
@@ -1472,8 +1493,18 @@ function splitRunSegments(
   });
 
   const segments: RunSegment[] = [
-    { phase: "canary", steps: canarySteps, tools: canaryTools },
-    { phase: "full", steps: fullSteps, tools: fullTools },
+    {
+      phase: "canary",
+      steps: canarySteps,
+      tools: canaryTools,
+      firstIndex: canaryStepItems[0]?.index ?? 0,
+    },
+    {
+      phase: "full",
+      steps: fullSteps,
+      tools: fullTools,
+      firstIndex: fullStepItems[0]?.index ?? 0,
+    },
   ];
   return segments.filter((segment) => segment.steps.length > 0);
 }
@@ -1532,17 +1563,17 @@ export function groupExecutionRunTimeline(
 ): DiagnosisTimelineItem[] {
   const runBuckets = new Map<
     string,
-    { firstIndex: number; steps: DiagnosisRunStepView[]; tools: DiagnosisRunToolView[] }
+    { steps: Array<{ index: number; step: DiagnosisRunStepView }>; tools: DiagnosisRunToolView[] }
   >();
   const consumedIds = new Set<string>();
   let activeRunId: string | null = null;
 
-  const getBucket = (runId: string, firstIndex: number) => {
+  const getBucket = (runId: string) => {
     const existing = runBuckets.get(runId);
     if (existing) {
       return existing;
     }
-    const created = { firstIndex, steps: [], tools: [] };
+    const created = { steps: [], tools: [] };
     runBuckets.set(runId, created);
     return created;
   };
@@ -1555,8 +1586,8 @@ export function groupExecutionRunTimeline(
 
     if (isExecutionRunSystemItem(item)) {
       const runId = item.runId ?? fallbackRunId;
-      const bucket = getBucket(runId, index);
-      bucket.steps.push(createRunStep(item));
+      const bucket = getBucket(runId);
+      bucket.steps.push({ index, step: createRunStep(item) });
       consumedIds.add(item.id);
       activeRunId = runId;
       return;
@@ -1564,7 +1595,8 @@ export function groupExecutionRunTimeline(
 
     if (item.kind === "tool" && activeRunId) {
       const bucket = runBuckets.get(activeRunId);
-      const latestStep = bucket?.steps[bucket.steps.length - 1];
+      const latestStepEntry = bucket?.steps[bucket.steps.length - 1];
+      const latestStep = latestStepEntry?.step;
       if (bucket && latestStep) {
         bucket.tools.push(createRunTool(item, latestStep.id));
         latestStep.toolIds.push(item.id);
@@ -1576,12 +1608,12 @@ export function groupExecutionRunTimeline(
   const runItemsByFirstIndex = new Map<number, DiagnosisRunTimelineItem[]>();
   for (const [runId, bucket] of runBuckets.entries()) {
     const segments = splitRunSegments(bucket.steps, bucket.tools);
-    const runItems = segments.map((segment) =>
-      buildRunTimelineItem(runId, segment.phase, segment.steps, segment.tools),
-    );
-    const existing = runItemsByFirstIndex.get(bucket.firstIndex) ?? [];
-    existing.push(...runItems);
-    runItemsByFirstIndex.set(bucket.firstIndex, existing);
+    segments.forEach((segment) => {
+      const runItem = buildRunTimelineItem(runId, segment.phase, segment.steps, segment.tools);
+      const existing = runItemsByFirstIndex.get(segment.firstIndex) ?? [];
+      existing.push(runItem);
+      runItemsByFirstIndex.set(segment.firstIndex, existing);
+    });
   }
 
   const grouped: DiagnosisTimelineItem[] = [];

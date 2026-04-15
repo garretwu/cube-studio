@@ -75,7 +75,7 @@ describe("topology modified selectors", () => {
     const portNodes = topologyExplorerOnlineMock.nodes.filter((node) => node.id.startsWith("sw-200g:"));
 
     expect(switchNode?.type).toBe("switch");
-    expect(portNodes).toHaveLength(6);
+    expect(portNodes).toHaveLength(3);
     expect(portNodes.every((node) => node.type === "port")).toBe(true);
   });
 

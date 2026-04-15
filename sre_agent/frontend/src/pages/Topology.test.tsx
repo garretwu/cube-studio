@@ -34,7 +34,7 @@ describe("TopologyPage", () => {
     expect(screen.queryByTestId("topology-side-inspector")).not.toBeInTheDocument();
   });
 
-  it("switches between layered, domain, and tree views", async () => {
+  it("switches between layered and tree views", async () => {
     const user = userEvent.setup();
     renderTopologyRoutes();
 
@@ -42,10 +42,6 @@ describe("TopologyPage", () => {
     const tabs = within(panel).getAllByRole("tab");
 
     await user.click(tabs[1]!);
-    expect(screen.getByTestId("topology-stage-workplane")).toHaveAttribute("data-layout-preset", "domain");
-    expect(screen.getByTestId("topology-stage-workplane")).toHaveAttribute("data-view-mode", "graph");
-
-    await user.click(tabs[2]!);
     expect(screen.getByTestId("topology-stage-workplane")).toHaveAttribute("data-view-mode", "tree");
 
     await user.click(tabs[0]!);

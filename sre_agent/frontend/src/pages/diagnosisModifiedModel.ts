@@ -162,13 +162,24 @@ function isThinkingStep(entry: ThinkingStep | Observation): entry is ThinkingSte
   return "thought" in entry;
 }
 
+const ANSI_ESCAPE_PATTERN = /\u001b\[[0-?]*[ -/]*[@-~]/g;
+const UNICODE_FORMAT_CHARS_PATTERN = /[\u200B-\u200F\u202A-\u202E\u2060-\u206F\uFEFF]/g;
+
+function stripControlCharacters(text: string) {
+  return text
+    .replace(ANSI_ESCAPE_PATTERN, "")
+    .replace(UNICODE_FORMAT_CHARS_PATTERN, "")
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, "");
+}
+
 function formatValue(value: unknown): string {
   if (value == null) {
     return "-";
   }
 
   if (typeof value === "string") {
-    return value.length > 72 ? `${value.slice(0, 69)}...` : value;
+    const normalized = stripControlCharacters(value);
+    return normalized.length > 72 ? `${normalized.slice(0, 69)}...` : normalized;
   }
 
   if (typeof value === "number" || typeof value === "boolean") {

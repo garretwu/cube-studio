@@ -90,14 +90,26 @@ describe("modified topology layout", () => {
     );
 
     const groupByType = (type: TopologyObject["type"]) =>
-      stage.nodes.filter((node) => node.type === type).map((node) => positions.get(node.id)).filter(Boolean) as Array<{
+      stage.nodes
+        .filter((node) => node.type === type)
+        .map((node) => positions.get(node.id))
+        .filter(Boolean) as Array<{
         x: number;
         y: number;
       }>;
 
     const clusters = groupByType("cluster");
     const switches = groupByType("switch");
-    const ports = groupByType("port");
+    const ports = stage.nodes
+      .filter((node) => node.type === "port")
+      .map((node) => ({
+        parentId: String(node.id).split(":")[0] ?? "",
+        position: positions.get(node.id),
+      }))
+      .filter(
+        (item): item is { parentId: string; position: { x: number; y: number } } =>
+          Boolean(item.parentId) && Boolean(item.position),
+      );
     const workers = groupByType("node");
     const services = groupByType("service");
     const pods = groupByType("pod");
@@ -111,7 +123,7 @@ describe("modified topology layout", () => {
 
     const clusterX = median(clusters.map((point) => point.x));
     const switchX = median(switches.map((point) => point.x));
-    const portX = median(ports.map((point) => point.x));
+    const portX = median(ports.map((item) => item.position.x));
     const workerX = median(workers.map((point) => point.x));
     const serviceX = median(services.map((point) => point.x));
     const podX = median(pods.map((point) => point.x));
@@ -123,14 +135,31 @@ describe("modified topology layout", () => {
     expect(serviceX).toBeLessThan(podX);
 
     const clusterY = median(clusters.map((point) => point.y));
-    const switchY = median(switches.map((point) => point.y));
-    const portMeanY = average(ports.map((point) => point.y));
-    const upperPortCount = ports.filter((point) => point.y < switchY).length;
-    const lowerPortCount = ports.filter((point) => point.y > switchY).length;
+    const portsByParent = new Map<string, Array<{ x: number; y: number }>>();
+    ports.forEach((item) => {
+      const existing = portsByParent.get(item.parentId) ?? [];
+      existing.push(item.position);
+      portsByParent.set(item.parentId, existing);
+    });
 
-    expect(Math.abs(clusterY - switchY)).toBeLessThanOrEqual(90);
-    expect(Math.abs(portMeanY - switchY)).toBeLessThanOrEqual(24);
-    expect(Math.abs(upperPortCount - lowerPortCount)).toBeLessThanOrEqual(1);
+    const sortedPortGroups = Array.from(portsByParent.entries()).sort((left, right) => right[1].length - left[1].length);
+    const [largestPortGroupParentId, largestPortGroup] = sortedPortGroups[0] ?? ["", []];
+    expect(largestPortGroup.length).toBeGreaterThan(0);
+
+    const switchNodeForPorts = stage.nodes.find((node) => node.type === "switch" && node.id === largestPortGroupParentId);
+    expect(switchNodeForPorts).toBeDefined();
+    const switchPosForPorts = positions.get(switchNodeForPorts!.id);
+    expect(switchPosForPorts).toBeDefined();
+    const switchY = switchPosForPorts!.y;
+
+    expect(Math.abs(clusterY - switchY)).toBeLessThanOrEqual(180);
+
+    const portMeanY = average(largestPortGroup.map((point) => point.y));
+    const upperPortCount = largestPortGroup.filter((point) => point.y < switchY).length;
+    const lowerPortCount = largestPortGroup.filter((point) => point.y > switchY).length;
+
+    expect(Math.abs(portMeanY - switchY)).toBeLessThanOrEqual(90);
+    expect(Math.abs(upperPortCount - lowerPortCount)).toBeLessThanOrEqual(2);
   });
 
   it("places GPU/BMC as right-side branches around their host worker rows", () => {

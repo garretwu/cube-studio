@@ -59,11 +59,8 @@ function TopologyObjectPage() {
   }, [detail.focalNode?.id]);
 
   const navigateToObject = (nextNodeId: string) => {
-    const inModified = location.pathname.startsWith("/topology-modified/");
     navigate(
-      inModified
-        ? buildTopologyObjectPath(nextNodeId, mode).replace("/topology/object/", "/topology-modified/object/")
-        : buildTopologyObjectPath(nextNodeId, mode),
+      buildTopologyObjectPath(nextNodeId, mode),
     );
   };
 
@@ -77,15 +74,9 @@ function TopologyObjectPage() {
               <AppButton
                 size="sm"
                 variant="secondary"
-                onClick={() =>
-                  navigate(
-                    location.pathname.startsWith("/topology-modified/")
-                      ? "/topology-modified"
-                      : "/topology",
-                  )
-                }
+                onClick={() => navigate("/topology")}
               >
-                {location.pathname.startsWith("/topology-modified/") ? "返回改造拓扑" : "返回全局拓扑"}
+                返回拓扑
               </AppButton>
               {detail.focalNode ? (
                 <StatusChip tone={getStatusTone(detail.focalNode.status)}>

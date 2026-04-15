@@ -32,12 +32,6 @@ const rootPageChrome: Record<
     contentSpacing: "compact",
     contentMode: "workspace",
   },
-  "/topology-modified": {
-    title: "拓扑（改造）",
-    subtitle: "对比改造版拓扑中的路由与布局变化。",
-    contentSpacing: "compact",
-    contentMode: "workspace",
-  },
   "/alerts": {
     title: "告警",
     subtitle: "跟踪进行中事件的告警信号、级别与责任归属。",
@@ -96,9 +90,6 @@ function resolvePageChrome(pathname: string): {
   contentSpacing?: "default" | "compact";
   contentMode?: "default" | "workspace";
 } {
-  if (pathname.startsWith("/topology-modified/")) {
-    return rootPageChrome["/topology-modified"];
-  }
   const rootChrome = rootPageChrome[pathname];
   if (rootChrome) {
     return rootChrome;
@@ -172,6 +163,7 @@ function AppRoutes() {
         element={<KnowledgeDetailPage />}
       />
       <Route path="/topology/object/:nodeId/*" element={<TopologyObjectPage />} />
+      <Route path="/topology-modified" element={<Navigate to="/topology" replace />} />
       <Route path="/topology-modified/object/:nodeId/*" element={<TopologyObjectPage />} />
       <Route
         path="/alerts-modified"
