@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 
 import { TOPOLOGY_CANVAS_METRICS } from "./canvasConfig";
 import {
+  deriveModifiedEdgeBundles,
   deriveModifiedEdgeRouting,
   deriveModifiedSmoothStepPathOptions,
   getModifiedHandlePosition,
@@ -125,5 +126,133 @@ describe("modified edge routing", () => {
         relationType: "depends_on",
       }),
     ).toEqual({ borderRadius: 26, offset: 14 });
+  });
+
+  it("marks high-density same-target edges as bundled", () => {
+    const targetNode = createNode("target", 620, 260);
+    const nodes = [
+      createNode("s1", 180, 140),
+      createNode("s2", 180, 190),
+      createNode("s3", 180, 240),
+      createNode("s4", 180, 290),
+      targetNode,
+    ];
+
+    const bundleMeta = deriveModifiedEdgeBundles({
+      edges: ["s1", "s2", "s3", "s4"].map((sourceId, index) => ({
+        edgeId: `e${index + 1}`,
+        sourceId,
+        targetId: targetNode.id,
+        sourceHandle: MODIFIED_EDGE_HANDLE_IDS.source.right,
+        targetHandle: MODIFIED_EDGE_HANDLE_IDS.target.left,
+      })),
+      nodeLookup: new Map(nodes.map((node) => [node.id, node])),
+      metrics,
+    });
+
+    expect(bundleMeta.size).toBe(4);
+    expect(bundleMeta.get("e1")?.bundleSize).toBe(4);
+    expect(bundleMeta.get("e1")?.axis).toBe("horizontal");
+    expect(bundleMeta.get("e1")?.mergeRatio).toBeCloseTo(0.64);
+  });
+
+  it("does not enable bundling when edge count is below threshold", () => {
+    const targetNode = createNode("target", 620, 260);
+    const nodes = [
+      createNode("s1", 180, 140),
+      createNode("s2", 180, 190),
+      createNode("s3", 180, 240),
+      targetNode,
+    ];
+
+    const bundleMeta = deriveModifiedEdgeBundles({
+      edges: ["s1", "s2", "s3"].map((sourceId, index) => ({
+        edgeId: `e${index + 1}`,
+        sourceId,
+        targetId: targetNode.id,
+        sourceHandle: MODIFIED_EDGE_HANDLE_IDS.source.right,
+        targetHandle: MODIFIED_EDGE_HANDLE_IDS.target.left,
+      })),
+      nodeLookup: new Map(nodes.map((node) => [node.id, node])),
+      metrics,
+    });
+
+    expect(bundleMeta.size).toBe(0);
+  });
+
+  it("does not enable bundling when orthogonal spread is too wide", () => {
+    const targetNode = createNode("target", 620, 260);
+    const nodes = [
+      createNode("s1", 180, 60),
+      createNode("s2", 180, 240),
+      createNode("s3", 180, 460),
+      createNode("s4", 180, 720),
+      targetNode,
+    ];
+
+    const bundleMeta = deriveModifiedEdgeBundles({
+      edges: ["s1", "s2", "s3", "s4"].map((sourceId, index) => ({
+        edgeId: `e${index + 1}`,
+        sourceId,
+        targetId: targetNode.id,
+        sourceHandle: MODIFIED_EDGE_HANDLE_IDS.source.right,
+        targetHandle: MODIFIED_EDGE_HANDLE_IDS.target.left,
+      })),
+      nodeLookup: new Map(nodes.map((node) => [node.id, node])),
+      metrics,
+    });
+
+    expect(bundleMeta.size).toBe(0);
+  });
+
+  it("assigns stable bundle index ordering by orthogonal axis and source position", () => {
+    const targetNode = createNode("target", 620, 260);
+    const nodes = [
+      createNode("sA", 170, 200),
+      createNode("sB", 200, 200),
+      createNode("sC", 180, 240),
+      createNode("sD", 190, 280),
+      targetNode,
+    ];
+
+    const bundleMeta = deriveModifiedEdgeBundles({
+      edges: [
+        {
+          edgeId: "edge-b",
+          sourceId: "sB",
+          targetId: targetNode.id,
+          sourceHandle: MODIFIED_EDGE_HANDLE_IDS.source.right,
+          targetHandle: MODIFIED_EDGE_HANDLE_IDS.target.left,
+        },
+        {
+          edgeId: "edge-a",
+          sourceId: "sA",
+          targetId: targetNode.id,
+          sourceHandle: MODIFIED_EDGE_HANDLE_IDS.source.right,
+          targetHandle: MODIFIED_EDGE_HANDLE_IDS.target.left,
+        },
+        {
+          edgeId: "edge-c",
+          sourceId: "sC",
+          targetId: targetNode.id,
+          sourceHandle: MODIFIED_EDGE_HANDLE_IDS.source.right,
+          targetHandle: MODIFIED_EDGE_HANDLE_IDS.target.left,
+        },
+        {
+          edgeId: "edge-d",
+          sourceId: "sD",
+          targetId: targetNode.id,
+          sourceHandle: MODIFIED_EDGE_HANDLE_IDS.source.right,
+          targetHandle: MODIFIED_EDGE_HANDLE_IDS.target.left,
+        },
+      ],
+      nodeLookup: new Map(nodes.map((node) => [node.id, node])),
+      metrics,
+    });
+
+    expect(bundleMeta.get("edge-a")?.bundleIndex).toBe(0);
+    expect(bundleMeta.get("edge-b")?.bundleIndex).toBe(1);
+    expect(bundleMeta.get("edge-c")?.bundleIndex).toBe(2);
+    expect(bundleMeta.get("edge-d")?.bundleIndex).toBe(3);
   });
 });

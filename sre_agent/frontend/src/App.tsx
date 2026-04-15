@@ -96,6 +96,9 @@ function resolvePageChrome(pathname: string): {
   contentSpacing?: "default" | "compact";
   contentMode?: "default" | "workspace";
 } {
+  if (pathname.startsWith("/topology-modified/")) {
+    return rootPageChrome["/topology-modified"];
+  }
   const rootChrome = rootPageChrome[pathname];
   if (rootChrome) {
     return rootChrome;
@@ -169,6 +172,7 @@ function AppRoutes() {
         element={<KnowledgeDetailPage />}
       />
       <Route path="/topology/object/:nodeId/*" element={<TopologyObjectPage />} />
+      <Route path="/topology-modified/object/:nodeId/*" element={<TopologyObjectPage />} />
       <Route
         path="/alerts-modified"
         element={<Navigate to="/alerts" replace />}

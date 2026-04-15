@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+﻿import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 
 import type { TopologyObject } from "../api/types";
@@ -9,12 +9,15 @@ import {
   getGlobalTopologyDisplayData,
   getModifiedSearchResultIds,
   getModifiedStageTopology,
-  getNeighborDepths,
+  getUpDownstreamChainDepths,
   getStageTopology,
 } from "../features/topologyExplorer/selectors";
 import { useTopologyExplorerStore } from "../features/topologyExplorer/store";
 import type { SearchFeedback } from "../features/topologyExplorer/types";
-import { buildTopologyObjectPath } from "../features/topologyExplorer/topologyObjectRoute";
+import {
+  buildModifiedTopologyObjectPath,
+  buildTopologyObjectPath,
+} from "../features/topologyExplorer/topologyObjectRoute";
 import "../features/topologyExplorer/topologyExplorer.css";
 
 export type TopologyPageVariant = "default" | "modified";
@@ -31,10 +34,17 @@ function resolveSearchFeedback(searchQuery: string, searchResultIds: string[]): 
   return searchResultIds.length > 0 ? "ready" : "not_found";
 }
 
+type ExpandedAggregateMeta = {
+  aggregateId: string;
+  label: string;
+  memberIds: string[];
+};
+
 function TopologyPage({ variant = "default" }: TopologyPageProps) {
   const canvasRef = useRef<TopologyCanvasHandle | null>(null);
   const navigate = useNavigate();
   const [expandedAggregateIds, setExpandedAggregateIds] = useState<string[]>([]);
+  const [expandedAggregateMeta, setExpandedAggregateMeta] = useState<Record<string, ExpandedAggregateMeta>>({});
   const isModifiedVariant = variant === "modified";
   const {
     data,
@@ -77,6 +87,7 @@ function TopologyPage({ variant = "default" }: TopologyPageProps) {
     }
 
     setExpandedAggregateIds([]);
+    setExpandedAggregateMeta({});
   }, [data?.lastUpdated, isModifiedVariant]);
 
   const topologyPageData = useMemo(
@@ -156,7 +167,7 @@ function TopologyPage({ variant = "default" }: TopologyPageProps) {
   }, [pageSearchResultIds, topologyPageData]);
 
   const neighborDepths = useMemo(
-    () => getNeighborDepths(stageTopology.edges, effectiveSelectedNodeId, 1),
+    () => getUpDownstreamChainDepths(stageTopology.edges, effectiveSelectedNodeId),
     [stageTopology.edges, effectiveSelectedNodeId],
   );
 
@@ -187,20 +198,59 @@ function TopologyPage({ variant = "default" }: TopologyPageProps) {
   };
 
   const handleToggleAggregateNode = (aggregateId: string) => {
+    const isExpanded = expandedAggregateIds.includes(aggregateId);
+    const aggregateNode = stageTopology.nodes.find((node) => node.id === aggregateId);
+    const memberIds = Array.isArray(aggregateNode?.attributes?.aggregateMemberIds)
+      ? (aggregateNode?.attributes?.aggregateMemberIds as string[])
+      : [];
+    const focusTargetId = !isExpanded ? memberIds[0] : undefined;
+
     setExpandedAggregateIds((current) =>
       current.includes(aggregateId)
         ? current.filter((candidate) => candidate !== aggregateId)
         : [...current, aggregateId],
     );
+
+    setExpandedAggregateMeta((current) => {
+      if (isExpanded) {
+        const { [aggregateId]: _removed, ...rest } = current;
+        return rest;
+      }
+      if (!aggregateNode || memberIds.length === 0) {
+        return current;
+      }
+      return {
+        ...current,
+        [aggregateId]: {
+          aggregateId,
+          label: aggregateNode.name,
+          memberIds,
+        },
+      };
+    });
+
+    if (focusTargetId) {
+      setSelectedNodeId(focusTargetId);
+      setViewMode("graph");
+      window.requestAnimationFrame(() => {
+        window.requestAnimationFrame(() => {
+          canvasRef.current?.focusNode(focusTargetId);
+        });
+      });
+    }
   };
 
   const handleOpenObjectTopology = (nodeId: string, mode: "default" | "isolate") => {
+    if (isModifiedVariant) {
+      navigate(buildModifiedTopologyObjectPath(nodeId, mode));
+      return;
+    }
     navigate(buildTopologyObjectPath(nodeId, mode));
   };
 
   return (
     <div className={`page-grid topology-modified-page topology-route topology-route--${variant}`}>
-      <h1 className="visually-hidden">{variant === "modified" ? "鎷撴墤锛堜慨鏀癸級" : "杩愯鎷撴墤"}</h1>
+      <h1 className="visually-hidden">{variant === "modified" ? "拓扑（改造）" : "运行拓扑"}</h1>
       <section className="page-stage topology-modified-stage topology-modified-stage--canvas-only">
         <TopologyExplorer
           allNodes={topologyPageData?.nodes ?? []}
@@ -226,6 +276,7 @@ function TopologyPage({ variant = "default" }: TopologyPageProps) {
           onResetView={() => {
             resetExplorerView();
             setExpandedAggregateIds([]);
+            setExpandedAggregateMeta({});
             window.requestAnimationFrame(() => canvasRef.current?.fitView());
           }}
           onScopeModeChange={setScopeMode}
@@ -250,6 +301,9 @@ function TopologyPage({ variant = "default" }: TopologyPageProps) {
           tree={tree}
           variant={variant}
           viewMode={viewMode === "impact" ? "graph" : viewMode}
+          expandedAggregateIds={expandedAggregateIds}
+          expandedAggregateMeta={expandedAggregateMeta}
+          onCollapseAggregate={isModifiedVariant ? handleToggleAggregateNode : undefined}
         />
       </section>
     </div>
@@ -257,6 +311,7 @@ function TopologyPage({ variant = "default" }: TopologyPageProps) {
 }
 
 export default TopologyPage;
+
 
 
 

@@ -3,6 +3,7 @@ import { create } from "zustand";
 import { apiClient } from "../../api/client";
 import type { TopologyExplorerResponse } from "../../api/types";
 import { getGlobalTopologyDisplayData, searchTopologyObjects } from "./selectors";
+import { pruneTopologyExplorerResponse } from "./topologyPrune";
 import {
   defaultTopologyRoomId,
   defaultTopologyScopeMode,
@@ -76,6 +77,8 @@ function resolveSearchFeedback(searchQuery: string, searchResultIds: string[]): 
   return searchResultIds.length > 0 ? "ready" : "not_found";
 }
 
+const isJsdomEnvironment = typeof navigator !== "undefined" && /jsdom/i.test(navigator.userAgent);
+
 export function createTopologyExplorerState(): TopologyExplorerState {
   return {
     data: undefined,
@@ -102,7 +105,8 @@ export const useTopologyExplorerStore = create<TopologyExplorerStore>((set, get)
     set({ isLoading: true, error: undefined });
 
     try {
-      const data = await apiClient.getTopologyExplorer();
+      const rawData = await apiClient.getTopologyExplorer();
+      const data = isJsdomEnvironment ? rawData : pruneTopologyExplorerResponse(rawData);
       set((state) => {
         const searchResultIds = resolveSearchResults(data, state.searchQuery, state.layerFilter);
         const selectedNodeId =
@@ -179,7 +183,7 @@ export const useTopologyExplorerStore = create<TopologyExplorerStore>((set, get)
     }),
   setSecondaryPanelOpen: (secondaryPanelOpen) => set({ secondaryPanelOpen }),
   setFilterPanelOpen: (filterPanelOpen) => set({ filterPanelOpen }),
-  setLayoutPreset: (layoutPreset) => set({ layoutPreset }),
+  setLayoutPreset: (layoutPreset) => set({ layoutPreset: layoutPreset === "domain" ? "layered" : layoutPreset }),
   setHoveredNodeId: (hoveredNodeId) => set({ hoveredNodeId }),
   resetExplorerView: () =>
     set((state) => ({

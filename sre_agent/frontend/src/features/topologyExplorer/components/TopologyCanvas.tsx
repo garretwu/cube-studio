@@ -1,11 +1,15 @@
 import {
   Background,
   BackgroundVariant,
+  BaseEdge,
   Handle,
   MarkerType,
   Position,
   ReactFlow,
+  getBezierPath,
   type Edge,
+  type EdgeProps,
+  type EdgeTypes,
   type Node,
   type NodeProps,
   type ReactFlowInstance,
@@ -14,6 +18,7 @@ import "@xyflow/react/dist/style.css";
 import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
 
 import type { TopologyObject, TopologyRelation } from "../../../api/types";
+import { AppIcon } from "../../../components/ui";
 import {
   formatRelationType,
   formatTopologyStatus,
@@ -30,9 +35,11 @@ import {
 } from "../canvasConfig";
 import { computeModifiedHybridLayout } from "../modifiedLayout";
 import {
+  deriveModifiedEdgeBundles,
   deriveModifiedEdgeRouting,
   getModifiedHandlePosition,
   MODIFIED_EDGE_HANDLE_IDS,
+  type ModifiedEdgeBundleMeta,
 } from "../modifiedEdgeRouting";
 import type { ExplorerLayoutPreset } from "../types";
 
@@ -41,6 +48,10 @@ type TopologyCanvasProps = {
   edges: TopologyRelation[];
   selectedNodeId?: string;
   hoveredNodeId?: string;
+  highlightedTypes?: TopologyObject["type"][];
+  expandedAggregateIds?: string[];
+  expandedAggregateMeta?: Record<string, { aggregateId: string; label: string; memberIds: string[] }>;
+  onCollapseAggregate?: (aggregateId: string) => void;
   forceEdgeLabels?: boolean;
   matchedNodeIds: string[];
   neighborDepths: Map<string, number>;
@@ -77,6 +88,142 @@ type ExplorerFlowNodeData = {
   variant: TopologyCanvasVariant;
   onSelectNode: (nodeId: string) => void;
 };
+
+type ExplorerFlowEdgeData = {
+  bundleMeta?: ModifiedEdgeBundleMeta;
+};
+
+type GroupBoxData = {
+  aggregateId: string;
+  label: string;
+  count: number;
+  onCollapse?: (aggregateId: string) => void;
+};
+
+type CanvasNodeData = ExplorerFlowNodeData | GroupBoxData;
+
+function clamp(value: number, min: number, max: number) {
+  return Math.max(min, Math.min(max, value));
+}
+
+function buildModifiedBundledPath({
+  sourceX,
+  sourceY,
+  targetX,
+  targetY,
+  bundleMeta,
+}: {
+  sourceX: number;
+  sourceY: number;
+  targetX: number;
+  targetY: number;
+  bundleMeta: ModifiedEdgeBundleMeta;
+}) {
+  const centerIndex = (bundleMeta.bundleSize - 1) / 2;
+  const laneOffset = (bundleMeta.bundleIndex - centerIndex) * bundleMeta.laneGap;
+
+  if (bundleMeta.axis === "horizontal") {
+    const rawMergeX = sourceX + (targetX - sourceX) * bundleMeta.mergeRatio;
+    const minMergeX = Math.min(sourceX, targetX) + 6;
+    const maxMergeX = Math.max(sourceX, targetX) - 6;
+    const mergeX = clamp(rawMergeX, minMergeX, maxMergeX);
+    const mergeY = targetY + laneOffset;
+    const firstDx = mergeX - sourceX;
+    const secondDx = targetX - mergeX;
+
+    return {
+      path: [
+        `M ${sourceX},${sourceY}`,
+        `C ${sourceX + firstDx * 0.38},${sourceY} ${mergeX - firstDx * 0.24},${mergeY} ${mergeX},${mergeY}`,
+        `C ${mergeX + secondDx * 0.2},${mergeY} ${targetX - secondDx * 0.42},${targetY} ${targetX},${targetY}`,
+      ].join(" "),
+      labelX: (mergeX + targetX) / 2,
+      labelY: (mergeY + targetY) / 2,
+    };
+  }
+
+  const rawMergeY = sourceY + (targetY - sourceY) * bundleMeta.mergeRatio;
+  const minMergeY = Math.min(sourceY, targetY) + 6;
+  const maxMergeY = Math.max(sourceY, targetY) - 6;
+  const mergeY = clamp(rawMergeY, minMergeY, maxMergeY);
+  const mergeX = targetX + laneOffset;
+  const firstDy = mergeY - sourceY;
+  const secondDy = targetY - mergeY;
+
+  return {
+    path: [
+      `M ${sourceX},${sourceY}`,
+      `C ${sourceX},${sourceY + firstDy * 0.38} ${mergeX},${mergeY - firstDy * 0.24} ${mergeX},${mergeY}`,
+      `C ${mergeX},${mergeY + secondDy * 0.2} ${targetX},${targetY - secondDy * 0.42} ${targetX},${targetY}`,
+    ].join(" "),
+    labelX: (mergeX + targetX) / 2,
+    labelY: (mergeY + targetY) / 2,
+  };
+}
+
+function ModifiedBundledEdge({
+  sourceX,
+  sourceY,
+  targetX,
+  targetY,
+  markerEnd,
+  style,
+  interactionWidth,
+  label,
+  labelStyle,
+  labelShowBg,
+  labelBgStyle,
+  labelBgBorderRadius,
+  labelBgPadding,
+  data,
+}: EdgeProps<Edge<ExplorerFlowEdgeData>>) {
+  const bundleMeta = data?.bundleMeta;
+
+  if (!bundleMeta) {
+    const [edgePath, labelX, labelY] = getBezierPath({ sourceX, sourceY, targetX, targetY });
+    return (
+      <BaseEdge
+        interactionWidth={interactionWidth}
+        label={label}
+        labelBgBorderRadius={labelBgBorderRadius}
+        labelBgPadding={labelBgPadding}
+        labelBgStyle={labelBgStyle}
+        labelShowBg={labelShowBg}
+        labelStyle={labelStyle}
+        labelX={labelX}
+        labelY={labelY}
+        markerEnd={markerEnd}
+        path={edgePath}
+        style={style}
+      />
+    );
+  }
+
+  const { path, labelX, labelY } = buildModifiedBundledPath({
+    sourceX,
+    sourceY,
+    targetX,
+    targetY,
+    bundleMeta,
+  });
+
+  return (
+    <BaseEdge
+      interactionWidth={interactionWidth}
+      label={label}
+      labelBgBorderRadius={labelBgBorderRadius}
+      labelBgPadding={labelBgPadding}
+      labelBgStyle={labelBgStyle}
+      labelShowBg={labelShowBg}
+      labelStyle={labelStyle}
+      labelX={labelX}
+      labelY={labelY}
+      markerEnd={markerEnd}
+      path={path}
+      style={style}
+    />
+  );
+}
 
 const HANDLE_STYLE = {
   width: 10,
@@ -121,6 +268,24 @@ function getNodeSummary(node: TopologyObject) {
   }
 
   return node.summary;
+}
+
+export function shouldShowModifiedEdgeLabel({
+  selectedNodeId,
+  activeEdgeId,
+  edgeId,
+  sourceId,
+  targetId,
+}: {
+  selectedNodeId?: string;
+  activeEdgeId?: string;
+  edgeId: string;
+  sourceId: string;
+  targetId: string;
+}) {
+  const isConnectedToSelected = Boolean(selectedNodeId) && (sourceId === selectedNodeId || targetId === selectedNodeId);
+  const isActiveEdge = activeEdgeId === edgeId;
+  return Boolean((selectedNodeId && isConnectedToSelected) || (activeEdgeId && isActiveEdge));
 }
 
 function getBasePositions(
@@ -251,7 +416,7 @@ function ExplorerNode({ data }: NodeProps<Node<ExplorerFlowNodeData>>) {
             {isAggregate ? <span className="topology-flow-node__count-badge">{aggregateCount}</span> : null}
           </span>
           <span className="topology-flow-node__title">{node.name}</span>
-          {isAggregate ? <span className="topology-flow-node__meta">{aggregateCount} {"\u4e2a\u5bf9\u8c61"}</span> : null}
+          {isAggregate ? <span className="topology-flow-node__meta" aria-hidden="true" /> : null}
         </button>
         {Object.values(MODIFIED_EDGE_HANDLE_IDS.source).map((handleId) => {
           const position = getModifiedHandlePosition(handleId);
@@ -302,6 +467,31 @@ function ExplorerNode({ data }: NodeProps<Node<ExplorerFlowNodeData>>) {
 
 const nodeTypes = {
   assetNode: ExplorerNode,
+  groupBox: function GroupBoxNode({ data }: NodeProps<Node<GroupBoxData>>) {
+    const { aggregateId, label, count, onCollapse } = data;
+    const handleCollapse = () => onCollapse?.(aggregateId);
+    return (
+      <button
+        className="topology-aggregate-box"
+        onClick={handleCollapse}
+        type="button"
+      >
+        <div className="topology-aggregate-box__header">
+          <div className="topology-aggregate-box__title">
+            <span className="topology-aggregate-box__label">{label}</span>
+            <span className="topology-aggregate-box__count">{count}</span>
+          </div>
+          <span className="topology-aggregate-box__collapse" aria-hidden="true">
+            <AppIcon name="frameCollapse" size={14} />
+          </span>
+        </div>
+      </button>
+    );
+  },
+};
+
+const edgeTypes: EdgeTypes = {
+  modifiedBundled: ModifiedBundledEdge,
 };
 
 const isJsdomEnvironment = typeof navigator !== "undefined" && /jsdom/i.test(navigator.userAgent);
@@ -313,6 +503,10 @@ const TopologyCanvas = forwardRef<TopologyCanvasHandle, TopologyCanvasProps>(fun
     edges,
     selectedNodeId,
     hoveredNodeId,
+    highlightedTypes,
+    expandedAggregateIds,
+    expandedAggregateMeta,
+    onCollapseAggregate,
     forceEdgeLabels = false,
     matchedNodeIds,
     neighborDepths,
@@ -326,8 +520,9 @@ const TopologyCanvas = forwardRef<TopologyCanvasHandle, TopologyCanvasProps>(fun
   },
   ref,
 ) {
-  const [instance, setInstance] = useState<ReactFlowInstance<Node<ExplorerFlowNodeData>, Edge> | null>(null);
+  const [instance, setInstance] = useState<ReactFlowInstance<Node<CanvasNodeData>, Edge<ExplorerFlowEdgeData>> | null>(null);
   const [tooltip, setTooltip] = useState<{ x: number; y: number; title: string; summary: string } | null>(null);
+  const [activeEdgeId, setActiveEdgeId] = useState<string | undefined>(undefined);
   const canvasHostRef = useRef<HTMLDivElement | null>(null);
   const positionsRef = useRef<Record<string, { x: number; y: number }>>({});
   const flowNodesRef = useRef<Node<ExplorerFlowNodeData>[]>([]);
@@ -338,6 +533,9 @@ const TopologyCanvas = forwardRef<TopologyCanvasHandle, TopologyCanvasProps>(fun
   const nodeKeyRef = useRef(nodeKey);
   const focusNodeId = selectedNodeId ?? hoveredNodeId;
   const metrics = TOPOLOGY_CANVAS_METRICS[variant];
+  const highlightSet = useMemo(() => new Set(highlightedTypes ?? []), [highlightedTypes]);
+  const hasTypeHighlight = (highlightedTypes?.length ?? 0) > 0;
+  const nodeTypeById = useMemo(() => new Map(nodes.map((node) => [node.id, node.type] as const)), [nodes]);
 
   if (layoutRef.current !== layoutPreset || nodeKeyRef.current !== nodeKey || variantRef.current !== variant) {
     positionsRef.current = {};
@@ -358,7 +556,10 @@ const TopologyCanvas = forwardRef<TopologyCanvasHandle, TopologyCanvasProps>(fun
     return nodes.map((node) => {
       const position = positionsRef.current[node.id] ?? layoutPositions.get(node.id) ?? { x: 0, y: 0 };
       const neighborDepth = neighborDepths.get(node.id) ?? -1;
-      const dimmed = Boolean(selectedNodeId) && node.id !== selectedNodeId && neighborDepth < 1;
+      const inSelectionChain = neighborDepths.has(node.id);
+      const dimmedBySelection = Boolean(selectedNodeId) && node.id !== selectedNodeId && !inSelectionChain;
+      const dimmedByType = hasTypeHighlight && !highlightSet.has(node.type);
+      const dimmed = dimmedBySelection || dimmedByType;
 
       return {
         id: node.id,
@@ -379,11 +580,115 @@ const TopologyCanvas = forwardRef<TopologyCanvasHandle, TopologyCanvasProps>(fun
         },
       };
     });
-  }, [layoutPositions, matchedNodeIds, metrics, neighborDepths, nodes, onSelectNode, selectedNodeId, variant]);
+  }, [
+    hasTypeHighlight,
+    highlightSet,
+    layoutPositions,
+    matchedNodeIds,
+    metrics,
+    neighborDepths,
+    nodes,
+    onSelectNode,
+    selectedNodeId,
+    variant,
+  ]);
 
   const flowNodeLookup = useMemo(() => new Map(flowNodes.map((node) => [node.id, node])), [flowNodes]);
 
-  const flowEdges = useMemo<Edge[]>(() => {
+  const groupBoxNodes = useMemo<Node<GroupBoxData>[]>(() => {
+    const aggregateIds = expandedAggregateIds ?? [];
+    const meta = expandedAggregateMeta ?? {};
+    if (aggregateIds.length === 0) {
+      return [];
+    }
+
+    const padding = 18;
+    const headerHeight = 32;
+
+    const result: Array<Node<GroupBoxData>> = [];
+
+    aggregateIds.forEach((aggregateId) => {
+      const entry = meta[aggregateId];
+      if (!entry) {
+        return;
+      }
+
+      const memberNodes = entry.memberIds
+        .map((memberId) => flowNodeLookup.get(memberId))
+        .filter((node): node is Node<ExplorerFlowNodeData> => Boolean(node));
+      if (memberNodes.length === 0) {
+        return;
+      }
+
+      const minX = Math.min(...memberNodes.map((node) => node.position.x));
+      const minY = Math.min(...memberNodes.map((node) => node.position.y));
+      const maxX = Math.max(...memberNodes.map((node) => node.position.x + metrics.nodeWidth));
+      const maxY = Math.max(...memberNodes.map((node) => node.position.y + metrics.nodeHeight));
+
+      const x = Math.round(minX - padding);
+      const y = Math.round(minY - padding - headerHeight);
+      const width = Math.round(Math.max(240, maxX - minX + padding * 2));
+      const height = Math.round(Math.max(140, maxY - minY + padding * 2 + headerHeight));
+
+      result.push({
+        id: `groupbox:${entry.aggregateId}`,
+        type: "groupBox",
+        position: { x, y },
+        draggable: false,
+        selectable: false,
+        focusable: false,
+        connectable: false,
+        data: {
+          aggregateId: entry.aggregateId,
+          label: entry.label,
+          count: entry.memberIds.length,
+          onCollapse: onCollapseAggregate,
+        },
+        style: {
+          width,
+          height,
+          zIndex: 0,
+        },
+      });
+    });
+
+    return result;
+  }, [expandedAggregateIds, expandedAggregateMeta, flowNodeLookup, metrics.nodeHeight, metrics.nodeWidth, onCollapseAggregate]);
+
+  const flowEdges = useMemo<Edge<ExplorerFlowEdgeData>[]>(() => {
+    const routingByEdgeId = new Map<string, ReturnType<typeof deriveModifiedEdgeRouting>>();
+
+    if (variant === "modified") {
+      edges.forEach((edge) => {
+        routingByEdgeId.set(
+          edge.id,
+          deriveModifiedEdgeRouting({
+            sourceNode: flowNodeLookup.get(edge.source),
+            targetNode: flowNodeLookup.get(edge.target),
+            metrics,
+          }),
+        );
+      });
+    }
+
+    const bundleMetadataByEdgeId =
+      variant === "modified"
+        ? deriveModifiedEdgeBundles({
+            edges: edges.map((edge) => {
+              const routing = routingByEdgeId.get(edge.id);
+              return {
+                edgeId: edge.id,
+                sourceId: edge.source,
+                targetId: edge.target,
+                sourceHandle: routing?.sourceHandle ?? MODIFIED_EDGE_HANDLE_IDS.source.right,
+                targetHandle: routing?.targetHandle ?? MODIFIED_EDGE_HANDLE_IDS.target.left,
+              };
+            }),
+            nodeLookup: flowNodeLookup,
+            metrics,
+          })
+        : new Map<string, ModifiedEdgeBundleMeta>();
+
     return edges.map((edge) => {
       const isConnectedToFocus = Boolean(focusNodeId) && (edge.source === focusNodeId || edge.target === focusNodeId);
       const isContextEdge =
@@ -391,24 +696,41 @@ const TopologyCanvas = forwardRef<TopologyCanvasHandle, TopologyCanvasProps>(fun
         edge.source === focusNodeId ||
         edge.target === focusNodeId ||
         (neighborDepths.has(edge.source) && neighborDepths.has(edge.target));
+      const sourceType = nodeTypeById.get(edge.source);
+      const targetType = nodeTypeById.get(edge.target);
+      const isTypeMatched =
+        !hasTypeHighlight ||
+        (Boolean(sourceType && highlightSet.has(sourceType)) && Boolean(targetType && highlightSet.has(targetType)));
       const stroke = getEdgeColor(edge, variant);
-      const shouldShowLabel = variant === "modified" ? true : forceEdgeLabels || isConnectedToFocus;
+      const shouldShowLabel =
+        variant === "modified"
+          ? shouldShowModifiedEdgeLabel({
+              selectedNodeId,
+              activeEdgeId,
+              edgeId: edge.id,
+              sourceId: edge.source,
+              targetId: edge.target,
+            })
+          : forceEdgeLabels || isConnectedToFocus;
       const routing =
         variant === "modified"
-          ? deriveModifiedEdgeRouting({
+          ? routingByEdgeId.get(edge.id) ??
+            deriveModifiedEdgeRouting({
               sourceNode: flowNodeLookup.get(edge.source),
               targetNode: flowNodeLookup.get(edge.target),
               metrics,
             })
           : undefined;
+      const bundleMeta = variant === "modified" ? bundleMetadataByEdgeId.get(edge.id) : undefined;
 
       return {
         id: edge.id,
         source: edge.source,
         target: edge.target,
-        type: routing?.edgeType ?? "default",
+        type: bundleMeta ? "modifiedBundled" : routing?.edgeType ?? "default",
         sourceHandle: routing?.sourceHandle,
         targetHandle: routing?.targetHandle,
+        data: bundleMeta ? { bundleMeta } : undefined,
         label: shouldShowLabel ? edge.label ?? formatRelationType(edge.relationType) : undefined,
         labelStyle: {
           fill: "#253247",
@@ -423,42 +745,63 @@ const TopologyCanvas = forwardRef<TopologyCanvasHandle, TopologyCanvasProps>(fun
           height: variant === "modified" ? 18 : 14,
         },
         animated: Boolean(edge.isCritical && isConnectedToFocus),
-        zIndex: isConnectedToFocus ? 8 : edge.isCritical ? 5 : 2,
+        zIndex: variant === "modified" ? 1 : isConnectedToFocus ? 8 : edge.isCritical ? 5 : 2,
         style: {
           stroke,
           strokeWidth:
             variant === "modified"
               ? isConnectedToFocus
-                ? 2.8
+                ? 1.6
                 : edge.isCritical
-                  ? 2.4
+                  ? 1.3
                   : edge.isAggregated
-                    ? 2.1
-                    : 1.9
+                    ? 1.1
+                    : 0.9
               : isConnectedToFocus
                 ? 2.4
                 : edge.isCritical
                   ? 1.9
                   : 1.4,
           opacity:
-            variant === "modified"
-              ? isConnectedToFocus
-                ? 0.98
+            hasTypeHighlight
+              ? isTypeMatched
+                ? variant === "modified"
+                  ? 0.86
+                  : 0.88
+                : variant === "modified"
+                  ? 0.14
+                  : 0.08
+              : variant === "modified"
+                ? isConnectedToFocus
+                  ? 0.98
+                  : isContextEdge
+                    ? edge.isCritical
+                      ? 0.88
+                      : edge.isAggregated
+                        ? 0.8
+                        : 0.72
+                    : 0.38
                 : isContextEdge
-                  ? edge.isCritical
-                    ? 0.88
-                    : edge.isAggregated
-                      ? 0.8
-                      : 0.72
-                  : 0.38
-              : isContextEdge
-                ? 0.88
-                : 0.2,
+                  ? 0.88
+                  : 0.2,
           strokeDasharray: undefined,
         },
       };
     });
-  }, [edges, flowNodeLookup, focusNodeId, forceEdgeLabels, metrics, neighborDepths, variant]);
+  }, [
+    activeEdgeId,
+    edges,
+    flowNodeLookup,
+    focusNodeId,
+    forceEdgeLabels,
+    hasTypeHighlight,
+    highlightSet,
+    metrics,
+    neighborDepths,
+    nodeTypeById,
+    selectedNodeId,
+    variant,
+  ]);
 
   flowNodesRef.current = flowNodes;
 
@@ -612,11 +955,12 @@ const TopologyCanvas = forwardRef<TopologyCanvasHandle, TopologyCanvasProps>(fun
       data-topology-canvas-variant={variant}
       ref={canvasHostRef}
     >
-      <ReactFlow
+      <ReactFlow<Node<CanvasNodeData>, Edge<ExplorerFlowEdgeData>>
         edges={flowEdges}
+        edgeTypes={edgeTypes}
         fitView
         minZoom={variant === "modified" ? 0.22 : 0.35}
-        nodes={flowNodes}
+        nodes={[...groupBoxNodes, ...flowNodes]}
         nodeTypes={nodeTypes}
         nodesDraggable={!isJsdomEnvironment}
         nodesFocusable={false}
@@ -632,12 +976,16 @@ const TopologyCanvas = forwardRef<TopologyCanvasHandle, TopologyCanvasProps>(fun
           positionsRef.current[node.id] = node.position;
         }}
         onNodeMouseEnter={(event, node) => {
+          if (node.type !== "assetNode") {
+            return;
+          }
           onHoverNode(node.id);
+          const data = node.data as ExplorerFlowNodeData;
           setTooltip({
             x: event.clientX,
             y: event.clientY,
-            title: node.data.node.name,
-            summary: getNodeSummary(node.data.node),
+            title: data.node.name,
+            summary: getNodeSummary(data.node),
           });
         }}
         onNodeMouseLeave={() => {
@@ -645,23 +993,36 @@ const TopologyCanvas = forwardRef<TopologyCanvasHandle, TopologyCanvasProps>(fun
           setTooltip(null);
         }}
         onNodeMouseMove={(event, node) => {
+          if (node.type !== "assetNode") {
+            return;
+          }
+          const data = node.data as ExplorerFlowNodeData;
           setTooltip({
             x: event.clientX,
             y: event.clientY,
-            title: node.data.node.name,
-            summary: getNodeSummary(node.data.node),
+            title: data.node.name,
+            summary: getNodeSummary(data.node),
           });
         }}
+        onEdgeClick={(_, edge) => {
+          setActiveEdgeId(edge.id);
+          onCanvasInteraction?.();
+        }}
         onNodeClick={(event, node) => {
+          if (node.type !== "assetNode") {
+            return;
+          }
           onSelectNode(node.id);
+          const data = node.data as ExplorerFlowNodeData;
           onOpenNodeActions?.({
-            node: node.data.node,
+            node: data.node,
             clientX: event.clientX,
             clientY: event.clientY,
           });
         }}
         onPaneClick={() => {
           onCanvasInteraction?.();
+          setActiveEdgeId(undefined);
           onHoverNode(undefined);
           setTooltip(null);
         }}
@@ -670,9 +1031,9 @@ const TopologyCanvas = forwardRef<TopologyCanvasHandle, TopologyCanvasProps>(fun
       >
         {shouldRenderBackground ? (
           <Background
-            color={variant === "modified" ? "rgba(196, 206, 220, 0.62)" : "rgba(177, 186, 198, 0.78)"}
+            color={variant === "modified" ? "rgba(148, 163, 184, 0.55)" : "rgba(177, 186, 198, 0.78)"}
             gap={variant === "modified" ? 26 : 24}
-            size={variant === "modified" ? 1.2 : 1.6}
+            size={variant === "modified" ? 1.4 : 1.6}
             variant={BackgroundVariant.Dots}
           />
         ) : null}
@@ -689,3 +1050,4 @@ const TopologyCanvas = forwardRef<TopologyCanvasHandle, TopologyCanvasProps>(fun
 });
 
 export default TopologyCanvas;
+

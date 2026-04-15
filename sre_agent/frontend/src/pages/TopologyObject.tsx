@@ -1,6 +1,6 @@
 import { Spin } from "antd";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useNavigate, useParams, useSearchParams } from "react-router-dom";
+import { useLocation, useNavigate, useParams, useSearchParams } from "react-router-dom";
 
 import { AppButton, StatusChip } from "../components/ui";
 import type { TopologyCanvasHandle } from "../features/topologyExplorer/components/TopologyCanvas";
@@ -22,6 +22,7 @@ function TopologyObjectPage() {
   const nodeTail = routeParams["*"];
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
+  const location = useLocation();
   const canvasRef = useRef<TopologyCanvasHandle | null>(null);
   const [zoomPercent, setZoomPercent] = useState(100);
   const [inspectorTab, setInspectorTab] = useState<InspectorTabKey>("overview");
@@ -58,7 +59,12 @@ function TopologyObjectPage() {
   }, [detail.focalNode?.id]);
 
   const navigateToObject = (nextNodeId: string) => {
-    navigate(buildTopologyObjectPath(nextNodeId, mode));
+    const inModified = location.pathname.startsWith("/topology-modified/");
+    navigate(
+      inModified
+        ? buildTopologyObjectPath(nextNodeId, mode).replace("/topology/object/", "/topology-modified/object/")
+        : buildTopologyObjectPath(nextNodeId, mode),
+    );
   };
 
   return (
@@ -68,8 +74,18 @@ function TopologyObjectPage() {
         <div className="topology-object-header">
           <div className="topology-object-header__copy">
             <div className="topology-object-header__actions">
-              <AppButton size="sm" variant="secondary" onClick={() => navigate("/topology")}>
-                返回全局拓扑
+              <AppButton
+                size="sm"
+                variant="secondary"
+                onClick={() =>
+                  navigate(
+                    location.pathname.startsWith("/topology-modified/")
+                      ? "/topology-modified"
+                      : "/topology",
+                  )
+                }
+              >
+                {location.pathname.startsWith("/topology-modified/") ? "返回改造拓扑" : "返回全局拓扑"}
               </AppButton>
               {detail.focalNode ? (
                 <StatusChip tone={getStatusTone(detail.focalNode.status)}>

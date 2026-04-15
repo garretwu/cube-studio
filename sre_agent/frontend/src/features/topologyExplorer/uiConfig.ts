@@ -40,15 +40,9 @@ export const topologyLegendTypeOrder = [
 export const topologyCanvasViewControls = [
   {
     id: "graph-layered",
-    label: "\u5173\u7cfb\u56fe\uff08\u5c42\u5e03\u5c40\uff09",
+    label: "\u5173\u7cfb\u56fe",
     viewMode: "graph",
     layoutPreset: "layered",
-  },
-  {
-    id: "graph-domain",
-    label: "\u5173\u7cfb\u56fe\uff08\u57df\u5e03\u5c40\uff09",
-    viewMode: "graph",
-    layoutPreset: "domain",
   },
   {
     id: "tree",

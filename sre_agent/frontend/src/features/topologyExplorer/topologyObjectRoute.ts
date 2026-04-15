@@ -15,6 +15,11 @@ export function buildTopologyObjectPath(nodeId: string, mode: TopologyObjectMode
   return `/topology/object/${encodedNodeId}${mode === "isolate" ? ISOLATE_QUERY : ""}`;
 }
 
+export function buildModifiedTopologyObjectPath(nodeId: string, mode: TopologyObjectMode) {
+  const encodedNodeId = encodeURIComponent(nodeId);
+  return `/topology-modified/object/${encodedNodeId}${mode === "isolate" ? ISOLATE_QUERY : ""}`;
+}
+
 export function resolveTopologyObjectNodeId(nodeIdParam?: string, splatParam?: string) {
   if (!nodeIdParam) {
     return undefined;

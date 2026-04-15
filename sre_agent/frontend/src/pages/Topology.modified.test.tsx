@@ -47,4 +47,32 @@ describe("TopologyPage modified variant", () => {
       expect(screen.queryByTestId("topology-node-popover")).not.toBeInTheDocument();
     });
   });
+
+  it("keeps modified labels hidden by default and preserves stable interactions", async () => {
+    renderModifiedTopologyPage();
+
+    const canvas = await screen.findByTestId("topology-canvas");
+
+    expect(canvas.querySelectorAll(".react-flow__edge-text").length).toBe(0);
+
+    const pane = canvas.querySelector(".react-flow__pane") as HTMLDivElement | null;
+    if (pane) {
+      fireEvent.click(pane);
+    }
+
+    expect(canvas.querySelectorAll(".react-flow__edge-text").length).toBe(0);
+
+    const aggregateMeta = Array.from(
+      canvas.querySelectorAll(".topology-flow-node--aggregate .topology-flow-node__meta"),
+    );
+    const aggregateButton = aggregateMeta[0]?.closest("button");
+    expect(aggregateButton).not.toBeNull();
+
+    fireEvent.click(aggregateButton!);
+
+    await waitFor(() => {
+      expect(screen.queryByTestId("topology-node-popover")).not.toBeInTheDocument();
+    });
+  });
 });
+

@@ -19,7 +19,7 @@ import {
   getStatusTone,
   getTopologyTypeIconAsset,
 } from "../formatters";
-import { isSyntheticServiceAggregateNode, type TopologyTreeNode } from "../selectors";
+import { isSyntheticGpuAggregateNode, isSyntheticServiceAggregateNode, type TopologyTreeNode } from "../selectors";
 import {
   topologyCanvasViewControls,
   topologyLegendTypeOrder,
@@ -82,6 +82,9 @@ type TopologyExplorerProps = {
   onFilterPanelOpenChange: (open: boolean) => void;
   onOpenObjectTopology: (nodeId: string, mode: "default" | "isolate") => void;
   onToggleAggregateNode?: (aggregateId: string) => void;
+  expandedAggregateIds?: string[];
+  expandedAggregateMeta?: Record<string, { aggregateId: string; label: string; memberIds: string[] }>;
+  onCollapseAggregate?: (aggregateId: string) => void;
 };
 
 const layerOptions = [
@@ -171,12 +174,16 @@ function TopologyExplorer({
   onFilterPanelOpenChange,
   onOpenObjectTopology,
   onToggleAggregateNode,
+  expandedAggregateIds,
+  expandedAggregateMeta,
+  onCollapseAggregate,
 }: TopologyExplorerProps) {
   const [zoomPercent, setZoomPercent] = useState(100);
   const [nodeActions, setNodeActions] = useState<TopologyCanvasNodeAction | null>(null);
   const [filterPanelEntryMode, setFilterPanelEntryMode] = useState<FilterPanelEntryMode>("filter");
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [topbarInlineSlot, setTopbarInlineSlot] = useState<HTMLElement | null>(null);
+  const [highlightedLegendType, setHighlightedLegendType] = useState<TopologyObject["type"] | null>(null);
   const searchInputRef = useRef<HTMLInputElement | HTMLTextAreaElement | null>(null);
   const stageShellRef = useRef<HTMLDivElement | null>(null);
 
@@ -206,8 +213,7 @@ function TopologyExplorer({
   const selectedRoom =
     topologyRoomOptions.find((option) => option.id === selectedRoomId) ?? topologyRoomOptions[0];
 
-  const activeViewControlId =
-    viewMode === "tree" ? "tree" : layoutPreset === "domain" ? "graph-domain" : "graph-layered";
+  const activeViewControlId = viewMode === "tree" ? "tree" : "graph-layered";
 
   const searchStatus =
     searchFeedback === "not_found"
@@ -308,6 +314,10 @@ function TopologyExplorer({
     }
   };
 
+  const handleLegendTypeToggle = (type: TopologyObject["type"]) => {
+    setHighlightedLegendType((current) => (current === type ? null : type));
+  };
+
   const openFilterPanel = (entryMode: FilterPanelEntryMode) => {
     setNodeActions(null);
     setFilterPanelEntryMode(entryMode);
@@ -404,7 +414,12 @@ function TopologyExplorer({
                   </div>
                   <div className="topology-stage-legend-list">
                     {legendItems.map((item) => (
-                      <div className="topology-stage-legend-item" key={item.type}>
+                      <button
+                        className={`topology-stage-legend-item ${highlightedLegendType === item.type ? "topology-stage-legend-item--active" : ""}`}
+                        key={item.type}
+                        onClick={() => handleLegendTypeToggle(item.type)}
+                        type="button"
+                      >
                         <span
                           aria-hidden="true"
                           className={`topology-stage-legend-item__icon topology-stage-legend-item__icon--${item.type}`}
@@ -413,9 +428,21 @@ function TopologyExplorer({
                         </span>
                         <span className="topology-stage-legend-item__label">{item.label}</span>
                         <span className="topology-stage-legend-item__count">{item.count}</span>
-                      </div>
+                      </button>
                     ))}
                   </div>
+                  {highlightedLegendType ? (
+                    <div className="topology-stage-secondary-panel__section-head">
+                      <span>{`\u7c7b\u578b\u7b5b\u9009\uff1a${formatTopologyType(highlightedLegendType)}`}</span>
+                      <button
+                        className="topology-stage-view-switch__option"
+                        onClick={() => setHighlightedLegendType(null)}
+                        type="button"
+                      >
+                        {"\u6e05\u9664"}
+                      </button>
+                    </div>
+                  ) : null}
                 </section>
 
                 <section className="topology-stage-secondary-panel__section">
@@ -424,9 +451,7 @@ function TopologyExplorer({
                     <span>
                       {isTreeView
                         ? "\u6811\u7ed3\u6784"
-                        : layoutPreset === "domain"
-                          ? "\u57df\u5e03\u5c40"
-                          : "\u5c42\u5e03\u5c40"}
+                        : "\u5c42\u5e03\u5c40"}
                     </span>
                   </div>
                   <div aria-label={"\u62d3\u6251\u89c6\u56fe\u5207\u6362"} className="topology-stage-view-switch" role="tablist">
@@ -610,11 +635,15 @@ function TopologyExplorer({
             matchedNodeIds={matchedNodeIds}
             neighborDepths={neighborDepths}
             nodes={graphNodes}
+            highlightedTypes={highlightedLegendType ? [highlightedLegendType] : undefined}
+            expandedAggregateIds={expandedAggregateIds}
+            expandedAggregateMeta={expandedAggregateMeta}
+            onCollapseAggregate={onCollapseAggregate}
             onCanvasInteraction={() => setNodeActions(null)}
             onHoverNode={onHoverNode}
             onOpenNodeActions={(payload) => {
               onFilterPanelOpenChange(false);
-              if (variant === "modified" && isSyntheticServiceAggregateNode(payload.node)) {
+              if (variant === "modified" && (isSyntheticServiceAggregateNode(payload.node) || isSyntheticGpuAggregateNode(payload.node))) {
                 setNodeActions(null);
                 onToggleAggregateNode?.(payload.node.id);
                 return;
@@ -657,14 +686,20 @@ function TopologyExplorer({
           </dl>
           <div className="topology-node-menu__actions">
             <AppButton
-              onClick={() => onOpenObjectTopology(actionNode.id, "isolate")}
+              onClick={() => {
+                onOpenObjectTopology(actionNode.id, "isolate");
+                setNodeActions(null);
+              }}
               size="sm"
               variant="secondary"
             >
               Isolate
             </AppButton>
             <AppButton
-              onClick={() => onOpenObjectTopology(actionNode.id, "default")}
+              onClick={() => {
+                onOpenObjectTopology(actionNode.id, "default");
+                setNodeActions(null);
+              }}
               size="sm"
               variant="primary"
             >

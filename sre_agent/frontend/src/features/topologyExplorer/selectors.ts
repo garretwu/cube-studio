@@ -289,7 +289,7 @@ function buildModifiedAggregatedTopology(
 
       aggregateNodes.push({
         id: aggregateGroupId,
-        name: `GPUç»?\u00b7 ${members.length} \u00b7 ${hostLabel}`,
+        name: `GPU ${hostLabel}`,
         type: "gpu",
         status: aggregateStatus,
         layer: "compute",
@@ -399,13 +399,29 @@ function buildModifiedAggregatedTopology(
 
     const key = `${source}:${target}`;
     const syntheticEndpoint =
-      source.startsWith("aggregate:") || target.startsWith("aggregate:");
-    const existing = mergedEdges.get(key);
+      source.startsWith("aggregate:") ||
+      target.startsWith("aggregate:") ||
+      source.startsWith("aggregate-gpu:") ||
+      target.startsWith("aggregate-gpu:");
+    const sourceIsAggregate = source.startsWith("aggregate:") || source.startsWith("aggregate-gpu:");
+    const targetIsAggregate = target.startsWith("aggregate:") || target.startsWith("aggregate-gpu:");
+    const sourceNode = nodeMap.get(source);
+    const targetNode = nodeMap.get(target);
+    const mergeKey =
+      syntheticEndpoint && (sourceIsAggregate || targetIsAggregate)
+        ? (() => {
+            const aggregateId = sourceIsAggregate ? source : target;
+            const otherNode = sourceIsAggregate ? targetNode : sourceNode;
+            const otherType = otherNode?.type ?? (sourceIsAggregate ? target : source);
+            return `${aggregateId}:${edge.relationType}:${otherType}`;
+          })()
+        : key;
+    const existing = mergedEdges.get(mergeKey);
 
     if (!existing) {
-      mergedEdges.set(key, {
+      mergedEdges.set(mergeKey, {
         ...edge,
-        id: syntheticEndpoint ? `aggregated-${key}` : edge.id,
+        id: syntheticEndpoint ? `aggregated-${mergeKey}` : edge.id,
         source,
         target,
         relationType: syntheticEndpoint ? "aggregated" : edge.relationType,
@@ -612,6 +628,55 @@ export function getNeighborDepths(
       queue.push({ id: neighborId, depth: nextDepth });
     });
   }
+
+  return visited;
+}
+
+export function getUpDownstreamChainDepths(edges: TopologyRelation[], nodeId?: string) {
+  if (!nodeId) {
+    return new Map<string, number>();
+  }
+
+  const incoming = new Map<string, string[]>();
+  const outgoing = new Map<string, string[]>();
+
+  edges.forEach((edge) => {
+    const outList = outgoing.get(edge.source) ?? [];
+    outList.push(edge.target);
+    outgoing.set(edge.source, outList);
+
+    const inList = incoming.get(edge.target) ?? [];
+    inList.push(edge.source);
+    incoming.set(edge.target, inList);
+  });
+
+  const visited = new Map<string, number>([[nodeId, 0]]);
+
+  const walk = (direction: "upstream" | "downstream") => {
+    const queue: Array<{ id: string; depth: number }> = [{ id: nodeId, depth: 0 }];
+    while (queue.length > 0) {
+      const current = queue.shift();
+      if (!current) {
+        continue;
+      }
+
+      const neighbors =
+        direction === "upstream" ? incoming.get(current.id) ?? [] : outgoing.get(current.id) ?? [];
+      neighbors.forEach((neighborId) => {
+        const nextDepth = current.depth + 1;
+        const signedDepth = direction === "upstream" ? -nextDepth : nextDepth;
+        const previous = visited.get(neighborId);
+        if (previous !== undefined && Math.abs(previous) <= nextDepth) {
+          return;
+        }
+        visited.set(neighborId, signedDepth);
+        queue.push({ id: neighborId, depth: nextDepth });
+      });
+    }
+  };
+
+  walk("upstream");
+  walk("downstream");
 
   return visited;
 }
@@ -1137,6 +1202,7 @@ function filterEssentialTopologyEdges(nodes: TopologyObject[], edges: TopologyRe
     "node:port",
     "gpu:node",
     "bmc:node",
+    "gpu:service",
     "node:service",
     "pod:service",
     "port:switch",

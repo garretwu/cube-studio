@@ -404,6 +404,7 @@ function createLayeredTargets(
   const branchX = nodeX + Math.round(columnStep * 0.62);
   const serviceX = nodeX + Math.round(columnStep * 1.84);
   const podX = serviceX + Math.round(columnStep * 1.42);
+  const serviceBridgeX = nodeX + Math.round(columnStep * 1.26);
 
   const relationFallbackScore: Record<TopologyRelation["relationType"], number> = {
     contains: 0,
@@ -680,7 +681,15 @@ function createLayeredTargets(
   const serviceLaneYById = placeLaneByAnchors(serviceAnchors, serviceLaneGap);
   serviceAnchors.forEach((item) => {
     const y = serviceLaneYById.get(item.id) ?? Math.round(item.anchorY);
-    positions.set(item.id, { x: serviceX, y });
+    const serviceNode = nodeById.get(item.id);
+    const hasComputeDependency =
+      serviceNode?.type === "service" &&
+      getRelatedIdsByType(serviceNode.id, "gpu", ["depends_on", "runs_on", "contains"]).length > 0;
+    const hasDownstreamPods =
+      serviceNode?.type === "service" &&
+      getRelatedIdsByType(serviceNode.id, "pod", ["depends_on", "contains", "runs_on"]).length > 0;
+    const isBridgeService = Boolean(hasComputeDependency && hasDownstreamPods);
+    positions.set(item.id, { x: isBridgeService ? serviceBridgeX : serviceX, y });
     serviceYById.set(item.id, y);
   });
 
@@ -786,11 +795,34 @@ function createLayeredTargets(
     Math.round(switchCenterY + metrics.nodeHeight * 2.4),
   );
 
-  const placeBranchNodes = (
-    grouped: Map<string, TopologyObject[]>,
-    branchDirection: "up" | "down",
-  ) => {
-    const hostIds = [...grouped.keys()].sort((left, right) => {
+  const branchAnchors: AnchoredLaneItem[] = [];
+
+  const pushAnchoredGroup = (hostId: string, items: TopologyObject[], direction: "up" | "down") => {
+    const hostY = workerYById.get(hostId);
+    if (hostId === "unassigned" || hostY === undefined) {
+      items.forEach((item, index) => {
+        branchAnchors.push({
+          id: item.id,
+          anchorY: unassignedBranchY + index * branchStackGap,
+          tieBreaker: `branch-unassigned-${direction}-${index}-${item.name}-${item.id}`,
+        });
+      });
+      unassignedBranchY += Math.max(1, items.length) * branchStackGap;
+      return;
+    }
+
+    const center = direction === "up" ? hostY - branchBandOffset : hostY + branchBandOffset;
+    items.forEach((item, index) => {
+      branchAnchors.push({
+        id: item.id,
+        anchorY: center + getCenteredOffset(index, items.length, branchStackGap),
+        tieBreaker: `branch-${hostY}-${direction}-${index}-${item.name}-${item.id}`,
+      });
+    });
+  };
+
+  const orderedHostIds = (grouped: Map<string, TopologyObject[]>) =>
+    [...grouped.keys()].sort((left, right) => {
       if (left === "unassigned" || right === "unassigned") {
         return left === "unassigned" ? 1 : -1;
       }
@@ -804,30 +836,25 @@ function createLayeredTargets(
       return left.localeCompare(right, "zh-Hans-CN");
     });
 
-    hostIds.forEach((hostId) => {
-      const items = [...(grouped.get(hostId) ?? [])].sort((left, right) =>
-        compareNodes(left, right, incomingEdges, outgoingEdges),
-      );
+  orderedHostIds(bmcByHost).forEach((hostId) => {
+    const items = [...(bmcByHost.get(hostId) ?? [])].sort((left, right) =>
+      compareNodes(left, right, incomingEdges, outgoingEdges),
+    );
+    pushAnchoredGroup(hostId, items, "up");
+  });
 
-      const hostY = workerYById.get(hostId);
-      if (hostId === "unassigned" || hostY === undefined) {
-        items.forEach((item) => {
-          positions.set(item.id, { x: branchX, y: unassignedBranchY });
-          unassignedBranchY += branchStackGap;
-        });
-        return;
-      }
+  orderedHostIds(gpuByHost).forEach((hostId) => {
+    const items = [...(gpuByHost.get(hostId) ?? [])].sort((left, right) =>
+      compareNodes(left, right, incomingEdges, outgoingEdges),
+    );
+    pushAnchoredGroup(hostId, items, "down");
+  });
 
-      const center = branchDirection === "up" ? hostY - branchBandOffset : hostY + branchBandOffset;
-      items.forEach((item, index) => {
-        const y = Math.round(center + getCenteredOffset(index, items.length, branchStackGap));
-        positions.set(item.id, { x: branchX, y });
-      });
-    });
-  };
-
-  placeBranchNodes(bmcByHost, "up");
-  placeBranchNodes(gpuByHost, "down");
+  const branchLaneYById = placeLaneByAnchors(branchAnchors, branchStackGap);
+  branchAnchors.forEach((item) => {
+    const y = branchLaneYById.get(item.id) ?? Math.round(item.anchorY);
+    positions.set(item.id, { x: branchX, y: Math.round(y) });
+  });
 
   return positions;
 }

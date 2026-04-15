@@ -419,11 +419,57 @@ function buildNamespaceServices(
   return { nodes: nextNodes, edges: nextEdges };
 }
 
+function pruneDanglingSwitchPorts(nodes: RawTopologyCanvasNode[], edges: RawTopologyCanvasEdge[]) {
+  const nodeById = new Map(nodes.map((node) => [node.id, node]));
+  const portIds = new Set(
+    nodes
+      .filter((node) => String(node.type ?? "").trim().toLowerCase().includes("port"))
+      .map((node) => node.id),
+  );
+  const switchIds = new Set(
+    nodes
+      .filter((node) => String(node.type ?? "").trim().toLowerCase() === "switch")
+      .map((node) => node.id),
+  );
+
+  const degreeToNonSwitch = new Map<string, number>();
+  edges.forEach((edge) => {
+    if (!portIds.has(edge.source) && !portIds.has(edge.target)) {
+      return;
+    }
+
+    const portId = portIds.has(edge.source) ? edge.source : edge.target;
+    const otherId = portId === edge.source ? edge.target : edge.source;
+    if (switchIds.has(otherId)) {
+      return;
+    }
+
+    const otherNode = nodeById.get(otherId);
+    const otherType = String(otherNode?.type ?? "").trim().toLowerCase();
+    if (otherType === "switch" || otherType === "switch_port") {
+      return;
+    }
+
+    degreeToNonSwitch.set(portId, (degreeToNonSwitch.get(portId) ?? 0) + 1);
+  });
+
+  const danglingPortIds = Array.from(portIds).filter((portId) => (degreeToNonSwitch.get(portId) ?? 0) === 0);
+  if (danglingPortIds.length === 0) {
+    return { nodes, edges };
+  }
+
+  const danglingSet = new Set(danglingPortIds);
+  const nextNodes = nodes.filter((node) => !danglingSet.has(node.id));
+  const nextEdges = edges.filter((edge) => !danglingSet.has(edge.source) && !danglingSet.has(edge.target));
+  return { nodes: nextNodes, edges: nextEdges };
+}
+
 const withPortSwitch = ensurePortSwitchEdges(canonicalRawNodes, canonicalRawEdges);
 const withClusterSwitch = ensureClusterSwitchEdge(canonicalRawNodes, withPortSwitch);
 const withNamespaceServices = buildNamespaceServices(canonicalRawNodes, withClusterSwitch);
-const canonicalRawNodesWithServices = withNamespaceServices.nodes;
-const canonicalRawEdgesWithClusterSwitch = withNamespaceServices.edges;
+const prunedPorts = pruneDanglingSwitchPorts(withNamespaceServices.nodes, withNamespaceServices.edges);
+const canonicalRawNodesWithServices = prunedPorts.nodes;
+const canonicalRawEdgesWithClusterSwitch = prunedPorts.edges;
 const lastUpdated =
   topologyCanvas.meta?.lastUpdated ??
   topologyCanvas.meta?.exportedAt ??
