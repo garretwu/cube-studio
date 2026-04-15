@@ -93,7 +93,14 @@ Final JSON shape:
     "estimated_impact": "中文预估影响说明，可保留英文专业词汇",
     "confidence": 0.0,
     "priority": "P0|P1|P2",
-    "safety_level": "low|medium|high|critical"
+    "safety_level": "low|medium|high|critical",
+    "canary": {
+      "enabled": true,
+      "target_percentage": 0.1,
+      "monitor_duration": 120,
+      "success_criteria": [{"metric": "...", "operator": "<", "value": 0}],
+      "max_batches": 3
+    }
   }
 }
 
@@ -105,6 +112,7 @@ The remediation plan is proposal-only and must not assume any write action has r
 For `k8s.delete_pod`, valid params use `namespace` plus either `label_selector` or `pod_name`.
 Never invent `pod_selector` for `k8s.delete_pod`.
 Do not encode required remediation parameters only in free-form text such as "在节点 10.11.0.12 上执行"; they must appear in `params`.
+If multiple entities are affected (e.g., multiple nodes or pods), include a canary config to roll out the fix progressively. Otherwise omit canary.
 """
 
 

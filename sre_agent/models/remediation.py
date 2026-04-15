@@ -69,6 +69,7 @@ class CanaryConfig(StrictFrozenModel):
     criteria_mode: Literal["all", "any"] = "all"
     max_batches: int = Field(default=3, ge=1)
     auto_rollback_on_regression: bool = True
+    progressive: bool = True
 
     @model_validator(mode="after")
     def _enabled_requires_criteria(self) -> CanaryConfig:

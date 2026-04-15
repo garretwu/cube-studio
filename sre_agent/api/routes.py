@@ -1141,6 +1141,10 @@ def build_api_router() -> APIRouter:
             "observation_started": EventType.OBSERVATION_STARTED,
             "observation_result": EventType.OBSERVATION_RESULT,
             "escalation_required": EventType.ESCALATION_REQUIRED,
+            "canary_batch_started": EventType.REMEDIATION_PROGRESS,
+            "canary_batch_completed": EventType.REMEDIATION_PROGRESS,
+            "canary_check_passed": EventType.REMEDIATION_PROGRESS,
+            "canary_check_failed": EventType.REMEDIATION_PROGRESS,
         }
         mapped_event_type = stage_to_event_type.get(stage)
         if mapped_event_type is not None:

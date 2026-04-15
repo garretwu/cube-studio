@@ -3716,6 +3716,57 @@ def _clamp_confidence(value: Any, *, default: float) -> float:
     return max(0.0, min(1.0, numeric))
 
 
+def _normalize_canary_config(
+    *,
+    raw_canary: Any,
+    root_cause_entities: list[str],
+    normalized_steps: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    """Normalize and optionally auto-fill canary config for a remediation plan.
+
+    - If LLM returned a canary dict, validate and return it.
+    - If >= 2 affected entities and no canary, auto-fill a default config.
+    - Otherwise return None.
+    """
+    if isinstance(raw_canary, dict):
+        canary = dict(raw_canary)
+        canary.setdefault("enabled", True)
+        canary.setdefault("progressive", True)
+        # Ensure success_criteria is present; if empty/missing the model
+        # validator will reject it, so the caller should drop it.
+        return canary
+
+    # Collect unique targets from step params
+    target_keys = ("node", "target", "service_id", "entity_id")
+    targets: set[str] = set()
+    for step in normalized_steps:
+        params = step.get("params")
+        if not isinstance(params, dict):
+            continue
+        for key in target_keys:
+            value = params.get(key)
+            if isinstance(value, str) and value.strip():
+                targets.add(value.strip())
+    for entity in root_cause_entities:
+        entity_str = str(entity).strip()
+        if entity_str:
+            targets.add(entity_str)
+
+    if len(targets) >= 2:
+        return {
+            "enabled": True,
+            "target_percentage": 0.1,
+            "monitor_duration": 120,
+            "success_criteria": [],
+            "criteria_mode": "all",
+            "max_batches": 3,
+            "auto_rollback_on_regression": True,
+            "progressive": True,
+        }
+
+    return None
+
+
 def _normalize_remediation_plan_payload(
     *,
     raw_plan: dict[str, Any] | None,
@@ -3797,6 +3848,20 @@ def _normalize_remediation_plan_payload(
     candidate.setdefault("confidence", _normalize_plan_confidence(diagnosis.confidence))
     candidate.setdefault("priority", _normalize_plan_priority(diagnosis.triage_priority))
     candidate.setdefault("safety_level", "high")
+
+    # ── Canary normalization ───────────────────────────────────────────
+    candidate["canary"] = _normalize_canary_config(
+        raw_canary=candidate.get("canary"),
+        root_cause_entities=list(diagnosis.root_cause_entities),
+        normalized_steps=normalized_steps,
+    )
+    # If canary validation fails (e.g. missing criteria), drop it silently.
+    if candidate["canary"] is not None:
+        try:
+            from sre_agent.models.remediation import CanaryConfig
+            CanaryConfig.model_validate(candidate["canary"])
+        except Exception:  # noqa: BLE001
+            candidate["canary"] = None
 
     try:
         return RemediationPlan.model_validate(candidate)
