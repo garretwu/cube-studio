@@ -1455,6 +1455,100 @@ tags:
         ]
         self.assertTrue(nodes_module._has_probed_ttft_external_node(tool_runs, "10.11.4.13"))
 
+    def test_find_ttft_external_probe_auth_error_detects_permission_denied(self) -> None:
+        tool_runs: list[dict[str, Any]] = [
+            {
+                "tool": "process.find",
+                "success": False,
+                "params": {"pattern": "load_simulator", "node": "10.11.4.13"},
+                "error": "SSH error: Permission denied for user yuyonghao on host 10.11.4.13",
+            }
+        ]
+        error = nodes_module._find_ttft_external_probe_auth_error(tool_runs, "10.11.4.13")
+        self.assertIn("Permission denied", error)
+
+    def test_find_ttft_external_probe_auth_error_ignores_after_success(self) -> None:
+        tool_runs: list[dict[str, Any]] = [
+            {
+                "tool": "process.find",
+                "success": False,
+                "params": {"pattern": "load_simulator", "node": "10.11.4.13"},
+                "error": "SSH error: Permission denied for user yuyonghao on host 10.11.4.13",
+            },
+            {
+                "tool": "process.find",
+                "success": True,
+                "params": {"pattern": "load_simulator", "node": "10.11.4.13"},
+                "data": {"node": "10.11.4.13", "count": 2},
+            },
+        ]
+        error = nodes_module._find_ttft_external_probe_auth_error(tool_runs, "10.11.4.13")
+        self.assertEqual(error, "")
+
+    def test_normalize_step_params_in_place_normalizes_kill_signal_sigterm(self) -> None:
+        diagnosis = DiagnosisResult(
+            root_cause="ttft load contention",
+            root_cause_layer="service",
+            root_cause_entities=["node:10.11.4.13"],
+            confidence=0.86,
+            hypotheses=[],
+            propagation_chain=[],
+            impact_summary="ttft elevated",
+            affected_services=["qwen3-32b-fp8-202602261"],
+            recommended_fix=None,
+            triage_priority="P1",
+            ranked_candidates=[],
+            diagnosis_certainty="confirmed",
+        )
+        registry = build_default_registry()
+        step = {
+            "tool": "kill_process",
+            "params": {"node": "10.11.4.13", "pid": 12345, "signal": "SIGTERM"},
+        }
+
+        error = nodes_module._normalize_step_params_in_place(
+            step,
+            diagnosis=diagnosis,
+            registry=registry,
+            tool_runs=[],
+            variables={},
+        )
+
+        self.assertIsNone(error)
+        self.assertEqual(step["params"]["signal"], "TERM")
+
+    def test_normalize_step_params_in_place_keeps_kill_signal_term(self) -> None:
+        diagnosis = DiagnosisResult(
+            root_cause="ttft load contention",
+            root_cause_layer="service",
+            root_cause_entities=["node:10.11.4.13"],
+            confidence=0.86,
+            hypotheses=[],
+            propagation_chain=[],
+            impact_summary="ttft elevated",
+            affected_services=["qwen3-32b-fp8-202602261"],
+            recommended_fix=None,
+            triage_priority="P1",
+            ranked_candidates=[],
+            diagnosis_certainty="confirmed",
+        )
+        registry = build_default_registry()
+        step = {
+            "tool": "kill_process",
+            "params": {"node": "10.11.4.13", "pid": 12345, "signal": "TERM"},
+        }
+
+        error = nodes_module._normalize_step_params_in_place(
+            step,
+            diagnosis=diagnosis,
+            registry=registry,
+            tool_runs=[],
+            variables={},
+        )
+
+        self.assertIsNone(error)
+        self.assertEqual(step["params"]["signal"], "TERM")
+
     def test_get_ttft_external_node_prefers_alert_snapshot(self) -> None:
         state: dict[str, Any] = {
             "alert_snapshot": {

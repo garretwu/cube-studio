@@ -811,6 +811,54 @@ async def reason_node(
             persist_state_snapshot(updated.get("checkpoint_dir"), updated["session_id"], "reason", updated)
             return updated
 
+    if _is_ttft_alert_state(state):
+        tool_runs = list(state.get("tool_runs", []) or [])
+        variables = dict(state.get("variables", {}) or {})
+        external_node = _get_ttft_external_node(state)
+        auth_error = _find_ttft_external_probe_auth_error(tool_runs, external_node)
+        blocked_reason = str(variables.get("ttft_external_probe_blocked_reason", "") or "").strip()
+        if blocked_reason or auth_error:
+            reason_text = blocked_reason or (
+                f"SSH precheck failed for TTFT external node {external_node}: {auth_error}"
+            )
+            diagnosis_payload = _normalize_diagnosis_payload(
+                {
+                    "root_cause": (
+                        f"外部压测源节点 {external_node} SSH 认证失败，无法完成 process.find 取证，"
+                        "当前诊断证据不足。"
+                    ),
+                    "root_cause_layer": "platform",
+                    "root_cause_entities": [external_node] if external_node else [],
+                    "confidence": 0.45,
+                    "hypotheses": [
+                        {
+                            "description": (
+                                f"外部压测源节点 {external_node} 因 SSH 认证失败无法执行 process.find，"
+                                "导致关键证据链缺失。"
+                            ),
+                            "status": "testing",
+                            "evidence_for": [reason_text],
+                            "evidence_against": [],
+                            "confidence": 0.45,
+                        }
+                    ],
+                    "impact_summary": (
+                        f"TTFT 诊断被外部压测源节点 {external_node or 'unknown'} 的 SSH 认证失败阻断，"
+                        "不能将其判定为“未发现可疑进程”。"
+                    ),
+                    "affected_services": [],
+                    "triage_priority": "P1",
+                    "diagnosis_certainty": "ambiguous",
+                }
+            )
+            diagnosis = DiagnosisResult.model_validate(diagnosis_payload)
+            remediation_plan = None
+            plan_missing_reason = f"TTFT external probe blocked by SSH authentication failure: {reason_text}"
+            final_thought = (
+                f"{final_thought}\n外部压测源 SSH 认证失败，已将本轮结论降级为“证据不足”，"
+                "并阻断“未发现可疑进程”结论。"
+            )
+
     if remediation_plan is not None:
         diagnosis = diagnosis.model_copy(update={"recommended_fix": remediation_plan})
     updated_trace.append(
@@ -2762,6 +2810,54 @@ def _has_probed_ttft_external_node(
     return False
 
 
+def _find_ttft_external_probe_auth_error(
+    tool_runs: list[dict[str, Any]],
+    external_node: str,
+) -> str:
+    if not external_node:
+        return ""
+    seen_external_probe = False
+    successful_external_probe = False
+    errors: list[str] = []
+    for run in tool_runs:
+        if not isinstance(run, dict):
+            continue
+        if str(run.get("tool", "")).strip() != "process.find":
+            continue
+        node = ""
+        params = run.get("params")
+        if isinstance(params, dict):
+            node = str(params.get("node", "") or "").strip()
+        if not node:
+            data = run.get("data")
+            if isinstance(data, dict):
+                node = str(data.get("node", "") or "").strip()
+        if node != external_node:
+            continue
+        seen_external_probe = True
+        if bool(run.get("success", False)):
+            successful_external_probe = True
+            continue
+        error_text = str(run.get("error", "") or "").strip()
+        if not error_text:
+            data = run.get("data")
+            if isinstance(data, dict):
+                error_text = str(data.get("error", "") or "").strip()
+        if error_text:
+            errors.append(error_text)
+    if not seen_external_probe or successful_external_probe:
+        return ""
+    for message in errors:
+        lowered = message.lower()
+        if (
+            "permission denied" in lowered
+            or "authentication failed" in lowered
+            or "auth failed" in lowered
+        ):
+            return message
+    return ""
+
+
 def _count_tool_runs(tool_runs: list[dict[str, Any]], tool_name: str) -> int:
     return sum(1 for run in tool_runs if isinstance(run, dict) and str(run.get("tool", "")).strip() == tool_name)
 
@@ -4696,6 +4792,9 @@ def _normalize_step_params_in_place(
                 params["kind"] = scope
 
     if tool_name == "kill_process":
+        normalized_signal = _normalize_kill_signal(params)
+        if normalized_signal:
+            params["signal"] = normalized_signal
         process_entity_id = _resolve_kill_process_entity_id(params)
         if process_entity_id:
             params["entity_id"] = process_entity_id
@@ -4742,6 +4841,16 @@ def _is_placeholder_param(value: Any) -> bool:
 
 def _is_blank_param(value: Any) -> bool:
     return _is_placeholder_param(value)
+
+
+def _normalize_kill_signal(params: dict[str, Any]) -> str:
+    raw_signal = str(params.get("signal") or "").strip()
+    if not raw_signal:
+        return ""
+    normalized = raw_signal.upper()
+    if normalized.startswith("SIG") and len(normalized) > 3:
+        normalized = normalized[3:]
+    return normalized
 
 
 def _normalize_node_param_in_place(params: dict[str, Any]) -> str | None:

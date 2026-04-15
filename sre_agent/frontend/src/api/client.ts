@@ -492,6 +492,51 @@ async function consumeSseResponse(
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
+  let hasWarnedAboutChunkParse = false;
+
+  const warnChunkParseError = (rawChunk: string, error: unknown): void => {
+    if (hasWarnedAboutChunkParse || !import.meta.env.DEV) {
+      return;
+    }
+    hasWarnedAboutChunkParse = true;
+    const preview = rawChunk.slice(0, 240);
+    console.warn("streamDiagnosis: failed to parse SSE chunk", {
+      error,
+      chunkPreview: preview,
+    });
+  };
+
+  const parseChunkSafely = (rawChunk: string): void => {
+    const chunk = rawChunk.trim();
+    if (!chunk) {
+      return;
+    }
+    try {
+      parseSseChunk(chunk, onEvent);
+    } catch (error) {
+      warnChunkParseError(rawChunk, error);
+    }
+  };
+
+  const takeNextChunk = (): string | null => {
+    const lfIndex = buffer.indexOf("\n\n");
+    const crlfIndex = buffer.indexOf("\r\n\r\n");
+    if (lfIndex < 0 && crlfIndex < 0) {
+      return null;
+    }
+    let separatorIndex = lfIndex;
+    let separatorLength = 2;
+    if (
+      crlfIndex >= 0
+      && (lfIndex < 0 || crlfIndex < lfIndex)
+    ) {
+      separatorIndex = crlfIndex;
+      separatorLength = 4;
+    }
+    const chunk = buffer.slice(0, separatorIndex);
+    buffer = buffer.slice(separatorIndex + separatorLength);
+    return chunk;
+  };
 
   while (true) {
     if (signal?.aborted) {
@@ -503,21 +548,16 @@ async function consumeSseResponse(
     }
     buffer += decoder.decode(value, { stream: true });
     while (true) {
-      const separatorIndex = buffer.indexOf("\n\n");
-      if (separatorIndex < 0) {
+      const chunk = takeNextChunk();
+      if (chunk === null) {
         break;
       }
-      const chunk = buffer.slice(0, separatorIndex).trim();
-      buffer = buffer.slice(separatorIndex + 2);
-      if (chunk) {
-        parseSseChunk(chunk, onEvent);
-      }
+      parseChunkSafely(chunk);
     }
   }
 
-  const tail = buffer.trim();
-  if (tail) {
-    parseSseChunk(tail, onEvent);
+  if (buffer.trim()) {
+    parseChunkSafely(buffer);
   }
 }
 
@@ -1250,5 +1290,4 @@ export const apiClient = {
 };
 
 export type ApiClient = typeof apiClient;
-
 

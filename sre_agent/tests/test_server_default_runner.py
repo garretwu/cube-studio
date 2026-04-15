@@ -480,6 +480,60 @@ inventory:
     assert "resolve_service_pods" in str(updated.get("target_resolution_chain", ""))
 
 
+def test_apply_ttft_runtime_bootstrap_propagates_precheck_block_reason(tmp_path) -> None:
+    from sre_agent.models.alert import Alert
+    from sre_agent.server import _apply_ttft_runtime_bootstrap
+
+    config = SREAgentConfig.model_validate(
+        {
+            "global": {"aidc_id": "test-aidc"},
+            "agent": {"ttft_external_process_default_node": "10.11.4.13"},
+            "ontology": {"db_path": str(tmp_path / "ontology.db")},
+            "memory": {"db_dir": str(tmp_path / "memory")},
+        }
+    )
+    alert = Alert.model_validate(
+        {
+            "alert_name": "AIServiceTTFTP99High",
+            "severity": "warning",
+            "labels": {"namespace": "service", "service": "qwen3-32b-fp8-202602261"},
+            "annotations": {"summary": "ttft high"},
+            "starts_at": datetime(2026, 4, 14, 12, 0, tzinfo=UTC).isoformat(),
+            "fingerprint": "ttft-bootstrap-precheck-1",
+            "status": "firing",
+        }
+    )
+    context = ToolExecutionContext(
+        metadata={
+            "ttft_external_ssh_precheck": {
+                "node": "10.11.4.13",
+                "ok": False,
+                "error": "SSH precheck failed for TTFT external node 10.11.4.13: Permission denied",
+            }
+        }
+    )
+    payload = {
+        "alert_name": alert.alert_name,
+        "namespace": "service",
+        "service": "qwen3-32b-fp8-202602261",
+        "ttft_external_process_default_node": "10.11.4.13",
+        "promql": "up",
+    }
+
+    updated = asyncio.run(
+        _apply_ttft_runtime_bootstrap(
+            payload=payload,
+            alert=alert,
+            context=context,
+            cfg=config,
+        )
+    )
+
+    assert updated["ttft_external_ssh_precheck_ok"] is False
+    assert "ttft_external_probe_blocked_reason" in updated
+    assert "Permission denied" in str(updated["ttft_external_probe_blocked_reason"])
+
+
 def test_create_app_strict_mode_rejects_when_core_channels_not_ready(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("JWT_SECRET", "secret")
     monkeypatch.setenv("SRE_OPENAI_API_KEY", "test-key")
@@ -601,6 +655,44 @@ def test_create_app_injects_ttft_external_process_default_node_into_context_meta
         pass
 
     assert context.metadata.get("ttft_external_process_default_node") == "10.11.4.13"
+
+
+def test_create_app_runs_ttft_external_ssh_precheck_and_sets_metadata(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("JWT_SECRET", "secret")
+    monkeypatch.setenv("SRE_OPENAI_API_KEY", "test-key")
+    monkeypatch.setenv("SRE_LLM_MODEL", "MiniMax-M2.7")
+
+    class _Result:
+        success = True
+        output = "yuyonghao\nwj-lab-cpt-04\n2202736 python3 -m load_simulator run --only inference\n"
+        error = ""
+
+    class _SSHChannel:
+        async def run_command(self, node: str, command: str, use_sudo: bool = False):  # noqa: ANN001
+            _ = command
+            assert node == "10.11.4.13"
+            assert use_sudo is False
+            return _Result()
+
+    context = ToolExecutionContext(channels={"ssh": _SSHChannel()})
+    config = SREAgentConfig.model_validate(
+        {
+            "global": {"aidc_id": "test-aidc"},
+            "agent": {"ttft_external_process_default_node": "10.11.4.13"},
+            "ontology": {"db_path": str(tmp_path / "ontology.db")},
+            "memory": {"db_dir": str(tmp_path / "memory")},
+        }
+    )
+
+    with TestClient(create_app(config=config, execution_context=context)):
+        pass
+
+    precheck = context.metadata.get("ttft_external_ssh_precheck")
+    assert isinstance(precheck, dict)
+    assert precheck.get("node") == "10.11.4.13"
+    assert precheck.get("ok") is True
+    assert precheck.get("whoami") == "yuyonghao"
+    assert precheck.get("hostname") == "wj-lab-cpt-04"
 
 
 def test_build_ttft_query_includes_external_pressure_path_instruction(tmp_path) -> None:

@@ -632,6 +632,36 @@ class TestToolRegistryUnit(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(by_pid.success)
         self.assertIn("kill -KILL -- 12345", ssh.calls[1]["command"])
 
+        by_sigterm = await registry.execute(
+            "kill_process",
+            {"node": "worker-03", "pid": 12346, "signal": "SIGTERM"},
+            context,
+        )
+        self.assertTrue(by_sigterm.success)
+        self.assertIn("kill -TERM -- 12346", ssh.calls[2]["command"])
+
+        by_sigkill_lower = await registry.execute(
+            "kill_process",
+            {"node": "worker-03", "pid": 12347, "signal": "sigkill"},
+            context,
+        )
+        self.assertTrue(by_sigkill_lower.success)
+        self.assertIn("kill -KILL -- 12347", ssh.calls[3]["command"])
+
+    async def test_unit_kill_process_rejects_unsupported_signal_with_sig_prefix(self) -> None:
+        registry = build_default_registry()
+        ssh = _FakeSSHChannel()
+        context = ToolExecutionContext(channels={"ssh": ssh}, write_approved=True)
+
+        result = await registry.execute(
+            "kill_process",
+            {"node": "worker-03", "pid": 12345, "signal": "SIGUSR1"},
+            context,
+        )
+
+        self.assertFalse(result.success)
+        self.assertIn("unsupported signal", result.error)
+
     async def test_unit_kill_process_accepts_proc_entity_id_pid_fallback(self) -> None:
         registry = build_default_registry()
         ssh = _FakeSSHChannel()

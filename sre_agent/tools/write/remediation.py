@@ -22,9 +22,12 @@ def _require_str(params: dict[str, Any], key: str) -> str:
 
 def _coerce_signal(params: dict[str, Any]) -> str:
     signal = str(params.get("signal") or "TERM").strip().upper()
+    if signal.startswith("SIG") and len(signal) > 3:
+        signal = signal[3:]
     allowed = {"TERM", "KILL", "INT", "HUP"}
     if signal not in allowed:
-        raise ToolValidationError(f"unsupported signal: {signal!r}")
+        raw_signal = str(params.get("signal") or "TERM").strip().upper()
+        raise ToolValidationError(f"unsupported signal: {raw_signal!r}")
     return signal
 
 
