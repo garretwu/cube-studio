@@ -2,8 +2,6 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
-CONFIG_PATH="${REPO_ROOT}/sre_agent/conf/config.yaml"
 if [ -f "${SCRIPT_DIR}/image.env" ]; then
   # shellcheck disable=SC1091
   source "${SCRIPT_DIR}/image.env"
@@ -65,19 +63,6 @@ if [ -z "${IMAGE_TAG}" ]; then
   exit 1
 fi
 
-if [ -z "${SRE_OPENAI_API_KEY:-}" ] && [ -f "${CONFIG_PATH}" ]; then
-  config_api_key="$(sed -n 's/^[[:space:]]*api_key:[[:space:]]*"\(.*\)".*$/\1/p' "${CONFIG_PATH}" | head -n 1)"
-  if [ -n "${config_api_key:-}" ]; then
-    SRE_OPENAI_API_KEY="${config_api_key}"
-    echo "SRE_OPENAI_API_KEY is not set, using llm.api_key from ${CONFIG_PATH}"
-  fi
-fi
-
-if [ -z "${SRE_OPENAI_API_KEY:-}" ]; then
-  echo "SRE_OPENAI_API_KEY is required, and no llm.api_key fallback was found in ${CONFIG_PATH}"
-  exit 1
-fi
-
 HOST_BACKEND_PORT="$(find_available_port "${HOST_BACKEND_PORT}" "backend")"
 HOST_FRONTEND_PORT="$(find_available_port "${HOST_FRONTEND_PORT}" "frontend")"
 
@@ -89,7 +74,6 @@ docker run -d --rm \
   --name "${CONTAINER_NAME}" \
   -p "${HOST_BACKEND_PORT}:${CONTAINER_BACKEND_PORT}" \
   -p "${HOST_FRONTEND_PORT}:${CONTAINER_FRONTEND_PORT}" \
-  -e "SRE_OPENAI_API_KEY=${SRE_OPENAI_API_KEY}" \
   -e "BACKEND_PORT=${CONTAINER_BACKEND_PORT}" \
   -e "FRONTEND_PORT=${CONTAINER_FRONTEND_PORT}" \
   "${IMAGE_REF}"

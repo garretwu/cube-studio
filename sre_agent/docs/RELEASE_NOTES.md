@@ -1,5 +1,83 @@
 # SRE Agent Release Notes
 
+2026-04-14 13:05
+
+**Scope**
+
+- 增强网络诊断链路，补齐节点映射、只读网络工具和诊断状态上下文，让 Agent 可以更稳定地把告警对象映射到真实节点与网络排障动作
+- 新增 GPU 掉卡 / missing-card 现场演示脚本与内置 skill，补充 `gpu-drop-diagnosis` 修复脚本和 SOP 内容
+- 收紧 skill-first 诊断流程，优先走匹配到的内置 skill，并增强 GPU 故障场景下的工具调用与时间线输出
+- 更新 GPU 自动诊断默认配置，`auto_diagnose_alert_names` 默认改为空列表，避免默认演示告警名误触发自动诊断
+- release 流水线支持手动 release version override，并增加单调递增版本校验，防止误发低版本或重复版本
+- 飞书 release 成功通知补充 preview 链接，让发布卡片可以直接跳转到对应验证环境
+- Docker 本地启动与 GitLab preview 不再解析、校验或透传 `SRE_OPENAI_API_KEY`，LLM `api_key`、`base_url`、`model` 统一交由应用启动逻辑从配置中读取
+
+**Code**
+
+Agent diagnosis:
+
+- [sre_agent/agent/nodes.py](/home/kevin/project/cube-studio/sre_agent/agent/nodes.py)
+- [sre_agent/agent/prompts.py](/home/kevin/project/cube-studio/sre_agent/agent/prompts.py)
+- [sre_agent/agent/state.py](/home/kevin/project/cube-studio/sre_agent/agent/state.py)
+- [sre_agent/runtime/node_mapping.py](/home/kevin/project/cube-studio/sre_agent/runtime/node_mapping.py)
+- [sre_agent/tools/readonly/network.py](/home/kevin/project/cube-studio/sre_agent/tools/readonly/network.py)
+- [sre_agent/tools/readonly/skills.py](/home/kevin/project/cube-studio/sre_agent/tools/readonly/skills.py)
+- [sre_agent/tools/registry.py](/home/kevin/project/cube-studio/sre_agent/tools/registry.py)
+
+Skills / demos:
+
+- [sre_agent/skills/builtin/network-diagnosis/SKILL.md](/home/kevin/project/cube-studio/sre_agent/skills/builtin/network-diagnosis/SKILL.md)
+- [sre_agent/skills/builtin/gpu-drop-diagnosis/SKILL.md](/home/kevin/project/cube-studio/sre_agent/skills/builtin/gpu-drop-diagnosis/SKILL.md)
+- [sre_agent/skills/builtin/gpu-drop-diagnosis/scripts/gpu_drop_recover.sh](/home/kevin/project/cube-studio/sre_agent/skills/builtin/gpu-drop-diagnosis/scripts/gpu_drop_recover.sh)
+- [sre_agent/scripts/gpu_card_missing_live_demo.py](/home/kevin/project/cube-studio/sre_agent/scripts/gpu_card_missing_live_demo.py)
+- [sre_agent/scripts/gpu_thermal_skill_demo.py](/home/kevin/project/cube-studio/sre_agent/scripts/gpu_thermal_skill_demo.py)
+
+Config / API:
+
+- [sre_agent/conf/config.yaml](/home/kevin/project/cube-studio/sre_agent/conf/config.yaml)
+- [sre_agent/config.py](/home/kevin/project/cube-studio/sre_agent/config.py)
+- [sre_agent/api/routes.py](/home/kevin/project/cube-studio/sre_agent/api/routes.py)
+- [sre_agent/server.py](/home/kevin/project/cube-studio/sre_agent/server.py)
+
+Docker / CI:
+
+- [/.gitlab-ci.yml](/home/kevin/project/cube-studio/.gitlab-ci.yml)
+- [sre_agent/docker/run_container.sh](/home/kevin/project/cube-studio/sre_agent/docker/run_container.sh)
+- [sre_agent/docker/container_entrypoint.sh](/home/kevin/project/cube-studio/sre_agent/docker/container_entrypoint.sh)
+- [sre_agent/deploy/gitlab/ci/common.sh](/home/kevin/project/cube-studio/sre_agent/deploy/gitlab/ci/common.sh)
+- [sre_agent/deploy/gitlab/ci/notify_feishu.sh](/home/kevin/project/cube-studio/sre_agent/deploy/gitlab/ci/notify_feishu.sh)
+- [sre_agent/deploy/gitlab/ci/promote_release.sh](/home/kevin/project/cube-studio/sre_agent/deploy/gitlab/ci/promote_release.sh)
+- [sre_agent/deploy/gitlab/ci/run_preview_container.sh](/home/kevin/project/cube-studio/sre_agent/deploy/gitlab/ci/run_preview_container.sh)
+
+Docs / tests:
+
+- [sre_agent/docs/gitlab/README.md](/home/kevin/project/cube-studio/sre_agent/docs/gitlab/README.md)
+- [sre_agent/docs/gitlab/PIPELINE_RUNBOOK.md](/home/kevin/project/cube-studio/sre_agent/docs/gitlab/PIPELINE_RUNBOOK.md)
+- [sre_agent/tests/test_api.py](/home/kevin/project/cube-studio/sre_agent/tests/test_api.py)
+- [sre_agent/tests/test_graph.py](/home/kevin/project/cube-studio/sre_agent/tests/test_graph.py)
+- [sre_agent/tests/test_node_mapping.py](/home/kevin/project/cube-studio/sre_agent/tests/test_node_mapping.py)
+- [sre_agent/tests/test_skills.py](/home/kevin/project/cube-studio/sre_agent/tests/test_skills.py)
+- [sre_agent/tests/test_tools.py](/home/kevin/project/cube-studio/sre_agent/tests/test_tools.py)
+
+**Runtime**
+
+Diagnosis behavior:
+
+- 网络诊断可利用更完整的节点映射和只读网络工具进行排障
+- GPU 掉卡场景优先匹配内置 skill，并可通过 live demo 脚本进行现场验证
+- 默认不再通过 `auto_diagnose_alert_names` 预置告警名触发自动诊断
+
+Release behavior:
+
+- 手动 release 可通过 `RELEASE_VERSION` 指定版本
+- release promotion 会校验版本必须单调递增，除非显式设置 `ALLOW_RELEASE_VERSION_REUSE=1`
+- release 飞书卡片包含对应 preview 入口
+
+Container behavior:
+
+- Docker 与 preview 流水线不再处理 LLM key/model 变更
+- LLM 运行时配置由应用启动逻辑读取 `config.yaml` 后注入环境
+
 2026-04-10 19:20
 
 **Scope**

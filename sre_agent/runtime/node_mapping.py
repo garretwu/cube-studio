@@ -92,6 +92,7 @@ def iter_inventory_candidate_paths() -> list[Path]:
 def load_inventory_node_mapping() -> tuple[set[str], dict[str, str]]:
     names: set[str] = set()
     host_to_name: dict[str, str] = {}
+    k8s_node_to_name: dict[str, str] = {}
     if yaml is None:
         return names, host_to_name
 
@@ -111,12 +112,19 @@ def load_inventory_node_mapping() -> tuple[set[str], dict[str, str]]:
             name = str(worker.get("name") or "").strip()
             ssh = worker.get("ssh")
             host = str(ssh.get("host") or "").strip() if isinstance(ssh, dict) else ""
+            k8s_node_name = str(worker.get("k8s_node_name") or "").strip()
             if name:
                 names.add(name)
             if name and host:
                 host_to_name[host] = name
+            if name and k8s_node_name:
+                k8s_node_to_name[k8s_node_name] = name
         if names or host_to_name:
             break
+    # Merge k8s_node_to_name into host_to_name for unified lookup
+    for k8s_name, worker_name in k8s_node_to_name.items():
+        if k8s_name not in host_to_name:
+            host_to_name[k8s_name] = worker_name
     return names, host_to_name
 
 

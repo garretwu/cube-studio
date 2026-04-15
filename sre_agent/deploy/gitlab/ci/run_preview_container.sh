@@ -122,10 +122,6 @@ while [ "${run_attempts}" -lt 20 ]; do
     -p "${frontend_host_port}:${frontend_container_port}"
   )
 
-  if [ -n "${SRE_OPENAI_API_KEY:-}" ]; then
-    run_cmd+=(-e "SRE_OPENAI_API_KEY=${SRE_OPENAI_API_KEY}")
-  fi
-
   run_cmd+=("${WEB_IMAGE_REF}")
 
   if "${run_cmd[@]}" >/tmp/sre-agent-preview-container.id 2>/tmp/sre-agent-preview-container.err; then
