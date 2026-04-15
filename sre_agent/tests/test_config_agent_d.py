@@ -99,6 +99,7 @@ def test_load_config_applies_reason_timeout_tuning_values(tmp_path: Path) -> Non
                 "  reasoning_context_strategy: transcript_compact",
                 "  reasoning_overflow_behavior: compact",
                 "  reasoning_input_target_tokens: 32000",
+                '  ttft_external_process_default_node: "10.11.4.13"',
                 "  step_timeout_sec: 240",
                 "  total_timeout_sec: 900",
             ]
@@ -111,5 +112,6 @@ def test_load_config_applies_reason_timeout_tuning_values(tmp_path: Path) -> Non
     assert config.agent.reasoning_context_strategy == "transcript_compact"
     assert config.agent.reasoning_overflow_behavior == "compact"
     assert config.agent.reasoning_input_target_tokens == 32000
+    assert config.agent.ttft_external_process_default_node == "10.11.4.13"
     assert config.agent.step_timeout_sec == 240
     assert config.agent.total_timeout_sec == 900

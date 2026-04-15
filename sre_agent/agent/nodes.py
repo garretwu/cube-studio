@@ -1479,6 +1479,79 @@ def _summarize_find_process(data: Any) -> tuple[str, dict[str, Any] | None]:
     }
 
 
+def _summarize_process_find(data: Any) -> tuple[str, dict[str, Any] | None]:
+    if not isinstance(data, dict):
+        summary, _, fields = _summarize_generic_data(data)
+        return summary, fields
+
+    raw_count = data.get("count")
+    try:
+        count = max(0, int(raw_count))
+    except Exception:  # noqa: BLE001
+        count = 0
+
+    node = str(data.get("node", "") or "").strip()
+    matches = data.get("matches")
+    normalized_matches = matches if isinstance(matches, list) else []
+    process_names: list[str] = []
+    sample_pids: list[int] = []
+    suspicious_processes: list[dict[str, Any]] = []
+    seen_pid: set[int] = set()
+
+    for item in normalized_matches[:12]:
+        if not isinstance(item, dict):
+            continue
+        process = str(item.get("process", "") or "").strip()
+        command = str(item.get("command", "") or "").strip()
+        candidate_name = command or process
+        if process and process not in process_names:
+            process_names.append(process)
+        pid = item.get("pid")
+        parsed_pid: int | None = None
+        try:
+            parsed_pid = int(pid)
+        except Exception:  # noqa: BLE001
+            parsed_pid = None
+        if parsed_pid is not None and parsed_pid not in sample_pids:
+            sample_pids.append(parsed_pid)
+
+        if not _is_ttft_suspect_load_process(f"{process} {command}".strip()):
+            continue
+        if parsed_pid is None:
+            continue
+        if parsed_pid in seen_pid:
+            continue
+        seen_pid.add(parsed_pid)
+        suspicious_processes.append(
+            {
+                "pid": parsed_pid,
+                "process_name": candidate_name,
+                "memory_mib": None,
+                "node": node,
+            }
+        )
+
+    suspicious_present = bool(suspicious_processes)
+    summary = (
+        f"matches={count}; node={node or 'unknown'}; "
+        f"suspicious_load_present={str(suspicious_present).lower()}"
+    )
+    if suspicious_present:
+        preview = ",".join(
+            f"{item.get('pid')}:{_truncate_prompt_note(str(item.get('process_name', '')), max_chars=40)}"
+            for item in suspicious_processes[:3]
+        )
+        summary = f"{summary}; suspicious={preview}"
+    return summary, {
+        "match_count": count,
+        "node": node or None,
+        "process_names": process_names[:6],
+        "sample_pids": sample_pids[:6],
+        "suspicious_load_present": suspicious_present,
+        "suspicious_load_processes": suspicious_processes[:6],
+    }
+
+
 def _parse_gpu_process_rows(text: str, *, max_rows: int = 32) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for line in text.splitlines():
@@ -1667,6 +1740,8 @@ def _build_tool_prompt_fields(
         prompt_summary, key_fields = _summarize_counter_text(data, label="rdma")
     elif tool == "network.find_process":
         prompt_summary, key_fields = _summarize_find_process(data)
+    elif tool == "process.find":
+        prompt_summary, key_fields = _summarize_process_find(data)
     elif tool == "gpu.get_processes":
         prompt_summary, key_fields = _summarize_gpu_processes(data)
     else:
@@ -2416,6 +2491,10 @@ def _extract_evidence_signals(tool_runs: list[dict[str, Any]]) -> dict[str, Any]
                 signals["process_evidence_steps"].append(int(run.get("step", 0) or 0))
         elif tool == "gpu.get_processes":
             suspect_items: list[dict[str, Any]] = []
+            run_params = run.get("params")
+            run_node = ""
+            if isinstance(run_params, dict):
+                run_node = str(run_params.get("node", "") or "").strip()
             key_suspects = fields.get("suspicious_load_processes")
             if isinstance(key_suspects, list):
                 for item in key_suspects[:6]:
@@ -2429,6 +2508,7 @@ def _extract_evidence_signals(tool_runs: list[dict[str, Any]]) -> dict[str, Any]
                             "pid": item.get("pid"),
                             "process_name": process_name,
                             "memory_mib": item.get("memory_mib"),
+                            "node": run_node,
                         }
                     )
             if not suspect_items:
@@ -2445,6 +2525,7 @@ def _extract_evidence_signals(tool_runs: list[dict[str, Any]]) -> dict[str, Any]
                             "pid": pids[idx] if idx < len(pids) else None,
                             "process_name": name,
                             "memory_mib": None,
+                            "node": run_node,
                         }
                     )
             if not suspect_items and any(token in summary for token in ("stress", "benchmark", "load", "simulator")):
@@ -2453,11 +2534,65 @@ def _extract_evidence_signals(tool_runs: list[dict[str, Any]]) -> dict[str, Any]
                         "pid": None,
                         "process_name": "suspected_load_process",
                         "memory_mib": None,
+                        "node": run_node,
                     }
                 )
             if suspect_items:
                 signals["ttft_suspect_process_present"] = True
                 signals["ttft_gpu_process_steps"].append(int(run.get("step", 0) or 0))
+                target = signals.get("ttft_suspect_processes")
+                if not isinstance(target, list):
+                    target = []
+                    signals["ttft_suspect_processes"] = target
+                for item in suspect_items:
+                    if item not in target:
+                        target.append(item)
+        elif tool == "process.find":
+            suspect_items = []
+            run_params = run.get("params")
+            run_node = ""
+            if isinstance(run_params, dict):
+                run_node = str(run_params.get("node", "") or "").strip()
+            if not run_node and isinstance(fields.get("node"), str):
+                run_node = str(fields.get("node") or "").strip()
+            key_suspects = fields.get("suspicious_load_processes")
+            if isinstance(key_suspects, list):
+                for item in key_suspects[:8]:
+                    if not isinstance(item, dict):
+                        continue
+                    process_name = str(item.get("process_name", "") or "").strip()
+                    if not process_name:
+                        continue
+                    suspect_items.append(
+                        {
+                            "pid": item.get("pid"),
+                            "process_name": process_name,
+                            "memory_mib": item.get("memory_mib"),
+                            "node": str(item.get("node", "") or "").strip() or run_node,
+                        }
+                    )
+            if not suspect_items:
+                run_data = run.get("data")
+                matches = run_data.get("matches") if isinstance(run_data, dict) else None
+                if isinstance(matches, list):
+                    for item in matches[:8]:
+                        if not isinstance(item, dict):
+                            continue
+                        process = str(item.get("process", "") or "").strip()
+                        command = str(item.get("command", "") or "").strip()
+                        merged = f"{process} {command}".strip()
+                        if not _is_ttft_suspect_load_process(merged):
+                            continue
+                        suspect_items.append(
+                            {
+                                "pid": item.get("pid"),
+                                "process_name": command or process,
+                                "memory_mib": None,
+                                "node": run_node,
+                            }
+                        )
+            if suspect_items:
+                signals["ttft_suspect_process_present"] = True
                 target = signals.get("ttft_suspect_processes")
                 if not isinstance(target, list):
                     target = []
@@ -3910,6 +4045,71 @@ def _resolve_ttft_target_node(
     return ""
 
 
+def _resolve_kill_process_entity_id(params: dict[str, Any]) -> str | None:
+    raw_entity = str(params.get("entity_id", "") or "").strip()
+    if raw_entity:
+        return raw_entity
+
+    pid_raw = params.get("pid")
+    try:
+        parsed_pid = int(pid_raw)
+        if parsed_pid > 0:
+            return f"proc:{parsed_pid}"
+    except Exception:  # noqa: BLE001
+        pass
+
+    pid_or_name = str(params.get("pid_or_name", "") or "").strip()
+    if pid_or_name:
+        return f"proc:{pid_or_name}"
+
+    process_name = str(params.get("process_name", "") or "").strip()
+    if process_name:
+        return f"proc:{process_name}"
+    return None
+
+
+def _collect_ttft_suspect_processes(raw_items: Any, *, max_items: int = 6) -> list[dict[str, Any]]:
+    if not isinstance(raw_items, list):
+        return []
+
+    seen: set[str] = set()
+    normalized: list[dict[str, Any]] = []
+    for item in raw_items:
+        if not isinstance(item, dict):
+            continue
+        process_name = str(item.get("process_name", "") or "").strip()
+        node = str(item.get("node", "") or "").strip()
+        pid: int | None = None
+        try:
+            parsed_pid = int(item.get("pid"))
+            if parsed_pid > 0:
+                pid = parsed_pid
+        except Exception:  # noqa: BLE001
+            pid = None
+        if not process_name and pid is None:
+            continue
+        node_prefix = node.lower()
+        dedupe_key = (
+            f"{node_prefix}|pid:{pid}"
+            if pid is not None
+            else f"{node_prefix}|name:{process_name.lower()}"
+        )
+        if dedupe_key in seen:
+            continue
+        seen.add(dedupe_key)
+        entry: dict[str, Any] = {
+            "pid": pid,
+            "process_name": process_name,
+            "memory_mib": item.get("memory_mib"),
+        }
+        if node:
+            entry["node"] = node
+        normalized.append(entry)
+        if len(normalized) >= max_items:
+            break
+    return normalized
+
+
 def _build_ttft_kill_process_plan_candidate(
     *,
     diagnosis: DiagnosisResult,
@@ -3919,66 +4119,81 @@ def _build_ttft_kill_process_plan_candidate(
     variables: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     suspect_present = bool(evidence_signals.get("ttft_suspect_process_present"))
-    suspect_raw = evidence_signals.get("ttft_suspect_processes")
-    suspect_processes = suspect_raw if isinstance(suspect_raw, list) else []
+    suspect_processes = _collect_ttft_suspect_processes(evidence_signals.get("ttft_suspect_processes"))
     if not suspect_present or not suspect_processes:
         return None
 
-    node = _resolve_ttft_target_node(tool_runs=tool_runs, variables=variables)
-    if not node:
-        return None
+    default_node = _resolve_ttft_target_node(tool_runs=tool_runs, variables=variables)
 
-    selected: dict[str, Any] | None = None
-    for item in suspect_processes:
-        if not isinstance(item, dict):
+    steps: list[dict[str, Any]] = []
+    for index, suspect in enumerate(suspect_processes, start=1):
+        step_node = str(suspect.get("node", "") or "").strip() or default_node
+        if not step_node:
             continue
-        process_name = str(item.get("process_name", "") or "").strip()
-        if not process_name:
+        process_name = str(suspect.get("process_name", "") or "").strip()
+        pid = suspect.get("pid")
+        step_params: dict[str, Any] = {
+            "node": step_node,
+            "signal": "TERM",
+        }
+        target_token = ""
+        target_label = ""
+        if isinstance(pid, int) and pid > 0:
+            step_params["pid"] = pid
+            target_token = str(pid)
+            target_label = f"PID {pid}"
+        elif process_name:
+            step_params["pid_or_name"] = process_name
+            target_token = process_name
+            target_label = process_name
+        else:
             continue
-        selected = item
-        break
-    if selected is None:
-        return None
-
-    process_name = str(selected.get("process_name", "") or "").strip()
-    pid_raw = selected.get("pid")
-    pid: int | None
-    try:
-        parsed_pid = int(pid_raw)
-        pid = parsed_pid if parsed_pid > 0 else None
-    except Exception:  # noqa: BLE001
-        pid = None
-
-    step_params: dict[str, Any] = {
-        "node": node,
-        "signal": "TERM",
-    }
-    if pid is not None:
-        step_params["pid"] = pid
-        target_label = f"PID {pid}"
-    else:
-        step_params["pid_or_name"] = process_name
-        target_label = process_name
-
-    return {
-        "plan_id": f"proposal-{(session_id or 'session')[:8]}-ttft-kill",
-        "root_cause": diagnosis.root_cause,
-        "description": "识别到可疑 GPU 负载进程，先终止疑似压测/模拟负载并复核 TTFT 与告警状态。",
-        "steps": [
+        step_params["entity_id"] = f"proc:{target_token}"
+        steps.append(
             {
-                "step_id": 1,
-                "description": f"在节点 {node} 终止可疑负载进程 {target_label}",
+                "step_id": index,
+                "description": f"在节点 {step_node} 终止可疑负载进程 {target_label}",
                 "tool": "kill_process",
                 "params": step_params,
                 "verification": {"method": "wait", "wait_seconds": 60},
                 "timeout": 60,
             }
-        ],
+        )
+    if not steps:
+        return None
+
+    canary: dict[str, Any] | None = None
+    if len(steps) >= 2:
+        canary = {
+            "enabled": True,
+            "target_percentage": 0.5,
+            "monitor_duration": 60,
+            "success_criteria": [
+                {
+                    "metric": "vector(1)",
+                    "operator": ">=",
+                    "value": 1,
+                }
+            ],
+            "criteria_mode": "all",
+            "max_batches": 2,
+            "auto_rollback_on_regression": True,
+            "progressive": False,
+        }
+
+    payload: dict[str, Any] = {
+        "plan_id": f"proposal-{(session_id or 'session')[:8]}-ttft-kill",
+        "root_cause": diagnosis.root_cause,
+        "description": "识别到可疑压测/模拟负载进程，按进程粒度灰度终止并复核 TTFT 与告警状态。",
+        "steps": steps,
         "estimated_impact": "释放异常争用，预期 TTFT 回落并推动告警恢复。",
         "confidence": _normalize_plan_confidence(max(0.55, float(diagnosis.confidence))),
         "priority": _normalize_plan_priority(diagnosis.triage_priority),
         "safety_level": "high",
     }
+    if canary is not None:
+        payload["canary"] = canary
+    return payload
 
 
 def _normalize_step_params_in_place(
@@ -4035,6 +4250,11 @@ def _normalize_step_params_in_place(
             scope = _extract_tc_scope(step)
             if scope:
                 params["kind"] = scope
+
+    if tool_name == "kill_process":
+        process_entity_id = _resolve_kill_process_entity_id(params)
+        if process_entity_id:
+            params["entity_id"] = process_entity_id
 
     if registry is None or not tool_name:
         return None

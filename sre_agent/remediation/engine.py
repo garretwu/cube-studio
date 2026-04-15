@@ -333,13 +333,32 @@ class RemediationEngine:
 
     @staticmethod
     def _collect_targets(plan: RemediationPlan) -> list[str]:
-        targets: list[str] = []
+        process_targets: list[str] = []
+        generic_targets: list[str] = []
+        seen_process: set[str] = set()
+        seen_generic: set[str] = set()
+
+        def _append_unique(bucket: list[str], seen: set[str], value: str) -> None:
+            normalized = str(value or "").strip()
+            if not normalized or normalized in seen:
+                return
+            seen.add(normalized)
+            bucket.append(normalized)
+
         for step in plan.steps:
+            entity_id = step.params.get("entity_id")
+            if isinstance(entity_id, str) and entity_id.strip().lower().startswith("proc:"):
+                _append_unique(process_targets, seen_process, entity_id)
+                continue
             for key in ("node", "target", "service_id", "entity_id"):
                 value = step.params.get(key)
                 if isinstance(value, str) and value.strip():
-                    targets.append(value.strip())
-        return sorted(set(targets))
+                    _append_unique(generic_targets, seen_generic, value)
+
+        # Prefer process-level targets for canary batching when available.
+        if process_targets:
+            return process_targets
+        return generic_targets
 
     @staticmethod
     def _filter_steps_by_targets(

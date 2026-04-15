@@ -51,6 +51,7 @@ _TTFT_ALLOWED_READONLY_TOOLS = [
     "k8s.list_pods",
     "gpu.get_metrics",
     "gpu.get_processes",
+    "process.find",
     "prometheus.query_instant",
 ]
 
@@ -1321,6 +1322,7 @@ def _build_diagnosis_query(
     selected_pod = str(variables.get("pod") or "").strip()
     selected_node = str(variables.get("node") or "").strip()
     node_ip = str(variables.get("node_ip") or "").strip()
+    external_process_default_node = str(variables.get("ttft_external_process_default_node") or "").strip()
     promql = str(variables.get("promql") or "").strip()
     context_hints: dict[str, Any] = {
         "namespace": namespace,
@@ -1328,6 +1330,7 @@ def _build_diagnosis_query(
         "selected_pod": selected_pod,
         "selected_node": selected_node,
         "selected_node_ip": node_ip,
+        "external_process_default_node": external_process_default_node,
         "promql": promql,
         "target_resolution_chain": variables.get("target_resolution_chain"),
     }
@@ -1337,12 +1340,18 @@ def _build_diagnosis_query(
         diagnosis_goal=(
             "This is AIServiceTTFT diagnosis; prioritize deterministic service->pod->node->gpu evidence chain "
             "before broad exploration. Use prometheus.query_instant only for verification and keep it within "
-            "two calls unless absolutely required for contradiction resolution. If gpu.get_processes reveals suspicious synthetic/load-generator processes, summarize the evidence and prepare a proposal-only kill_process remediation step (approval-gated, not auto-executed)."
+            "two calls unless absolutely required for contradiction resolution. If suspicious load-generator processes "
+            "are not found on the serving pod node, continue with external pressure path and inspect likely load-source "
+            "nodes from context hints. If gpu.get_processes reveals suspicious synthetic/load-generator processes, "
+            "summarize the evidence and prepare proposal-only kill_process remediation steps per process. For two or "
+            "more suspicious processes on the same node, prefer process-level canary batches (50% then 100%, "
+            "approval-gated, not auto-executed)."
         ),
         investigation_steps=[
             "定位受影响 service 对应的 pod（k8s.resolve_service_pods / k8s.list_pods）。",
             "定位 pod 所在 node 与 node_ip（k8s.resolve_pod_node_ip + inventory mapping）。",
             "在目标 node 采集 GPU metrics/processes（gpu.get_metrics + gpu.get_processes），识别异常负载进程。",
+            "若服务侧 node 未发现可疑进程，必须在 external_process_default_node 执行 process.find(pattern=load_simulator|stress|benchmark|simulator) 复核外部压测源。",
             "用 prometheus.query_instant 复核 TTFT 与请求时延变化，并给出处置结论。",
         ],
         context_hints=context_hints,
@@ -1373,6 +1382,7 @@ def _build_runtime_diagnosis_variables(
     if iface.lower() in {"unknown", "n/a", "none", "-", "--", "null"}:
         iface = ""
     promql = _infer_default_promql(alert_name=alert.alert_name, labels=labels)
+    ttft_external_process_default_node = str(cfg.agent.ttft_external_process_default_node or "").strip()
     payload: dict[str, Any] = {
         "alert_name": alert.alert_name,
         "severity": alert.severity.value,
@@ -1384,6 +1394,8 @@ def _build_runtime_diagnosis_variables(
         "namespace": namespace,
         "promql": promql,
     }
+    if _is_ttft_alert_name(alert.alert_name) and ttft_external_process_default_node:
+        payload["ttft_external_process_default_node"] = ttft_external_process_default_node
     if service:
         payload["service"] = service
     if pod:
@@ -2189,6 +2201,9 @@ def create_app(
     knowledge_store, created_knowledge = _build_knowledge_store(cfg, knowledge)
     registry = tool_registry or build_default_registry()
     context = execution_context or ToolExecutionContext()
+    ttft_external_process_default_node = str(cfg.agent.ttft_external_process_default_node or "").strip()
+    if ttft_external_process_default_node:
+        context.metadata["ttft_external_process_default_node"] = ttft_external_process_default_node
     if "alert" not in context.channels:
         alertmanager_url = str(cfg.global_.alertmanager_url or "").strip()
         if alertmanager_url:

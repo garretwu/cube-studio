@@ -1,6 +1,6 @@
 """Read-only tool handlers wrapping existing channel APIs."""
 
-from sre_agent.tools.readonly import bmc, gpu, k8s, knowledge, logs, memory, network, ontology, platform, prometheus, skills
+from sre_agent.tools.readonly import bmc, gpu, k8s, knowledge, logs, memory, network, ontology, platform, process, prometheus, skills
 
 __all__ = [
     "bmc",
@@ -12,6 +12,7 @@ __all__ = [
     "network",
     "ontology",
     "platform",
+    "process",
     "prometheus",
     "skills",
 ]

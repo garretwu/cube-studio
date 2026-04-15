@@ -69,6 +69,7 @@ class AgentRuntimeConfig(BaseModel):
     reasoning_overflow_behavior: str = "fail"
     reasoning_input_target_tokens: int = 180000
     reasoning_model_family: str | None = None
+    ttft_external_process_default_node: str | None = None
     reason_context_char_budget: int = 2400
     tool_message_char_limit: int = 1200
     reason_preserve_recent_messages: int = 6

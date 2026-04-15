@@ -27,6 +27,47 @@ def _is_placeholder_param(value: Any) -> bool:
     return False
 
 
+def _has_explicit_kill_process_target(params: dict[str, Any]) -> bool:
+    pid_value = params.get("pid")
+    if pid_value is not None:
+        try:
+            if int(str(pid_value).strip()) > 0:
+                return True
+        except Exception:  # noqa: BLE001
+            pass
+
+    for key in ("pid_or_name", "process_name"):
+        value = params.get(key)
+        if isinstance(value, str) and value.strip() and not _is_placeholder_param(value):
+            return True
+    return False
+
+
+def _is_valid_proc_entity_id(value: Any) -> bool:
+    if not isinstance(value, str):
+        return False
+    normalized = value.strip()
+    if not normalized:
+        return False
+    if not normalized.lower().startswith("proc:"):
+        return False
+    return bool(normalized.split(":", 1)[1].strip())
+
+
+def _validate_kill_process_target(params: dict[str, Any]) -> str | None:
+    if _has_explicit_kill_process_target(params):
+        return None
+
+    entity_id = params.get("entity_id")
+    if _is_valid_proc_entity_id(entity_id):
+        return None
+
+    entity_text = str(entity_id or "").strip()
+    if entity_text:
+        return "missing_target for kill_process (entity_id must be 'proc:<target>' when no pid/pid_or_name/process_name)"
+    return "missing_target for kill_process (require pid, pid_or_name, process_name, or entity_id='proc:<target>')"
+
+
 class PlanValidator:
     def __init__(
         self,
@@ -64,6 +105,10 @@ class PlanValidator:
             ]
             if placeholder_fields:
                 errors.append(f"step {step.step_id}: placeholder_params {placeholder_fields} (value like 'unknown' is not valid)")
+            if step.tool == "kill_process":
+                target_error = _validate_kill_process_target(step.params)
+                if target_error:
+                    errors.append(f"step {step.step_id}: {target_error}")
             if step.rollback_tool and step.rollback_tool not in write_tool_names:
                 errors.append(f"step {step.step_id}: rollback_tool {step.rollback_tool!r} not found")
             if step.verification.tool and step.verification.tool not in read_tool_names:

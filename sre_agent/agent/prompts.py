@@ -111,6 +111,8 @@ Only set "remediation_plan" to null when the evidence is genuinely insufficient 
 The remediation plan is proposal-only and must not assume any write action has run.
 For `k8s.delete_pod`, valid params use `namespace` plus either `label_selector` or `pod_name`.
 Never invent `pod_selector` for `k8s.delete_pod`.
+For `kill_process`, `params` must include at least one target field: `pid`, `pid_or_name`, `process_name`, or `entity_id` formatted as `proc:<target>`.
+Do not output `kill_process` with only `node` and natural-language target text in `description`.
 Do not encode required remediation parameters only in free-form text such as "在节点 10.11.0.12 上执行"; they must appear in `params`.
 If multiple entities are affected (e.g., multiple nodes or pods), include a canary config to roll out the fix progressively. Otherwise omit canary.
 """

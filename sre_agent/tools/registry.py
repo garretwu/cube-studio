@@ -317,7 +317,7 @@ class ToolRegistry:
 
 def build_default_registry() -> ToolRegistry:
     """Build the default Agent-B tool layout."""
-    from sre_agent.tools.readonly import bmc, gpu, k8s, knowledge, logs, memory, network, ontology, platform, prometheus, skills
+    from sre_agent.tools.readonly import bmc, gpu, k8s, knowledge, logs, memory, network, ontology, platform, process, prometheus, skills
     from sre_agent.tools.write import k8s as write_k8s
     from sre_agent.tools.write import network as write_network
     from sre_agent.tools.write import remediation as write_remediation
@@ -470,6 +470,16 @@ def build_default_registry() -> ToolRegistry:
             tags=("network", "readonly"),
         ),
         network.find_process,
+    )
+    registry.register(
+        ToolDefinition(
+            name="process.find",
+            description="Find matching processes via SSH ps output (read-only), with optional node fallback from context metadata.",
+            safety_level=SafetyLevel.READ_ONLY,
+            params_schema={"type": "object", "required": ["pattern"]},
+            tags=("process", "readonly", "ssh"),
+        ),
+        process.find,
     )
     registry.register(
         ToolDefinition(

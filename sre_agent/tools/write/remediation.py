@@ -43,6 +43,25 @@ def _extract_output(value: Any) -> Any:
     return {"output": output or "", "error": error or ""}
 
 
+def _resolve_kill_target_from_entity_id(params: dict[str, Any]) -> tuple[str, str]:
+    raw_entity_id = str(params.get("entity_id", "") or "").strip()
+    if not raw_entity_id:
+        return "", ""
+
+    if not raw_entity_id.lower().startswith("proc:"):
+        raise ToolValidationError(
+            "kill_process entity_id must start with 'proc:' when pid/pid_or_name/process_name is missing"
+        )
+
+    target = raw_entity_id.split(":", 1)[1].strip()
+    if not target:
+        raise ToolValidationError("kill_process entity_id target is empty")
+
+    if target.isdigit():
+        return target, ""
+    return "", target
+
+
 async def execute_plan(params: dict[str, Any], context: ToolExecutionContext) -> Any:
     remediation = context.channels.get("remediation")
     if remediation is None:
@@ -77,7 +96,10 @@ async def kill_process(params: dict[str, Any], context: ToolExecutionContext) ->
 
     target = pid_text or pid_or_name or process_name
     if not target:
-        raise ToolValidationError("kill_process requires pid, pid_or_name, or process_name")
+        pid_text, pid_or_name = _resolve_kill_target_from_entity_id(params)
+        target = pid_text or pid_or_name
+    if not target:
+        raise ToolValidationError("kill_process requires pid, pid_or_name, process_name, or entity_id='proc:<target>'")
 
     if pid_text:
         command = f"kill -{signal} -- {shlex.quote(pid_text)}"

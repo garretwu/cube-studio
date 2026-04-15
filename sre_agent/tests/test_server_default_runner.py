@@ -548,6 +548,7 @@ def test_default_runner_ttft_alert_uses_ttft_allowed_tools(monkeypatch, tmp_path
     config = SREAgentConfig.model_validate(
         {
             "global": {"aidc_id": "test-aidc"},
+            "agent": {"ttft_external_process_default_node": "10.11.4.13"},
             "ontology": {"db_path": str(tmp_path / "ontology.db")},
             "memory": {"db_dir": str(tmp_path / "memory")},
         }
@@ -574,4 +575,58 @@ def test_default_runner_ttft_alert_uses_ttft_allowed_tools(monkeypatch, tmp_path
     assert "k8s.resolve_service_pods" in allowed
     assert "k8s.resolve_pod_node_ip" in allowed
     assert "gpu.get_metrics" in allowed
+    assert "process.find" in allowed
     assert "prometheus.query_instant" in allowed
+    variables = captured.get("variables")
+    assert isinstance(variables, dict)
+    assert variables.get("ttft_external_process_default_node") == "10.11.4.13"
+
+
+def test_create_app_injects_ttft_external_process_default_node_into_context_metadata(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("JWT_SECRET", "secret")
+    monkeypatch.setenv("SRE_OPENAI_API_KEY", "test-key")
+    monkeypatch.setenv("SRE_LLM_MODEL", "MiniMax-M2.7")
+
+    context = ToolExecutionContext()
+    config = SREAgentConfig.model_validate(
+        {
+            "global": {"aidc_id": "test-aidc"},
+            "agent": {"ttft_external_process_default_node": "10.11.4.13"},
+            "ontology": {"db_path": str(tmp_path / "ontology.db")},
+            "memory": {"db_dir": str(tmp_path / "memory")},
+        }
+    )
+
+    with TestClient(create_app(config=config, execution_context=context)):
+        pass
+
+    assert context.metadata.get("ttft_external_process_default_node") == "10.11.4.13"
+
+
+def test_build_ttft_query_includes_external_pressure_path_instruction(tmp_path) -> None:
+    from sre_agent.models.alert import Alert
+    from sre_agent.server import _build_diagnosis_query
+
+    alert = Alert.model_validate(
+        {
+            "alert_name": "AIServiceTTFTP99High",
+            "severity": "warning",
+            "labels": {"namespace": "service", "service": "qwen3-32b-fp8-202602261"},
+            "annotations": {"summary": "ttft high"},
+            "starts_at": datetime(2026, 4, 14, 12, 0, tzinfo=UTC).isoformat(),
+            "fingerprint": "fp-ttft-query-external-process-1",
+            "status": "firing",
+        }
+    )
+    query = _build_diagnosis_query(
+        alert=alert,
+        variables={
+            "namespace": "service",
+            "service": "qwen3-32b-fp8-202602261",
+            "ttft_external_process_default_node": "10.11.4.13",
+        },
+        topology_context={"summary": "topology-summary", "affected_count": 1},
+        extra_alerts=None,
+    )
+    assert "external pressure path" in query
+    assert "10.11.4.13" in query

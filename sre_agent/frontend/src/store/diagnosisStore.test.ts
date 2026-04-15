@@ -801,4 +801,49 @@ describe("useDiagnosisStore", () => {
     expect(useDiagnosisStore.getState().localAuditRecords).toHaveLength(1);
     expect(useDiagnosisStore.getState().localAuditRecords[0]?.summary).toContain("拒绝执行");
   });
+
+  it("appends canary batch progress messages in order and then observation summary", async () => {
+    await useDiagnosisStore.getState().bootstrapSession(diagnosisSession.session_id);
+
+    useDiagnosisStore.getState().applyEvent({
+      schema_version: "1",
+      type: "remediation_progress",
+      session_id: diagnosisSession.session_id,
+      timestamp: "2026-04-15T09:00:01Z",
+      data: {
+        stage: "canary_batch_started",
+        batch: "canary-1",
+        message: "灰度批次 1/2 开始，覆盖目标 proc:ls_demo_a",
+      },
+    });
+    useDiagnosisStore.getState().applyEvent({
+      schema_version: "1",
+      type: "remediation_progress",
+      session_id: diagnosisSession.session_id,
+      timestamp: "2026-04-15T09:00:10Z",
+      data: {
+        stage: "canary_batch_completed",
+        batch: "canary-1",
+        message: "灰度批次 1/2 完成，覆盖目标 proc:ls_demo_a",
+      },
+    });
+    useDiagnosisStore.getState().applyEvent({
+      schema_version: "1",
+      type: "observation_result",
+      session_id: diagnosisSession.session_id,
+      timestamp: "2026-04-15T09:01:00Z",
+      data: {
+        alert_cleared: true,
+        metrics_improved: true,
+        baseline_alert: { status: "firing" },
+        post_alert: { status: "resolved" },
+      },
+    });
+
+    const state = useDiagnosisStore.getState();
+    const latestMessages = state.messages.slice(-3).map((item) => item.content);
+    expect(latestMessages[0]).toBe("灰度批次 1/2 开始，覆盖目标 proc:ls_demo_a");
+    expect(latestMessages[1]).toBe("灰度批次 1/2 完成，覆盖目标 proc:ls_demo_a");
+    expect(latestMessages[2]).toContain("观察结果：alert_cleared=true，metrics_improved=true，告警状态 firing -> resolved");
+  });
 });

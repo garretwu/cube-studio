@@ -24,6 +24,7 @@ agent:
   reasoning_input_target_tokens: 32000
   reasoning_model_family: "MiniMax-M2.5"
   #reasoning_model_family: "glm-5.1"
+  ttft_external_process_default_node: "10.11.4.13"
   step_timeout_sec: 240
   total_timeout_sec: 900
 

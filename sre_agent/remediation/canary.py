@@ -90,7 +90,7 @@ class CanaryExecutor:
             if canary.success_criteria:
                 if progress_callback is not None:
                     await progress_callback(
-                        stage="canary_batch_started",
+                        stage="canary_check_passed",
                         details={
                             "batch": f"canary-{batch_index + 1}",
                             "batch_index": batch_index + 1,
