@@ -1537,6 +1537,24 @@ async def _apply_ttft_runtime_bootstrap(
         updated["node"] = node
     if resolution_chain:
         updated["target_resolution_chain"] = " -> ".join(resolution_chain)
+
+    external_node = str(
+        updated.get("ttft_external_process_default_node") or cfg.agent.ttft_external_process_default_node or ""
+    ).strip()
+    precheck = context.metadata.get("ttft_external_ssh_precheck")
+    if external_node and isinstance(precheck, dict):
+        precheck_node = str(precheck.get("node", "") or "").strip()
+        if precheck_node == external_node:
+            precheck_ok = bool(precheck.get("ok", False))
+            updated["ttft_external_ssh_precheck_ok"] = precheck_ok
+            if not precheck_ok:
+                blocked_reason = str(precheck.get("error") or "").strip() or str(
+                    context.metadata.get("ttft_external_probe_blocked_reason", "") or ""
+                ).strip()
+                if blocked_reason:
+                    updated["ttft_external_probe_blocked_reason"] = blocked_reason
+            else:
+                updated.pop("ttft_external_probe_blocked_reason", None)
     return updated
 
 
@@ -2200,6 +2218,115 @@ async def _preload_redfish_sessions(
     LOGGER.warning("redfish pre-auth degraded: succeeded %s/%s hosts", ok_count, total)
 
 
+async def _precheck_ttft_external_ssh_access(
+    *,
+    cfg: SREAgentConfig,
+    context: ToolExecutionContext,
+    services: AgentCServices,
+) -> None:
+    external_node = str(cfg.agent.ttft_external_process_default_node or "").strip()
+    if not external_node:
+        return
+
+    ssh_channel = context.channels.get("ssh")
+    if ssh_channel is None or not hasattr(ssh_channel, "run_command"):
+        message = "ttft external ssh precheck skipped: ssh channel is unavailable"
+        context.metadata["ttft_external_ssh_precheck"] = {
+            "node": external_node,
+            "ok": False,
+            "checked_at": datetime.now(UTC).isoformat(),
+            "error": message,
+            "whoami": "",
+            "hostname": "",
+            "process_probe_count": 0,
+        }
+        context.metadata["ttft_external_probe_blocked_reason"] = message
+        _set_channel_status(
+            services=services,
+            context=context,
+            channel_name="ssh",
+            health="degraded",
+            last_error=message,
+            mode="channel+precheck",
+        )
+        LOGGER.warning(message)
+        return
+
+    command = (
+        "whoami && hostname && "
+        "ps -eo pid=,comm=,args= "
+        "| grep -E -- 'load_simulator|stress|benchmark|simulator' "
+        "| grep -v -E 'grep -E --' "
+        "| head -n 5 || true"
+    )
+
+    result = None
+    error_text = ""
+    whoami = ""
+    hostname = ""
+    process_probe_count = 0
+    try:
+        result = await ssh_channel.run_command(external_node, command, use_sudo=False)
+    except Exception as exc:  # noqa: BLE001
+        error_text = str(exc).strip() or exc.__class__.__name__
+
+    success = False
+    if result is not None:
+        success = bool(getattr(result, "success", False))
+        output = str(getattr(result, "output", "") or "")
+        if output:
+            lines = [line.strip() for line in output.splitlines() if line.strip()]
+            if lines:
+                whoami = lines[0]
+            if len(lines) > 1:
+                hostname = lines[1]
+            if len(lines) > 2:
+                process_probe_count = len(lines[2:])
+        if not success:
+            error_text = str(getattr(result, "error", "") or "").strip() or error_text or "ssh precheck failed"
+
+    payload = {
+        "node": external_node,
+        "ok": bool(success),
+        "checked_at": datetime.now(UTC).isoformat(),
+        "error": error_text or None,
+        "whoami": whoami,
+        "hostname": hostname,
+        "process_probe_count": int(process_probe_count),
+    }
+    context.metadata["ttft_external_ssh_precheck"] = payload
+    if success:
+        context.metadata.pop("ttft_external_probe_blocked_reason", None)
+        _set_channel_status(
+            services=services,
+            context=context,
+            channel_name="ssh",
+            health="ready",
+            last_error=None,
+            mode="channel+precheck",
+        )
+        LOGGER.info(
+            "ttft external ssh precheck succeeded: node=%s user=%s host=%s process_probe_count=%s",
+            external_node,
+            whoami or "<unknown>",
+            hostname or "<unknown>",
+            process_probe_count,
+        )
+        return
+
+    blocked_reason = f"SSH precheck failed for TTFT external node {external_node}: {error_text or 'unknown error'}"
+    context.metadata["ttft_external_probe_blocked_reason"] = blocked_reason
+    _set_channel_status(
+        services=services,
+        context=context,
+        channel_name="ssh",
+        health="degraded",
+        last_error=blocked_reason,
+        mode="channel+precheck",
+    )
+    LOGGER.warning(blocked_reason)
+
+
 def create_app(
     *,
     config: SREAgentConfig | None = None,
@@ -2425,6 +2552,11 @@ def create_app(
         if created_memory and hasattr(memory_store, "connect"):
             await memory_store.connect()
         await _preload_redfish_sessions(
+            cfg=cfg,
+            context=context,
+            services=services,
+        )
+        await _precheck_ttft_external_ssh_access(
             cfg=cfg,
             context=context,
             services=services,
