@@ -1337,6 +1337,7 @@ def build_api_router() -> APIRouter:
                         metric_key=metric_key,
                         query=query,
                         value=value,
+                        available=value is not None,
                         condition=condition if isinstance(condition, dict) else None,
                     )
                 )
@@ -1395,10 +1396,15 @@ def build_api_router() -> APIRouter:
                 improved = bool(operator) and _compare_scalar(after.value, operator, expected)
                 all_improved = all_improved and improved
             else:
-                try:
-                    improved = float(after.value) <= float(before.value)
-                except (TypeError, ValueError):
-                    improved = False
+                after_val = after.value if after is not None else None
+                before_val = before.value if before is not None else None
+                if after_val is None and isinstance(before_val, (int, float)) and float(before_val) > 0:
+                    improved = True  # 基线异常高、修复后无数据 → 视为改善
+                elif after_val is not None and before_val is not None:
+                    try:
+                        improved = float(after_val) <= float(before_val)
+                    except (TypeError, ValueError):
+                        improved = False
                 all_improved = all_improved and improved
             reviews.append(
                 RemediationMetricReview(

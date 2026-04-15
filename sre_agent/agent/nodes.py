@@ -4315,13 +4315,7 @@ def _build_ttft_kill_process_plan_candidate(
             "enabled": True,
             "target_percentage": 0.5,
             "monitor_duration": 60,
-            "success_criteria": [
-                {
-                    "metric": "vector(1)",
-                    "operator": ">=",
-                    "value": 1,
-                }
-            ],
+            "success_criteria": [],
             "criteria_mode": "all",
             "max_batches": 2,
             "auto_rollback_on_regression": True,

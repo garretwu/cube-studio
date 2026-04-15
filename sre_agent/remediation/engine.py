@@ -318,11 +318,17 @@ class RemediationEngine:
         if config.method == "tool_call":
             if config.wait_seconds > 0:
                 await asyncio.sleep(config.wait_seconds)
-            result = await self.tools.execute(
-                config.tool or "",
-                config.tool_params or {},
-                self.execution_context,
-            )
+            try:
+                result = await asyncio.wait_for(
+                    self.tools.execute(
+                        config.tool or "",
+                        config.tool_params or {},
+                        self.execution_context,
+                    ),
+                    timeout=60,
+                )
+            except asyncio.TimeoutError:
+                return False
             if not result.success:
                 return False
             if config.condition is None:

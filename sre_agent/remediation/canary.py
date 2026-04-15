@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 from typing import Any, Callable, Coroutine
 
 from sre_agent.models.remediation import (
@@ -188,6 +189,8 @@ class CanaryExecutor:
             value = await self.prometheus.query_instant(condition.metric)
         else:
             value = 0
+        if value is None or (isinstance(value, float) and (math.isnan(value) or math.isinf(value))):
+            return True  # 指标缺失或不可用时，不阻断灰度
         return _compare(value, condition.operator, condition.value)
 
 

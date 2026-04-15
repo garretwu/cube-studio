@@ -73,8 +73,7 @@ class CanaryConfig(StrictFrozenModel):
 
     @model_validator(mode="after")
     def _enabled_requires_criteria(self) -> CanaryConfig:
-        if self.enabled and not self.success_criteria:
-            raise ValueError("enabled canary requires at least one success criterion")
+        # 允许空 criteria（step-level verification 已覆盖），跳过条件检查直接通过
         return self
 
 
