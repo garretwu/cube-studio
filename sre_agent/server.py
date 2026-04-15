@@ -1129,6 +1129,45 @@ def _build_runtime_diagnosis_variables(
         payload["node"] = node
     if iface:
         payload["iface"] = iface
+
+    # Extract host_ip for skill tool params (used by GPU/BMC tools)
+    # Priority:
+    # 1. labels.host_ip (explicit)
+    # 2. SSH host IP from inventory via k8s_node_name/Hostname mapping
+    # 3. instance label (strip port, may be pod IP not SSH IP)
+    # 4. annotations.host_ip
+    host_ip = str(labels.get("host_ip") or labels.get("HostIP") or "").strip()
+
+    if not host_ip:
+        # Try to resolve SSH host IP from inventory using Hostname label
+        hostname = str(labels.get("Hostname") or "").strip()
+        if hostname:
+            workers = _load_inventory_workers(cfg=cfg)
+            for worker in workers:
+                k8s_node_name = str(worker.get("k8s_node_name") or "").strip()
+                worker_name = str(worker.get("name") or "").strip()
+                ssh_config = worker.get("ssh")
+                ssh_host = str(ssh_config.get("host") or "").strip() if isinstance(ssh_config, dict) else ""
+                if k8s_node_name == hostname or worker_name == hostname:
+                    if ssh_host:
+                        host_ip = ssh_host
+                        break
+
+    if not host_ip:
+        # Fallback: extract IP from instance label (may be Prometheus pod IP)
+        instance = str(labels.get("instance") or "").strip()
+        if instance and ":" in instance:
+            host_ip = instance.split(":")[0].strip()
+        elif instance:
+            host_ip = instance
+
+    if not host_ip:
+        host_ip = str(annotations.get("host_ip") or annotations.get("HostIP") or "").strip()
+
+    if host_ip and host_ip.lower() not in {"unknown", "n/a", "none", "-", "--", "null"}:
+        payload["host_ip"] = host_ip
+
+    return payload
     return payload
 
 
@@ -1577,7 +1616,8 @@ def _read_inventory_payload(path: Path) -> dict[str, Any]:
 
 def _load_redfish_preauth_targets(cfg: SREAgentConfig) -> list[dict[str, Any]]:
     mode = str(cfg.ontology.discovery.mode or "static").strip().lower()
-    if mode != "live":
+    # Support both "live" and "hybrid" modes for BMC credential loading
+    if mode not in ("live", "hybrid"):
         return []
     inventory_path = Path(str(cfg.ontology.discovery.live_inventory_path or "").strip())
     payload = _read_inventory_payload(inventory_path)
@@ -1659,7 +1699,8 @@ async def _preload_redfish_sessions(
     if redfish_channel is None or not hasattr(redfish_channel, "authenticate"):
         return
     mode = str(cfg.ontology.discovery.mode or "static").strip().lower()
-    if mode != "live":
+    # Support both "live" and "hybrid" modes for BMC credential loading
+    if mode not in ("live", "hybrid"):
         return
 
     targets = _load_redfish_preauth_targets(cfg)

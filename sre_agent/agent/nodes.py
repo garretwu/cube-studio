@@ -326,6 +326,10 @@ async def reason_node(
         state,
         pending_tool_calls,
     )
+    pending_tool_calls = _auto_follow_loaded_skill_recommended_tools(
+        state,
+        pending_tool_calls,
+    )
     raw_response_text = _extract_text(response.content)
     step_index = state.get("step_count", 0) + 1
 
@@ -576,17 +580,15 @@ def _normalize_positive_int(value: Any, *, default: int, minimum: int) -> int:
 
 def _select_bound_tool_names_for_turn(state: SREAgentState) -> list[str] | None:
     allowed_tool_names = state.get("allowed_tool_names")
+    if not state.get("tool_runs"):
+        return ["skills.list_skills"]
+
     if not allowed_tool_names:
         return None
 
     names = [str(name).strip() for name in allowed_tool_names if str(name).strip()]
     if not names:
         return None
-
-    if not state.get("tool_runs"):
-        skill_names = [name for name in names if name.startswith("skills.")]
-        if skill_names:
-            return skill_names
     return names
 
 
@@ -714,6 +716,139 @@ def _choose_skill_script_to_run(load_run: dict[str, Any], tool_runs: list[dict[s
     return skill_id, script
 
 
+def _extract_recommended_tool_calls_from_skill_content(content: str) -> list[dict[str, Any]]:
+    calls: list[dict[str, Any]] = []
+    if not str(content or "").strip():
+        return calls
+
+    for snippet in re.findall(r"`([^`]+)`", content):
+        text = str(snippet or "").strip()
+        if not text:
+            continue
+        match = re.match(r"^([a-z0-9_]+\.[a-z0-9_]+)(?:\((.*)\))?$", text)
+        if not match:
+            continue
+        tool_name = str(match.group(1) or "").strip()
+        if not tool_name or tool_name == "skills.run_skill":
+            continue
+
+        args: dict[str, Any] = {}
+        raw_args = str(match.group(2) or "").strip()
+        if raw_args:
+            for key, value in re.findall(r'([a-zA-Z_][a-zA-Z0-9_]*)\s*=\s*"([^"]*)"', raw_args):
+                args[str(key).strip()] = value
+            for key, value in re.findall(r"([a-zA-Z_][a-zA-Z0-9_]*)\s*=\s*'([^']*)'", raw_args):
+                args[str(key).strip()] = value
+
+        calls.append({"name": tool_name, "args": args})
+    return calls
+
+
+def _interpolate_params(params: dict[str, Any], variables: dict[str, Any] | None) -> dict[str, Any]:
+    """Interpolate ${variable} syntax in params dict with values from variables.
+
+    Supports:
+    - ${host_ip} -> variables.host_ip
+    - ${labels.instance} -> variables.labels.instance
+    - ${gpu_uuid} -> variables.gpu_uuid
+    """
+    if not params:
+        return {}
+    if not variables:
+        return dict(params)
+
+    result: dict[str, Any] = {}
+    for key, value in params.items():
+        if isinstance(value, str) and value.startswith("${") and value.endswith("}"):
+            # Extract variable path: ${host_ip} -> "host_ip"
+            var_path = value[2:-1].strip()
+            interpolated = _resolve_variable_path(var_path, variables)
+            result[key] = interpolated if interpolated is not None else value
+        else:
+            result[key] = value
+    return result
+
+
+def _resolve_variable_path(path: str, variables: dict[str, Any]) -> Any:
+    """Resolve a dotted path like 'labels.instance' from variables dict."""
+    parts = path.split(".")
+    current: Any = variables
+    for part in parts:
+        if isinstance(current, dict):
+            current = current.get(part)
+        else:
+            return None
+        if current is None:
+            return None
+    return current
+
+
+def _choose_recommended_tool_call_from_skill_load(
+    load_run: dict[str, Any],
+    tool_runs: list[dict[str, Any]],
+    variables: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    data = load_run.get("data")
+    if not isinstance(data, dict):
+        return None
+
+    scripts = data.get("scripts")
+    if isinstance(scripts, list) and scripts:
+        return None
+
+    # Only count successful tool executions as "attempted"
+    attempted_runs: list[tuple[str, dict[str, Any]]] = []
+    for run in tool_runs:
+        if not isinstance(run, dict):
+            continue
+        if not bool(run.get("success", False)):
+            continue
+        tool_name = str(run.get("tool", "")).strip()
+        params = run.get("params")
+        attempted_runs.append((tool_name, params if isinstance(params, dict) else {}))
+
+    recommended_tools = data.get("recommended_tools")
+    candidates: list[dict[str, Any]] = []
+    if isinstance(recommended_tools, list):
+        for item in recommended_tools:
+            if not isinstance(item, dict):
+                continue
+            tool_name = str(item.get("tool", "")).strip()
+            params = item.get("params", {})
+            # Interpolate ${variable} syntax in params
+            interpolated_params = _interpolate_params(params, variables)
+            candidates.append(
+                {
+                    "name": tool_name,
+                    "args": interpolated_params,
+                }
+            )
+    if not candidates:
+        content = str(data.get("content") or "").strip()
+        if not content:
+            return None
+        candidates = _extract_recommended_tool_calls_from_skill_content(content)
+
+    for candidate in candidates:
+        tool_name = str(candidate.get("name", "")).strip()
+        args_dict = candidate.get("args") or {}
+
+        already_attempted = False
+        for attempted_tool_name, attempted_params in attempted_runs:
+            if attempted_tool_name != tool_name:
+                continue
+            if not args_dict:
+                already_attempted = True
+                break
+            if all(attempted_params.get(key) == value for key, value in args_dict.items()):
+                already_attempted = True
+                break
+        if already_attempted:
+            continue
+        return {"name": tool_name, "args": args_dict}
+    return None
+
+
 def _auto_run_single_script_skill(
     state: SREAgentState,
     pending_tool_calls: list[dict[str, Any]],
@@ -742,6 +877,67 @@ def _auto_run_single_script_skill(
         {
             "name": "skills.run_skill",
             "args": {"skill_id": skill_id, "script": script},
+            "id": call_id,
+            "type": "tool_call",
+        }
+    ]
+
+
+def _auto_follow_loaded_skill_recommended_tools(
+    state: SREAgentState,
+    pending_tool_calls: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    # Check if LLM is trying to run_skill on a skill without scripts
+    # If so, replace with recommended_tools instead
+    tool_runs = [dict(item) for item in list(state.get("tool_runs", []) or []) if isinstance(item, dict)]
+    latest_load = _find_latest_successful_skill_load(tool_runs)
+
+    if latest_load is not None:
+        data = latest_load.get("data", {})
+        if isinstance(data, dict):
+            scripts = data.get("scripts")
+            # If skill has no scripts, check if LLM is calling skills.run_skill
+            if not (isinstance(scripts, list) and scripts):
+                for call in pending_tool_calls:
+                    if isinstance(call, dict) and str(call.get("name", "")).strip() == "skills.run_skill":
+                        # Replace with recommended_tools instead
+                        variables = dict(state.get("variables", {}) or {})
+                        candidate = _choose_recommended_tool_call_from_skill_load(latest_load, tool_runs, variables=variables)
+                        if candidate:
+                            call_id = str(call.get("id", "") or "").strip() or "call-skill-followup"
+                            return [
+                                {
+                                    "name": str(candidate.get("name", "")).strip(),
+                                    "args": dict(candidate.get("args") or {}),
+                                    "id": call_id,
+                                    "type": "tool_call",
+                                }
+                            ]
+
+    # Normal flow: if pending_tool_calls already has non-list_skills calls, return them
+    if any(
+        str(call.get("name", "")).strip() not in {"skills.list_skills"}
+        for call in pending_tool_calls
+        if isinstance(call, dict)
+    ):
+        return pending_tool_calls
+
+    if latest_load is None:
+        return pending_tool_calls
+
+    variables = dict(state.get("variables", {}) or {})
+    candidate = _choose_recommended_tool_call_from_skill_load(latest_load, tool_runs, variables=variables)
+    if not candidate:
+        return pending_tool_calls
+
+    call_id = ""
+    if pending_tool_calls:
+        call_id = str((pending_tool_calls[0] or {}).get("id", "")).strip()
+    call_id = call_id or "call-skill-followup"
+    return [
+        {
+            "name": str(candidate.get("name", "")).strip(),
+            "args": dict(candidate.get("args") or {}),
             "id": call_id,
             "type": "tool_call",
         }
@@ -984,11 +1180,13 @@ def _compact_prompt_value(
     depth: int = 0,
     max_depth: int = 2,
     max_items: int = 6,
-    max_keys: int = 8,
+    max_keys: int = 50,  # Increased to show full labels (host_ip etc.)
     max_string: int = 180,
 ) -> Any:
     if depth >= max_depth:
         if isinstance(value, dict):
+            if max_keys <= 0:
+                return {"kind": "object", "keys": sorted(str(key) for key in value.keys())}
             return {"kind": "object", "keys": sorted(str(key) for key in list(value.keys())[:max_keys])}
         if isinstance(value, list):
             return {"kind": "list", "items": len(value)}
@@ -1007,7 +1205,7 @@ def _compact_prompt_value(
         return items
     if isinstance(value, dict):
         compact: dict[str, Any] = {}
-        keys = list(value.keys())[:max_keys]
+        keys = list(value.keys()) if max_keys <= 0 else list(value.keys())[:max_keys]
         for key in keys:
             compact[str(key)] = _compact_prompt_value(
                 value[key],
@@ -1017,7 +1215,7 @@ def _compact_prompt_value(
                 max_keys=max_keys,
                 max_string=max_string,
             )
-        if len(value) > max_keys:
+        if max_keys > 0 and len(value) > max_keys:
             compact["_remaining_keys"] = len(value) - max_keys
         return compact
     return value
@@ -1294,6 +1492,12 @@ def _build_tool_prompt_fields(
         prompt_summary, key_fields = _summarize_counter_text(data, label="rdma")
     elif tool == "network.find_process":
         prompt_summary, key_fields = _summarize_find_process(data)
+    elif tool == "bmc.get_fan_status":
+        prompt_summary, key_fields = _summarize_bmc_fan_status(data)
+    elif tool == "gpu.get_metrics":
+        prompt_summary, key_fields = _summarize_gpu_metrics(data)
+    elif tool == "gpu.get_processes":
+        prompt_summary, key_fields = _summarize_gpu_processes(data)
     else:
         prompt_summary, item_count, key_fields = _summarize_generic_data(data)
     if item_count is None:
@@ -1309,6 +1513,95 @@ def _build_tool_prompt_fields(
     }
 
 
+def _summarize_bmc_fan_status(data: Any) -> tuple[str, dict[str, Any]]:
+    """Summarize BMC fan status for prompt."""
+    if not isinstance(data, dict):
+        return "kind=unknown", None
+    summary = data.get("fan_status_summary") or {}
+    mode_name = str(summary.get("mode_name", "Unknown") or "Unknown")
+    is_manual = bool(summary.get("is_manual", False))
+    is_fixed_pwm = bool(summary.get("is_fixed_pwm", False))
+    fixed_pwm = summary.get("fixed_pwm")
+    pwm_values = summary.get("unique_pwm_values", [])
+    fan_count = summary.get("fan_count", 0)
+    bmc_host = str(data.get("bmc_host", "") or "").strip()
+
+    key_fields = {
+        "mode": mode_name,
+        "is_manual": is_manual,
+        "is_fixed_pwm": is_fixed_pwm,
+        "fixed_pwm": fixed_pwm,
+        "pwm_values": pwm_values[:4] if pwm_values else None,
+        "fan_count": fan_count,
+        "bmc_host": bmc_host,
+    }
+    prompt_summary = f"mode={mode_name}; manual={is_manual}; fixed_pwm={is_fixed_pwm}; pwm={fixed_pwm or pwm_values}; fans={fan_count}"
+    return prompt_summary, key_fields
+
+
+def _summarize_gpu_metrics(data: Any) -> tuple[str, dict[str, Any]]:
+    """Summarize GPU metrics (nvidia-smi output) for prompt."""
+    output = _extract_output_blob(data)
+    if not output:
+        return "output=empty", None
+    # Parse CSV output: index, name, util, mem_used, mem_total, temp
+    lines = [line.strip() for line in output.splitlines() if line.strip()]
+    gpu_info: list[dict[str, Any]] = []
+    max_temp = 0
+    max_util = 0
+    for line in lines:
+        parts = [p.strip() for p in line.split(",")]
+        if len(parts) >= 6:
+            try:
+                idx = int(parts[0])
+                name = parts[1][:30]  # truncate GPU name
+                util = int(parts[2])
+                mem_used = int(parts[3])
+                mem_total = int(parts[4])
+                temp = int(parts[5])
+                gpu_info.append({"idx": idx, "temp": temp, "util": util, "mem": f"{mem_used}/{mem_total}"})
+                max_temp = max(max_temp, temp)
+                max_util = max(max_util, util)
+            except (ValueError, IndexError):
+                continue
+    if not gpu_info:
+        return f"lines={len(lines)}; parse_failed", None
+    temps = [g["temp"] for g in gpu_info]
+    prompt_summary = f"gpu_count={len(gpu_info)}; temps={temps}; max_temp={max_temp}C; max_util={max_util}%"
+    key_fields = {"gpu_count": len(gpu_info), "temps": temps, "max_temp": max_temp, "max_util": max_util, "gpu_info": gpu_info[:4]}
+    return prompt_summary, key_fields
+
+
+def _summarize_gpu_processes(data: Any) -> tuple[str, dict[str, Any]]:
+    """Summarize GPU processes for prompt."""
+    output = _extract_output_blob(data)
+    if not output:
+        return "output=empty", None
+    # Parse CSV output: pid, process_name, gpu_uuid, mem_used
+    lines = [line.strip() for line in output.splitlines() if line.strip()]
+    processes: list[dict[str, Any]] = []
+    process_names: set[str] = set()
+    total_mem = 0
+    for line in lines:
+        parts = [p.strip() for p in line.split(",")]
+        if len(parts) >= 4:
+            try:
+                pid = int(parts[0])
+                name = parts[1][:20]  # truncate process name
+                gpu_uuid = parts[2][:20]
+                mem = int(parts[3])
+                processes.append({"pid": pid, "name": name, "mem": mem})
+                process_names.add(name)
+                total_mem += mem
+            except (ValueError, IndexError):
+                continue
+    if not processes:
+        return f"lines={len(lines)}; no_processes", None
+    prompt_summary = f"process_count={len(processes)}; names={list(process_names)}; total_mem={total_mem}MiB"
+    key_fields = {"process_count": len(processes), "process_names": list(process_names)[:3], "total_mem": total_mem, "processes": processes[:4]}
+    return prompt_summary, key_fields
+
+
 def _render_tool_run_for_prompt(item: dict[str, Any]) -> dict[str, Any]:
     rendered = {
         "step": int(item.get("step", 0) or 0),
@@ -1321,10 +1614,17 @@ def _render_tool_run_for_prompt(item: dict[str, Any]) -> dict[str, Any]:
         "data_kind": str(item.get("data_kind", "") or "").strip() or None,
         "item_count": item.get("item_count"),
         "skill_id": str(item.get("skill_id", "") or "").strip() or None,
-        "key_fields": _compact_prompt_value(_safe_jsonable(item.get("key_fields")), max_items=4, max_keys=6, max_string=96),
     }
-    if not rendered["key_fields"]:
-        rendered.pop("key_fields")
+    # Include key_fields for specific tools that have useful data summaries
+    key_fields = _safe_jsonable(item.get("key_fields"))
+    if key_fields and isinstance(key_fields, dict):
+        # For BMC/GPU tools, include full key_fields as output_summary
+        tool = str(item.get("tool", "") or "").strip()
+        if tool.startswith("bmc.") or tool.startswith("gpu."):
+            rendered["output_summary"] = key_fields
+        else:
+            rendered["key_fields"] = _compact_prompt_value(key_fields, max_items=4, max_keys=6, max_string=96)
+    return rendered
     return rendered
 
 
@@ -2377,6 +2677,11 @@ async def act_node(
         minimum=200,
     )
     allowed_tool_names_for_turn = set(_select_bound_tool_names_for_turn(state) or [])
+
+    # Inject variables into context.metadata for skill execution
+    # This allows SkillExecutor to extract SSH info from alert labels
+    if variables:
+        context.metadata["variables"] = variables
     observation_entries: list[dict[str, Any]] = []
     for tool_call in pending:
         tool_name = str(tool_call.get("name", "")).strip()
