@@ -14,6 +14,7 @@ import {
 } from "../features/topologyExplorer/selectors";
 import { useTopologyExplorerStore } from "../features/topologyExplorer/store";
 import type { SearchFeedback } from "../features/topologyExplorer/types";
+import { buildTopologyObjectPath } from "../features/topologyExplorer/topologyObjectRoute";
 import "../features/topologyExplorer/topologyExplorer.css";
 
 export type TopologyPageVariant = "default" | "modified";
@@ -194,13 +195,12 @@ function TopologyPage({ variant = "default" }: TopologyPageProps) {
   };
 
   const handleOpenObjectTopology = (nodeId: string, mode: "default" | "isolate") => {
-    const query = mode === "isolate" ? "?mode=isolate" : "";
-    navigate(`/topology/object/${nodeId}${query}`);
+    navigate(buildTopologyObjectPath(nodeId, mode));
   };
 
   return (
     <div className={`page-grid topology-modified-page topology-route topology-route--${variant}`}>
-      <h1 className="visually-hidden">{variant === "modified" ? "拓扑（修改）" : "运行拓扑"}</h1>
+      <h1 className="visually-hidden">{variant === "modified" ? "鎷撴墤锛堜慨鏀癸級" : "杩愯鎷撴墤"}</h1>
       <section className="page-stage topology-modified-stage topology-modified-stage--canvas-only">
         <TopologyExplorer
           allNodes={topologyPageData?.nodes ?? []}
@@ -257,3 +257,6 @@ function TopologyPage({ variant = "default" }: TopologyPageProps) {
 }
 
 export default TopologyPage;
+
+
+

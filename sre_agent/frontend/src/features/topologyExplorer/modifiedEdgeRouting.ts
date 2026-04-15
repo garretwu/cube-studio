@@ -1,5 +1,6 @@
 ﻿import { Position, type Edge, type Node } from "@xyflow/react";
 
+import type { TopologyObject, TopologyRelation } from "../../api/types";
 import type { TopologyCanvasMetrics } from "./canvasConfig";
 
 export const MODIFIED_EDGE_HANDLE_IDS = {
@@ -23,6 +24,11 @@ export type ModifiedEdgeRouting = {
   targetHandle: string;
 };
 
+export type ModifiedSmoothStepPathOptions = {
+  borderRadius: number;
+  offset: number;
+};
+
 type RoutingDirection = "left" | "right" | "top" | "bottom";
 
 type RoutingInput = {
@@ -42,21 +48,23 @@ function getNodeCenter(node: Node, metrics: TopologyCanvasMetrics) {
 }
 
 function getAnchorOffset(direction: RoutingDirection, metrics: TopologyCanvasMetrics) {
+  // Modified nodes are rendered as compact circles near the top of each node card.
+  // Anchor edges on the outer circle frame so links visually touch entity boundaries.
   const orbRadius = metrics.nodeCircleSize / 2;
-  const verticalCenter = orbRadius + 2;
-  const horizontalCenter = metrics.nodeWidth / 2;
+  const centerX = metrics.nodeWidth / 2;
+  const centerY = orbRadius;
 
   switch (direction) {
     case "left":
-      return { x: 0, y: verticalCenter };
+      return { x: centerX - orbRadius, y: centerY };
     case "right":
-      return { x: metrics.nodeWidth, y: verticalCenter };
+      return { x: centerX + orbRadius, y: centerY };
     case "top":
-      return { x: horizontalCenter, y: 4 };
+      return { x: centerX, y: 0 };
     case "bottom":
-      return { x: horizontalCenter, y: metrics.nodeCircleSize + 12 };
+      return { x: centerX, y: metrics.nodeCircleSize };
     default:
-      return { x: metrics.nodeWidth, y: verticalCenter };
+      return { x: centerX + orbRadius, y: centerY };
   }
 }
 
@@ -158,7 +166,7 @@ export function deriveModifiedEdgeRouting({
 }: RoutingInput): ModifiedEdgeRouting {
   if (!sourceNode || !targetNode) {
     return {
-      edgeType: "smoothstep",
+      edgeType: "default",
       sourceHandle: MODIFIED_EDGE_HANDLE_IDS.source.right,
       targetHandle: MODIFIED_EDGE_HANDLE_IDS.target.left,
     };
@@ -167,9 +175,70 @@ export function deriveModifiedEdgeRouting({
   const { sourceDirection, targetDirection } = getPreferredDirection(sourceNode, targetNode, metrics);
 
   return {
-    edgeType: "smoothstep",
+    edgeType: "default",
     sourceHandle: getSourceHandleId(sourceDirection),
     targetHandle: getTargetHandleId(targetDirection),
+  };
+}
+
+type ModifiedPathOptionsInput = {
+  sourceType?: TopologyObject["type"];
+  targetType?: TopologyObject["type"];
+  relationType: TopologyRelation["relationType"];
+  isAggregated?: boolean;
+};
+
+function getSortedTypePair(
+  sourceType?: TopologyObject["type"],
+  targetType?: TopologyObject["type"],
+) {
+  if (!sourceType || !targetType) {
+    return undefined;
+  }
+
+  return [sourceType, targetType].sort((left, right) => left.localeCompare(right)).join(":");
+}
+
+// Kept for backwards compatibility with existing imports/tests.
+export function deriveModifiedSmoothStepPathOptions({
+  sourceType,
+  targetType,
+  relationType,
+  isAggregated,
+}: ModifiedPathOptionsInput): ModifiedSmoothStepPathOptions {
+  const pairKey = getSortedTypePair(sourceType, targetType);
+
+  if (pairKey === "port:switch" || pairKey === "cluster:switch") {
+    return {
+      borderRadius: 36,
+      offset: 20,
+    };
+  }
+
+  if (pairKey === "bmc:node" || pairKey === "gpu:node") {
+    return {
+      borderRadius: 14,
+      offset: 8,
+    };
+  }
+
+  if (pairKey === "node:service" || pairKey === "pod:service") {
+    return {
+      borderRadius: 22,
+      offset: 12,
+    };
+  }
+
+  if (isAggregated || relationType === "aggregated") {
+    return {
+      borderRadius: 30,
+      offset: 18,
+    };
+  }
+
+  return {
+    borderRadius: 26,
+    offset: 14,
   };
 }
 

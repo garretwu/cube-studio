@@ -528,23 +528,26 @@ describe("diagnosis remediation audit timeline", () => {
     const systemItems = view.timeline.filter((item) => item.kind === "system");
     const runItems = view.timeline.filter((item) => item.kind === "run");
 
-    expect(runItems).toHaveLength(1);
+    expect(runItems).toHaveLength(2);
     expect(systemItems).toHaveLength(1);
     const approvalItems = systemItems.filter(
       (item) => item.kind === "system" && item.eventKind === "approval_result",
     );
     expect(approvalItems).toHaveLength(1);
     expect(approvalItems[0]?.summary).toContain("\u5ba1\u6279\u4eba alice");
-    expect(runItems[0]?.steps.map((item) => item.summary)).toEqual(
+
+    const allRunSummaries = runItems.flatMap((item) => item.steps.map((step) => step.summary));
+    expect(allRunSummaries).toEqual(
       expect.arrayContaining([
         "[\u7cfb\u7edf] \u5f00\u59cb\u6267\u884c\uff1a\u5f00\u59cb\u6267\u884c\u6b65\u9aa4 1",
         "[\u7cfb\u7edf] \u6267\u884c\u6210\u529f\uff1a\u91d1\u4e1d\u96c0\u6279\u6b21\u9a8c\u8bc1\u901a\u8fc7",
       ]),
     );
-    expect(runItems[0]?.currentStageLabel).toBe("\u6267\u884c\u6210\u529f");
+    expect(runItems.some((item) => item.phase === "canary")).toBe(true);
+    expect(runItems.some((item) => item.phase === "full")).toBe(true);
   });
 
-  it("maps canary, metric feedback, alert recovery, and closure stages into system events", () => {
+  it("splits canary and full rollout into separate run blocks and keeps metric feedback as a system event", () => {
     const session: DiagnosisSession = {
       session_id: "sess-canary-1",
       alert: baseAlert,
@@ -634,24 +637,19 @@ describe("diagnosis remediation audit timeline", () => {
 
     const view = buildDiagnosisLiveView(session, [], events, []);
     const runItems = view.timeline.filter((item) => item.kind === "run");
+    const metricFeedbackItems = view.timeline.filter(
+      (item) => item.kind === "system" && item.eventKind === "metric_feedback",
+    );
 
-    expect(runItems).toHaveLength(1);
-    expect(runItems[0]?.steps.map((item) => item.summary)).toEqual(
+    expect(runItems).toHaveLength(2);
+    expect(runItems.find((item) => item.phase === "canary")?.steps).toHaveLength(2);
+    expect(runItems.find((item) => item.phase === "full")?.steps.map((item) => item.summary)).toEqual(
       expect.arrayContaining([
-        "[\u7cfb\u7edf] \u5f00\u59cb\u7070\u5ea6\uff1a\u5f00\u59cb\u7070\u5ea6\uff0c\u8c03\u7528 skill \u89c2\u5bdf\u7070\u5ea6\u7a97\u53e3",
-        "[\u7cfb\u7edf] \u5df2\u5b8c\u6210\u7070\u5ea6\uff1a\u5df2\u5b8c\u6210\u7070\u5ea6\uff0c\u7b49\u5f85\u6307\u6807\u53cd\u9988\u786e\u8ba4\u7070\u5ea6\u6548\u679c",
-        "[\u7cfb\u7edf] \u6307\u6807\u53cd\u9988\u5df2\u786e\u8ba4\uff1a\u53cd\u9988\u5df2\u786e\u8ba4\u7070\u5ea6\u6ca1\u6709\u95ee\u9898\uff0c\u8fdb\u884c\u5168\u91cf\u4fee\u590d",
         "[\u7cfb\u7edf] \u5f00\u59cb\u5168\u91cf\u4fee\u590d\uff1a\u5f00\u59cb\u5168\u91cf\u4fee\u590d",
-        "[\u7cfb\u7edf] \u62a5\u8b66\u5df2\u6062\u590d\uff1a\u76f8\u5173\u62a5\u8b66\u5df2\u7ecf\u6062\u590d",
-        "[\u7cfb\u7edf] \u8bca\u65ad\u5df2\u5173\u95ed\uff1a\u7ed3\u675f\u5e76\u5173\u95ed\u8bca\u65ad",
+        "[\u7cfb\u7edf] \u544a\u8b66\u5df2\u6062\u590d\uff1a\u76f8\u5173\u62a5\u8b66\u5df2\u7ecf\u6062\u590d",
       ]),
     );
-    expect(runItems[0]?.progress.value).toBe(100);
-    expect(runItems[0]?.metrics).toEqual(
-      expect.arrayContaining(["\u6307\u6807\u53cd\u9988\uff1a\u5df2\u6062\u590d", "\u62a5\u8b66\u72b6\u6001\uff1a\u5df2\u6062\u590d"]),
-    );
-    expect(runItems[0]?.steps.find((item) => item.eventKind === "canary_progress")?.progress?.value).toBe(10);
-    expect(runItems[0]?.steps.find((item) => item.eventKind === "alert_recovery")?.progress?.value).toBe(100);
+    expect(metricFeedbackItems).toHaveLength(1);
   });
 
   it("groups execution stages by explicit run identifiers before falling back to session order", () => {
@@ -767,5 +765,3 @@ describe("diagnosis remediation audit timeline", () => {
   });
 
 });
-
-

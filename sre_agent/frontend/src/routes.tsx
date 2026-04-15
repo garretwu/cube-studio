@@ -1,4 +1,4 @@
-import React from "react";
+﻿import React from "react";
 
 import type { AppIconName } from "./components/ui";
 import AlertsModifiedPage from "./pages/AlertsModified";
@@ -30,7 +30,7 @@ export const appRoutes: AppRoute[] = [
   {
     key: "topologyModified",
     path: "/topology-modified",
-    label: "拓扑（修改）",
+    label: "拓扑（改造）",
     section: "operations",
     icon: "topology",
     element: <TopologyPage variant="modified" />,

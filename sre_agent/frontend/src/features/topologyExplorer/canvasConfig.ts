@@ -39,6 +39,7 @@ export const TOPOLOGY_CANVAS_METRICS: Record<TopologyCanvasVariant, TopologyCanv
       node: { x: 452, y: 396 },
       gpu: { x: 820, y: 332 },
       service: { x: 1160, y: 218 },
+      pod: { x: 1340, y: 232 },
     },
   },
   modified: {
@@ -62,6 +63,7 @@ export const TOPOLOGY_CANVAS_METRICS: Record<TopologyCanvasVariant, TopologyCanv
       node: { x: 344, y: 306 },
       gpu: { x: 620, y: 238 },
       service: { x: 884, y: 170 },
+      pod: { x: 1068, y: 196 },
     },
   },
 };

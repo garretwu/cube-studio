@@ -12359,3 +12359,102 @@
     padding: 0 12px 12px;
   }
 }
+
+/* Diagnosis post-approval execution: linear style */
+.diagnosis-workspace-run-block {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface-panel);
+  box-shadow: none;
+  gap: 12px;
+}
+
+.diagnosis-workspace-run-block--running {
+  border-color: rgba(15, 23, 42, 0.28);
+}
+
+.diagnosis-workspace-run-block--error,
+.diagnosis-workspace-run-block--timeout {
+  border-color: rgba(220, 38, 38, 0.35);
+}
+
+.diagnosis-workspace-run-block--phase-canary {
+  border-top: 2px solid rgba(15, 23, 42, 0.12);
+}
+
+.diagnosis-workspace-run-block--phase-full {
+  border-top: 2px solid rgba(15, 23, 42, 0.22);
+}
+
+.diagnosis-workspace-run-block__eyebrow,
+.diagnosis-workspace-run-block__meta,
+.diagnosis-workspace-run-step__state,
+.diagnosis-workspace-run-tool__status {
+  color: rgba(71, 85, 105, 0.92);
+  letter-spacing: 0.04em;
+}
+
+.diagnosis-workspace-run-block__meta {
+  gap: 0;
+}
+
+.diagnosis-workspace-run-block__meta span + span::before {
+  content: none;
+}
+
+.diagnosis-workspace-run-block__title-row h3 {
+  font-size: 15px;
+  line-height: 22px;
+  font-weight: 650;
+  letter-spacing: 0;
+}
+
+.diagnosis-workspace-run-block__metrics span,
+.diagnosis-workspace-run-step__metric-row span {
+  background: rgba(148, 163, 184, 0.14);
+  color: rgba(30, 41, 59, 0.92);
+}
+
+.diagnosis-workspace-run-step__dot {
+  background: rgba(100, 116, 139, 0.72);
+  box-shadow: 0 0 0 3px rgba(148, 163, 184, 0.2);
+}
+
+.diagnosis-workspace-run-step--running .diagnosis-workspace-run-step__dot {
+  background: rgba(51, 65, 85, 0.92);
+  box-shadow: 0 0 0 3px rgba(100, 116, 139, 0.25);
+}
+
+.diagnosis-workspace-run-step--success .diagnosis-workspace-run-step__dot {
+  background: rgba(15, 23, 42, 0.92);
+  box-shadow: 0 0 0 3px rgba(148, 163, 184, 0.2);
+}
+
+.diagnosis-workspace-run-tool {
+  border-left: 1px solid rgba(148, 163, 184, 0.35);
+}
+
+.diagnosis-workspace-run-tool__copy strong,
+.diagnosis-workspace-run-tool__copy span,
+.diagnosis-workspace-run-tool__status {
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+}
+
+.diagnosis-workspace-run-tool__copy span,
+.diagnosis-workspace-run-tool__status {
+  color: rgba(100, 116, 139, 0.9);
+}
+
+.diagnosis-workspace-run-tool__details {
+  gap: 4px;
+  padding-top: 4px;
+}
+.diagnosis-workspace-run-block .remediation-progress-track {
+  background: rgba(148, 163, 184, 0.22);
+}
+
+.diagnosis-workspace-run-block .remediation-progress-track__fill,
+.diagnosis-workspace-run-block .remediation-progress-track__fill--canary,
+.diagnosis-workspace-run-block .remediation-progress-track__fill--full {
+  background: rgba(15, 23, 42, 0.76);
+}

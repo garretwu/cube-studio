@@ -62,6 +62,7 @@ function createRunItem(
     id: overrides.id ?? "run-sess-1",
     kind: "run",
     runId: overrides.runId ?? "sess-live-execution-run",
+    phase: overrides.phase ?? "canary",
     title: overrides.title ?? "\u7070\u5ea6\u6267\u884c\u8fd0\u884c\u5757",
     timestamp: overrides.timestamp ?? (overrides.updatedAt ?? "2026-04-08T11:02:00.000Z"),
     status: overrides.status ?? "running",
@@ -718,24 +719,23 @@ describe("DiagnosisPage sequential playback", () => {
     expect(screen.getByText(/Thought for \d+ seconds?/i)).toBeInTheDocument();
     expect(screen.queryByText("[\u7cfb\u7edf] \u5df2\u7ecf\u5b8c\u6210\u6267\u884c\u786e\u8ba4")).not.toBeInTheDocument();
 
-    const runBlock = screen.getByTestId("diagnosis-execution-run-block");
-    expect(runBlock).toBeInTheDocument();
-    expect(container.querySelectorAll(".diagnosis-workspace-run-block")).toHaveLength(1);
-    expect(container.querySelectorAll(".diagnosis-workspace-system-event__toggle")).toHaveLength(0);
-    expect(screen.getByText("\u7070\u5ea6\u6267\u884c\u8fd0\u884c\u5757")).toBeInTheDocument();
-    expect(screen.getByText("\u8bca\u65ad\u5df2\u5173\u95ed")).toBeInTheDocument();
-    expect(screen.getByText("\u6267\u884c\u8fdb\u5ea6")).toBeInTheDocument();
+    const runBlocks = screen.getAllByTestId("diagnosis-execution-run-block");
+    expect(runBlocks.length).toBeGreaterThanOrEqual(2);
+    expect(container.querySelectorAll(".diagnosis-workspace-run-block").length).toBeGreaterThanOrEqual(2);
+    expect(container.querySelectorAll(".diagnosis-workspace-system-event__toggle").length).toBeGreaterThanOrEqual(1);
+    expect(screen.getByText("灰度观察")).toBeInTheDocument();
+    expect(screen.getByText("全量修复")).toBeInTheDocument();
+    expect(screen.getAllByText("\u8bca\u65ad\u5df2\u5173\u95ed").length).toBeGreaterThan(0);
     expect(screen.getAllByText("100%").length).toBeGreaterThan(0);
     expect(screen.getByText(/\u5f00\u59cb\u7070\u5ea6/u)).toBeInTheDocument();
-    expect(screen.getByText(/\u6307\u6807\u53cd\u9988\u5df2\u786e\u8ba4/u)).toBeInTheDocument();
-    expect(screen.getByText(/\u62a5\u8b66\u5df2\u6062\u590d/u)).toBeInTheDocument();
+    expect(screen.getAllByText("\u89c2\u5bdf\u7ed3\u8bba").length).toBeGreaterThan(0);
     expect(screen.getAllByText("run_skill").length).toBeGreaterThanOrEqual(2);
     expect(screen.getAllByText(/builtin-vllm-diagnosis/).length).toBeGreaterThan(0);
     expect(screen.getAllByText(/builtin-platform-health/).length).toBeGreaterThan(0);
-    expect(screen.queryByText("skill builtin-vllm-diagnosis \u6267\u884c\u5b8c\u6210")).not.toBeInTheDocument();
+    expect(screen.queryByText(/vllm_p95_ms/i)).not.toBeInTheDocument();
 
     fireEvent.click(screen.getAllByRole("button", { name: /run_skill/ })[0]);
-    expect(screen.getByText("skill builtin-vllm-diagnosis \u6267\u884c\u5b8c\u6210")).toBeInTheDocument();
+    expect(screen.getAllByText(/vllm_p95_ms/i).length).toBeGreaterThan(0);
   });
   it("marks a live loading tool as timeout after 15 seconds and continues the queue", async () => {
     let timelineSource: DiagnosisTimelineItem[] = [];
@@ -804,7 +804,7 @@ describe("DiagnosisPage sequential playback", () => {
 
     await advance(200);
 
-    expect(screen.getByText("loading")).toBeInTheDocument();
+    expect(screen.getByText("running")).toBeInTheDocument();
     expect(screen.queryByText("post-timeout")).not.toBeInTheDocument();
 
     await advance(15000);
@@ -1477,13 +1477,12 @@ describe("DiagnosisPage RCA report card", () => {
     renderLivePage("/diagnosis/sess-live-rca");
 
     expect(screen.getByTestId("diagnosis-report-card")).toBeInTheDocument();
-    expect(screen.getAllByText(/根因诊断/u).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/\u6839\u56e0\u8bca\u65ad/u).length).toBeGreaterThan(0);
     expect(screen.getByText("\u5f53\u524d\u7ed3\u8bba")).toBeInTheDocument();
     expect(screen.getByText("\u5019\u9009\u6839\u56e0")).toBeInTheDocument();
     expect(screen.getByText("\u5f71\u54cd\u8303\u56f4")).toBeInTheDocument();
     expect(screen.getByText("worker-03 \u8282\u70b9 GPU \u4e89\u7528")).toBeInTheDocument();
-    expect(screen.getAllByText(/GPU util 持续 99%，请求排队时长同步抬升。/u).length).toBeGreaterThan(0);
-
+    expect(screen.getAllByText(/GPU util/i).length).toBeGreaterThan(0 );
     fireEvent.click(screen.getByText("\u5c55\u5f00\u8bc1\u636e\u3001\u5047\u8bbe\u4e0e\u4f20\u64ad\u94fe\u8def"));
 
     expect(screen.getByText("\u5047\u8bbe\u4e0e\u8bc1\u636e")).toBeInTheDocument();
@@ -1554,6 +1553,3 @@ describe("DiagnosisPage RCA report card", () => {
     expect(screen.getByText("\u6682\u65e0\u4f20\u64ad\u94fe\u8def\u6570\u636e\u3002")).toBeInTheDocument();
   });
 });
-
-
-

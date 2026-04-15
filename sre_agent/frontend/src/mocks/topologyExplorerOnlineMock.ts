@@ -365,26 +365,26 @@ function buildNamespaceServices(
     runsOnByPod.set(edge.source, list);
   });
 
-  const servicePodEdges: RawTopologyCanvasEdge[] = podNodes
-    .map((pod) => {
-      const ns = (pod.attributes as any)?.namespace;
-      const serviceId = typeof ns === "string" ? serviceByNamespace.get(ns) : undefined;
-      if (!serviceId) {
-        return null;
-      }
-      return {
-        id: `edge-svc-ns-${serviceId}-${pod.id}`,
-        source: serviceId,
-        target: pod.id,
-        relationType: "depends_on",
-        status: "healthy",
-        impactLevel: "low",
-        label: "serves",
-        isCritical: false,
-        isAggregated: false,
-      } satisfies RawTopologyCanvasEdge;
-    })
-    .filter((edge): edge is RawTopologyCanvasEdge => Boolean(edge));
+  const servicePodEdges: RawTopologyCanvasEdge[] = [];
+  podNodes.forEach((pod) => {
+    const ns = (pod.attributes as any)?.namespace;
+    const serviceId = typeof ns === "string" ? serviceByNamespace.get(ns) : undefined;
+    if (!serviceId) {
+      return;
+    }
+
+    servicePodEdges.push({
+      id: `edge-svc-ns-${serviceId}-${pod.id}`,
+      source: serviceId,
+      target: pod.id,
+      relationType: "depends_on",
+      status: "healthy",
+      impactLevel: "low",
+      label: "serves",
+      isCritical: false,
+      isAggregated: false,
+    });
+  });
 
   const serviceNodeEdges = new Map<string, RawTopologyCanvasEdge>();
   podNodes.forEach((pod) => {

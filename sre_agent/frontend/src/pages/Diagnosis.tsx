@@ -21,6 +21,7 @@ import {
   buildDiagnosisDemoScenario,
   buildDiagnosisLiveView,
   groupExecutionRunTimeline,
+  normalizeDiagnosisDisplayText,
   type DiagnosisCandidateView,
   type DiagnosisDemoEvent,
   type DiagnosisPlanView,
@@ -58,6 +59,22 @@ const APPROVAL_KEY_DETAIL_PATTERNS = [
   /^approval action\s*[:\uff1a]/i,
   /^reject reason\s*[:\uff1a]/i,
   /^plan (?:title|version|id)\s*[:\uff1a]/i,
+];
+
+const EXECUTION_DETAIL_NOISE_PATTERNS = [
+  /^\u72b6\u6001\u65f6\u95f4\s*[:\uff1a]/i,
+  /^\u6267\u884c\u9636\u6bb5\s*[:\uff1a]/i,
+  /^\u6267\u884c\u4eba\s*[:\uff1a]/i,
+  /^\u8c03\u7528\s*skill\s*[:\uff1a]/i,
+  /^status time\s*[:\uff1a]/i,
+  /^stage\s*[:\uff1a]/i,
+  /^operator\s*[:\uff1a]/i,
+  /^skill\s*[:\uff1a]/i,
+];
+
+const EXECUTION_DETAIL_SIGNAL_PATTERNS = [
+  /\u6307\u6807|\u53cd\u9988|\u89c2\u5bdf|\u7ed3\u8bba|\u544a\u8b66|\u6062\u590d|\u56de\u6eda|\u4e0b\u4e00\u6b65/i,
+  /p95|p99|latency|error|gpu|util|queue|throughput/i,
 ];
 
 type DemoApprovalDecision = "approved" | "rejected";
@@ -158,6 +175,58 @@ function extractApprovalResultDetailLines(
   }
 
   return dedupeNonEmptyLines([summaryLine]);
+}
+
+function compactExecutionDetailLines(lines: string[]) {
+  const filtered = dedupeNonEmptyLines(lines)
+    .filter((line) => !EXECUTION_DETAIL_NOISE_PATTERNS.some((pattern) => pattern.test(line.trim())))
+    .filter((line) => EXECUTION_DETAIL_SIGNAL_PATTERNS.some((pattern) => pattern.test(line)));
+
+  if (filtered.length > 0) {
+    return filtered.slice(0, 3);
+  }
+
+  return dedupeNonEmptyLines(lines)
+    .filter((line) => !EXECUTION_DETAIL_NOISE_PATTERNS.some((pattern) => pattern.test(line.trim())))
+    .slice(0, 2);
+}
+
+function formatRunStatusLabel(status: "running" | "success" | "error" | "timeout" | "loading") {
+  switch (status) {
+    case "running":
+    case "loading":
+      return "running";
+    case "success":
+      return "done";
+    case "error":
+      return "error";
+    case "timeout":
+      return "timeout";
+    default:
+      return status;
+  }
+}
+
+function getRunPhaseLabel(phase: Extract<DiagnosisTimelineItem, { kind: "run" }>['phase']) {
+  if (phase === "canary") {
+    return "canary stage";
+  }
+  if (phase === "full") {
+    return "full rollout";
+  }
+  return "execution";
+}
+
+function extractSystemEventDetailLines(
+  item: Extract<DiagnosisTimelineItem, { kind: "system" }>,
+) {
+  const usefulLines = compactExecutionDetailLines(item.details);
+  if (usefulLines.length > 0) {
+    return usefulLines;
+  }
+
+  const summaryLine = stripSystemEventPrefix(item.summary);
+  return summaryLine ? [summaryLine] : [];
 }
 function splitThinkingAndConclusion(content: string): {
   thinking: string | null;
@@ -704,11 +773,15 @@ function ExecutionRunBlock({
     });
   };
 
+  const phaseLabel = getRunPhaseLabel(item.phase);
+  const compactMetrics = item.metrics.slice(0, 3);
+
   return (
     <section
       className={cn(
         "diagnosis-workspace-run-block",
         `diagnosis-workspace-run-block--${item.status}`,
+        `diagnosis-workspace-run-block--phase-${item.phase}`,
       )}
       data-testid="diagnosis-execution-run-block"
       title={`${formatTimestamp(item.startedAt)} - ${formatTimestamp(item.updatedAt)}`}
@@ -716,18 +789,15 @@ function ExecutionRunBlock({
       <header className="diagnosis-workspace-run-block__header">
         <div className="diagnosis-workspace-run-block__heading">
           <span className="diagnosis-workspace-run-block__eyebrow">
-            {item.runId}
+            {phaseLabel}
           </span>
           <div className="diagnosis-workspace-run-block__title-row">
             <h3>{item.title}</h3>
-            <ToneBadge tone={item.status === "success" ? "success" : item.status === "running" ? "warning" : "danger"}>
-              {item.currentStageLabel}
-            </ToneBadge>
+            <ToneBadge tone="neutral">{item.currentStageLabel}</ToneBadge>
           </div>
         </div>
         <div className="diagnosis-workspace-run-block__meta">
-          <span>{formatTimestamp(item.startedAt)}</span>
-          <span>{formatTimestamp(item.updatedAt)}</span>
+          <span>{`updated ${formatTimestamp(item.updatedAt)}`}</span>
         </div>
       </header>
 
@@ -745,9 +815,9 @@ function ExecutionRunBlock({
         {item.progress.helper ? <p>{item.progress.helper}</p> : null}
       </div>
 
-      {item.metrics.length > 0 ? (
+      {compactMetrics.length > 0 ? (
         <div className="diagnosis-workspace-run-block__metrics">
-          {item.metrics.map((metric) => (
+          {compactMetrics.map((metric) => (
             <span key={metric}>{metric}</span>
           ))}
         </div>
@@ -757,6 +827,7 @@ function ExecutionRunBlock({
         {item.steps.map((step, index) => {
           const isExpanded = expandedStepIds.has(step.id);
           const stepTools = toolsByStep.get(step.id) ?? [];
+          const stepDetails = compactExecutionDetailLines(step.details);
           return (
             <article
               className={cn(
@@ -783,15 +854,15 @@ function ExecutionRunBlock({
                     <span>{step.summary}</span>
                   </span>
                   <span className="diagnosis-workspace-run-step__state">
-                    {step.progress ? `${step.progress.value}%` : step.status}
+                    {step.progress ? `${step.progress.value}%` : formatRunStatusLabel(step.status)}
                   </span>
                 </button>
 
                 {isExpanded ? (
                   <div className="diagnosis-workspace-run-step__panel">
-                    {step.details.length > 0 ? (
+                    {stepDetails.length > 0 ? (
                       <div className="diagnosis-workspace-run-step__details">
-                        {step.details.map((detail) => (
+                        {stepDetails.map((detail) => (
                           <p key={`${step.id}-${detail}`}>{detail}</p>
                         ))}
                       </div>
@@ -799,7 +870,7 @@ function ExecutionRunBlock({
 
                     {step.metricLines.length > 0 ? (
                       <div className="diagnosis-workspace-run-step__metric-row">
-                        {step.metricLines.map((metric) => (
+                        {step.metricLines.slice(0, 3).map((metric) => (
                           <span key={`${step.id}-${metric}`}>{metric}</span>
                         ))}
                       </div>
@@ -809,9 +880,10 @@ function ExecutionRunBlock({
                       <div className="diagnosis-workspace-run-tools">
                         {stepTools.map((tool) => {
                           const toolExpanded = expandedToolIds.has(tool.id);
-                          const hasToolDetails =
-                            Object.keys(tool.params).length > 0 ||
-                            tool.summaryLines.length > 0;
+                          const toolLines = dedupeNonEmptyLines(tool.summaryLines);
+                          const previewLine = toolLines[0] ?? "";
+                          const detailLines = toolLines.slice(1, 4);
+                          const hasToolDetails = detailLines.length > 0;
                           return (
                             <div
                               className={cn(
@@ -836,20 +908,15 @@ function ExecutionRunBlock({
                                 />
                                 <span className="diagnosis-workspace-run-tool__copy">
                                   <strong>{tool.toolName}</strong>
-                                  {Object.keys(tool.params).length > 0 ? (
-                                    <span>{JSON.stringify(tool.params)}</span>
-                                  ) : null}
+                                  {previewLine ? <span>{previewLine}</span> : null}
                                 </span>
                                 <span className="diagnosis-workspace-run-tool__status">
-                                  {tool.status}
+                                  {formatRunStatusLabel(tool.status)}
                                 </span>
                               </button>
                               {toolExpanded ? (
                                 <div className="diagnosis-workspace-run-tool__details">
-                                  {Object.keys(tool.params).length > 0 ? (
-                                    <pre>{JSON.stringify(tool.params, null, 2)}</pre>
-                                  ) : null}
-                                  {tool.summaryLines.map((line) => (
+                                  {detailLines.map((line) => (
                                     <p key={`${tool.id}-${line}`}>{line}</p>
                                   ))}
                                 </div>
@@ -1162,21 +1229,21 @@ function RCAReportCard({
 }
 
 function getSystemEventCategoryLabel(
-  eventKind: Extract<DiagnosisTimelineItem, { kind: "system" }>["eventKind"],
+  eventKind: Extract<DiagnosisTimelineItem, { kind: "system" }>['eventKind'],
 ) {
   switch (eventKind) {
     case "approval_result":
-      return "鎵ц纭";
+      return "审批反馈";
     case "canary_progress":
-      return "鐏板害杩涘害";
+      return "灰度执行";
     case "metric_feedback":
-      return "鎸囨爣鍙嶉";
+      return "观察结论";
     case "alert_recovery":
-      return "鎶ヨ鎭㈠";
+      return "告警恢复";
     case "session_closed":
-      return "璇婃柇鍏抽棴";
+      return "诊断结束";
     default:
-      return "鎵ц杩涘害";
+      return "系统事件";
   }
 }
 function SystemEventBlock({
@@ -1187,6 +1254,10 @@ function SystemEventBlock({
   const [isExpanded, setIsExpanded] = useState(false);
   const hoverTime = formatTimestamp(item.timestamp);
   const categoryLabel = getSystemEventCategoryLabel(item.eventKind);
+  const detailLines = useMemo(
+    () => extractSystemEventDetailLines(item),
+    [item.details, item.summary],
+  );
 
   return (
     <article
@@ -1208,7 +1279,7 @@ function SystemEventBlock({
             />
           </span>
           <span className="diagnosis-workspace-system-event__label-wrap">
-            <ToneBadge tone={item.statusTone}>{categoryLabel}</ToneBadge>
+            <ToneBadge tone="neutral">{categoryLabel}</ToneBadge>
             <span className="diagnosis-workspace-system-event__summary">
               {item.summary}
             </span>
@@ -1236,7 +1307,7 @@ function SystemEventBlock({
         {isExpanded ? (
           <div className="diagnosis-workspace-system-event__panel">
             <div className="diagnosis-workspace-system-event__content">
-              {item.details.map((detail, index) => (
+              {detailLines.map((detail, index) => (
                 <p key={`${item.id}-${index}`}>{detail}</p>
               ))}
             </div>
@@ -2319,11 +2390,19 @@ function DiagnosisPage() {
           id,
           kind: "system",
           eventKind,
-          summary,
-          details,
+          summary: normalizeDiagnosisDisplayText(summary),
+          details: details.map((detail) => normalizeDiagnosisDisplayText(detail)),
           timestamp: timestampAt(offsetMs),
           statusTone,
-          progress,
+          progress: progress
+            ? {
+                ...progress,
+                label: normalizeDiagnosisDisplayText(progress.label),
+                helper: progress.helper
+                  ? normalizeDiagnosisDisplayText(progress.helper)
+                  : undefined,
+              }
+            : undefined,
           source: "optimistic",
           dedupeKey: id,
         });
@@ -2342,7 +2421,7 @@ function DiagnosisPage() {
           params,
           timestamp: timestampAt(offsetMs),
           status: "loading",
-          summaryLines,
+          summaryLines: summaryLines.map((line) => normalizeDiagnosisDisplayText(line)),
         });
       };
       const completeTool = (
@@ -2358,7 +2437,7 @@ function DiagnosisPage() {
             return {
               ...item,
               status: "success",
-              summaryLines,
+              summaryLines: summaryLines.map((line) => normalizeDiagnosisDisplayText(line)),
               rawResult,
             };
           }),
@@ -2372,10 +2451,10 @@ function DiagnosisPage() {
                 appendSystemEvent(
           `demo-approval-confirmed-${startedAt}`,
           "approval_result",
-          "[系统] 已经完成执行确认",
+          "[绯荤粺] 宸茬粡瀹屾垚鎵ц纭",
           [
             "审批反馈：已经完成执行确认",
-            "执行边界：先灰度，指标确认后再做全量修复",
+            "鎵ц杈圭晫锛氬厛鐏板害锛屾寚鏍囩‘璁ゅ悗鍐嶅仛鍏ㄩ噺淇",
           ],
           "success",
           0,
@@ -2392,15 +2471,15 @@ function DiagnosisPage() {
         appendSystemEvent(
           `demo-canary-started-${startedAt}`,
           "canary_progress",
-          "[系统] 开始灰度：调用 skill 观察灰度窗口",
+          "[绯荤粺] 寮€濮嬬伆搴︼細璋冪敤 skill 瑙傚療鐏板害绐楀彛",
           [
-            "调用 skill：builtin-vllm-diagnosis",
-            "灰度范围：10% 流量",
-            "观察对象：vllm_p95_ms / inference_error_rate / GPU util",
+            "璋冪敤 skill锛歜uiltin-vllm-diagnosis",
+            "鐏板害鑼冨洿锛?0% 娴侀噺",
+            "瑙傚療瀵硅薄锛歷llm_p95_ms / inference_error_rate / GPU util",
           ],
           "warning",
           900,
-          { label: "灰度进度", value: 10, helper: "canary 10%" },
+          { label: "鐏板害杩涘害", value: 10, helper: "canary 10%" },
         );
         appendTool(
           canarySkillToolId,
@@ -2411,7 +2490,7 @@ function DiagnosisPage() {
             namespace: "service",
             node: "worker-03",
           },
-          ["正在调用 builtin-vllm-diagnosis 采集灰度窗口指标..."],
+          ["姝ｅ湪璋冪敤 builtin-vllm-diagnosis 閲囬泦鐏板害绐楀彛鎸囨爣..."],
           980,
         );
         if (!(await wait(1250))) return;
@@ -2420,28 +2499,28 @@ function DiagnosisPage() {
           `demo-canary-progress-45-${startedAt}`,
           "canary_progress",
           "[系统] 灰度执行中：首批实例已完成切换",
-          ["灰度进度：45%", "当前 p95：1.72s", "错误率：0.4%"],
+          ["鐏板害杩涘害锛?5%", "褰撳墠 p95锛?.72s", "閿欒鐜囷細0.4%"],
           "warning",
           2150,
-          { label: "灰度进度", value: 45, helper: "首批实例" },
+          { label: "鐏板害杩涘害", value: 45, helper: "棣栨壒瀹炰緥" },
         );
         if (!(await wait(900))) return;
 
         appendSystemEvent(
           `demo-canary-progress-80-${startedAt}`,
           "canary_progress",
-          "[系统] 灰度执行中：指标持续收敛",
-          ["灰度进度：80%", "GPU util：99% -> 74%", "队列等待：下降 68%"],
+          "[绯荤粺] 鐏板害鎵ц涓細鎸囨爣鎸佺画鏀舵暃",
+          ["鐏板害杩涘害锛?0%", "GPU util锛?9% -> 74%", "闃熷垪绛夊緟锛氫笅闄?68%"],
           "warning",
           3050,
-          { label: "灰度进度", value: 80, helper: "指标收敛" },
+          { label: "鐏板害杩涘害", value: 80, helper: "鎸囨爣鏀舵暃" },
         );
         if (!(await wait(860))) return;
 
         completeTool(
           canarySkillToolId,
           [
-            "skill builtin-vllm-diagnosis 执行完成",
+            "skill builtin-vllm-diagnosis 鎵ц瀹屾垚",
             "vllm_p95_ms: 3.4s -> 1.68s",
             "inference_error_rate: 2.7% -> 0.4%",
           ],
@@ -2454,21 +2533,21 @@ function DiagnosisPage() {
         appendSystemEvent(
           `demo-canary-complete-${startedAt}`,
           "canary_progress",
-          "[系统] 已完成灰度：等待指标反馈确认灰度效果",
+          "[绯荤粺] 宸插畬鎴愮伆搴︼細绛夊緟鎸囨爣鍙嶉纭鐏板害鏁堟灉",
           [
-            "灰度进度：100%",
-            "下一步：等待指标反馈确认是否继续全量修复",
+            "鐏板害杩涘害锛?00%",
+            "涓嬩竴姝ワ細绛夊緟鎸囨爣鍙嶉纭鏄惁缁х画鍏ㄩ噺淇",
           ],
           "success",
           3920,
-          { label: "灰度进度", value: 100, helper: "等待指标反馈" },
+          { label: "鐏板害杩涘害", value: 100, helper: "绛夊緟鎸囨爣鍙嶉" },
         );
         if (!(await wait(760))) return;
 
         appendSystemEvent(
           `demo-canary-feedback-${startedAt}`,
           "metric_feedback",
-          "[系统] 指标反馈已确认：反馈已确认灰度没有问题，进行全量修复",
+          "[绯荤粺] 鎸囨爣鍙嶉宸茬‘璁わ細鍙嶉宸茬‘璁ょ伆搴︽病鏈夐棶棰橈紝杩涜鍏ㄩ噺淇",
           ["指标反馈：灰度没有问题", "vLLM p95 低于 1.8s", "错误率低于 1%"],
           "success",
           4680,
@@ -2479,10 +2558,10 @@ function DiagnosisPage() {
           `demo-full-rollout-start-${startedAt}`,
           "execution_progress",
           "[系统] 开始全量修复：扩大到剩余实例",
-          ["执行动作：traffic_restore", "策略：gradual", "范围：剩余 90% 流量"],
+          ["鎵ц鍔ㄤ綔锛歵raffic_restore", "绛栫暐锛歡radual", "鑼冨洿锛氬墿浣?90% 娴侀噺"],
           "warning",
           5320,
-          { label: "全量进度", value: 35, helper: "逐步放量" },
+          { label: "鍏ㄩ噺杩涘害", value: 35, helper: "閫愭鏀鹃噺" },
         );
         if (!(await wait(720))) return;
 
@@ -2495,24 +2574,24 @@ function DiagnosisPage() {
             namespace: "service",
             node: "worker-03",
           },
-          ["正在调用 builtin-platform-health 观察全量修复效果..."],
+          ["姝ｅ湪璋冪敤 builtin-platform-health 瑙傚療鍏ㄩ噺淇鏁堟灉..."],
           6040,
         );
         appendSystemEvent(
           `demo-full-rollout-progress-${startedAt}`,
           "execution_progress",
-          "[系统] 全量修复中：放量进度稳定推进",
+          "[绯荤粺] 鍏ㄩ噺淇涓細鏀鹃噺杩涘害绋冲畾鎺ㄨ繘",
           ["全量进度：72%", "未观察到错误率反弹"],
           "warning",
           6080,
-          { label: "全量进度", value: 72, helper: "全量放量" },
+          { label: "鍏ㄩ噺杩涘害", value: 72, helper: "鍏ㄩ噺鏀鹃噺" },
         );
         if (!(await wait(1050))) return;
 
         appendSystemEvent(
           `demo-full-feedback-wait-${startedAt}`,
           "metric_feedback",
-          "[系统] 等待指标反馈全量效果",
+          "[绯荤粺] 绛夊緟鎸囨爣鍙嶉鍏ㄩ噺鏁堟灉",
           ["观察窗口：全量放量后 3 分钟", "检查项：延迟、错误率、告警状态"],
           "warning",
           7130,
@@ -2522,7 +2601,7 @@ function DiagnosisPage() {
         completeTool(
           fullSkillToolId,
           [
-            "skill builtin-platform-health 执行完成",
+            "skill builtin-platform-health 鎵ц瀹屾垚",
             "vllm_p95_ms: 1.42s",
             "inference_error_rate: 0.1%",
             "alert_status: resolved",
@@ -2537,11 +2616,11 @@ function DiagnosisPage() {
         appendSystemEvent(
           `demo-alert-recovered-${startedAt}`,
           "alert_recovery",
-          "[系统] 报警已恢复：相关报警已经恢复",
-          ["报警：vLLM 推理延迟升高", "状态：resolved", "恢复来源：Alertmanager snapshot"],
+          "[绯荤粺] 鎶ヨ宸叉仮澶嶏細鐩稿叧鎶ヨ宸茬粡鎭㈠",
+          ["鎶ヨ锛歷LLM 鎺ㄧ悊寤惰繜鍗囬珮", "鐘舵€侊細resolved", "鎭㈠鏉ユ簮锛欰lertmanager snapshot"],
           "success",
           8110,
-          { label: "执行进度", value: 100, helper: "报警恢复" },
+          { label: "鎵ц杩涘害", value: 100, helper: "鎶ヨ鎭㈠" },
         );
         if (!(await wait(520))) return;
 
@@ -2552,7 +2631,7 @@ function DiagnosisPage() {
           ["闭环结果：修复完成", "后续动作：保留审计记录与执行明细"],
           "success",
           8630,
-          { label: "执行进度", value: 100, helper: "会话关闭" },
+          { label: "鎵ц杩涘害", value: 100, helper: "浼氳瘽鍏抽棴" },
         );
       })();
     },
@@ -3406,5 +3485,3 @@ function DiagnosisPage() {
   );
 }
 export default DiagnosisPage;
-
-

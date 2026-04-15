@@ -163,6 +163,49 @@ function getCenteredOffset(index: number, count: number, gap: number) {
   return count <= 1 ? 0 : (index - (count - 1) / 2) * gap;
 }
 
+type AnchoredLaneItem = {
+  id: string;
+  anchorY: number;
+  tieBreaker: string;
+};
+
+function placeLaneByAnchors(items: AnchoredLaneItem[], minGap: number) {
+  const normalizedGap = Math.max(1, Math.round(minGap));
+  const sorted = [...items].sort((left, right) => {
+    if (left.anchorY !== right.anchorY) {
+      return left.anchorY - right.anchorY;
+    }
+    return left.tieBreaker.localeCompare(right.tieBreaker, "zh-Hans-CN");
+  });
+
+  const placed = sorted.map((item) => ({
+    ...item,
+    y: Math.round(item.anchorY),
+  }));
+
+  for (let index = 1; index < placed.length; index += 1) {
+    const minY = placed[index - 1].y + normalizedGap;
+    if (placed[index].y < minY) {
+      placed[index].y = minY;
+    }
+  }
+
+  for (let index = placed.length - 2; index >= 0; index -= 1) {
+    const maxY = placed[index + 1].y - normalizedGap;
+    if (placed[index].y > maxY) {
+      placed[index].y = maxY;
+    }
+  }
+
+  for (let index = 1; index < placed.length; index += 1) {
+    const minY = placed[index - 1].y + normalizedGap;
+    if (placed[index].y < minY) {
+      placed[index].y = minY;
+    }
+  }
+
+  return new Map(placed.map((item) => [item.id, item.y]));
+}
 function getNetworkFamilyKey(node: TopologyObject) {
   const delimiterIndex = node.id.indexOf(":");
   return delimiterIndex > 0 ? node.id.slice(0, delimiterIndex) : node.id;
@@ -336,132 +379,553 @@ function createLayeredTargets(
   outgoingEdges: Map<string, TopologyRelation[]>,
 ) {
   const positions = new Map<string, { x: number; y: number }>();
-  const physicalNodes = nodes
-    .filter((node) => node.layer === "physical")
-    .sort((left, right) => compareNodes(left, right, incomingEdges, outgoingEdges));
-  const networkGroups = createLayoutGroups(
-    nodes.filter((node) => node.layer === "network"),
-    getNetworkFamilyKey,
-  );
-  const computeGroups = createLayoutGroups(
-    nodes.filter((node) => node.layer === "compute"),
-    getComputeFamilyKey,
-  );
-  const serviceGroups = createLayoutGroups(
-    nodes.filter((node) => node.layer === "service"),
-    (node) => String(getPrimaryHostId(node, outgoingEdges) ?? "unassigned"),
-  );
+  const nodeById = new Map(nodes.map((node) => [node.id, node]));
 
-  const serviceCountsByHost = new Map(serviceGroups.map((group) => [group.key, group.nodes.length]));
+  const byType = (type: TopologyObject["type"]) =>
+    nodes
+      .filter((node) => node.type === type)
+      .sort((left, right) => compareNodes(left, right, incomingEdges, outgoingEdges));
 
-  networkGroups.sort((left, right) => {
-    const leftLeader = getLayerGroupLeader(left, incomingEdges, outgoingEdges);
-    const rightLeader = getLayerGroupLeader(right, incomingEdges, outgoingEdges);
-    return compareNodes(leftLeader, rightLeader, incomingEdges, outgoingEdges);
+  const clusters = byType("cluster");
+  const racks = byType("rack");
+  const switches = byType("switch");
+  const ports = byType("port");
+  const workers = byType("node");
+  const bmcs = byType("bmc");
+  const gpus = byType("gpu");
+  const services = byType("service");
+  const pods = byType("pod");
+
+  const columnStep = Math.round(metrics.nodeWidth * 1.42);
+  const clusterX = Math.round(metrics.layerXOffset);
+  const switchX = clusterX + columnStep;
+  const portX = switchX + columnStep;
+  const nodeX = portX + columnStep;
+  const branchX = nodeX + Math.round(columnStep * 0.62);
+  const serviceX = nodeX + Math.round(columnStep * 1.84);
+  const podX = serviceX + Math.round(columnStep * 1.42);
+
+  const relationFallbackScore: Record<TopologyRelation["relationType"], number> = {
+    contains: 0,
+    runs_on: 1,
+    connects_to: 2,
+    uplink_to: 3,
+    depends_on: 4,
+    aggregated: 5,
+  };
+
+  const getNodeEdges = (nodeId: string) => [
+    ...(outgoingEdges.get(nodeId) ?? []),
+    ...(incomingEdges.get(nodeId) ?? []),
+  ];
+
+  const getRelatedIdsByType = (
+    nodeId: string,
+    targetType: TopologyObject["type"],
+    preferredRelations: TopologyRelation["relationType"][] = [],
+  ) => {
+    const rankByRelation = new Map(preferredRelations.map((relationType, index) => [relationType, index]));
+    const bestById = new Map<string, number>();
+
+    getNodeEdges(nodeId).forEach((edge) => {
+      const neighborId = edge.source === nodeId ? edge.target : edge.source;
+      const neighbor = nodeById.get(neighborId);
+      if (!neighbor || neighbor.type !== targetType) {
+        return;
+      }
+
+      const preferredRank = rankByRelation.get(edge.relationType);
+      const score =
+        preferredRank !== undefined
+          ? preferredRank
+          : preferredRelations.length + (relationFallbackScore[edge.relationType] ?? 99);
+      const previous = bestById.get(neighborId);
+      if (previous === undefined || score < previous) {
+        bestById.set(neighborId, score);
+      }
+    });
+
+    return Array.from(bestById.entries())
+      .sort((left, right) => {
+        if (left[1] !== right[1]) {
+          return left[1] - right[1];
+        }
+        const leftNode = nodeById.get(left[0]);
+        const rightNode = nodeById.get(right[0]);
+        if (!leftNode || !rightNode) {
+          return left[0].localeCompare(right[0], "zh-Hans-CN");
+        }
+        return compareNodes(leftNode, rightNode, incomingEdges, outgoingEdges);
+      })
+      .map(([id]) => id);
+  };
+
+  const getMaxPlacedY = () => {
+    const all = Array.from(positions.values());
+    if (all.length === 0) {
+      return metrics.layerYOffset;
+    }
+    return Math.max(...all.map((point) => point.y));
+  };
+
+  const orderedSwitches = [...switches].sort((left, right) => left.name.localeCompare(right.name, "zh-Hans-CN"));
+  const switchIdSet = new Set(orderedSwitches.map((node) => node.id));
+
+  const resolvePortSwitchId = (port: TopologyObject) => {
+    const connectedSwitch = getRelatedIdsByType(port.id, "switch", ["contains", "uplink_to", "connects_to"])[0];
+    if (connectedSwitch) {
+      return connectedSwitch;
+    }
+
+    if (port.id.includes(":")) {
+      const [prefix] = port.id.split(":");
+      if (prefix && switchIdSet.has(prefix)) {
+        return prefix;
+      }
+    }
+
+    return orderedSwitches[0]?.id;
+  };
+
+  const orderedPorts = [...ports].sort((left, right) => {
+    const leftSwitch = resolvePortSwitchId(left) ?? "";
+    const rightSwitch = resolvePortSwitchId(right) ?? "";
+    const leftSwitchOrder = orderedSwitches.findIndex((item) => item.id === leftSwitch);
+    const rightSwitchOrder = orderedSwitches.findIndex((item) => item.id === rightSwitch);
+
+    const normalizedLeftOrder = leftSwitchOrder === -1 ? Number.MAX_SAFE_INTEGER : leftSwitchOrder;
+    const normalizedRightOrder = rightSwitchOrder === -1 ? Number.MAX_SAFE_INTEGER : rightSwitchOrder;
+    if (normalizedLeftOrder !== normalizedRightOrder) {
+      return normalizedLeftOrder - normalizedRightOrder;
+    }
+
+    return left.name.localeCompare(right.name, "zh-Hans-CN");
   });
 
-  computeGroups.sort((left, right) => {
-    const serviceDelta = (serviceCountsByHost.get(right.key) ?? 0) - (serviceCountsByHost.get(left.key) ?? 0);
-    if (serviceDelta !== 0) {
-      return serviceDelta;
-    }
-
-    const leftLeader = getLayerGroupLeader(left, incomingEdges, outgoingEdges);
-    const rightLeader = getLayerGroupLeader(right, incomingEdges, outgoingEdges);
-    return compareNodes(leftLeader, rightLeader, incomingEdges, outgoingEdges);
+  const portGap = Math.round(metrics.nodeHeight * 1.04);
+  const portTopY = Math.round(metrics.layerYOffset + metrics.nodeHeight * 0.6);
+  const portYById = new Map<string, number>();
+  orderedPorts.forEach((port, index) => {
+    const y = Math.round(portTopY + index * portGap);
+    portYById.set(port.id, y);
+    positions.set(port.id, { x: portX, y });
   });
 
-  const computeGroupOrder = new Map(computeGroups.map((group, index) => [group.key, index]));
-  serviceGroups.sort((left, right) => {
-    const leftOrder = computeGroupOrder.get(left.key);
-    const rightOrder = computeGroupOrder.get(right.key);
+  const switchCenterY =
+    orderedPorts.length > 0
+      ? Math.round(portTopY + ((orderedPorts.length - 1) * portGap) / 2)
+      : Math.round(metrics.layerYOffset + metrics.nodeHeight * 2.2);
 
-    if (leftOrder !== undefined && rightOrder !== undefined && leftOrder !== rightOrder) {
-      return leftOrder - rightOrder;
-    }
+  orderedSwitches.forEach((switchNode, index) => {
+    const relatedPortYs = orderedPorts
+      .filter((port) => resolvePortSwitchId(port) === switchNode.id)
+      .map((port) => portYById.get(port.id))
+      .filter((value): value is number => value !== undefined);
 
-    if (leftOrder !== undefined && rightOrder === undefined) {
-      return -1;
-    }
+    const fallbackY = Math.round(
+      switchCenterY +
+        getCenteredOffset(index, Math.max(1, orderedSwitches.length), Math.round(metrics.nodeHeight * 1.2)),
+    );
 
-    if (leftOrder === undefined && rightOrder !== undefined) {
-      return 1;
-    }
+    const y =
+      relatedPortYs.length > 0
+        ? Math.round(relatedPortYs.reduce((sum, value) => sum + value, 0) / relatedPortYs.length)
+        : fallbackY;
 
-    const sizeDelta = right.nodes.length - left.nodes.length;
-    if (sizeDelta !== 0) {
-      return sizeDelta;
-    }
-
-    const leftLeader = getLayerGroupLeader(left, incomingEdges, outgoingEdges);
-    const rightLeader = getLayerGroupLeader(right, incomingEdges, outgoingEdges);
-    return compareNodes(leftLeader, rightLeader, incomingEdges, outgoingEdges);
+    positions.set(switchNode.id, { x: switchX, y });
   });
 
-  const physicalX = metrics.layerXOffset;
-  const networkX = metrics.layerXOffset + LAYER_ORDER.network * metrics.layerXSpacing;
-  const computeX = metrics.layerXOffset + LAYER_ORDER.compute * metrics.layerXSpacing;
-  const serviceX = metrics.layerXOffset + LAYER_ORDER.service * metrics.layerXSpacing + Math.round(metrics.nodeWidth * 1.2);
+  const orderedClusters = [...clusters].sort((left, right) => left.name.localeCompare(right.name, "zh-Hans-CN"));
+  orderedClusters.forEach((clusterNode, index) => {
+    const y = Math.round(
+      switchCenterY +
+        getCenteredOffset(index, Math.max(1, orderedClusters.length), Math.round(metrics.nodeHeight * 1.08)),
+    );
+    positions.set(clusterNode.id, { x: clusterX, y });
+  });
 
-  physicalNodes.forEach((node, index) => {
-    positions.set(node.id, {
-      x: Math.round(physicalX),
-      y: Math.round(metrics.layerYOffset + index * Math.round(metrics.layerYSpacing * 1.18)),
+  const workerPortBinding = new Map<string, string>();
+  const workersByPort = new Map<string, TopologyObject[]>();
+  const unboundWorkers: TopologyObject[] = [];
+  const portOrder = new Map(orderedPorts.map((port, index) => [port.id, index]));
+
+  workers.forEach((worker) => {
+    const connectedPorts = getRelatedIdsByType(worker.id, "port", ["contains", "connects_to", "uplink_to", "runs_on"]);
+    const bestPortId = connectedPorts
+      .filter((portId) => portOrder.has(portId))
+      .sort((left, right) => (portOrder.get(left) ?? 0) - (portOrder.get(right) ?? 0))[0];
+
+    if (!bestPortId) {
+      unboundWorkers.push(worker);
+      return;
+    }
+
+    workerPortBinding.set(worker.id, bestPortId);
+    const list = workersByPort.get(bestPortId) ?? [];
+    list.push(worker);
+    workersByPort.set(bestPortId, list);
+  });
+
+  const workerYById = new Map<string, number>();
+  const workerStackGap = Math.round(metrics.nodeHeight * 0.74);
+
+  orderedPorts.forEach((port) => {
+    const anchorY = portYById.get(port.id) ?? switchCenterY;
+    const members = [...(workersByPort.get(port.id) ?? [])].sort((left, right) =>
+      compareNodes(left, right, incomingEdges, outgoingEdges),
+    );
+
+    members.forEach((worker, index) => {
+      const y = Math.round(anchorY + getCenteredOffset(index, members.length, workerStackGap));
+      workerYById.set(worker.id, y);
+      positions.set(worker.id, { x: nodeX, y });
     });
   });
 
-  const networkBottomY = placeGroupedLayer(positions, networkGroups, {
-    baseX: networkX,
-    startY: metrics.layerYOffset,
-    groupColumns: 1,
-    groupXGap: Math.round(metrics.nodeWidth * 0.8),
-    groupRowGap: Math.round(metrics.nodeHeight * 1.04),
-    localXGap: Math.round(metrics.nodeWidth * 0.9),
-    localYGap: Math.round(metrics.nodeHeight * 0.9),
-    incomingEdges,
-    outgoingEdges,
+  let unboundWorkerCursorY =
+    orderedPorts.length > 0
+      ? Math.round((portYById.get(orderedPorts[orderedPorts.length - 1].id) ?? switchCenterY) + workerStackGap * 1.3)
+      : Math.round(switchCenterY + workerStackGap);
+
+  [...unboundWorkers]
+    .sort((left, right) => compareNodes(left, right, incomingEdges, outgoingEdges))
+    .forEach((worker) => {
+      workerYById.set(worker.id, unboundWorkerCursorY);
+      positions.set(worker.id, { x: nodeX, y: unboundWorkerCursorY });
+      unboundWorkerCursorY += workerStackGap;
+    });
+
+  let rackCursorY = Math.max(
+    getMaxPlacedY() + Math.round(metrics.nodeHeight * 0.6),
+    Math.round(switchCenterY + metrics.nodeHeight * 1.4),
+  );
+  racks.forEach((rack) => {
+    positions.set(rack.id, { x: clusterX, y: rackCursorY });
+    rackCursorY += Math.round(metrics.nodeHeight * 0.92);
   });
 
-  const computeBottomY = placeGroupedLayer(positions, computeGroups, {
-    baseX: computeX,
-    startY: metrics.layerYOffset,
-    groupColumns: 2,
-    groupXGap: Math.round(metrics.nodeWidth * 1.5),
-    groupRowGap: Math.round(metrics.nodeHeight * 1.12),
-    localXGap: Math.round(metrics.nodeWidth * 0.88),
-    localYGap: Math.round(metrics.nodeHeight * 0.94),
-    incomingEdges,
-    outgoingEdges,
+  const serviceHostById = new Map<string, string>();
+  const servicesByHost = new Map<string, TopologyObject[]>();
+
+  services.forEach((service) => {
+    const hostId = getRelatedIdsByType(service.id, "node", ["runs_on", "contains", "depends_on"])[0];
+    if (hostId) {
+      serviceHostById.set(service.id, hostId);
+    }
+
+    const list = servicesByHost.get(hostId ?? "unassigned") ?? [];
+    list.push(service);
+    servicesByHost.set(hostId ?? "unassigned", list);
   });
 
-  placeGroupedLayer(positions, serviceGroups, {
-    baseX: serviceX,
-    startY: metrics.layerYOffset,
-    groupColumns: 8,
-    groupXGap: Math.round(metrics.nodeWidth * 1.25),
-    groupRowGap: Math.round(metrics.nodeHeight * 0.82),
-    localXGap: Math.round(metrics.nodeWidth * 0.78),
-    localYGap: Math.round(metrics.nodeHeight * 0.74),
-    incomingEdges,
-    outgoingEdges,
-  });
+  const serviceYById = new Map<string, number>();
+  const serviceAnchorGap = Math.round(metrics.nodeHeight * 0.6);
+  const serviceLaneGap = Math.round(metrics.nodeHeight * 0.78);
+  let unassignedServiceAnchorY = Math.max(
+    getMaxPlacedY() + Math.round(metrics.nodeHeight * 0.82),
+    Math.round(switchCenterY + metrics.nodeHeight * 2.25),
+  );
 
-  if (!physicalNodes.length) {
-    return positions;
-  }
+  const assignedHostIds = [...servicesByHost.keys()]
+    .filter((hostId) => hostId !== "unassigned")
+    .sort((left, right) => {
+      const leftY = workerYById.get(left) ?? Number.MAX_SAFE_INTEGER;
+      const rightY = workerYById.get(right) ?? Number.MAX_SAFE_INTEGER;
+      if (leftY !== rightY) {
+        return leftY - rightY;
+      }
+      return left.localeCompare(right, "zh-Hans-CN");
+    });
 
-  const contentBottom = Math.max(networkBottomY, computeBottomY, metrics.layerYOffset + Math.round(metrics.nodeHeight * 1.4));
-  const centeredClusterY = Math.max(metrics.layerYOffset + 48, Math.round(contentBottom / 2.8));
-  physicalNodes.forEach((node, index) => {
-    positions.set(node.id, {
-      x: Math.round(physicalX),
-      y: Math.round(centeredClusterY + index * Math.round(metrics.layerYSpacing * 0.82)),
+  const serviceAnchors: AnchoredLaneItem[] = [];
+
+  assignedHostIds.forEach((hostId) => {
+    const hostY = workerYById.get(hostId);
+    const serviceMembers = [...(servicesByHost.get(hostId) ?? [])].sort((left, right) =>
+      compareNodes(left, right, incomingEdges, outgoingEdges),
+    );
+
+    if (hostY === undefined) {
+      serviceMembers.forEach((service) => {
+        serviceAnchors.push({
+          id: service.id,
+          anchorY: unassignedServiceAnchorY,
+          tieBreaker: "service-unassigned-" + service.name + "-" + service.id,
+        });
+        unassignedServiceAnchorY += serviceLaneGap;
+      });
+      return;
+    }
+
+    serviceMembers.forEach((service, index) => {
+      serviceAnchors.push({
+        id: service.id,
+        anchorY: hostY + getCenteredOffset(index, serviceMembers.length, serviceAnchorGap),
+        tieBreaker: "service-" + hostY + "-" + index + "-" + service.name + "-" + service.id,
+      });
     });
   });
+
+  [...(servicesByHost.get("unassigned") ?? [])]
+    .sort((left, right) => compareNodes(left, right, incomingEdges, outgoingEdges))
+    .forEach((service, index) => {
+      serviceAnchors.push({
+        id: service.id,
+        anchorY: unassignedServiceAnchorY,
+        tieBreaker: "service-unassigned-tail-" + index + "-" + service.name + "-" + service.id,
+      });
+      unassignedServiceAnchorY += serviceLaneGap;
+    });
+
+  const serviceLaneYById = placeLaneByAnchors(serviceAnchors, serviceLaneGap);
+  serviceAnchors.forEach((item) => {
+    const y = serviceLaneYById.get(item.id) ?? Math.round(item.anchorY);
+    positions.set(item.id, { x: serviceX, y });
+    serviceYById.set(item.id, y);
+  });
+
+  const podsByService = new Map<string, TopologyObject[]>();
+
+  pods.forEach((pod) => {
+    const ownerService = getRelatedIdsByType(pod.id, "service", ["depends_on", "contains", "runs_on"])[0];
+    const list = podsByService.get(ownerService ?? "unassigned") ?? [];
+    list.push(pod);
+    podsByService.set(ownerService ?? "unassigned", list);
+  });
+
+  const podAnchorGap = Math.round(metrics.nodeHeight * 0.56);
+  const podLaneGap = Math.round(metrics.nodeHeight * 0.74);
+  let unassignedPodAnchorY = Math.max(
+    getMaxPlacedY() + Math.round(metrics.nodeHeight * 0.84),
+    Math.round(switchCenterY + metrics.nodeHeight * 2.85),
+  );
+
+  const serviceOrder = [...serviceYById.entries()]
+    .sort((left, right) => left[1] - right[1])
+    .map(([id]) => id);
+
+  const podAnchors: AnchoredLaneItem[] = [];
+
+  serviceOrder.forEach((serviceId) => {
+    const anchorY = serviceYById.get(serviceId);
+    const servicePods = [...(podsByService.get(serviceId) ?? [])].sort((left, right) =>
+      compareNodes(left, right, incomingEdges, outgoingEdges),
+    );
+
+    if (anchorY === undefined) {
+      servicePods.forEach((pod) => {
+        podAnchors.push({
+          id: pod.id,
+          anchorY: unassignedPodAnchorY,
+          tieBreaker: "pod-unassigned-" + pod.name + "-" + pod.id,
+        });
+        unassignedPodAnchorY += podLaneGap;
+      });
+      return;
+    }
+
+    servicePods.forEach((pod, index) => {
+      podAnchors.push({
+        id: pod.id,
+        anchorY: anchorY + getCenteredOffset(index, servicePods.length, podAnchorGap),
+        tieBreaker: "pod-" + anchorY + "-" + index + "-" + pod.name + "-" + pod.id,
+      });
+    });
+  });
+
+  [...(podsByService.get("unassigned") ?? [])]
+    .sort((left, right) => compareNodes(left, right, incomingEdges, outgoingEdges))
+    .forEach((pod, index) => {
+      podAnchors.push({
+        id: pod.id,
+        anchorY: unassignedPodAnchorY,
+        tieBreaker: "pod-unassigned-tail-" + index + "-" + pod.name + "-" + pod.id,
+      });
+      unassignedPodAnchorY += podLaneGap;
+    });
+
+  const podLaneYById = placeLaneByAnchors(podAnchors, podLaneGap);
+  podAnchors.forEach((item) => {
+    const y = podLaneYById.get(item.id) ?? Math.round(item.anchorY);
+    positions.set(item.id, { x: podX, y });
+  });
+  const resolveHostForBranchNode = (entity: TopologyObject) => {
+    const connectedHost = getRelatedIdsByType(entity.id, "node", ["contains", "runs_on", "connects_to"])[0];
+    if (connectedHost) {
+      return connectedHost;
+    }
+
+    const hostFromAttr = typeof entity.attributes.host === "string" ? entity.attributes.host : undefined;
+    if (hostFromAttr && nodeById.get(hostFromAttr)?.type === "node") {
+      return hostFromAttr;
+    }
+
+    return undefined;
+  };
+
+  const bmcByHost = new Map<string, TopologyObject[]>();
+  bmcs.forEach((bmc) => {
+    const hostId = resolveHostForBranchNode(bmc) ?? "unassigned";
+    const list = bmcByHost.get(hostId) ?? [];
+    list.push(bmc);
+    bmcByHost.set(hostId, list);
+  });
+
+  const gpuByHost = new Map<string, TopologyObject[]>();
+  gpus.forEach((gpu) => {
+    const hostId = resolveHostForBranchNode(gpu) ?? "unassigned";
+    const list = gpuByHost.get(hostId) ?? [];
+    list.push(gpu);
+    gpuByHost.set(hostId, list);
+  });
+
+  const branchBandOffset = Math.round(metrics.nodeHeight * 0.72);
+  const branchStackGap = Math.round(metrics.nodeHeight * 0.58);
+  let unassignedBranchY = Math.max(
+    getMaxPlacedY() + Math.round(metrics.nodeHeight * 0.8),
+    Math.round(switchCenterY + metrics.nodeHeight * 2.4),
+  );
+
+  const placeBranchNodes = (
+    grouped: Map<string, TopologyObject[]>,
+    branchDirection: "up" | "down",
+  ) => {
+    const hostIds = [...grouped.keys()].sort((left, right) => {
+      if (left === "unassigned" || right === "unassigned") {
+        return left === "unassigned" ? 1 : -1;
+      }
+
+      const leftY = workerYById.get(left) ?? Number.MAX_SAFE_INTEGER;
+      const rightY = workerYById.get(right) ?? Number.MAX_SAFE_INTEGER;
+      if (leftY !== rightY) {
+        return leftY - rightY;
+      }
+
+      return left.localeCompare(right, "zh-Hans-CN");
+    });
+
+    hostIds.forEach((hostId) => {
+      const items = [...(grouped.get(hostId) ?? [])].sort((left, right) =>
+        compareNodes(left, right, incomingEdges, outgoingEdges),
+      );
+
+      const hostY = workerYById.get(hostId);
+      if (hostId === "unassigned" || hostY === undefined) {
+        items.forEach((item) => {
+          positions.set(item.id, { x: branchX, y: unassignedBranchY });
+          unassignedBranchY += branchStackGap;
+        });
+        return;
+      }
+
+      const center = branchDirection === "up" ? hostY - branchBandOffset : hostY + branchBandOffset;
+      items.forEach((item, index) => {
+        const y = Math.round(center + getCenteredOffset(index, items.length, branchStackGap));
+        positions.set(item.id, { x: branchX, y });
+      });
+    });
+  };
+
+  placeBranchNodes(bmcByHost, "up");
+  placeBranchNodes(gpuByHost, "down");
 
   return positions;
 }
+function getLayeredCollisionRadius(node: TopologyObject, metrics: TopologyCanvasMetrics) {
+  const aggregateCount = getAggregateCount(node);
+  const baseRadius = metrics.nodeCircleSize / 2 + 3;
 
+  if (aggregateCount > 0) {
+    return baseRadius + Math.min(14, aggregateCount) * 0.35 + 4;
+  }
+
+  if (node.type === "cluster") {
+    return baseRadius + 4;
+  }
+
+  if (node.type === "service" || node.type === "pod") {
+    return baseRadius + 1;
+  }
+
+  return baseRadius;
+}
+
+function resolveLayeredVerticalOverlaps(
+  baseTargets: Map<string, { x: number; y: number }>,
+  nodes: TopologyObject[],
+  metrics: TopologyCanvasMetrics,
+) {
+  const result = new Map<string, { x: number; y: number }>();
+  const nodeById = new Map(nodes.map((node) => [node.id, node]));
+  const lanes = new Map<number, Array<{ id: string; x: number; anchorY: number; y: number; radius: number }>>();
+
+  baseTargets.forEach((target, nodeId) => {
+    const node = nodeById.get(nodeId);
+    if (!node) {
+      return;
+    }
+
+    const laneKey = Math.round(target.x / 4) * 4;
+    const radius = getLayeredCollisionRadius(node, metrics);
+    const lane = lanes.get(laneKey) ?? [];
+    lane.push({
+      id: nodeId,
+      x: target.x,
+      anchorY: target.y,
+      y: target.y,
+      radius,
+    });
+    lanes.set(laneKey, lane);
+  });
+
+  lanes.forEach((lane) => {
+    lane.sort((left, right) => left.anchorY - right.anchorY);
+
+    for (let index = 1; index < lane.length; index += 1) {
+      const previous = lane[index - 1];
+      const current = lane[index];
+      const minY = previous.y + previous.radius + current.radius + 6;
+      if (current.y < minY) {
+        current.y = minY;
+      }
+    }
+
+    for (let index = lane.length - 2; index >= 0; index -= 1) {
+      const current = lane[index];
+      const next = lane[index + 1];
+      const maxY = next.y - (current.radius + next.radius + 6);
+      if (current.y > maxY) {
+        current.y = maxY;
+      }
+    }
+
+    const anchorCenter = lane.reduce((sum, item) => sum + item.anchorY, 0) / Math.max(1, lane.length);
+    const currentCenter = lane.reduce((sum, item) => sum + item.y, 0) / Math.max(1, lane.length);
+    const shift = anchorCenter - currentCenter;
+
+    lane.forEach((item) => {
+      item.y += shift;
+    });
+
+    for (let index = 1; index < lane.length; index += 1) {
+      const previous = lane[index - 1];
+      const current = lane[index];
+      const minY = previous.y + previous.radius + current.radius + 6;
+      if (current.y < minY) {
+        current.y = minY;
+      }
+    }
+
+    lane.forEach((item) => {
+      result.set(item.id, {
+        x: Math.round(item.x),
+        y: Math.round(item.y),
+      });
+    });
+  });
+
+  return result;
+}
 function createDomainTargets(
   nodes: TopologyObject[],
   metrics: TopologyCanvasMetrics,
@@ -533,10 +997,18 @@ export function computeModifiedHybridLayout(
   if (layoutPreset === "layered") {
     const minX = 32;
     const minY = 28;
-    baseTargets.forEach((target, nodeId) => {
+    const relaxedTargets = resolveLayeredVerticalOverlaps(baseTargets, nodes, metrics);
+
+    let lowestY = Number.POSITIVE_INFINITY;
+    relaxedTargets.forEach((target) => {
+      lowestY = Math.min(lowestY, target.y);
+    });
+    const yShift = Number.isFinite(lowestY) && lowestY < minY ? minY - lowestY : 0;
+
+    relaxedTargets.forEach((target, nodeId) => {
       positions.set(nodeId, {
         x: Math.max(minX, Math.round(target.x)),
-        y: Math.max(minY, Math.round(target.y)),
+        y: Math.round(target.y + yShift),
       });
     });
     return positions;

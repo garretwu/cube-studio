@@ -1,9 +1,10 @@
-﻿import { Position, type Node } from "@xyflow/react";
+import { Position, type Node } from "@xyflow/react";
 import { describe, expect, it } from "vitest";
 
 import { TOPOLOGY_CANVAS_METRICS } from "./canvasConfig";
 import {
   deriveModifiedEdgeRouting,
+  deriveModifiedSmoothStepPathOptions,
   getModifiedHandlePosition,
   MODIFIED_EDGE_HANDLE_IDS,
 } from "./modifiedEdgeRouting";
@@ -28,7 +29,7 @@ describe("modified edge routing", () => {
       metrics,
     });
 
-    expect(routing.edgeType).toBe("straight");
+    expect(routing.edgeType).toBe("default");
     expect(routing.sourceHandle).toBe(MODIFIED_EDGE_HANDLE_IDS.source.right);
     expect(routing.targetHandle).toBe(MODIFIED_EDGE_HANDLE_IDS.target.left);
   });
@@ -62,7 +63,7 @@ describe("modified edge routing", () => {
       metrics,
     });
 
-    expect(routing.edgeType).toBe("straight");
+    expect(routing.edgeType).toBe("default");
     expect([MODIFIED_EDGE_HANDLE_IDS.source.left, MODIFIED_EDGE_HANDLE_IDS.source.bottom]).toContain(routing.sourceHandle);
     expect([MODIFIED_EDGE_HANDLE_IDS.target.right, MODIFIED_EDGE_HANDLE_IDS.target.top]).toContain(routing.targetHandle);
   });
@@ -72,5 +73,57 @@ describe("modified edge routing", () => {
     expect(getModifiedHandlePosition(MODIFIED_EDGE_HANDLE_IDS.source.right)).toBe(Position.Right);
     expect(getModifiedHandlePosition(MODIFIED_EDGE_HANDLE_IDS.source.top)).toBe(Position.Top);
     expect(getModifiedHandlePosition(MODIFIED_EDGE_HANDLE_IDS.source.bottom)).toBe(Position.Bottom);
+  });
+
+  it("derives grouped smoothstep options by relation family", () => {
+    expect(
+      deriveModifiedSmoothStepPathOptions({
+        sourceType: "switch",
+        targetType: "port",
+        relationType: "contains",
+      }),
+    ).toEqual({ borderRadius: 36, offset: 20 });
+
+    expect(
+      deriveModifiedSmoothStepPathOptions({
+        sourceType: "node",
+        targetType: "gpu",
+        relationType: "contains",
+      }),
+    ).toEqual({ borderRadius: 14, offset: 8 });
+
+    expect(
+      deriveModifiedSmoothStepPathOptions({
+        sourceType: "node",
+        targetType: "service",
+        relationType: "runs_on",
+      }),
+    ).toEqual({ borderRadius: 22, offset: 12 });
+
+    expect(
+      deriveModifiedSmoothStepPathOptions({
+        sourceType: "service",
+        targetType: "pod",
+        relationType: "aggregated",
+        isAggregated: true,
+      }),
+    ).toEqual({ borderRadius: 22, offset: 12 });
+
+    expect(
+      deriveModifiedSmoothStepPathOptions({
+        sourceType: "rack",
+        targetType: "cluster",
+        relationType: "aggregated",
+        isAggregated: true,
+      }),
+    ).toEqual({ borderRadius: 30, offset: 18 });
+
+    expect(
+      deriveModifiedSmoothStepPathOptions({
+        sourceType: "rack",
+        targetType: "cluster",
+        relationType: "depends_on",
+      }),
+    ).toEqual({ borderRadius: 26, offset: 14 });
   });
 });

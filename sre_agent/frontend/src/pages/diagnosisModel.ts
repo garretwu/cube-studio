@@ -66,6 +66,7 @@ export type DiagnosisRunToolView = {
 export type DiagnosisRunStepView = {
   id: string;
   eventKind: DiagnosisSystemEventView["eventKind"];
+  stage?: string;
   title: string;
   summary: string;
   details: string[];
@@ -77,10 +78,13 @@ export type DiagnosisRunStepView = {
   toolIds: string[];
 };
 
+export type DiagnosisRunPhase = "single" | "canary" | "full";
+
 export type DiagnosisRunTimelineItem = {
   id: string;
   kind: "run";
   runId: string;
+  phase: DiagnosisRunPhase;
   title: string;
   timestamp: string;
   status: DiagnosisRunStatus;
@@ -846,10 +850,10 @@ function isSyntheticRemediationMessage(message: ChatMessage) {
 function buildPlanStepDetailLines(plan: DiagnosisSession["diagnosis_result"] | undefined) {
   const steps = plan?.recommended_fix?.steps ?? [];
   if (steps.length === 0) {
-    return ["执行步骤：--"];
+    return ["\u6267\u884c\u6b65\u9aa4\uff1a--"];
   }
 
-  return steps.map((step, index) => `步骤 ${index + 1}：${normalizeDiagnosisDisplayText(step.description)}`);
+  return steps.map((step, index) => "\u6b65\u9aa4 " + (index + 1) + "\uff1a" + normalizeDiagnosisDisplayText(step.description));
 }
 
 function getSystemRecordPriority(source: DiagnosisLocalAuditRecord["source"]) {
@@ -890,26 +894,26 @@ function buildApprovalResultFromExecutionEvent(
 
   const plan = session?.diagnosis_result?.recommended_fix;
   const planVersion = normalizePlanVersion(data.plan_version) ?? parsePlanVersionFromPlanId(plan?.plan_id) ?? null;
-  const versionLabel = planVersion ? `v${planVersion}` : "v?";
+  const versionLabel = planVersion ? "v" + planVersion : "v?";
   const approver = resolveRecordUser(data);
   const details = [
-    `审批时间：${formatDateTime(event.timestamp)}`,
-    `方案版本：${planVersion ? `v${planVersion}` : "--"}`,
-    `方案 ID：${plan?.plan_id ?? "--"}`,
-    `审批人：${approver}`,
-    "审批动作：同意，通过执行",
-    `方案标题：${plan ? normalizeDiagnosisDisplayText(plan.root_cause) : "--"}`,
+    "\u5ba1\u6279\u65f6\u95f4\uff1a" + formatDateTime(event.timestamp),
+    "\u65b9\u6848\u7248\u672c\uff1a" + (planVersion ? "v" + planVersion : "--"),
+    "\u65b9\u6848 ID\uff1a" + (plan?.plan_id ?? "--"),
+    "\u5ba1\u6279\u4eba\uff1a" + approver,
+    "\u5ba1\u6279\u52a8\u4f5c\uff1a\u540c\u610f\uff0c\u8fdb\u5165\u6267\u884c",
+    "\u65b9\u6848\u6807\u9898\uff1a" + (plan ? normalizeDiagnosisDisplayText(plan.root_cause) : "--"),
     ...buildPlanStepDetailLines(session?.diagnosis_result),
   ];
 
   return {
-    id: `event-approval-approved-${event.timestamp}`,
+    id: "event-approval-approved-" + event.timestamp,
     sessionId: event.session_id,
     eventKind: "approval_result",
     source: "event",
-    dedupeKey: `approval-result-approved-${versionLabel}`,
+    dedupeKey: "approval-result-approved-" + versionLabel,
     timestamp: event.timestamp,
-    summary: `[系统] 已经完成执行确认（${versionLabel}，审批人 ${approver}）`,
+    summary: "[\u7cfb\u7edf] \u5df2\u5b8c\u6210\u6267\u884c\u786e\u8ba4\uff08" + versionLabel + "\uff0c\u5ba1\u6279\u4eba " + approver + "\uff09",
     details,
     statusTone: "success",
   };
@@ -931,43 +935,43 @@ function getExecutionStageLabel(stage: string, session?: DiagnosisSession) {
   const canaryEnabled = hasCanaryPlan(session);
   switch (stage) {
     case "approval_confirmed":
-      return "执行确认";
+      return "\u5ba1\u6279\u786e\u8ba4";
     case "execution_started":
-      return canaryEnabled ? "开始灰度" : "开始执行";
+      return canaryEnabled ? "\u5f00\u59cb\u6267\u884c" : "\u5f00\u59cb\u6267\u884c";
     case "canary_started":
-      return "开始灰度";
+      return "\u5f00\u59cb\u7070\u5ea6\u6267\u884c";
     case "canary_progress":
     case "canary_batch_progress":
-      return "灰度执行中";
+      return "\u7070\u5ea6\u6267\u884c\u4e2d";
     case "canary_succeeded":
     case "canary_completed":
-      return "已完成灰度";
+      return "\u7070\u5ea6\u6267\u884c\u6210\u529f";
     case "observation_started":
-      return "等待指标反馈";
+      return "\u7070\u5ea6\u89c2\u5bdf\u4e2d";
     case "observation_result":
-      return "指标反馈已确认";
+      return "\u7070\u5ea6\u89c2\u5bdf\u7ed3\u679c";
     case "full_rollout_started":
-      return "开始全量修复";
+      return "\u5f00\u59cb\u5168\u91cf\u4fee\u590d";
     case "full_rollout_progress":
-      return "全量修复中";
+      return "\u5168\u91cf\u4fee\u590d\u4e2d";
     case "full_rollout_succeeded":
-      return "全量修复完成";
+      return "\u5168\u91cf\u4fee\u590d\u6210\u529f";
     case "alert_recovered":
-      return "报警已恢复";
+      return "\u544a\u8b66\u5df2\u6062\u590d";
     case "session_closed":
-      return "诊断已关闭";
+      return "\u4f1a\u8bdd\u5df2\u5173\u95ed";
     case "execution_mocked":
-      return "模拟执行完成";
+      return "\u6a21\u62df\u6267\u884c\u5b8c\u6210";
     case "execution_succeeded":
-      return canaryEnabled ? "全量修复完成" : "执行成功";
+      return canaryEnabled ? "\u5168\u91cf\u4fee\u590d\u6210\u529f" : "\u6267\u884c\u6210\u529f";
     case "execution_failed":
-      return "执行失败";
+      return "\u6267\u884c\u5931\u8d25";
     case "execution_timeout":
-      return "执行超时";
+      return "\u6267\u884c\u8d85\u65f6";
     case "escalation_required":
-      return "需要工程师介入";
+      return "\u9700\u8981\u5347\u7ea7\u5904\u7406";
     default:
-      return stage || "执行进度";
+      return stage || "\u6267\u884c\u72b6\u6001\u66f4\u65b0";
   }
 }
 
@@ -1030,38 +1034,40 @@ function getDefaultExecutionMessage(
 
   const canaryEnabled = hasCanaryPlan(session);
   if (stage === "approval_confirmed") {
-    return "已经完成执行确认";
+    return "\u5ba1\u6279\u901a\u8fc7\uff0c\u51c6\u5907\u5f00\u59cb\u6267\u884c";
   }
   if (stage === "execution_started" && canaryEnabled) {
-    return "已通过审批，开始灰度执行";
+    return "\u5ba1\u6279\u901a\u8fc7\uff0c\u5148\u8fdb\u5165\u7070\u5ea6\u6267\u884c\u5e76\u6301\u7eed\u89c2\u6d4b";
   }
   if (stage === "canary_started") {
-    return "开始灰度，调用 skill 观察灰度窗口";
+    return "\u5f00\u59cb\u7070\u5ea6\u6267\u884c\uff0c\u8c03\u7528\u8bca\u65ad skill \u8fdb\u884c\u5c0f\u6d41\u91cf\u9a8c\u8bc1";
   }
   if (stage === "canary_succeeded" || stage === "canary_completed") {
-    return "已完成灰度，等待指标反馈确认灰度效果";
+    return "\u7070\u5ea6\u6279\u6b21\u9a8c\u8bc1\u901a\u8fc7\uff0c\u7ee7\u7eed\u89c2\u5bdf\u6307\u6807\u540e\u518d\u63a8\u8fdb\u5168\u91cf";
   }
   if (stage === "observation_started") {
-    return "等待指标反馈确认当前效果";
+    return "\u5f00\u59cb\u7070\u5ea6\u89c2\u5bdf\uff0c\u6301\u7eed\u91c7\u96c6\u5ef6\u8fdf\u548c\u9519\u8bef\u7387\u6307\u6807";
   }
   if (stage === "observation_result") {
     const ok = data.metrics_improved === true && data.alert_cleared !== false;
-    return ok ? "反馈已确认灰度没有问题，进行全量修复" : "指标反馈仍需复核，暂停继续放量";
+    return ok
+      ? "\u89c2\u5bdf\u7ed3\u8bba\u826f\u597d\uff0c\u51c6\u5907\u63a8\u8fdb\u5168\u91cf\u4fee\u590d"
+      : "\u89c2\u5bdf\u7ed3\u8bba\u672a\u901a\u8fc7\uff0c\u5efa\u8bae\u6682\u505c\u5168\u91cf\u5e76\u7ee7\u7eed\u6392\u67e5";
   }
   if (stage === "full_rollout_started") {
-    return "开始全量修复";
+    return "\u5f00\u59cb\u5168\u91cf\u4fee\u590d";
   }
   if (stage === "full_rollout_succeeded") {
-    return "全量修复已完成，等待指标反馈全量效果";
+    return "\u5168\u91cf\u4fee\u590d\u5b8c\u6210\uff0c\u6301\u7eed\u89c2\u5bdf\u786e\u8ba4\u4e1a\u52a1\u6062\u590d";
   }
   if (stage === "alert_recovered") {
-    return "相关报警已经恢复";
+    return "\u76f8\u5173\u62a5\u8b66\u5df2\u7ecf\u6062\u590d";
   }
   if (stage === "session_closed") {
-    return "结束并关闭诊断";
+    return "\u6267\u884c\u4f1a\u8bdd\u5df2\u7ed3\u675f";
   }
   if (stage === "execution_succeeded" && canaryEnabled) {
-    return "全量修复完成，等待指标反馈全量效果";
+    return "\u5168\u91cf\u4fee\u590d\u6210\u529f\uff0c\u6d41\u7a0b\u6267\u884c\u5b8c\u6210";
   }
   return "";
 }
@@ -1092,10 +1098,10 @@ function getExecutionProgress(
 
   const label =
     stage.includes("canary") || (stage === "execution_started" && canaryEnabled)
-      ? "灰度进度"
+      ? "\u7070\u5ea6\u8fdb\u5ea6"
       : stage.includes("full_rollout")
-        ? "全量进度"
-        : "执行进度";
+        ? "\u5168\u91cf\u8fdb\u5ea6"
+        : "\u6267\u884c\u8fdb\u5ea6";
   const helper = typeof data.progress_label === "string" && data.progress_label.trim()
     ? normalizeDiagnosisDisplayText(data.progress_label)
     : typeof data.batch === "string" && data.batch.trim()
@@ -1183,15 +1189,16 @@ function buildExecutionProgressRecord(
   const stageLabel = getExecutionStageLabel(stage, session);
   const message = getDefaultExecutionMessage(stage, data, session);
   const operator = resolveRecordUser(data);
+  const runId = resolveExecutionRunId(data, event.session_id);
   const progress = getExecutionProgress(stage, data, session);
   const details = [
-    `状态时间：${formatDateTime(event.timestamp)}`,
-    `执行阶段：${stageLabel}`,
-    `执行人：${operator}`,
+    "\u6267\u884c\u65f6\u95f4\uff1a" + formatDateTime(event.timestamp),
+    "\u6267\u884c\u9636\u6bb5\uff1a" + stageLabel,
+    "\u6267\u884c\u4eba\uff1a" + operator,
   ];
 
   if (message) {
-    details.push(`执行说明：${message}`);
+    details.push("\u6267\u884c\u8bf4\u660e\uff1a" + message);
   }
 
   const skillId = typeof data.skill_id === "string" && data.skill_id.trim()
@@ -1200,23 +1207,29 @@ function buildExecutionProgressRecord(
       ? data.skill.trim()
       : "";
   if (skillId) {
-    details.push(`调用 skill：${skillId}`);
+    details.push("\u8c03\u7528 skill\uff1a" + skillId);
   }
 
   if (progress) {
-    details.push(`${progress.label}：${progress.value}%${progress.helper ? `（${progress.helper}）` : ""}`);
+    details.push(
+      progress.label
+      + "\uff1a"
+      + progress.value
+      + "%"
+      + (progress.helper ? "\uff08" + progress.helper + "\uff09" : ""),
+    );
   }
 
   if (typeof data.metrics_improved === "boolean") {
-    details.push(`指标反馈：${data.metrics_improved ? "已恢复" : "未恢复"}`);
+    details.push("\u6307\u6807\u53cd\u9988\uff1a" + (data.metrics_improved ? "\u5df2\u6062\u590d" : "\u672a\u6062\u590d"));
   }
   if (typeof data.alert_cleared === "boolean") {
-    details.push(`报警状态：${data.alert_cleared ? "已恢复" : "仍在触发"}`);
+    details.push("\u544a\u8b66\u72b6\u6001\uff1a" + (data.alert_cleared ? "\u5df2\u6062\u590d" : "\u672a\u6062\u590d"));
   }
 
   const timeoutSeconds = Number(data.timeout_seconds ?? 0);
   if (Number.isFinite(timeoutSeconds) && timeoutSeconds > 0) {
-    details.push(`超时上限：${timeoutSeconds}s`);
+    details.push("\u8d85\u65f6\u4e0a\u9650\uff1a" + timeoutSeconds + "s");
   }
 
   const stepResults = Array.isArray(data.step_results) ? data.step_results : [];
@@ -1226,22 +1239,29 @@ function buildExecutionProgressRecord(
     }
     const tool = typeof step.tool === "string" ? step.tool : "step";
     const command = typeof step.command === "string" ? step.command : "";
-    details.push(`细节 ${index + 1}：${tool}${command ? ` | ${normalizeDiagnosisDisplayText(command)}` : ""}`);
+    details.push("\u7ec6\u8282 " + (index + 1) + "\uff1a" + tool + (command ? " | " + normalizeDiagnosisDisplayText(command) : ""));
   });
 
+  const metricLines = extractExecutionMetricLines(details);
+
   return {
-    id: `event-${stage}-${event.timestamp}`,
+    id: "event-" + stage + "-" + event.timestamp,
     sessionId: event.session_id,
     eventKind: getExecutionEventKind(stage),
     source: "event",
-    dedupeKey: `execution-progress-${stage}-${event.timestamp}`,
+    dedupeKey: "execution-progress-" + stage + "-" + event.timestamp,
     timestamp: event.timestamp,
-    summary: message ? `[系统] ${stageLabel}：${message}` : `[系统] ${stageLabel}`,
+    summary: message ? "[\u7cfb\u7edf] " + stageLabel + "\uff1a" + message : "[\u7cfb\u7edf] " + stageLabel,
     details,
     statusTone: getExecutionStageTone(stage),
+    stage,
+    runId,
+    isExecutionRunEvent: true,
+    metricLines,
     progress,
   };
 }
+
 function buildSystemRecords(
   session: DiagnosisSession | undefined,
   events: SessionEvent[],
@@ -1274,17 +1294,16 @@ function isExecutionRunSystemItem(
   return (
     item.kind === "system" &&
     item.eventKind !== "approval_result" &&
+    item.eventKind !== "metric_feedback" &&
     (item.isExecutionRunEvent === true ||
       [
         "canary_progress",
         "execution_progress",
-        "metric_feedback",
         "alert_recovery",
         "session_closed",
       ].includes(item.eventKind))
   );
 }
-
 function getRunStepStatus(item: DiagnosisSystemEventView): DiagnosisRunStatus {
   const normalizedSummary = item.summary.toLowerCase();
   if (item.statusTone === "danger") {
@@ -1349,6 +1368,7 @@ function createRunStep(item: DiagnosisSystemEventView): DiagnosisRunStepView {
   return {
     id: `run-step-${item.id}`,
     eventKind: item.eventKind,
+    stage: item.stage,
     title,
     summary: item.summary,
     details: item.details,
@@ -1377,14 +1397,110 @@ function createRunTool(
   };
 }
 
+function getRunPhaseForStep(step: DiagnosisRunStepView): DiagnosisRunPhase {
+  const stage = (step.stage ?? "").toLowerCase();
+  if (stage.includes("full_rollout")) {
+    return "full";
+  }
+  if (["execution_succeeded", "execution_failed", "execution_timeout", "execution_mocked"].includes(stage)) {
+    return "full";
+  }
+  if (
+    stage.includes("canary") ||
+    stage === "execution_started" ||
+    stage === "approval_confirmed" ||
+    stage === "observation_started"
+  ) {
+    return "canary";
+  }
+  if (step.eventKind === "canary_progress") {
+    return "canary";
+  }
+  if (step.eventKind === "execution_progress" && step.title.includes("\u5168\u91cf")) {
+    return "full";
+  }
+  return "single";
+}
+
+type RunSegment = {
+  phase: DiagnosisRunPhase;
+  steps: DiagnosisRunStepView[];
+  tools: DiagnosisRunToolView[];
+};
+
+function splitRunSegments(
+  steps: DiagnosisRunStepView[],
+  tools: DiagnosisRunToolView[],
+): RunSegment[] {
+  if (steps.length === 0) {
+    return [];
+  }
+
+  const phases = steps.map((step) => getRunPhaseForStep(step));
+  const firstFullIndex = phases.findIndex((phase) => phase === "full");
+  const hasCanaryPhase = phases.some((phase) => phase === "canary");
+
+  if (firstFullIndex <= 0 || !hasCanaryPhase) {
+    return [{ phase: hasCanaryPhase ? "canary" : "single", steps, tools }];
+  }
+
+  const canarySteps = steps.slice(0, firstFullIndex);
+  const fullSteps = steps.slice(firstFullIndex);
+  const canaryStepIds = new Set(canarySteps.map((step) => step.id));
+  const fullStepIds = new Set(fullSteps.map((step) => step.id));
+  const canaryTools: DiagnosisRunToolView[] = [];
+  const fullTools: DiagnosisRunToolView[] = [];
+  const fullStartAt = new Date(fullSteps[0]?.timestamp ?? 0).getTime();
+
+  tools.forEach((tool) => {
+    if (tool.stepId && fullStepIds.has(tool.stepId)) {
+      fullTools.push(tool);
+      return;
+    }
+    if (tool.stepId && canaryStepIds.has(tool.stepId)) {
+      canaryTools.push(tool);
+      return;
+    }
+
+    const toolTime = new Date(tool.timestamp).getTime();
+    if (Number.isFinite(toolTime) && toolTime >= fullStartAt) {
+      fullTools.push(tool);
+      return;
+    }
+
+    canaryTools.push(tool);
+  });
+
+  const segments: RunSegment[] = [
+    { phase: "canary", steps: canarySteps, tools: canaryTools },
+    { phase: "full", steps: fullSteps, tools: fullTools },
+  ];
+  return segments.filter((segment) => segment.steps.length > 0);
+}
+
+function getRunTitle(
+  phase: DiagnosisRunPhase,
+  steps: DiagnosisRunStepView[],
+) {
+  if (phase === "canary") {
+    return "\u7070\u5ea6\u89c2\u5bdf";
+  }
+  if (phase === "full") {
+    return "\u5168\u91cf\u4fee\u590d";
+  }
+  return steps.some((step) => step.eventKind === "canary_progress")
+    ? "\u7070\u5ea6\u6267\u884c"
+    : "\u6267\u884c\u6d41\u7a0b";
+}
+
 function buildRunTimelineItem(
   runId: string,
+  phase: DiagnosisRunPhase,
   steps: DiagnosisRunStepView[],
   tools: DiagnosisRunToolView[],
 ): DiagnosisRunTimelineItem {
   const status = getRunStatusFromSteps(steps);
   const latestStep = steps[steps.length - 1];
-  const hasCanary = steps.some((step) => step.eventKind === "canary_progress");
   const startedAt =
     steps[0]?.timestamp ?? tools[0]?.timestamp ?? new Date(0).toISOString();
   const updatedAt =
@@ -1393,10 +1509,11 @@ function buildRunTimelineItem(
     steps[0]?.timestamp ??
     new Date(0).toISOString();
   return {
-    id: `execution-run-${runId}`,
+    id: `execution-run-${runId}-${phase}-${steps[0]?.id ?? "0"}`,
     kind: "run",
     runId,
-    title: hasCanary ? "\u7070\u5ea6\u6267\u884c\u8fd0\u884c\u5757" : "\u6267\u884c\u8fd0\u884c\u5757",
+    phase,
+    title: getRunTitle(phase, steps),
     timestamp: updatedAt,
     status,
     progress: getRunProgress(steps, status),
@@ -1405,7 +1522,7 @@ function buildRunTimelineItem(
     updatedAt,
     steps,
     tools,
-    metrics: dedupeRunLines(steps.flatMap((step) => step.metricLines)).slice(0, 8),
+    metrics: dedupeRunLines(steps.flatMap((step) => step.metricLines)).slice(0, 4),
   };
 }
 
@@ -1458,9 +1575,12 @@ export function groupExecutionRunTimeline(
 
   const runItemsByFirstIndex = new Map<number, DiagnosisRunTimelineItem[]>();
   for (const [runId, bucket] of runBuckets.entries()) {
-    const runItem = buildRunTimelineItem(runId, bucket.steps, bucket.tools);
+    const segments = splitRunSegments(bucket.steps, bucket.tools);
+    const runItems = segments.map((segment) =>
+      buildRunTimelineItem(runId, segment.phase, segment.steps, segment.tools),
+    );
     const existing = runItemsByFirstIndex.get(bucket.firstIndex) ?? [];
-    existing.push(runItem);
+    existing.push(...runItems);
     runItemsByFirstIndex.set(bucket.firstIndex, existing);
   }
 

@@ -1,4 +1,4 @@
-﻿import {
+import {
   Background,
   BackgroundVariant,
   Handle,
@@ -112,12 +112,12 @@ function getAggregateTypeLabel(node: TopologyObject) {
   if (rawType === "gpu") {
     return "GPU";
   }
-  return rawType === "pod" ? "Pod" : "服务组";
+  return rawType === "pod" ? "Pod" : "\u670d\u52a1\u7ec4";
 }
 
 function getNodeSummary(node: TopologyObject) {
   if (isSyntheticServiceAggregateNode(node) || isSyntheticGpuAggregateNode(node)) {
-    return `聚合 ${getAggregateCount(node)} 个${getAggregateTypeLabel(node)}对象，点击展开查看。`;
+    return `\u805a\u5408 ${getAggregateCount(node)} \u4e2a${getAggregateTypeLabel(node)}\u5bf9\u8c61\uff0c\u70b9\u51fb\u5c55\u5f00\u67e5\u770b\u3002`;
   }
 
   return node.summary;
@@ -163,40 +163,42 @@ function getBasePositions(
 }
 
 function getModifiedHandleStyle(position: Position, metrics: TopologyCanvasMetrics) {
-  const orbCenterY = metrics.nodeCircleSize / 2 + 2;
+  const orbRadius = metrics.nodeCircleSize / 2;
+  const orbCenterX = metrics.nodeWidth / 2;
+  const orbCenterY = orbRadius;
 
   if (position === Position.Left) {
     return {
       ...HANDLE_STYLE,
-      left: -2,
+      left: orbCenterX - orbRadius,
       top: orbCenterY,
-      transform: "translateY(-50%)",
+      transform: "translate(-50%, -50%)",
     };
   }
 
   if (position === Position.Right) {
     return {
       ...HANDLE_STYLE,
-      right: -2,
+      left: orbCenterX + orbRadius,
       top: orbCenterY,
-      transform: "translateY(-50%)",
+      transform: "translate(-50%, -50%)",
     };
   }
 
   if (position === Position.Top) {
     return {
       ...HANDLE_STYLE,
-      left: metrics.nodeWidth / 2,
-      top: 4,
-      transform: "translateX(-50%)",
+      left: orbCenterX,
+      top: 0,
+      transform: "translate(-50%, -50%)",
     };
   }
 
   return {
     ...HANDLE_STYLE,
-    left: metrics.nodeWidth / 2,
-    top: metrics.nodeCircleSize + 12,
-    transform: "translateX(-50%)",
+    left: orbCenterX,
+    top: metrics.nodeCircleSize,
+    transform: "translate(-50%, -50%)",
   };
 }
 
@@ -206,7 +208,7 @@ function ExplorerNode({ data }: NodeProps<Node<ExplorerFlowNodeData>>) {
   const aggregateCount = getAggregateCount(node);
   const handleStyle = { ...HANDLE_STYLE, top: metrics.nodeCircleSize / 2 + 2 };
   const statusLabel = formatTopologyStatus(node.status);
-  const semanticTypeLabel = isAggregate ? `${getAggregateTypeLabel(node)}聚合组` : formatTopologyType(node.type);
+  const semanticTypeLabel = isAggregate ? `${getAggregateTypeLabel(node)}\u805a\u5408\u7ec4` : formatTopologyType(node.type);
   const title = `${node.name} | ${semanticTypeLabel} | ${statusLabel}${neighborDepth > 0 ? ` | ${neighborDepth} hop` : ""}`;
 
   if (variant === "modified") {
@@ -244,12 +246,12 @@ function ExplorerNode({ data }: NodeProps<Node<ExplorerFlowNodeData>>) {
               className="topology-flow-node__icon-image"
               draggable={false}
               src={getTopologyTypeIconAsset(node.type)}
-              style={{ width: metrics.iconSize + 2, height: metrics.iconSize + 2 }}
+
             />
             {isAggregate ? <span className="topology-flow-node__count-badge">{aggregateCount}</span> : null}
           </span>
           <span className="topology-flow-node__title">{node.name}</span>
-          {isAggregate ? <span className="topology-flow-node__meta">{aggregateCount} 个对象</span> : null}
+          {isAggregate ? <span className="topology-flow-node__meta">{aggregateCount} {"\u4e2a\u5bf9\u8c61"}</span> : null}
         </button>
         {Object.values(MODIFIED_EDGE_HANDLE_IDS.source).map((handleId) => {
           const position = getModifiedHandlePosition(handleId);
@@ -390,7 +392,7 @@ const TopologyCanvas = forwardRef<TopologyCanvasHandle, TopologyCanvasProps>(fun
         edge.target === focusNodeId ||
         (neighborDepths.has(edge.source) && neighborDepths.has(edge.target));
       const stroke = getEdgeColor(edge, variant);
-      const shouldShowLabel = forceEdgeLabels || isConnectedToFocus;
+      const shouldShowLabel = variant === "modified" ? true : forceEdgeLabels || isConnectedToFocus;
       const routing =
         variant === "modified"
           ? deriveModifiedEdgeRouting({
@@ -407,9 +409,6 @@ const TopologyCanvas = forwardRef<TopologyCanvasHandle, TopologyCanvasProps>(fun
         type: routing?.edgeType ?? "default",
         sourceHandle: routing?.sourceHandle,
         targetHandle: routing?.targetHandle,
-        ...(variant === "modified" && routing?.edgeType === "smoothstep"
-          ? { pathOptions: { borderRadius: 26, offset: 14 } }
-          : {}),
         label: shouldShowLabel ? edge.label ?? formatRelationType(edge.relationType) : undefined,
         labelStyle: {
           fill: "#253247",
@@ -420,6 +419,8 @@ const TopologyCanvas = forwardRef<TopologyCanvasHandle, TopologyCanvasProps>(fun
         markerEnd: {
           type: MarkerType.ArrowClosed,
           color: stroke,
+          width: variant === "modified" ? 18 : 14,
+          height: variant === "modified" ? 18 : 14,
         },
         animated: Boolean(edge.isCritical && isConnectedToFocus),
         zIndex: isConnectedToFocus ? 8 : edge.isCritical ? 5 : 2,
@@ -428,12 +429,12 @@ const TopologyCanvas = forwardRef<TopologyCanvasHandle, TopologyCanvasProps>(fun
           strokeWidth:
             variant === "modified"
               ? isConnectedToFocus
-                ? 2.4
+                ? 2.8
                 : edge.isCritical
-                  ? 1.8
+                  ? 2.4
                   : edge.isAggregated
-                    ? 1.1
-                    : 1
+                    ? 2.1
+                    : 1.9
               : isConnectedToFocus
                 ? 2.4
                 : edge.isCritical
@@ -442,18 +443,18 @@ const TopologyCanvas = forwardRef<TopologyCanvasHandle, TopologyCanvasProps>(fun
           opacity:
             variant === "modified"
               ? isConnectedToFocus
-                ? 0.94
+                ? 0.98
                 : isContextEdge
                   ? edge.isCritical
-                    ? 0.46
+                    ? 0.88
                     : edge.isAggregated
-                      ? 0.2
-                      : 0.16
-                  : 0.08
+                      ? 0.8
+                      : 0.72
+                  : 0.38
               : isContextEdge
                 ? 0.88
                 : 0.2,
-          strokeDasharray: variant === "modified" && edge.isAggregated ? "4 6" : undefined,
+          strokeDasharray: undefined,
         },
       };
     });
@@ -688,5 +689,3 @@ const TopologyCanvas = forwardRef<TopologyCanvasHandle, TopologyCanvasProps>(fun
 });
 
 export default TopologyCanvas;
-
-

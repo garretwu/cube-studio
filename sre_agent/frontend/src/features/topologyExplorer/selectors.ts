@@ -131,6 +131,21 @@ function getHighestStatus(nodes: TopologyObject[]) {
     return statusRank(node.status) > statusRank(winner) ? node.status : winner;
   }, "healthy");
 }
+function getRelationLabel(edge: Pick<TopologyRelation, "relationType" | "label">) {
+  const rawLabel = typeof edge.label === "string" ? edge.label.trim() : "";
+  if (rawLabel.length > 0) {
+    return rawLabel;
+  }
+  return edge.relationType.replace(/_/g, " ");
+}
+
+function buildAggregatedRelationLabel(relationLabels: Set<string>, count: number) {
+  if (relationLabels.size === 1) {
+    const [relationLabel] = Array.from(relationLabels);
+    return `${relationLabel}(${count})`;
+  }
+  return `${count} relations`;
+}
 function pathStatusRank(status: TopologyPath["status"]) {
   return status === "active" ? 1 : 0;
 }
@@ -274,7 +289,7 @@ function buildModifiedAggregatedTopology(
 
       aggregateNodes.push({
         id: aggregateGroupId,
-        name: `GPU组 \u00b7 ${members.length} \u00b7 ${hostLabel}`,
+        name: `GPU�?\u00b7 ${members.length} \u00b7 ${hostLabel}`,
         type: "gpu",
         status: aggregateStatus,
         layer: "compute",
@@ -366,7 +381,14 @@ function buildModifiedAggregatedTopology(
   });
 
   const visibleNodes = response.nodes.filter((node) => !replacementMap.has(node.id));
-  const mergedEdges = new Map<string, TopologyRelation & { __count: number; __syntheticEndpoint: boolean }>();
+  const mergedEdges = new Map<
+    string,
+    TopologyRelation & {
+      __count: number;
+      __syntheticEndpoint: boolean;
+      __relationLabels: Set<string>;
+    }
+  >();
 
   response.edges.forEach((edge) => {
     const source = replacementMap.get(edge.source) ?? edge.source;
@@ -387,16 +409,20 @@ function buildModifiedAggregatedTopology(
         source,
         target,
         relationType: syntheticEndpoint ? "aggregated" : edge.relationType,
-        label: syntheticEndpoint ? "1 relation" : edge.label,
+        label: syntheticEndpoint
+          ? buildAggregatedRelationLabel(new Set([getRelationLabel(edge)]), 1)
+          : edge.label,
         isAggregated: syntheticEndpoint || edge.isAggregated,
         __count: 1,
         __syntheticEndpoint: syntheticEndpoint,
+        __relationLabels: new Set([getRelationLabel(edge)]),
       });
       return;
     }
 
     existing.__count += 1;
     existing.__syntheticEndpoint = existing.__syntheticEndpoint || syntheticEndpoint;
+    existing.__relationLabels.add(getRelationLabel(edge));
     existing.status =
       statusRank(edge.status) > statusRank(existing.status)
         ? edge.status
@@ -411,16 +437,15 @@ function buildModifiedAggregatedTopology(
   });
 
   const edges = Array.from(mergedEdges.values()).map(
-    ({ __count, __syntheticEndpoint, ...edge }) => ({
+    ({ __count, __syntheticEndpoint, __relationLabels, ...edge }) => ({
       ...edge,
       label:
         __count > 1 || __syntheticEndpoint
-          ? `${__count} 个关系`
+          ? buildAggregatedRelationLabel(__relationLabels, __count)
           : edge.label ?? edge.relationType,
       isAggregated: edge.isAggregated || __count > 1 || __syntheticEndpoint,
     }),
   );
-
   return {
     ...response,
     nodes: [...visibleNodes, ...aggregateNodes],
@@ -675,7 +700,13 @@ function buildAggregatedEdges(
       )
       .map((edge) => `${edge.source}:${edge.target}`),
   );
-  const aggregated = new Map<string, TopologyRelation>();
+  const aggregated = new Map<
+    string,
+    TopologyRelation & {
+      __count: number;
+      __relationLabels: Set<string>;
+    }
+  >();
 
   visibleNodeIds.forEach((sourceId) => {
     const initialEdges = (outgoing.get(sourceId) ?? []).filter(
@@ -729,18 +760,44 @@ function buildAggregatedEdges(
               ? edge.impactLevel
               : winner;
           }, "low");
+          const relationLabels = new Set(
+            traversedEdges.map((traversedEdge) => getRelationLabel(traversedEdge)),
+          );
 
-          aggregated.set(aggregateKey, {
-            id: `aggregated-${sourceId}-${nextEdge.target}`,
-            source: sourceId,
-            target: nextEdge.target,
-            relationType: "aggregated",
-            status: withNodeStatus,
-            isCritical: traversedEdges.some((edge) => edge.isCritical),
-            impactLevel,
-            label: "????",
-            isAggregated: true,
-          });
+          const existing = aggregated.get(aggregateKey);
+          if (!existing) {
+            aggregated.set(aggregateKey, {
+              id: `aggregated-${sourceId}-${nextEdge.target}`,
+              source: sourceId,
+              target: nextEdge.target,
+              relationType: "aggregated",
+              status: withNodeStatus,
+              isCritical: traversedEdges.some((edge) => edge.isCritical),
+              impactLevel,
+              label: buildAggregatedRelationLabel(relationLabels, 1),
+              isAggregated: true,
+              __count: 1,
+              __relationLabels: relationLabels,
+            });
+            return;
+          }
+
+          existing.__count += 1;
+          relationLabels.forEach((label) => existing.__relationLabels.add(label));
+          existing.status =
+            statusRank(withNodeStatus) > statusRank(existing.status)
+              ? withNodeStatus
+              : existing.status;
+          existing.impactLevel =
+            impactRank(impactLevel) > impactRank(existing.impactLevel)
+              ? impactLevel
+              : existing.impactLevel;
+          existing.isCritical =
+            existing.isCritical || traversedEdges.some((edge) => edge.isCritical);
+          existing.label = buildAggregatedRelationLabel(
+            existing.__relationLabels,
+            existing.__count,
+          );
           return;
         }
 
@@ -759,9 +816,10 @@ function buildAggregatedEdges(
     }
   });
 
-  return Array.from(aggregated.values());
+  return Array.from(aggregated.values()).map(
+    ({ __count: _count, __relationLabels: _labels, ...edge }) => edge,
+  );
 }
-
 export function getVisibleTopology(
   response: TopologyExplorerResponse | undefined,
   filters: TopologyExplorerFilters,

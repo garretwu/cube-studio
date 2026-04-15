@@ -1,4 +1,4 @@
-﻿import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 
 import { createTopologyExplorerState, useTopologyExplorerStore } from "../features/topologyExplorer/store";
@@ -29,9 +29,15 @@ describe("TopologyPage modified variant", () => {
     expect(screen.getByTestId("topology-stage-workplane")).toHaveAttribute("data-topology-variant", "modified");
 
     const canvas = await screen.findByTestId("topology-canvas");
-    const aggregateMeta = await within(canvas).findAllByText(/个对象/i);
-    expect(aggregateMeta.length).toBeGreaterThan(0);
+    await waitFor(() => {
+      expect(
+        canvas.querySelectorAll(".topology-flow-node--aggregate .topology-flow-node__meta").length,
+      ).toBeGreaterThan(0);
+    });
 
+    const aggregateMeta = Array.from(
+      canvas.querySelectorAll(".topology-flow-node--aggregate .topology-flow-node__meta"),
+    );
     const aggregateButton = aggregateMeta[0]?.closest("button");
     expect(aggregateButton).not.toBeNull();
 

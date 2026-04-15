@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 
+import type { TopologyExplorerResponse } from "../../api/types";
 import { topologyExplorerOnlineMock } from "../../mocks/topologyExplorerOnlineMock";
 import {
   getGlobalTopologyDisplayData,
@@ -10,6 +11,64 @@ import {
   isSyntheticServiceAggregateNode,
 } from "./selectors";
 
+
+function buildAggregateLabelFixture(edges: TopologyExplorerResponse["edges"]): TopologyExplorerResponse {
+  const now = "2026-04-15T00:00:00.000Z";
+  const baseNode: Omit<TopologyExplorerResponse["nodes"][number], "id" | "name" | "type" | "layer"> = {
+    status: "healthy",
+    domain: "factory-a",
+    region: "cn",
+    zone: "sh",
+    summary: "fixture",
+    tags: [],
+    updatedAt: now,
+    attributes: {},
+  };
+
+  return {
+    site: {
+      id: "site-1",
+      name: "Fixture Site",
+      region: "cn",
+      zone: "sh",
+      domain: "factory-a",
+      summary: "fixture site",
+    },
+    nodes: [
+      {
+        id: "cluster-a",
+        name: "Cluster A",
+        type: "cluster",
+        layer: "physical",
+        ...baseNode,
+      },
+      {
+        id: "rack-z",
+        name: "Rack Z",
+        type: "rack",
+        layer: "physical",
+        ...baseNode,
+      },
+      {
+        id: "svc-1",
+        name: "Service 1",
+        type: "service",
+        layer: "service",
+        ...baseNode,
+      },
+      {
+        id: "svc-2",
+        name: "Service 2",
+        type: "service",
+        layer: "service",
+        ...baseNode,
+      },
+    ],
+    edges,
+    paths: [],
+    lastUpdated: now,
+  };
+}
 describe("topology modified selectors", () => {
   it("keeps switch ports as independent port objects instead of switch nodes", () => {
     const switchNode = topologyExplorerOnlineMock.nodes.find((node) => node.id === "sw-200g");
@@ -128,5 +187,116 @@ describe("topology modified selectors", () => {
 
     expect(stage.nodes.some((node) => node.id === firstPodNode!.id)).toBe(true);
     expect(searchResultIds.every((id) => stage.searchResultIds.includes(id))).toBe(true);
+  });
+  it("formats aggregated edge labels as relation(count) when merged relations are homogeneous", () => {
+    const fixture = buildAggregateLabelFixture([
+      {
+        id: "e-1",
+        source: "cluster-a",
+        target: "svc-1",
+        relationType: "depends_on",
+        label: "serve to",
+        status: "healthy",
+        isCritical: false,
+        impactLevel: "low",
+      },
+      {
+        id: "e-2",
+        source: "svc-1",
+        target: "rack-z",
+        relationType: "depends_on",
+        label: "serve to",
+        status: "healthy",
+        isCritical: false,
+        impactLevel: "low",
+      },
+      {
+        id: "e-3",
+        source: "cluster-a",
+        target: "svc-2",
+        relationType: "depends_on",
+        label: "serve to",
+        status: "healthy",
+        isCritical: false,
+        impactLevel: "low",
+      },
+      {
+        id: "e-4",
+        source: "svc-2",
+        target: "rack-z",
+        relationType: "depends_on",
+        label: "serve to",
+        status: "healthy",
+        isCritical: false,
+        impactLevel: "low",
+      },
+    ]);
+
+    const stage = getStageTopology(fixture, {
+      layerFilter: "physical",
+      searchQuery: "",
+    });
+
+    const edge = stage.edges.find(
+      (item) => item.source === "cluster-a" && item.target === "rack-z" && item.isAggregated,
+    );
+
+    expect(edge?.label).toBe("serve to(2)");
+  });
+
+  it("formats aggregated edge labels as N relations when merged relations are mixed", () => {
+    const fixture = buildAggregateLabelFixture([
+      {
+        id: "e-1",
+        source: "cluster-a",
+        target: "svc-1",
+        relationType: "depends_on",
+        label: "serve to",
+        status: "healthy",
+        isCritical: false,
+        impactLevel: "low",
+      },
+      {
+        id: "e-2",
+        source: "svc-1",
+        target: "rack-z",
+        relationType: "depends_on",
+        label: "serve to",
+        status: "healthy",
+        isCritical: false,
+        impactLevel: "low",
+      },
+      {
+        id: "e-3",
+        source: "cluster-a",
+        target: "svc-2",
+        relationType: "connects_to",
+        label: "depends on",
+        status: "healthy",
+        isCritical: false,
+        impactLevel: "low",
+      },
+      {
+        id: "e-4",
+        source: "svc-2",
+        target: "rack-z",
+        relationType: "connects_to",
+        label: "depends on",
+        status: "healthy",
+        isCritical: false,
+        impactLevel: "low",
+      },
+    ]);
+
+    const stage = getStageTopology(fixture, {
+      layerFilter: "physical",
+      searchQuery: "",
+    });
+
+    const edge = stage.edges.find(
+      (item) => item.source === "cluster-a" && item.target === "rack-z" && item.isAggregated,
+    );
+
+    expect(edge?.label).toBe("2 relations");
   });
 });
