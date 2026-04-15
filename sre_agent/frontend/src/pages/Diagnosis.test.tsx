@@ -121,6 +121,15 @@ function resetDiagnosisStore(overrides: Partial<ReturnType<typeof useDiagnosisSt
     hasPlan: false,
     planMissingReason: undefined,
     effectiveReviseInstruction: undefined,
+    completedThinkingRounds: [],
+    liveThinking: null,
+    liveFinalAnswer: null,
+    streamingText: "",
+    streamingNode: null,
+    isStreamingDiagnosis: false,
+    streamingPhase: "idle",
+    activeStreamingTools: [],
+    streamingAbortController: null,
     bootstrapSession: vi.fn().mockResolvedValue(undefined),
     sendMessage: vi.fn().mockResolvedValue(undefined),
     revisePlan: vi.fn().mockResolvedValue(undefined),
@@ -246,7 +255,7 @@ describe("DiagnosisPage sequential playback", () => {
     expect(container.querySelectorAll(".diagnosis-workspace-message-row")).toHaveLength(3);
   });
 
-  it("collapses finished thinking into a unified Thought for x seconds label", async () => {
+  it("collapses finished thinking into a unified 思考完成（Xs） label", async () => {
     mockedBuildDemoScenario.mockReturnValue({
       initialTimeline: [
         {
@@ -288,9 +297,55 @@ describe("DiagnosisPage sequential playback", () => {
 
     await flushPendingTimers();
 
-    expect(screen.getByText(/Thought for \d+ seconds?/i)).toBeInTheDocument();
+    expect(screen.getByText(/思考完成（\d+s）/)).toBeInTheDocument();
     expect(screen.queryByText("Agent is understanding the request")).not.toBeInTheDocument();
   });
+
+  it("collapses live completed thinking by default and avoids local thought-duration estimation", async () => {
+    let timelineSource: DiagnosisTimelineItem[] = [
+      {
+        id: "live-thinking-no-duration",
+        kind: "thinking",
+        title: "Agent is converging on the diagnosis",
+        content: "Live reasoning content should remain visible.",
+        timestamp: "2026-04-08T10:25:01.000Z",
+        status: "completed",
+      },
+    ];
+
+    mockedBuildLiveView.mockImplementation(() => ({
+      timeline: timelineSource,
+      candidates: [],
+      summary: undefined,
+      plan: undefined,
+    }));
+
+    resetDiagnosisStore({
+      session: createLiveSession("sess-live-thinking-no-duration"),
+      activeSessionId: "sess-live-thinking-no-duration",
+      bootstrapStatus: "ready",
+      traceStatus: "ready",
+      messages: [],
+      bootstrapSession: vi.fn().mockResolvedValue(undefined),
+    });
+
+    renderLivePage("/diagnosis/sess-live-thinking-no-duration");
+    await advance(120);
+
+    expect(screen.getByText("思考完成")).toBeInTheDocument();
+    expect(screen.queryByText(/思考完成（\d+s）/)).not.toBeInTheDocument();
+    expect(screen.getByText("Live reasoning content should remain visible.")).toBeInTheDocument();
+
+    await advance(1200);
+
+    expect(
+      screen.queryByText("Live reasoning content should remain visible."),
+    ).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByText("思考完成"));
+    expect(screen.getByText("Live reasoning content should remain visible.")).toBeInTheDocument();
+  });
+
   it("blocks later timeline items while a demo tool is still loading", async () => {
     mockedBuildDemoScenario.mockReturnValue({
       initialTimeline: [
@@ -1042,6 +1097,356 @@ describe("DiagnosisPage status badges", () => {
     expect(screen.queryByText(/\u5b9e\u65f6\u94fe\u8def/u)).not.toBeInTheDocument();
   });
 
+  it("renders the live thinking block inside the main timeline when backend stream is active", () => {
+    mockedBuildLiveView.mockImplementation((_session, _messages, _events, _localAuditRecords, liveThinking) => ({
+      timeline: liveThinking
+        ? [
+            {
+              id: `trace-thinking-${liveThinking.thought_key}`,
+              kind: "thinking",
+              title: "Agent is planning a tool call",
+              content: liveThinking.content,
+              timestamp: liveThinking.timestamp,
+              toolName: liveThinking.tool_name,
+              status: "thinking",
+            },
+            ...liveThinking.active_tools.map((tool) => ({
+              id: `trace-tool-${liveThinking.thought_key}-${tool.tool}`,
+              kind: "tool" as const,
+              toolName: tool.tool,
+              params: tool.params,
+              timestamp: liveThinking.timestamp,
+              status: "loading" as const,
+              summaryLines: ["Waiting for tool result..."],
+            })),
+          ]
+        : [],
+      candidates: [],
+      summary: undefined,
+      plan: undefined,
+    }));
+
+    resetDiagnosisStore({
+      session: createLiveSession("sess-live-stream"),
+      activeSessionId: "sess-live-stream",
+      bootstrapStatus: "ready",
+      traceStatus: "ready",
+      isStreamingDiagnosis: true,
+      liveThinking: {
+        thought_key: "run-reason-1:reason",
+        node: "reason",
+        run_id: "run-reason-1",
+        timestamp: "2026-04-08T10:20:01.000Z",
+        content: "partial token output",
+        status: "thinking",
+        tool_name: "query_metrics",
+        active_tools: [{ tool: "query_metrics", params: { service: "auth-svc" } }],
+      },
+      messages: [],
+      bootstrapSession: vi.fn().mockResolvedValue(undefined),
+    });
+
+    renderLivePage("/diagnosis/sess-live-stream");
+
+    expect(screen.queryByText("Live stream")).not.toBeInTheDocument();
+    expect(screen.getByText("思考中")).toBeInTheDocument();
+    expect(screen.getByText(/partial token output/)).toBeInTheDocument();
+    expect(screen.getAllByText("query_metrics").length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("renders per-round thinking transitions in-order instead of reusing one top card", () => {
+    let timelineSource: DiagnosisTimelineItem[] = [
+      {
+        id: "round-1-thinking",
+        kind: "thinking",
+        title: "round 1",
+        content: "round-1 reasoning",
+        timestamp: "2026-04-08T10:21:01.000Z",
+        status: "thinking",
+      },
+    ];
+
+    mockedBuildLiveView.mockImplementation(() => ({
+      timeline: timelineSource,
+      candidates: [],
+      summary: undefined,
+      plan: undefined,
+    }));
+
+    resetDiagnosisStore({
+      session: createLiveSession("sess-live-round-transition"),
+      activeSessionId: "sess-live-round-transition",
+      bootstrapStatus: "ready",
+      traceStatus: "ready",
+      isStreamingDiagnosis: true,
+      messages: [],
+      bootstrapSession: vi.fn().mockResolvedValue(undefined),
+    });
+
+    const { container } = renderLivePage("/diagnosis/sess-live-round-transition");
+    const labelSelector = ".diagnosis-workspace-thinking__label";
+    const pulseSelector = ".diagnosis-workspace-thinking__pulse";
+    const getThinkingLabels = () =>
+      Array.from(container.querySelectorAll(labelSelector)).map((node) => (node.textContent ?? "").trim());
+
+    expect(getThinkingLabels()).toEqual(["思考中"]);
+    expect(container.querySelectorAll(pulseSelector)).toHaveLength(1);
+
+    timelineSource = [
+      {
+        id: "round-1-thinking",
+        kind: "thinking",
+        title: "round 1",
+        content: "round-1 reasoning done",
+        timestamp: "2026-04-08T10:21:01.000Z",
+        status: "completed",
+      },
+      {
+        id: "round-2-thinking",
+        kind: "thinking",
+        title: "round 2",
+        content: "round-2 reasoning",
+        timestamp: "2026-04-08T10:21:03.000Z",
+        status: "thinking",
+      },
+    ];
+    act(() => {
+      const state = useDiagnosisStore.getState();
+      useDiagnosisStore.setState({ ...state, messages: [...state.messages] });
+    });
+
+    expect(getThinkingLabels()).toEqual(["思考完成", "思考中"]);
+    expect(container.querySelectorAll(".diagnosis-workspace-process-row")).toHaveLength(2);
+    expect(container.querySelectorAll(pulseSelector)).toHaveLength(1);
+
+    timelineSource = [
+      {
+        id: "round-1-thinking",
+        kind: "thinking",
+        title: "round 1",
+        content: "round-1 reasoning done",
+        timestamp: "2026-04-08T10:21:01.000Z",
+        status: "completed",
+      },
+      {
+        id: "round-2-thinking",
+        kind: "thinking",
+        title: "round 2",
+        content: "round-2 reasoning done",
+        timestamp: "2026-04-08T10:21:03.000Z",
+        status: "completed",
+      },
+    ];
+    act(() => {
+      const state = useDiagnosisStore.getState();
+      useDiagnosisStore.setState({ ...state, messages: [...state.messages] });
+    });
+
+    expect(getThinkingLabels()).toEqual(["思考完成", "思考完成"]);
+    expect(container.querySelectorAll(pulseSelector)).toHaveLength(0);
+  });
+
+  it("does not render thinking spinner after timeout/error terminal state", () => {
+    mockedBuildLiveView.mockImplementation((_session, _messages, _events, _localAuditRecords, liveThinking) => ({
+      timeline: liveThinking
+        ? [
+            {
+              id: `trace-thinking-${liveThinking.thought_key}`,
+              kind: "thinking",
+              title: "Agent terminal summary",
+              content: liveThinking.content,
+              timestamp: liveThinking.timestamp,
+              toolName: liveThinking.tool_name,
+              status: liveThinking.status,
+            },
+          ]
+        : [],
+      candidates: [],
+      summary: undefined,
+      plan: undefined,
+    }));
+
+    resetDiagnosisStore({
+      session: createLiveSession("sess-live-timeout-summary"),
+      activeSessionId: "sess-live-timeout-summary",
+      bootstrapStatus: "ready",
+      traceStatus: "ready",
+      isStreamingDiagnosis: false,
+      streamingPhase: "error",
+      liveThinking: {
+        thought_key: "run-reason-timeout:reason",
+        node: "reason",
+        run_id: "run-reason-timeout",
+        timestamp: "2026-04-08T10:20:05.000Z",
+        content: "Timeout while reasoning; compact final summary applied.",
+        status: "completed",
+        tool_name: null,
+        active_tools: [],
+      },
+      messages: [],
+      bootstrapSession: vi.fn().mockResolvedValue(undefined),
+    });
+
+    const { container } = renderLivePage("/diagnosis/sess-live-timeout-summary");
+
+    expect(container.querySelector(".diagnosis-workspace-thinking__pulse")).toBeNull();
+    expect(screen.queryByText(/\u601d\u8003\u4e2d/u)).not.toBeInTheDocument();
+    expect(screen.getByText(/\u601d\u8003\u5b8c\u6210/u)).toBeInTheDocument();
+    expect(screen.getByText("Timeout while reasoning; compact final summary applied.")).toBeInTheDocument();
+  });
+
+  it("keeps startup view clean while waiting for the first live content", () => {
+    mockedBuildLiveView.mockImplementation((_session, _messages, _events, _localAuditRecords, liveThinking) => ({
+      timeline: liveThinking
+        ? [
+            {
+              id: `trace-thinking-${liveThinking.thought_key}`,
+              kind: "thinking",
+              title: "bootstrap",
+              content: liveThinking.content,
+              timestamp: liveThinking.timestamp,
+              toolName: liveThinking.tool_name,
+              status: "thinking",
+            },
+          ]
+        : [],
+      candidates: [],
+      summary: undefined,
+      plan: undefined,
+    }));
+
+    const bootstrapSession = vi.fn().mockResolvedValue(undefined);
+    resetDiagnosisStore({
+      session: createLiveSession("pending-123"),
+      activeSessionId: "pending-123",
+      bootstrapStatus: "ready",
+      traceStatus: "empty",
+      isStreamingDiagnosis: true,
+      streamingPhase: "bootstrapping",
+      planMissingReason: "当前会话尚未产出修复计划，请先完成诊断或切换会话。",
+      liveThinking: {
+        thought_key: "bootstrap:pending-123",
+        node: "bootstrap",
+        run_id: null,
+        timestamp: "2026-04-08T10:20:01.000Z",
+        content: "",
+        status: "thinking",
+        tool_name: null,
+        active_tools: [],
+      },
+      messages: [],
+      bootstrapSession,
+    });
+
+    renderLivePage("/diagnosis/pending-123");
+    expect(bootstrapSession).not.toHaveBeenCalled();
+
+    expect(screen.getByText("思考中")).toBeInTheDocument();
+    expect(screen.queryByText("The live session has not produced trace entries yet.")).not.toBeInTheDocument();
+    expect(screen.queryByText("当前会话尚未产出修复计划，请先完成诊断或切换会话。")).not.toBeInTheDocument();
+  });
+
+  it("redirects stale pending sessions to /diagnosis after timeout", async () => {
+    resetDiagnosisStore({
+      session: undefined,
+      activeSessionId: undefined,
+      bootstrapStatus: "idle",
+      traceStatus: "unknown",
+      isStreamingDiagnosis: false,
+      bootstrapSession: vi.fn().mockResolvedValue(undefined),
+    });
+
+    render(
+      <MemoryRouter initialEntries={["/diagnosis/pending-stale-1"]}>
+        <Routes>
+          <Route path="/diagnosis/:sessionId" element={<DiagnosisPage />} />
+          <Route path="/diagnosis" element={<div>fallback-diagnosis-route</div>} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    expect(screen.queryByText("fallback-diagnosis-route")).not.toBeInTheDocument();
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 1700));
+    });
+    await waitFor(() => {
+      expect(screen.getByText("fallback-diagnosis-route")).toBeInTheDocument();
+    });
+  });
+
+  it("localizes tool loading copy in the live timeline", () => {
+    mockedBuildLiveView.mockReturnValue({
+      timeline: [
+        {
+          id: "tool-live-1",
+          kind: "tool",
+          toolName: "query_metrics",
+          params: { service: "auth-svc" },
+          timestamp: "2026-04-08T10:20:03.000Z",
+          status: "loading",
+          summaryLines: [],
+        },
+      ],
+      candidates: [],
+      summary: undefined,
+      plan: undefined,
+    });
+
+    resetDiagnosisStore({
+      session: createLiveSession("sess-live-tool-loading"),
+      activeSessionId: "sess-live-tool-loading",
+      bootstrapStatus: "ready",
+      traceStatus: "ready",
+      messages: [],
+      bootstrapSession: vi.fn().mockResolvedValue(undefined),
+    });
+
+    renderLivePage("/diagnosis/sess-live-tool-loading");
+
+    expect(screen.getByText("正在连接诊断遥测流...")).toBeInTheDocument();
+    expect(screen.getByText("正在查询诊断上下文...")).toBeInTheDocument();
+  });
+
+  it("renders live final answer content from backend content tokens", () => {
+    mockedBuildLiveView.mockImplementation((_session, _messages, _events, _localAuditRecords, _liveThinking, liveFinalAnswer) => ({
+      timeline: liveFinalAnswer
+        ? [
+            {
+              id: liveFinalAnswer.id,
+              kind: "message",
+              role: "assistant",
+              content: liveFinalAnswer.content,
+              timestamp: liveFinalAnswer.timestamp,
+              label: liveFinalAnswer.status === "streaming" ? "诊断结论生成中" : "诊断结论",
+            },
+          ]
+        : [],
+      candidates: [],
+      summary: undefined,
+      plan: undefined,
+    }));
+
+    resetDiagnosisStore({
+      session: createLiveSession("sess-live-final"),
+      activeSessionId: "sess-live-final",
+      bootstrapStatus: "ready",
+      traceStatus: "ready",
+      isStreamingDiagnosis: true,
+      liveFinalAnswer: {
+        id: "live-final-sess-live-final",
+        timestamp: "2026-04-08T10:21:01.000Z",
+        content: "诊断结论：Node contention。",
+        status: "streaming",
+      },
+      messages: [],
+      bootstrapSession: vi.fn().mockResolvedValue(undefined),
+    });
+
+    renderLivePage("/diagnosis/sess-live-final");
+
+    expect(screen.getByText("诊断结论：Node contention。")).toBeInTheDocument();
+  });
+
   it("keeps the demo badge without live business fields", () => {
     resetDiagnosisStore();
 
@@ -1085,6 +1490,20 @@ describe("DiagnosisPage RCA report card", () => {
       messages: [],
       bootstrapSession: vi.fn().mockResolvedValue(undefined),
     });
+  });
+
+  it("does not render the RCA card while the live view has no summary", () => {
+    mockedBuildLiveView.mockReturnValue({
+      timeline: [],
+      candidates: [],
+      summary: undefined,
+      plan: undefined,
+    });
+
+    const { container } = renderLivePage("/diagnosis/sess-live-rca");
+
+    expect(container.querySelector(".diagnosis-workspace-report-card")).toBeNull();
+    expect(screen.queryByText("\u5f53\u524d\u7ed3\u8bba")).not.toBeInTheDocument();
   });
 
   it("renders the restructured RCA card sections with localized labels", () => {
@@ -1210,8 +1629,6 @@ describe("DiagnosisPage RCA report card", () => {
     expect(screen.getByText("\u6682\u65e0\u4f20\u64ad\u94fe\u8def\u6570\u636e\u3002")).toBeInTheDocument();
   });
 });
-
-
 
 
 

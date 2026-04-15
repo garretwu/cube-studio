@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from typing import Any, Awaitable, Callable
@@ -22,6 +23,7 @@ from sre_agent.agent.nodes import (
     route_after_reason,
 )
 from sre_agent.agent.state import SREAgentState
+from sre_agent.config import resolve_llm_runtime_settings
 from sre_agent.models.events import EventType
 from sre_agent.skills import SkillExecutor, SkillPolicy, SkillRegistry
 from sre_agent.tools import ToolExecutionContext, ToolRegistry, build_default_registry
@@ -32,23 +34,217 @@ class PassthroughGuardrails:
         return llm
 
 
-def build_default_llm_from_env() -> ChatOpenAI:
-    api_key = (
-        os.getenv("SRE_OPENAI_API_KEY", "").strip()
-        or os.getenv("OPENAI_API_KEY", "").strip()
+def _extract_error_code(exc: Exception) -> str | None:
+    message = str(exc).strip()
+    if not message:
+        return None
+    for pattern in (
+        r'"code"\s*:\s*"?(?P<code>\d{3,4})"?',
+        r"http_code'\s*:\s*'(?P<code>\d{3,4})'",
+        r"status(?:\s+code)?\s*[:=]\s*(?P<code>\d{3})",
+    ):
+        match = re.search(pattern, message, flags=re.IGNORECASE)
+        if match:
+            return str(match.group("code")).strip()
+    return None
+
+
+def _is_retryable_llm_error(exc: Exception) -> bool:
+    message = str(exc).strip().lower()
+    code = _extract_error_code(exc)
+    if code == "1305" or code == "429":
+        return True
+    if code is not None and code.isdigit() and 500 <= int(code) <= 599:
+        return True
+    signals = (
+        "rate limit",
+        "too many requests",
+        "temporarily unavailable",
+        "service unavailable",
+        "访问量过大",
     )
+    return any(signal in message for signal in signals)
+
+
+_LAST_LLM_RUNTIME_DIAGNOSTICS: dict[str, Any] = {
+    "last_error_code": None,
+    "last_error_message": None,
+    "retry_count": 0,
+    "active_model": None,
+    "fallback_used": False,
+    "last_attempt_at": None,
+}
+_RUNTIME_DIAGNOSTIC_UNSET = object()
+
+
+def _record_llm_runtime_diagnostics(
+    *,
+    last_error_code: str | None | object = _RUNTIME_DIAGNOSTIC_UNSET,
+    last_error_message: str | None | object = _RUNTIME_DIAGNOSTIC_UNSET,
+    retry_count: int | None = None,
+    active_model: str | None = None,
+    fallback_used: bool | None = None,
+) -> None:
+    if last_error_code is not _RUNTIME_DIAGNOSTIC_UNSET:
+        _LAST_LLM_RUNTIME_DIAGNOSTICS["last_error_code"] = last_error_code
+    if last_error_message is not _RUNTIME_DIAGNOSTIC_UNSET:
+        _LAST_LLM_RUNTIME_DIAGNOSTICS["last_error_message"] = last_error_message
+    if retry_count is not None:
+        _LAST_LLM_RUNTIME_DIAGNOSTICS["retry_count"] = max(0, int(retry_count))
+    if active_model is not None:
+        _LAST_LLM_RUNTIME_DIAGNOSTICS["active_model"] = active_model
+    if fallback_used is not None:
+        _LAST_LLM_RUNTIME_DIAGNOSTICS["fallback_used"] = bool(fallback_used)
+    _LAST_LLM_RUNTIME_DIAGNOSTICS["last_attempt_at"] = datetime.now(UTC).isoformat()
+
+
+def get_last_llm_runtime_diagnostics() -> dict[str, Any]:
+    return dict(_LAST_LLM_RUNTIME_DIAGNOSTICS)
+
+
+class _BoundResilientLLM:
+    def __init__(self, parent: "ResilientOpenAICompatibleLLM", tools: list[Any], tool_choice: str) -> None:
+        self._parent = parent
+        self._tools = tools
+        self._tool_choice = tool_choice
+
+    async def ainvoke(self, messages: list[Any]) -> Any:
+        return await self._parent._ainvoke_with_resilience(  # noqa: SLF001
+            messages,
+            tools=self._tools,
+            tool_choice=self._tool_choice,
+        )
+
+
+class ResilientOpenAICompatibleLLM:
+    def __init__(
+        self,
+        *,
+        api_key: str,
+        model: str,
+        base_url: str | None = None,
+        fallback_models: list[str] | None = None,
+        max_retries_per_model: int = 2,
+        retry_backoff_base_sec: float = 0.35,
+    ) -> None:
+        self._api_key = api_key
+        self._base_url = base_url
+        self._max_retries_per_model = max(0, int(max_retries_per_model))
+        self._retry_backoff_base_sec = max(0.1, float(retry_backoff_base_sec))
+        ordered_models = [model, *(fallback_models or [])]
+        self._models: list[str] = []
+        seen: set[str] = set()
+        for candidate in ordered_models:
+            normalized = str(candidate or "").strip()
+            if not normalized or normalized in seen:
+                continue
+            seen.add(normalized)
+            self._models.append(normalized)
+        if not self._models:
+            raise RuntimeError("at least one LLM model is required")
+        self._clients: dict[str, ChatOpenAI] = {}
+
+    def _get_client(self, model: str) -> ChatOpenAI:
+        client = self._clients.get(model)
+        if client is not None:
+            return client
+        kwargs: dict[str, Any] = {
+            "api_key": self._api_key,
+            "model": model,
+            "temperature": 0,
+        }
+        if self._base_url:
+            kwargs["base_url"] = self._base_url
+        client = ChatOpenAI(**kwargs)
+        self._clients[model] = client
+        return client
+
+    async def _invoke_once(
+        self,
+        *,
+        model: str,
+        messages: list[Any],
+        tools: list[Any] | None,
+        tool_choice: str | None,
+    ) -> Any:
+        client = self._get_client(model)
+        if tools is None:
+            return await client.ainvoke(messages)
+        bound = client.bind_tools(tools, tool_choice=tool_choice or "auto")
+        return await bound.ainvoke(messages)
+
+    async def _ainvoke_with_resilience(
+        self,
+        messages: list[Any],
+        *,
+        tools: list[Any] | None = None,
+        tool_choice: str | None = None,
+    ) -> Any:
+        total_retries = 0
+        for model_index, model in enumerate(self._models):
+            fallback_used = model_index > 0
+            for attempt in range(self._max_retries_per_model + 1):
+                try:
+                    response = await self._invoke_once(
+                        model=model,
+                        messages=messages,
+                        tools=tools,
+                        tool_choice=tool_choice,
+                    )
+                    _record_llm_runtime_diagnostics(
+                        last_error_code=None,
+                        retry_count=total_retries,
+                        active_model=model,
+                        fallback_used=fallback_used,
+                    )
+                    return response
+                except Exception as exc:  # noqa: BLE001
+                    retryable = _is_retryable_llm_error(exc)
+                    code = _extract_error_code(exc)
+                    _record_llm_runtime_diagnostics(
+                        last_error_code=code,
+                        last_error_message=str(exc).strip() or exc.__class__.__name__,
+                        retry_count=total_retries,
+                        active_model=model,
+                        fallback_used=fallback_used,
+                    )
+                    if not retryable:
+                        raise
+                    if attempt < self._max_retries_per_model:
+                        total_retries += 1
+                        await asyncio.sleep(self._retry_backoff_base_sec * (2**attempt))
+                        continue
+                    break
+        raise RuntimeError(
+            "all configured LLM models failed after retry/fallback: "
+            f"{', '.join(self._models)}"
+        )
+
+    async def ainvoke(self, messages: list[Any]) -> Any:
+        return await self._ainvoke_with_resilience(messages)
+
+    def bind_tools(self, tools: list[Any], tool_choice: str = "auto") -> _BoundResilientLLM:
+        return _BoundResilientLLM(self, tools, tool_choice)
+
+
+def build_default_llm_from_env() -> Any:
+    settings = resolve_llm_runtime_settings()
+    api_key = str(settings["api_key"] or "").strip()
     if not api_key:
         raise RuntimeError("SRE_OPENAI_API_KEY or OPENAI_API_KEY is required")
-    base_url = os.getenv("SRE_OPENAI_BASE_URL", "").strip() or None
-    model = os.getenv("SRE_LLM_MODEL", "").strip() or "MiniMax-M2.7"
-    kwargs: dict[str, Any] = {
-        "api_key": api_key,
-        "model": model,
-        "temperature": 0,
-    }
-    if base_url:
-        kwargs["base_url"] = base_url
-    return ChatOpenAI(**kwargs)
+    model = str(settings["model"] or "").strip()
+    base_url = str(settings["base_url"] or "").strip() or None
+    fallback_models = [
+        str(item).strip()
+        for item in list(settings.get("fallback_models", []))
+        if str(item).strip()
+    ]
+    return ResilientOpenAICompatibleLLM(
+        api_key=api_key,
+        model=model,
+        base_url=base_url,
+        fallback_models=fallback_models,
+    )
 
 
 TraceEventCallback = Callable[[dict[str, Any]], Awaitable[None]]
@@ -66,6 +262,96 @@ def _to_dict(value: Any) -> dict[str, Any]:
     if isinstance(value, dict):
         return dict(value)
     return {}
+
+
+def _coerce_stream_text_chunk(value: Any) -> str:
+    if isinstance(value, list):
+        return "".join(
+            part if isinstance(part, str) else str(getattr(part, "text", ""))
+            for part in value
+        )
+    if value is None:
+        return ""
+    return str(value)
+
+
+def _extract_stream_text(chunk: Any) -> str:
+    if chunk is None:
+        return ""
+    content_text = _coerce_stream_text_chunk(getattr(chunk, "content", None))
+    if content_text:
+        return content_text
+
+    reasoning_text = _coerce_stream_text_chunk(getattr(chunk, "reasoning_content", None))
+    if reasoning_text:
+        return reasoning_text
+
+    additional_kwargs = _to_dict(getattr(chunk, "additional_kwargs", {}))
+    fallback_reasoning = _coerce_stream_text_chunk(additional_kwargs.get("reasoning_content"))
+    if fallback_reasoning:
+        return fallback_reasoning
+    return ""
+
+
+def _parse_iso_utc(value: Any) -> datetime | None:
+    if isinstance(value, datetime):
+        return value.astimezone(UTC)
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    if not text:
+        return None
+    if text.endswith("Z"):
+        text = f"{text[:-1]}+00:00"
+    try:
+        return datetime.fromisoformat(text).astimezone(UTC)
+    except ValueError:
+        return None
+
+
+def _build_thought_key(run_id: str | None, node: str | None) -> str | None:
+    normalized_run_id = (run_id or "").strip()
+    normalized_node = (node or "").strip()
+    if normalized_run_id and normalized_node:
+        return f"{normalized_run_id}:{normalized_node}"
+    return None
+
+
+def _resolve_terminal_reason_from_status(
+    status: Any,
+    *,
+    has_diagnosis_result: bool = False,
+) -> str | None:
+    normalized = str(status or "").strip().lower()
+    if normalized in {"failed"}:
+        return "error"
+    if normalized in {"timeout", "step_timeout"}:
+        return "timeout"
+    if has_diagnosis_result or normalized in {"diagnosed"}:
+        return "diagnosis_result"
+    return None
+
+
+def _normalize_stream_trace_items(
+    *,
+    session_id: str,
+    trace_items: list[dict[str, Any]],
+    thought_duration_sec: int | None = None,
+    thought_key: str | None = None,
+) -> list[dict[str, Any]]:
+    normalized: list[dict[str, Any]] = []
+    for item in trace_items:
+        event = _normalize_trace_item_event(session_id=session_id, item=item, thought_key=thought_key)
+        if not event:
+            continue
+        payload = _to_dict(event.get("data"))
+        if event["type"] in {EventType.THINKING_STEP.value, EventType.TOOL_CALL.value}:
+            if thought_duration_sec is not None:
+                payload["thought_duration_sec"] = thought_duration_sec
+
+        payload["event_type"] = event["type"]
+        normalized.append(payload)
+    return normalized
 
 
 def _is_context_window_exceeded_error(exc: Exception) -> bool:
@@ -86,22 +372,33 @@ def _is_context_window_exceeded_error(exc: Exception) -> bool:
     )
 
 
-def _normalize_trace_item_event(*, session_id: str, item: dict[str, Any]) -> dict[str, Any] | None:
+def _normalize_trace_item_event(
+    *,
+    session_id: str,
+    item: dict[str, Any],
+    thought_key: str | None = None,
+) -> dict[str, Any] | None:
     item_type = str(item.get("type", "")).strip().lower()
     if item_type == "thought":
         action = str(item.get("action", "tool_call")).strip().lower()
         event_type = EventType.THINKING_STEP.value
         if action == "tool_call":
             event_type = EventType.TOOL_CALL.value
+        tool_params = _to_dict(item.get("tool_params"))
+        thought = str(item.get("content", "")).strip() or "diagnosis step"
+        next_action = item.get("next_action")
         payload = {
             "step": int(item.get("step", 1)),
             "timestamp": _to_iso_utc(item.get("timestamp")),
-            "thought": str(item.get("content", "")).strip() or "diagnosis step",
+            "thought": thought,
             "action_type": action if action in {"tool_call", "conclude", "remediate"} else "tool_call",
+            "thought_key": thought_key or item.get("thought_key"),
             "tool_name": item.get("tool_name"),
-            "tool_params": _to_dict(item.get("tool_params")),
+            "tool_params": tool_params,
             "confidence": item.get("confidence"),
         }
+        if isinstance(next_action, str) and next_action.strip():
+            payload["next_action"] = next_action.strip()
         return {
             "type": event_type,
             "session_id": session_id,
@@ -224,8 +521,23 @@ def create_sre_graph(
                 next_state=next_state,
             )
             return next_state
-        except asyncio.TimeoutError:
+        except asyncio.TimeoutError as exc:
             trace_items = list(state.get("trace_items", []))
+            retry_record = _to_dict(getattr(exc, "reason_timeout_retry", {}))
+            if retry_record:
+                trace_items.append(
+                    {
+                        "type": "thought",
+                        "step": state.get("step_count", 0) + 1,
+                        "content": "reason timeout retry exhausted after compact final retry",
+                        "action": "conclude",
+                        "confidence": None,
+                        "tool_params": {
+                            "kind": "reason_timeout_retry",
+                            **retry_record,
+                        },
+                    }
+                )
             trace_items.append(
                 {
                     "type": "thought",
@@ -364,6 +676,10 @@ async def run_diagnosis(
     checkpoint_dir: str | None = "./data/checkpoints/sre_agent",
     allowed_tool_names: list[str] | None = None,
     trace_callback: TraceEventCallback | None = None,
+    reasoning_context_strategy: str | None = None,
+    reasoning_overflow_behavior: str | None = None,
+    reasoning_input_target_tokens: int | None = None,
+    reasoning_model_family: str | None = None,
 ) -> SREAgentState:
     active_session_id = session_id or uuid4().hex
     graph = create_sre_graph(
@@ -388,6 +704,10 @@ async def run_diagnosis(
         alert_snapshot=alert_snapshot,
         topology_context=topology_context,
         extra_alerts=extra_alerts,
+        reasoning_context_strategy=reasoning_context_strategy,
+        reasoning_overflow_behavior=reasoning_overflow_behavior,
+        reasoning_input_target_tokens=reasoning_input_target_tokens,
+        reasoning_model_family=reasoning_model_family,
     )
 
     # Emit diagnosis_started event so frontend can display alert/topology context immediately.
@@ -449,6 +769,10 @@ async def run_diagnosis_stream(
     max_steps: int = 50,
     checkpoint_dir: str | None = "./data/checkpoints/sre_agent",
     allowed_tool_names: list[str] | None = None,
+    reasoning_context_strategy: str | None = None,
+    reasoning_overflow_behavior: str | None = None,
+    reasoning_input_target_tokens: int | None = None,
+    reasoning_model_family: str | None = None,
 ) -> AsyncIterator[dict[str, Any]]:
     """Stream diagnosis events by iterating over ``graph.astream_events(version='v2')``.
 
@@ -478,6 +802,10 @@ async def run_diagnosis_stream(
         alert_snapshot=alert_snapshot,
         topology_context=topology_context,
         extra_alerts=extra_alerts,
+        reasoning_context_strategy=reasoning_context_strategy,
+        reasoning_overflow_behavior=reasoning_overflow_behavior,
+        reasoning_input_target_tokens=reasoning_input_target_tokens,
+        reasoning_model_family=reasoning_model_family,
     )
 
     yield {
@@ -488,6 +816,7 @@ async def run_diagnosis_stream(
             "topology": topology_context,
             "variables": variables or {},
             "extra_alerts": extra_alerts or [],
+            "bootstrap_state": "thinking",
         },
     }
 
@@ -495,6 +824,32 @@ async def run_diagnosis_stream(
 
     async def _run() -> None:
         nonlocal final_state
+        active_node_runs: dict[str, str] = {}
+        node_started_at: dict[tuple[str, str], datetime] = {}
+        last_trace_count = 0
+
+        def _event_run_id(raw_event: dict[str, Any]) -> str:
+            raw = raw_event.get("run_id")
+            if isinstance(raw, str) and raw.strip():
+                return raw.strip()
+            return ""
+
+        def _event_metadata(raw_event: dict[str, Any]) -> dict[str, Any]:
+            return _to_dict(raw_event.get("metadata"))
+
+        def _event_node(raw_event: dict[str, Any], fallback: str = "") -> str:
+            metadata = _event_metadata(raw_event)
+            candidate = metadata.get("langgraph_node")
+            if isinstance(candidate, str) and candidate.strip():
+                return candidate.strip()
+            fallback_text = fallback.strip()
+            if fallback_text:
+                return fallback_text
+            raw_name = raw_event.get("name")
+            if isinstance(raw_name, str) and raw_name.strip():
+                return raw_name.strip()
+            return ""
+
         async for event in graph.astream_events(
             initial_state,
             config={"configurable": {"thread_id": active_session_id}},
@@ -508,47 +863,111 @@ async def run_diagnosis_stream(
                 chunk = data.get("chunk")
                 if chunk is None:
                     continue
-                content = getattr(chunk, "content", None)
-                if not content:
-                    continue
-                # Some providers return content as a list of parts.
-                if isinstance(content, list):
-                    text = "".join(
-                        part if isinstance(part, str) else str(getattr(part, "text", ""))
-                        for part in content
-                    )
-                else:
-                    text = str(content)
+                text = _extract_stream_text(chunk)
                 if not text:
                     continue
+                node_name = _event_node(event)
+                active_run_id = active_node_runs.get(node_name, "")
+                token_run_id = active_run_id or _event_run_id(event)
+                thought_key = _build_thought_key(token_run_id, node_name)
+                token_payload: dict[str, Any] = {"content": text}
+                if node_name:
+                    token_payload["node"] = node_name
+                if token_run_id:
+                    token_payload["run_id"] = token_run_id
+                if thought_key:
+                    token_payload["thought_key"] = thought_key
                 yield {
                     "type": EventType.TOKEN_DELTA.value,
                     "session_id": active_session_id,
-                    "data": {"content": text, "node": name},
+                    "data": token_payload,
                 }
 
             elif kind == "on_chain_start" and name in _STREAM_GRAPH_NODES:
+                run_id = _event_run_id(event)
+                if not run_id:
+                    run_id = uuid4().hex
+                started_at = datetime.now(UTC)
+                active_node_runs[name] = run_id
+                node_started_at[(run_id, name)] = started_at
+                thought_key = _build_thought_key(run_id, name)
                 yield {
                     "type": EventType.NODE_STARTED.value,
                     "session_id": active_session_id,
-                    "data": {"node": name},
+                    "data": {
+                        "node": name,
+                        "run_id": run_id,
+                        "thought_key": thought_key,
+                        "started_at": started_at.isoformat(),
+                        "display_mode": "thinking_only",
+                    },
                 }
 
             elif kind == "on_chain_end" and name in _STREAM_GRAPH_NODES:
                 output = data.get("output")
                 if isinstance(output, dict):
                     final_state = output
-                event_data: dict[str, Any] = {"node": name}
+                run_id = _event_run_id(event) or active_node_runs.get(name, "")
+                started_at: datetime | None = None
+                if run_id:
+                    started_at = node_started_at.pop((run_id, name), None)
+                if started_at is None:
+                    for key, value in list(node_started_at.items()):
+                        if key[1] == name:
+                            started_at = value
+                            if not run_id:
+                                run_id = key[0]
+                            node_started_at.pop(key, None)
+                            break
+                completed_at = datetime.now(UTC)
+                duration_sec: int | None = None
+                if started_at is not None:
+                    elapsed = (completed_at - started_at).total_seconds()
+                    duration_sec = max(1, int(round(elapsed)))
+                thought_key = _build_thought_key(run_id, name)
+
+                event_data: dict[str, Any] = {
+                    "node": name,
+                    "completed_at": completed_at.isoformat(),
+                }
+                if run_id:
+                    event_data["run_id"] = run_id
+                if thought_key:
+                    event_data["thought_key"] = thought_key
+                if started_at is not None:
+                    event_data["started_at"] = started_at.isoformat()
+                if duration_sec is not None:
+                    event_data["thought_duration_sec"] = duration_sec
                 if isinstance(output, dict):
-                    event_data["status"] = output.get("status")
+                    output_status = output.get("status")
+                    event_data["status"] = output_status
                     event_data["step_count"] = output.get("step_count")
                     trace_items = output.get("trace_items") or []
                     if trace_items:
-                        event_data["new_trace_items"] = trace_items[-1:]
+                        serialized_trace_items = [_to_dict(item) for item in trace_items if isinstance(item, dict)]
+                        if len(serialized_trace_items) < last_trace_count:
+                            last_trace_count = 0
+                        trace_delta = serialized_trace_items[last_trace_count:]
+                        last_trace_count = len(serialized_trace_items)
+                        normalized_trace_items = _normalize_stream_trace_items(
+                            session_id=active_session_id,
+                            trace_items=trace_delta,
+                            thought_duration_sec=duration_sec,
+                            thought_key=thought_key,
+                        )
+                        if normalized_trace_items:
+                            event_data["new_trace_items"] = normalized_trace_items
                     if output.get("diagnosis_result") is not None:
                         event_data["diagnosis_result"] = output["diagnosis_result"]
                     if output.get("remediation_plan") is not None:
                         event_data["remediation_plan"] = output["remediation_plan"]
+                    terminal_reason = _resolve_terminal_reason_from_status(
+                        output_status,
+                        has_diagnosis_result=output.get("diagnosis_result") is not None,
+                    )
+                    if terminal_reason is not None:
+                        event_data["terminal_reason"] = terminal_reason
+                active_node_runs.pop(name, None)
                 yield {
                     "type": EventType.NODE_COMPLETED.value,
                     "session_id": active_session_id,
@@ -556,17 +975,25 @@ async def run_diagnosis_stream(
                 }
 
             elif kind == "on_tool_start":
+                tool_data: dict[str, Any] = {"tool": name, "params": data.get("input", {})}
+                run_id = _event_run_id(event)
+                if run_id:
+                    tool_data["run_id"] = run_id
                 yield {
                     "type": EventType.TOOL_STARTED.value,
                     "session_id": active_session_id,
-                    "data": {"tool": name, "params": data.get("input", {})},
+                    "data": tool_data,
                 }
 
             elif kind == "on_tool_end":
+                tool_data: dict[str, Any] = {"tool": name, "result": data.get("output")}
+                run_id = _event_run_id(event)
+                if run_id:
+                    tool_data["run_id"] = run_id
                 yield {
                     "type": EventType.TOOL_COMPLETED.value,
                     "session_id": active_session_id,
-                    "data": {"tool": name, "result": data.get("output")},
+                    "data": tool_data,
                 }
 
     try:
@@ -577,14 +1004,25 @@ async def run_diagnosis_stream(
         yield {
             "type": EventType.ERROR.value,
             "session_id": active_session_id,
-            "data": {"message": "diagnosis session timed out"},
+            "data": {
+                "message": "diagnosis session timed out",
+                "terminal_reason": "timeout",
+            },
         }
 
     # Yield the final done event.
     final_status = final_state.get("status", "completed")
     final_summary = final_state.get("summary")
+    final_terminal_reason = _resolve_terminal_reason_from_status(
+        final_status,
+        has_diagnosis_result=final_state.get("diagnosis_result") is not None,
+    ) or "done"
     yield {
         "type": "done",
         "session_id": active_session_id,
-        "data": {"status": final_status, "summary": final_summary},
+        "data": {
+            "status": final_status,
+            "summary": final_summary,
+            "terminal_reason": final_terminal_reason,
+        },
     }

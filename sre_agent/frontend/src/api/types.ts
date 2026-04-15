@@ -141,10 +141,46 @@ export type ThinkingStep = {
   timestamp: string;
   thought: string;
   action_type: "tool_call" | "conclude" | "remediate";
+  thought_key?: string | null;
   stage?: string | null;
   tool_name?: string | null;
   tool_params?: Record<string, unknown> | null;
   confidence?: number | null;
+  next_action?: string | null;
+  thought_duration_sec?: number | null;
+};
+
+export type StreamingToolCall = {
+  tool: string;
+  params: Record<string, unknown>;
+  round_id?: string | null;
+  round_seq?: number | null;
+  thought_key?: string | null;
+  run_id?: string | null;
+  node?: string | null;
+};
+
+export type LiveThinkingBlock = {
+  round_id?: string | null;
+  round_seq?: number | null;
+  stream_seq?: number | null;
+  thought_key: string;
+  run_id?: string | null;
+  node?: string | null;
+  timestamp: string;
+  content: string;
+  status: "thinking" | "completed";
+  thought_duration_sec?: number | null;
+  next_action?: string | null;
+  tool_name?: string | null;
+  active_tools: StreamingToolCall[];
+};
+
+export type LiveFinalAnswerBlock = {
+  id: string;
+  timestamp: string;
+  content: string;
+  status: "streaming" | "completed";
 };
 
 export type Observation = {
@@ -265,6 +301,8 @@ export type DiagnosisStartedData = {
     summary: string;
   } | null;
   variables: Record<string, unknown>;
+  bootstrap_state?: "thinking";
+  degraded_start?: boolean;
 };
 
 export type SessionSummary = {
@@ -675,4 +713,3 @@ export type WSEvent = {
   timestamp: string;
   data: Record<string, unknown>;
 };
-

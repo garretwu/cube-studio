@@ -75,6 +75,26 @@ def test_create_app_bootstraps_alert_knowledge_and_log_channels(monkeypatch: pyt
         assert client.app.state.services.knowledge is not None
 
 
+def test_create_app_binds_runtime_prometheus_to_remediation_engine(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    monkeypatch.setenv("JWT_SECRET", "secret")
+    config = SREAgentConfig.model_validate(
+        {
+            "global": {
+                "aidc_id": "test-aidc",
+                "prometheus_url": "http://prometheus.local",
+            },
+            "ontology": {"db_path": str(tmp_path / "ontology.db"), "discovery": {"auto_discovery": False}},
+            "memory": {"db_dir": str(tmp_path / "memory")},
+        }
+    )
+
+    with TestClient(create_app(config=config)) as client:
+        services = client.app.state.services
+        assert services.tool_channel_status["prometheus"]["health"] == "ready"
+        assert services.remediation_engine.prometheus is not None
+        assert hasattr(services.remediation_engine.prometheus, "query_instant")
+
+
 def test_load_redfish_preauth_targets_uses_env_fallback_for_placeholder_password(
     monkeypatch: pytest.MonkeyPatch, tmp_path
 ) -> None:
@@ -142,6 +162,90 @@ def test_create_app_preauthenticates_redfish_channel_on_startup(monkeypatch: pyt
                 "db_path": str(tmp_path / "ontology.db"),
                 "discovery": {
                     "mode": "live",
+                    "auto_discovery": False,
+                    "live_inventory_path": str(inventory),
+                },
+            },
+            "memory": {"db_dir": str(tmp_path / "memory")},
+        }
+    )
+
+    with TestClient(create_app(config=config, execution_context=context)) as client:
+        services = client.app.state.services
+        assert len(fake_redfish.auth_calls) == 1
+        assert services.tool_channel_status["redfish"]["health"] == "ready"
+        assert services.tool_channel_status["redfish"]["mode"] == "channel+preauth"
+
+
+def test_load_redfish_preauth_targets_supports_hybrid_mode(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """Test that hybrid mode loads BMC credentials just like live mode."""
+    inventory = tmp_path / "live_inventory.yaml"
+    inventory.write_text(
+        "\n".join(
+            [
+                "inventory:",
+                "  workers:",
+                "    - name: worker-01",
+                "      redfish:",
+                "        bmc_host: 10.0.0.1",
+                "        username: admin",
+                "        password: Admin@9000",
+                "        verify_tls: false",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    config = SREAgentConfig.model_validate(
+        {
+            "ontology": {
+                "discovery": {
+                    "mode": "hybrid",
+                    "live_inventory_path": str(inventory),
+                    "auto_discovery": False,
+                }
+            }
+        }
+    )
+
+    targets = _load_redfish_preauth_targets(config)
+    assert len(targets) == 1
+    assert targets[0]["bmc_host"] == "10.0.0.1"
+    assert targets[0]["username"] == "admin"
+    assert targets[0]["password"] == "Admin@9000"
+
+
+def test_create_app_preauthenticates_redfish_channel_on_startup_hybrid_mode(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """Test that hybrid mode also pre-authenticates BMC credentials on startup."""
+    monkeypatch.setenv("JWT_SECRET", "secret")
+    inventory = tmp_path / "live_inventory.yaml"
+    inventory.write_text(
+        "\n".join(
+            [
+                "inventory:",
+                "  workers:",
+                "    - name: worker-01",
+                "      redfish:",
+                "        bmc_host: 10.0.0.1",
+                "        username: admin",
+                "        password: Admin@9000",
+                "        verify_tls: false",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    fake_redfish = _FakeRedfishChannel()
+    context = ToolExecutionContext(channels={"redfish": fake_redfish})
+    config = SREAgentConfig.model_validate(
+        {
+            "global": {"aidc_id": "test-aidc"},
+            "ontology": {
+                "db_path": str(tmp_path / "ontology.db"),
+                "discovery": {
+                    "mode": "hybrid",
                     "auto_discovery": False,
                     "live_inventory_path": str(inventory),
                 },

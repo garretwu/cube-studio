@@ -152,6 +152,32 @@ describe("buildDiagnosisLiveView tool matching", () => {
 });
 
 describe("buildDiagnosisLiveView next-action narration", () => {
+  it("prefers backend-provided next_action and thought_duration_sec fields", () => {
+    const session = createSession([
+      {
+        step: 1,
+        timestamp: "2026-04-08T10:35:01.000Z",
+        thought: "Inspect queue depth before concluding",
+        action_type: "conclude",
+        next_action: "Next action: use backend supplied narration.",
+        thought_duration_sec: 12,
+      },
+    ]);
+
+    const view = buildDiagnosisLiveView(session, []);
+    const thinking = view.timeline[0];
+    const nextAction = view.timeline[1];
+
+    expect(thinking?.kind).toBe("thinking");
+    if (thinking?.kind === "thinking") {
+      expect(thinking.thoughtDurationSec).toBe(12);
+    }
+    expect(nextAction?.kind).toBe("message");
+    if (nextAction?.kind === "message") {
+      expect(nextAction.content).toBe("Next action: use backend supplied narration.");
+    }
+  });
+
   it("injects a next-action assistant message right after tool-call thinking", () => {
     const session = createSession([
       {
@@ -161,6 +187,7 @@ describe("buildDiagnosisLiveView next-action narration", () => {
         action_type: "tool_call",
         tool_name: "query_metrics",
         tool_params: { service: "auth-svc" },
+        next_action: "Next action: call query_metrics for auth-svc and compare p95 with baseline.",
       },
       {
         tool: "query_metrics",
@@ -180,11 +207,11 @@ describe("buildDiagnosisLiveView next-action narration", () => {
     if (nextAction?.kind === "message") {
       expect(nextAction.role).toBe("assistant");
       expect(nextAction.label).toBe("Next action");
-      expect(nextAction.content).toContain("query_metrics");
+      expect(nextAction.content).toBe("Next action: call query_metrics for auth-svc and compare p95 with baseline.");
     }
   });
 
-  it("injects a next-action assistant message after conclude thinking", () => {
+  it("does not inject next-action narration when backend next_action is missing", () => {
     const session = createSession([
       {
         step: 1,
@@ -196,17 +223,213 @@ describe("buildDiagnosisLiveView next-action narration", () => {
 
     const view = buildDiagnosisLiveView(session, []);
 
-    expect(view.timeline).toHaveLength(2);
+    expect(view.timeline).toHaveLength(1);
     expect(view.timeline[0]?.kind).toBe("thinking");
-    expect(view.timeline[1]?.kind).toBe("message");
-
-    const nextAction = view.timeline[1];
-    if (nextAction?.kind === "message") {
-      expect(nextAction.role).toBe("assistant");
-      expect(nextAction.label).toBe("Next action");
-      expect(nextAction.content).toContain("root-cause conclusion");
-    }  });
+    expect(view.timeline[0]?.kind).not.toBe("message");
+  });
 });
+
+describe("buildDiagnosisLiveView live thinking merge", () => {
+  it("builds deterministic live ids from thought_key+timestamp when round_id is absent", () => {
+    const view = buildDiagnosisLiveView(
+      createSession([]),
+      [],
+      [],
+      [],
+      {
+        thought_key: "run-reason-1:reason",
+        node: "reason",
+        run_id: "run-reason-1",
+        timestamp: "2026-04-08T11:00:01.000Z",
+        content: "Streaming reasoning",
+        status: "thinking",
+        tool_name: "query_metrics",
+        active_tools: [{ tool: "query_metrics", params: { service: "auth-svc" } }],
+      },
+    );
+
+    expect(view.timeline[0]).toMatchObject({
+      id: "stream-thinking-run-reason-1:reason-2026-04-08T11:00:01.000Z",
+      kind: "thinking",
+      status: "thinking",
+      content: "Streaming reasoning",
+    });
+    expect(view.timeline[1]).toMatchObject({
+      id: "trace-tool-run-reason-1:reason-2026-04-08T11:00:01.000Z-query_metrics-1",
+      kind: "tool",
+      status: "loading",
+      toolName: "query_metrics",
+    });
+  });
+
+  it("prefers round_id for live thinking/tool ids", () => {
+    const view = buildDiagnosisLiveView(
+      createSession([]),
+      [],
+      [],
+      [],
+      {
+        round_id: "round-reason-2",
+        thought_key: "run-reason-1:reason",
+        node: "reason",
+        run_id: "run-reason-1",
+        timestamp: "2026-04-08T11:00:05.000Z",
+        content: "Streaming reasoning round 2",
+        status: "thinking",
+        tool_name: "query_metrics",
+        active_tools: [{ tool: "query_metrics", params: { service: "auth-svc" }, round_id: "round-reason-2" }],
+      },
+    );
+
+    expect(view.timeline[0]).toMatchObject({
+      id: "stream-thinking-round-reason-2",
+      kind: "thinking",
+      status: "thinking",
+    });
+    expect(view.timeline[1]).toMatchObject({
+      id: "trace-tool-round-reason-2-query_metrics-1",
+      kind: "tool",
+      status: "loading",
+    });
+  });
+
+  it("places live final answer content after the active thinking/tool stream", () => {
+    const view = buildDiagnosisLiveView(
+      createSession([]),
+      [],
+      [],
+      [],
+      {
+        thought_key: "run-reason-1:reason",
+        node: "reason",
+        run_id: "run-reason-1",
+        timestamp: "2026-04-08T11:00:01.000Z",
+        content: "Streaming reasoning",
+        status: "thinking",
+        tool_name: "query_metrics",
+        active_tools: [{ tool: "query_metrics", params: { service: "auth-svc" } }],
+      },
+      {
+        id: "live-final-sess-1",
+        timestamp: "2026-04-08T11:00:04.000Z",
+        content: "诊断结论：Node contention。",
+        status: "streaming",
+      },
+    );
+
+    expect(view.timeline.map((item) => item.kind)).toEqual(["thinking", "tool", "message"]);
+    const finalMessage = view.timeline[2];
+    expect(finalMessage).toMatchObject({
+      id: "live-final-sess-1",
+      kind: "message",
+      label: "诊断结论生成中",
+      content: "诊断结论：Node contention。",
+    });
+  });
+
+  it("places completedThinkingRounds before the active liveThinking round", () => {
+    const view = buildDiagnosisLiveView(
+      createSession([]),
+      [],
+      [],
+      [],
+      {
+        round_id: "round-live-2",
+        thought_key: "run-live:reason",
+        node: "reason",
+        run_id: "run-live",
+        timestamp: "2026-04-08T11:20:04.000Z",
+        content: "round 2 thinking",
+        status: "thinking",
+        tool_name: null,
+        active_tools: [],
+      },
+      null,
+      [
+        {
+          round_id: "round-live-1",
+          thought_key: "run-live:reason",
+          node: "reason",
+          run_id: "run-live",
+          timestamp: "2026-04-08T11:20:02.000Z",
+          content: "round 1 completed",
+          status: "completed",
+          tool_name: null,
+          active_tools: [],
+        },
+      ],
+    );
+
+    const thinkingItems = view.timeline.filter(
+      (item): item is Extract<DiagnosisTimelineItem, { kind: "thinking" }> => item.kind === "thinking",
+    );
+    expect(thinkingItems).toHaveLength(2);
+    expect(thinkingItems[0]).toMatchObject({
+      id: "stream-thinking-round-live-1",
+      status: "completed",
+      content: "round 1 completed",
+    });
+    expect(thinkingItems[1]).toMatchObject({
+      id: "stream-thinking-round-live-2",
+      status: "thinking",
+      content: "round 2 thinking",
+    });
+  });
+});
+
+describe("buildDiagnosisLiveView trace thinking ids", () => {
+  it("keeps multiple thinking items when trace reuses the same thought_key across rounds", () => {
+    const session = createSession([
+      {
+        step: 1,
+        timestamp: "2026-04-08T11:10:01.000Z",
+        thought: "round 1",
+        action_type: "conclude",
+        thought_key: "run-reason-dup:reason",
+      },
+      {
+        step: 2,
+        timestamp: "2026-04-08T11:10:03.000Z",
+        thought: "round 2",
+        action_type: "conclude",
+        thought_key: "run-reason-dup:reason",
+      },
+    ]);
+
+    const view = buildDiagnosisLiveView(session, []);
+    const thinkingItems = view.timeline.filter(
+      (item): item is Extract<DiagnosisTimelineItem, { kind: "thinking" }> => item.kind === "thinking",
+    );
+
+    expect(thinkingItems).toHaveLength(2);
+    expect(thinkingItems[0]?.id).not.toBe(thinkingItems[1]?.id);
+    expect(thinkingItems[0]?.content).toBe("round 1");
+    expect(thinkingItems[1]?.content).toBe("round 2");
+  });
+});
+
+describe("buildDiagnosisLiveView summary timing", () => {
+  it("does not create an RCA summary before a diagnosis result exists", () => {
+    const session = createSession([
+      {
+        step: 1,
+        timestamp: "2026-04-08T10:55:01.000Z",
+        thought: "Gathering evidence before making a conclusion",
+        action_type: "tool_call",
+        tool_name: "query_metrics",
+        tool_params: { service: "auth-svc" },
+      },
+    ]);
+
+    const view = buildDiagnosisLiveView(session, []);
+
+    expect(view.summary).toBeUndefined();
+    expect(view.candidates).toEqual([]);
+    expect(view.hypotheses).toEqual([]);
+    expect(view.propagationChain).toEqual([]);
+  });
+});
+
 describe("buildDiagnosisDemoScenario ReAct cadence", () => {
   it("ensures every thinking append is followed by an assistant conclusion append", () => {
     const scenario = buildDiagnosisDemoScenario("Analyze auth-svc latency and error-rate spike");
@@ -348,6 +571,77 @@ describe("diagnosis summary metadata", () => {
     expect(scenario.summary.updatedTimeLabel).not.toBe("--");
     expect(scenario.summary.updatedDateTimeLabel).not.toBe("--");
     expect(scenario.summary.title).toBe("\u6839\u56e0\u8bca\u65ad");
+  });
+});
+
+describe("diagnosis plan extraction", () => {
+  it("falls back to the top-ranked candidate recommended_fix when diagnosis_result.recommended_fix is missing", () => {
+    const session: DiagnosisSession = {
+      session_id: "sess-plan-fallback",
+      alert: baseAlert,
+      status: "approval_required",
+      duration_seconds: 0,
+      diagnosis_result: {
+        root_cause: "GPU contention",
+        root_cause_layer: "platform",
+        root_cause_entities: ["node:worker-03"],
+        confidence: 0.78,
+        hypotheses: [],
+        impact_summary: "impact",
+        affected_services: ["auth-svc"],
+        triage_priority: "P2",
+        diagnosis_certainty: "probable",
+        ranked_candidates: [
+          {
+            rank: 2,
+            root_cause: "Secondary candidate",
+            root_cause_layer: "service",
+            root_cause_entities: [],
+            confidence: 0.61,
+            evidence_summary: "secondary",
+          },
+          {
+            rank: 1,
+            root_cause: "Primary candidate",
+            root_cause_layer: "platform",
+            root_cause_entities: ["node:worker-03"],
+            confidence: 0.78,
+            evidence_summary: "primary",
+            recommended_fix: {
+              plan_id: "plan-primary-v1",
+              root_cause: "Primary candidate",
+              description: "Drain worker-03",
+              steps: [
+                {
+                  step_id: 1,
+                  description: "Drain canary",
+                  tool: "kubectl",
+                  params: { node: "worker-03" },
+                  verification: { method: "wait", wait_seconds: 60 },
+                  timeout: 120,
+                },
+              ],
+              estimated_impact: "low",
+              confidence: 0.78,
+              priority: "P2",
+            },
+          },
+        ],
+      },
+    };
+
+    const view = buildDiagnosisLiveView(session, []);
+
+    expect(view.plan).toMatchObject({
+      title: "Primary candidate",
+      description: "Drain worker-03",
+      priorityLabel: "P2",
+    });
+    expect(view.plan?.steps).toHaveLength(1);
+    expect(view.plan?.steps[0]).toMatchObject({
+      title: "Drain canary",
+      toolName: "kubectl",
+    });
   });
 });
 

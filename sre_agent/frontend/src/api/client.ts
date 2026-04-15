@@ -551,21 +551,46 @@ export async function streamDiagnosis(
     headers.Authorization = `Bearer ${token}`;
   }
 
-  const response = await fetch(url, {
-    method: "POST",
-    headers,
-    body: JSON.stringify(alert),
-    signal,
-  });
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(alert),
+      signal,
+    });
+  } catch (error) {
+    if ((error as Error).name === "AbortError") {
+      throw error;
+    }
+    const session = await apiClient.startDiagnoseAlert(alert, extraAlertFingerprints);
+    onEvent({
+      type: "diagnosis_started",
+      session_id: session.session_id,
+      data: {
+        alert,
+        topology: null,
+        variables: {},
+        bootstrap_state: "thinking",
+        degraded_start: true,
+      },
+    });
+    return;
+  }
 
   if (response.status === 404 || response.status === 405 || response.status === 500) {
     const session = await apiClient.startDiagnoseAlert(alert, extraAlertFingerprints);
     onEvent({
       type: "diagnosis_started",
       session_id: session.session_id,
-      data: { alert, topology: null, variables: {} },
+      data: {
+        alert,
+        topology: null,
+        variables: {},
+        bootstrap_state: "thinking",
+        degraded_start: true,
+      },
     });
-    onEvent({ type: "done", session_id: session.session_id, data: {} });
     return;
   }
 
@@ -860,6 +885,48 @@ export const apiClient = {
       );
       const progressStatus = String(session.status || "").trim() || latestStage || "pending";
 
+      // Extract canary batch status from remediation_progress events
+      const batchStatusMap = new Map<string, { batch: string; progress: number; status: string }>();
+      for (const event of remediationEvents) {
+        const data = event.data as Record<string, unknown> | undefined;
+        if (!data) continue;
+        const stage = String(data.stage ?? "").trim();
+        const batch = String(data.batch ?? "").trim();
+        if (!batch) continue;
+        if (stage === "canary_batch_started") {
+          if (!batchStatusMap.has(batch)) {
+            batchStatusMap.set(batch, { batch, progress: 0, status: "pending" });
+          }
+        } else if (stage === "canary_batch_completed") {
+          const batchCompleted = Number(data.steps_completed ?? 0);
+          const batchTotal = Number(data.steps_total ?? 1);
+          const pct = batchTotal > 0 ? Math.round((batchCompleted / batchTotal) * 100) : 100;
+          batchStatusMap.set(batch, { batch, progress: pct, status: "resolved" });
+        } else if (stage === "canary_check_failed") {
+          const existing = batchStatusMap.get(batch);
+          batchStatusMap.set(batch, { batch, progress: existing?.progress ?? 0, status: "failed" });
+        } else if (stage === "canary_check_passed") {
+          const existing = batchStatusMap.get(batch);
+          batchStatusMap.set(batch, { batch, progress: existing?.progress ?? 50, status: "validating" });
+        }
+      }
+      // Also track remediating/validating for step-level progress when no canary events
+      if (batchStatusMap.size === 0 && currentPlan.canary?.enabled) {
+        const canaryBatches = Number((currentPlan.canary as Record<string, unknown>)?.max_batches ?? 2);
+        for (let i = 1; i <= canaryBatches; i++) {
+          const batchLabel = `canary-${i}`;
+          if (latestStage === "remediating" || latestStage === "validating") {
+            batchStatusMap.set(batchLabel, {
+              batch: batchLabel,
+              progress: Math.round((completedSteps / currentPlan.steps.length) * 100),
+              status: latestStage,
+            });
+          } else {
+            batchStatusMap.set(batchLabel, { batch: batchLabel, progress: 0, status: "pending" });
+          }
+        }
+      }
+
       return {
         session_id: resolved,
         plan: currentPlan,
@@ -874,7 +941,7 @@ export const apiClient = {
           status: progressStatus,
           completed_steps: completedSteps,
           total_steps: currentPlan.steps.length,
-          batch_status: [],
+          batch_status: Array.from(batchStatusMap.values()),
         },
         timeline: events,
         approval_required: session.status === "approval_required",

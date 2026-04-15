@@ -657,6 +657,10 @@ def _cube_web_latency_alert_payload(*, fingerprint: str = "fp-cube-latency-1") -
     }
 
 
+def _ai_service_ttft_alert_payload(*, fingerprint: str = "fp-ai-ttft-1") -> dict[str, Any]:
+    return _demo_blocked_alert_payload(alert_name="AIServiceTTFTP99High", fingerprint=fingerprint)
+
+
 @pytest.fixture(autouse=True)
 def _ensure_llm_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("SRE_OPENAI_API_KEY", "test-key")
@@ -2009,6 +2013,169 @@ class TestAPIE2E:
             session_resp = client.get(f"/api/sessions/{session_id}", headers=_auth_headers(token))
             assert session_resp.status_code == 200
             assert session_resp.json()["data"]["status"] == "escalated"
+        finally:
+            client.close()
+
+    def test_e2e_approve_route_real_mode_ai_ttft_escalates_with_alert_only_policy_when_metrics_unavailable(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        client, token = _build_real_client(monkeypatch)
+        try:
+            _set_tool_channel_health(client, "k8s", health="ready")
+            _set_tool_channel_health(client, "prometheus", health="ready")
+            services = client.app.state.services
+            alert_payload = _ai_service_ttft_alert_payload()
+
+            async def _approve_and_keep_alert(
+                target_session_id: str,
+                approval_input: Any,
+                *,
+                progress_callback: Any | None = None,
+            ) -> Any:
+                _ = (approval_input, progress_callback)
+                plan = services.remediation_engine.get_plan(target_session_id)
+                services.alert_store.replace([Alert.model_validate(alert_payload)])
+                return RemediationResult(
+                    plan_id=plan.plan_id if plan is not None else "plan-missing",
+                    success=True,
+                    steps_completed=len(plan.steps) if plan is not None else 0,
+                    steps_total=len(plan.steps) if plan is not None else 0,
+                    verification_results=[{"step_id": 1, "verified": True}],
+                )
+
+            services.remediation_engine.approve_and_execute = _approve_and_keep_alert  # type: ignore[method-assign]
+
+            diagnose = client.post("/api/diagnose", json=alert_payload, headers=_auth_headers(token)).json()
+            session_id = diagnose["data"]["session_id"]
+
+            approve = client.post(
+                f"/api/remediate/{session_id}/approve",
+                json={"approved": True, "user": "alice"},
+                headers=_auth_headers(token),
+            )
+            assert approve.status_code == 200
+            payload = approve.json()
+            assert payload["success"] is False
+            assert payload["error"]["code"] == ErrorCode.REMEDIATION_EXECUTION_FAILED.value
+
+            events_resp = client.get(f"/api/sessions/{session_id}/events", headers=_auth_headers(token))
+            assert events_resp.status_code == 200
+            remediation_events = [
+                item for item in events_resp.json()["data"] if item["type"] == EventType.REMEDIATION_PROGRESS.value
+            ]
+            observation = next(item for item in remediation_events if item["data"]["stage"] == "observation_result")
+            assert observation["data"]["policy_applied"] == "alert_status_only_when_post_metrics_unavailable"
+            assert "alert_not_cleared" in observation["data"]["escalation_reasons"]
+            assert "metrics_unavailable" in observation["data"]["escalation_reasons"]
+            assert remediation_events[-1]["data"]["stage"] == "escalation_required"
+        finally:
+            client.close()
+
+    def test_e2e_approve_route_real_mode_ai_ttft_succeeds_when_alert_cleared_even_if_metrics_unavailable(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        client, token = _build_real_client(monkeypatch)
+        try:
+            _set_tool_channel_health(client, "k8s", health="ready")
+            _set_tool_channel_health(client, "prometheus", health="ready")
+            services = client.app.state.services
+            alert_payload = _ai_service_ttft_alert_payload()
+
+            async def _approve_and_clear_alert(
+                target_session_id: str,
+                approval_input: Any,
+                *,
+                progress_callback: Any | None = None,
+            ) -> Any:
+                _ = (approval_input, progress_callback)
+                plan = services.remediation_engine.get_plan(target_session_id)
+                services.alert_store.replace([])
+                return RemediationResult(
+                    plan_id=plan.plan_id if plan is not None else "plan-missing",
+                    success=True,
+                    steps_completed=len(plan.steps) if plan is not None else 0,
+                    steps_total=len(plan.steps) if plan is not None else 0,
+                    verification_results=[{"step_id": 1, "verified": True}],
+                )
+
+            services.remediation_engine.approve_and_execute = _approve_and_clear_alert  # type: ignore[method-assign]
+
+            diagnose = client.post("/api/diagnose", json=alert_payload, headers=_auth_headers(token)).json()
+            session_id = diagnose["data"]["session_id"]
+
+            approve = client.post(
+                f"/api/remediate/{session_id}/approve",
+                json={"approved": True, "user": "alice"},
+                headers=_auth_headers(token),
+            )
+            assert approve.status_code == 200
+            assert approve.json()["success"] is True
+
+            events_resp = client.get(f"/api/sessions/{session_id}/events", headers=_auth_headers(token))
+            assert events_resp.status_code == 200
+            remediation_events = [
+                item for item in events_resp.json()["data"] if item["type"] == EventType.REMEDIATION_PROGRESS.value
+            ]
+            observation = next(item for item in remediation_events if item["data"]["stage"] == "observation_result")
+            assert observation["data"]["alert_cleared"] is True
+            assert observation["data"]["metrics_improved"] is False
+            assert observation["data"]["policy_applied"] == "alert_status_only_when_post_metrics_unavailable"
+            assert observation["data"]["escalation_reasons"] == []
+            assert remediation_events[-1]["data"]["stage"] == "execution_succeeded"
+        finally:
+            client.close()
+
+    def test_e2e_approve_route_real_mode_non_ttft_keeps_default_policy_when_metrics_unavailable(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        client, token = _build_real_client(monkeypatch)
+        try:
+            _set_tool_channel_health(client, "k8s", health="ready")
+            _set_tool_channel_health(client, "prometheus", health="ready")
+            services = client.app.state.services
+
+            async def _approve_and_clear_alert(
+                target_session_id: str,
+                approval_input: Any,
+                *,
+                progress_callback: Any | None = None,
+            ) -> Any:
+                _ = (approval_input, progress_callback)
+                plan = services.remediation_engine.get_plan(target_session_id)
+                services.alert_store.replace([])
+                return RemediationResult(
+                    plan_id=plan.plan_id if plan is not None else "plan-missing",
+                    success=True,
+                    steps_completed=len(plan.steps) if plan is not None else 0,
+                    steps_total=len(plan.steps) if plan is not None else 0,
+                    verification_results=[{"step_id": 1, "verified": True}],
+                )
+
+            services.remediation_engine.approve_and_execute = _approve_and_clear_alert  # type: ignore[method-assign]
+
+            diagnose = client.post("/api/diagnose", json=_alert_payload(), headers=_auth_headers(token)).json()
+            session_id = diagnose["data"]["session_id"]
+
+            approve = client.post(
+                f"/api/remediate/{session_id}/approve",
+                json={"approved": True, "user": "alice"},
+                headers=_auth_headers(token),
+            )
+            assert approve.status_code == 200
+            payload = approve.json()
+            assert payload["success"] is False
+            assert payload["error"]["code"] == ErrorCode.REMEDIATION_EXECUTION_FAILED.value
+
+            events_resp = client.get(f"/api/sessions/{session_id}/events", headers=_auth_headers(token))
+            assert events_resp.status_code == 200
+            remediation_events = [
+                item for item in events_resp.json()["data"] if item["type"] == EventType.REMEDIATION_PROGRESS.value
+            ]
+            observation = next(item for item in remediation_events if item["data"]["stage"] == "observation_result")
+            assert observation["data"]["policy_applied"] == "default_alert_and_metrics"
+            assert "metrics_unavailable" in observation["data"]["escalation_reasons"]
+            assert "alert_not_cleared" not in observation["data"]["escalation_reasons"]
+            assert remediation_events[-1]["data"]["stage"] == "escalation_required"
         finally:
             client.close()
 

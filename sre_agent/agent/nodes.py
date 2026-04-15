@@ -10,7 +10,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage, messages_to_dict
+from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage, SystemMessage, ToolMessage, message_chunk_to_message, messages_to_dict
 from pydantic import BaseModel, Field
 
 from sre_agent.agent.checkpoint import persist_state_snapshot
@@ -20,14 +20,16 @@ from sre_agent.models.diagnosis import DiagnosisResult, Observation, ThinkingSte
 from sre_agent.models.remediation import RemediationPlan
 from sre_agent.runtime.node_mapping import load_inventory_node_mapping, normalize_node_identifier
 from sre_agent.runtime.token_estimation import estimate_token_count
-from sre_agent.tools import ToolExecutionContext, ToolRegistry, ToolResult
+from sre_agent.tools import SafetyLevel, ToolExecutionContext, ToolRegistry, ToolResult
 
 # LLM 交互日志记录器
 _llm_logger = logging.getLogger("sre_agent.llm")
 _llm_logger.setLevel(logging.DEBUG)
-_llm_logger.addHandler(logging.NullHandler())  # 默认空 handler，避免警告
+_llm_logger.addHandler(logging.NullHandler())  # default null handler to avoid warnings
 
 LLM_LOG_DIR = Path("./data/llm_logs")
+_TTFT_PROMETHEUS_TOTAL_BUDGET = 2
+_TTFT_PROMETHEUS_FAMILY_BUDGET = 1
 
 
 class FinalDiagnosisEnvelope(BaseModel):
@@ -40,6 +42,12 @@ class ReasoningEnvelope(BaseModel):
     thought: str = Field(min_length=1)
     diagnosis: dict[str, Any] | None = None
     remediation_plan: dict[str, Any] | None = None
+
+
+class ReasonStepTimeoutError(asyncio.TimeoutError):
+    def __init__(self, *, retry_record: dict[str, Any]) -> None:
+        super().__init__("reason step timed out")
+        self.reason_timeout_retry = retry_record
 
 
 def initialize_state(
@@ -55,6 +63,10 @@ def initialize_state(
     alert_snapshot: dict[str, Any] | None = None,
     topology_context: dict[str, Any] | None = None,
     extra_alerts: list[dict[str, Any]] | None = None,
+    reasoning_context_strategy: str | None = None,
+    reasoning_overflow_behavior: str | None = None,
+    reasoning_input_target_tokens: int | None = None,
+    reasoning_model_family: str | None = None,
 ) -> SREAgentState:
     return {
         "query": query,
@@ -80,6 +92,10 @@ def initialize_state(
         "alert_snapshot": alert_snapshot,
         "topology_context": topology_context,
         "extra_alerts": extra_alerts,
+        "reasoning_context_strategy": reasoning_context_strategy,
+        "reasoning_overflow_behavior": reasoning_overflow_behavior,
+        "reasoning_input_target_tokens": reasoning_input_target_tokens,
+        "reasoning_model_family": reasoning_model_family,
         "evidence_signals": {},
         "loop_guard": {
             "recent_fingerprint": None,
@@ -100,10 +116,10 @@ def _log_tool_execution(
     tool_args: dict[str, Any],
     result: dict[str, Any],
 ) -> None:
-    """将工具执行结果写入日志文件。
+    """Write tool execution results to a log file.
 
-    日志格式: JSONL (每行一个 JSON 对象)
-    日志路径: ./data/llm_logs/{session_id}.jsonl
+    Log format: JSONL (one JSON object per line)
+    Log path: ./data/llm_logs/{session_id}.jsonl
     """
     try:
         LLM_LOG_DIR.mkdir(parents=True, exist_ok=True)
@@ -140,16 +156,16 @@ def _log_llm_interaction(
     prompt_fallback_used: bool = False,
     prompt_metadata: dict[str, Any] | None = None,
 ) -> None:
-    """将 LLM 交互日志写入文件，便于调试和分析。
+    """Write LLM interaction logs to file for debugging and analysis.
 
-    日志格式: JSONL (每行一个 JSON 对象)
-    日志路径: ./data/llm_logs/{session_id}.jsonl
+    Log format: JSONL (one JSON object per line)
+    Log path: ./data/llm_logs/{session_id}.jsonl
     """
     try:
         LLM_LOG_DIR.mkdir(parents=True, exist_ok=True)
         log_file = LLM_LOG_DIR / f"{session_id}.jsonl"
 
-        # 构建日志内容
+        # 构建日志内容
         log_entry = {
             "timestamp": datetime.now(UTC).isoformat(),
             "session_id": session_id,
@@ -178,6 +194,67 @@ def _log_llm_interaction(
     except Exception:  # noqa: BLE001
         # 日志记录失败不应影响诊断流程
         _llm_logger.exception("Failed to log LLM interaction")
+
+
+async def _invoke_llm_message(llm: Any, messages: list[Any], *, timeout: float) -> AIMessage:
+    async def _run() -> AIMessage:
+        stream = getattr(llm, "astream", None)
+        if callable(stream):
+            accumulated: AIMessageChunk | None = None
+            fallback_text_parts: list[str] = []
+            async for chunk in stream(messages):
+                if isinstance(chunk, AIMessage):
+                    return chunk
+                if isinstance(chunk, AIMessageChunk):
+                    accumulated = chunk if accumulated is None else accumulated + chunk
+                    continue
+                text = _extract_text(getattr(chunk, "content", chunk))
+                if text:
+                    fallback_text_parts.append(text)
+
+            if accumulated is not None:
+                message = message_chunk_to_message(accumulated)
+                if isinstance(message, AIMessage):
+                    return message
+                return AIMessage(content=_extract_text(getattr(message, "content", message)))
+            if fallback_text_parts:
+                return AIMessage(content="".join(fallback_text_parts))
+
+        invoke = getattr(llm, "ainvoke", None)
+        if not callable(invoke):
+            raise RuntimeError(f"LLM object {type(llm).__name__} does not support ainvoke or astream")
+        response = await invoke(messages)
+        if not isinstance(response, AIMessage):
+            raise RuntimeError(f"expected AIMessage from LLM, got {type(response).__name__}")
+        return response
+
+    return await asyncio.wait_for(_run(), timeout=timeout)
+
+
+def _extract_reason_prompt_metadata_snapshot(prompt_metadata: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "prompt_mode": str(prompt_metadata.get("prompt_mode", "") or "").strip() or None,
+        "estimated_input_tokens": int(prompt_metadata.get("estimated_input_tokens") or 0),
+        "reasoning_context_strategy": str(prompt_metadata.get("reasoning_context_strategy", "") or "").strip() or None,
+        "reasoning_overflow_behavior": str(prompt_metadata.get("reasoning_overflow_behavior", "") or "").strip() or None,
+        "reasoning_input_target_tokens": int(prompt_metadata.get("reasoning_input_target_tokens") or 0),
+        "prompt_fallback_used": bool(prompt_metadata.get("prompt_fallback_used")),
+    }
+
+
+def _build_reason_timeout_retry_record(
+    *,
+    retry_count: int,
+    timeout_sec: float,
+    previous_prompt_metadata: dict[str, Any],
+    retry_prompt_metadata: dict[str, Any],
+) -> dict[str, Any]:
+    return {
+        "retry_count": max(0, int(retry_count)),
+        "timeout_sec": float(timeout_sec),
+        "previous_prompt_metadata": _extract_reason_prompt_metadata_snapshot(previous_prompt_metadata),
+        "retry_prompt_metadata": _extract_reason_prompt_metadata_snapshot(retry_prompt_metadata),
+    }
 
 
 async def reason_node(
@@ -209,11 +286,66 @@ async def reason_node(
     prompt_fallback_used = False
     bound_tool_names: list[str] = []
     tool_choice = "auto"
+    step_index = state.get("step_count", 0) + 1
+    timeout_retry_record: dict[str, Any] | None = None
     final_turn = bool(state.get("force_final_turn", False)) or (
         bool(state.get("tool_runs")) and state.get("step_count", 0) >= max(state.get("max_steps", 10) - 1, 1)
     )
+    llm_supports_message_invocation = hasattr(llm, "ainvoke") or hasattr(llm, "astream")
     interaction_mode = "final_json" if final_turn else "tool_bound"
-    if final_turn and hasattr(llm, "ainvoke"):
+
+    async def _invoke_reason_with_timeout_retry(call_model: Any) -> AIMessage:
+        nonlocal invoked_messages
+        nonlocal prompt_metadata
+        nonlocal prompt_fallback_used
+        nonlocal interaction_mode
+        nonlocal tool_choice
+        nonlocal bound_tool_names
+        nonlocal timeout_retry_record
+
+        step_timeout_sec = float(state["step_timeout_sec"])
+        try:
+            return await _invoke_llm_message(call_model, invoked_messages, timeout=step_timeout_sec)
+        except asyncio.TimeoutError:
+            if not llm_supports_message_invocation:
+                raise
+
+            retry_messages, retry_prompt_metadata = _build_transcript_compact_reason_messages(
+                system_prompt=system_prompt,
+                state=state,
+                final_turn=True,
+                tool_binding_fallback=True,
+            )
+            retry_prompt_metadata = {
+                **retry_prompt_metadata,
+                "reasoning_context_strategy": "transcript_compact",
+                "reasoning_overflow_behavior": "compact",
+                "reason_timeout_retry": True,
+                "reason_timeout_retry_count": 1,
+                "reason_timeout_retry_timeout_sec": step_timeout_sec,
+                "reason_timeout_retry_trigger_mode": interaction_mode,
+                "reason_timeout_retry_trigger_tool_choice": tool_choice,
+            }
+            timeout_retry_record = _build_reason_timeout_retry_record(
+                retry_count=1,
+                timeout_sec=step_timeout_sec,
+                previous_prompt_metadata=prompt_metadata,
+                retry_prompt_metadata=retry_prompt_metadata,
+            )
+            try:
+                retry_response = await _invoke_llm_message(llm, retry_messages, timeout=step_timeout_sec)
+            except asyncio.TimeoutError as retry_exc:
+                raise ReasonStepTimeoutError(retry_record=timeout_retry_record) from retry_exc
+
+            invoked_messages = retry_messages
+            prompt_metadata = retry_prompt_metadata
+            prompt_fallback_used = bool(prompt_metadata.get("prompt_fallback_used"))
+            interaction_mode = "timeout_retry_final_compact"
+            tool_choice = "none"
+            bound_tool_names = []
+            return retry_response
+
+    if final_turn and llm_supports_message_invocation:
         invoked_messages, prompt_metadata, overflow_failed = _prepare_reason_prompt_messages_for_invocation(
             system_prompt=system_prompt,
             state=state,
@@ -230,7 +362,7 @@ async def reason_node(
                 tool_choice="none",
             )
         tool_choice = "none"
-        response = await asyncio.wait_for(llm.ainvoke(invoked_messages), timeout=state["step_timeout_sec"])
+        response = await _invoke_reason_with_timeout_retry(llm)
     else:
         invoked_messages, prompt_metadata, overflow_failed = _prepare_reason_prompt_messages_for_invocation(
             system_prompt=system_prompt,
@@ -257,9 +389,9 @@ async def reason_node(
                 bound_tools,
                 tool_choice=tool_choice,
             )
-            response = await asyncio.wait_for(call_model.ainvoke(invoked_messages), timeout=state["step_timeout_sec"])
+            response = await _invoke_reason_with_timeout_retry(call_model)
         except Exception as exc:  # noqa: BLE001
-            if hasattr(llm, "ainvoke") and _is_reason_prompt_empty_error(exc):
+            if llm_supports_message_invocation and _is_reason_prompt_empty_error(exc):
                 invoked_messages, prompt_metadata, overflow_failed = _prepare_reason_prompt_messages_for_invocation(
                     system_prompt=system_prompt,
                     state=state,
@@ -285,10 +417,10 @@ async def reason_node(
                         bound_tools,
                         tool_choice=tool_choice,
                     )
-                    response = await asyncio.wait_for(call_model.ainvoke(invoked_messages), timeout=state["step_timeout_sec"])
+                    response = await _invoke_reason_with_timeout_retry(call_model)
                 except Exception as retry_exc:  # noqa: BLE001
                     exc = retry_exc
-            if not hasattr(llm, "ainvoke") or not (
+            if not llm_supports_message_invocation or not (
                 _is_tool_binding_incompatible_error(exc) or _is_reason_prompt_empty_error(exc)
             ):
                 raise
@@ -311,13 +443,27 @@ async def reason_node(
                     interaction_mode=interaction_mode,
                     tool_choice=tool_choice,
                 )
-            response = await asyncio.wait_for(llm.ainvoke(invoked_messages), timeout=state["step_timeout_sec"])
+            response = await _invoke_reason_with_timeout_retry(llm)
     if not isinstance(response, AIMessage):
         raise RuntimeError(f"expected AIMessage from LLM, got {type(response).__name__}")
 
     updated_messages = [*messages, response]
     updated_trace = list(state.get("trace_items", []))
     updated_interactions = list(state.get("llm_interactions", []))
+    if timeout_retry_record is not None:
+        updated_trace.append(
+            {
+                "type": "thought",
+                "step": step_index,
+                "content": "reason step hit timeout; retried once with compact final prompt",
+                "action": "conclude",
+                "confidence": None,
+                "tool_params": {
+                    "kind": "reason_timeout_retry",
+                    **_safe_jsonable(timeout_retry_record),
+                },
+            }
+        )
     pending_tool_calls = _auto_load_high_score_skill(
         state,
         list(response.tool_calls or []),
@@ -326,8 +472,11 @@ async def reason_node(
         state,
         pending_tool_calls,
     )
+    pending_tool_calls = _auto_follow_loaded_skill_recommended_tools(
+        state,
+        pending_tool_calls,
+    )
     raw_response_text = _extract_text(response.content)
-    step_index = state.get("step_count", 0) + 1
 
     # 记录 LLM 交互到日志文件
     _log_llm_interaction(
@@ -428,9 +577,9 @@ async def reason_node(
         corrected_payload: dict[str, Any] | None = None
         corrected_remediation_plan: dict[str, Any] | None = None
         corrected_thought = ""
-        if hasattr(llm, "ainvoke"):
+        if llm_supports_message_invocation:
             try:
-                retry_response = await asyncio.wait_for(llm.ainvoke(correction_messages), timeout=state["step_timeout_sec"])
+                retry_response = await _invoke_llm_message(llm, correction_messages, timeout=state["step_timeout_sec"])
                 if isinstance(retry_response, AIMessage):
                     correction_response = retry_response
                     correction_raw_response_text = _extract_text(retry_response.content)
@@ -457,7 +606,7 @@ async def reason_node(
             prompt_metadata={
                 "evidence_signals": _safe_jsonable(evidence_signals),
                 "correction_error": correction_error or None,
-                "provider_invocation_skipped": not hasattr(llm, "ainvoke"),
+                "provider_invocation_skipped": not llm_supports_message_invocation,
             },
         )
         updated_interactions.append(
@@ -472,7 +621,7 @@ async def reason_node(
                 "prompt_metadata": {
                     "evidence_signals": _safe_jsonable(evidence_signals),
                     "correction_error": correction_error or None,
-                    "provider_invocation_skipped": not hasattr(llm, "ainvoke"),
+                    "provider_invocation_skipped": not llm_supports_message_invocation,
                 },
                 "response_message": messages_to_dict([correction_response])[0] if correction_response is not None else None,
                 "raw_response_text": correction_raw_response_text,
@@ -505,6 +654,163 @@ async def reason_node(
         tool_runs=list(state.get("tool_runs", []) or []),
         variables=dict(state.get("variables", {}) or {}),
     )
+    plan_missing_reason: str | None = None
+    if remediation_plan is None:
+        plan_completion_messages = _build_plan_completion_messages(
+            system_prompt=system_prompt,
+            query=str(state.get("query", "") or "").strip(),
+            diagnosis_payload=diagnosis_payload,
+            tool_runs=list(state.get("tool_runs", []) or []),
+        )
+        plan_completion_stats = _build_prompt_message_stats(plan_completion_messages)
+        plan_completion_response: AIMessage | None = None
+        plan_completion_raw_response_text = ""
+        plan_completion_error = ""
+        completion_raw_plan: dict[str, Any] | None = None
+
+        if llm_supports_message_invocation:
+            try:
+                retry_response = await _invoke_llm_message(llm, plan_completion_messages, timeout=state["step_timeout_sec"])
+                if isinstance(retry_response, AIMessage):
+                    plan_completion_response = retry_response
+                    plan_completion_raw_response_text = _extract_text(retry_response.content)
+                    completion_parsed = _parse_reasoning_output(plan_completion_raw_response_text)
+                    completion_raw_plan = completion_parsed.remediation_plan
+                else:
+                    plan_completion_raw_response_text = _extract_text(getattr(retry_response, "content", retry_response))
+            except Exception as exc:  # noqa: BLE001
+                plan_completion_error = _normalized_exception_message(exc)
+
+        _log_llm_interaction(
+            session_id=str(state.get("session_id", "unknown")),
+            step=step_index,
+            prompt_messages=plan_completion_messages,
+            response=plan_completion_response,
+            mode="plan_completion_retry",
+            tool_choice="none",
+            tool_calls=[],
+            prompt_message_stats=plan_completion_stats,
+            prompt_fallback_used=False,
+            prompt_metadata={
+                "top_candidate": _safe_jsonable(_select_top_ranked_candidate(diagnosis_payload) or {}),
+                "provider_invocation_skipped": not llm_supports_message_invocation,
+                "plan_completion_error": plan_completion_error or None,
+            },
+        )
+        updated_interactions.append(
+            {
+                "step": step_index,
+                "mode": "plan_completion_retry",
+                "tool_choice": "none",
+                "bound_tool_names": [],
+                "prompt_messages": messages_to_dict(plan_completion_messages),
+                "prompt_message_stats": plan_completion_stats,
+                "prompt_fallback_used": False,
+                "prompt_metadata": {
+                    "top_candidate": _safe_jsonable(_select_top_ranked_candidate(diagnosis_payload) or {}),
+                    "provider_invocation_skipped": not llm_supports_message_invocation,
+                    "plan_completion_error": plan_completion_error or None,
+                },
+                "response_message": messages_to_dict([plan_completion_response])[0] if plan_completion_response is not None else None,
+                "raw_response_text": plan_completion_raw_response_text,
+                "tool_calls": [],
+            }
+        )
+
+        if completion_raw_plan is not None:
+            remediation_plan = _normalize_remediation_plan_payload(
+                raw_plan=completion_raw_plan,
+                diagnosis=diagnosis,
+                session_id=str(state.get("session_id", "")),
+                registry=registry,
+                tool_runs=list(state.get("tool_runs", []) or []),
+                variables=dict(state.get("variables", {}) or {}),
+            )
+            if remediation_plan is not None:
+                diagnosis = diagnosis.model_copy(update={"recommended_fix": remediation_plan})
+                final_thought = (
+                    f"{final_thought}\n已基于主根因补全 proposal-only 修复方案，等待人工审批。"
+                )
+            else:
+                plan_missing_reason = "诊断已完成，但自动补全修复方案未通过参数/安全校验。"
+        else:
+            if plan_completion_error:
+                plan_missing_reason = f"诊断已完成，但自动补全修复方案失败：{plan_completion_error}"
+            else:
+                plan_missing_reason = "诊断已完成，但模型未返回可执行修复方案。"
+    if remediation_plan is None and _is_ttft_alert_state(state):
+        auto_ttft_plan = _build_ttft_kill_process_plan_candidate(
+            diagnosis=diagnosis,
+            evidence_signals=evidence_signals,
+            session_id=str(state.get("session_id", "")),
+            tool_runs=list(state.get("tool_runs", []) or []),
+            variables=dict(state.get("variables", {}) or {}),
+        )
+        if auto_ttft_plan is not None:
+            remediation_plan = _normalize_remediation_plan_payload(
+                raw_plan=auto_ttft_plan,
+                diagnosis=diagnosis,
+                session_id=str(state.get("session_id", "")),
+                registry=registry,
+                tool_runs=list(state.get("tool_runs", []) or []),
+                variables=dict(state.get("variables", {}) or {}),
+            )
+            if remediation_plan is not None:
+                diagnosis = diagnosis.model_copy(update={"recommended_fix": remediation_plan})
+                plan_missing_reason = None
+                final_thought = (
+                    f"{final_thought}\n已根据 GPU 进程证据进入处置阶段："
+                    "已生成 kill_process proposal（需审批后执行）。"
+                )
+
+    # ── TTFT forced external node probe (fail-safe) ──
+    # 当 TTFT 诊断在服务节点未发现可疑进程，且尚未探测外部压测源节点时，
+    # 注入合成的 process.find 调用，路由回 act_node 继续诊断。
+    if (
+        remediation_plan is None
+        and _is_ttft_alert_state(state)
+        and not evidence_signals.get("ttft_suspect_process_present")
+        and not state.get("_ttft_external_probe_injected")
+    ):
+        _ext_node = _get_ttft_external_node(state)
+        if _ext_node and not _has_probed_ttft_external_node(
+            list(state.get("tool_runs", []) or []), _ext_node
+        ):
+            updated_trace.append(
+                {
+                    "type": "thought",
+                    "step": step_index,
+                    "content": (
+                        f"TTFT 证据链缺口：服务节点未发现可疑负载进程，"
+                        f"强制探测外部压测源节点 {_ext_node}。"
+                    ),
+                    "action": "tool_call",
+                    "confidence": None,
+                }
+            )
+            forced_call = {
+                "name": "process.find",
+                "args": {"pattern": "stress|benchmark|load_simulator|simulator"},
+                "id": f"ttft-forced-external-probe-{step_index}",
+            }
+            updated = {
+                **state,
+                "messages": updated_messages,
+                "llm_interactions": updated_interactions,
+                "trace_items": updated_trace,
+                "pending_tool_calls": [forced_call],
+                "step_count": step_index,
+                "diagnosis_result": None,
+                "remediation_plan": None,
+                "status": "running",
+                "summary": None,
+                "error": None,
+                "evidence_signals": evidence_signals,
+                "_ttft_external_probe_injected": True,
+            }
+            persist_state_snapshot(updated.get("checkpoint_dir"), updated["session_id"], "reason", updated)
+            return updated
+
     if remediation_plan is not None:
         diagnosis = diagnosis.model_copy(update={"recommended_fix": remediation_plan})
     updated_trace.append(
@@ -530,6 +836,7 @@ async def reason_node(
         "error": None,
         "evidence_signals": evidence_signals,
         "force_final_turn": False,
+        "plan_missing_reason": plan_missing_reason,
     }
     persist_state_snapshot(updated.get("checkpoint_dir"), updated["session_id"], "reason", updated)
     return updated
@@ -576,17 +883,15 @@ def _normalize_positive_int(value: Any, *, default: int, minimum: int) -> int:
 
 def _select_bound_tool_names_for_turn(state: SREAgentState) -> list[str] | None:
     allowed_tool_names = state.get("allowed_tool_names")
+    if not state.get("tool_runs"):
+        return ["skills.list_skills"]
+
     if not allowed_tool_names:
         return None
 
     names = [str(name).strip() for name in allowed_tool_names if str(name).strip()]
     if not names:
         return None
-
-    if not state.get("tool_runs"):
-        skill_names = [name for name in names if name.startswith("skills.")]
-        if skill_names:
-            return skill_names
     return names
 
 
@@ -608,6 +913,7 @@ def _find_latest_successful_skill_listing(tool_runs: list[dict[str, Any]]) -> di
 
 
 _AUTO_LOAD_SKILL_MATCH_THRESHOLD = 0.6
+_SKILL_LIST_COOLDOWN_STEPS = 6
 
 
 def _choose_skill_id_to_load_from_listing(listing_run: dict[str, Any], tool_runs: list[dict[str, Any]]) -> str:
@@ -714,6 +1020,139 @@ def _choose_skill_script_to_run(load_run: dict[str, Any], tool_runs: list[dict[s
     return skill_id, script
 
 
+def _extract_recommended_tool_calls_from_skill_content(content: str) -> list[dict[str, Any]]:
+    calls: list[dict[str, Any]] = []
+    if not str(content or "").strip():
+        return calls
+
+    for snippet in re.findall(r"`([^`]+)`", content):
+        text = str(snippet or "").strip()
+        if not text:
+            continue
+        match = re.match(r"^([a-z0-9_]+\.[a-z0-9_]+)(?:\((.*)\))?$", text)
+        if not match:
+            continue
+        tool_name = str(match.group(1) or "").strip()
+        if not tool_name or tool_name == "skills.run_skill":
+            continue
+
+        args: dict[str, Any] = {}
+        raw_args = str(match.group(2) or "").strip()
+        if raw_args:
+            for key, value in re.findall(r'([a-zA-Z_][a-zA-Z0-9_]*)\s*=\s*"([^"]*)"', raw_args):
+                args[str(key).strip()] = value
+            for key, value in re.findall(r"([a-zA-Z_][a-zA-Z0-9_]*)\s*=\s*'([^']*)'", raw_args):
+                args[str(key).strip()] = value
+
+        calls.append({"name": tool_name, "args": args})
+    return calls
+
+
+def _interpolate_params(params: dict[str, Any], variables: dict[str, Any] | None) -> dict[str, Any]:
+    """Interpolate ${variable} syntax in params dict with values from variables.
+
+    Supports:
+    - ${host_ip} -> variables.host_ip
+    - ${labels.instance} -> variables.labels.instance
+    - ${gpu_uuid} -> variables.gpu_uuid
+    """
+    if not params:
+        return {}
+    if not variables:
+        return dict(params)
+
+    result: dict[str, Any] = {}
+    for key, value in params.items():
+        if isinstance(value, str) and value.startswith("${") and value.endswith("}"):
+            # Extract variable path: ${host_ip} -> "host_ip"
+            var_path = value[2:-1].strip()
+            interpolated = _resolve_variable_path(var_path, variables)
+            result[key] = interpolated if interpolated is not None else value
+        else:
+            result[key] = value
+    return result
+
+
+def _resolve_variable_path(path: str, variables: dict[str, Any]) -> Any:
+    """Resolve a dotted path like 'labels.instance' from variables dict."""
+    parts = path.split(".")
+    current: Any = variables
+    for part in parts:
+        if isinstance(current, dict):
+            current = current.get(part)
+        else:
+            return None
+        if current is None:
+            return None
+    return current
+
+
+def _choose_recommended_tool_call_from_skill_load(
+    load_run: dict[str, Any],
+    tool_runs: list[dict[str, Any]],
+    variables: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    data = load_run.get("data")
+    if not isinstance(data, dict):
+        return None
+
+    scripts = data.get("scripts")
+    if isinstance(scripts, list) and scripts:
+        return None
+
+    # Only count successful tool executions as "attempted"
+    attempted_runs: list[tuple[str, dict[str, Any]]] = []
+    for run in tool_runs:
+        if not isinstance(run, dict):
+            continue
+        if not bool(run.get("success", False)):
+            continue
+        tool_name = str(run.get("tool", "")).strip()
+        params = run.get("params")
+        attempted_runs.append((tool_name, params if isinstance(params, dict) else {}))
+
+    recommended_tools = data.get("recommended_tools")
+    candidates: list[dict[str, Any]] = []
+    if isinstance(recommended_tools, list):
+        for item in recommended_tools:
+            if not isinstance(item, dict):
+                continue
+            tool_name = str(item.get("tool", "")).strip()
+            params = item.get("params", {})
+            # Interpolate ${variable} syntax in params
+            interpolated_params = _interpolate_params(params, variables)
+            candidates.append(
+                {
+                    "name": tool_name,
+                    "args": interpolated_params,
+                }
+            )
+    if not candidates:
+        content = str(data.get("content") or "").strip()
+        if not content:
+            return None
+        candidates = _extract_recommended_tool_calls_from_skill_content(content)
+
+    for candidate in candidates:
+        tool_name = str(candidate.get("name", "")).strip()
+        args_dict = candidate.get("args") or {}
+
+        already_attempted = False
+        for attempted_tool_name, attempted_params in attempted_runs:
+            if attempted_tool_name != tool_name:
+                continue
+            if not args_dict:
+                already_attempted = True
+                break
+            if all(attempted_params.get(key) == value for key, value in args_dict.items()):
+                already_attempted = True
+                break
+        if already_attempted:
+            continue
+        return {"name": tool_name, "args": args_dict}
+    return None
+
+
 def _auto_run_single_script_skill(
     state: SREAgentState,
     pending_tool_calls: list[dict[str, Any]],
@@ -742,6 +1181,67 @@ def _auto_run_single_script_skill(
         {
             "name": "skills.run_skill",
             "args": {"skill_id": skill_id, "script": script},
+            "id": call_id,
+            "type": "tool_call",
+        }
+    ]
+
+
+def _auto_follow_loaded_skill_recommended_tools(
+    state: SREAgentState,
+    pending_tool_calls: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    # Check if LLM is trying to run_skill on a skill without scripts
+    # If so, replace with recommended_tools instead
+    tool_runs = [dict(item) for item in list(state.get("tool_runs", []) or []) if isinstance(item, dict)]
+    latest_load = _find_latest_successful_skill_load(tool_runs)
+
+    if latest_load is not None:
+        data = latest_load.get("data", {})
+        if isinstance(data, dict):
+            scripts = data.get("scripts")
+            # If skill has no scripts, check if LLM is calling skills.run_skill
+            if not (isinstance(scripts, list) and scripts):
+                for call in pending_tool_calls:
+                    if isinstance(call, dict) and str(call.get("name", "")).strip() == "skills.run_skill":
+                        # Replace with recommended_tools instead
+                        variables = dict(state.get("variables", {}) or {})
+                        candidate = _choose_recommended_tool_call_from_skill_load(latest_load, tool_runs, variables=variables)
+                        if candidate:
+                            call_id = str(call.get("id", "") or "").strip() or "call-skill-followup"
+                            return [
+                                {
+                                    "name": str(candidate.get("name", "")).strip(),
+                                    "args": dict(candidate.get("args") or {}),
+                                    "id": call_id,
+                                    "type": "tool_call",
+                                }
+                            ]
+
+    # Normal flow: if pending_tool_calls already has non-list_skills calls, return them
+    if any(
+        str(call.get("name", "")).strip() not in {"skills.list_skills"}
+        for call in pending_tool_calls
+        if isinstance(call, dict)
+    ):
+        return pending_tool_calls
+
+    if latest_load is None:
+        return pending_tool_calls
+
+    variables = dict(state.get("variables", {}) or {})
+    candidate = _choose_recommended_tool_call_from_skill_load(latest_load, tool_runs, variables=variables)
+    if not candidate:
+        return pending_tool_calls
+
+    call_id = ""
+    if pending_tool_calls:
+        call_id = str((pending_tool_calls[0] or {}).get("id", "")).strip()
+    call_id = call_id or "call-skill-followup"
+    return [
+        {
+            "name": str(candidate.get("name", "")).strip(),
+            "args": dict(candidate.get("args") or {}),
             "id": call_id,
             "type": "tool_call",
         }
@@ -984,11 +1484,13 @@ def _compact_prompt_value(
     depth: int = 0,
     max_depth: int = 2,
     max_items: int = 6,
-    max_keys: int = 8,
+    max_keys: int = 50,  # Increased to show full labels (host_ip etc.)
     max_string: int = 180,
 ) -> Any:
     if depth >= max_depth:
         if isinstance(value, dict):
+            if max_keys <= 0:
+                return {"kind": "object", "keys": sorted(str(key) for key in value.keys())}
             return {"kind": "object", "keys": sorted(str(key) for key in list(value.keys())[:max_keys])}
         if isinstance(value, list):
             return {"kind": "list", "items": len(value)}
@@ -1007,7 +1509,7 @@ def _compact_prompt_value(
         return items
     if isinstance(value, dict):
         compact: dict[str, Any] = {}
-        keys = list(value.keys())[:max_keys]
+        keys = list(value.keys()) if max_keys <= 0 else list(value.keys())[:max_keys]
         for key in keys:
             compact[str(key)] = _compact_prompt_value(
                 value[key],
@@ -1017,7 +1519,7 @@ def _compact_prompt_value(
                 max_keys=max_keys,
                 max_string=max_string,
             )
-        if len(value) > max_keys:
+        if max_keys > 0 and len(value) > max_keys:
             compact["_remaining_keys"] = len(value) - max_keys
         return compact
     return value
@@ -1165,7 +1667,7 @@ def _summarize_tc_qdisc(data: Any) -> tuple[str, dict[str, Any] | None]:
     if handle_match:
         findings.append(f"handle={_truncate_prompt_note(handle_match.group(1), max_chars=24)}")
 
-    # 提取 iface：优先 data.iface，fallback 到文本中的 dev <iface>
+    # Extract iface: prefer data.iface, fallback to dev <iface> in text
     raw_iface = data.get("iface") if isinstance(data, dict) else None
     iface_match = re.search(r"\bdev\s+([a-zA-Z0-9_.:-]+)", text, flags=re.IGNORECASE)
     resolved_iface = str(raw_iface or "").strip() or (iface_match.group(1).strip() if iface_match else None) or None
@@ -1221,6 +1723,196 @@ def _summarize_find_process(data: Any) -> tuple[str, dict[str, Any] | None]:
         "sample_pids": sample_pids[:6],
         "tc_process_present": tc_process_present,
     }
+
+
+def _summarize_process_find(data: Any) -> tuple[str, dict[str, Any] | None]:
+    if not isinstance(data, dict):
+        summary, _, fields = _summarize_generic_data(data)
+        return summary, fields
+
+    raw_count = data.get("count")
+    try:
+        count = max(0, int(raw_count))
+    except Exception:  # noqa: BLE001
+        count = 0
+
+    node = str(data.get("node", "") or "").strip()
+    matches = data.get("matches")
+    normalized_matches = matches if isinstance(matches, list) else []
+    process_names: list[str] = []
+    sample_pids: list[int] = []
+    suspicious_processes: list[dict[str, Any]] = []
+    seen_pid: set[int] = set()
+
+    for item in normalized_matches[:12]:
+        if not isinstance(item, dict):
+            continue
+        process = str(item.get("process", "") or "").strip()
+        command = str(item.get("command", "") or "").strip()
+        candidate_name = command or process
+        if process and process not in process_names:
+            process_names.append(process)
+        pid = item.get("pid")
+        parsed_pid: int | None = None
+        try:
+            parsed_pid = int(pid)
+        except Exception:  # noqa: BLE001
+            parsed_pid = None
+        if parsed_pid is not None and parsed_pid not in sample_pids:
+            sample_pids.append(parsed_pid)
+
+        if not _is_ttft_suspect_load_process(f"{process} {command}".strip()):
+            continue
+        if parsed_pid is None:
+            continue
+        if parsed_pid in seen_pid:
+            continue
+        seen_pid.add(parsed_pid)
+        suspicious_processes.append(
+            {
+                "pid": parsed_pid,
+                "process_name": candidate_name,
+                "memory_mib": None,
+                "node": node,
+            }
+        )
+
+    suspicious_present = bool(suspicious_processes)
+    summary = (
+        f"matches={count}; node={node or 'unknown'}; "
+        f"suspicious_load_present={str(suspicious_present).lower()}"
+    )
+    if suspicious_present:
+        preview = ",".join(
+            f"{item.get('pid')}:{_truncate_prompt_note(str(item.get('process_name', '')), max_chars=40)}"
+            for item in suspicious_processes[:3]
+        )
+        summary = f"{summary}; suspicious={preview}"
+    return summary, {
+        "match_count": count,
+        "node": node or None,
+        "process_names": process_names[:6],
+        "sample_pids": sample_pids[:6],
+        "suspicious_load_present": suspicious_present,
+        "suspicious_load_processes": suspicious_processes[:6],
+    }
+
+
+def _parse_gpu_process_rows(text: str, *, max_rows: int = 32) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        parts = [segment.strip() for segment in stripped.split(",")]
+        if len(parts) < 2:
+            continue
+        pid_text = parts[0]
+        process_name = parts[1] if len(parts) > 1 else ""
+        memory_text = parts[3] if len(parts) > 3 else ""
+        try:
+            pid = int(pid_text)
+        except Exception:  # noqa: BLE001
+            continue
+        memory_match = re.search(r"([0-9]+(?:\.[0-9]+)?)", memory_text)
+        memory_mib = float(memory_match.group(1)) if memory_match else None
+        rows.append(
+            {
+                "pid": pid,
+                "process_name": process_name,
+                "memory_mib": memory_mib,
+            }
+        )
+        if len(rows) >= max_rows:
+            break
+    return rows
+
+
+def _is_ttft_suspect_load_process(process_name: str) -> bool:
+    normalized = str(process_name or "").strip().lower()
+    if not normalized:
+        return False
+    suspicious_tokens = (
+        "stress",
+        "stress-ng",
+        "benchmark",
+        "bench",
+        "wrk",
+        "hey",
+        "ab ",
+        "apachebench",
+        "locust",
+        "load",
+        "simulator",
+        "simulate",
+        "mock",
+        "perf",
+        "iperf",
+        "fio",
+        "jmeter",
+    )
+    return any(token in normalized for token in suspicious_tokens)
+
+
+def _summarize_gpu_processes(data: Any) -> tuple[str, dict[str, Any] | None]:
+    text = _extract_output_blob(data)
+    rows = _parse_gpu_process_rows(text)
+    if not rows:
+        return (
+            "process_count=0; suspicious_load_present=false",
+            {
+                "process_count": 0,
+                "sample_pids": [],
+                "sample_process_names": [],
+                "suspicious_load_present": False,
+                "suspicious_load_processes": [],
+            },
+        )
+
+    sorted_rows = sorted(rows, key=lambda item: float(item.get("memory_mib") or 0.0), reverse=True)
+    suspicious_rows = [
+        item
+        for item in sorted_rows
+        if _is_ttft_suspect_load_process(str(item.get("process_name", "")))
+    ]
+    sample_names = [
+        _truncate_prompt_note(str(item.get("process_name", "")), max_chars=48)
+        for item in sorted_rows[:4]
+        if str(item.get("process_name", "")).strip()
+    ]
+    summary_parts = [
+        f"process_count={len(sorted_rows)}",
+        f"suspicious_load_present={str(bool(suspicious_rows)).lower()}",
+    ]
+    if sample_names:
+        summary_parts.append(f"top_processes={','.join(sample_names)}")
+    if suspicious_rows:
+        suspicious_preview = ",".join(
+            f"{item.get('pid')}:{_truncate_prompt_note(str(item.get('process_name', '')), max_chars=36)}"
+            for item in suspicious_rows[:3]
+        )
+        summary_parts.append(f"suspicious={suspicious_preview}")
+    return (
+        "; ".join(summary_parts),
+        {
+            "process_count": len(sorted_rows),
+            "sample_pids": [int(item.get("pid", 0) or 0) for item in sorted_rows[:8]],
+            "sample_process_names": [
+                str(item.get("process_name", "")).strip()
+                for item in sorted_rows[:8]
+                if str(item.get("process_name", "")).strip()
+            ],
+            "suspicious_load_present": bool(suspicious_rows),
+            "suspicious_load_processes": [
+                {
+                    "pid": int(item.get("pid", 0) or 0),
+                    "process_name": str(item.get("process_name", "")).strip(),
+                    "memory_mib": item.get("memory_mib"),
+                }
+                for item in suspicious_rows[:6]
+            ],
+        },
+    )
 
 
 def _summarize_link_state(data: Any) -> tuple[str, dict[str, Any] | None]:
@@ -1294,6 +1986,14 @@ def _build_tool_prompt_fields(
         prompt_summary, key_fields = _summarize_counter_text(data, label="rdma")
     elif tool == "network.find_process":
         prompt_summary, key_fields = _summarize_find_process(data)
+    elif tool == "process.find":
+        prompt_summary, key_fields = _summarize_process_find(data)
+    elif tool == "bmc.get_fan_status":
+        prompt_summary, key_fields = _summarize_bmc_fan_status(data)
+    elif tool == "gpu.get_metrics":
+        prompt_summary, key_fields = _summarize_gpu_metrics(data)
+    elif tool == "gpu.get_processes":
+        prompt_summary, key_fields = _summarize_gpu_processes(data)
     else:
         prompt_summary, item_count, key_fields = _summarize_generic_data(data)
     if item_count is None:
@@ -1309,6 +2009,95 @@ def _build_tool_prompt_fields(
     }
 
 
+def _summarize_bmc_fan_status(data: Any) -> tuple[str, dict[str, Any]]:
+    """Summarize BMC fan status for prompt."""
+    if not isinstance(data, dict):
+        return "kind=unknown", None
+    summary = data.get("fan_status_summary") or {}
+    mode_name = str(summary.get("mode_name", "Unknown") or "Unknown")
+    is_manual = bool(summary.get("is_manual", False))
+    is_fixed_pwm = bool(summary.get("is_fixed_pwm", False))
+    fixed_pwm = summary.get("fixed_pwm")
+    pwm_values = summary.get("unique_pwm_values", [])
+    fan_count = summary.get("fan_count", 0)
+    bmc_host = str(data.get("bmc_host", "") or "").strip()
+
+    key_fields = {
+        "mode": mode_name,
+        "is_manual": is_manual,
+        "is_fixed_pwm": is_fixed_pwm,
+        "fixed_pwm": fixed_pwm,
+        "pwm_values": pwm_values[:4] if pwm_values else None,
+        "fan_count": fan_count,
+        "bmc_host": bmc_host,
+    }
+    prompt_summary = f"mode={mode_name}; manual={is_manual}; fixed_pwm={is_fixed_pwm}; pwm={fixed_pwm or pwm_values}; fans={fan_count}"
+    return prompt_summary, key_fields
+
+
+def _summarize_gpu_metrics(data: Any) -> tuple[str, dict[str, Any]]:
+    """Summarize GPU metrics (nvidia-smi output) for prompt."""
+    output = _extract_output_blob(data)
+    if not output:
+        return "output=empty", None
+    # Parse CSV output: index, name, util, mem_used, mem_total, temp
+    lines = [line.strip() for line in output.splitlines() if line.strip()]
+    gpu_info: list[dict[str, Any]] = []
+    max_temp = 0
+    max_util = 0
+    for line in lines:
+        parts = [p.strip() for p in line.split(",")]
+        if len(parts) >= 6:
+            try:
+                idx = int(parts[0])
+                name = parts[1][:30]  # truncate GPU name
+                util = int(parts[2])
+                mem_used = int(parts[3])
+                mem_total = int(parts[4])
+                temp = int(parts[5])
+                gpu_info.append({"idx": idx, "temp": temp, "util": util, "mem": f"{mem_used}/{mem_total}"})
+                max_temp = max(max_temp, temp)
+                max_util = max(max_util, util)
+            except (ValueError, IndexError):
+                continue
+    if not gpu_info:
+        return f"lines={len(lines)}; parse_failed", None
+    temps = [g["temp"] for g in gpu_info]
+    prompt_summary = f"gpu_count={len(gpu_info)}; temps={temps}; max_temp={max_temp}C; max_util={max_util}%"
+    key_fields = {"gpu_count": len(gpu_info), "temps": temps, "max_temp": max_temp, "max_util": max_util, "gpu_info": gpu_info[:4]}
+    return prompt_summary, key_fields
+
+
+def _summarize_gpu_processes(data: Any) -> tuple[str, dict[str, Any]]:
+    """Summarize GPU processes for prompt."""
+    output = _extract_output_blob(data)
+    if not output:
+        return "output=empty", None
+    # Parse CSV output: pid, process_name, gpu_uuid, mem_used
+    lines = [line.strip() for line in output.splitlines() if line.strip()]
+    processes: list[dict[str, Any]] = []
+    process_names: set[str] = set()
+    total_mem = 0
+    for line in lines:
+        parts = [p.strip() for p in line.split(",")]
+        if len(parts) >= 4:
+            try:
+                pid = int(parts[0])
+                name = parts[1][:20]  # truncate process name
+                gpu_uuid = parts[2][:20]
+                mem = int(parts[3])
+                processes.append({"pid": pid, "name": name, "mem": mem})
+                process_names.add(name)
+                total_mem += mem
+            except (ValueError, IndexError):
+                continue
+    if not processes:
+        return f"lines={len(lines)}; no_processes", None
+    prompt_summary = f"process_count={len(processes)}; names={list(process_names)}; total_mem={total_mem}MiB"
+    key_fields = {"process_count": len(processes), "process_names": list(process_names)[:3], "total_mem": total_mem, "processes": processes[:4]}
+    return prompt_summary, key_fields
+
+
 def _render_tool_run_for_prompt(item: dict[str, Any]) -> dict[str, Any]:
     rendered = {
         "step": int(item.get("step", 0) or 0),
@@ -1321,10 +2110,17 @@ def _render_tool_run_for_prompt(item: dict[str, Any]) -> dict[str, Any]:
         "data_kind": str(item.get("data_kind", "") or "").strip() or None,
         "item_count": item.get("item_count"),
         "skill_id": str(item.get("skill_id", "") or "").strip() or None,
-        "key_fields": _compact_prompt_value(_safe_jsonable(item.get("key_fields")), max_items=4, max_keys=6, max_string=96),
     }
-    if not rendered["key_fields"]:
-        rendered.pop("key_fields")
+    # Include key_fields for specific tools that have useful data summaries
+    key_fields = _safe_jsonable(item.get("key_fields"))
+    if key_fields and isinstance(key_fields, dict):
+        # For BMC/GPU tools, include full key_fields as output_summary
+        tool = str(item.get("tool", "") or "").strip()
+        if tool.startswith("bmc.") or tool.startswith("gpu."):
+            rendered["output_summary"] = key_fields
+        else:
+            rendered["key_fields"] = _compact_prompt_value(key_fields, max_items=4, max_keys=6, max_string=96)
+    return rendered
     return rendered
 
 
@@ -1842,10 +2638,15 @@ def _normalize_loop_guard_state(raw: Any, *, threshold_default: int = 2) -> dict
     payload = dict(raw) if isinstance(raw, dict) else {}
     threshold = _normalize_positive_int(payload.get("threshold"), default=threshold_default, minimum=1)
     repeat_count = _normalize_positive_int(payload.get("repeat_count"), default=0, minimum=0)
+    family_threshold = _normalize_positive_int(payload.get("family_threshold"), default=threshold_default, minimum=1)
+    family_repeat_count = _normalize_positive_int(payload.get("family_repeat_count"), default=0, minimum=0)
     return {
         "recent_fingerprint": str(payload.get("recent_fingerprint", "") or "").strip() or None,
         "repeat_count": repeat_count,
         "threshold": threshold,
+        "recent_family_fingerprint": str(payload.get("recent_family_fingerprint", "") or "").strip() or None,
+        "family_repeat_count": family_repeat_count,
+        "family_threshold": family_threshold,
         "triggered": bool(payload.get("triggered", False)),
         "trigger_step": payload.get("trigger_step"),
     }
@@ -1861,6 +2662,162 @@ def _build_tool_call_fingerprint(item: dict[str, Any]) -> str:
     return f"{tool}|{params_json}|{summary}"
 
 
+def _canonicalize_tool_args(tool_name: str, tool_args: dict[str, Any]) -> dict[str, Any]:
+    canonical = _safe_jsonable(tool_args)
+    if not isinstance(canonical, dict):
+        canonical = {}
+    # Normalize wrapped kwargs payload emitted by some providers.
+    nested_kwargs = canonical.get("kwargs")
+    if isinstance(nested_kwargs, dict):
+        merged = dict(canonical)
+        merged.pop("kwargs", None)
+        for key, value in nested_kwargs.items():
+            merged.setdefault(str(key), value)
+        canonical = merged
+    # Reduce noise for skills.list_skills queries so semantically-same calls can be deduped.
+    if tool_name == "skills.list_skills":
+        query = str(canonical.get("query", "") or "").strip().lower()
+        query = re.sub(r"\s+", " ", query)
+        canonical["query"] = query
+    return canonical
+
+
+def _build_pending_tool_call_dedupe_key(tool_name: str, tool_args: dict[str, Any]) -> str:
+    canonical = _canonicalize_tool_args(tool_name, tool_args)
+    canonical_json = json.dumps(canonical, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+    return f"{tool_name}|{canonical_json}"
+
+
+def _normalize_promql_family(promql: str) -> str:
+    text = str(promql or "").strip().lower()
+    if not text:
+        return ""
+    text = re.sub(r'"[^"]*"', '"?"', text)
+    text = re.sub(r"\b\d+(\.\d+)?\b", "?", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
+
+
+def _tool_family_fingerprint(item: dict[str, Any]) -> str:
+    tool = str(item.get("tool", "") or "").strip() or "unknown"
+    params = item.get("params")
+    if not isinstance(params, dict):
+        params = {}
+    if tool == "prometheus.query_instant":
+        promql = _normalize_promql_family(str(params.get("promql", "") or ""))
+        if promql:
+            return f"{tool}|{promql}"
+    if tool == "k8s.list_pods":
+        namespace = str(params.get("namespace", "") or "").strip()
+        selector = str(params.get("label_selector", "") or "").strip()
+        return f"{tool}|ns={namespace}|selector={selector}"
+    if tool == "skills.list_skills":
+        return tool
+    return tool
+
+
+def _is_ttft_alert_state(state: SREAgentState) -> bool:
+    snapshot = state.get("alert_snapshot")
+    if not isinstance(snapshot, dict):
+        return False
+    alert_name = str(snapshot.get("alert_name", "") or "").strip().lower()
+    return "ttft" in alert_name or alert_name.startswith("aiservicettft")
+
+
+def _get_ttft_external_node(state: SREAgentState) -> str:
+    """从 alert_snapshot 或 variables 获取 TTFT 外部压测源节点地址。"""
+    snapshot = state.get("alert_snapshot")
+    if isinstance(snapshot, dict):
+        node = str(snapshot.get("ttft_external_process_default_node", "") or "").strip()
+        if node:
+            return node
+    variables = state.get("variables")
+    if isinstance(variables, dict):
+        node = str(variables.get("ttft_external_process_default_node", "") or "").strip()
+        if node:
+            return node
+    return ""
+
+
+def _has_probed_ttft_external_node(
+    tool_runs: list[dict[str, Any]],
+    external_node: str,
+) -> bool:
+    """检查是否已对外部节点执行过 process.find。"""
+    for run in tool_runs:
+        if not isinstance(run, dict):
+            continue
+        if str(run.get("tool", "")).strip() != "process.find":
+            continue
+        params = run.get("params")
+        if isinstance(params, dict):
+            run_node = str(params.get("node", "") or "").strip()
+            if run_node == external_node:
+                return True
+        data = run.get("data")
+        if isinstance(data, dict):
+            data_node = str(data.get("node", "") or "").strip()
+            if data_node == external_node:
+                return True
+    return False
+
+
+def _count_tool_runs(tool_runs: list[dict[str, Any]], tool_name: str) -> int:
+    return sum(1 for run in tool_runs if isinstance(run, dict) and str(run.get("tool", "")).strip() == tool_name)
+
+
+def _count_tool_family_runs(tool_runs: list[dict[str, Any]], family_fingerprint: str) -> int:
+    if not family_fingerprint:
+        return 0
+    return sum(
+        1
+        for run in tool_runs
+        if isinstance(run, dict) and _tool_family_fingerprint(run) == family_fingerprint
+    )
+
+
+def _find_latest_successful_tool_run(
+    tool_runs: list[dict[str, Any]],
+    *,
+    tool_name: str,
+    family_fingerprint: str | None = None,
+) -> dict[str, Any] | None:
+    for run in reversed(tool_runs):
+        if not isinstance(run, dict):
+            continue
+        if str(run.get("tool", "")).strip() != tool_name:
+            continue
+        if family_fingerprint and _tool_family_fingerprint(run) != family_fingerprint:
+            continue
+        if not bool(run.get("success", False)):
+            continue
+        return run
+    return None
+
+
+def _build_tool_run_dedupe_key(run: dict[str, Any]) -> str:
+    tool_name = str(run.get("tool", "") or "").strip()
+    params = run.get("params", {})
+    if not isinstance(params, dict):
+        params = {}
+    return _build_pending_tool_call_dedupe_key(tool_name, params)
+
+
+def _find_latest_tool_run_by_dedupe_key(
+    tool_runs: list[dict[str, Any]],
+    dedupe_key: str,
+) -> dict[str, Any] | None:
+    if not dedupe_key:
+        return None
+    for run in reversed(tool_runs):
+        if not isinstance(run, dict):
+            continue
+        if _build_tool_run_dedupe_key(run) != dedupe_key:
+            continue
+        return run
+    return None
+
+
 def _extract_evidence_signals(tool_runs: list[dict[str, Any]]) -> dict[str, Any]:
     signals: dict[str, Any] = {
         "tc_netem_present": False,
@@ -1871,6 +2828,9 @@ def _extract_evidence_signals(tool_runs: list[dict[str, Any]]) -> dict[str, Any]
         "tc_iface_candidates": [],
         "qdisc_evidence_steps": [],
         "process_evidence_steps": [],
+        "ttft_suspect_process_present": False,
+        "ttft_suspect_processes": [],
+        "ttft_gpu_process_steps": [],
     }
     for run in tool_runs:
         if not isinstance(run, dict) or not bool(run.get("success", False)):
@@ -1913,6 +2873,117 @@ def _extract_evidence_signals(tool_runs: list[dict[str, Any]]) -> dict[str, Any]
             if tc_process_present:
                 signals["tc_process_present"] = True
                 signals["process_evidence_steps"].append(int(run.get("step", 0) or 0))
+        elif tool == "gpu.get_processes":
+            suspect_items: list[dict[str, Any]] = []
+            run_params = run.get("params")
+            run_node = ""
+            if isinstance(run_params, dict):
+                run_node = str(run_params.get("node", "") or "").strip()
+            key_suspects = fields.get("suspicious_load_processes")
+            if isinstance(key_suspects, list):
+                for item in key_suspects[:6]:
+                    if not isinstance(item, dict):
+                        continue
+                    process_name = str(item.get("process_name", "") or "").strip()
+                    if not process_name:
+                        continue
+                    suspect_items.append(
+                        {
+                            "pid": item.get("pid"),
+                            "process_name": process_name,
+                            "memory_mib": item.get("memory_mib"),
+                            "node": run_node,
+                        }
+                    )
+            if not suspect_items:
+                sample_names = fields.get("sample_process_names")
+                names = sample_names if isinstance(sample_names, list) else []
+                sample_pids = fields.get("sample_pids")
+                pids = sample_pids if isinstance(sample_pids, list) else []
+                for idx, raw_name in enumerate(names[:6]):
+                    name = str(raw_name or "").strip()
+                    if not name or not _is_ttft_suspect_load_process(name):
+                        continue
+                    suspect_items.append(
+                        {
+                            "pid": pids[idx] if idx < len(pids) else None,
+                            "process_name": name,
+                            "memory_mib": None,
+                            "node": run_node,
+                        }
+                    )
+            if not suspect_items and any(token in summary for token in ("stress", "benchmark", "load", "simulator")):
+                suspect_items.append(
+                    {
+                        "pid": None,
+                        "process_name": "suspected_load_process",
+                        "memory_mib": None,
+                        "node": run_node,
+                    }
+                )
+            if suspect_items:
+                signals["ttft_suspect_process_present"] = True
+                signals["ttft_gpu_process_steps"].append(int(run.get("step", 0) or 0))
+                target = signals.get("ttft_suspect_processes")
+                if not isinstance(target, list):
+                    target = []
+                    signals["ttft_suspect_processes"] = target
+                for item in suspect_items:
+                    if item not in target:
+                        target.append(item)
+        elif tool == "process.find":
+            suspect_items = []
+            run_params = run.get("params")
+            run_node = ""
+            if isinstance(run_params, dict):
+                run_node = str(run_params.get("node", "") or "").strip()
+            if not run_node and isinstance(fields.get("node"), str):
+                run_node = str(fields.get("node") or "").strip()
+            key_suspects = fields.get("suspicious_load_processes")
+            if isinstance(key_suspects, list):
+                for item in key_suspects[:8]:
+                    if not isinstance(item, dict):
+                        continue
+                    process_name = str(item.get("process_name", "") or "").strip()
+                    if not process_name:
+                        continue
+                    suspect_items.append(
+                        {
+                            "pid": item.get("pid"),
+                            "process_name": process_name,
+                            "memory_mib": item.get("memory_mib"),
+                            "node": str(item.get("node", "") or "").strip() or run_node,
+                        }
+                    )
+            if not suspect_items:
+                run_data = run.get("data")
+                matches = run_data.get("matches") if isinstance(run_data, dict) else None
+                if isinstance(matches, list):
+                    for item in matches[:8]:
+                        if not isinstance(item, dict):
+                            continue
+                        process = str(item.get("process", "") or "").strip()
+                        command = str(item.get("command", "") or "").strip()
+                        merged = f"{process} {command}".strip()
+                        if not _is_ttft_suspect_load_process(merged):
+                            continue
+                        suspect_items.append(
+                            {
+                                "pid": item.get("pid"),
+                                "process_name": command or process,
+                                "memory_mib": None,
+                                "node": run_node,
+                            }
+                        )
+            if suspect_items:
+                signals["ttft_suspect_process_present"] = True
+                target = signals.get("ttft_suspect_processes")
+                if not isinstance(target, list):
+                    target = []
+                    signals["ttft_suspect_processes"] = target
+                for item in suspect_items:
+                    if item not in target:
+                        target.append(item)
     return signals
 
 
@@ -1949,10 +3020,54 @@ def _build_tc_consistency_retry_messages(
                 f"current_diagnosis={_json_line(diagnosis_payload)}\n\n"
                 "Rules:\n"
                 "- If tc/netem evidence exists, diagnosis root cause and hypotheses must explicitly reflect tc/netem.\n"
-                "- Do not output '证据不足' when tc/netem evidence is present.\n"
+                "- Do not output '璇佹嵁涓嶈冻' when tc/netem evidence is present.\n"
                 "- Return JSON only with keys: thought, diagnosis, remediation_plan."
             )
         ),
+    ]
+
+
+def _select_top_ranked_candidate(diagnosis_payload: dict[str, Any]) -> dict[str, Any] | None:
+    raw_candidates = diagnosis_payload.get("ranked_candidates")
+    if not isinstance(raw_candidates, list):
+        return None
+    candidates = [item for item in raw_candidates if isinstance(item, dict)]
+    if not candidates:
+        return None
+    candidates.sort(key=lambda item: int(item.get("rank", 9999) or 9999))
+    return candidates[0]
+
+
+def _build_plan_completion_messages(
+    *,
+    system_prompt: str,
+    query: str,
+    diagnosis_payload: dict[str, Any],
+    tool_runs: list[dict[str, Any]],
+) -> list[Any]:
+    top_candidate = _select_top_ranked_candidate(diagnosis_payload) or {}
+    root_cause = str(top_candidate.get("root_cause") or diagnosis_payload.get("root_cause") or "").strip()
+    root_layer = str(top_candidate.get("root_cause_layer") or diagnosis_payload.get("root_cause_layer") or "").strip()
+    confidence = top_candidate.get("confidence", diagnosis_payload.get("confidence"))
+    prompt_lines = [
+        "Plan completion request:",
+        f"query={query or '<empty>'}",
+        f"root_cause={root_cause or '<unknown>'}",
+        f"root_cause_layer={root_layer or '<unknown>'}",
+        f"confidence={confidence if confidence is not None else '<unknown>'}",
+        f"diagnosis={_json_line(diagnosis_payload)}",
+        f"tool_evidence={_json_line(tool_runs[-5:]) if tool_runs else 'none'}",
+        "",
+        "Rules:",
+        "- Keep diagnosis unchanged; only complete remediation_plan.",
+        "- Prefer one conservative proposal-only step first.",
+        "- Use a real write-tool name from schema and include all required params.",
+        "- If no safe executable proposal can be formed, set remediation_plan to null.",
+        "- Return JSON only with keys: thought, diagnosis, remediation_plan.",
+    ]
+    return [
+        SystemMessage(content=system_prompt),
+        HumanMessage(content="\n".join(prompt_lines)),
     ]
 
 
@@ -1964,7 +3079,7 @@ def _build_tc_fallback_diagnosis_payload(
 ) -> dict[str, Any]:
     fallback = dict(original)
     delay_value = evidence_signals.get("tc_delay_value")
-    delay_text = f"{delay_value}ms" if delay_value is not None else "未知"
+    delay_text = f"{delay_value}ms" if delay_value is not None else "鏈煡"
     entities: list[str] = []
     for run in tool_runs:
         if not isinstance(run, dict):
@@ -2377,6 +3492,30 @@ async def act_node(
         minimum=200,
     )
     allowed_tool_names_for_turn = set(_select_bound_tool_names_for_turn(state) or [])
+    is_ttft_alert = _is_ttft_alert_state(state)
+    deduped_pending: list[dict[str, Any]] = []
+    seen_pending_keys: set[str] = set()
+    suppressed_in_round = 0
+    suppressed_reasons: list[dict[str, Any]] = []
+    for raw_call in pending:
+        if not isinstance(raw_call, dict):
+            continue
+        pending_tool_name = str(raw_call.get("name", "")).strip()
+        pending_tool_args = raw_call.get("args", {})
+        if not isinstance(pending_tool_args, dict):
+            pending_tool_args = {}
+        pending_key = _build_pending_tool_call_dedupe_key(pending_tool_name, pending_tool_args)
+        if pending_key in seen_pending_keys:
+            suppressed_in_round += 1
+            continue
+        seen_pending_keys.add(pending_key)
+        deduped_pending.append(raw_call)
+    pending = deduped_pending
+
+    # Inject variables into context.metadata for skill execution
+    # This allows SkillExecutor to extract SSH info from alert labels
+    if variables:
+        context.metadata["variables"] = variables
     observation_entries: list[dict[str, Any]] = []
     for tool_call in pending:
         tool_name = str(tool_call.get("name", "")).strip()
@@ -2393,6 +3532,7 @@ async def act_node(
             tool_args = raw_tool_args = tool_call.get("args", {})
             if not isinstance(tool_args, dict):
                 tool_args = {}
+            serialized_source = "tool"
         else:
             raw_tool_args = tool_call.get("args", {})
             tool_args = _merge_tool_args(
@@ -2401,13 +3541,158 @@ async def act_node(
                 tool_args=raw_tool_args if isinstance(raw_tool_args, dict) else {},
                 variables=variables,
             )
-            try:
-                result = await asyncio.wait_for(
-                    registry.execute(tool_name, tool_args, context),
-                    timeout=state["step_timeout_sec"],
+            cached_skill_listing: dict[str, Any] | None = None
+            latest_listing = _find_latest_successful_skill_listing([item for item in tool_runs if isinstance(item, dict)])
+            if tool_name == "skills.list_skills" and latest_listing is not None:
+                latest_listing_step = int(latest_listing.get("step", 0) or 0)
+                current_step = len(tool_runs) + 1
+                if latest_listing_step > 0 and current_step - latest_listing_step <= _SKILL_LIST_COOLDOWN_STEPS:
+                    listing_data = latest_listing.get("data")
+                    if isinstance(listing_data, dict):
+                        cached_skill_listing = listing_data
+            merged_call_key = _build_pending_tool_call_dedupe_key(tool_name, tool_args)
+            latest_same_call = _find_latest_tool_run_by_dedupe_key(tool_runs, merged_call_key)
+            latest_tool_run = next((item for item in reversed(tool_runs) if isinstance(item, dict)), None)
+            can_reuse_consecutive_call = (
+                latest_same_call is not None
+                and latest_tool_run is latest_same_call
+                and bool(latest_same_call.get("success", False))
+            )
+
+            if cached_skill_listing is not None:
+                result = ToolResult(
+                    tool=tool_name,
+                    success=True,
+                    data=cached_skill_listing,
+                    error="",
                 )
-            except asyncio.TimeoutError:
-                result = ToolResult(tool=tool_name, success=False, data=None, error=f"tool timed out after {state['step_timeout_sec']}s")
+                serialized_source = "cooldown_cache"
+            elif can_reuse_consecutive_call:
+                result = ToolResult(
+                    tool=tool_name,
+                    success=True,
+                    data=_safe_jsonable(latest_same_call.get("data")),
+                    error="",
+                )
+                serialized_source = "repeat_cache_reuse"
+                force_final_turn = True
+                suppressed_reasons.append(
+                    {
+                        "reason": "cross_round_duplicate",
+                        "tool": tool_name,
+                        "fingerprint": _build_tool_call_fingerprint(latest_same_call),
+                        "reused": True,
+                    }
+                )
+            elif is_ttft_alert and tool_name == "prometheus.query_instant":
+                family_fingerprint = _tool_family_fingerprint(
+                    {
+                        "tool": tool_name,
+                        "params": tool_args,
+                    }
+                )
+                total_prometheus_calls = _count_tool_runs(tool_runs, "prometheus.query_instant")
+                family_prometheus_calls = _count_tool_family_runs(tool_runs, family_fingerprint)
+                latest_family_success = _find_latest_successful_tool_run(
+                    tool_runs,
+                    tool_name="prometheus.query_instant",
+                    family_fingerprint=family_fingerprint,
+                )
+                latest_any_success = _find_latest_successful_tool_run(
+                    tool_runs,
+                    tool_name="prometheus.query_instant",
+                )
+
+                if family_prometheus_calls >= _TTFT_PROMETHEUS_FAMILY_BUDGET:
+                    force_final_turn = True
+                    if latest_family_success is not None:
+                        result = ToolResult(
+                            tool=tool_name,
+                            success=True,
+                            data=_safe_jsonable(latest_family_success.get("data")),
+                            error="",
+                        )
+                        serialized_source = "ttft_family_cache_reuse"
+                        suppressed_reasons.append(
+                            {
+                                "reason": "family_budget_exceeded",
+                                "family_fingerprint": family_fingerprint,
+                                "family_calls": family_prometheus_calls,
+                                "total_calls": total_prometheus_calls,
+                                "reused": True,
+                            }
+                        )
+                    else:
+                        result = ToolResult(
+                            tool=tool_name,
+                            success=False,
+                            data=None,
+                            error="prometheus.query_instant suppressed by TTFT family budget (no cached success)",
+                        )
+                        serialized_source = "ttft_family_budget_blocked"
+                        suppressed_reasons.append(
+                            {
+                                "reason": "family_budget_exceeded",
+                                "family_fingerprint": family_fingerprint,
+                                "family_calls": family_prometheus_calls,
+                                "total_calls": total_prometheus_calls,
+                                "reused": False,
+                            }
+                        )
+                elif total_prometheus_calls >= _TTFT_PROMETHEUS_TOTAL_BUDGET:
+                    force_final_turn = True
+                    if latest_any_success is not None:
+                        result = ToolResult(
+                            tool=tool_name,
+                            success=True,
+                            data=_safe_jsonable(latest_any_success.get("data")),
+                            error="",
+                        )
+                        serialized_source = "ttft_total_cache_reuse"
+                        suppressed_reasons.append(
+                            {
+                                "reason": "total_budget_exceeded",
+                                "family_fingerprint": family_fingerprint,
+                                "family_calls": family_prometheus_calls,
+                                "total_calls": total_prometheus_calls,
+                                "reused": True,
+                            }
+                        )
+                    else:
+                        result = ToolResult(
+                            tool=tool_name,
+                            success=False,
+                            data=None,
+                            error="prometheus.query_instant suppressed by TTFT total budget (no cached success)",
+                        )
+                        serialized_source = "ttft_total_budget_blocked"
+                        suppressed_reasons.append(
+                            {
+                                "reason": "total_budget_exceeded",
+                                "family_fingerprint": family_fingerprint,
+                                "family_calls": family_prometheus_calls,
+                                "total_calls": total_prometheus_calls,
+                                "reused": False,
+                            }
+                        )
+                else:
+                    try:
+                        result = await asyncio.wait_for(
+                            registry.execute(tool_name, tool_args, context),
+                            timeout=state["step_timeout_sec"],
+                        )
+                    except asyncio.TimeoutError:
+                        result = ToolResult(tool=tool_name, success=False, data=None, error=f"tool timed out after {state['step_timeout_sec']}s")
+                    serialized_source = "tool"
+            else:
+                try:
+                    result = await asyncio.wait_for(
+                        registry.execute(tool_name, tool_args, context),
+                        timeout=state["step_timeout_sec"],
+                    )
+                except asyncio.TimeoutError:
+                    result = ToolResult(tool=tool_name, success=False, data=None, error=f"tool timed out after {state['step_timeout_sec']}s")
+                serialized_source = "tool"
         serialized = _canonicalize_tool_run(
             {
                 "step": len(tool_runs) + 1,
@@ -2418,9 +3703,9 @@ async def act_node(
                 "error": result.error,
             },
             session_id=str(state.get("session_id", "unknown")),
-            source="tool",
+            source=serialized_source,
         )
-        # 记录工具执行结果到日志文件
+        # 璁板綍宸ュ叿鎵ц缁撴灉鍒版棩蹇楁枃浠?
         _log_tool_execution(
             session_id=str(state.get("session_id", "unknown")),
             step=serialized["step"],
@@ -2433,18 +3718,37 @@ async def act_node(
             },
         )
         tool_runs.append(serialized)
-        fingerprint = _build_tool_call_fingerprint(serialized)
-        if fingerprint and fingerprint == loop_guard.get("recent_fingerprint"):
-            loop_guard["repeat_count"] = int(loop_guard.get("repeat_count", 0) or 0) + 1
-        else:
-            loop_guard["recent_fingerprint"] = fingerprint
-            loop_guard["repeat_count"] = 1
-        if int(loop_guard.get("repeat_count", 0) or 0) > int(loop_guard.get("threshold", 2) or 2):
-            if not bool(loop_guard.get("triggered", False)):
-                loop_guard["triggered"] = True
-                loop_guard["trigger_step"] = serialized["step"]
-                loop_guard_triggered = True
-            force_final_turn = True
+        counts_for_loop_guard = str(serialized_source).strip() not in {
+            "cooldown_cache",
+            "repeat_cache_reuse",
+            "ttft_family_cache_reuse",
+            "ttft_total_cache_reuse",
+        }
+        if counts_for_loop_guard:
+            fingerprint = _build_tool_call_fingerprint(serialized)
+            if fingerprint and fingerprint == loop_guard.get("recent_fingerprint"):
+                loop_guard["repeat_count"] = int(loop_guard.get("repeat_count", 0) or 0) + 1
+            else:
+                loop_guard["recent_fingerprint"] = fingerprint
+                loop_guard["repeat_count"] = 1
+            family_fingerprint = _tool_family_fingerprint(serialized)
+            if family_fingerprint and family_fingerprint == loop_guard.get("recent_family_fingerprint"):
+                loop_guard["family_repeat_count"] = int(loop_guard.get("family_repeat_count", 0) or 0) + 1
+            else:
+                loop_guard["recent_family_fingerprint"] = family_fingerprint
+                loop_guard["family_repeat_count"] = 1
+            if int(loop_guard.get("repeat_count", 0) or 0) > int(loop_guard.get("threshold", 2) or 2):
+                if not bool(loop_guard.get("triggered", False)):
+                    loop_guard["triggered"] = True
+                    loop_guard["trigger_step"] = serialized["step"]
+                    loop_guard_triggered = True
+                force_final_turn = True
+            if int(loop_guard.get("family_repeat_count", 0) or 0) > int(loop_guard.get("family_threshold", 2) or 2):
+                if not bool(loop_guard.get("triggered", False)):
+                    loop_guard["triggered"] = True
+                    loop_guard["trigger_step"] = serialized["step"]
+                    loop_guard_triggered = True
+                force_final_turn = True
         messages.append(
             ToolMessage(
                 tool_call_id=str(tool_call.get("id", "")),
@@ -2475,10 +3779,7 @@ async def act_node(
             {
                 "type": "thought",
                 "step": state.get("step_count", 0) + 1,
-                "content": (
-                    "检测到同参同摘要工具调用重复超过阈值，已触发 loop_guard，"
-                    "下一轮将强制进入总结阶段。"
-                ),
+                "content": "已停止重复查询，进入总结阶段。",
                 "action": "conclude",
                 "confidence": None,
                 "tool_params": {
@@ -2486,6 +3787,64 @@ async def act_node(
                     "repeat_count": loop_guard.get("repeat_count"),
                     "threshold": loop_guard.get("threshold"),
                     "fingerprint": loop_guard.get("recent_fingerprint"),
+                    "family_repeat_count": loop_guard.get("family_repeat_count"),
+                    "family_threshold": loop_guard.get("family_threshold"),
+                    "family_fingerprint": loop_guard.get("recent_family_fingerprint"),
+                },
+            }
+        )
+    if suppressed_in_round > 0:
+        updated_trace_items.append(
+            {
+                "type": "thought",
+                "step": state.get("step_count", 0) + 1,
+                "content": f"已停止 {suppressed_in_round} 次重复查询，进入总结阶段。",
+                "action": "conclude",
+                "confidence": None,
+                "tool_params": {
+                    "kind": "duplicate_tool_suppressed",
+                    "count": suppressed_in_round,
+                },
+            }
+        )
+    for suppressed in suppressed_reasons:
+        reason = str(suppressed.get("reason", "budget_exceeded")).strip()
+        reused = bool(suppressed.get("reused", False))
+        if reason == "cross_round_duplicate":
+            updated_trace_items.append(
+                {
+                    "type": "thought",
+                    "step": state.get("step_count", 0) + 1,
+                    "content": "已停止重复查询，进入总结阶段。",
+                    "action": "conclude",
+                    "confidence": None,
+                    "tool_params": {
+                        "kind": "duplicate_tool_suppressed",
+                        "reason": reason,
+                        "tool": suppressed.get("tool"),
+                        "fingerprint": suppressed.get("fingerprint"),
+                        "reused": reused,
+                    },
+                }
+            )
+            continue
+        updated_trace_items.append(
+            {
+                "type": "thought",
+                "step": state.get("step_count", 0) + 1,
+                "content": (
+                    "TTFT 路径下已抑制额外 Prometheus 查询，"
+                    f"原因={reason}，复用缓存={reused}。"
+                ),
+                "action": "conclude",
+                "confidence": None,
+                "tool_params": {
+                    "kind": "prometheus_query_suppressed",
+                    "reason": reason,
+                    "reused": reused,
+                    "family_fingerprint": suppressed.get("family_fingerprint"),
+                    "family_calls": suppressed.get("family_calls"),
+                    "total_calls": suppressed.get("total_calls"),
                 },
             }
         )
@@ -2519,6 +3878,51 @@ def observe_node(state: SREAgentState) -> SREAgentState:
 def decide_node(state: SREAgentState) -> SREAgentState:
     persist_state_snapshot(state.get("checkpoint_dir"), state["session_id"], "decide", state)
     return state
+
+
+def _build_step_timeout_evidence_summary(
+    tool_runs: list[dict[str, Any]],
+    *,
+    sample_limit: int = 3,
+    per_item_chars: int = 160,
+    total_chars: int = 380,
+) -> str:
+    successful_runs: list[dict[str, Any]] = []
+    for run in tool_runs:
+        if not isinstance(run, dict):
+            continue
+        if bool(run.get("success")):
+            successful_runs.append(run)
+
+    sampled_runs = successful_runs[-max(1, sample_limit) :]
+    evidence_parts: list[str] = []
+    for run in sampled_runs:
+        tool_name = str(run.get("tool", "unknown") or "").strip() or "unknown"
+        prompt_summary = _truncate_prompt_note(
+            str(run.get("prompt_summary", "") or "").strip(),
+            max_chars=max(80, per_item_chars),
+        )
+        key_fields = run.get("key_fields")
+        key_summary = ""
+        if isinstance(key_fields, dict) and key_fields:
+            compact_fields = _compact_prompt_value(_safe_jsonable(key_fields))
+            key_summary = _truncate_prompt_note(
+                json.dumps(compact_fields, ensure_ascii=False, sort_keys=True),
+                max_chars=max(80, per_item_chars - 20),
+            )
+
+        if prompt_summary and key_summary:
+            evidence_parts.append(f"{tool_name}: {prompt_summary}; key={key_summary}")
+        elif prompt_summary:
+            evidence_parts.append(f"{tool_name}: {prompt_summary}")
+        elif key_summary:
+            evidence_parts.append(f"{tool_name}: key={key_summary}")
+        else:
+            evidence_parts.append(f"{tool_name}: success")
+
+    if not evidence_parts:
+        return "no successful tool evidence collected before timeout"
+    return _truncate_prompt_note("; ".join(evidence_parts), max_chars=max(120, total_chars))
 
 
 def finalize_node(state: SREAgentState) -> SREAgentState:
@@ -2556,18 +3960,12 @@ def finalize_node(state: SREAgentState) -> SREAgentState:
         "trace_items": serialized_trace,
         "summary": summary,
     }
-    # 当步骤超时且没有诊断结果时，从已收集的证据合成部分诊断
+    # When step times out with no diagnosis result, synthesize partial diagnosis from collected evidence
     if updated.get("status") == "step_timeout" and updated.get("diagnosis_result") is None:
-        tool_runs = updated.get("tool_runs", [])
-        skill_runs = updated.get("skill_runs", [])
-        evidence_parts: list[str] = []
-        for tr in tool_runs:
-            if tr.get("success"):
-                tool_name = tr.get("tool", "unknown")
-                data = tr.get("data")
-                if data:
-                    evidence_parts.append(f"{tool_name}: {_safe_jsonable(data)}")
-        evidence_summary = "; ".join(evidence_parts)[:500] if evidence_parts else "no tool evidence collected"
+        raw_tool_runs = updated.get("tool_runs", [])
+        tool_runs = [run for run in raw_tool_runs if isinstance(run, dict)]
+        evidence_summary = _build_step_timeout_evidence_summary(tool_runs)
+        summary_preview = _truncate_prompt_note(evidence_summary, max_chars=220)
         partial_diagnosis = {
             "root_cause": "Diagnosis timed out during analysis; partial evidence collected",
             "root_cause_layer": "service",
@@ -2581,14 +3979,14 @@ def finalize_node(state: SREAgentState) -> SREAgentState:
                 {
                     "description": "Diagnosis was interrupted by step timeout",
                     "status": "testing",
-                    "evidence_for": [evidence_summary] if evidence_parts else [],
+                    "evidence_for": [evidence_summary] if tool_runs else [],
                     "evidence_against": [],
                     "confidence": 0.45,
                 },
             ],
         }
         updated["diagnosis_result"] = partial_diagnosis
-        updated["summary"] = f"Diagnosis timed out; partial evidence: {evidence_summary[:200]}"
+        updated["summary"] = f"Diagnosis timed out; partial evidence: {summary_preview}"
     persist_state_snapshot(updated.get("checkpoint_dir"), updated["session_id"], "finalize", updated)
     return updated
 
@@ -2624,7 +4022,7 @@ def _merge_tool_args(
         for key, value in nested_kwargs.items():
             merged.setdefault(str(key), value)
     if not variables:
-        _normalize_runtime_defaults(merged, variables)
+        _normalize_runtime_defaults(merged, variables, tool_name=tool_name)
         return merged
     try:
         tool_def = registry.get_tool(tool_name)
@@ -2641,12 +4039,20 @@ def _merge_tool_args(
     for key, value in variables.items():
         if key not in merged and (not required or key in required):
             merged[key] = value
-    _normalize_runtime_defaults(merged, variables)
+    _normalize_runtime_defaults(merged, variables, tool_name=tool_name)
     return merged
 
 
-def _normalize_runtime_defaults(params: dict[str, Any], variables: dict[str, Any]) -> None:
-    if "node" in variables:
+_NODE_SELF_RESOLVING_TOOLS: frozenset[str] = frozenset({"process.find"})
+
+
+def _normalize_runtime_defaults(
+    params: dict[str, Any],
+    variables: dict[str, Any],
+    *,
+    tool_name: str = "",
+) -> None:
+    if "node" in variables and tool_name not in _NODE_SELF_RESOLVING_TOOLS:
         params["node"] = variables["node"]
     if "namespace" in variables:
         params["namespace"] = variables["namespace"]
@@ -2842,6 +4248,57 @@ def _clamp_confidence(value: Any, *, default: float) -> float:
     return max(0.0, min(1.0, numeric))
 
 
+def _normalize_canary_config(
+    *,
+    raw_canary: Any,
+    root_cause_entities: list[str],
+    normalized_steps: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    """Normalize and optionally auto-fill canary config for a remediation plan.
+
+    - If LLM returned a canary dict, validate and return it.
+    - If >= 2 affected entities and no canary, auto-fill a default config.
+    - Otherwise return None.
+    """
+    if isinstance(raw_canary, dict):
+        canary = dict(raw_canary)
+        canary.setdefault("enabled", True)
+        canary.setdefault("progressive", True)
+        # Ensure success_criteria is present; if empty/missing the model
+        # validator will reject it, so the caller should drop it.
+        return canary
+
+    # Collect unique targets from step params
+    target_keys = ("node", "target", "service_id", "entity_id")
+    targets: set[str] = set()
+    for step in normalized_steps:
+        params = step.get("params")
+        if not isinstance(params, dict):
+            continue
+        for key in target_keys:
+            value = params.get(key)
+            if isinstance(value, str) and value.strip():
+                targets.add(value.strip())
+    for entity in root_cause_entities:
+        entity_str = str(entity).strip()
+        if entity_str:
+            targets.add(entity_str)
+
+    if len(targets) >= 2:
+        return {
+            "enabled": True,
+            "target_percentage": 0.1,
+            "monitor_duration": 120,
+            "success_criteria": [],
+            "criteria_mode": "all",
+            "max_batches": 3,
+            "auto_rollback_on_regression": True,
+            "progressive": True,
+        }
+
+    return None
+
+
 def _normalize_remediation_plan_payload(
     *,
     raw_plan: dict[str, Any] | None,
@@ -2865,6 +4322,19 @@ def _normalize_remediation_plan_payload(
         for index, step in enumerate(steps, start=1):
             if not isinstance(step, dict):
                 continue
+            step_tool_name = str(step.get("tool", "") or "").strip()
+            if step_tool_name and registry is not None:
+                try:
+                    step_tool_def = registry.get_tool(step_tool_name)
+                    if step_tool_def.safety_level == SafetyLevel.READ_ONLY:
+                        _llm_logger.debug(
+                            "skipping read-only tool %r in remediation plan for session %s",
+                            step_tool_name,
+                            session_id,
+                        )
+                        continue
+                except Exception:  # noqa: BLE001
+                    pass
             normalized_step = dict(step)
             normalized_step.setdefault("step_id", index)
             normalized_step.setdefault(
@@ -2908,6 +4378,10 @@ def _normalize_remediation_plan_payload(
                 normalized_step.pop("rollback_params", None)
             normalized_steps.append(normalized_step)
 
+    # Re-number step_id after filtering (e.g., read-only tool removal may leave gaps).
+    for re_index, step in enumerate(normalized_steps, start=1):
+        step["step_id"] = re_index
+
     candidate["steps"] = normalized_steps
     candidate.pop("actions", None)
     candidate.setdefault(
@@ -2923,6 +4397,20 @@ def _normalize_remediation_plan_payload(
     candidate.setdefault("confidence", _normalize_plan_confidence(diagnosis.confidence))
     candidate.setdefault("priority", _normalize_plan_priority(diagnosis.triage_priority))
     candidate.setdefault("safety_level", "high")
+
+    # ── Canary normalization ───────────────────────────────────────────
+    candidate["canary"] = _normalize_canary_config(
+        raw_canary=candidate.get("canary"),
+        root_cause_entities=list(diagnosis.root_cause_entities),
+        normalized_steps=normalized_steps,
+    )
+    # If canary validation fails (e.g. missing criteria), drop it silently.
+    if candidate["canary"] is not None:
+        try:
+            from sre_agent.models.remediation import CanaryConfig
+            CanaryConfig.model_validate(candidate["canary"])
+        except Exception:  # noqa: BLE001
+            candidate["canary"] = None
 
     try:
         return RemediationPlan.model_validate(candidate)
@@ -2944,6 +4432,212 @@ def _normalize_plan_priority(value: str) -> str:
     if normalized in {"P0", "P1", "P2"}:
         return normalized
     return "P2"
+
+
+def _resolve_ttft_target_node(
+    *,
+    tool_runs: list[dict[str, Any]] | None = None,
+    variables: dict[str, Any] | None = None,
+) -> str:
+    source_runs = list(tool_runs or [])
+    for run in reversed(source_runs):
+        if not isinstance(run, dict):
+            continue
+        if str(run.get("tool", "")).strip() != "gpu.get_processes":
+            continue
+        params = run.get("params", {})
+        if not isinstance(params, dict):
+            continue
+        node = str(params.get("node", "") or "").strip()
+        if node:
+            return node
+    source_variables = dict(variables or {})
+    for key in ("node", "node_ip", "instance"):
+        value = str(source_variables.get(key, "") or "").strip()
+        if value and value.lower() not in _PLACEHOLDER_VALUES:
+            return value
+    return ""
+
+
+def _resolve_kill_process_entity_id(params: dict[str, Any]) -> str | None:
+    raw_entity = str(params.get("entity_id", "") or "").strip()
+    if raw_entity:
+        return raw_entity
+
+    pid_raw = params.get("pid")
+    try:
+        parsed_pid = int(pid_raw)
+        if parsed_pid > 0:
+            return f"proc:{parsed_pid}"
+    except Exception:  # noqa: BLE001
+        pass
+
+    pid_or_name = str(params.get("pid_or_name", "") or "").strip()
+    if pid_or_name:
+        return f"proc:{pid_or_name}"
+
+    process_name = str(params.get("process_name", "") or "").strip()
+    if process_name:
+        return f"proc:{process_name}"
+    return None
+
+
+def _collect_ttft_suspect_processes(raw_items: Any, *, max_items: int = 6) -> list[dict[str, Any]]:
+    if not isinstance(raw_items, list):
+        return []
+
+    seen: set[str] = set()
+    normalized: list[dict[str, Any]] = []
+    for item in raw_items:
+        if not isinstance(item, dict):
+            continue
+        process_name = str(item.get("process_name", "") or "").strip()
+        node = str(item.get("node", "") or "").strip()
+        pid: int | None = None
+        try:
+            parsed_pid = int(item.get("pid"))
+            if parsed_pid > 0:
+                pid = parsed_pid
+        except Exception:  # noqa: BLE001
+            pid = None
+        if not process_name and pid is None:
+            continue
+        node_prefix = node.lower()
+        dedupe_key = (
+            f"{node_prefix}|pid:{pid}"
+            if pid is not None
+            else f"{node_prefix}|name:{process_name.lower()}"
+        )
+        if dedupe_key in seen:
+            continue
+        seen.add(dedupe_key)
+        entry: dict[str, Any] = {
+            "pid": pid,
+            "process_name": process_name,
+            "memory_mib": item.get("memory_mib"),
+        }
+        if node:
+            entry["node"] = node
+        normalized.append(entry)
+        if len(normalized) >= max_items:
+            break
+    return normalized
+
+
+def _extract_verification_pattern(process_name: str) -> str:
+    """从进程名/命令中提取适合 process.find 的验证模式。"""
+    _verification_tokens = (
+        "load_simulator",
+        "stress-ng",
+        "stress",
+        "benchmark",
+        "simulator",
+        "locust",
+        "jmeter",
+        "hey",
+        "apachebench",
+        "wrk",
+        "iperf",
+        "fio",
+    )
+    lowered = str(process_name or "").lower()
+    for token in _verification_tokens:
+        if token in lowered:
+            return token
+    # Fallback: first meaningful word of the command
+    parts = str(process_name or "").strip().split()
+    for part in parts:
+        clean = part.strip("-_")
+        if clean and len(clean) >= 3:
+            return clean
+    return "unknown_process"
+
+
+def _build_ttft_kill_process_plan_candidate(
+    *,
+    diagnosis: DiagnosisResult,
+    evidence_signals: dict[str, Any],
+    session_id: str,
+    tool_runs: list[dict[str, Any]] | None = None,
+    variables: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    suspect_present = bool(evidence_signals.get("ttft_suspect_process_present"))
+    suspect_processes = _collect_ttft_suspect_processes(evidence_signals.get("ttft_suspect_processes"))
+    if not suspect_present or not suspect_processes:
+        return None
+
+    default_node = _resolve_ttft_target_node(tool_runs=tool_runs, variables=variables)
+
+    steps: list[dict[str, Any]] = []
+    for index, suspect in enumerate(suspect_processes, start=1):
+        step_node = str(suspect.get("node", "") or "").strip() or default_node
+        if not step_node:
+            continue
+        process_name = str(suspect.get("process_name", "") or "").strip()
+        pid = suspect.get("pid")
+        step_params: dict[str, Any] = {
+            "node": step_node,
+            "signal": "TERM",
+        }
+        target_token = ""
+        target_label = ""
+        if isinstance(pid, int) and pid > 0:
+            step_params["pid"] = pid
+            target_token = str(pid)
+            target_label = f"PID {pid}"
+        elif process_name:
+            step_params["pid_or_name"] = process_name
+            target_token = process_name
+            target_label = process_name
+        else:
+            continue
+        step_params["entity_id"] = f"proc:{target_token}"
+        verification_pattern = _extract_verification_pattern(process_name or target_token)
+        steps.append(
+            {
+                "step_id": index,
+                "description": f"在节点 {step_node} 终止可疑负载进程 {target_label}",
+                "tool": "kill_process",
+                "params": step_params,
+                "verification": {
+                    "method": "tool_call",
+                    "tool": "process.find",
+                    "tool_params": {"pattern": verification_pattern, "node": step_node},
+                    "wait_seconds": 30,
+                    "condition": {"field": "count", "operator": "==", "value": 0},
+                },
+                "timeout": 60,
+            }
+        )
+    if not steps:
+        return None
+
+    canary: dict[str, Any] | None = None
+    if len(steps) >= 2:
+        canary = {
+            "enabled": True,
+            "target_percentage": 0.5,
+            "monitor_duration": 60,
+            "success_criteria": [],
+            "criteria_mode": "all",
+            "max_batches": 2,
+            "auto_rollback_on_regression": True,
+            "progressive": False,
+        }
+
+    payload: dict[str, Any] = {
+        "plan_id": f"proposal-{(session_id or 'session')[:8]}-ttft-kill",
+        "root_cause": diagnosis.root_cause,
+        "description": "识别到可疑压测/模拟负载进程，按进程粒度灰度终止并复核 TTFT 与告警状态。",
+        "steps": steps,
+        "estimated_impact": "释放异常争用，预期 TTFT 回落并推动告警恢复。",
+        "confidence": _normalize_plan_confidence(max(0.55, float(diagnosis.confidence))),
+        "priority": _normalize_plan_priority(diagnosis.triage_priority),
+        "safety_level": "high",
+    }
+    if canary is not None:
+        payload["canary"] = canary
+    return payload
 
 
 def _normalize_step_params_in_place(
@@ -2972,12 +4666,12 @@ def _normalize_step_params_in_place(
 
     if tool_name == "network.clear_tc_qdisc":
         iface = params.get("iface")
-        # 占位值视为缺失
+        # 鍗犱綅鍊艰涓虹己澶?
         if _is_placeholder_param(iface):
             params.pop("iface", None)
 
         if not params.get("iface"):
-            # 推断顺序：step 文本 → tc qdisc tool run 的 key_fields → 运行时变量
+            # Inference order: step text -> tc qdisc tool run key_fields -> runtime variables
             candidates = _collect_tc_iface_candidates(
                 step,
                 diagnosis=diagnosis,
@@ -3000,6 +4694,11 @@ def _normalize_step_params_in_place(
             scope = _extract_tc_scope(step)
             if scope:
                 params["kind"] = scope
+
+    if tool_name == "kill_process":
+        process_entity_id = _resolve_kill_process_entity_id(params)
+        if process_entity_id:
+            params["entity_id"] = process_entity_id
 
     if registry is None or not tool_name:
         return None
@@ -3100,7 +4799,7 @@ def _collect_tc_iface_candidates(
             seen.add(iface)
             candidates.append(iface)
 
-    # 来源 1：step 文本中的 dev <iface>
+    # 鏉ユ簮 1锛歴tep 鏂囨湰涓殑 dev <iface>
     _add(_infer_tc_iface(step))
     if candidates:
         return candidates

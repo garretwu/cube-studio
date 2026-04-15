@@ -66,7 +66,7 @@ def main() -> int:
         role="operator",
         username="container-ui",
         token_expire_seconds=8 * 3600,
-        llm_mode="minimax_api",
+        llm_mode="openai_compatible_api",
     )
 
     resolved_config_path = str(_resolve_config_path(config_path))

@@ -225,36 +225,19 @@ function AlertsModifiedPage() {
     setDiagnosingItemId(item.id);
     const extraFingerprints = item.fingerprints.filter((fingerprint) => fingerprint !== item.primaryFingerprint);
     const fps = extraFingerprints.length > 0 ? extraFingerprints : undefined;
-    let navigated = false;
-
     try {
-      useDiagnosisStore.getState().startStreamingDiagnosis(
+      const pendingSessionId = useDiagnosisStore.getState().startStreamingDiagnosis(
         selected,
         fps,
         (sessionId) => {
-          navigated = true;
-          navigate(`/diagnosis/${sessionId}`);
+          navigate(`/diagnosis/${sessionId}`, { replace: true });
         },
       );
+      navigate(`/diagnosis/${pendingSessionId}`);
     } catch {
-      // Ignore synchronous setup errors and fallback below.
+      setDiagnosisError("发起流式诊断失败，请稍后重试。");
+      setDiagnosingItemId(null);
     }
-
-    window.setTimeout(async () => {
-      if (navigated) {
-        return;
-      }
-
-      try {
-        const session = await apiClient.startDiagnoseAlert(selected, fps);
-        navigated = true;
-        navigate(`/diagnosis/${session.session_id}`);
-      } catch (error) {
-        setDiagnosisError(error instanceof Error ? error.message : "发起诊断失败");
-      } finally {
-        setDiagnosingItemId(null);
-      }
-    }, 3000);
   };
 
   const handleItemAction = (item: AlertDashboardItem) => {

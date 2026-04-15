@@ -277,6 +277,7 @@ _DEFAULT_CHANNEL_TOOL_MAP: dict[str, list[str]] = {
     "ssh": [
         "gpu.get_metrics",
         "gpu.get_processes",
+        "process.find",
         "network.get_rdma_stats",
         "network.get_tc_qdisc",
         "network.get_nic_link_state",

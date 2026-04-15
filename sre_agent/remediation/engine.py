@@ -164,8 +164,13 @@ class RemediationEngine:
                 return await self.canary.execute_with_canary(
                     plan,
                     targets,
-                    lambda _targets: self._execute_steps(plan, progress_callback=progress_callback),
+                    lambda batch_targets: self._execute_steps(
+                        plan,
+                        progress_callback=progress_callback,
+                        target_filter=set(batch_targets) if batch_targets else None,
+                    ),
                     progress_callback=progress_callback,
+                    session_id=session_id,
                 )
             result = await self._execute_steps(plan, progress_callback=progress_callback)
             duration = int(time.monotonic() - start)
@@ -213,11 +218,18 @@ class RemediationEngine:
         plan: RemediationPlan,
         *,
         progress_callback: Any | None = None,
+        target_filter: set[str] | None = None,
     ) -> RemediationResult:
         completed = 0
         verification_results: list[dict[str, Any]] = []
         failed_step = None
-        for step in plan.steps:
+
+        steps_to_run = plan.steps
+        if target_filter is not None:
+            steps_to_run = self._filter_steps_by_targets(plan.steps, target_filter)
+
+        total_steps = len(steps_to_run)
+        for step in steps_to_run:
             if step.rollback_tool:
                 self.wal.record(
                     fault_id=f"{plan.plan_id}-step-{step.step_id}",
@@ -233,8 +245,8 @@ class RemediationEngine:
                         "step_id": step.step_id,
                         "tool": step.tool,
                         "steps_completed": completed,
-                        "steps_total": len(plan.steps),
-                        "message": f"正在执行步骤 {step.step_id}/{len(plan.steps)}: {step.description}",
+                        "steps_total": total_steps,
+                        "message": f"正在执行步骤 {step.step_id}/{total_steps}: {step.description}",
                     },
                 )
             result = await self.tools.execute(
@@ -249,7 +261,7 @@ class RemediationEngine:
                     plan_id=plan.plan_id,
                     success=False,
                     steps_completed=completed,
-                    steps_total=len(plan.steps),
+                    steps_total=total_steps,
                     failed_step=failed_step,
                     rolled_back=True,
                     error=result.error,
@@ -260,7 +272,7 @@ class RemediationEngine:
                     details={
                         "step_id": step.step_id,
                         "steps_completed": completed,
-                        "steps_total": len(plan.steps),
+                        "steps_total": total_steps,
                         "message": f"验证步骤 {step.step_id} 执行结果",
                     },
                 )
@@ -273,7 +285,7 @@ class RemediationEngine:
                     plan_id=plan.plan_id,
                     success=False,
                     steps_completed=completed,
-                    steps_total=len(plan.steps),
+                    steps_total=total_steps,
                     failed_step=failed_step,
                     rolled_back=True,
                     verification_results=verification_results,
@@ -285,7 +297,7 @@ class RemediationEngine:
             plan_id=plan.plan_id,
             success=True,
             steps_completed=completed,
-            steps_total=len(plan.steps),
+            steps_total=total_steps,
             verification_results=verification_results,
         )
 
@@ -306,11 +318,17 @@ class RemediationEngine:
         if config.method == "tool_call":
             if config.wait_seconds > 0:
                 await asyncio.sleep(config.wait_seconds)
-            result = await self.tools.execute(
-                config.tool or "",
-                config.tool_params or {},
-                self.execution_context,
-            )
+            try:
+                result = await asyncio.wait_for(
+                    self.tools.execute(
+                        config.tool or "",
+                        config.tool_params or {},
+                        self.execution_context,
+                    ),
+                    timeout=60,
+                )
+            except asyncio.TimeoutError:
+                return False
             if not result.success:
                 return False
             if config.condition is None:
@@ -321,13 +339,53 @@ class RemediationEngine:
 
     @staticmethod
     def _collect_targets(plan: RemediationPlan) -> list[str]:
-        targets: list[str] = []
+        process_targets: list[str] = []
+        generic_targets: list[str] = []
+        seen_process: set[str] = set()
+        seen_generic: set[str] = set()
+
+        def _append_unique(bucket: list[str], seen: set[str], value: str) -> None:
+            normalized = str(value or "").strip()
+            if not normalized or normalized in seen:
+                return
+            seen.add(normalized)
+            bucket.append(normalized)
+
         for step in plan.steps:
+            entity_id = step.params.get("entity_id")
+            if isinstance(entity_id, str) and entity_id.strip().lower().startswith("proc:"):
+                _append_unique(process_targets, seen_process, entity_id)
+                continue
             for key in ("node", "target", "service_id", "entity_id"):
                 value = step.params.get(key)
                 if isinstance(value, str) and value.strip():
-                    targets.append(value.strip())
-        return sorted(set(targets))
+                    _append_unique(generic_targets, seen_generic, value)
+
+        # Prefer process-level targets for canary batching when available.
+        if process_targets:
+            return process_targets
+        return generic_targets
+
+    @staticmethod
+    def _filter_steps_by_targets(
+        steps: list[RemediationAction],
+        target_filter: set[str],
+    ) -> list[RemediationAction]:
+        """Return only steps whose params reference at least one target in the filter set.
+
+        If a step has no target-related param at all, it is included (global step).
+        """
+        target_keys = ("node", "target", "service_id", "entity_id")
+        filtered: list[RemediationAction] = []
+        for step in steps:
+            step_targets = {
+                step.params[key]
+                for key in target_keys
+                if isinstance(step.params.get(key), str) and step.params[key].strip()
+            }
+            if not step_targets or step_targets & target_filter:
+                filtered.append(step)
+        return filtered
 
     @staticmethod
     def _base_plan_id(plan_id: str) -> str:

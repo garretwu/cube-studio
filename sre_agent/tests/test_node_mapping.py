@@ -25,6 +25,7 @@ def _write_inventory(path: Path) -> None:
                 "        host: 10.11.4.12",
                 "        user: demo",
                 "    - name: worker-04",
+                "      k8s_node_name: wj-lab-cpt-04",
                 "      ssh:",
                 "        host: 10.11.4.13",
                 "        user: demo",
@@ -252,6 +253,50 @@ class TestNodeMapping(unittest.TestCase):
         }
         channel = SSHChannel(inventory=inventory, dry_run=True)
         self.assertEqual(channel._resolve_node_name("10.11.0.12"), "worker-03")
+
+    def test_normalize_node_identifier_supports_k8s_node_name(self) -> None:
+        """k8s_node_name should be mapped to inventory worker name."""
+        normalized, reason = normalize_node_identifier(
+            "wj-lab-cpt-04",
+            inventory_names={"worker-04"},
+            host_to_name={"10.11.4.13": "worker-04", "wj-lab-cpt-04": "worker-04"},
+        )
+        self.assertEqual(normalized, "worker-04")
+        self.assertIsNone(reason)
+
+    def test_ssh_channel_resolves_k8s_node_name_to_inventory_worker(self) -> None:
+        """SSH channel should resolve k8s_node_name to worker name."""
+        inventory = {
+            "worker-04": TargetNodeConfig.model_validate(
+                {
+                    "name": "worker-04",
+                    "ssh": {"host": "10.11.4.13", "user": "demo"},
+                }
+            )
+        }
+        # Create channel with k8s_node_name in the IP mapping
+        channel = SSHChannel(inventory=inventory, dry_run=True)
+        # Simulate having k8s_node_name mapped (this is done in node_mapping.py)
+        channel._ip_to_node["wj-lab-cpt-04"] = "worker-04"
+        self.assertEqual(channel._resolve_node_name("wj-lab-cpt-04"), "worker-04")
+
+    def test_load_inventory_node_mapping_extracts_k8s_node_name(self) -> None:
+        """load_inventory_node_mapping should extract k8s_node_name from inventory yaml."""
+        from sre_agent.runtime.node_mapping import load_inventory_node_mapping
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            inventory_path = Path(tmpdir) / "inventory.yaml"
+            _write_inventory(inventory_path)
+            with patch.dict(os.environ, {"SRE_SSH_INVENTORY_PATH": str(inventory_path)}, clear=False):
+                names, host_to_name = load_inventory_node_mapping()
+
+        self.assertIn("worker-03", names)
+        self.assertIn("worker-04", names)
+        # SSH host IP mapping
+        self.assertEqual(host_to_name.get("10.11.4.12"), "worker-03")
+        self.assertEqual(host_to_name.get("10.11.4.13"), "worker-04")
+        # k8s_node_name mapping
+        self.assertEqual(host_to_name.get("wj-lab-cpt-04"), "worker-04")
 
 
 if __name__ == "__main__":

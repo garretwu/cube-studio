@@ -39,10 +39,18 @@ DEFAULT_KUBECONFIG_PATH = str((REPO_ROOT / "sre_agent" / "conf" / "kube.conf").r
 DEFAULT_LOCAL_LLM_BASE_URL = "http://10.11.4.13:18080/v1"
 DEFAULT_LOCAL_LLM_MODEL = "MiniMax-M2.5-IQ4_XS-00001-of-00004.gguf"
 LOCAL_LLM_PLACEHOLDER_KEY = "local-llama-placeholder"
+DEFAULT_LLM_MODE = "openai_compatible_api"
 BACKEND_READINESS_PATH = "/openapi.json"
 BACKEND_READINESS_TIMEOUT_SECONDS = 180.0
 BACKEND_READINESS_INTERVAL_SECONDS = 1.0
 BACKEND_READINESS_PROBE_TIMEOUT_SECONDS = 2.0
+
+_LLM_MODE_ALIASES = {
+    "openai_compatible_api": "openai_compatible_api",
+    "openai_compatible_local": "openai_compatible_local",
+    "minimax_api": "openai_compatible_api",
+    "minimax_local": "openai_compatible_local",
+}
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -62,19 +70,23 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--token-expire-seconds", type=int, default=8 * 3600, help="Frontend token expire seconds.")
     parser.add_argument(
         "--llm-mode",
-        choices=["minimax_api", "minimax_local"],
-        default="minimax_api",
-        help="minimax_api: keep current cloud MiniMax config; minimax_local: use local llama.cpp gateway.",
+        choices=sorted(_LLM_MODE_ALIASES.keys()),
+        default=DEFAULT_LLM_MODE,
+        help=(
+            "openai_compatible_api: use configured cloud OpenAI-compatible endpoint; "
+            "openai_compatible_local: use local OpenAI-compatible llama.cpp gateway. "
+            "Legacy aliases minimax_api/minimax_local are still accepted."
+        ),
     )
     parser.add_argument(
         "--local-llm-base-url",
         default=DEFAULT_LOCAL_LLM_BASE_URL,
-        help="Local OpenAI-compatible base URL used when --llm-mode=minimax_local.",
+        help="Local OpenAI-compatible base URL used when --llm-mode=openai_compatible_local.",
     )
     parser.add_argument(
         "--local-model",
         default=DEFAULT_LOCAL_LLM_MODEL,
-        help="Local model name used when --llm-mode=minimax_local.",
+        help="Local model name used when --llm-mode=openai_compatible_local.",
     )
     parser.add_argument(
         "--runtime-info",
@@ -183,7 +195,7 @@ def build_runtime_env(
     role: str,
     username: str,
     token_expire_seconds: int,
-    llm_mode: str = "minimax_api",
+    llm_mode: str = DEFAULT_LLM_MODE,
     local_llm_base_url: str = DEFAULT_LOCAL_LLM_BASE_URL,
     local_model: str = DEFAULT_LOCAL_LLM_MODEL,
 ) -> tuple[dict[str, str], dict[str, str]]:
@@ -204,15 +216,16 @@ def build_runtime_env(
     frontend_url = f"http://127.0.0.1:{frontend_port}"
 
     env = dict(os.environ)
-    apply_llm_env_from_config(config, env, only_if_missing=True)
-    resolved_llm_mode = str(llm_mode or "minimax_api").strip().lower()
-    if resolved_llm_mode not in {"minimax_api", "minimax_local"}:
+    apply_llm_env_from_config(config, env, only_if_missing=False)
+    raw_llm_mode = str(llm_mode or DEFAULT_LLM_MODE).strip().lower()
+    resolved_llm_mode = _LLM_MODE_ALIASES.get(raw_llm_mode)
+    if resolved_llm_mode is None:
         raise SystemExit(f"invalid --llm-mode: {llm_mode}")
 
     llm_local_probe_passed = "false"
     llm_local_selected_model = ""
     llm_local_base_url = ""
-    if resolved_llm_mode == "minimax_local":
+    if resolved_llm_mode == "openai_compatible_local":
         llm_local_selected_model = str(local_model or DEFAULT_LOCAL_LLM_MODEL).strip() or DEFAULT_LOCAL_LLM_MODEL
         llm_local_base_url = str(local_llm_base_url or DEFAULT_LOCAL_LLM_BASE_URL).strip().rstrip("/")
         _probe_local_llm(base_url=llm_local_base_url, model=llm_local_selected_model)
@@ -222,7 +235,7 @@ def build_runtime_env(
         env["SRE_OPENAI_API_KEY"] = LOCAL_LLM_PLACEHOLDER_KEY
 
     llm_api_key = str(env.get("SRE_OPENAI_API_KEY") or env.get("OPENAI_API_KEY") or "").strip()
-    if resolved_llm_mode == "minimax_api" and not llm_api_key:
+    if resolved_llm_mode == "openai_compatible_api" and not llm_api_key:
         raise SystemExit("missing required LLM API key: set SRE_OPENAI_API_KEY (or OPENAI_API_KEY) before starting backend")
     env[auth["jwt_secret_env"]] = jwt_secret
     env["VITE_API_TOKEN"] = token
@@ -472,7 +485,7 @@ def main() -> int:
         f"mode={info['llm_mode']}",
         flush=True,
     )
-    if info["llm_mode"] == "minimax_local":
+    if info["llm_mode"] == "openai_compatible_local":
         print(
             f"[ok] local llm probe passed={info['llm_local_probe_passed']} "
             f"selected_model={info['llm_local_selected_model']} "

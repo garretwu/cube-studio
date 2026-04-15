@@ -8,6 +8,9 @@ import { useDiagnosisStore } from "./diagnosisStore";
 
 describe("useDiagnosisStore", () => {
   beforeEach(() => {
+    server.use(
+      http.post("/api/diagnose/start", async () => HttpResponse.json(diagnosisSession)),
+    );
     window.localStorage.removeItem("sre_session_id");
     useDiagnosisStore.setState({
       session: undefined,
@@ -30,6 +33,15 @@ describe("useDiagnosisStore", () => {
       hasPlan: false,
       planMissingReason: undefined,
       effectiveReviseInstruction: undefined,
+      completedThinkingRounds: [],
+      liveThinking: null,
+      liveFinalAnswer: null,
+      streamingText: "",
+      streamingNode: null,
+      isStreamingDiagnosis: false,
+      streamingPhase: "idle",
+      activeStreamingTools: [],
+      streamingAbortController: null,
       connectionState: "closed",
       error: undefined,
     });
@@ -120,6 +132,618 @@ describe("useDiagnosisStore", () => {
     });
   });
 
+  it("aggregates live node events into a single streaming thinking block and keeps backend-only semantics", async () => {
+    await useDiagnosisStore.getState().bootstrapSession();
+
+    const nodeStarted: WSEvent = {
+      schema_version: "1",
+      type: "node_started",
+      session_id: diagnosisSession.session_id,
+      timestamp: "2026-03-18T12:07:00Z",
+      data: {
+        node: "reason",
+        run_id: "run-reason-1",
+        thought_key: "run-reason-1:reason",
+        started_at: "2026-03-18T12:07:00Z",
+      },
+    };
+    const tokenOne: WSEvent = {
+      schema_version: "1",
+      type: "token_delta",
+      session_id: diagnosisSession.session_id,
+      timestamp: "2026-03-18T12:07:01Z",
+      data: {
+        node: "reason",
+        run_id: "run-reason-1",
+        thought_key: "run-reason-1:reason",
+        content: "Investigating queue depth. ",
+      },
+    };
+    const toolStarted: WSEvent = {
+      schema_version: "1",
+      type: "tool_started",
+      session_id: diagnosisSession.session_id,
+      timestamp: "2026-03-18T12:07:01Z",
+      data: {
+        tool: "query_metrics",
+        params: { service: "auth-svc" },
+        node: "reason",
+        run_id: "run-reason-1",
+        thought_key: "run-reason-1:reason",
+      },
+    };
+    const tokenTwo: WSEvent = {
+      schema_version: "1",
+      type: "token_delta",
+      session_id: diagnosisSession.session_id,
+      timestamp: "2026-03-18T12:07:02Z",
+      data: {
+        node: "reason",
+        run_id: "run-reason-1",
+        thought_key: "run-reason-1:reason",
+        content: "Comparing p95 against baseline.",
+      },
+    };
+    const nodeCompleted: WSEvent = {
+      schema_version: "1",
+      type: "node_completed",
+      session_id: diagnosisSession.session_id,
+      timestamp: "2026-03-18T12:07:03Z",
+      data: {
+        node: "reason",
+        run_id: "run-reason-1",
+        thought_key: "run-reason-1:reason",
+        thought_duration_sec: 3,
+        new_trace_items: [
+          {
+            event_type: "tool_call",
+            step: 3,
+            timestamp: "2026-03-18T12:07:03Z",
+            thought: "Investigating queue depth. Comparing p95 against baseline.",
+            action_type: "tool_call",
+            thought_key: "run-reason-1:reason",
+            tool_name: "query_metrics",
+            tool_params: { service: "auth-svc" },
+            thought_duration_sec: 3,
+          },
+        ],
+      },
+    };
+
+    useDiagnosisStore.getState().applyEvent(nodeStarted);
+    useDiagnosisStore.getState().applyEvent(tokenOne);
+    useDiagnosisStore.getState().applyEvent(toolStarted);
+    useDiagnosisStore.getState().applyEvent(tokenTwo);
+
+    let state = useDiagnosisStore.getState();
+    expect(state.liveThinking).toMatchObject({
+      thought_key: "run-reason-1:reason",
+      node: "reason",
+      content: "Investigating queue depth. Comparing p95 against baseline.",
+    });
+    expect(state.activeStreamingTools).toHaveLength(1);
+    expect(state.activeStreamingTools[0]).toMatchObject({
+      tool: "query_metrics",
+      thought_key: "run-reason-1:reason",
+    });
+
+    useDiagnosisStore.getState().applyEvent(nodeCompleted);
+
+    state = useDiagnosisStore.getState();
+    expect(state.liveThinking).toBeNull();
+    expect(state.activeStreamingTools).toEqual([]);
+    expect(state.session?.trace?.steps?.at(-1)).toMatchObject({
+      thought: "Investigating queue depth. Comparing p95 against baseline.",
+      thought_key: "run-reason-1:reason",
+      thought_duration_sec: 3,
+    });
+    expect(state.session?.trace?.steps?.at(-1)).not.toHaveProperty("next_action");
+  });
+
+  it("routes final content token deltas into the live final answer buffer", async () => {
+    await useDiagnosisStore.getState().bootstrapSession();
+
+    useDiagnosisStore.getState().applyEvent({
+      schema_version: "1",
+      type: "token_delta",
+      session_id: diagnosisSession.session_id,
+      timestamp: "2026-03-18T12:08:00Z",
+      data: {
+        content: "诊断结论：Node contention。",
+        stream_channel: "content",
+        phase: "final",
+      },
+    });
+    useDiagnosisStore.getState().applyEvent({
+      schema_version: "1",
+      type: "done",
+      session_id: diagnosisSession.session_id,
+      timestamp: "2026-03-18T12:08:01Z",
+      data: {},
+    });
+
+    const state = useDiagnosisStore.getState();
+    expect(state.liveThinking).toBeNull();
+    expect(state.liveFinalAnswer).toMatchObject({
+      content: "诊断结论：Node contention。",
+      status: "completed",
+    });
+  });
+
+  it("marks live thinking as completed and sets streamingPhase=error on error event", () => {
+    useDiagnosisStore.setState({
+      session: diagnosisSession,
+      activeSessionId: diagnosisSession.session_id,
+      isStreamingDiagnosis: true,
+      streamingPhase: "streaming_thought",
+      liveThinking: {
+        thought_key: "run-reason-error:reason",
+        run_id: "run-reason-error",
+        node: "reason",
+        timestamp: "2026-03-18T12:08:10Z",
+        content: "",
+        status: "thinking",
+        tool_name: null,
+        active_tools: [],
+      },
+      activeStreamingTools: [],
+    });
+
+    useDiagnosisStore.getState().applyEvent({
+      schema_version: "1",
+      type: "error",
+      session_id: diagnosisSession.session_id,
+      timestamp: "2026-03-18T12:08:11Z",
+      data: {
+        message: "reason step timed out",
+      },
+    });
+
+    const state = useDiagnosisStore.getState();
+    expect(state.isStreamingDiagnosis).toBe(false);
+    expect(state.streamingPhase).toBe("error");
+    expect(state.liveThinking?.status).toBe("completed");
+    expect(state.liveThinking?.content).toContain("reason step timed out");
+  });
+
+  it("closes streaming and keeps liveThinking non-thinking when done event arrives", () => {
+    useDiagnosisStore.setState({
+      session: diagnosisSession,
+      activeSessionId: diagnosisSession.session_id,
+      isStreamingDiagnosis: true,
+      streamingPhase: "streaming_thought",
+      liveThinking: {
+        thought_key: "run-reason-done:reason",
+        run_id: "run-reason-done",
+        node: "reason",
+        timestamp: "2026-03-18T12:08:12Z",
+        content: "Investigating impact scope",
+        status: "thinking",
+        tool_name: null,
+        active_tools: [],
+      },
+      activeStreamingTools: [],
+    });
+
+    useDiagnosisStore.getState().applyEvent({
+      schema_version: "1",
+      type: "done",
+      session_id: diagnosisSession.session_id,
+      timestamp: "2026-03-18T12:08:13Z",
+      data: {
+        status: "diagnosed",
+        summary: "诊断完成",
+      },
+    });
+
+    const state = useDiagnosisStore.getState();
+    expect(state.isStreamingDiagnosis).toBe(false);
+    expect(state.streamingPhase).toBe("completed");
+    expect(state.liveThinking?.status).toBe("completed");
+    expect(state.liveThinking?.content).toBe("Investigating impact scope");
+  });
+
+  it("does not keep spinner on node_completed step_timeout terminal event", () => {
+    useDiagnosisStore.setState({
+      session: diagnosisSession,
+      activeSessionId: diagnosisSession.session_id,
+      isStreamingDiagnosis: true,
+      streamingPhase: "streaming_thought",
+      liveThinking: {
+        thought_key: "run-reason-timeout:reason",
+        run_id: "run-reason-timeout",
+        node: "reason",
+        timestamp: "2026-03-18T12:08:14Z",
+        content: "",
+        status: "thinking",
+        tool_name: null,
+        active_tools: [],
+      },
+      activeStreamingTools: [],
+    });
+
+    useDiagnosisStore.getState().applyEvent({
+      schema_version: "1",
+      type: "node_completed",
+      session_id: diagnosisSession.session_id,
+      timestamp: "2026-03-18T12:08:15Z",
+      data: {
+        node: "reason",
+        run_id: "run-reason-timeout",
+        thought_key: "run-reason-timeout:reason",
+        status: "step_timeout",
+      },
+    });
+
+    const state = useDiagnosisStore.getState();
+    expect(state.isStreamingDiagnosis).toBe(false);
+    expect(state.streamingPhase).toBe("error");
+    expect(state.liveThinking?.status).toBe("completed");
+    expect(state.liveThinking?.content).toContain("超时");
+  });
+
+  it("captures plan_unavailable reason for sessions without remediation plan", () => {
+    const sessionWithoutPlan = {
+      ...diagnosisSession,
+      session_id: "sess-no-plan",
+      status: "diagnosed" as const,
+      diagnosis_result: diagnosisSession.diagnosis_result
+        ? {
+            ...diagnosisSession.diagnosis_result,
+            recommended_fix: undefined,
+            ranked_candidates: (diagnosisSession.diagnosis_result.ranked_candidates ?? []).map((candidate) => ({
+              ...candidate,
+              recommended_fix: undefined,
+            })),
+          }
+        : undefined,
+    };
+
+    useDiagnosisStore.setState({
+      session: sessionWithoutPlan,
+      activeSessionId: "sess-no-plan",
+      events: [],
+      messages: [],
+      hasPlan: false,
+      planMissingReason: undefined,
+    });
+
+    useDiagnosisStore.getState().applyEvent({
+      schema_version: "1",
+      type: "remediation_progress",
+      session_id: "sess-no-plan",
+      timestamp: "2026-03-18T12:08:02Z",
+      data: {
+        stage: "plan_unavailable",
+        message: "证据不足，暂不生成可执行修复计划。",
+      },
+    });
+
+    const state = useDiagnosisStore.getState();
+    expect(state.hasPlan).toBe(false);
+    expect(state.planMissingReason).toBe("证据不足，暂不生成可执行修复计划。");
+  });
+
+  it("shows a thinking placeholder immediately on node_started before token deltas arrive", () => {
+    useDiagnosisStore.setState({
+      session: diagnosisSession,
+      activeSessionId: diagnosisSession.session_id,
+      events: [],
+      messages: [],
+      liveThinking: null,
+      activeStreamingTools: [],
+    });
+
+    useDiagnosisStore.getState().applyEvent({
+      schema_version: "1",
+      type: "node_started",
+      session_id: diagnosisSession.session_id,
+      timestamp: "2026-03-18T12:09:00Z",
+      data: {
+        node: "reason",
+        run_id: "run-reason-placeholder",
+        thought_key: "run-reason-placeholder:reason",
+      },
+    });
+
+    const state = useDiagnosisStore.getState();
+    expect(state.liveThinking).toMatchObject({
+      thought_key: "run-reason-placeholder:reason",
+      status: "thinking",
+    });
+    expect(state.liveThinking?.content).toBe("");
+  });
+
+  it("creates a new round_id for repeated thought_key rounds and resets content on the next round", () => {
+    useDiagnosisStore.setState({
+      session: diagnosisSession,
+      activeSessionId: diagnosisSession.session_id,
+      events: [],
+      messages: [],
+      liveThinking: null,
+      activeStreamingTools: [],
+      isStreamingDiagnosis: true,
+      streamingPhase: "streaming_thought",
+    });
+
+    useDiagnosisStore.getState().applyEvent({
+      schema_version: "1",
+      type: "node_started",
+      session_id: diagnosisSession.session_id,
+      timestamp: "2026-03-18T12:11:00Z",
+      data: {
+        node: "reason",
+        run_id: "run-reason-rounds",
+        thought_key: "run-reason-rounds:reason",
+        started_at: "2026-03-18T12:11:00Z",
+      },
+    });
+    useDiagnosisStore.getState().applyEvent({
+      schema_version: "1",
+      type: "token_delta",
+      session_id: diagnosisSession.session_id,
+      timestamp: "2026-03-18T12:11:01Z",
+      data: {
+        node: "reason",
+        run_id: "run-reason-rounds",
+        thought_key: "run-reason-rounds:reason",
+        content: "round-1 thinking",
+      },
+    });
+    useDiagnosisStore.getState().applyEvent({
+      schema_version: "1",
+      type: "node_completed",
+      session_id: diagnosisSession.session_id,
+      timestamp: "2026-03-18T12:11:02Z",
+      data: {
+        node: "reason",
+        run_id: "run-reason-rounds",
+        thought_key: "run-reason-rounds:reason",
+        thought_duration_sec: 2,
+      },
+    });
+
+    const afterRoundOne = useDiagnosisStore.getState();
+    const roundOneId = afterRoundOne.liveThinking?.round_id;
+    expect(afterRoundOne.liveThinking?.status).toBe("completed");
+    expect(afterRoundOne.liveThinking?.content).toBe("round-1 thinking");
+
+    useDiagnosisStore.getState().applyEvent({
+      schema_version: "1",
+      type: "node_started",
+      session_id: diagnosisSession.session_id,
+      timestamp: "2026-03-18T12:11:03Z",
+      data: {
+        node: "reason",
+        run_id: "run-reason-rounds",
+        thought_key: "run-reason-rounds:reason",
+        started_at: "2026-03-18T12:11:03Z",
+      },
+    });
+
+    const afterRoundTwoStarted = useDiagnosisStore.getState();
+    expect(afterRoundTwoStarted.liveThinking?.status).toBe("thinking");
+    expect(afterRoundTwoStarted.liveThinking?.content).toBe("");
+    expect(afterRoundTwoStarted.liveThinking?.round_id).toBeDefined();
+    expect(afterRoundTwoStarted.liveThinking?.round_id).not.toBe(roundOneId);
+  });
+
+  it("starts a fresh round on token_delta when the previous round is already completed", () => {
+    useDiagnosisStore.setState({
+      session: diagnosisSession,
+      activeSessionId: diagnosisSession.session_id,
+      isStreamingDiagnosis: true,
+      streamingPhase: "streaming_thought",
+      completedThinkingRounds: [],
+      liveThinking: {
+        round_id: "run-reason-token@2026-03-18T12:12:00Z",
+        thought_key: "run-reason-token:reason",
+        run_id: "run-reason-token",
+        node: "reason",
+        timestamp: "2026-03-18T12:12:00Z",
+        content: "round-1 done",
+        status: "completed",
+        tool_name: null,
+        active_tools: [],
+      },
+      activeStreamingTools: [],
+    });
+
+    useDiagnosisStore.getState().applyEvent({
+      schema_version: "1",
+      type: "token_delta",
+      session_id: diagnosisSession.session_id,
+      timestamp: "2026-03-18T12:12:03Z",
+      data: {
+        node: "reason",
+        run_id: "run-reason-token",
+        thought_key: "run-reason-token:reason",
+        content: "round-2 thinking",
+      },
+    });
+
+    const state = useDiagnosisStore.getState();
+    expect(state.liveThinking?.status).toBe("thinking");
+    expect(state.liveThinking?.content).toBe("round-2 thinking");
+    expect(state.liveThinking?.timestamp).toBe("2026-03-18T12:12:03Z");
+    expect(state.liveThinking?.round_id).not.toBe("run-reason-token@2026-03-18T12:12:00Z");
+    expect(state.completedThinkingRounds).toHaveLength(1);
+    expect(state.completedThinkingRounds[0]).toMatchObject({
+      thought_key: "run-reason-token:reason",
+      content: "round-1 done",
+      status: "completed",
+    });
+  });
+
+  it("consumes completedThinkingRounds once node_completed snapshot includes the same thought_key", () => {
+    useDiagnosisStore.setState({
+      session: {
+        ...diagnosisSession,
+        trace: { steps: [] },
+      },
+      activeSessionId: diagnosisSession.session_id,
+      isStreamingDiagnosis: true,
+      streamingPhase: "streaming_thought",
+      completedThinkingRounds: [
+        {
+          round_id: "run-reason-snapshot@2026-03-18T12:13:00Z",
+          thought_key: "run-reason-snapshot:reason",
+          run_id: "run-reason-snapshot",
+          node: "reason",
+          timestamp: "2026-03-18T12:13:00Z",
+          content: "pending completed round",
+          status: "completed",
+          tool_name: null,
+          active_tools: [],
+        },
+      ],
+      liveThinking: {
+        round_id: "run-reason-snapshot@2026-03-18T12:13:01Z",
+        thought_key: "run-reason-snapshot:reason",
+        run_id: "run-reason-snapshot",
+        node: "reason",
+        timestamp: "2026-03-18T12:13:01Z",
+        content: "active round",
+        status: "thinking",
+        tool_name: null,
+        active_tools: [],
+      },
+      activeStreamingTools: [],
+    });
+
+    useDiagnosisStore.getState().applyEvent({
+      schema_version: "1",
+      type: "node_completed",
+      session_id: diagnosisSession.session_id,
+      timestamp: "2026-03-18T12:13:05Z",
+      data: {
+        node: "reason",
+        run_id: "run-reason-snapshot",
+        thought_key: "run-reason-snapshot:reason",
+        new_trace_items: [
+          {
+            event_type: "thinking_step",
+            step: 9,
+            timestamp: "2026-03-18T12:13:04Z",
+            thought: "snapshot absorbed this round",
+            action_type: "conclude",
+            thought_key: "run-reason-snapshot:reason",
+            thought_duration_sec: 3,
+          },
+        ],
+      },
+    });
+
+    const state = useDiagnosisStore.getState();
+    expect(state.completedThinkingRounds).toEqual([]);
+  });
+
+  it("creates a bootstrap thinking block immediately when streaming diagnosis starts", async () => {
+    server.use(
+      http.post("/api/diagnose/stream", async () =>
+        new HttpResponse("", {
+          status: 200,
+          headers: { "Content-Type": "text/event-stream" },
+        }),
+      ),
+    );
+
+    const pendingSessionId = useDiagnosisStore.getState().startStreamingDiagnosis(diagnosisSession.alert);
+    const state = useDiagnosisStore.getState();
+
+    expect(pendingSessionId).toMatch(/^pending-/);
+    expect(state.activeSessionId).toBe(pendingSessionId);
+    expect(state.session?.session_id).toBe(pendingSessionId);
+    expect(state.streamingPhase).toBe("bootstrapping");
+    expect(state.isStreamingDiagnosis).toBe(true);
+    expect(state.liveThinking).toMatchObject({
+      thought_key: `bootstrap:${pendingSessionId}`,
+      node: "bootstrap",
+      status: "thinking",
+      content: "",
+    });
+
+    useDiagnosisStore.getState().cancelStreamingDiagnosis();
+  });
+
+  it("adopts the real session id when the first streaming event arrives for a pending session", () => {
+    useDiagnosisStore.setState({
+      session: {
+        ...diagnosisSession,
+        session_id: "pending-123",
+        trace: { steps: [] },
+      },
+      activeSessionId: "pending-123",
+      bootstrapStatus: "ready",
+      traceStatus: "empty",
+      isStreamingDiagnosis: true,
+      streamingPhase: "bootstrapping",
+      liveThinking: {
+        thought_key: "bootstrap:pending-123",
+        node: "bootstrap",
+        run_id: null,
+        timestamp: "2026-03-18T12:09:30Z",
+        content: "",
+        status: "thinking",
+        tool_name: null,
+        active_tools: [],
+      },
+    });
+
+    useDiagnosisStore.getState().applyEvent({
+      schema_version: "1",
+      type: "diagnosis_started",
+      session_id: "sess-real-001",
+      timestamp: "2026-03-18T12:09:31Z",
+      data: {
+        alert: {
+          alert_name: diagnosisSession.alert.alert_name,
+          severity: diagnosisSession.alert.severity,
+          labels: diagnosisSession.alert.labels,
+        },
+        topology: null,
+        variables: {},
+        bootstrap_state: "thinking",
+      },
+    });
+
+    const state = useDiagnosisStore.getState();
+    expect(state.activeSessionId).toBe("sess-real-001");
+    expect(state.session?.session_id).toBe("sess-real-001");
+    expect(state.streamingPhase).toBe("waiting_first_content");
+  });
+
+  it("does not reset active streaming session during bootstrap for the same session id", async () => {
+    useDiagnosisStore.setState({
+      session: {
+        ...diagnosisSession,
+        session_id: "sess-live-001",
+      },
+      activeSessionId: "sess-live-001",
+      bootstrapStatus: "ready",
+      isStreamingDiagnosis: true,
+      streamingPhase: "streaming_thought",
+      liveThinking: {
+        thought_key: "run-live:reason",
+        node: "reason",
+        run_id: "run-live",
+        timestamp: "2026-03-18T12:10:01Z",
+        content: "streaming...",
+        status: "thinking",
+        tool_name: null,
+        active_tools: [],
+      },
+    });
+
+    await useDiagnosisStore.getState().bootstrapSession("sess-live-001");
+
+    const state = useDiagnosisStore.getState();
+    expect(state.activeSessionId).toBe("sess-live-001");
+    expect(state.isStreamingDiagnosis).toBe(true);
+    expect(state.streamingPhase).toBe("streaming_thought");
+    expect(state.liveThinking?.content).toBe("streaming...");
+  });
+
   it("uses default instruction when revising plan without input", async () => {
     let capturedInstruction = "";
     server.use(
@@ -176,5 +800,50 @@ describe("useDiagnosisStore", () => {
 
     expect(useDiagnosisStore.getState().localAuditRecords).toHaveLength(1);
     expect(useDiagnosisStore.getState().localAuditRecords[0]?.summary).toContain("拒绝执行");
+  });
+
+  it("appends canary batch progress messages in order and then observation summary", async () => {
+    await useDiagnosisStore.getState().bootstrapSession(diagnosisSession.session_id);
+
+    useDiagnosisStore.getState().applyEvent({
+      schema_version: "1",
+      type: "remediation_progress",
+      session_id: diagnosisSession.session_id,
+      timestamp: "2026-04-15T09:00:01Z",
+      data: {
+        stage: "canary_batch_started",
+        batch: "canary-1",
+        message: "灰度批次 1/2 开始，覆盖目标 proc:ls_demo_a",
+      },
+    });
+    useDiagnosisStore.getState().applyEvent({
+      schema_version: "1",
+      type: "remediation_progress",
+      session_id: diagnosisSession.session_id,
+      timestamp: "2026-04-15T09:00:10Z",
+      data: {
+        stage: "canary_batch_completed",
+        batch: "canary-1",
+        message: "灰度批次 1/2 完成，覆盖目标 proc:ls_demo_a",
+      },
+    });
+    useDiagnosisStore.getState().applyEvent({
+      schema_version: "1",
+      type: "observation_result",
+      session_id: diagnosisSession.session_id,
+      timestamp: "2026-04-15T09:01:00Z",
+      data: {
+        alert_cleared: true,
+        metrics_improved: true,
+        baseline_alert: { status: "firing" },
+        post_alert: { status: "resolved" },
+      },
+    });
+
+    const state = useDiagnosisStore.getState();
+    const latestMessages = state.messages.slice(-3).map((item) => item.content);
+    expect(latestMessages[0]).toBe("灰度批次 1/2 开始，覆盖目标 proc:ls_demo_a");
+    expect(latestMessages[1]).toBe("灰度批次 1/2 完成，覆盖目标 proc:ls_demo_a");
+    expect(latestMessages[2]).toContain("观察结果：alert_cleared=true，metrics_improved=true，告警状态 firing -> resolved");
   });
 });

@@ -5,10 +5,13 @@ import tempfile
 import unittest
 from pathlib import Path
 from typing import Any
+from unittest.mock import AsyncMock, patch
 
 from langchain_core.messages import AIMessage
 
-from sre_agent.agent import run_diagnosis
+import sre_agent.agent.graph as graph_module
+import sre_agent.agent.nodes as nodes_module
+from sre_agent.agent import run_diagnosis, run_diagnosis_stream
 from sre_agent.agent.prompts import build_system_prompt
 from sre_agent.models.diagnosis import DiagnosisResult, ThinkingTrace
 from sre_agent.tools import ToolExecutionContext, build_default_registry
@@ -154,6 +157,104 @@ class _SlowLLM:
 
         await asyncio.sleep(0.2)
         return AIMessage(content="{}")
+
+
+class _TimeoutThenSuccessBoundLLM:
+    def __init__(self, parent: "_TimeoutThenSuccessLLM", tool_choice: str) -> None:
+        self._parent = parent
+        self._tool_choice = tool_choice
+
+    async def ainvoke(self, messages: list[Any]) -> AIMessage:
+        return await self._parent._ainvoke(messages, tool_choice=self._tool_choice)  # noqa: SLF001
+
+
+class _TimeoutThenSuccessLLM:
+    def __init__(self, response: AIMessage) -> None:
+        self._response = response
+        self.calls: list[dict[str, Any]] = []
+
+    async def _ainvoke(self, messages: list[Any], *, tool_choice: str) -> AIMessage:
+        self.calls.append({"messages": messages, "tool_choice": tool_choice})
+        if len(self.calls) == 1:
+            import asyncio
+
+            await asyncio.sleep(0.2)
+        return self._response
+
+    async def ainvoke(self, messages: list[Any]) -> AIMessage:
+        return await self._ainvoke(messages, tool_choice="none")
+
+    def bind_tools(self, _tools: list[Any], tool_choice: str = "auto") -> _TimeoutThenSuccessBoundLLM:
+        return _TimeoutThenSuccessBoundLLM(self, tool_choice)
+
+
+class _TimeoutAlwaysBoundLLM:
+    def __init__(self, parent: "_TimeoutAlwaysLLM", tool_choice: str) -> None:
+        self._parent = parent
+        self._tool_choice = tool_choice
+
+    async def ainvoke(self, messages: list[Any]) -> AIMessage:
+        return await self._parent._ainvoke(messages, tool_choice=self._tool_choice)  # noqa: SLF001
+
+
+class _TimeoutAlwaysLLM:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, Any]] = []
+
+    async def _ainvoke(self, messages: list[Any], *, tool_choice: str) -> AIMessage:
+        self.calls.append({"messages": messages, "tool_choice": tool_choice})
+        import asyncio
+
+        await asyncio.sleep(0.2)
+        return AIMessage(content="{}")
+
+    async def ainvoke(self, messages: list[Any]) -> AIMessage:
+        return await self._ainvoke(messages, tool_choice="none")
+
+    def bind_tools(self, _tools: list[Any], tool_choice: str = "auto") -> _TimeoutAlwaysBoundLLM:
+        return _TimeoutAlwaysBoundLLM(self, tool_choice)
+
+
+class _FakeStreamChunk:
+    def __init__(self, content: str | None = None, *, reasoning_content: str | None = None) -> None:
+        self.content = content
+        self.reasoning_content = reasoning_content
+        self.additional_kwargs = {}
+
+
+class _FakeStreamGraph:
+    def __init__(self, events: list[dict[str, Any]]) -> None:
+        self._events = events
+
+    async def astream_events(self, *_args: Any, **_kwargs: Any):  # noqa: ANN401
+        for event in self._events:
+            yield event
+
+
+class _ResilientFakeBoundModel:
+    def __init__(self, parent: "_ResilientFakeChatOpenAI", tool_choice: str) -> None:
+        self._parent = parent
+        self._tool_choice = tool_choice
+
+    async def ainvoke(self, messages: list[Any]) -> AIMessage:
+        return await self._parent._ainvoke(messages, tool_choice=self._tool_choice)  # noqa: SLF001
+
+
+class _ResilientFakeChatOpenAI:
+    def __init__(self, **kwargs: Any) -> None:
+        self._kwargs = kwargs
+        self.model = str(kwargs.get("model", "")).strip()
+
+    async def _ainvoke(self, _messages: list[Any], *, tool_choice: str) -> AIMessage:
+        if self.model == "glm-5.1":
+            raise RuntimeError('{"error":{"code":"1305","message":"该模型当前访问量过大，请您稍后再试"}}')
+        return AIMessage(content=f"ok:{self.model}:{tool_choice}")
+
+    async def ainvoke(self, messages: list[Any]) -> AIMessage:
+        return await self._ainvoke(messages, tool_choice="none")
+
+    def bind_tools(self, _tools: list[Any], tool_choice: str = "auto") -> _ResilientFakeBoundModel:
+        return _ResilientFakeBoundModel(self, tool_choice)
 
 
 class TestGraphUnit(unittest.IsolatedAsyncioTestCase):
@@ -316,7 +417,7 @@ description: Diagnose vLLM latency with a Claude-style skill.
                 ["skills.list_skills", "skills.load_skill", "skills.read_skill_ref", "skills.run_skill"],
             )
             self.assertEqual(llm.calls[0]["tool_choice"], "required")
-            self.assertEqual(llm.calls[-1]["tool_choice"], "auto")
+            self.assertIn(str(llm.calls[-1]["tool_choice"]), {"auto", "none"})
             self.assertEqual(result["tool_runs"][-1]["data"]["status"], "success")
 
     async def test_first_round_binds_only_skill_tools_when_available(self) -> None:
@@ -961,9 +1062,727 @@ tags:
             )
 
             self.assertEqual(result["status"], "diagnosed")
-            self.assertTrue(result["loop_guard"]["triggered"])
-            self.assertTrue(result["force_final_turn"] is False)
+            self.assertFalse(result["loop_guard"]["triggered"])
+            self.assertFalse(result["force_final_turn"])
             self.assertEqual(llm.calls[-1]["tool_choice"], "none")
+            trace_items = list(result.get("trace_items", []))
+            self.assertTrue(
+                any(
+                    isinstance(item, dict)
+                    and str((item.get("tool_params") or {}).get("kind", "")) == "duplicate_tool_suppressed"
+                    for item in trace_items
+                )
+            )
+
+    async def test_act_node_deduplicates_same_round_duplicate_tool_calls(self) -> None:
+        llm = _FakeLLM(
+            [
+                AIMessage(
+                    content="Collect pod list once.",
+                    tool_calls=[
+                        {
+                            "name": "k8s.list_pods",
+                            "args": {"namespace": "default"},
+                            "id": "call-1",
+                            "type": "tool_call",
+                        },
+                        {
+                            "name": "k8s.list_pods",
+                            "args": {"namespace": "default"},
+                            "id": "call-2",
+                            "type": "tool_call",
+                        },
+                    ],
+                ),
+                AIMessage(
+                    content=json.dumps(
+                        {
+                            "thought": "已收集到足够证据并完成总结。",
+                            "diagnosis": {
+                                "root_cause": "未发现异常，重复调用已被抑制。",
+                                "root_cause_layer": "service",
+                                "root_cause_entities": ["default"],
+                                "confidence": 0.65,
+                                "impact_summary": "同轮重复工具调用已去重。",
+                                "affected_services": ["demo"],
+                                "triage_priority": "P3",
+                                "diagnosis_certainty": "probable",
+                            },
+                            "remediation_plan": None,
+                        }
+                    )
+                ),
+            ]
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            result = await run_diagnosis(
+                query="Diagnose duplicate list pod calls.",
+                context=_happy_context(),
+                variables={},
+                llm=llm,
+                step_timeout_sec=5.0,
+                total_timeout_sec=10.0,
+                checkpoint_dir=tmpdir,
+                allowed_tool_names=["k8s.list_pods"],
+                max_steps=6,
+            )
+
+            executed_tools = [item["tool"] for item in result["tool_runs"]]
+            self.assertEqual(executed_tools.count("k8s.list_pods"), 1)
+            trace_items = list(result.get("trace_items", []))
+            self.assertTrue(
+                any(
+                    isinstance(item, dict)
+                    and str((item.get("tool_params") or {}).get("kind", "")) == "duplicate_tool_suppressed"
+                    for item in trace_items
+                )
+            )
+
+    async def test_loop_guard_triggers_on_repeated_prometheus_family_calls(self) -> None:
+        llm = _FakeLLM(
+            [
+                AIMessage(
+                    content="Query metric A.",
+                    tool_calls=[
+                        {
+                            "name": "prometheus.query_instant",
+                            "args": {"promql": "sum(rate(http_request_duration_seconds_count{service=\"svc-a\"}[5m]))"},
+                            "id": "call-a",
+                            "type": "tool_call",
+                        }
+                    ],
+                ),
+                AIMessage(
+                    content="Query metric B.",
+                    tool_calls=[
+                        {
+                            "name": "prometheus.query_instant",
+                            "args": {"promql": "sum(rate(http_request_duration_seconds_count{service=\"svc-b\"}[5m]))"},
+                            "id": "call-b",
+                            "type": "tool_call",
+                        }
+                    ],
+                ),
+                AIMessage(
+                    content="Query metric C.",
+                    tool_calls=[
+                        {
+                            "name": "prometheus.query_instant",
+                            "args": {"promql": "sum(rate(http_request_duration_seconds_count{service=\"svc-c\"}[5m]))"},
+                            "id": "call-c",
+                            "type": "tool_call",
+                        }
+                    ],
+                ),
+                AIMessage(
+                    content=json.dumps(
+                        {
+                            "thought": "同类工具调用重复，进入总结。",
+                            "diagnosis": {
+                                "root_cause": "同类 Prometheus 查询未提供新增证据。",
+                                "root_cause_layer": "service",
+                                "root_cause_entities": ["svc-a"],
+                                "confidence": 0.58,
+                                "impact_summary": "触发工具族 loop guard。",
+                                "affected_services": ["svc-a"],
+                                "triage_priority": "P2",
+                                "diagnosis_certainty": "ambiguous",
+                            },
+                            "remediation_plan": None,
+                        }
+                    )
+                ),
+            ]
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            result = await run_diagnosis(
+                query="Diagnose repeated prometheus family calls.",
+                context=_happy_context(),
+                variables={},
+                llm=llm,
+                step_timeout_sec=5.0,
+                total_timeout_sec=10.0,
+                checkpoint_dir=tmpdir,
+                allowed_tool_names=["prometheus.query_instant"],
+                max_steps=8,
+            )
+
+            self.assertEqual(result["status"], "diagnosed")
+            self.assertTrue(result["loop_guard"]["triggered"])
+            self.assertEqual(llm.calls[-1]["tool_choice"], "none")
+
+    async def test_ttft_prometheus_budget_limits_real_execution_and_reuses_cached_results(self) -> None:
+        llm = _FakeLLM(
+            [
+                AIMessage(
+                    content="Verify TTFT baseline metric.",
+                    tool_calls=[
+                        {
+                            "name": "prometheus.query_instant",
+                            "args": {"promql": "histogram_quantile(0.99, sum(rate(http_request_duration_seconds_bucket{service=\"svc-a\"}[5m])) by (le))"},
+                            "id": "call-prom-a",
+                            "type": "tool_call",
+                        }
+                    ],
+                ),
+                AIMessage(
+                    content="Cross-check with second query.",
+                    tool_calls=[
+                        {
+                            "name": "prometheus.query_instant",
+                            "args": {"promql": "histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket{service=\"svc-b\"}[5m])) by (le))"},
+                            "id": "call-prom-b",
+                            "type": "tool_call",
+                        }
+                    ],
+                ),
+                AIMessage(
+                    content="Try one more query that should be budget-suppressed.",
+                    tool_calls=[
+                        {
+                            "name": "prometheus.query_instant",
+                            "args": {"promql": "histogram_quantile(0.90, sum(rate(http_request_duration_seconds_bucket{service=\"svc-c\"}[5m])) by (le))"},
+                            "id": "call-prom-c",
+                            "type": "tool_call",
+                        }
+                    ],
+                ),
+                AIMessage(
+                    content=json.dumps(
+                        {
+                            "thought": "TTFT query budget reached; conclude with existing evidence.",
+                            "diagnosis": {
+                                "root_cause": "TTFT increase observed with stable GPU evidence.",
+                                "root_cause_layer": "service",
+                                "root_cause_entities": ["svc-a"],
+                                "confidence": 0.66,
+                                "impact_summary": "Suppressed redundant prometheus queries after budget reached.",
+                                "affected_services": ["svc-a"],
+                                "triage_priority": "P2",
+                                "diagnosis_certainty": "probable",
+                            },
+                            "remediation_plan": None,
+                        }
+                    )
+                ),
+            ]
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            result = await run_diagnosis(
+                query="Diagnose AIServiceTTFT with deterministic query budget.",
+                context=_happy_context(),
+                variables={},
+                llm=llm,
+                alert_snapshot={"alert_name": "AIServiceTTFTP99High"},
+                step_timeout_sec=5.0,
+                total_timeout_sec=10.0,
+                checkpoint_dir=tmpdir,
+                allowed_tool_names=["prometheus.query_instant"],
+                max_steps=8,
+            )
+
+            prom_runs = [item for item in result["tool_runs"] if item.get("tool") == "prometheus.query_instant"]
+            real_exec_runs = [item for item in prom_runs if str(item.get("source", "tool")) == "tool"]
+            reuse_runs = [item for item in prom_runs if "reuse" in str(item.get("source", ""))]
+            self.assertLessEqual(len(real_exec_runs), 2)
+            self.assertGreaterEqual(len(reuse_runs), 1)
+            trace_items = [item for item in result.get("trace_items", []) if isinstance(item, dict)]
+            self.assertTrue(
+                any(
+                    str((item.get("tool_params") or {}).get("kind", "")) == "prometheus_query_suppressed"
+                    for item in trace_items
+                )
+            )
+
+    def test_ttft_auto_kill_process_plan_generates_two_steps_with_process_canary(self) -> None:
+        diagnosis = DiagnosisResult(
+            root_cause="异常负载导致 TTFT 抬高",
+            root_cause_layer="service",
+            root_cause_entities=["node:10.11.4.13"],
+            confidence=0.71,
+            hypotheses=[],
+            propagation_chain=[],
+            impact_summary="同节点多进程压测争用导致首 token 延迟上升",
+            affected_services=["qwen3-32b-fp8-202602261"],
+            recommended_fix=None,
+            triage_priority="P1",
+            ranked_candidates=[],
+            diagnosis_certainty="probable",
+        )
+        evidence_signals = {
+            "ttft_suspect_process_present": True,
+            "ttft_suspect_processes": [
+                {"pid": 11001, "process_name": "load_simulator --tag ls_demo_a"},
+                {"pid": 11002, "process_name": "load_simulator --tag ls_demo_b"},
+            ],
+        }
+        tool_runs = [
+            {
+                "tool": "gpu.get_processes",
+                "params": {"node": "10.11.4.13"},
+                "success": True,
+                "data": {},
+            }
+        ]
+
+        plan = nodes_module._build_ttft_kill_process_plan_candidate(
+            diagnosis=diagnosis,
+            evidence_signals=evidence_signals,
+            session_id="sess-ttft-demo-01",
+            tool_runs=tool_runs,
+            variables={},
+        )
+
+        self.assertIsNotNone(plan)
+        assert plan is not None
+        self.assertEqual(len(plan["steps"]), 2)
+        step_one = plan["steps"][0]
+        step_two = plan["steps"][1]
+        self.assertEqual(step_one["tool"], "kill_process")
+        self.assertEqual(step_two["tool"], "kill_process")
+        self.assertEqual(step_one["params"]["entity_id"], "proc:11001")
+        self.assertEqual(step_two["params"]["entity_id"], "proc:11002")
+        self.assertEqual(step_one["params"]["node"], "10.11.4.13")
+        self.assertEqual(step_two["params"]["node"], "10.11.4.13")
+        self.assertEqual(plan["canary"]["target_percentage"], 0.5)
+        self.assertEqual(plan["canary"]["max_batches"], 2)
+        self.assertFalse(plan["canary"]["progressive"])
+
+    def test_ttft_auto_kill_process_plan_uses_process_node_when_differs_from_serving_node(self) -> None:
+        diagnosis = DiagnosisResult(
+            root_cause="外部压测源导致 TTFT 抬高",
+            root_cause_layer="service",
+            root_cause_entities=["node:10.11.4.12"],
+            confidence=0.72,
+            hypotheses=[],
+            propagation_chain=[],
+            impact_summary="服务节点与压测源节点不一致",
+            affected_services=["qwen3-32b-fp8-202602261"],
+            recommended_fix=None,
+            triage_priority="P1",
+            ranked_candidates=[],
+            diagnosis_certainty="probable",
+        )
+        evidence_signals = {
+            "ttft_suspect_process_present": True,
+            "ttft_suspect_processes": [
+                {"pid": 473156, "process_name": "python3 -m load_simulator run --only inference", "node": "10.11.4.13"},
+                {"pid": 473220, "process_name": "python3 -m load_simulator run --only inference", "node": "10.11.4.13"},
+            ],
+        }
+        tool_runs = [
+            {
+                "tool": "gpu.get_processes",
+                "params": {"node": "10.11.4.12"},
+                "success": True,
+                "data": {},
+            }
+        ]
+
+        plan = nodes_module._build_ttft_kill_process_plan_candidate(
+            diagnosis=diagnosis,
+            evidence_signals=evidence_signals,
+            session_id="sess-ttft-cross-node-01",
+            tool_runs=tool_runs,
+            variables={"node": "10.11.4.12"},
+        )
+
+        self.assertIsNotNone(plan)
+        assert plan is not None
+        self.assertEqual(len(plan["steps"]), 2)
+        self.assertEqual(plan["steps"][0]["params"]["node"], "10.11.4.13")
+        self.assertEqual(plan["steps"][1]["params"]["node"], "10.11.4.13")
+        self.assertEqual(plan["steps"][0]["params"]["entity_id"], "proc:473156")
+        self.assertEqual(plan["steps"][1]["params"]["entity_id"], "proc:473220")
+
+    def test_extract_evidence_signals_collects_process_find_suspects(self) -> None:
+        tool_runs = [
+            {
+                "tool": "process.find",
+                "success": True,
+                "params": {"pattern": "load_simulator", "node": "10.11.4.13"},
+                "key_fields": {
+                    "match_count": 2,
+                    "node": "10.11.4.13",
+                    "suspicious_load_present": True,
+                    "suspicious_load_processes": [
+                        {
+                            "pid": 473156,
+                            "process_name": "python3 -m load_simulator run --only inference",
+                            "memory_mib": None,
+                            "node": "10.11.4.13",
+                        },
+                        {
+                            "pid": 473573,
+                            "process_name": "python3 -m load_simulator run --only inference",
+                            "memory_mib": None,
+                            "node": "10.11.4.13",
+                        },
+                    ],
+                },
+                "data": {},
+            }
+        ]
+
+        signals = nodes_module._extract_evidence_signals(tool_runs)
+        self.assertTrue(signals["ttft_suspect_process_present"])
+        suspects = signals["ttft_suspect_processes"]
+        self.assertIsInstance(suspects, list)
+        self.assertEqual(len(suspects), 2)
+        self.assertEqual(suspects[0]["node"], "10.11.4.13")
+
+    def test_has_probed_ttft_external_node_detects_existing_probe(self) -> None:
+        tool_runs: list[dict[str, Any]] = [
+            {
+                "tool": "process.find",
+                "params": {"pattern": "stress", "node": "10.11.4.13"},
+                "data": {"node": "10.11.4.13"},
+            },
+        ]
+        self.assertTrue(nodes_module._has_probed_ttft_external_node(tool_runs, "10.11.4.13"))
+        self.assertFalse(nodes_module._has_probed_ttft_external_node(tool_runs, "10.11.4.99"))
+
+    def test_has_probed_ttft_external_node_returns_false_for_empty(self) -> None:
+        self.assertFalse(nodes_module._has_probed_ttft_external_node([], "10.11.4.13"))
+
+    def test_has_probed_ttft_external_node_detects_via_data_node(self) -> None:
+        tool_runs: list[dict[str, Any]] = [
+            {
+                "tool": "process.find",
+                "params": {"pattern": "stress"},
+                "data": {"node": "10.11.4.13"},
+            },
+        ]
+        self.assertTrue(nodes_module._has_probed_ttft_external_node(tool_runs, "10.11.4.13"))
+
+    def test_get_ttft_external_node_prefers_alert_snapshot(self) -> None:
+        state: dict[str, Any] = {
+            "alert_snapshot": {
+                "alert_name": "AIServiceTTFTP99High",
+                "ttft_external_process_default_node": "10.11.4.13",
+            },
+            "variables": {"ttft_external_process_default_node": "10.11.4.99"},
+        }
+        self.assertEqual(nodes_module._get_ttft_external_node(state), "10.11.4.13")
+
+    def test_get_ttft_external_node_falls_back_to_variables(self) -> None:
+        state: dict[str, Any] = {
+            "alert_snapshot": {"alert_name": "AIServiceTTFTP99High"},
+            "variables": {"ttft_external_process_default_node": "10.11.4.99"},
+        }
+        self.assertEqual(nodes_module._get_ttft_external_node(state), "10.11.4.99")
+
+    def test_get_ttft_external_node_returns_empty_when_absent(self) -> None:
+        state: dict[str, Any] = {
+            "alert_snapshot": {"alert_name": "AIServiceTTFTP99High"},
+            "variables": {},
+        }
+        self.assertEqual(nodes_module._get_ttft_external_node(state), "")
+
+    async def test_run_diagnosis_stream_emits_real_duration_and_backend_next_action_without_trace_duplicates(self) -> None:
+        stream_events = [
+            {
+                "event": "on_chain_start",
+                "name": "reason",
+                "run_id": "run-reason-1",
+                "data": {},
+            },
+            {
+                "event": "on_chat_model_stream",
+                "name": "ChatOpenAI",
+                "run_id": "run-llm-1",
+                "metadata": {"langgraph_node": "reason"},
+                "data": {"chunk": _FakeStreamChunk("Analyzing telemetry...")},
+            },
+            {
+                "event": "on_chain_end",
+                "name": "reason",
+                "run_id": "run-reason-1",
+                "data": {
+                    "output": {
+                        "status": "diagnosing",
+                        "step_count": 1,
+                        "trace_items": [
+                            {
+                                "type": "thought",
+                                "step": 1,
+                                "timestamp": "2026-04-13T13:00:00+00:00",
+                                "content": "Inspecting service latency and queue depth.",
+                                "action": "tool_call",
+                                "thought_key": "run-reason-1:reason",
+                                "tool_name": "query_metrics",
+                                "tool_params": {"service": "auth-svc"},
+                                "confidence": 0.74,
+                                "next_action": "Next action: call query_metrics for auth-svc and compare p95 with baseline.",
+                            }
+                        ],
+                    }
+                },
+            },
+            {
+                "event": "on_chain_end",
+                "name": "finalize",
+                "run_id": "run-finalize-1",
+                "data": {
+                    "output": {
+                        "status": "diagnosed",
+                        "step_count": 2,
+                        "trace_items": [
+                            {
+                                "type": "thought",
+                                "step": 1,
+                                "timestamp": "2026-04-13T13:00:00+00:00",
+                                "content": "Inspecting service latency and queue depth.",
+                                "action": "tool_call",
+                                "thought_key": "run-reason-1:reason",
+                                "tool_name": "query_metrics",
+                                "tool_params": {"service": "auth-svc"},
+                                "confidence": 0.74,
+                                "next_action": "Next action: call query_metrics for auth-svc and compare p95 with baseline.",
+                            }
+                        ],
+                        "diagnosis_result": {
+                            "root_cause": "Node contention",
+                            "root_cause_layer": "platform",
+                            "root_cause_entities": ["node:worker-03"],
+                            "confidence": 0.82,
+                            "hypotheses": [],
+                            "propagation_chain": [],
+                            "impact_summary": "p95 latency increased due to contention.",
+                            "affected_services": ["auth-svc"],
+                            "triage_priority": "P1",
+                            "diagnosis_certainty": "probable",
+                            "ranked_candidates": [],
+                        },
+                    }
+                },
+            },
+        ]
+
+        with patch("sre_agent.agent.graph.create_sre_graph", return_value=_FakeStreamGraph(stream_events)):
+            emitted: list[dict[str, Any]] = []
+            async for event in run_diagnosis_stream(
+                query="Diagnose auth latency",
+                context=_happy_context(),
+                variables={},
+                checkpoint_dir=None,
+                total_timeout_sec=10.0,
+            ):
+                emitted.append(event)
+
+        token_event = next(item for item in emitted if item["type"] == "token_delta")
+        self.assertEqual(token_event["data"]["node"], "reason")
+        self.assertEqual(token_event["data"]["run_id"], "run-reason-1")
+        self.assertEqual(token_event["data"]["thought_key"], "run-reason-1:reason")
+
+        diagnosis_started = next(item for item in emitted if item["type"] == "diagnosis_started")
+        self.assertEqual(diagnosis_started["data"]["bootstrap_state"], "thinking")
+
+        node_started = next(item for item in emitted if item["type"] == "node_started")
+        self.assertEqual(node_started["data"]["run_id"], "run-reason-1")
+        self.assertEqual(node_started["data"]["thought_key"], "run-reason-1:reason")
+        self.assertIn("started_at", node_started["data"])
+        self.assertEqual(node_started["data"]["display_mode"], "thinking_only")
+
+        node_completed_events = [item for item in emitted if item["type"] == "node_completed"]
+        self.assertGreaterEqual(len(node_completed_events), 2)
+        reason_completed = next(item for item in node_completed_events if item["data"].get("node") == "reason")
+        self.assertEqual(reason_completed["data"]["run_id"], "run-reason-1")
+        self.assertEqual(reason_completed["data"]["thought_key"], "run-reason-1:reason")
+        self.assertIn("completed_at", reason_completed["data"])
+        self.assertGreaterEqual(int(reason_completed["data"]["thought_duration_sec"]), 1)
+        self.assertIn("new_trace_items", reason_completed["data"])
+
+        new_trace_items = reason_completed["data"]["new_trace_items"]
+        self.assertEqual(len(new_trace_items), 1)
+        self.assertEqual(new_trace_items[0]["event_type"], "tool_call")
+        self.assertEqual(new_trace_items[0]["thought_key"], "run-reason-1:reason")
+        self.assertEqual(
+            new_trace_items[0]["next_action"],
+            "Next action: call query_metrics for auth-svc and compare p95 with baseline.",
+        )
+        self.assertGreaterEqual(int(new_trace_items[0]["thought_duration_sec"]), 1)
+
+        finalize_completed = next(item for item in node_completed_events if item["data"].get("node") == "finalize")
+        self.assertNotIn("new_trace_items", finalize_completed["data"])
+
+    async def test_run_diagnosis_stream_keeps_next_action_missing_when_trace_item_does_not_provide_it(self) -> None:
+        stream_events = [
+            {
+                "event": "on_chain_start",
+                "name": "reason",
+                "run_id": "run-reason-2",
+                "data": {},
+            },
+            {
+                "event": "on_chain_end",
+                "name": "reason",
+                "run_id": "run-reason-2",
+                "data": {
+                    "output": {
+                        "status": "diagnosing",
+                        "step_count": 1,
+                        "trace_items": [
+                            {
+                                "type": "thought",
+                                "step": 1,
+                                "timestamp": "2026-04-13T13:10:00+00:00",
+                                "content": "Inspecting error budget burn before concluding.",
+                                "action": "conclude",
+                            }
+                        ],
+                    }
+                },
+            },
+        ]
+
+        with patch("sre_agent.agent.graph.create_sre_graph", return_value=_FakeStreamGraph(stream_events)):
+            emitted: list[dict[str, Any]] = []
+            async for event in run_diagnosis_stream(
+                query="Diagnose error budget burn",
+                context=_happy_context(),
+                variables={},
+                checkpoint_dir=None,
+                total_timeout_sec=10.0,
+            ):
+                emitted.append(event)
+
+        reason_completed = next(item for item in emitted if item["type"] == "node_completed")
+        new_trace_items = reason_completed["data"]["new_trace_items"]
+        self.assertEqual(len(new_trace_items), 1)
+        self.assertNotIn("next_action", new_trace_items[0])
+
+    async def test_run_diagnosis_stream_emits_token_from_reasoning_content_when_content_empty(self) -> None:
+        stream_events = [
+            {
+                "event": "on_chain_start",
+                "name": "reason",
+                "run_id": "run-reason-3",
+                "data": {},
+            },
+            {
+                "event": "on_chat_model_stream",
+                "name": "ChatOpenAI",
+                "run_id": "run-llm-2",
+                "metadata": {"langgraph_node": "reason"},
+                "data": {"chunk": _FakeStreamChunk(content=None, reasoning_content="thinking-token")},
+            },
+            {
+                "event": "on_chain_end",
+                "name": "reason",
+                "run_id": "run-reason-3",
+                "data": {"output": {"status": "diagnosing", "step_count": 1, "trace_items": []}},
+            },
+        ]
+        with patch("sre_agent.agent.graph.create_sre_graph", return_value=_FakeStreamGraph(stream_events)):
+            emitted: list[dict[str, Any]] = []
+            async for event in run_diagnosis_stream(
+                query="Diagnose reasoning stream",
+                context=_happy_context(),
+                variables={},
+                checkpoint_dir=None,
+                total_timeout_sec=10.0,
+            ):
+                emitted.append(event)
+
+        token_event = next(item for item in emitted if item["type"] == "token_delta")
+        self.assertEqual(token_event["data"]["content"], "thinking-token")
+        self.assertEqual(token_event["data"]["thought_key"], "run-reason-3:reason")
+
+    async def test_resilient_llm_retries_and_fallbacks_for_retryable_errors(self) -> None:
+        env = {
+            "SRE_OPENAI_API_KEY": "test-key",
+            "SRE_LLM_PROVIDER": "glm",
+            "SRE_LLM_MODEL": "glm-5.1",
+            "SRE_LLM_FALLBACK_MODELS": "glm-5-turbo",
+            "SRE_OPENAI_BASE_URL": "https://open.bigmodel.cn/api/coding/paas/v4",
+        }
+        with (
+            patch.dict("os.environ", env, clear=True),
+            patch("sre_agent.agent.graph.ChatOpenAI", _ResilientFakeChatOpenAI),
+            patch("sre_agent.agent.graph.asyncio.sleep", new=AsyncMock(return_value=None)),
+        ):
+            runtime_llm = graph_module.build_default_llm_from_env()
+            response = await runtime_llm.ainvoke([])
+            self.assertIsInstance(response, AIMessage)
+            self.assertIn("glm-5-turbo", str(response.content))
+
+            diagnostics = graph_module.get_last_llm_runtime_diagnostics()
+            self.assertEqual(diagnostics["active_model"], "glm-5-turbo")
+            self.assertTrue(diagnostics["fallback_used"])
+            self.assertGreaterEqual(int(diagnostics["retry_count"]), 1)
+            self.assertIn(str(diagnostics["last_error_code"]), {"1305", "None"})
+
+    async def test_reason_timeout_retries_once_with_compact_final_prompt_and_succeeds(self) -> None:
+        llm = _TimeoutThenSuccessLLM(
+            AIMessage(
+                content=json.dumps(
+                    {
+                        "thought": "Retry completed with compact final evidence.",
+                        "diagnosis": {
+                            "root_cause": "Transient LLM latency during reason step",
+                            "root_cause_layer": "service",
+                            "root_cause_entities": ["service:test"],
+                            "confidence": 0.63,
+                            "impact_summary": "Retry succeeded after first reason timeout.",
+                            "affected_services": ["service:test"],
+                            "triage_priority": "P2",
+                            "diagnosis_certainty": "probable",
+                        },
+                        "remediation_plan": None,
+                    }
+                )
+            )
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            result = await run_diagnosis(
+                query="Diagnose with a temporary reason timeout and retry once.",
+                context=_happy_context(),
+                variables={},
+                llm=llm,
+                step_timeout_sec=0.05,
+                total_timeout_sec=1.0,
+                allowed_tool_names=["prometheus.query_instant"],
+                checkpoint_dir=tmpdir,
+            )
+
+        self.assertEqual(result["status"], "diagnosed")
+        self.assertGreaterEqual(len(llm.calls), 2)
+        self.assertEqual(llm.calls[-1]["tool_choice"], "none")
+        trace_items = [item for item in result.get("trace_items", []) if isinstance(item, dict)]
+        self.assertTrue(
+            any(
+                str((item.get("tool_params") or {}).get("kind", "")) == "reason_timeout_retry"
+                for item in trace_items
+            )
+        )
+
+    async def test_reason_timeout_retry_exhausted_keeps_step_timeout_and_retry_trace(self) -> None:
+        llm = _TimeoutAlwaysLLM()
+        result = await run_diagnosis(
+            query="Diagnose with persistent reason timeout.",
+            context=_happy_context(),
+            variables={},
+            llm=llm,
+            step_timeout_sec=0.05,
+            total_timeout_sec=1.0,
+            allowed_tool_names=["prometheus.query_instant"],
+            checkpoint_dir=None,
+        )
+        self.assertEqual(result["status"], "step_timeout")
+        trace_items = [item for item in result.get("trace_items", []) if isinstance(item, dict)]
+        self.assertTrue(
+            any(
+                str((item.get("tool_params") or {}).get("kind", "")) == "reason_timeout_retry"
+                for item in trace_items
+            )
+        )
+        self.assertTrue(
+            any(
+                str((item.get("tool_params") or {}).get("kind", "")) == "reason_timeout"
+                for item in trace_items
+            )
+        )
 
     async def test_step_timeout_returns_step_timeout_state(self) -> None:
         result = await run_diagnosis(

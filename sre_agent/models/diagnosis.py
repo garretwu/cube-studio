@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from datetime import UTC, datetime
 from typing import Any, Literal
 from uuid import uuid4
@@ -41,6 +42,13 @@ class RemediationMetricSnapshot(StrictFrozenModel):
     available: bool = True
     error: str | None = None
 
+    @field_validator("value", mode="before")
+    @classmethod
+    def _sanitize_non_json_float(cls, v: Any) -> Any:
+        if isinstance(v, float) and (math.isnan(v) or math.isinf(v)):
+            return None
+        return v
+
 
 class RemediationCheckSnapshot(StrictFrozenModel):
     """Grouped alert + metric evidence at a specific remediation phase."""
@@ -74,6 +82,13 @@ class RemediationMetricReview(StrictFrozenModel):
     error: str | None = None
     reviewed_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
+    @field_validator("before_value", "after_value", mode="before")
+    @classmethod
+    def _sanitize_non_json_float(cls, v: Any) -> Any:
+        if isinstance(v, float) and (math.isnan(v) or math.isinf(v)):
+            return None
+        return v
+
 
 class RemediationEvidence(StrictFrozenModel):
     """Persistent before/after evidence for remediation audit and review."""
@@ -94,9 +109,12 @@ class ThinkingStep(StrictFrozenModel):
     timestamp: datetime = Field(default_factory=lambda: datetime.now(UTC))
     thought: str = Field(min_length=1)
     action_type: ActionType
+    thought_key: str | None = None
     tool_name: str | None = None
     tool_params: dict[str, Any] | None = None
     confidence: float | None = Field(default=None, ge=0.0, le=1.0)
+    next_action: str | None = None
+    thought_duration_sec: int | None = Field(default=None, ge=1)
 
     def to_dict(self) -> dict[str, Any]:
         return self.model_dump(mode="json")
@@ -137,9 +155,12 @@ class ThinkingTrace(StrictFrozenModel):
                     step=int(item.get("step", next_step)),
                     thought=str(item.get("content", "")),
                     action_type=str(item.get("action", "tool_call")),  # type: ignore[arg-type]
+                    thought_key=item.get("thought_key"),
                     tool_name=item.get("tool_name"),
                     tool_params=item.get("tool_params"),
                     confidence=item.get("confidence"),
+                    next_action=item.get("next_action"),
+                    thought_duration_sec=item.get("thought_duration_sec"),
                 )
                 trace_items.append(step)
                 next_step = step.step + 1

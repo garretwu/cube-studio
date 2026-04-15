@@ -421,6 +421,107 @@ class TestToolRegistryUnit(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(missing_pattern.success)
         self.assertIn("parameter 'pattern' is required", missing_pattern.error)
 
+    async def test_unit_process_find_returns_structured_matches(self) -> None:
+        class _ProcessSSHChannel(_FakeSSHChannel):
+            async def run_command(self, node: str, command: str, use_sudo: bool = False) -> _FakeChannelResult:
+                self.calls.append({"node": node, "command": command, "use_sudo": use_sudo})
+                return _FakeChannelResult(
+                    output=(
+                        "473156 python3 python3 -m load_simulator run --only inference --output-format json\n"
+                        "473573 python3 python3 -m load_simulator run --only inference --output-format json\n"
+                    )
+                )
+
+        registry = build_default_registry()
+        ssh = _ProcessSSHChannel()
+        context = ToolExecutionContext(channels={"ssh": ssh})
+        result = await registry.execute(
+            "process.find",
+            {"node": "worker-04", "pattern": "load_simulator"},
+            context,
+        )
+
+        self.assertTrue(result.success)
+        self.assertEqual(result.data["node"], "worker-04")
+        self.assertEqual(result.data["count"], 2)
+        self.assertEqual(result.data["matches"][0]["pid"], 473156)
+        self.assertIn("grep -E --", ssh.calls[0]["command"])
+        self.assertFalse(ssh.calls[0]["use_sudo"])
+
+    async def test_unit_process_find_uses_context_default_node(self) -> None:
+        class _ProcessSSHChannel(_FakeSSHChannel):
+            async def run_command(self, node: str, command: str, use_sudo: bool = False) -> _FakeChannelResult:
+                self.calls.append({"node": node, "command": command, "use_sudo": use_sudo})
+                return _FakeChannelResult(
+                    output="473156 python3 python3 -m load_simulator run --only inference --output-format json\n"
+                )
+
+        registry = build_default_registry()
+        ssh = _ProcessSSHChannel()
+        context = ToolExecutionContext(
+            channels={"ssh": ssh},
+            metadata={"ttft_external_process_default_node": "10.11.4.13"},
+        )
+        result = await registry.execute(
+            "process.find",
+            {"pattern": "load_simulator"},
+            context,
+        )
+
+        self.assertTrue(result.success)
+        self.assertEqual(result.data["node"], "10.11.4.13")
+        self.assertEqual(ssh.calls[0]["node"], "10.11.4.13")
+
+    async def test_unit_process_find_requires_node_or_context_default(self) -> None:
+        registry = build_default_registry()
+        result = await registry.execute(
+            "process.find",
+            {"pattern": "load_simulator"},
+            ToolExecutionContext(channels={"ssh": _FakeSSHChannel()}),
+        )
+        self.assertFalse(result.success)
+        self.assertIn("parameter 'node' is required", result.error)
+
+    def test_unit_merge_tool_args_omits_node_for_process_find(self) -> None:
+        """process.find 不显式传 node 时，_merge_tool_args 不注入 variables.node。"""
+        from sre_agent.agent.nodes import _merge_tool_args
+
+        registry = build_default_registry()
+        merged = _merge_tool_args(
+            registry=registry,
+            tool_name="process.find",
+            tool_args={"pattern": "stress"},
+            variables={"node": "worker-03"},
+        )
+        self.assertNotIn("node", merged)
+        self.assertEqual(merged["pattern"], "stress")
+
+    def test_unit_merge_tool_args_preserves_explicit_node_for_process_find(self) -> None:
+        """process.find 显式传 node 时，_merge_tool_args 保留显式值。"""
+        from sre_agent.agent.nodes import _merge_tool_args
+
+        registry = build_default_registry()
+        merged = _merge_tool_args(
+            registry=registry,
+            tool_name="process.find",
+            tool_args={"pattern": "stress", "node": "10.11.4.13"},
+            variables={"node": "worker-03"},
+        )
+        self.assertEqual(merged["node"], "10.11.4.13")
+
+    def test_unit_merge_tool_args_injects_node_for_other_tools(self) -> None:
+        """非 process.find 工具仍然通过 _normalize_runtime_defaults 注入 node。"""
+        from sre_agent.agent.nodes import _merge_tool_args
+
+        registry = build_default_registry()
+        merged = _merge_tool_args(
+            registry=registry,
+            tool_name="gpu.get_metrics",
+            tool_args={},
+            variables={"node": "worker-03"},
+        )
+        self.assertEqual(merged["node"], "worker-03")
+
     async def test_unit_network_clear_tc_qdisc_dispatches_expected_commands(self) -> None:
         registry = build_default_registry()
         ssh = _FakeSSHChannel()
@@ -530,6 +631,48 @@ class TestToolRegistryUnit(unittest.IsolatedAsyncioTestCase):
         )
         self.assertTrue(by_pid.success)
         self.assertIn("kill -KILL -- 12345", ssh.calls[1]["command"])
+
+    async def test_unit_kill_process_accepts_proc_entity_id_pid_fallback(self) -> None:
+        registry = build_default_registry()
+        ssh = _FakeSSHChannel()
+        context = ToolExecutionContext(channels={"ssh": ssh}, write_approved=True)
+
+        result = await registry.execute(
+            "kill_process",
+            {"node": "worker-03", "entity_id": "proc:473156"},
+            context,
+        )
+
+        self.assertTrue(result.success)
+        self.assertIn("kill -TERM -- 473156", ssh.calls[0]["command"])
+
+    async def test_unit_kill_process_accepts_proc_entity_id_name_fallback(self) -> None:
+        registry = build_default_registry()
+        ssh = _FakeSSHChannel()
+        context = ToolExecutionContext(channels={"ssh": ssh}, write_approved=True)
+
+        result = await registry.execute(
+            "kill_process",
+            {"node": "worker-03", "entity_id": "proc:load_simulator"},
+            context,
+        )
+
+        self.assertTrue(result.success)
+        self.assertIn("pkill -TERM -f -- load_simulator", ssh.calls[0]["command"])
+
+    async def test_unit_kill_process_rejects_non_proc_entity_id_without_explicit_target(self) -> None:
+        registry = build_default_registry()
+        ssh = _FakeSSHChannel()
+        context = ToolExecutionContext(channels={"ssh": ssh}, write_approved=True)
+
+        result = await registry.execute(
+            "kill_process",
+            {"node": "worker-03", "entity_id": "node:10.11.4.13"},
+            context,
+        )
+
+        self.assertFalse(result.success)
+        self.assertIn("entity_id must start with 'proc:'", result.error)
 
     async def test_unit_redfish_unsupported_actions_fail_fast(self) -> None:
         registry = build_default_registry()

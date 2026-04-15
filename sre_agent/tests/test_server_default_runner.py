@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+import asyncio
 
 from fastapi.testclient import TestClient
 
 from sre_agent.auth.jwt import CurrentUser, encode_token, resolve_jwt_settings
 from sre_agent.config import SREAgentConfig
 from sre_agent.server import create_app
+from sre_agent.tools import ToolExecutionContext
 
 
 def _auth_headers(token: str) -> dict[str, str]:
@@ -396,6 +398,88 @@ inventory:
     assert "node" not in variables
 
 
+def test_infer_default_promql_uses_ttft_query_for_ttft_alert() -> None:
+    from sre_agent.server import _infer_default_promql
+
+    promql = _infer_default_promql(
+        alert_name="AIServiceTTFTP99High",
+        labels={"service": "qwen3-32b-fp8-202602261"},
+    )
+
+    assert "histogram_quantile(0.99" in promql
+    assert 'service="qwen3-32b-fp8-202602261"' in promql
+
+
+def test_apply_ttft_runtime_bootstrap_resolves_pod_to_node(monkeypatch, tmp_path) -> None:
+    from sre_agent.models.alert import Alert
+    from sre_agent.server import _apply_ttft_runtime_bootstrap
+
+    class _FakeK8s:
+        async def resolve_pod_names_for_service(self, namespace: str, service_name: str):  # noqa: ANN001
+            _ = (namespace, service_name)
+            return ["qwen3-32b-fp8-202602261-7df4474bbd-25cmh"]
+
+        async def resolve_node_ip_for_pod(self, namespace: str, pod_name: str):  # noqa: ANN001
+            _ = (namespace, pod_name)
+            return "10.11.4.12"
+
+    inventory_path = tmp_path / "inventory.yaml"
+    inventory_path.write_text(
+        """
+inventory:
+  workers:
+    - name: worker-03
+      ssh:
+        host: 10.11.4.12
+        user: demo
+""".strip(),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("SRE_SSH_INVENTORY_PATH", str(inventory_path))
+
+    config = SREAgentConfig.model_validate(
+        {
+            "global": {"aidc_id": "test-aidc"},
+            "ontology": {"db_path": str(tmp_path / "ontology.db")},
+            "memory": {"db_dir": str(tmp_path / "memory")},
+        }
+    )
+    alert = Alert.model_validate(
+        {
+            "alert_name": "AIServiceTTFTP99High",
+            "severity": "warning",
+            "labels": {
+                "namespace": "service",
+                "service": "qwen3-32b-fp8-202602261",
+            },
+            "annotations": {"summary": "ttft high"},
+            "starts_at": datetime(2026, 4, 14, 12, 0, tzinfo=UTC).isoformat(),
+            "fingerprint": "ttft-bootstrap-1",
+            "status": "firing",
+        }
+    )
+    context = ToolExecutionContext(channels={"k8s": _FakeK8s()})
+    payload = {
+        "alert_name": alert.alert_name,
+        "namespace": "service",
+        "service": "qwen3-32b-fp8-202602261",
+        "promql": "up",
+    }
+
+    updated = asyncio.run(
+        _apply_ttft_runtime_bootstrap(
+            payload=payload,
+            alert=alert,
+            context=context,
+            cfg=config,
+        )
+    )
+    assert updated["pod"] == "qwen3-32b-fp8-202602261-7df4474bbd-25cmh"
+    assert updated["node_ip"] == "10.11.4.12"
+    assert updated["node"] == "worker-03"
+    assert "resolve_service_pods" in str(updated.get("target_resolution_chain", ""))
+
+
 def test_create_app_strict_mode_rejects_when_core_channels_not_ready(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("JWT_SECRET", "secret")
     monkeypatch.setenv("SRE_OPENAI_API_KEY", "test-key")
@@ -440,3 +524,109 @@ def test_create_app_fails_fast_when_llm_key_missing(monkeypatch, tmp_path) -> No
         assert "SRE_OPENAI_API_KEY or OPENAI_API_KEY is required" in str(exc)
     else:
         raise AssertionError("expected startup failure when llm key is missing")
+
+
+def test_default_runner_ttft_alert_uses_ttft_allowed_tools(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("JWT_SECRET", "secret")
+    monkeypatch.setenv("SRE_OPENAI_API_KEY", "test-key")
+    monkeypatch.setenv("SRE_LLM_MODEL", "MiniMax-M2.7")
+
+    captured: dict[str, object] = {}
+
+    async def _fake_run_diagnosis(**kwargs):  # noqa: ANN003
+        captured.update(kwargs)
+        return {
+            "session_id": "ttft-session-1",
+            "status": "diagnosed",
+            "summary": "synthetic ttft diagnosis",
+        }
+
+    monkeypatch.setattr("sre_agent.server.run_diagnosis", _fake_run_diagnosis)
+
+    settings = resolve_jwt_settings()
+    token = encode_token(CurrentUser(user_id="u1", username="alice", role="operator"), settings)
+    config = SREAgentConfig.model_validate(
+        {
+            "global": {"aidc_id": "test-aidc"},
+            "agent": {"ttft_external_process_default_node": "10.11.4.13"},
+            "ontology": {"db_path": str(tmp_path / "ontology.db")},
+            "memory": {"db_dir": str(tmp_path / "memory")},
+        }
+    )
+
+    with TestClient(create_app(config=config)) as client:
+        response = client.post(
+            "/api/diagnose",
+            json={
+                "alert_name": "AIServiceTTFTP99High",
+                "severity": "warning",
+                "labels": {"namespace": "service", "service": "qwen3-32b-fp8-202602261"},
+                "annotations": {"summary": "ttft high"},
+                "starts_at": datetime(2026, 4, 14, 12, 0, tzinfo=UTC).isoformat(),
+                "fingerprint": "fp-ttft-allowed-tools-1",
+                "status": "firing",
+            },
+            headers=_auth_headers(token),
+        )
+
+    assert response.status_code == 200
+    allowed = captured.get("allowed_tool_names")
+    assert isinstance(allowed, list)
+    assert "k8s.resolve_service_pods" in allowed
+    assert "k8s.resolve_pod_node_ip" in allowed
+    assert "gpu.get_metrics" in allowed
+    assert "process.find" in allowed
+    assert "prometheus.query_instant" in allowed
+    variables = captured.get("variables")
+    assert isinstance(variables, dict)
+    assert variables.get("ttft_external_process_default_node") == "10.11.4.13"
+
+
+def test_create_app_injects_ttft_external_process_default_node_into_context_metadata(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("JWT_SECRET", "secret")
+    monkeypatch.setenv("SRE_OPENAI_API_KEY", "test-key")
+    monkeypatch.setenv("SRE_LLM_MODEL", "MiniMax-M2.7")
+
+    context = ToolExecutionContext()
+    config = SREAgentConfig.model_validate(
+        {
+            "global": {"aidc_id": "test-aidc"},
+            "agent": {"ttft_external_process_default_node": "10.11.4.13"},
+            "ontology": {"db_path": str(tmp_path / "ontology.db")},
+            "memory": {"db_dir": str(tmp_path / "memory")},
+        }
+    )
+
+    with TestClient(create_app(config=config, execution_context=context)):
+        pass
+
+    assert context.metadata.get("ttft_external_process_default_node") == "10.11.4.13"
+
+
+def test_build_ttft_query_includes_external_pressure_path_instruction(tmp_path) -> None:
+    from sre_agent.models.alert import Alert
+    from sre_agent.server import _build_diagnosis_query
+
+    alert = Alert.model_validate(
+        {
+            "alert_name": "AIServiceTTFTP99High",
+            "severity": "warning",
+            "labels": {"namespace": "service", "service": "qwen3-32b-fp8-202602261"},
+            "annotations": {"summary": "ttft high"},
+            "starts_at": datetime(2026, 4, 14, 12, 0, tzinfo=UTC).isoformat(),
+            "fingerprint": "fp-ttft-query-external-process-1",
+            "status": "firing",
+        }
+    )
+    query = _build_diagnosis_query(
+        alert=alert,
+        variables={
+            "namespace": "service",
+            "service": "qwen3-32b-fp8-202602261",
+            "ttft_external_process_default_node": "10.11.4.13",
+        },
+        topology_context={"summary": "topology-summary", "affected_count": 1},
+        extra_alerts=None,
+    )
+    assert "external pressure path" in query
+    assert "10.11.4.13" in query

@@ -221,8 +221,16 @@ class LLMRuntimeStatusResponse(BaseModel):
     api_key_configured: bool = False
     api_key_source: str = "none"
     api_key_length: int = 0
-    model: str = "gpt-4o-mini"
+    model: str = "MiniMax-M2.7"
     base_url: str | None = None
+    provider: str = "openai_compatible"
+    fallback_models: list[str] = Field(default_factory=list)
+    active_model: str | None = None
+    retry_count: int = 0
+    fallback_used: bool = False
+    last_error_code: str | None = None
+    last_error_message: str | None = None
+    last_attempt_at: str | None = None
     reason: str | None = None
 
 
@@ -701,8 +709,20 @@ def build_api_router() -> APIRouter:
             api_key_configured=bool(payload.get("api_key_configured", False)),
             api_key_source=str(payload.get("api_key_source", "none")),
             api_key_length=int(payload.get("api_key_length", 0) or 0),
-            model=str(payload.get("model", "gpt-4o-mini")),
+            model=str(payload.get("model", "MiniMax-M2.7")),
             base_url=str(payload["base_url"]) if payload.get("base_url") else None,
+            provider=str(payload.get("provider", "openai_compatible")),
+            fallback_models=[
+                str(item).strip()
+                for item in (payload.get("fallback_models") or [])
+                if str(item).strip()
+            ],
+            active_model=str(payload["active_model"]) if payload.get("active_model") else None,
+            retry_count=int(payload.get("retry_count", 0) or 0),
+            fallback_used=bool(payload.get("fallback_used", False)),
+            last_error_code=str(payload["last_error_code"]) if payload.get("last_error_code") else None,
+            last_error_message=str(payload["last_error_message"]) if payload.get("last_error_message") else None,
+            last_attempt_at=str(payload["last_attempt_at"]) if payload.get("last_attempt_at") else None,
             reason=str(payload["reason"]) if payload.get("reason") else None,
         )
 
@@ -1121,6 +1141,10 @@ def build_api_router() -> APIRouter:
             "observation_started": EventType.OBSERVATION_STARTED,
             "observation_result": EventType.OBSERVATION_RESULT,
             "escalation_required": EventType.ESCALATION_REQUIRED,
+            "canary_batch_started": EventType.REMEDIATION_PROGRESS,
+            "canary_batch_completed": EventType.REMEDIATION_PROGRESS,
+            "canary_check_passed": EventType.REMEDIATION_PROGRESS,
+            "canary_check_failed": EventType.REMEDIATION_PROGRESS,
         }
         mapped_event_type = stage_to_event_type.get(stage)
         if mapped_event_type is not None:
@@ -1313,6 +1337,7 @@ def build_api_router() -> APIRouter:
                         metric_key=metric_key,
                         query=query,
                         value=value,
+                        available=value is not None,
                         condition=condition if isinstance(condition, dict) else None,
                     )
                 )
@@ -1371,10 +1396,15 @@ def build_api_router() -> APIRouter:
                 improved = bool(operator) and _compare_scalar(after.value, operator, expected)
                 all_improved = all_improved and improved
             else:
-                try:
-                    improved = float(after.value) <= float(before.value)
-                except (TypeError, ValueError):
-                    improved = False
+                after_val = after.value if after is not None else None
+                before_val = before.value if before is not None else None
+                if after_val is None and isinstance(before_val, (int, float)) and float(before_val) > 0:
+                    improved = True  # 基线异常高、修复后无数据 → 视为改善
+                elif after_val is not None and before_val is not None:
+                    try:
+                        improved = float(after_val) <= float(before_val)
+                    except (TypeError, ValueError):
+                        improved = False
                 all_improved = all_improved and improved
             reviews.append(
                 RemediationMetricReview(
@@ -1389,6 +1419,14 @@ def build_api_router() -> APIRouter:
                 )
             )
         return reviews, all_improved
+
+    _ALERT_STATUS_ONLY_WHEN_METRICS_UNAVAILABLE = {"aiservicettftp99high"}
+
+    def _normalize_alert_name_for_policy(value: str | None) -> str:
+        return str(value or "").strip().lower()
+
+    def _should_use_alert_status_only_policy(alert_name: str | None) -> bool:
+        return _normalize_alert_name_for_policy(alert_name) in _ALERT_STATUS_ONLY_WHEN_METRICS_UNAVAILABLE
 
     async def _observe_post_remediation(
         services: Any,
@@ -1420,6 +1458,24 @@ def build_api_router() -> APIRouter:
             )
 
         metric_reviews, metrics_improved = _build_metric_reviews(pre_check, post_check)
+        post_metrics_unavailable_keys = [item.metric_key for item in post_check.metrics if not item.available]
+        use_alert_status_only_policy = _should_use_alert_status_only_policy(post_alert.alert_name) and bool(
+            post_metrics_unavailable_keys
+        )
+        policy_applied = (
+            "alert_status_only_when_post_metrics_unavailable"
+            if use_alert_status_only_policy
+            else "default_alert_and_metrics"
+        )
+        observed_ok = alert_cleared if use_alert_status_only_policy else (alert_cleared and metrics_improved)
+        escalation_reasons: list[str] = []
+        if not observed_ok:
+            if not alert_cleared:
+                escalation_reasons.append("alert_not_cleared")
+            if post_metrics_unavailable_keys:
+                escalation_reasons.append("metrics_unavailable")
+            elif not metrics_improved:
+                escalation_reasons.append("metrics_not_improved")
         evidence = RemediationEvidence(
             pre_check=pre_check,
             post_check=post_check,
@@ -1440,6 +1496,9 @@ def build_api_router() -> APIRouter:
             "post_check": post_check.model_dump(mode="json"),
             "alert_review": alert_review.model_dump(mode="json") if alert_review is not None else None,
             "metric_reviews": [item.model_dump(mode="json") for item in metric_reviews],
+            "policy_applied": policy_applied,
+            "post_metrics_unavailable_keys": post_metrics_unavailable_keys,
+            "escalation_reasons": escalation_reasons,
             "collected_at": evidence.collected_at.isoformat(),
         }
         updated_session = _update_session_evidence(services, session=session, evidence=evidence)
@@ -1449,7 +1508,7 @@ def build_api_router() -> APIRouter:
             stage="observation_result",
             details=details,
         )
-        return alert_cleared and metrics_improved, details, evidence
+        return observed_ok, details, evidence
 
     def _extract_step_results(result: RemediationResult) -> list[dict[str, Any]]:
         payload: list[dict[str, Any]] = []

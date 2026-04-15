@@ -21,11 +21,13 @@ from fastapi import FastAPI
 from lib.channels.alert import AlertChannel
 from lib.channels.knowledge import DifyKnowledgeStoreAdapter
 from sre_agent.agent import ConversationalAgent, run_diagnosis, run_diagnosis_stream
+from sre_agent.agent.prompts import build_alert_diagnosis_prompt
+from sre_agent.agent.graph import get_last_llm_runtime_diagnostics
 from sre_agent.alerts_filter import build_blocked_alert_name_set, filter_blocked_alerts, normalize_alert_name
 from sre_agent.api import build_api_router, build_websocket_router, install_middlewares
 from sre_agent.api.routes import AuditLogger
 from sre_agent.auth.jwt import CurrentUser, JWTSettings, resolve_jwt_settings
-from sre_agent.config import SREAgentConfig
+from sre_agent.config import SREAgentConfig, resolve_llm_runtime_settings
 from sre_agent.concurrency import AlertCorrelator, AlertDeduplicator, ResourceLock
 from sre_agent.knowledge.store import KnowledgeStore
 from sre_agent.memory.factory import create_memory_store
@@ -41,6 +43,17 @@ from sre_agent.topology.discovery import discover_hybrid_snapshot, discover_live
 from sre_agent.tools import ToolExecutionContext, build_default_registry
 
 LOGGER = logging.getLogger(__name__)
+
+_TTFT_ALLOWED_READONLY_TOOLS = [
+    "k8s.resolve_service_pods",
+    "k8s.resolve_pod_node_ip",
+    "k8s.describe_pod",
+    "k8s.list_pods",
+    "gpu.get_metrics",
+    "gpu.get_processes",
+    "process.find",
+    "prometheus.query_instant",
+]
 
 
 class DiagnosisRunnerProtocol(Protocol):
@@ -900,6 +913,19 @@ class DefaultDiagnosisRunner:
             topology_context=topology_context,
             extra_alerts=extra_alerts_payload,
         )
+        runtime_variables = await _apply_ttft_runtime_bootstrap(
+            payload=runtime_variables,
+            alert=enriched_alert,
+            context=self._execution_context,
+            cfg=self._config,
+        )
+        query = _build_diagnosis_query(
+            alert=enriched_alert,
+            variables=runtime_variables,
+            topology_context=topology_context,
+            extra_alerts=extra_alerts,
+        )
+        allowed_tool_names = _select_allowed_tool_names_for_alert(enriched_alert)
         result = await run_diagnosis(
             query=query,
             context=self._execution_context,
@@ -912,6 +938,11 @@ class DefaultDiagnosisRunner:
             alert_snapshot=enriched_alert.model_dump(mode="json"),
             topology_context=topology_context,
             extra_alerts=extra_alerts_payload,
+            allowed_tool_names=allowed_tool_names,
+            reasoning_context_strategy=_resolve_reasoning_context_strategy(self._config),
+            reasoning_overflow_behavior=_resolve_reasoning_overflow_behavior(self._config),
+            reasoning_input_target_tokens=_resolve_reasoning_input_target_tokens(self._config),
+            reasoning_model_family=_resolve_reasoning_model_family(self._config),
         )
         return _diagnosis_session_from_state(alert=enriched_alert, state=result)
 
@@ -965,9 +996,25 @@ class StreamingDiagnosisRunner:
             topology_context=topology_context,
             extra_alerts=extra_alerts_payload,
         )
+        runtime_variables = await _apply_ttft_runtime_bootstrap(
+            payload=runtime_variables,
+            alert=enriched_alert,
+            context=self._execution_context,
+            cfg=self._config,
+        )
+        query = _build_diagnosis_query(
+            alert=enriched_alert,
+            variables=runtime_variables,
+            topology_context=topology_context,
+            extra_alerts=extra_alerts,
+        )
+        allowed_tool_names = _select_allowed_tool_names_for_alert(enriched_alert)
 
         final_session_id: str | None = None
         final_state: dict[str, Any] = {}
+        final_trace_items: list[dict[str, Any]] = []
+        buffered_done_event: dict[str, Any] | None = None
+        emitted_event_types: set[str] = set()
 
         async for event in run_diagnosis_stream(
             query=query,
@@ -980,9 +1027,19 @@ class StreamingDiagnosisRunner:
             alert_snapshot=enriched_alert.model_dump(mode="json"),
             topology_context=topology_context,
             extra_alerts=extra_alerts_payload,
+            allowed_tool_names=allowed_tool_names,
+            reasoning_context_strategy=_resolve_reasoning_context_strategy(self._config),
+            reasoning_overflow_behavior=_resolve_reasoning_overflow_behavior(self._config),
+            reasoning_input_target_tokens=_resolve_reasoning_input_target_tokens(self._config),
+            reasoning_model_family=_resolve_reasoning_model_family(self._config),
         ):
             if final_session_id is None:
                 final_session_id = event.get("session_id")
+
+            event_type = str(event.get("type", "")).strip().lower()
+            if event_type == EventType.DONE.value:
+                buffered_done_event = dict(event) if isinstance(event, dict) else None
+                continue
 
             # Track state from node_completed events for session persistence.
             if event.get("type") == "node_completed" and isinstance(event.get("data"), dict):
@@ -995,34 +1052,144 @@ class StreamingDiagnosisRunner:
                     final_state["status"] = data["status"]
                 if data.get("step_count") is not None:
                     final_state["step_count"] = data["step_count"]
+                if data.get("plan_missing_reason") is not None:
+                    final_state["plan_missing_reason"] = data["plan_missing_reason"]
+                raw_trace_items = data.get("new_trace_items")
+                if isinstance(raw_trace_items, list):
+                    for raw_item in raw_trace_items:
+                        if not isinstance(raw_item, dict):
+                            continue
+                        trace_item = self._trace_item_from_stream_snapshot(raw_item)
+                        if trace_item is not None:
+                            final_trace_items.append(trace_item)
 
             # Publish key events to WebSocket for backward compatibility.
             event_type = event.get("type", "")
             if event_type in {
                 EventType.DIAGNOSIS_STARTED.value,
+                EventType.TOKEN_DELTA.value,
+                EventType.NODE_STARTED.value,
                 EventType.NODE_COMPLETED.value,
                 EventType.TOOL_STARTED.value,
                 EventType.TOOL_COMPLETED.value,
                 EventType.ERROR.value,
-                "done",
             }:
                 try:
                     await self._trace_publisher.publish(event)
                 except Exception:  # noqa: BLE001
                     pass
 
+            emitted_event_types.add(event_type)
             yield event
 
         # Persist the completed session.
         if final_session_id:
             final_state.setdefault("status", "diagnosed")
             final_state.setdefault("step_count", 0)
+            if final_trace_items:
+                final_state["trace_items"] = final_trace_items
             completed = _diagnosis_session_from_state(alert=enriched_alert, state=final_state)
             completed = completed.model_copy(update={"session_id": final_session_id})
-            self._session_store.put(completed)
             plan = self._extract_recommended_fix(completed)
             if plan is not None:
                 self._remediation_engine.register_plan(final_session_id, plan)
+                completed = completed.model_copy(update={"status": "approval_required"})
+            elif completed.status == "diagnosing":
+                completed = completed.model_copy(update={"status": "diagnosed"})
+            self._session_store.put(completed)
+
+            supplemental_events: list[dict[str, Any]] = []
+            if completed.diagnosis_result is not None and EventType.DIAGNOSIS_RESULT.value not in emitted_event_types:
+                supplemental_events.append(
+                    {
+                        "type": EventType.DIAGNOSIS_RESULT.value,
+                        "session_id": final_session_id,
+                        "data": completed.diagnosis_result.model_dump(mode="json"),
+                    }
+                )
+            if plan is not None and EventType.APPROVAL_REQUIRED.value not in emitted_event_types:
+                plan_version = self._remediation_engine.get_latest_plan_version(final_session_id)
+                supplemental_events.append(
+                    {
+                        "type": EventType.APPROVAL_REQUIRED.value,
+                        "session_id": final_session_id,
+                        "data": {
+                            "plan_id": plan.plan_id,
+                            "plan_version": plan_version,
+                        },
+                    }
+                )
+            if plan is None:
+                supplemental_events.append(
+                    {
+                        "type": EventType.REMEDIATION_PROGRESS.value,
+                        "session_id": final_session_id,
+                        "data": {
+                            "stage": "plan_unavailable",
+                            "message": self._build_plan_unavailable_reason(
+                                completed,
+                                final_state.get("plan_missing_reason"),
+                            ),
+                        },
+                    }
+                )
+
+            for supplemental in supplemental_events:
+                emitted_event_types.add(str(supplemental.get("type", "")).strip().lower())
+                try:
+                    await self._trace_publisher.publish(supplemental)
+                except Exception:  # noqa: BLE001
+                    pass
+                yield supplemental
+
+        done_event = buffered_done_event or {
+            "type": EventType.DONE.value,
+            "session_id": final_session_id or "",
+            "data": {},
+        }
+        if final_session_id and not str(done_event.get("session_id", "")).strip():
+            done_event = {**done_event, "session_id": final_session_id}
+        try:
+            await self._trace_publisher.publish(done_event)
+        except Exception:  # noqa: BLE001
+            pass
+        yield done_event
+
+    @staticmethod
+    def _trace_item_from_stream_snapshot(item: dict[str, Any]) -> dict[str, Any] | None:
+        event_type = str(item.get("event_type", "")).strip().lower()
+        if event_type in {EventType.THINKING_STEP.value, EventType.TOOL_CALL.value}:
+            action = str(item.get("action_type", "tool_call")).strip().lower()
+            if action not in {"tool_call", "conclude", "remediate"}:
+                action = "tool_call" if event_type == EventType.TOOL_CALL.value else "conclude"
+            thought = str(item.get("thought", "")).strip()
+            if not thought:
+                return None
+            output: dict[str, Any] = {
+                "type": "thought",
+                "step": int(item.get("step", 1)),
+                "timestamp": item.get("timestamp"),
+                "content": thought,
+                "action": action,
+                "thought_key": item.get("thought_key"),
+                "tool_name": item.get("tool_name"),
+                "tool_params": item.get("tool_params") if isinstance(item.get("tool_params"), dict) else {},
+                "confidence": item.get("confidence"),
+                "next_action": item.get("next_action"),
+                "thought_duration_sec": item.get("thought_duration_sec"),
+            }
+            return output
+
+        if event_type == EventType.TOOL_RESULT.value:
+            return {
+                "type": "observation",
+                "timestamp": item.get("timestamp"),
+                "tool": str(item.get("tool", "unknown")).strip() or "unknown",
+                "params": item.get("params") if isinstance(item.get("params"), dict) else {},
+                "result": item.get("result") if isinstance(item.get("result"), dict) else {},
+            }
+
+        return None
 
     @staticmethod
     def _extract_recommended_fix(session: DiagnosisSession) -> Any:
@@ -1034,6 +1201,22 @@ class StreamingDiagnosisRunner:
             if candidate.recommended_fix is not None:
                 return candidate.recommended_fix
         return None
+
+    @staticmethod
+    def _build_plan_unavailable_reason(session: DiagnosisSession, explicit_reason: Any = None) -> str:
+        explicit = str(explicit_reason or "").strip()
+        if explicit:
+            return explicit
+        diagnosis = session.diagnosis_result
+        if diagnosis is None:
+            return "诊断已结束，但未产出可审批修复计划。"
+        certainty = str(diagnosis.diagnosis_certainty or "").strip().lower()
+        if certainty == "ambiguous":
+            return "诊断结论仍不确定，暂不自动生成修复方案，请先人工确认主根因。"
+        confidence = float(diagnosis.confidence or 0.0)
+        if confidence < 0.55:
+            return f"当前置信度 {confidence:.2f} 偏低，暂不自动生成修复方案，请先补充证据。"
+        return "当前诊断未形成满足执行约束的修复计划（可能缺少可用写工具或关键参数）。"
 
 
 class DefaultReDiagnoseRunner:
@@ -1085,6 +1268,10 @@ class DefaultReDiagnoseRunner:
             trace_callback=trace_callback,
             alert_snapshot=alert.model_dump(mode="json"),
             topology_context=topology_context,
+            reasoning_context_strategy=_resolve_reasoning_context_strategy(self._config),
+            reasoning_overflow_behavior=_resolve_reasoning_overflow_behavior(self._config),
+            reasoning_input_target_tokens=_resolve_reasoning_input_target_tokens(self._config),
+            reasoning_model_family=_resolve_reasoning_model_family(self._config),
         )
         updated = _diagnosis_session_from_state(alert=alert, state=result)
         return updated.model_copy(update={"re_diagnosis_round": session.re_diagnosis_round + 1})
@@ -1095,6 +1282,84 @@ def _build_default_query(alert: Alert) -> str:
         f"Diagnose alert '{alert.alert_name}' with severity '{alert.severity.value}'. "
         f"Summary: {alert.summary or 'n/a'}. Description: {alert.description or 'n/a'}. "
         "Use available tools to identify root cause and produce ranked candidates."
+    )
+
+
+def _is_ttft_alert_name(alert_name: str) -> bool:
+    normalized = str(alert_name or "").strip().lower()
+    return "ttft" in normalized or normalized.startswith("aiservicettft")
+
+
+def _select_allowed_tool_names_for_alert(alert: Alert) -> list[str] | None:
+    if _is_ttft_alert_name(alert.alert_name):
+        return list(_TTFT_ALLOWED_READONLY_TOOLS)
+    return None
+
+
+def _build_diagnosis_query(
+    *,
+    alert: Alert,
+    variables: dict[str, Any],
+    topology_context: dict[str, Any],
+    extra_alerts: list[Alert] | None = None,
+) -> str:
+    if not _is_ttft_alert_name(alert.alert_name):
+        query = f"{_build_default_query(alert)}\n{topology_context['summary']}"
+        if extra_alerts:
+            query += "\n\nAdditional correlated alerts from the same convergence group:"
+            for idx, extra in enumerate(extra_alerts, start=1):
+                query += (
+                    f"\n- Alert {idx + 1}: '{extra.alert_name}' severity={extra.severity.value}"
+                    f" entity={extra.labels.get('instance', extra.labels.get('node', 'unknown'))}"
+                    f" summary={extra.summary or 'n/a'}"
+                )
+            query += "\nConsider all above alerts as context when forming diagnosis hypotheses."
+        return query
+
+    labels = dict(alert.labels or {})
+    namespace = str(variables.get("namespace") or labels.get("exported_namespace") or labels.get("namespace") or "service").strip()
+    service = str(variables.get("service") or labels.get("service") or labels.get("exported_container") or "").strip()
+    selected_pod = str(variables.get("pod") or "").strip()
+    selected_node = str(variables.get("node") or "").strip()
+    node_ip = str(variables.get("node_ip") or "").strip()
+    external_process_default_node = str(variables.get("ttft_external_process_default_node") or "").strip()
+    promql = str(variables.get("promql") or "").strip()
+    context_hints: dict[str, Any] = {
+        "namespace": namespace,
+        "service": service,
+        "selected_pod": selected_pod,
+        "selected_node": selected_node,
+        "selected_node_ip": node_ip,
+        "external_process_default_node": external_process_default_node,
+        "promql": promql,
+        "target_resolution_chain": variables.get("target_resolution_chain"),
+    }
+    return build_alert_diagnosis_prompt(
+        alert_payload=alert.model_dump(mode="json"),
+        available_tool_names=_TTFT_ALLOWED_READONLY_TOOLS,
+        diagnosis_goal=(
+            "This is AIServiceTTFT diagnosis; prioritize deterministic service->pod->node->gpu evidence chain "
+            "before broad exploration. Use prometheus.query_instant only for verification and keep it within "
+            "two calls unless absolutely required for contradiction resolution. If suspicious load-generator processes "
+            "are not found on the serving pod node, continue with external pressure path and inspect likely load-source "
+            "nodes from context hints. If gpu.get_processes reveals suspicious synthetic/load-generator processes, "
+            "summarize the evidence and prepare proposal-only kill_process remediation steps per process. For two or "
+            "more suspicious processes on the same node, prefer process-level canary batches (50% then 100%, "
+            "approval-gated, not auto-executed)."
+        ),
+        investigation_steps=[
+            "定位受影响 service 对应的 pod（k8s.resolve_service_pods / k8s.list_pods）。",
+            "定位 pod 所在 node 与 node_ip（k8s.resolve_pod_node_ip + inventory mapping）。",
+            "在目标 node 采集 GPU metrics/processes（gpu.get_metrics + gpu.get_processes），识别异常负载进程。",
+            "若服务侧 node 未发现可疑进程，必须在 external_process_default_node 执行 process.find(pattern=load_simulator|stress|benchmark|simulator) 复核外部压测源。",
+            "用 prometheus.query_instant 复核 TTFT 与请求时延变化，并给出处置结论。",
+        ],
+        context_hints=context_hints,
+        history_count=len(extra_alerts or []),
+        extra_context={
+            "topology_summary": topology_context.get("summary"),
+            "topology_affected_count": topology_context.get("affected_count"),
+        },
     )
 
 
@@ -1109,11 +1374,15 @@ def _build_runtime_diagnosis_variables(
     labels = dict(alert.labels or {})
     annotations = dict(alert.annotations or {})
     node = _resolve_inventory_node_for_alert(labels=labels, cfg=cfg)
-    namespace = str(labels.get("namespace") or "service").strip() or "service"
+    namespace = str(labels.get("exported_namespace") or labels.get("namespace") or "service").strip() or "service"
+    service = str(labels.get("service") or labels.get("exported_container") or "").strip()
+    pod = str(labels.get("exported_pod") or labels.get("pod") or "").strip()
+    instance = str(labels.get("instance") or "").strip()
     iface = str(labels.get("interface") or labels.get("device") or "").strip()
     if iface.lower() in {"unknown", "n/a", "none", "-", "--", "null"}:
         iface = ""
     promql = _infer_default_promql(alert_name=alert.alert_name, labels=labels)
+    ttft_external_process_default_node = str(cfg.agent.ttft_external_process_default_node or "").strip()
     payload: dict[str, Any] = {
         "alert_name": alert.alert_name,
         "severity": alert.severity.value,
@@ -1125,22 +1394,212 @@ def _build_runtime_diagnosis_variables(
         "namespace": namespace,
         "promql": promql,
     }
+    if _is_ttft_alert_name(alert.alert_name) and ttft_external_process_default_node:
+        payload["ttft_external_process_default_node"] = ttft_external_process_default_node
+    if service:
+        payload["service"] = service
+    if pod:
+        payload["pod"] = pod
+    if instance:
+        payload["instance"] = instance
     if node:
         payload["node"] = node
     if iface:
         payload["iface"] = iface
+
+    # Extract host_ip for skill tool params (used by GPU/BMC tools)
+    # Priority:
+    # 1. labels.host_ip (explicit)
+    # 2. SSH host IP from inventory via k8s_node_name/Hostname mapping
+    # 3. instance label (strip port, may be pod IP not SSH IP)
+    # 4. annotations.host_ip
+    host_ip = str(labels.get("host_ip") or labels.get("HostIP") or "").strip()
+
+    if not host_ip:
+        # Try to resolve SSH host IP from inventory using Hostname label
+        hostname = str(labels.get("Hostname") or "").strip()
+        if hostname:
+            workers = _load_inventory_workers(cfg=cfg)
+            for worker in workers:
+                k8s_node_name = str(worker.get("k8s_node_name") or "").strip()
+                worker_name = str(worker.get("name") or "").strip()
+                ssh_config = worker.get("ssh")
+                ssh_host = str(ssh_config.get("host") or "").strip() if isinstance(ssh_config, dict) else ""
+                if k8s_node_name == hostname or worker_name == hostname:
+                    if ssh_host:
+                        host_ip = ssh_host
+                        break
+
+    if not host_ip:
+        # Fallback: extract IP from instance label (may be Prometheus pod IP)
+        instance = str(labels.get("instance") or "").strip()
+        if instance and ":" in instance:
+            host_ip = instance.split(":")[0].strip()
+        elif instance:
+            host_ip = instance
+
+    if not host_ip:
+        host_ip = str(annotations.get("host_ip") or annotations.get("HostIP") or "").strip()
+
+    if host_ip and host_ip.lower() not in {"unknown", "n/a", "none", "-", "--", "null"}:
+        payload["host_ip"] = host_ip
+
+    return payload
     return payload
 
 
 def _infer_default_promql(*, alert_name: str, labels: dict[str, Any]) -> str:
     phase = str(labels.get("phase") or "").strip().lower()
     alert_name_lower = str(alert_name or "").strip().lower()
+    service = str(labels.get("service") or labels.get("exported_container") or "").strip()
     instance = str(labels.get("instance") or "").strip()
+    if _is_ttft_alert_name(alert_name):
+        if service:
+            return (
+                f'histogram_quantile(0.99, '
+                f'sum(rate(http_request_duration_seconds_bucket{{service="{service}"}}[5m])) by (le))'
+            )
+        return "histogram_quantile(0.99, sum(rate(http_request_duration_seconds_bucket[5m])) by (le))"
     if phase == "rtt" or "networklatencyhigh100ms" in alert_name_lower:
         if instance:
             return f'probe_icmp_duration_seconds{{instance="{instance}"}}'
         return "probe_icmp_duration_seconds"
     return "up"
+
+
+async def _apply_ttft_runtime_bootstrap(
+    *,
+    payload: dict[str, Any],
+    alert: Alert,
+    context: ToolExecutionContext,
+    cfg: SREAgentConfig,
+) -> dict[str, Any]:
+    if not _is_ttft_alert_name(alert.alert_name):
+        return payload
+
+    updated = dict(payload)
+    labels = dict(alert.labels or {})
+    namespace = str(updated.get("namespace") or labels.get("exported_namespace") or labels.get("namespace") or "service").strip() or "service"
+    service = str(updated.get("service") or labels.get("service") or labels.get("exported_container") or "").strip()
+    selected_pod = str(updated.get("pod") or labels.get("exported_pod") or labels.get("pod") or "").strip()
+    node = str(updated.get("node") or labels.get("node") or "").strip()
+    instance = str(updated.get("instance") or labels.get("instance") or "").strip()
+    node_ip = str(updated.get("node_ip") or "").strip()
+    resolution_chain: list[str] = []
+
+    if selected_pod:
+        resolution_chain.append(f"alert.pod={selected_pod}")
+    if node:
+        resolution_chain.append(f"alert.node={node}")
+    if instance:
+        resolution_chain.append(f"alert.instance={instance}")
+
+    if not selected_pod and service:
+        selected_pod = await _resolve_ttft_service_pod(
+            context=context,
+            namespace=namespace,
+            service=service,
+        )
+        if selected_pod:
+            resolution_chain.append(f"resolve_service_pods->{selected_pod}")
+
+    if selected_pod and not node_ip:
+        node_ip = await _resolve_ttft_pod_node_ip(
+            context=context,
+            namespace=namespace,
+            pod=selected_pod,
+        )
+        if node_ip:
+            resolution_chain.append(f"resolve_pod_node_ip->{node_ip}")
+
+    if not node and instance:
+        candidate_labels = dict(labels)
+        candidate_labels["instance"] = instance
+        node = _resolve_inventory_node_for_alert(labels=candidate_labels, cfg=cfg)
+        if node:
+            resolution_chain.append(f"inventory.instance->{node}")
+
+    if not node and node_ip:
+        candidate_labels = dict(labels)
+        candidate_labels["instance"] = node_ip
+        node = _resolve_inventory_node_for_alert(labels=candidate_labels, cfg=cfg)
+        if node:
+            resolution_chain.append(f"inventory.node_ip->{node}")
+
+    updated["namespace"] = namespace
+    if service:
+        updated["service"] = service
+    if selected_pod:
+        updated["pod"] = selected_pod
+    if node_ip:
+        updated["node_ip"] = node_ip
+    if node:
+        updated["node"] = node
+    if resolution_chain:
+        updated["target_resolution_chain"] = " -> ".join(resolution_chain)
+    return updated
+
+
+async def _resolve_ttft_service_pod(
+    *,
+    context: ToolExecutionContext,
+    namespace: str,
+    service: str,
+) -> str:
+    if not namespace or not service:
+        return ""
+    channel = context.channels.get("k8s")
+    if channel is None:
+        return ""
+    try:
+        if hasattr(channel, "resolve_pod_names_for_service"):
+            pods = await channel.resolve_pod_names_for_service(namespace, service)
+            if isinstance(pods, list):
+                for item in pods:
+                    candidate = str(item or "").strip()
+                    if candidate:
+                        return candidate
+        if hasattr(channel, "execute"):
+            value = await channel.execute("resolve_service_pods", {"namespace": namespace, "service_name": service})
+            if bool(getattr(value, "success", False)):
+                data = getattr(value, "data", None)
+                if isinstance(data, list):
+                    for item in data:
+                        candidate = str(item or "").strip()
+                        if candidate:
+                            return candidate
+    except Exception:  # noqa: BLE001
+        return ""
+    return ""
+
+
+async def _resolve_ttft_pod_node_ip(
+    *,
+    context: ToolExecutionContext,
+    namespace: str,
+    pod: str,
+) -> str:
+    if not namespace or not pod:
+        return ""
+    channel = context.channels.get("k8s")
+    if channel is None:
+        return ""
+    try:
+        if hasattr(channel, "resolve_node_ip_for_pod"):
+            value = await channel.resolve_node_ip_for_pod(namespace, pod)
+            text = str(value or "").strip()
+            if text:
+                return text
+        if hasattr(channel, "execute"):
+            value = await channel.execute("resolve_pod_node_ip", {"namespace": namespace, "pod_name": pod})
+            if bool(getattr(value, "success", False)):
+                data = getattr(value, "data", None)
+                if isinstance(data, dict):
+                    return str(data.get("node_ip") or data.get("output") or "").strip()
+                return str(data or "").strip()
+    except Exception:  # noqa: BLE001
+        return ""
+    return ""
 
 
 def _map_internal_to_external_ip(ip: str) -> str | None:
@@ -1455,16 +1914,19 @@ def _resolve_tool_runtime_mode(cfg: SREAgentConfig) -> str:
 
 
 def _collect_llm_runtime_status() -> dict[str, Any]:
-    key_name = ""
-    api_key = (os.getenv("SRE_OPENAI_API_KEY") or "").strip()
-    if api_key:
-        key_name = "SRE_OPENAI_API_KEY"
-    else:
-        api_key = (os.getenv("OPENAI_API_KEY") or "").strip()
-        if api_key:
-            key_name = "OPENAI_API_KEY"
-    model = (os.getenv("SRE_LLM_MODEL") or "gpt-4o-mini").strip()
-    base_url = (os.getenv("SRE_OPENAI_BASE_URL") or "").strip()
+    settings = resolve_llm_runtime_settings()
+    diagnostics = get_last_llm_runtime_diagnostics()
+    api_key = str(settings.get("api_key") or "").strip()
+    key_name = str(settings.get("api_key_source") or "none")
+    model = str(settings.get("model") or "").strip()
+    base_url = str(settings.get("base_url") or "").strip()
+    provider = str(settings.get("provider") or "").strip() or "openai_compatible"
+    fallback_models = [
+        str(item).strip()
+        for item in list(settings.get("fallback_models", []))
+        if str(item).strip()
+    ]
+    retry_count = int(diagnostics.get("retry_count") or 0)
     status = {
         "ready": bool(api_key),
         "required": True,
@@ -1473,6 +1935,14 @@ def _collect_llm_runtime_status() -> dict[str, Any]:
         "api_key_length": len(api_key),
         "model": model,
         "base_url": base_url or None,
+        "provider": provider,
+        "fallback_models": fallback_models,
+        "active_model": diagnostics.get("active_model") or model,
+        "retry_count": retry_count,
+        "fallback_used": bool(diagnostics.get("fallback_used", False)),
+        "last_error_code": diagnostics.get("last_error_code"),
+        "last_error_message": diagnostics.get("last_error_message"),
+        "last_attempt_at": diagnostics.get("last_attempt_at"),
         "reason": None if api_key else "SRE_OPENAI_API_KEY or OPENAI_API_KEY is required",
     }
     return status
@@ -1577,7 +2047,8 @@ def _read_inventory_payload(path: Path) -> dict[str, Any]:
 
 def _load_redfish_preauth_targets(cfg: SREAgentConfig) -> list[dict[str, Any]]:
     mode = str(cfg.ontology.discovery.mode or "static").strip().lower()
-    if mode != "live":
+    # Support both "live" and "hybrid" modes for BMC credential loading
+    if mode not in ("live", "hybrid"):
         return []
     inventory_path = Path(str(cfg.ontology.discovery.live_inventory_path or "").strip())
     payload = _read_inventory_payload(inventory_path)
@@ -1659,7 +2130,8 @@ async def _preload_redfish_sessions(
     if redfish_channel is None or not hasattr(redfish_channel, "authenticate"):
         return
     mode = str(cfg.ontology.discovery.mode or "static").strip().lower()
-    if mode != "live":
+    # Support both "live" and "hybrid" modes for BMC credential loading
+    if mode not in ("live", "hybrid"):
         return
 
     targets = _load_redfish_preauth_targets(cfg)
@@ -1770,6 +2242,9 @@ def create_app(
     knowledge_store, created_knowledge = _build_knowledge_store(cfg, knowledge)
     registry = tool_registry or build_default_registry()
     context = execution_context or ToolExecutionContext()
+    ttft_external_process_default_node = str(cfg.agent.ttft_external_process_default_node or "").strip()
+    if ttft_external_process_default_node:
+        context.metadata["ttft_external_process_default_node"] = ttft_external_process_default_node
     if "alert" not in context.channels:
         alertmanager_url = str(cfg.global_.alertmanager_url or "").strip()
         if alertmanager_url:
@@ -1795,6 +2270,16 @@ def create_app(
         ]
         if unmet_core:
             raise RuntimeError(f"tool runtime strict mode startup blocked: unavailable core channels={sorted(set(unmet_core))}")
+    resolved_prometheus = prometheus
+    if resolved_prometheus is None:
+        prometheus_status = bootstrap_result.statuses.get("prometheus")
+        prometheus_channel = context.channels.get("prometheus")
+        if (
+            prometheus_status is not None
+            and prometheus_status.health == "ready"
+            and hasattr(prometheus_channel, "query_instant")
+        ):
+            resolved_prometheus = prometheus_channel
     default_diagnosis_runner: DiagnosisRunnerProtocol | None = None
     default_re_diagnose_runner: ReDiagnoseRunnerProtocol | None = None
     if diagnosis_runner is None or re_diagnose_runner is None:
@@ -1833,7 +2318,7 @@ def create_app(
         registry,
         approval_gate,
         wal,
-        prometheus=prometheus,
+        prometheus=resolved_prometheus,
         validator=validator,
         execution_context=context,
         execution_mode=cfg.remediation.execution_mode,
@@ -1851,7 +2336,7 @@ def create_app(
     alert_store = InMemoryAlertStore()
     loop = LoopOrchestrator(
         engine,
-        prometheus=prometheus,
+        prometheus=resolved_prometheus,
         memory=memory_store,
         config=LoopConfig(
             max_candidates=cfg.loop_orchestrator.max_candidates,

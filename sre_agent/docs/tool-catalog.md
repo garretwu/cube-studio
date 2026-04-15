@@ -21,6 +21,7 @@
 | `get_inference_latency` | `read_only` | 否 | `prometheus` / `metrics` | 查询服务级推理延迟摘要（p50/p95/p99、qps、error_rate） |
 | `gpu.get_metrics` | `read_only` | 否 | `ssh` | 查看 GPU 利用率、显存、温度 |
 | `gpu.get_processes` | `read_only` | 否 | `ssh` | 查看 GPU 上的计算进程 |
+| `process.find` | `read_only` | 否 | `ssh` | 在指定节点通过 `ps` 搜索进程（支持 pattern 匹配） |
 | `get_thermal_status` | `read_only` | 否 | `ssh` | 查看节点温度与风扇状态 |
 | `k8s.list_pods` | `read_only` | 否 | `k8s` | 列出 namespace 下的 Pod |
 | `k8s.describe_pod` | `read_only` | 否 | `k8s` | 查看 Pod 状态摘要 |
