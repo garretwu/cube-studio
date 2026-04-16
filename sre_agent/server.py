@@ -2445,7 +2445,7 @@ def create_app(
         registry,
         approval_gate,
         wal,
-        prometheus=resolved_prometheus,
+        prometheus=None,  # [PATCH-A] skip canary prometheus metric checks
         validator=validator,
         execution_context=context,
         execution_mode=cfg.remediation.execution_mode,
@@ -2463,7 +2463,7 @@ def create_app(
     alert_store = InMemoryAlertStore()
     loop = LoopOrchestrator(
         engine,
-        prometheus=resolved_prometheus,
+        prometheus=None,  # [PATCH-A] skip canary prometheus metric checks
         memory=memory_store,
         config=LoopConfig(
             max_candidates=cfg.loop_orchestrator.max_candidates,

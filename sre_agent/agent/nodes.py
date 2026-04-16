@@ -931,16 +931,29 @@ def _normalize_positive_int(value: Any, *, default: int, minimum: int) -> int:
 
 def _select_bound_tool_names_for_turn(state: SREAgentState) -> list[str] | None:
     allowed_tool_names = state.get("allowed_tool_names")
+
+    # 1) If state already carries an explicit allowed list, honour it first.
+    if allowed_tool_names:
+        names = [str(name).strip() for name in allowed_tool_names if str(name).strip()]
+        if names:
+            return names
+
+    # 2) First turn (no tool_runs yet) — allow pending tool calls if present.
     if not state.get("tool_runs"):
+        pending = state.get("pending_tool_calls") or []
+        if pending:
+            pending_names = list({
+                str(c.get("name", "")).strip()
+                for c in pending
+                if isinstance(c, dict) and str(c.get("name", "")).strip()
+            })
+            if pending_names:
+                return pending_names
+        # Truly first turn with no pending — fall back to skills.list_skills only.
         return ["skills.list_skills"]
 
-    if not allowed_tool_names:
-        return None
-
-    names = [str(name).strip() for name in allowed_tool_names if str(name).strip()]
-    if not names:
-        return None
-    return names
+    # 3) Subsequent turns with no explicit allowed list — unrestrict (None).
+    return None
 
 
 def _find_latest_successful_skill_listing(tool_runs: list[dict[str, Any]]) -> dict[str, Any] | None:
