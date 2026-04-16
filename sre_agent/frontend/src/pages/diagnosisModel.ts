@@ -1305,12 +1305,12 @@ function isExecutionRunSystemItem(
     item.kind === "system" &&
     item.eventKind !== "approval_result" &&
     item.eventKind !== "metric_feedback" &&
+    item.eventKind !== "alert_recovery" &&
+    item.eventKind !== "session_closed" &&
     (item.isExecutionRunEvent === true ||
       [
         "canary_progress",
         "execution_progress",
-        "alert_recovery",
-        "session_closed",
       ].includes(item.eventKind))
   );
 }

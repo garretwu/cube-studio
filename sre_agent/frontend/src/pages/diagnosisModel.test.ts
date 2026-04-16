@@ -640,16 +640,23 @@ describe("diagnosis remediation audit timeline", () => {
     const metricFeedbackItems = view.timeline.filter(
       (item) => item.kind === "system" && item.eventKind === "metric_feedback",
     );
+    const recoveryItems = view.timeline.filter(
+      (item) => item.kind === "system" && item.eventKind === "alert_recovery",
+    );
+    const closeItems = view.timeline.filter(
+      (item) => item.kind === "system" && item.eventKind === "session_closed",
+    );
 
     expect(runItems).toHaveLength(2);
     expect(runItems.find((item) => item.phase === "canary")?.steps).toHaveLength(2);
     expect(runItems.find((item) => item.phase === "full")?.steps.map((item) => item.summary)).toEqual(
       expect.arrayContaining([
         "[\u7cfb\u7edf] \u5f00\u59cb\u5168\u91cf\u4fee\u590d\uff1a\u5f00\u59cb\u5168\u91cf\u4fee\u590d",
-        "[\u7cfb\u7edf] \u544a\u8b66\u5df2\u6062\u590d\uff1a\u76f8\u5173\u62a5\u8b66\u5df2\u7ecf\u6062\u590d",
       ]),
     );
     expect(metricFeedbackItems).toHaveLength(1);
+    expect(recoveryItems).toHaveLength(1);
+    expect(closeItems).toHaveLength(1);
   });
 
   it("groups execution stages by explicit run identifiers before falling back to session order", () => {

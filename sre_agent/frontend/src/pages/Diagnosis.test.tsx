@@ -719,28 +719,33 @@ describe("DiagnosisPage sequential playback", () => {
     expect(screen.getByText(/Thought for \d+ seconds?/i)).toBeInTheDocument();
     expect(screen.queryByText("[\u7cfb\u7edf] \u5df2\u7ecf\u5b8c\u6210\u6267\u884c\u786e\u8ba4")).not.toBeInTheDocument();
 
-    const runBlocks = screen.getAllByTestId("diagnosis-execution-run-block");
-    expect(runBlocks.length).toBeGreaterThanOrEqual(2);
-    expect(container.querySelectorAll(".diagnosis-workspace-run-block").length).toBeGreaterThanOrEqual(2);
-    expect(screen.getByText("灰度观察")).toBeInTheDocument();
-    expect(screen.getByText("全量修复")).toBeInTheDocument();
-    expect(screen.getAllByText(/告警已恢复，诊断已关闭/u).length).toBeGreaterThan(0);
-    expect(screen.getAllByText("100%").length).toBeGreaterThan(0);
-    expect(screen.getAllByText(/\u5f00\u59cb\u7070\u5ea6/u).length).toBeGreaterThan(0);
-    expect(screen.getAllByText("\u89c2\u5bdf\u7ed3\u8bba").length).toBeGreaterThan(0);
-    expect(container.querySelectorAll(".diagnosis-workspace-system-event__toggle").length).toBeGreaterThanOrEqual(1);
-    expect(screen.getAllByText(/指标反馈已确认：灰度没有问题，进入全量修复/u).length).toBeGreaterThan(0);
-    expect(screen.getAllByText(/已等待 \d+s/u).length).toBeGreaterThan(0);
-    expect(screen.getAllByText(/观察结束：指标反馈已确认，全量效果正常/u).length).toBeGreaterThan(0);
-    expect(screen.getAllByText(/指标反馈：全量没有问题/u).length).toBeGreaterThan(0);
-    expect(screen.getAllByText(/全量修复结束：本轮修复动作已完成/u).length).toBeGreaterThan(0);
-    expect(screen.getAllByText("run_skill").length).toBeGreaterThanOrEqual(2);
-    expect(screen.getAllByText(/builtin-vllm-diagnosis/).length).toBeGreaterThan(0);
-    expect(screen.getAllByText(/builtin-platform-health/).length).toBeGreaterThan(0);
-    expect(screen.queryByText(/vllm_p95_ms/i)).not.toBeInTheDocument();
+    const demoExecutionCard = screen.getByTestId("diagnosis-demo-execution-card");
+    expect(demoExecutionCard).toBeInTheDocument();
+    expect(screen.queryByTestId("diagnosis-execution-run-block")).not.toBeInTheDocument();
 
-    fireEvent.click(screen.getAllByRole("button", { name: /run_skill/ })[0]);
-    expect(screen.getAllByText(/vllm_p95_ms/i).length).toBeGreaterThan(0);
+    const stageRows = screen.getAllByTestId("diagnosis-demo-execution-stage");
+    expect(stageRows).toHaveLength(4);
+    expect(stageRows.map((row) => row.getAttribute("data-stage-key"))).toEqual([
+      "execution_started",
+      "observation_started",
+      "observation_result",
+      "execution_succeeded",
+    ]);
+
+    expect(screen.getByText("\u6267\u884c\u5f00\u59cb")).toBeInTheDocument();
+    expect(screen.getByText("\u89c2\u5bdf\u5f00\u59cb")).toBeInTheDocument();
+    expect(screen.getByText("\u89c2\u5bdf\u7ed3\u8bba")).toBeInTheDocument();
+    expect(screen.getByText("\u6267\u884c\u6210\u529f")).toBeInTheDocument();
+
+    expect(screen.getByText(/\u8c03\u7528\u4fee\u590d\u5de5\u5177\uff1arun_skill/u)).toBeInTheDocument();
+    expect(screen.getByText(/\u89c2\u5bdf\u65f6\u957f\uff1a3s/u)).toBeInTheDocument();
+    expect(screen.getByText(/\u89c2\u5bdf\u7ed3\u8bba\uff1a\u901a\u8fc7/u)).toBeInTheDocument();
+    expect(
+      screen.getByText(/\u7ed3\u679c\uff1a\u544a\u8b66\u5df2\u6062\u590d\uff0c\u8bca\u65ad\u5df2\u5173\u95ed/u),
+    ).toBeInTheDocument();
+
+    expect(container.querySelectorAll(".diagnosis-workspace-run-block").length).toBe(0);
+    expect(screen.queryByText(/vllm_p95_ms/i)).not.toBeInTheDocument();
   });
   it("marks a live loading tool as timeout after 15 seconds and continues the queue", async () => {
     let timelineSource: DiagnosisTimelineItem[] = [];

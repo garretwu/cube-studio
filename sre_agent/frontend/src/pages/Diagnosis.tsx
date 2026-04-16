@@ -1,4 +1,4 @@
-import {
+﻿import {
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -215,6 +215,418 @@ function getRunPhaseLabel(phase: Extract<DiagnosisTimelineItem, { kind: "run" }>
     return "full rollout";
   }
   return "execution";
+}
+
+
+type DemoExecutionStageKey =
+  | "execution_started"
+  | "observation_started"
+  | "observation_result"
+  | "execution_succeeded";
+
+type DemoExecutionStageStatus = "pending" | "running" | "done" | "error";
+
+type DemoExecutionStageView = {
+  key: DemoExecutionStageKey;
+  title: string;
+  status: DemoExecutionStageStatus;
+  summary: string;
+  durationSec?: number;
+};
+
+type DemoExecutionCardTimelineItem = {
+  id: string;
+  kind: "demo_execution_card";
+  timestamp: string;
+  progress: number;
+  stages: DemoExecutionStageView[];
+};
+
+type DiagnosisRenderableTimelineItem =
+  | DiagnosisTimelineItem
+  | DemoExecutionCardTimelineItem;
+
+const DEMO_EXECUTION_STAGE_ORDER: DemoExecutionStageKey[] = [
+  "execution_started",
+  "observation_started",
+  "observation_result",
+  "execution_succeeded",
+];
+
+const DEMO_EXECUTION_STAGE_PROGRESS: Record<DemoExecutionStageKey, number> = {
+  execution_started: 25,
+  observation_started: 50,
+  observation_result: 75,
+  execution_succeeded: 100,
+};
+
+function getDemoExecutionStageTitle(key: DemoExecutionStageKey) {
+  switch (key) {
+    case "execution_started":
+      return "\u6267\u884c\u5f00\u59cb";
+    case "observation_started":
+      return "\u89c2\u5bdf\u5f00\u59cb";
+    case "observation_result":
+      return "\u89c2\u5bdf\u7ed3\u8bba";
+    case "execution_succeeded":
+      return "\u6267\u884c\u6210\u529f";
+    default:
+      return key;
+  }
+}
+
+function getDemoExecutionPendingSummary(key: DemoExecutionStageKey) {
+  switch (key) {
+    case "execution_started":
+      return "\u7b49\u5f85\u8fdb\u5165\u6267\u884c\u9636\u6bb5";
+    case "observation_started":
+      return "\u7b49\u5f85\u8fdb\u5165\u89c2\u5bdf\u9636\u6bb5";
+    case "observation_result":
+      return "\u7b49\u5f85\u89c2\u5bdf\u7ed3\u8bba";
+    case "execution_succeeded":
+      return "\u7b49\u5f85\u6267\u884c\u7ed3\u679c";
+    default:
+      return "";
+  }
+}
+
+function getDemoExecutionStageStatusLabel(status: DemoExecutionStageStatus) {
+  switch (status) {
+    case "done":
+      return "done";
+    case "running":
+      return "running";
+    case "error":
+      return "error";
+    default:
+      return "pending";
+  }
+}
+
+function mapBadgeToneToDemoStageStatus(
+  tone: BadgeTone,
+): DemoExecutionStageStatus {
+  if (tone === "danger") {
+    return "error";
+  }
+  if (tone === "success") {
+    return "done";
+  }
+  if (tone === "warning" || tone === "accent" || tone === "info") {
+    return "running";
+  }
+  return "pending";
+}
+
+function resolveDemoExecutionStage(
+  stage: string | undefined,
+  eventKind?: Extract<DiagnosisTimelineItem, { kind: "system" }>['eventKind'],
+): DemoExecutionStageKey | null {
+  const normalized = (stage ?? "").trim().toLowerCase();
+  if (!normalized) {
+    if (eventKind === "alert_recovery" || eventKind === "session_closed") {
+      return "execution_succeeded";
+    }
+    return null;
+  }
+
+  if (normalized === "execution_started") {
+    return "execution_started";
+  }
+  if (
+    [
+      "canary_started",
+      "canary_progress",
+      "canary_batch_progress",
+      "canary_succeeded",
+      "canary_completed",
+      "full_rollout_started",
+      "full_rollout_progress",
+      "full_rollout_succeeded",
+      "approval_confirmed",
+    ].includes(normalized)
+  ) {
+    return "execution_started";
+  }
+  if (normalized === "observation_started") {
+    return "observation_started";
+  }
+  if (normalized === "observation_result") {
+    return "observation_result";
+  }
+  if (
+    [
+      "execution_succeeded",
+      "alert_recovered",
+      "session_closed",
+      "execution_failed",
+      "execution_timeout",
+      "escalation_required",
+    ].includes(normalized)
+  ) {
+    return "execution_succeeded";
+  }
+  return null;
+}
+
+function parseDurationSeconds(lines: string[]) {
+  for (const line of lines) {
+    const secondMatch =
+      /(\d+)\s*s\b/i.exec(line) ?? /(\d+)\s*\u79d2/.exec(line);
+    if (!secondMatch) {
+      continue;
+    }
+    const parsed = Number(secondMatch[1]);
+    if (Number.isFinite(parsed) && parsed >= 0) {
+      return parsed;
+    }
+  }
+  return null;
+}
+
+function buildDemoExecutionCardTimeline(
+  timeline: DiagnosisTimelineItem[],
+): DiagnosisRenderableTimelineItem[] {
+  type StageAccumulator = DemoExecutionStageView & { updatedAt: number };
+
+  const stageAcc = Object.fromEntries(
+    DEMO_EXECUTION_STAGE_ORDER.map((key) => [
+      key,
+      {
+        key,
+        title: getDemoExecutionStageTitle(key),
+        status: "pending" as DemoExecutionStageStatus,
+        summary: getDemoExecutionPendingSummary(key),
+        durationSec: undefined,
+        updatedAt: Number.NEGATIVE_INFINITY,
+      },
+    ]),
+  ) as Record<DemoExecutionStageKey, StageAccumulator>;
+
+  const consumedIds = new Set<string>();
+  let insertIndex: number | null = null;
+  let latestTimestamp = "";
+  let hasExecutionSignal = false;
+  let executionToolSummary: string | null = null;
+
+  const markInsertIndex = (index: number) => {
+    if (insertIndex === null || index < insertIndex) {
+      insertIndex = index;
+    }
+  };
+
+  const updateLatestTimestamp = (timestamp: string) => {
+    if (!latestTimestamp) {
+      latestTimestamp = timestamp;
+      return;
+    }
+    if (new Date(timestamp).getTime() >= new Date(latestTimestamp).getTime()) {
+      latestTimestamp = timestamp;
+    }
+  };
+
+  const applyStage = (
+    key: DemoExecutionStageKey,
+    next: {
+      status: DemoExecutionStageStatus;
+      summary: string;
+      durationSec?: number;
+      timestamp: string;
+    },
+  ) => {
+    const target = stageAcc[key];
+    const nextTime = new Date(next.timestamp).getTime();
+    if (
+      target.status !== "pending" &&
+      Number.isFinite(target.updatedAt) &&
+      nextTime < target.updatedAt
+    ) {
+      return;
+    }
+
+    target.status = next.status;
+    target.summary = next.summary;
+    target.durationSec = next.durationSec;
+    target.updatedAt = nextTime;
+  };
+
+  timeline.forEach((item, index) => {
+    if (item.kind === "run") {
+      const runHasExecutionStage = item.steps.some((step) =>
+        Boolean(resolveDemoExecutionStage(step.stage)),
+      );
+      if (!runHasExecutionStage) {
+        return;
+      }
+
+      hasExecutionSignal = true;
+      markInsertIndex(index);
+      consumedIds.add(item.id);
+      updateLatestTimestamp(item.timestamp);
+
+      item.tools.forEach((tool) => {
+        if (!executionToolSummary) {
+          const skillId =
+            typeof tool.params?.["skill_id"] === "string"
+              ? String(tool.params["skill_id"]).trim()
+              : "";
+          executionToolSummary = skillId
+            ? `${tool.toolName} (${skillId})`
+            : tool.toolName;
+        }
+        updateLatestTimestamp(tool.timestamp);
+      });
+
+      item.steps.forEach((step) => {
+        const key = resolveDemoExecutionStage(step.stage);
+        if (!key) {
+          return;
+        }
+        const summaryLine = stripSystemEventPrefix(step.summary) || step.title;
+        const status: DemoExecutionStageStatus =
+          step.status === "success"
+            ? "done"
+            : step.status === "error" || step.status === "timeout"
+              ? "error"
+              : "running";
+        let summary = summaryLine || getDemoExecutionPendingSummary(key);
+        if (key === "observation_result") {
+          const observationConclusion = step.details.find((line) =>
+            line.includes("\u89c2\u5bdf\u7ed3\u8bba"),
+          );
+          summary =
+            observationConclusion ||
+            summaryLine ||
+            "\u89c2\u5bdf\u7ed3\u8bba\u5df2\u751f\u6210";
+        }
+        if (key === "execution_succeeded") {
+          const executionResult = step.details.find((line) =>
+            line.includes("\u7ed3\u679c"),
+          );
+          summary =
+            executionResult ||
+            summaryLine ||
+            "\u4fee\u590d\u6267\u884c\u6210\u529f";
+        }
+        applyStage(key, {
+          status,
+          summary,
+          timestamp: step.timestamp,
+        });
+      });
+      return;
+    }
+
+    if (item.kind !== "system") {
+      return;
+    }
+
+    const key = resolveDemoExecutionStage(item.stage, item.eventKind);
+    if (!key) {
+      return;
+    }
+
+    hasExecutionSignal = true;
+    markInsertIndex(index);
+    consumedIds.add(item.id);
+    updateLatestTimestamp(item.timestamp);
+
+    const status = mapBadgeToneToDemoStageStatus(item.statusTone);
+    const summaryLine = stripSystemEventPrefix(item.summary);
+    const durationSec = parseDurationSeconds([item.summary, ...item.details]);
+
+    let summary = summaryLine || getDemoExecutionPendingSummary(key);
+    if (key === "execution_started") {
+      summary = executionToolSummary
+        ? `\u8c03\u7528\u4fee\u590d\u5de5\u5177\uff1a${executionToolSummary}`
+        : summary;
+    }
+    if (key === "observation_started") {
+      summary =
+        durationSec !== null
+          ? `\u8fdb\u5165\u89c2\u5bdf\u7a97\u53e3\uff0c\u89c2\u5bdf\u65f6\u957f\uff1a${durationSec}s`
+          : "\u8fdb\u5165\u89c2\u5bdf\u7a97\u53e3";
+    }
+    if (key === "observation_result") {
+      const observationConclusion = item.details.find((line) =>
+        line.includes("\u89c2\u5bdf\u7ed3\u8bba"),
+      );
+      summary =
+        observationConclusion ||
+        summaryLine ||
+        "\u89c2\u5bdf\u7ed3\u8bba\u5df2\u751f\u6210";
+    }
+    if (key === "execution_succeeded") {
+      const executionResult = item.details.find((line) =>
+        line.includes("\u7ed3\u679c"),
+      );
+      summary =
+        executionResult ||
+        summaryLine ||
+        "\u4fee\u590d\u6267\u884c\u6210\u529f";
+    }
+
+    applyStage(key, {
+      status,
+      summary,
+      durationSec: durationSec ?? undefined,
+      timestamp: item.timestamp,
+    });
+  });
+
+  if (!hasExecutionSignal || insertIndex === null) {
+    return timeline;
+  }
+
+  if (executionToolSummary) {
+    const executionStarted = stageAcc.execution_started;
+    if (executionStarted.status === "pending") {
+      executionStarted.status = "running";
+    }
+    executionStarted.summary = `\u8c03\u7528\u4fee\u590d\u5de5\u5177\uff1a${executionToolSummary}`;
+  }
+
+  const stages = DEMO_EXECUTION_STAGE_ORDER.map((key) => {
+    const { updatedAt: _updatedAt, ...rest } = stageAcc[key];
+    return rest;
+  });
+
+  let progress = 0;
+  for (const stage of stages) {
+    if (stage.status === "done") {
+      progress = DEMO_EXECUTION_STAGE_PROGRESS[stage.key];
+      continue;
+    }
+    if (stage.status === "running") {
+      progress = Math.max(progress, DEMO_EXECUTION_STAGE_PROGRESS[stage.key] - 5);
+      break;
+    }
+    if (stage.status === "error") {
+      progress = Math.max(progress, DEMO_EXECUTION_STAGE_PROGRESS[stage.key]);
+      break;
+    }
+    break;
+  }
+
+  const card: DemoExecutionCardTimelineItem = {
+    id: "demo-execution-four-stage-card",
+    kind: "demo_execution_card",
+    timestamp: latestTimestamp || new Date(0).toISOString(),
+    progress,
+    stages,
+  };
+
+  const renderTimeline: DiagnosisRenderableTimelineItem[] = [];
+  timeline.forEach((item, index) => {
+    if (index === insertIndex) {
+      renderTimeline.push(card);
+    }
+    if (!consumedIds.has(item.id)) {
+      renderTimeline.push(item);
+    }
+  });
+
+  return renderTimeline;
 }
 
 function extractSystemEventDetailLines(
@@ -937,6 +1349,64 @@ function ExecutionRunBlock({
   );
 }
 
+
+function DemoExecutionCard({
+  item,
+}: {
+  item: DemoExecutionCardTimelineItem;
+}) {
+  return (
+    <section
+      className="diagnosis-workspace-demo-execution-card"
+      data-testid="diagnosis-demo-execution-card"
+      title={formatTimestamp(item.timestamp)}
+    >
+      <header className="diagnosis-workspace-demo-execution-card__header">
+        <div className="diagnosis-workspace-demo-execution-card__heading">
+          <h3>\u7070\u5ea6\u8fdb\u5ea6</h3>
+          <p>{"\u6267\u884c \u2192 \u89c2\u5bdf \u2192 \u89c2\u5bdf\u7ed3\u8bba \u2192 \u5b8c\u6210"}</p>
+        </div>
+        <strong>{item.progress}%</strong>
+      </header>
+
+      <div className="progress-track remediation-progress-track remediation-progress-track--canary">
+        <div
+          className="progress-track__fill remediation-progress-track__fill remediation-progress-track__fill--canary"
+          style={{ width: `${item.progress}%` }}
+        />
+      </div>
+
+      <ol className="diagnosis-workspace-demo-execution-card__stage-list">
+        {item.stages.map((stage, index) => (
+          <li
+            className={cn(
+              "diagnosis-workspace-demo-execution-stage",
+              `diagnosis-workspace-demo-execution-stage--${stage.status}`,
+            )}
+            data-stage-key={stage.key}
+            data-testid="diagnosis-demo-execution-stage"
+            key={stage.key}
+          >
+            <div className="diagnosis-workspace-demo-execution-stage__rail" aria-hidden="true">
+              <span className="diagnosis-workspace-demo-execution-stage__dot" />
+              {index < item.stages.length - 1 ? (
+                <span className="diagnosis-workspace-demo-execution-stage__line" />
+              ) : null}
+            </div>
+            <div className="diagnosis-workspace-demo-execution-stage__body">
+              <div className="diagnosis-workspace-demo-execution-stage__row">
+                <strong>{stage.title}</strong>
+                <span>{getDemoExecutionStageStatusLabel(stage.status)}</span>
+              </div>
+              <p>{stage.summary}</p>
+            </div>
+          </li>
+        ))}
+      </ol>
+    </section>
+  );
+}
+
 function RCAReportCard({
   item,
 }: {
@@ -1233,17 +1703,17 @@ function getSystemEventCategoryLabel(
 ) {
   switch (eventKind) {
     case "approval_result":
-      return "审批反馈";
+      return "瀹℃壒鍙嶉";
     case "canary_progress":
-      return "灰度执行";
+      return "鐏板害鎵ц";
     case "metric_feedback":
-      return "观察结论";
+      return "瑙傚療缁撹";
     case "alert_recovery":
-      return "告警恢复";
+      return "鍛婅鎭㈠";
     case "session_closed":
-      return "诊断结束";
+      return "璇婃柇缁撴潫";
     default:
-      return "系统事件";
+      return "绯荤粺浜嬩欢";
   }
 }
 function SystemEventBlock({
@@ -2385,6 +2855,7 @@ function DiagnosisPage() {
         statusTone: BadgeTone,
         offsetMs: number,
         progress?: Extract<DiagnosisTimelineItem, { kind: "system" }>["progress"],
+        stage?: string,
       ) => {
         appendItem({
           id,
@@ -2403,6 +2874,7 @@ function DiagnosisPage() {
                   : undefined,
               }
             : undefined,
+          stage: stage?.trim() ? stage.trim().toLowerCase() : undefined,
           source: "optimistic",
           dedupeKey: id,
         });
@@ -2468,16 +2940,15 @@ function DiagnosisPage() {
       };
 
       void (async () => {
-        const canarySkillToolId = `demo-post-approval-canary-skill-${startedAt}`;
-        const fullSkillToolId = `demo-post-approval-full-skill-${startedAt}`;
+        const remediationToolId = `demo-post-approval-remediation-tool-${startedAt}`;
 
-                appendSystemEvent(
+        appendSystemEvent(
           `demo-approval-confirmed-${startedAt}`,
           "approval_result",
-          "[系统] 已完成执行确认",
+          "[\u7cfb\u7edf] \u5df2\u5b8c\u6210\u6267\u884c\u786e\u8ba4",
           [
-            "审批反馈：已经完成执行确认",
-            "执行边界：先灰度，指标确认后再做全量修复",
+            "\u5ba1\u6279\u53cd\u9988\uff1a\u5df2\u5b8c\u6210\u6267\u884c\u786e\u8ba4",
+            "\u6267\u884c\u8fb9\u754c\uff1a\u6309\u9636\u6bb5\u4f9d\u6b21\u6267\u884c\u5e76\u89c2\u5bdf\u7ed3\u8bba",
           ],
           "success",
           0,
@@ -2485,203 +2956,81 @@ function DiagnosisPage() {
         if (!(await wait(420))) return;
 
         if (!(await appendAssistantMessage(
-          `demo-canary-start-message-${startedAt}`,
-          "已收到确认。现在开始灰度，先调用 vLLM 诊断 skill 观察灰度窗口的延迟、错误率和 GPU 利用率。",
+          `demo-execution-start-message-${startedAt}`,
+          "\u5df2\u6536\u5230\u786e\u8ba4\u3002\u5f00\u59cb\u6267\u884c\u4fee\u590d\u52a8\u4f5c\uff0c\u968f\u540e\u8fdb\u5165\u89c2\u5bdf\u7a97\u53e3\u5e76\u7ed9\u51fa\u89c2\u5bdf\u7ed3\u8bba\u3002",
           420,
         ))) return;
         if (!(await wait(360))) return;
 
         appendSystemEvent(
-          `demo-canary-started-${startedAt}`,
-          "canary_progress",
-          "[系统] 开始灰度：调用 skill 观察灰度窗口",
-          [
-            "调用 skill：builtin-vllm-diagnosis",
-            "灰度范围：10% 流量",
-            "观察对象：p95 延迟 / 错误率 / GPU 利用率",
-          ],
+          `demo-execution-started-${startedAt}`,
+          "execution_progress",
+          "[\u7cfb\u7edf] \u6267\u884c\u5f00\u59cb\uff1a\u8c03\u7528\u4fee\u590d\u5de5\u5177",
+          ["\u8c03\u7528\u4fee\u590d\u5de5\u5177\uff1arun_skill"],
           "warning",
           900,
-          { label: "灰度进度", value: 10, helper: "canary 10%" },
+          { label: "\u6267\u884c\u8fdb\u5ea6", value: 25 },
+          "execution_started",
         );
         appendTool(
-          canarySkillToolId,
+          remediationToolId,
           "run_skill",
           {
             skill_id: "builtin-vllm-diagnosis",
-            phase: "canary",
+            phase: "execution_started",
             namespace: "service",
             node: "worker-03",
           },
-          ["正在调用 builtin-vllm-diagnosis 采集灰度窗口指标..."],
+          ["\u6b63\u5728\u8c03\u7528\u4fee\u590d\u5de5\u5177 run_skill..."],
           980,
         );
-        if (!(await wait(1250))) return;
-
-        appendSystemEvent(
-          `demo-canary-progress-45-${startedAt}`,
-          "canary_progress",
-          "[系统] 灰度执行中：首批实例已完成切换",
-          ["灰度进度：45%", "当前 p95：1.72s", "错误率：0.4%"],
-          "warning",
-          2150,
-          { label: "灰度进度", value: 45, helper: "首批实例" },
-        );
-        if (!(await wait(900))) return;
-
-        appendSystemEvent(
-          `demo-canary-progress-80-${startedAt}`,
-          "canary_progress",
-          "[系统] 灰度执行中：指标持续收敛",
-          ["灰度进度：80%", "GPU util：99% -> 74%", "队列等待：下降 68%"],
-          "warning",
-          3050,
-          { label: "灰度进度", value: 80, helper: "指标收敛" },
-        );
-        if (!(await wait(860))) return;
+        if (!(await wait(1200))) return;
 
         completeTool(
-          canarySkillToolId,
+          remediationToolId,
           [
-            "skill builtin-vllm-diagnosis 执行完成",
-            "vllm_p95_ms: 3.4s -> 1.68s",
-            "inference_error_rate: 2.7% -> 0.4%",
+            "skill builtin-vllm-diagnosis \u6267\u884c\u5b8c\u6210",
+            "\u4fee\u590d\u52a8\u4f5c\u5df2\u6267\u884c",
           ],
           {
             skill_id: "builtin-vllm-diagnosis",
-            vllm_p95_ms: 1680,
-            inference_error_rate: 0.004,
+            status: "done",
           },
         );
-        appendSystemEvent(
-          `demo-canary-complete-${startedAt}`,
-          "canary_progress",
-          "[系统] 已完成灰度：等待指标反馈确认灰度效果",
-          [
-            "灰度进度：100%",
-            "下一步：等待指标反馈确认是否继续全量修复",
-          ],
-          "success",
-          3920,
-          { label: "灰度进度", value: 100, helper: "等待指标反馈" },
-        );
-        if (!(await wait(760))) return;
 
         appendSystemEvent(
-          `demo-canary-feedback-${startedAt}`,
+          `demo-observation-started-${startedAt}`,
           "metric_feedback",
-          "[系统] 指标反馈已确认：灰度没有问题，进入全量修复",
-          ["指标反馈：灰度没有问题", "vLLM p95 低于 1.8s", "错误率低于 1%"],
-          "success",
-          4680,
-        );
-        if (!(await wait(640))) return;
-
-        appendSystemEvent(
-          `demo-full-rollout-start-${startedAt}`,
-          "execution_progress",
-          "[系统] 开始全量修复：扩大到剩余实例",
-          ["执行动作：traffic_restore", "策略：gradual", "范围：剩余 90% 流量"],
+          "[\u7cfb\u7edf] \u89c2\u5bdf\u5f00\u59cb\uff1a\u8fdb\u5165\u89c2\u5bdf\u7a97\u53e3",
+          ["\u89c2\u5bdf\u65f6\u957f\uff1a3s"],
           "warning",
-          5320,
-          { label: "全量进度", value: 35, helper: "逐步放量" },
+          2600,
+          { label: "\u6267\u884c\u8fdb\u5ea6", value: 50 },
+          "observation_started",
         );
-        if (!(await wait(720))) return;
-
-        appendTool(
-          fullSkillToolId,
-          "run_skill",
-          {
-            skill_id: "builtin-platform-health",
-            phase: "full_rollout_observation",
-            namespace: "service",
-            node: "worker-03",
-          },
-          ["正在调用 builtin-platform-health 观察全量修复效果..."],
-          6040,
-        );
-        appendSystemEvent(
-          `demo-full-rollout-progress-${startedAt}`,
-          "execution_progress",
-          "[系统] 全量修复中：放量进度稳定推进",
-          ["全量进度：72%", "未观察到错误率反弹"],
-          "warning",
-          6080,
-          { label: "全量进度", value: 72, helper: "全量放量" },
-        );
-        if (!(await wait(1050))) return;
+        if (!(await wait(1000))) return;
 
         appendSystemEvent(
-          `demo-full-feedback-wait-${startedAt}`,
+          `demo-observation-result-${startedAt}`,
           "metric_feedback",
-          "[系统] 全量观察中：进入等待窗口",
-          [
-            "已等待 0s",
-            "观察窗口：全量放量后 3 分钟",
-            "检查项：延迟、错误率、告警状态",
-          ],
-          "warning",
-          7130,
+          "[\u7cfb\u7edf] \u89c2\u5bdf\u7ed3\u8bba\uff1a\u6307\u6807\u53cd\u9988\u5df2\u786e\u8ba4",
+          ["\u89c2\u5bdf\u7ed3\u8bba\uff1a\u901a\u8fc7"],
+          "success",
+          3600,
+          { label: "\u6267\u884c\u8fdb\u5ea6", value: 75 },
+          "observation_result",
         );
-        updateSystemEvent(`demo-full-feedback-wait-${startedAt}`, {
-          stage: "observation_started",
-        });
-        const observationWaitSeconds = 3;
-        for (let waitedSec = 1; waitedSec <= observationWaitSeconds; waitedSec += 1) {
-          if (!(await wait(1000))) return;
-          updateSystemEvent(`demo-full-feedback-wait-${startedAt}`, {
-            details: [
-              `已等待 ${waitedSec}s`,
-              "观察窗口：全量放量后 3 分钟",
-              "检查项：延迟、错误率、告警状态",
-            ],
-          });
-        }
-        updateSystemEvent(`demo-full-feedback-wait-${startedAt}`, {
-          stage: "observation_result",
-          statusTone: "success",
-          summary: "[系统] 观察结束：指标反馈已确认，全量效果正常",
-          details: [
-            "指标反馈：全量没有问题",
-            "vLLM p95 低于 1.8s",
-            "错误率低于 1%",
-          ],
-        });
-        if (!(await wait(220))) return;
+        if (!(await wait(400))) return;
 
-        completeTool(
-          fullSkillToolId,
-          [
-            "skill builtin-platform-health 执行完成",
-            "vllm_p95_ms: 1.42s",
-            "inference_error_rate: 0.1%",
-            "alert_status: resolved",
-          ],
-          {
-            skill_id: "builtin-platform-health",
-            vllm_p95_ms: 1420,
-            inference_error_rate: 0.001,
-            alert_status: "resolved",
-          },
-        );
         appendSystemEvent(
-          `demo-full-rollout-complete-${startedAt}`,
+          `demo-execution-succeeded-${startedAt}`,
           "execution_progress",
-          "[系统] 全量修复结束：本轮修复动作已完成",
-          ["全量进度：100%", "下一步：进入观察窗口确认全量效果"],
+          "[\u7cfb\u7edf] \u6267\u884c\u6210\u529f\uff1a\u4fee\u590d\u5b8c\u6210",
+          ["\u7ed3\u679c\uff1a\u544a\u8b66\u5df2\u6062\u590d\uff0c\u8bca\u65ad\u5df2\u5173\u95ed"],
           "success",
-          7950,
-          { label: "全量进度", value: 100, helper: "全量修复结束" },
-        );
-        if (!(await wait(420))) return;
-
-        appendSystemEvent(
-          `demo-session-closed-${startedAt}`,
-          "session_closed",
-          "[系统] 告警已恢复，诊断已关闭",
-          ["告警：vLLM 推理延迟升高 | 状态：resolved", "闭环结果：修复完成 | 已归档诊断记录"],
-          "success",
-          8370,
+          4400,
+          { label: "\u6267\u884c\u8fdb\u5ea6", value: 100 },
+          "execution_succeeded",
         );
       })();
     },
@@ -3098,7 +3447,7 @@ function DiagnosisPage() {
   }, [setConnectionState, ws.state]);
 
   const activeRawTimeline = hasLiveSession ? liveTimeline : demoTimeline;
-  const activeTimeline = useMemo(
+  const groupedTimeline = useMemo(
     () =>
       groupExecutionRunTimeline(
         activeRawTimeline,
@@ -3107,6 +3456,13 @@ function DiagnosisPage() {
           : "demo-execution-run",
       ),
     [activeRawTimeline, activeSessionId, hasLiveSession, session?.session_id],
+  );
+  const activeTimeline = useMemo<DiagnosisRenderableTimelineItem[]>(
+    () =>
+      hasLiveSession
+        ? groupedTimeline
+        : buildDemoExecutionCardTimeline(groupedTimeline),
+    [groupedTimeline, hasLiveSession],
   );
   const activeSummary = hasLiveSession ? liveView.summary : demoSummary;
   const activePlan = hasLiveSession ? liveView.plan : demoPlan;
@@ -3384,6 +3740,10 @@ function DiagnosisPage() {
                     );
                   }
 
+                  if (item.kind === "demo_execution_card") {
+                    return <DemoExecutionCard item={item} key={item.id} />;
+                  }
+
                   if (item.kind === "run") {
                     return <ExecutionRunBlock item={item} key={item.id} />;
                   }
@@ -3535,3 +3895,4 @@ function DiagnosisPage() {
   );
 }
 export default DiagnosisPage;
+
