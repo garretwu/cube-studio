@@ -37,6 +37,10 @@ class SSHChannel(BaseChannel):
             ssh_host = getattr(node_config.ssh, "host", None) if hasattr(node_config, "ssh") else None
             if ssh_host:
                 self._ip_to_node[str(ssh_host)] = node_name
+            # Also add k8s_node_name mapping for resolving K8s node names like "wj-lab-cpt-04"
+            k8s_node_name = getattr(node_config, "k8s_node_name", None)
+            if k8s_node_name:
+                self._ip_to_node[str(k8s_node_name)] = node_name
 
     def _resolve_node_name(self, node: str) -> str:
         from sre_agent.runtime.node_mapping import normalize_node_identifier

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import datetime as dt
+import os
+import tempfile
 import unittest
 from dataclasses import dataclass
 from typing import Any
@@ -481,6 +483,65 @@ class TestToolRegistryUnit(unittest.IsolatedAsyncioTestCase):
         )
         self.assertFalse(result.success)
         self.assertIn("parameter 'node' is required", result.error)
+
+    async def test_unit_ssh_run_command_executes_arbitrary_command(self) -> None:
+        registry = build_default_registry()
+        ssh = _FakeSSHChannel()
+        context = ToolExecutionContext(channels={"ssh": ssh})
+        result = await registry.execute(
+            "ssh.run_command",
+            {"node": "worker-04", "command": "nvidia-smi --query-gpu=index --format=csv,noheader", "use_sudo": False},
+            context,
+        )
+
+        self.assertTrue(result.success)
+        self.assertEqual(result.data["node"], "worker-04")
+        self.assertIn("nvidia-smi --query-gpu=index", result.data["output"])
+        self.assertEqual(ssh.calls[0]["command"], "nvidia-smi --query-gpu=index --format=csv,noheader")
+        self.assertFalse(ssh.calls[0]["use_sudo"])
+
+    async def test_unit_ssh_run_command_requires_node_and_command(self) -> None:
+        registry = build_default_registry()
+        context = ToolExecutionContext(channels={"ssh": _FakeSSHChannel()})
+        missing_node = await registry.execute(
+            "ssh.run_command",
+            {"command": "nvidia-smi"},
+            context,
+        )
+        self.assertFalse(missing_node.success)
+        self.assertIn("parameter 'node' is required", missing_node.error)
+
+        missing_command = await registry.execute(
+            "ssh.run_command",
+            {"node": "worker-04"},
+            context,
+        )
+        self.assertFalse(missing_command.success)
+        self.assertIn("parameter 'command' is required", missing_command.error)
+
+    async def test_unit_file_read_returns_full_content(self) -> None:
+        registry = build_default_registry()
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False) as fp:
+            fp.write("line-1\nline-2\n")
+            path = fp.name
+        try:
+            result = await registry.execute(
+                "file.read",
+                {"path": path},
+                ToolExecutionContext(),
+            )
+            self.assertTrue(result.success)
+            self.assertEqual(result.data["path"], path)
+            self.assertIn("line-1\nline-2\n", result.data["content"])
+            self.assertGreaterEqual(int(result.data["size_bytes"]), 1)
+        finally:
+            os.unlink(path)
+
+    async def test_unit_file_read_requires_path(self) -> None:
+        registry = build_default_registry()
+        result = await registry.execute("file.read", {}, ToolExecutionContext())
+        self.assertFalse(result.success)
+        self.assertIn("parameter 'path' is required", result.error)
 
     def test_unit_merge_tool_args_omits_node_for_process_find(self) -> None:
         """process.find 不显式传 node 时，_merge_tool_args 不注入 variables.node。"""

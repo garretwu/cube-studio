@@ -19,6 +19,10 @@ Rules:
   4. `skills.run_skill`
 - If there is a highly relevant skill that directly matches the current alert or failure pattern, prefer using the skill first instead of decomposing the investigation into many low-level tools.
 - Prefer using skill tools when they can accelerate diagnosis, but keep the overall loop tool-driven.
+- If a skill is matched and loaded successfully, you MUST execute diagnosis by following the SKILL.md workflow strictly:
+  1. prioritize the ordered steps and command intent in SKILL.md,
+  2. prefer executing SKILL.md commands via available tools (e.g. `ssh.run_command`) when equivalent native tools are unavailable,
+  3. do not skip SKILL.md key evidence-collection steps before final diagnosis.
 - Skill execution is a two-step process:
   1. call `skills.load_skill` and inspect the returned `scripts` list,
   2. then call `skills.run_skill` with both `skill_id` and one concrete `script` from that list.

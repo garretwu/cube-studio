@@ -49,6 +49,7 @@ _TTFT_ALLOWED_READONLY_TOOLS = [
     "k8s.resolve_pod_node_ip",
     "k8s.describe_pod",
     "k8s.list_pods",
+    "ssh.run_command",
     "gpu.get_metrics",
     "gpu.get_processes",
     "process.find",
