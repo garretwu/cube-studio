@@ -188,8 +188,8 @@ class RemediationConfig(BaseModel):
     dry_run: bool = False
     max_concurrent_remediations: int = 2
     execution_mode: str = "real"
-    observation_seconds: int = 360
-    execution_timeout_seconds: int = 600
+    observation_seconds: int = 240
+    execution_timeout_seconds: int = 900
 
 
 class LoopOrchestratorConfig(BaseModel):

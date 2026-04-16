@@ -1907,5 +1907,74 @@ tags:
         self.assertEqual(result["error"], "diagnosis session timed out")
 
 
+class TestSelectBoundToolNamesForTurn(unittest.TestCase):
+    def setUp(self) -> None:
+        self._func = nodes_module._select_bound_tool_names_for_turn
+
+    def test_empty_tool_runs_with_pending_returns_pending_names(self) -> None:
+        state = {
+            "tool_runs": [],
+            "pending_tool_calls": [
+                {"name": "process.find", "args": {"pattern": "stress"}},
+            ],
+        }
+        result = self._func(state)
+        self.assertEqual(result, ["process.find"])
+
+    def test_empty_tool_runs_with_multiple_pending_deduplicates(self) -> None:
+        state = {
+            "tool_runs": [],
+            "pending_tool_calls": [
+                {"name": "process.find", "args": {"pattern": "a"}},
+                {"name": "process.find", "args": {"pattern": "b"}},
+                {"name": "gpu.get_processes", "args": {"node": "x"}},
+            ],
+        }
+        result = self._func(state)
+        self.assertCountEqual(result, ["process.find", "gpu.get_processes"])
+
+    def test_empty_tool_runs_no_pending_falls_back_to_skills(self) -> None:
+        state: dict[str, Any] = {"tool_runs": [], "pending_tool_calls": []}
+        result = self._func(state)
+        self.assertEqual(result, ["skills.list_skills"])
+
+    def test_empty_tool_runs_none_pending_falls_back_to_skills(self) -> None:
+        state: dict[str, Any] = {"tool_runs": [], "pending_tool_calls": None}
+        result = self._func(state)
+        self.assertEqual(result, ["skills.list_skills"])
+
+    def test_allowed_tool_names_takes_priority_over_pending(self) -> None:
+        state = {
+            "allowed_tool_names": ["prometheus.query_instant"],
+            "tool_runs": [],
+            "pending_tool_calls": [{"name": "process.find", "args": {}}],
+        }
+        result = self._func(state)
+        self.assertEqual(result, ["prometheus.query_instant"])
+
+    def test_nonempty_tool_runs_no_allowed_returns_none(self) -> None:
+        state = {
+            "tool_runs": [{"tool": "gpu.get_processes", "success": True}],
+        }
+        result = self._func(state)
+        self.assertIsNone(result)
+
+    def test_nonempty_tool_runs_with_allowed_returns_allowed(self) -> None:
+        state = {
+            "tool_runs": [{"tool": "gpu.get_processes", "success": True}],
+            "allowed_tool_names": ["process.find", "prometheus.query_instant"],
+        }
+        result = self._func(state)
+        self.assertEqual(result, ["process.find", "prometheus.query_instant"])
+
+    def test_empty_allowed_tool_names_treated_as_none(self) -> None:
+        state = {
+            "tool_runs": [{"tool": "gpu.get_processes", "success": True}],
+            "allowed_tool_names": [],
+        }
+        result = self._func(state)
+        self.assertIsNone(result)
+
+
 if __name__ == "__main__":
     unittest.main()

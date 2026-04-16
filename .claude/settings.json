@@ -2,7 +2,8 @@
   "permissions": {
     "allow": [
       "Bash(python3 -c ':*)",
-      "Bash(curl -s \"http://10.11.4.3:31260/api/v1/query?query=vllm:e2e_request_latency_seconds_count\" --connect-timeout 5)"
+      "Bash(curl -s \"http://10.11.4.3:31260/api/v1/query?query=vllm:e2e_request_latency_seconds_count\" --connect-timeout 5)",
+      "Bash(python -m pytest tests/test_graph.py::TestSelectBoundToolNamesForTurn -x -q --no-header)"
     ]
   }
 }
