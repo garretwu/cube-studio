@@ -14,6 +14,8 @@ export type Alert = {
   fingerprint: string;
   status: AlertStatus;
   source?: string | null;
+  summary?: string | null;
+  description?: string | null;
 };
 
 export type AlertCluster = {
@@ -59,7 +61,7 @@ export type TopologyStatus = {
   scanner_counts: Record<string, { nodes: number; edges: number }>;
 };
 
-export type TopologyObjectType = "rack" | "node" | "gpu" | "switch" | "service" | "pod" | "cluster";
+export type TopologyObjectType = "rack" | "node" | "gpu" | "switch" | "port" | "bmc" | "service" | "pod" | "cluster";
 export type TopologyObjectStatus = "healthy" | "abnormal" | "impacted" | "maintenance";
 export type TopologyLayer = "physical" | "network" | "compute" | "service";
 export type TopologyImpactLevel = "low" | "medium" | "high";
@@ -400,6 +402,7 @@ export type RemediationPlan = {
     enabled: boolean;
     target_percentage: number;
     monitor_duration: number;
+    max_batches?: number | null;
     success_criteria: CanaryCondition[];
   } | null;
   estimated_impact: string;
@@ -506,7 +509,11 @@ export type ChatDisplayPayload = {
 
 export type DiagnosisAuditEventKind =
   | "approval_result"
-  | "execution_progress";
+  | "canary_progress"
+  | "execution_progress"
+  | "metric_feedback"
+  | "alert_recovery"
+  | "session_closed";
 
 export type DiagnosisAuditSource =
   | "optimistic"
@@ -531,6 +538,11 @@ export type DiagnosisLocalAuditRecord = {
   summary: string;
   details: string[];
   statusTone: DiagnosisAuditTone;
+  progress?: {
+    label: string;
+    value: number;
+    helper?: string;
+  };
 };
 
 export type KnowledgeDocument = {

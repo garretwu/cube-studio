@@ -1,6 +1,6 @@
-﻿import { Spin } from "antd";
+import { Spin } from "antd";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useNavigate, useParams, useSearchParams } from "react-router-dom";
+import { useLocation, useNavigate, useParams, useSearchParams } from "react-router-dom";
 
 import { AppButton, StatusChip } from "../components/ui";
 import type { TopologyCanvasHandle } from "../features/topologyExplorer/components/TopologyCanvas";
@@ -13,12 +13,16 @@ import {
 import { useTopologyExplorerStore } from "../features/topologyExplorer/store";
 import { formatTopologyStatus, getStatusTone } from "../features/topologyExplorer/formatters";
 import type { InspectorTabKey } from "../features/topologyExplorer/types";
+import { buildTopologyObjectPath, resolveTopologyObjectNodeId } from "../features/topologyExplorer/topologyObjectRoute";
 import "../features/topologyExplorer/topologyExplorer.css";
 
 function TopologyObjectPage() {
-  const { nodeId } = useParams<{ nodeId: string }>();
+  const routeParams = useParams<{ nodeId?: string; "*"?: string }>();
+  const nodeId = routeParams.nodeId;
+  const nodeTail = routeParams["*"];
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
+  const location = useLocation();
   const canvasRef = useRef<TopologyCanvasHandle | null>(null);
   const [zoomPercent, setZoomPercent] = useState(100);
   const [inspectorTab, setInspectorTab] = useState<InspectorTabKey>("overview");
@@ -29,13 +33,15 @@ function TopologyObjectPage() {
     void fetchTopologyExplorer();
   }, [fetchTopologyExplorer]);
 
+  const resolvedNodeId = useMemo(() => resolveTopologyObjectNodeId(nodeId, nodeTail), [nodeId, nodeTail]);
+
   useEffect(() => {
     setInspectorTab("overview");
-  }, [nodeId, mode]);
+  }, [resolvedNodeId, mode]);
 
   const detail = useMemo(
-    () => getObjectTopologyDetail(data, nodeId),
-    [data, nodeId],
+    () => getObjectTopologyDetail(data, resolvedNodeId),
+    [data, resolvedNodeId],
   );
   const neighborDepths = useMemo(
     () => getNeighborDepths(detail.edges, detail.focalNode?.id, 1),
@@ -53,8 +59,9 @@ function TopologyObjectPage() {
   }, [detail.focalNode?.id]);
 
   const navigateToObject = (nextNodeId: string) => {
-    const query = mode === "isolate" ? "?mode=isolate" : "";
-    navigate(`/topology/object/${nextNodeId}${query}`);
+    navigate(
+      buildTopologyObjectPath(nextNodeId, mode),
+    );
   };
 
   return (
@@ -64,8 +71,12 @@ function TopologyObjectPage() {
         <div className="topology-object-header">
           <div className="topology-object-header__copy">
             <div className="topology-object-header__actions">
-              <AppButton size="sm" variant="secondary" onClick={() => navigate("/topology")}>
-                返回全局拓扑
+              <AppButton
+                size="sm"
+                variant="secondary"
+                onClick={() => navigate("/topology")}
+              >
+                返回拓扑
               </AppButton>
               {detail.focalNode ? (
                 <StatusChip tone={getStatusTone(detail.focalNode.status)}>
@@ -157,3 +168,6 @@ function TopologyObjectPage() {
 }
 
 export default TopologyObjectPage;
+
+
+

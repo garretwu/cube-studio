@@ -1,4 +1,4 @@
-﻿import axios from "axios";
+import axios from "axios";
 
 import type {
   Alert,
@@ -31,6 +31,7 @@ import type {
   TopologyExplorerResponse,
   TopologyLayer,
   TopologyObjectStatus,
+  TopologyObjectType,
   TopologySnapshot,
   TopologyStatus,
 } from "./types";
@@ -235,8 +236,8 @@ function normalizeSeverity(value: string): SessionSummary["severity"] {
 function mapSummaryToDiagnosisSummary(item: SessionSummary): DiagnosisSessionSummary {
   return {
     session_id: item.session_id,
-    title: `${item.alert_name} · ${item.severity.toUpperCase()}`,
-    summary: item.outcome ? `状态 ${item.status}，结果 ${item.outcome}` : `状态 ${item.status}`,
+    title: `${item.alert_name} \u00b7 ${item.severity.toUpperCase()}`,
+    summary: item.outcome ? `\u72b6\u6001 ${item.status}\uff0c\u7ed3\u679c ${item.outcome}` : `\u72b6\u6001 ${item.status}`,
     started_at: item.updated_at,
     updated_at: item.updated_at,
     status: item.status,
@@ -251,12 +252,18 @@ function mapSummaryToDiagnosisSummary(item: SessionSummary): DiagnosisSessionSum
   };
 }
 
-function mapEntityTypeToExplorerType(entityType: string): "rack" | "node" | "gpu" | "switch" | "service" | "pod" | "cluster" {
+function mapEntityTypeToExplorerType(entityType: string): TopologyObjectType {
   const value = entityType.toLowerCase();
+  if (value.includes("bmc")) {
+    return "bmc";
+  }
   if (value.includes("gpu")) {
     return "gpu";
   }
-  if (value.includes("switch") || value.includes("port") || value.includes("network")) {
+  if (value.includes("port")) {
+    return "port";
+  }
+  if (value.includes("switch") || value.includes("network")) {
     return "switch";
   }
   if (value.includes("cluster")) {
@@ -289,10 +296,10 @@ function mapNodeStatus(status: string | null | undefined): TopologyObjectStatus 
 }
 
 function mapLayer(type: ReturnType<typeof mapEntityTypeToExplorerType>): TopologyLayer {
-  if (type === "switch" || type === "rack") {
+  if (type === "switch" || type === "port" || type === "rack") {
     return "network";
   }
-  if (type === "gpu" || type === "node") {
+  if (type === "gpu" || type === "node" || type === "bmc") {
     return "compute";
   }
   if (type === "cluster") {
@@ -769,7 +776,7 @@ export const apiClient = {
         });
       }
 
-      throw new Error("诊断请求已提交，但会话尚未返回；请稍后在诊断/历史频道刷新查看。");
+      throw new Error("\u8bca\u65ad\u8bf7\u6c42\u5df2\u63d0\u4ea4\uff0c\u4f46\u4f1a\u8bdd\u5c1a\u672a\u8fd4\u56de\uff1b\u8bf7\u7a0d\u540e\u5728\u8bca\u65ad/\u5386\u53f2\u9891\u9053\u5237\u65b0\u67e5\u770b\u3002");
     }
   },
 
@@ -1252,7 +1259,7 @@ export const apiClient = {
             if (matched) {
               return matched;
             }
-            throw new Error("未找到对应技能");
+            throw new Error("\u672a\u627e\u5230\u5bf9\u5e94\u6280\u80fd");
           }
           throw error;
         }
@@ -1289,4 +1296,3 @@ export const apiClient = {
 };
 
 export type ApiClient = typeof apiClient;
-

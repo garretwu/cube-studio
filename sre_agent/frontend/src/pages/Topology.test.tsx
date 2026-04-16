@@ -11,7 +11,7 @@ function renderTopologyRoutes(initialEntry = "/topology") {
     <MemoryRouter initialEntries={[initialEntry]}>
       <Routes>
         <Route path="/topology" element={<TopologyPage />} />
-        <Route path="/topology/object/:nodeId" element={<TopologyObjectPage />} />
+        <Route path="/topology/object/:nodeId/*" element={<TopologyObjectPage />} />
       </Routes>
     </MemoryRouter>,
   );
@@ -22,40 +22,54 @@ describe("TopologyPage", () => {
     useTopologyExplorerStore.setState(createTopologyExplorerState());
   });
 
-  it("renders a single canvas-first stage without summary pills or a persistent side inspector", async () => {
-    renderTopologyRoutes();
-
-    await waitFor(
-      () => {
-        expect(screen.getByTestId("topology-filter-dock")).toBeInTheDocument();
-      },
-      { timeout: 3000 },
-    );
-
-    expect(screen.getByTestId("topology-stage-workplane")).toBeInTheDocument();
-    expect(screen.queryByTestId("topology-side-inspector")).not.toBeInTheDocument();
-    expect(screen.queryByText("总实体")).not.toBeInTheDocument();
-  });
-
-  it("opens the in-canvas filter panel and shows live search-filter results", async () => {
-    const user = userEvent.setup();
+  it("renders the topology stage with room scope selected by default", async () => {
     renderTopologyRoutes();
 
     await waitFor(() => {
-      expect(screen.getByRole("button", { name: "筛选" })).toBeInTheDocument();
+      expect(screen.getByTestId("topology-action-toolbar")).toBeInTheDocument();
     });
 
-    await user.click(screen.getByRole("button", { name: "筛选" }));
+    expect(screen.getByTestId("topology-stage-workplane")).toHaveAttribute("data-view-mode", "graph");
+    expect(screen.getByTestId("topology-room-selector")).toBeInTheDocument();
+    expect(screen.queryByTestId("topology-side-inspector")).not.toBeInTheDocument();
+  });
+
+  it("switches between layered and tree views", async () => {
+    const user = userEvent.setup();
+    renderTopologyRoutes();
+
+    const panel = await screen.findByTestId("topology-secondary-panel");
+    const tabs = within(panel).getAllByRole("tab");
+
+    await user.click(tabs[1]!);
+    expect(screen.getByTestId("topology-stage-workplane")).toHaveAttribute("data-view-mode", "tree");
+
+    await user.click(tabs[0]!);
+    expect(screen.getByTestId("topology-stage-workplane")).toHaveAttribute("data-view-mode", "graph");
+    expect(screen.getByTestId("topology-stage-workplane")).toHaveAttribute("data-layout-preset", "layered");
+  });
+
+  it("uses one shared filter panel for search and filter", async () => {
+    const user = userEvent.setup();
+    renderTopologyRoutes();
+
+    const toolbar = await screen.findByTestId("topology-action-toolbar");
+    const toolbarButtons = within(toolbar).getAllByRole("button");
+    const searchButton = toolbarButtons[0]!;
+    const filterButton = toolbarButtons[1]!;
+
+    await user.click(searchButton);
 
     const panel = await screen.findByTestId("topology-filter-panel");
-    const input = within(panel).getByPlaceholderText("搜索机柜 / 节点 / GPU / 服务 / 交换机");
+    const input = within(panel).getByRole("textbox");
     await user.type(input, "worker-01");
 
     await waitFor(() => {
       expect(within(panel).getByRole("button", { name: /BMC worker-01/i })).toBeInTheDocument();
     });
 
-    expect(within(panel).queryByText("当前筛选条件下没有匹配对象。")).not.toBeInTheDocument();
+    await user.click(filterButton);
+    expect(screen.getByTestId("topology-filter-panel")).toBe(panel);
   });
 
   it("shows a node action popover with Isolate and View topology actions", async () => {
@@ -77,11 +91,22 @@ describe("TopologyPage", () => {
     fireEvent.click(nodeButton);
     await user.click(await screen.findByRole("button", { name: "View topology" }));
 
+    await screen.findByTestId("topology-object-layout");
+    expect(screen.getByTestId("topology-object-inspector")).toBeInTheDocument();
+  });
+
+  it("opens object detail for a port node whose id contains slash", async () => {
+    const user = userEvent.setup();
+    renderTopologyRoutes();
+
+    const portButton = await screen.findByRole("button", { name: /^200GE1\/0\/1 \|/i });
+    fireEvent.click(portButton);
+    await user.click(await screen.findByRole("button", { name: "View topology" }));
+
     await waitFor(() => {
-      expect(screen.getByTestId("topology-object-layout")).toBeInTheDocument();
+      expect(screen.getByRole("heading", { level: 2, name: "200GE1/0/1" })).toBeInTheDocument();
     });
 
-    expect(screen.getByRole("button", { name: "返回全局拓扑" })).toBeInTheDocument();
-    expect(screen.getByTestId("topology-object-inspector")).toBeInTheDocument();
+    await screen.findByTestId("topology-object-layout");
   });
 });

@@ -40,7 +40,26 @@ export type ImpactTopology = {
 };
 
 export const GLOBAL_TOPOLOGY_SERVICE_NODE_LIMIT = 20;
+export const MODIFIED_SERVICE_AGGREGATE_MIN_MEMBERS = 4;
+export const SYNTHETIC_SERVICE_AGGREGATE_KIND = "serviceAggregate";
+export const SYNTHETIC_GPU_AGGREGATE_KIND = "gpuAggregate";
 
+export function isSyntheticTopologyNode(node: TopologyObject) {
+  return typeof node.attributes.syntheticKind === "string";
+}
+
+export function isSyntheticServiceAggregateNode(node: TopologyObject) {
+  return node.attributes.syntheticKind === SYNTHETIC_SERVICE_AGGREGATE_KIND;
+}
+
+export function isSyntheticGpuAggregateNode(node: TopologyObject) {
+  return node.attributes.syntheticKind === SYNTHETIC_GPU_AGGREGATE_KIND;
+}
+
+export function getSyntheticAggregateGroupId(node: TopologyObject) {
+  const value = node.attributes.aggregateGroupId;
+  return typeof value === "string" ? value : undefined;
+}
 function isGlobalTopologyCappedNode(node: TopologyObject) {
   return node.layer === "service";
 }
@@ -103,6 +122,30 @@ function impactRank(level: TopologyRelation["impactLevel"]) {
   return rank[level];
 }
 
+function getRawType(node: TopologyObject) {
+  return String(node.attributes.rawType ?? node.type);
+}
+
+function getHighestStatus(nodes: TopologyObject[]) {
+  return nodes.reduce<TopologyObjectStatus>((winner, node) => {
+    return statusRank(node.status) > statusRank(winner) ? node.status : winner;
+  }, "healthy");
+}
+function getRelationLabel(edge: Pick<TopologyRelation, "relationType" | "label">) {
+  const rawLabel = typeof edge.label === "string" ? edge.label.trim() : "";
+  if (rawLabel.length > 0) {
+    return rawLabel;
+  }
+  return edge.relationType.replace(/_/g, " ");
+}
+
+function buildAggregatedRelationLabel(relationLabels: Set<string>, count: number) {
+  if (relationLabels.size === 1) {
+    const [relationLabel] = Array.from(relationLabels);
+    return `${relationLabel}(${count})`;
+  }
+  return `${count} relations`;
+}
 function pathStatusRank(status: TopologyPath["status"]) {
   return status === "active" ? 1 : 0;
 }
@@ -152,6 +195,279 @@ function getOutgoing(edges: TopologyRelation[]) {
   return outgoing;
 }
 
+function getAggregateHostId(
+  node: TopologyObject,
+  outgoingEdges: Map<string, TopologyRelation[]>,
+) {
+  const hostEdge = (outgoingEdges.get(node.id) ?? []).find(
+    (edge) => edge.relationType === "runs_on",
+  );
+  return hostEdge?.target ?? node.cluster ?? node.rack ?? node.domain;
+}
+
+type ModifiedAggregationOptions = {
+  expandedAggregateIds?: string[];
+  priorityNodeIds?: string[];
+};
+
+function buildModifiedAggregatedTopology(
+  response: TopologyExplorerResponse,
+  options: ModifiedAggregationOptions = {},
+) {
+  const nodeMap = toLookupMap(response.nodes);
+  const outgoing = getOutgoing(response.edges);
+  const incoming = new Map<string, TopologyRelation[]>();
+  response.edges.forEach((edge) => {
+    const list = incoming.get(edge.target) ?? [];
+    list.push(edge);
+    incoming.set(edge.target, list);
+  });
+  const expandedAggregateIds = new Set(options.expandedAggregateIds ?? []);
+  const priorityNodeIds = new Set(options.priorityNodeIds ?? []);
+  const groupedMembers = new Map<string, TopologyObject[]>();
+
+  response.nodes.forEach((node) => {
+    if (node.layer !== "service") {
+      return;
+    }
+
+    // Keep namespace-level service objects visible; only aggregate Pod objects under their owning service.
+    if (node.type !== "pod" && String(node.attributes.rawType ?? "").trim().toLowerCase() !== "pod") {
+      return;
+    }
+    const ownerService = (incoming.get(node.id) ?? [])
+      .map((edge) => nodeMap.get(edge.source))
+      .find((candidate) => Boolean(candidate && candidate.type === "service"));
+    const serviceKey = ownerService?.id ?? "unassigned";
+    const aggregateGroupId = `aggregate:${serviceKey}:pod`;
+    const list = groupedMembers.get(aggregateGroupId) ?? [];
+    list.push(node);
+    groupedMembers.set(aggregateGroupId, list);
+  });
+
+  response.nodes.forEach((node) => {
+    if (node.type !== "gpu") {
+      return;
+    }
+    const hostNodeId = getGpuHostNodeId(node, nodeMap, outgoing, incoming) ?? "unassigned";
+    const aggregateGroupId = `aggregate-gpu:${hostNodeId}`;
+    const list = groupedMembers.get(aggregateGroupId) ?? [];
+    list.push(node);
+    groupedMembers.set(aggregateGroupId, list);
+  });
+
+  const replacementMap = new Map<string, string>();
+  const aggregateNodes: TopologyObject[] = [];
+
+  groupedMembers.forEach((members, aggregateGroupId) => {
+    if (aggregateGroupId.startsWith("aggregate-gpu:")) {
+      const hostNodeId = aggregateGroupId.slice("aggregate-gpu:".length) || "unassigned";
+      const fixedMembers = members.filter(
+        (node) => node.status !== "healthy" || priorityNodeIds.has(node.id),
+      );
+      const hiddenMembers = members.filter((node) => !fixedMembers.includes(node));
+
+      // Always show a dedicated GPU group node when there are multiple GPUs on the host.
+      // Healthy GPUs are collapsed into the group by default; abnormal/search-hit GPUs stay visible.
+      if (members.length < 2 || expandedAggregateIds.has(aggregateGroupId)) {
+        return;
+      }
+
+      hiddenMembers.forEach((node) => {
+        replacementMap.set(node.id, aggregateGroupId);
+      });
+
+      const hostNode = nodeMap.get(hostNodeId);
+      const hostLabel = hostNode?.name ?? hostNodeId;
+      const aggregateStatus = getHighestStatus(members);
+      const latestUpdatedAt = members
+        .map((node) => node.updatedAt)
+        .sort((left, right) => right.localeCompare(left))[0] ?? response.lastUpdated;
+      const sharedTags = unique(members.flatMap((node) => node.tags));
+      const cluster = members.find((node) => Boolean(node.cluster))?.cluster;
+      const rack = members.find((node) => Boolean(node.rack))?.rack;
+
+      aggregateNodes.push({
+        id: aggregateGroupId,
+        name: `GPU ${hostLabel}`,
+        type: "gpu",
+        status: aggregateStatus,
+        layer: "compute",
+        domain: members[0].domain,
+        region: members[0].region,
+        zone: members[0].zone,
+        cluster,
+        rack,
+        summary: `Aggregated ${members.length} GPU objects.`,
+        tags: sharedTags,
+        updatedAt: latestUpdatedAt,
+        metrics: {
+          aggregatedObjects: members.length,
+          abnormalObjects: members.filter((node) => node.status === "abnormal").length,
+          impactedObjects: members.filter((node) => node.status === "impacted").length,
+        },
+        attributes: {
+          syntheticKind: SYNTHETIC_GPU_AGGREGATE_KIND,
+          aggregateGroupId,
+          aggregateCount: members.length,
+          aggregateHostId: hostNodeId,
+          aggregateRawType: "gpu",
+          aggregateMemberIds: members.map((node) => node.id),
+          aggregateExpanded: false,
+          fixedMemberIds: fixedMembers.map((node) => node.id),
+        },
+      });
+      return;
+    }
+
+    const fixedMembers = members.filter(
+      (node) => node.status !== "healthy" || priorityNodeIds.has(node.id),
+    );
+    const hiddenMembers = members.filter((node) => !fixedMembers.includes(node));
+
+    if (
+      hiddenMembers.length < MODIFIED_SERVICE_AGGREGATE_MIN_MEMBERS ||
+      expandedAggregateIds.has(aggregateGroupId)
+    ) {
+      return;
+    }
+
+    const serviceId = getAggregateOwnerServiceId(aggregateGroupId);
+    const serviceNode = serviceId ? nodeMap.get(serviceId) : undefined;
+    const hostLabel = serviceNode?.name ?? serviceId ?? "unassigned";
+    const rawType = "pod";
+    const aggregateName = `${hostLabel} \u00b7 ${hiddenMembers.length} Pods`;
+    const aggregateStatus = getHighestStatus(hiddenMembers);
+    const latestUpdatedAt = hiddenMembers
+      .map((node) => node.updatedAt)
+      .sort((left, right) => right.localeCompare(left))[0] ?? response.lastUpdated;
+    const sharedTags = unique(hiddenMembers.flatMap((node) => node.tags));
+    const cluster = hiddenMembers.find((node) => Boolean(node.cluster))?.cluster;
+    const rack = hiddenMembers.find((node) => Boolean(node.rack))?.rack;
+
+    hiddenMembers.forEach((node) => {
+      replacementMap.set(node.id, aggregateGroupId);
+    });
+
+    aggregateNodes.push({
+      id: aggregateGroupId,
+      name: aggregateName,
+      type: "pod",
+      status: aggregateStatus,
+      layer: "service",
+      domain: hiddenMembers[0].domain,
+      region: hiddenMembers[0].region,
+      zone: hiddenMembers[0].zone,
+      cluster,
+      rack,
+      summary: `Aggregated ${hiddenMembers.length} Pod objects.`,
+      tags: sharedTags,
+      updatedAt: latestUpdatedAt,
+      metrics: {
+        aggregatedObjects: hiddenMembers.length,
+        abnormalObjects: hiddenMembers.filter((node) => node.status === "abnormal").length,
+        impactedObjects: hiddenMembers.filter((node) => node.status === "impacted").length,
+      },
+      attributes: {
+        syntheticKind: SYNTHETIC_SERVICE_AGGREGATE_KIND,
+        aggregateGroupId,
+        aggregateCount: hiddenMembers.length,
+        aggregateHostId: serviceId,
+        aggregateRawType: rawType,
+        aggregateMemberIds: hiddenMembers.map((node) => node.id),
+        aggregateExpanded: false,
+      },
+    });
+  });
+
+  const visibleNodes = response.nodes.filter((node) => !replacementMap.has(node.id));
+  const mergedEdges = new Map<
+    string,
+    TopologyRelation & {
+      __count: number;
+      __syntheticEndpoint: boolean;
+      __relationLabels: Set<string>;
+    }
+  >();
+
+  response.edges.forEach((edge) => {
+    const source = replacementMap.get(edge.source) ?? edge.source;
+    const target = replacementMap.get(edge.target) ?? edge.target;
+    if (source === target) {
+      return;
+    }
+
+    const key = `${source}:${target}`;
+    const syntheticEndpoint =
+      source.startsWith("aggregate:") ||
+      target.startsWith("aggregate:") ||
+      source.startsWith("aggregate-gpu:") ||
+      target.startsWith("aggregate-gpu:");
+    const sourceIsAggregate = source.startsWith("aggregate:") || source.startsWith("aggregate-gpu:");
+    const targetIsAggregate = target.startsWith("aggregate:") || target.startsWith("aggregate-gpu:");
+    const sourceNode = nodeMap.get(source);
+    const targetNode = nodeMap.get(target);
+    const mergeKey =
+      syntheticEndpoint && (sourceIsAggregate || targetIsAggregate)
+        ? (() => {
+            const aggregateId = sourceIsAggregate ? source : target;
+            const otherNode = sourceIsAggregate ? targetNode : sourceNode;
+            const otherType = otherNode?.type ?? (sourceIsAggregate ? target : source);
+            return `${aggregateId}:${edge.relationType}:${otherType}`;
+          })()
+        : key;
+    const existing = mergedEdges.get(mergeKey);
+
+    if (!existing) {
+      mergedEdges.set(mergeKey, {
+        ...edge,
+        id: syntheticEndpoint ? `aggregated-${mergeKey}` : edge.id,
+        source,
+        target,
+        relationType: syntheticEndpoint ? "aggregated" : edge.relationType,
+        label: syntheticEndpoint
+          ? buildAggregatedRelationLabel(new Set([getRelationLabel(edge)]), 1)
+          : edge.label,
+        isAggregated: syntheticEndpoint || edge.isAggregated,
+        __count: 1,
+        __syntheticEndpoint: syntheticEndpoint,
+        __relationLabels: new Set([getRelationLabel(edge)]),
+      });
+      return;
+    }
+
+    existing.__count += 1;
+    existing.__syntheticEndpoint = existing.__syntheticEndpoint || syntheticEndpoint;
+    existing.__relationLabels.add(getRelationLabel(edge));
+    existing.status =
+      statusRank(edge.status) > statusRank(existing.status)
+        ? edge.status
+        : existing.status;
+    existing.impactLevel =
+      impactRank(edge.impactLevel) > impactRank(existing.impactLevel)
+        ? edge.impactLevel
+        : existing.impactLevel;
+    existing.isCritical = existing.isCritical || edge.isCritical;
+    existing.isAggregated = true;
+    existing.relationType = "aggregated";
+  });
+
+  const edges = Array.from(mergedEdges.values()).map(
+    ({ __count, __syntheticEndpoint, __relationLabels, ...edge }) => ({
+      ...edge,
+      label:
+        __count > 1 || __syntheticEndpoint
+          ? buildAggregatedRelationLabel(__relationLabels, __count)
+          : edge.label ?? edge.relationType,
+      isAggregated: edge.isAggregated || __count > 1 || __syntheticEndpoint,
+    }),
+  );
+  return {
+    ...response,
+    nodes: [...visibleNodes, ...aggregateNodes],
+    edges,
+  };
+}
 function getUndirected(edges: TopologyRelation[]) {
   const neighbors = new Map<string, string[]>();
 
@@ -316,6 +632,55 @@ export function getNeighborDepths(
   return visited;
 }
 
+export function getUpDownstreamChainDepths(edges: TopologyRelation[], nodeId?: string) {
+  if (!nodeId) {
+    return new Map<string, number>();
+  }
+
+  const incoming = new Map<string, string[]>();
+  const outgoing = new Map<string, string[]>();
+
+  edges.forEach((edge) => {
+    const outList = outgoing.get(edge.source) ?? [];
+    outList.push(edge.target);
+    outgoing.set(edge.source, outList);
+
+    const inList = incoming.get(edge.target) ?? [];
+    inList.push(edge.source);
+    incoming.set(edge.target, inList);
+  });
+
+  const visited = new Map<string, number>([[nodeId, 0]]);
+
+  const walk = (direction: "upstream" | "downstream") => {
+    const queue: Array<{ id: string; depth: number }> = [{ id: nodeId, depth: 0 }];
+    while (queue.length > 0) {
+      const current = queue.shift();
+      if (!current) {
+        continue;
+      }
+
+      const neighbors =
+        direction === "upstream" ? incoming.get(current.id) ?? [] : outgoing.get(current.id) ?? [];
+      neighbors.forEach((neighborId) => {
+        const nextDepth = current.depth + 1;
+        const signedDepth = direction === "upstream" ? -nextDepth : nextDepth;
+        const previous = visited.get(neighborId);
+        if (previous !== undefined && Math.abs(previous) <= nextDepth) {
+          return;
+        }
+        visited.set(neighborId, signedDepth);
+        queue.push({ id: neighborId, depth: nextDepth });
+      });
+    }
+  };
+
+  walk("upstream");
+  walk("downstream");
+
+  return visited;
+}
+
 function getFilterContextIds(
   response: TopologyExplorerResponse,
   statusFilter: ExplorerStatusFilter,
@@ -400,7 +765,13 @@ function buildAggregatedEdges(
       )
       .map((edge) => `${edge.source}:${edge.target}`),
   );
-  const aggregated = new Map<string, TopologyRelation>();
+  const aggregated = new Map<
+    string,
+    TopologyRelation & {
+      __count: number;
+      __relationLabels: Set<string>;
+    }
+  >();
 
   visibleNodeIds.forEach((sourceId) => {
     const initialEdges = (outgoing.get(sourceId) ?? []).filter(
@@ -454,18 +825,44 @@ function buildAggregatedEdges(
               ? edge.impactLevel
               : winner;
           }, "low");
+          const relationLabels = new Set(
+            traversedEdges.map((traversedEdge) => getRelationLabel(traversedEdge)),
+          );
 
-          aggregated.set(aggregateKey, {
-            id: `aggregated-${sourceId}-${nextEdge.target}`,
-            source: sourceId,
-            target: nextEdge.target,
-            relationType: "aggregated",
-            status: withNodeStatus,
-            isCritical: traversedEdges.some((edge) => edge.isCritical),
-            impactLevel,
-            label: "鐠恒劌鐪伴懕姘値",
-            isAggregated: true,
-          });
+          const existing = aggregated.get(aggregateKey);
+          if (!existing) {
+            aggregated.set(aggregateKey, {
+              id: `aggregated-${sourceId}-${nextEdge.target}`,
+              source: sourceId,
+              target: nextEdge.target,
+              relationType: "aggregated",
+              status: withNodeStatus,
+              isCritical: traversedEdges.some((edge) => edge.isCritical),
+              impactLevel,
+              label: buildAggregatedRelationLabel(relationLabels, 1),
+              isAggregated: true,
+              __count: 1,
+              __relationLabels: relationLabels,
+            });
+            return;
+          }
+
+          existing.__count += 1;
+          relationLabels.forEach((label) => existing.__relationLabels.add(label));
+          existing.status =
+            statusRank(withNodeStatus) > statusRank(existing.status)
+              ? withNodeStatus
+              : existing.status;
+          existing.impactLevel =
+            impactRank(impactLevel) > impactRank(existing.impactLevel)
+              ? impactLevel
+              : existing.impactLevel;
+          existing.isCritical =
+            existing.isCritical || traversedEdges.some((edge) => edge.isCritical);
+          existing.label = buildAggregatedRelationLabel(
+            existing.__relationLabels,
+            existing.__count,
+          );
           return;
         }
 
@@ -484,9 +881,10 @@ function buildAggregatedEdges(
     }
   });
 
-  return Array.from(aggregated.values());
+  return Array.from(aggregated.values()).map(
+    ({ __count: _count, __relationLabels: _labels, ...edge }) => edge,
+  );
 }
-
 export function getVisibleTopology(
   response: TopologyExplorerResponse | undefined,
   filters: TopologyExplorerFilters,
@@ -667,13 +1065,25 @@ export function buildTopologyTree(
             objectType: service.type,
           }));
 
+        const bmcEndpoints = containsEdges
+          .filter((edge) => edge.target === node.id)
+          .map((edge) => nodeMap.get(edge.source))
+          .filter((bmc): bmc is TopologyObject => bmc?.type === "bmc")
+          .map<TopologyTreeNode>((bmc) => ({
+            id: bmc.id,
+            label: bmc.name,
+            type: "object",
+            objectId: bmc.id,
+            objectType: bmc.type,
+          }));
+
         return {
           id: node.id,
           label: node.name,
           type: "object",
           objectId: node.id,
           objectType: node.type,
-          children: [...gpus, ...services],
+          children: [...bmcEndpoints, ...gpus, ...services],
         };
       });
 
@@ -737,7 +1147,7 @@ export function buildTopologyTree(
       },
       {
         id: `${response.site.id}-network`,
-        label: "缂冩垹绮剁拋鐐煢",
+        label: "Network / Switches / Ports",
         type: "group",
         children: switchNodes,
       },
@@ -751,6 +1161,10 @@ export type TopologyStageFilters = {
   searchResultIds?: string[];
 };
 
+export type ModifiedTopologyStageOptions = {
+  expandedAggregateIds?: string[];
+  priorityNodeIds?: string[];
+};
 export type ObjectTopologyDetail = {
   focalNode?: TopologyObject;
   nodes: TopologyObject[];
@@ -777,6 +1191,97 @@ function getDirectNeighborContextIds(
   });
 
   return contextIds;
+}
+
+function filterEssentialTopologyEdges(nodes: TopologyObject[], edges: TopologyRelation[]) {
+  const nodeMap = toLookupMap(nodes);
+
+  // Use a canonical (sorted) pair key so the filter is direction-agnostic.
+  const allowedPairs = new Set([
+    "cluster:switch",
+    "node:port",
+    "gpu:node",
+    "bmc:node",
+    "gpu:service",
+    "node:service",
+    "pod:service",
+    "port:switch",
+  ]);
+
+  function isAllowedPair(left: TopologyObject | undefined, right: TopologyObject | undefined) {
+    if (!left || !right) {
+      return false;
+    }
+    const key = [left.type, right.type].sort((a, b) => a.localeCompare(b)).join(":");
+    return allowedPairs.has(key);
+  }
+
+  const relationPriority: Record<TopologyRelation["relationType"], number> = {
+    connects_to: 6,
+    uplink_to: 5,
+    runs_on: 4,
+    depends_on: 3,
+    contains: 2,
+    aggregated: 1,
+  };
+
+  const bestByPair = new Map<string, TopologyRelation>();
+  edges.forEach((edge) => {
+    const source = nodeMap.get(edge.source);
+    const target = nodeMap.get(edge.target);
+    if (!isAllowedPair(source, target)) {
+      return;
+    }
+
+    const pairKey = edge.source < edge.target ? `${edge.source}::${edge.target}` : `${edge.target}::${edge.source}`;
+    const existing = bestByPair.get(pairKey);
+    if (!existing) {
+      bestByPair.set(pairKey, edge);
+      return;
+    }
+
+    const existingScore =
+      (existing.isCritical ? 100 : 0) + (relationPriority[existing.relationType] ?? 0);
+    const candidateScore =
+      (edge.isCritical ? 100 : 0) + (relationPriority[edge.relationType] ?? 0);
+    if (candidateScore > existingScore) {
+      bestByPair.set(pairKey, edge);
+    }
+  });
+
+  return Array.from(bestByPair.values());
+}
+
+function getAggregateOwnerServiceId(aggregateGroupId: string) {
+  const prefix = "aggregate:";
+  const suffix = ":pod";
+  if (!aggregateGroupId.startsWith(prefix) || !aggregateGroupId.endsWith(suffix)) {
+    return undefined;
+  }
+  const value = aggregateGroupId.slice(prefix.length, -suffix.length);
+  return value.trim() ? value : undefined;
+}
+
+function getGpuHostNodeId(
+  gpu: TopologyObject,
+  nodeMap: Map<string, TopologyObject>,
+  outgoing: Map<string, TopologyRelation[]>,
+  incoming: Map<string, TopologyRelation[]>,
+) {
+  const outgoingEdge = (outgoing.get(gpu.id) ?? []).find((edge) => edge.relationType === "contains");
+  const outgoingTarget = outgoingEdge ? nodeMap.get(outgoingEdge.target) : undefined;
+  if (outgoingTarget?.type === "node") {
+    return outgoingTarget.id;
+  }
+
+  const incomingEdge = (incoming.get(gpu.id) ?? []).find((edge) => edge.relationType === "contains");
+  const incomingSource = incomingEdge ? nodeMap.get(incomingEdge.source) : undefined;
+  if (incomingSource?.type === "node") {
+    return incomingSource.id;
+  }
+
+  const fallbackHost = typeof gpu.attributes.host === "string" ? gpu.attributes.host : undefined;
+  return fallbackHost;
 }
 
 export function getStageTopology(
@@ -829,6 +1334,77 @@ export function getStageTopology(
   };
 }
 
+export function getModifiedSearchResultIds(
+  response: TopologyExplorerResponse | undefined,
+  layerFilter: ExplorerLayerFilter,
+  searchQuery: string,
+) {
+  if (!response) {
+    return [];
+  }
+
+  const searchNodes =
+    layerFilter === "all"
+      ? response.nodes
+      : response.nodes.filter((node) => node.layer === layerFilter);
+
+  return searchTopologyObjects(searchNodes, searchQuery)
+    .filter((node) => !isSyntheticTopologyNode(node))
+    .map((node) => node.id);
+}
+
+export function getModifiedStageTopology(
+  response: TopologyExplorerResponse | undefined,
+  filters: TopologyStageFilters,
+  options: ModifiedTopologyStageOptions = {},
+) {
+  if (!response) {
+    return {
+      nodes: [] as TopologyObject[],
+      edges: [] as TopologyRelation[],
+      contextIds: new Set<string>(),
+      visibleNodeIds: new Set<string>(),
+      searchResultIds: [] as string[],
+    };
+  }
+
+  const searchResultIds =
+    filters.searchResultIds ??
+    getModifiedSearchResultIds(response, filters.layerFilter, filters.searchQuery);
+  const priorityNodeIds = unique([
+    ...searchResultIds,
+    ...(options.priorityNodeIds ?? []),
+  ]);
+  const aggregatedResponse = buildModifiedAggregatedTopology(response, {
+    expandedAggregateIds: options.expandedAggregateIds,
+    priorityNodeIds,
+  });
+  const contextIds = filters.searchQuery.trim()
+    ? getDirectNeighborContextIds(aggregatedResponse, new Set(searchResultIds))
+    : new Set(aggregatedResponse.nodes.map((node) => node.id));
+  const visibleNodes = filterByLayer(
+    aggregatedResponse.nodes.filter((node) => contextIds.has(node.id)),
+    filters.layerFilter,
+  );
+  const visibleNodeIds = new Set(visibleNodes.map((node) => node.id));
+  const directEdges = aggregatedResponse.edges.filter(
+    (edge) =>
+      visibleNodeIds.has(edge.source) && visibleNodeIds.has(edge.target),
+  );
+  const essentialEdges = filterEssentialTopologyEdges(visibleNodes, directEdges);
+  const aggregatedEdges =
+    filters.layerFilter === "all"
+      ? []
+      : buildAggregatedEdges(aggregatedResponse, visibleNodeIds, contextIds);
+
+  return {
+    nodes: visibleNodes,
+    edges: [...essentialEdges, ...aggregatedEdges],
+    contextIds,
+    visibleNodeIds,
+    searchResultIds,
+  };
+}
 export function getObjectTopologyDetail(
   response: TopologyExplorerResponse | undefined,
   nodeId?: string,

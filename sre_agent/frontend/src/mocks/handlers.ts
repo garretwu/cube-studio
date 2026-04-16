@@ -103,7 +103,11 @@ export const handlers = [
   }),
   http.get("/api/topology-explorer", async () => {
     await delay(80);
-    return HttpResponse.json(topologyExplorerOnlineMock);
+    return HttpResponse.json(topologyExplorerOnlineMock, {
+      headers: {
+        "x-mock-source": "msw:topologyExplorerOnlineMock",
+      },
+    });
   }),
 
   http.get("/api/alerts", async () => {

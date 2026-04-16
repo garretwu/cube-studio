@@ -32,8 +32,9 @@ function ApprovalDialog({
 
   return (
     <Modal
+      className="approval-dialog-modal"
       closable={!isBusy}
-      destroyOnHidden
+      destroyOnClose
       footer={
         <div style={{ display: "flex", justifyContent: "space-between", gap: 12, marginTop: 8 }}>
           <AppButton disabled={rejectDisabled || isBusy} loading={loadingAction === "reject"} onClick={onReject} variant="danger">
@@ -65,10 +66,10 @@ function ApprovalDialog({
           {plan?.safety_level ? <StatusChip tone="neutral">{formatWorkflowStatus(plan.safety_level)}</StatusChip> : null}
         </div>
         {errorMessage ? <p className="data-list__copy remediation-sidebar__error">{errorMessage}</p> : null}
-        <div className="mini-card">
-          <p className="mini-card__title">{plan?.description ?? "当前暂无可审批的修复方案。"}</p>
-          <p className="mini-card__copy">根因：{plan?.root_cause ?? "暂无"}</p>
-          <p className="mini-card__copy">预计影响：{plan?.estimated_impact ?? "暂无"}</p>
+        <div className="approval-dialog__summary">
+          <p className="approval-dialog__summary-title">{plan?.description ?? "当前暂无可审批的修复方案。"}</p>
+          <p className="approval-dialog__summary-copy">根因：{plan?.root_cause ?? "暂无"}</p>
+          <p className="approval-dialog__summary-copy">预计影响：{plan?.estimated_impact ?? "暂无"}</p>
         </div>
         {plan?.steps && plan.steps.length > 0 ? (
           <div className="mini-card" style={{ marginTop: 8 }}>

@@ -83,20 +83,16 @@ describe("App shell", () => {
     expect(container.querySelectorAll(".nav-section")).toHaveLength(2);
   });
 
-  it("keeps topology active when the legacy modified route is opened", async () => {
-    const topologyLabel = appRoutes.find((route) => route.key === "topology")?.label;
-
-    expect(topologyLabel).toBeTruthy();
-    expect(appRoutes.some((route) => route.key === "topologyModified")).toBe(false);
-
+  it("redirects the legacy modified topology route to /topology", async () => {
     render(
       <MemoryRouter initialEntries={["/topology-modified"]}>
         <App />
       </MemoryRouter>,
     );
 
-    const topologyButton = await screen.findByRole("button", { name: topologyLabel! });
-    expect(topologyButton.className).toContain("nav-item--active");
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "拓扑" }).className).toContain("nav-item--active");
+    });
   });
 
   it("keeps topology active when an object topology detail route is opened", async () => {
