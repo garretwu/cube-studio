@@ -938,16 +938,15 @@ export const apiClient = {
             batchStatusMap.set(batch, { batch, progress: 0, status: "pending" });
           }
         } else if (stage === "canary_batch_completed") {
-          const batchCompleted = Number(data.steps_completed ?? 0);
-          const batchTotal = Number(data.steps_total ?? 1);
-          const pct = batchTotal > 0 ? Math.round((batchCompleted / batchTotal) * 100) : 100;
-          batchStatusMap.set(batch, { batch, progress: pct, status: "resolved" });
+          batchStatusMap.set(batch, { batch, progress: 100, status: "resolved" });
         } else if (stage === "canary_check_failed") {
           const existing = batchStatusMap.get(batch);
           batchStatusMap.set(batch, { batch, progress: existing?.progress ?? 0, status: "failed" });
         } else if (stage === "canary_check_passed") {
-          const existing = batchStatusMap.get(batch);
-          batchStatusMap.set(batch, { batch, progress: existing?.progress ?? 50, status: "validating" });
+          const batchCompleted = Number(data.batch_completed ?? 0);
+          const batchTotal = Number(data.batch_total ?? 1);
+          const pct = batchTotal > 0 ? Math.round((batchCompleted / batchTotal) * 100) : 50;
+          batchStatusMap.set(batch, { batch, progress: pct, status: "validating" });
         }
       }
       // Also track remediating/validating for step-level progress when no canary events
