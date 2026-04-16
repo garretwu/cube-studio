@@ -1587,7 +1587,24 @@ def _compact_prompt_value(
 
 
 def _json_line(value: Any) -> str:
-    return json.dumps(_compact_prompt_value(_safe_jsonable(value)), ensure_ascii=False, sort_keys=True)
+    """Convert value to JSON, with special handling for skills.load_skill output_summary."""
+    safe_value = _safe_jsonable(value)
+    # Preserve output_summary for skills.load_skill entries (don't compress)
+    if isinstance(safe_value, list):
+        preserved_output_summaries: dict[int, Any] = {}
+        for i, item in enumerate(safe_value):
+            if isinstance(item, dict) and item.get("tool") == "skills.load_skill" and "output_summary" in item:
+                preserved_output_summaries[i] = item["output_summary"]
+                # Temporarily remove to prevent compression
+                item.pop("output_summary")
+        # Now compress
+        compacted = _compact_prompt_value(safe_value)
+        # Restore preserved output_summaries
+        for i, preserved in preserved_output_summaries.items():
+            if isinstance(compacted, list) and i < len(compacted) and isinstance(compacted[i], dict):
+                compacted[i]["output_summary"] = preserved
+        return json.dumps(compacted, ensure_ascii=False, sort_keys=True)
+    return json.dumps(_compact_prompt_value(safe_value), ensure_ascii=False, sort_keys=True)
 
 
 def _truncate_prompt_note(text: str, *, max_chars: int = 320) -> str:
@@ -2055,6 +2072,8 @@ def _build_tool_prompt_fields(
         prompt_summary, key_fields = _summarize_gpu_metrics(data)
     elif tool == "gpu.get_processes":
         prompt_summary, key_fields = _summarize_gpu_processes(data)
+    elif tool == "skills.load_skill":
+        prompt_summary, key_fields = _summarize_skill_load(data)
     else:
         prompt_summary, item_count, key_fields = _summarize_generic_data(data)
     if item_count is None:
@@ -2159,6 +2178,38 @@ def _summarize_gpu_processes(data: Any) -> tuple[str, dict[str, Any]]:
     return prompt_summary, key_fields
 
 
+def _summarize_skill_load(data: Any) -> tuple[str, dict[str, Any]]:
+    """Summarize skills.load_skill result for prompt - pass full SKILL.md content to LLM."""
+    if not isinstance(data, dict):
+        return "kind=unknown", None
+
+    skill_id = str(data.get("skill_id", "") or "").strip()
+    skill_name = str(data.get("name", "") or "").strip()
+    content = str(data.get("content", "") or "").strip()  # Full SKILL.md content
+    recommended_tools = data.get("recommended_tools", [])
+    scripts = data.get("scripts", [])
+    references = data.get("references", [])
+    description = str(data.get("description", "") or "").strip()
+
+    # Build key_fields with full content (no truncation)
+    key_fields: dict[str, Any] = {
+        "skill_id": skill_id,
+        "skill_name": skill_name,
+        "description": description,
+        "recommended_tools": recommended_tools if isinstance(recommended_tools, list) else [],
+        "scripts": scripts if isinstance(scripts, list) else [],
+        "references": references if isinstance(references, list) else [],
+        "content": content,  # Full SKILL.md content, no truncation
+    }
+
+    # Build prompt summary
+    tool_count = len(recommended_tools) if isinstance(recommended_tools, list) else 0
+    script_count = len(scripts) if isinstance(scripts, list) else 0
+    prompt_summary = f"skill={skill_id or skill_name}; tools={tool_count}; scripts={script_count}; content_len={len(content)}"
+
+    return prompt_summary, key_fields
+
+
 def _render_tool_run_for_prompt(item: dict[str, Any]) -> dict[str, Any]:
     rendered = {
         "step": int(item.get("step", 0) or 0),
@@ -2175,13 +2226,12 @@ def _render_tool_run_for_prompt(item: dict[str, Any]) -> dict[str, Any]:
     # Include key_fields for specific tools that have useful data summaries
     key_fields = _safe_jsonable(item.get("key_fields"))
     if key_fields and isinstance(key_fields, dict):
-        # For BMC/GPU tools, include full key_fields as output_summary
+        # For BMC/GPU tools and skills.load_skill, include full key_fields as output_summary (no compression)
         tool = str(item.get("tool", "") or "").strip()
-        if tool.startswith("bmc.") or tool.startswith("gpu."):
-            rendered["output_summary"] = key_fields
+        if tool.startswith("bmc.") or tool.startswith("gpu.") or tool == "skills.load_skill":
+            rendered["output_summary"] = key_fields  # Pass full content, no truncation
         else:
             rendered["key_fields"] = _compact_prompt_value(key_fields, max_items=4, max_keys=6, max_string=96)
-    return rendered
     return rendered
 
 
