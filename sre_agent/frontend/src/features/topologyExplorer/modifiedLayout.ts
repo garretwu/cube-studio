@@ -217,6 +217,15 @@ function getComputeFamilyKey(node: TopologyObject) {
     return host;
   }
 
+  if (node.id.startsWith("aggregate-bmc:")) {
+    return node.id.slice("aggregate-bmc:".length);
+  }
+
+  if (node.id.startsWith("aggregate-gpu:")) {
+    const [, family] = node.id.split(":");
+    return family ?? node.id;
+  }
+
   if (node.id.startsWith("bmc:")) {
     return node.id.slice(4);
   }
@@ -759,7 +768,7 @@ function createLayeredTargets(
     positions.set(item.id, { x: podX, y });
   });
   const resolveHostForBranchNode = (entity: TopologyObject) => {
-    const connectedHost = getRelatedIdsByType(entity.id, "node", ["contains", "runs_on", "connects_to"])[0];
+    const connectedHost = getRelatedIdsByType(entity.id, "node", ["contains", "runs_on", "connects_to", "depends_on"])[0];
     if (connectedHost) {
       return connectedHost;
     }
@@ -767,6 +776,11 @@ function createLayeredTargets(
     const hostFromAttr = typeof entity.attributes.host === "string" ? entity.attributes.host : undefined;
     if (hostFromAttr && nodeById.get(hostFromAttr)?.type === "node") {
       return hostFromAttr;
+    }
+
+    const aggregateHostId = typeof entity.attributes.aggregateHostId === "string" ? entity.attributes.aggregateHostId : undefined;
+    if (aggregateHostId && nodeById.get(aggregateHostId)?.type === "node") {
+      return aggregateHostId;
     }
 
     return undefined;

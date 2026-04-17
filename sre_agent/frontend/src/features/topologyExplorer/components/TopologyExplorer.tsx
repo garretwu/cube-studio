@@ -19,7 +19,7 @@ import {
   getStatusTone,
   getTopologyTypeIconAsset,
 } from "../formatters";
-import { isSyntheticGpuAggregateNode, isSyntheticServiceAggregateNode, type TopologyTreeNode } from "../selectors";
+import { isSyntheticBmcAggregateNode, isSyntheticGpuAggregateNode, isSyntheticServiceAggregateNode, type TopologyTreeNode } from "../selectors";
 import {
   topologyCanvasViewControls,
   topologyLegendTypeOrder,
@@ -42,6 +42,8 @@ type TopologyExplorerProps = {
   isLoading: boolean;
   error?: string;
   hasSourceData: boolean;
+  syncState?: "idle" | "syncing" | "ready" | "degraded" | "error";
+  lastError?: string | null;
   allNodes: TopologyObject[];
   scopeMode: TopologyScopeMode;
   selectedRoomId: string;
@@ -134,6 +136,8 @@ function TopologyExplorer({
   isLoading,
   error,
   hasSourceData,
+  syncState,
+  lastError,
   allNodes,
   scopeMode,
   selectedRoomId,
@@ -196,6 +200,14 @@ function TopologyExplorer({
 
   const legendItems = useMemo(() => {
     const counts = allNodes.reduce<Record<string, number>>((accumulator, node) => {
+      if (node.type === "service") {
+        // "服务组" should represent namespace groups only (ns:*),
+        // not every Kubernetes Service object (svc:*).
+        const kind = String(node.attributes.kind ?? "").toLowerCase();
+        if (kind !== "namespace_group") {
+          return accumulator;
+        }
+      }
       accumulator[node.type] = (accumulator[node.type] ?? 0) + 1;
       return accumulator;
     }, {});
@@ -381,6 +393,16 @@ function TopologyExplorer({
     >
       {topbarInlineSlot && scopeControls ? createPortal(scopeControls, topbarInlineSlot) : scopeControls}
 
+      {syncState === "degraded" || syncState === "error" ? (
+        <div className="topology-sync-warning" data-testid="topology-sync-warning">
+          <span className="topology-sync-warning__icon">⚠</span>
+          <span className="topology-sync-warning__text">
+            {syncState === "error" ? "拓扑同步失败" : "拓扑部分加载失败"}
+            {lastError ? `：${lastError}` : ""}
+          </span>
+        </div>
+      ) : null}
+
       <div className="topology-stage-shell" data-testid="topology-explorer-stage" ref={stageShellRef}>
         {canRenderOverlay ? (
           <>
@@ -410,7 +432,7 @@ function TopologyExplorer({
                 <section className="topology-stage-secondary-panel__section">
                   <div className="topology-stage-secondary-panel__section-head">
                     <span>{"\u8282\u70b9\u7c7b\u578b"}</span>
-                    <span>{legendItems.reduce((sum, item) => sum + item.count, 0)} {"\u4e2a\u5bf9\u8c61"}</span>
+                    <span>{allNodes.length} {"\u4e2a\u5bf9\u8c61"}</span>
                   </div>
                   <div className="topology-stage-legend-list">
                     {legendItems.map((item) => (
@@ -643,7 +665,7 @@ function TopologyExplorer({
             onHoverNode={onHoverNode}
             onOpenNodeActions={(payload) => {
               onFilterPanelOpenChange(false);
-              if (variant === "modified" && (isSyntheticServiceAggregateNode(payload.node) || isSyntheticGpuAggregateNode(payload.node))) {
+              if (variant === "modified" && (isSyntheticServiceAggregateNode(payload.node) || isSyntheticGpuAggregateNode(payload.node) || isSyntheticBmcAggregateNode(payload.node))) {
                 setNodeActions(null);
                 onToggleAggregateNode?.(payload.node.id);
                 return;

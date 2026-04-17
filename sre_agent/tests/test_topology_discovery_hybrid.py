@@ -96,7 +96,16 @@ async def test_discover_k8s_workload_snapshot_discovers_all_non_system_namespace
 
     class _FakeK8sChannel:
         async def list_namespaces(self) -> list[str]:
-            return ["default", "kube-system", "inference", "default", "kube-public", "kube-node-lease"]
+            return [
+                "default",
+                "kube-system",
+                "inference",
+                "default",
+                "kube-public",
+                "kube-node-lease",
+                "karmada-system",
+                "monitoring",
+            ]
 
     class _FakeScanner:
         def __init__(self, channel: object) -> None:
@@ -119,12 +128,12 @@ async def test_discover_k8s_workload_snapshot_discovers_all_non_system_namespace
 
     nodes, edges, counts = await discovery_module.discover_k8s_workload_snapshot(SREAgentConfig())
 
-    assert seen_namespaces == ["default", "inference", "kube-node-lease", "kube-public"]
+    assert seen_namespaces == ["default", "inference", "karmada-system", "monitoring"]
     assert {node.id for node in nodes} == {
         "pod:default:demo",
         "pod:inference:demo",
-        "pod:kube-node-lease:demo",
-        "pod:kube-public:demo",
+        "pod:karmada-system:demo",
+        "pod:monitoring:demo",
     }
     assert edges == []
     assert counts["k8s_workload"] == {"nodes": 4, "edges": 0}
@@ -175,3 +184,89 @@ async def test_discover_k8s_workload_snapshot_respects_explicit_namespace_allowl
     assert {node.id for node in nodes} == {"pod:default:demo", "pod:inference:demo"}
     assert edges == []
     assert counts["k8s_workload"] == {"nodes": 2, "edges": 0}
+
+
+@pytest.mark.asyncio
+async def test_discover_hybrid_snapshot_deduplicates_same_named_static_and_k8s_clusters(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    static_nodes = [
+        _node("cluster:aidc-lab", EntityType.CLUSTER, source="unified_static"),
+        _node("node-a", EntityType.NODE, source="lab_seed"),
+    ]
+    static_edges = [
+        OntologyEdge(
+            source_id="cluster:aidc-lab",
+            target_id="node-a",
+            relation=RelationType.PART_OF,
+            properties={"source": "unified_static"},
+        )
+    ]
+    dynamic_nodes = [
+        _node("k8s:aidc-lab", EntityType.K8S_CLUSTER, source="k8s"),
+        _node("svc:team-a:demo", EntityType.INFERENCE_SERVICE, source="k8s"),
+    ]
+    dynamic_edges = [
+        OntologyEdge(
+            source_id="svc:team-a:demo",
+            target_id="k8s:aidc-lab",
+            relation=RelationType.PART_OF,
+            properties={"namespace": "team-a"},
+        )
+    ]
+
+    async def _fake_static(_: SREAgentConfig):
+        return static_nodes, static_edges, {"cluster": {"nodes": 1, "edges": 1}}
+
+    async def _fake_k8s(_: SREAgentConfig):
+        return dynamic_nodes, dynamic_edges, {"k8s_workload": {"nodes": 2, "edges": 1}}
+
+    monkeypatch.setattr(discovery_module, "discover_static_snapshot", _fake_static)
+    monkeypatch.setattr(discovery_module, "discover_k8s_workload_snapshot", _fake_k8s)
+
+    nodes, edges, counts, fallback_reason = await discovery_module.discover_hybrid_snapshot(SREAgentConfig())
+
+    assert fallback_reason is None
+    assert "cluster:aidc-lab" in {node.id for node in nodes}
+    assert "k8s:aidc-lab" not in {node.id for node in nodes}
+    assert any(
+        edge.source_id == "svc:team-a:demo"
+        and edge.target_id == "cluster:aidc-lab"
+        and edge.relation == RelationType.PART_OF
+        for edge in edges
+    )
+    assert counts["cluster"] == {"nodes": 1, "edges": 1}
+    assert counts["k8s_workload"] == {"nodes": 2, "edges": 1}
+
+
+@pytest.mark.asyncio
+async def test_discover_hybrid_snapshot_deduplicates_when_static_cluster_has_cluster_prefix_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Defensive regression: cluster:<name> should dedupe even if static type drifts.
+    static_nodes = [_node("cluster:aidc-lab", EntityType.K8S_CLUSTER, source="unified_static")]
+    static_edges: list[OntologyEdge] = []
+    dynamic_nodes = [_node("k8s:aidc-lab", EntityType.K8S_CLUSTER, source="k8s")]
+    dynamic_edges = [
+        OntologyEdge(
+            source_id="pod:default:demo",
+            target_id="k8s:aidc-lab",
+            relation=RelationType.PART_OF,
+            properties={"namespace": "default"},
+        )
+    ]
+
+    async def _fake_static(_: SREAgentConfig):
+        return static_nodes, static_edges, {"cluster": {"nodes": 1, "edges": 0}}
+
+    async def _fake_k8s(_: SREAgentConfig):
+        return dynamic_nodes, dynamic_edges, {"k8s_workload": {"nodes": 1, "edges": 1}}
+
+    monkeypatch.setattr(discovery_module, "discover_static_snapshot", _fake_static)
+    monkeypatch.setattr(discovery_module, "discover_k8s_workload_snapshot", _fake_k8s)
+
+    nodes, edges, _, _ = await discovery_module.discover_hybrid_snapshot(SREAgentConfig())
+
+    assert "cluster:aidc-lab" in {node.id for node in nodes}
+    assert "k8s:aidc-lab" not in {node.id for node in nodes}
+    assert any(edge.target_id == "cluster:aidc-lab" for edge in edges)

@@ -49,16 +49,17 @@ ontology:
     mode: hybrid
     auto_discovery: true
     refresh_interval_seconds: 120
+    unified_inventory_path: sre_agent/conf/ontology.unified.lab.yaml
     live_inventory_path: sre_agent/conf/live_inventory.lab.yaml
-    live_fallback_to_static: true
+    live_fallback_to_static: false
     k8s_cluster_name: aidc-lab
     k8s_namespaces: []
     prometheus_targets:
-      cpu_util: worker-01
-      memory_util: worker-04
-      gpu_util: worker-01
-      gpu_memory_used_mb: worker-02
-      gpu_power_watts: worker-03
+      cpu_util: wj-lab-cpt-01
+      memory_util: wj-lab-cpt-04
+      gpu_util: wj-lab-cpt-01
+      gpu_memory_used_mb: wj-lab-cpt-02
+      gpu_power_watts: wj-lab-cpt-03
     switches:
       - id: sw-200g
         name: sw-200g
@@ -70,42 +71,49 @@ ontology:
         ports:
           - id: sw-200g:200GE1/0/1
             name: 200GE1/0/1
-            connected_to: worker-01
+            connected_to: wj-lab-cpt-01
             status: up
             speed_gbps: 200
             source: static-fallback
             mapping_source: inventory_heuristic
           - id: sw-200g:200GE1/0/2
             name: 200GE1/0/2
-            connected_to: worker-02
+            connected_to: wj-lab-cpt-02
             status: up
             speed_gbps: 200
             source: static-fallback
             mapping_source: inventory_heuristic
           - id: sw-200g:200GE1/0/3
             name: 200GE1/0/3
-            connected_to: worker-03
+            connected_to: wj-lab-cpt-03
             status: up
             speed_gbps: 200
             source: static-fallback
             mapping_source: inventory_heuristic
           - id: sw-200g:200GE1/0/4
             name: 200GE1/0/4
-            connected_to: worker-04
+            connected_to: wj-lab-cpt-04
             status: up
             speed_gbps: 200
             source: static-fallback
             mapping_source: inventory_heuristic
-          - id: sw-200g:200GE1/0/5
-            name: 200GE1/0/5
-            connected_to: worker-05
+          - id: sw-200g:200GE1/0/13
+            name: 200GE1/0/13
+            connected_to: wj-lab-stor-01
             status: up
             speed_gbps: 200
             source: static-fallback
             mapping_source: inventory_heuristic
-          - id: sw-200g:200GE1/0/6
-            name: 200GE1/0/6
-            connected_to: worker-06
+          - id: sw-200g:200GE1/0/14
+            name: 200GE1/0/14
+            connected_to: wj-lab-stor-02
+            status: up
+            speed_gbps: 200
+            source: static-fallback
+            mapping_source: inventory_heuristic
+          - id: sw-200g:200GE1/0/15
+            name: 200GE1/0/15
+            connected_to: wj-lab-stor-03
             status: up
             speed_gbps: 200
             source: static-fallback
@@ -113,8 +121,8 @@ ontology:
 
 lab_seed:
   nodes:
-    - id: worker-01
-      name: worker-01
+    - id: wj-lab-cpt-01
+      name: wj-lab-cpt-01
       role: gpu
       source: static-fallback
       status: online
@@ -122,12 +130,12 @@ lab_seed:
       switch: sw-200g
       port: 200GE1/0/1
       gpu_ids:
-        - gpu:worker-01:0
-        - gpu:worker-01:1
-        - gpu:worker-01:2
-        - gpu:worker-01:3
-    - id: worker-02
-      name: worker-02
+        - gpu:wj-lab-cpt-01:0
+        - gpu:wj-lab-cpt-01:1
+        - gpu:wj-lab-cpt-01:2
+        - gpu:wj-lab-cpt-01:3
+    - id: wj-lab-cpt-02
+      name: wj-lab-cpt-02
       role: gpu
       source: static-fallback
       status: online
@@ -135,12 +143,12 @@ lab_seed:
       switch: sw-200g
       port: 200GE1/0/2
       gpu_ids:
-        - gpu:worker-02:0
-        - gpu:worker-02:1
-        - gpu:worker-02:2
-        - gpu:worker-02:3
-    - id: worker-03
-      name: worker-03
+        - gpu:wj-lab-cpt-02:0
+        - gpu:wj-lab-cpt-02:1
+        - gpu:wj-lab-cpt-02:2
+        - gpu:wj-lab-cpt-02:3
+    - id: wj-lab-cpt-03
+      name: wj-lab-cpt-03
       role: gpu
       source: static-fallback
       status: online
@@ -148,34 +156,68 @@ lab_seed:
       switch: sw-200g
       port: 200GE1/0/3
       gpu_ids:
-        - gpu:worker-03:0
-        - gpu:worker-03:1
-        - gpu:worker-03:2
-        - gpu:worker-03:3
-    - id: worker-04
-      name: worker-04
-      role: cpu
+        - gpu:wj-lab-cpt-03:0
+        - gpu:wj-lab-cpt-03:1
+        - gpu:wj-lab-cpt-03:2
+        - gpu:wj-lab-cpt-03:3
+    - id: wj-lab-cpt-04
+      name: wj-lab-cpt-04
+      role: gpu
       source: static-fallback
       status: online
       bmc_ip: 10.11.8.13
       switch: sw-200g
       port: 200GE1/0/4
-      gpu_ids: []
-    - id: worker-05
-      name: worker-05
+      gpu_ids:
+        - gpu:wj-lab-cpt-04:0
+        - gpu:wj-lab-cpt-04:1
+        - gpu:wj-lab-cpt-04:2
+        - gpu:wj-lab-cpt-04:3
+    - id: wj-lab-ctl-01
+      name: wj-lab-ctl-01
       role: cpu
       source: static-fallback
       status: online
-      bmc_ip: 10.11.8.14
-      switch: sw-200g
-      port: 200GE1/0/5
+      bmc_ip: 10.11.8.2
       gpu_ids: []
-    - id: worker-06
-      name: worker-06
+    - id: wj-lab-ctl-02
+      name: wj-lab-ctl-02
       role: cpu
       source: static-fallback
       status: online
-      bmc_ip: 10.11.8.15
+      bmc_ip: 10.11.8.3
+      gpu_ids: []
+    - id: wj-lab-ctl-03
+      name: wj-lab-ctl-03
+      role: cpu
+      source: static-fallback
+      status: online
+      bmc_ip: 10.11.8.4
+      gpu_ids: []
+    - id: wj-lab-stor-01
+      name: wj-lab-stor-01
+      role: storage
+      source: static-fallback
+      status: online
+      bmc_ip: 10.11.8.20
       switch: sw-200g
-      port: 200GE1/0/6
+      port: 200GE1/0/13
+      gpu_ids: []
+    - id: wj-lab-stor-02
+      name: wj-lab-stor-02
+      role: storage
+      source: static-fallback
+      status: online
+      bmc_ip: 10.11.8.21
+      switch: sw-200g
+      port: 200GE1/0/14
+      gpu_ids: []
+    - id: wj-lab-stor-03
+      name: wj-lab-stor-03
+      role: storage
+      source: static-fallback
+      status: online
+      bmc_ip: 10.11.8.22
+      switch: sw-200g
+      port: 200GE1/0/15
       gpu_ids: []

@@ -3,7 +3,6 @@ import { create } from "zustand";
 import { apiClient } from "../../api/client";
 import type { TopologyExplorerResponse } from "../../api/types";
 import { getGlobalTopologyDisplayData, searchTopologyObjects } from "./selectors";
-import { pruneTopologyExplorerResponse } from "./topologyPrune";
 import {
   defaultTopologyRoomId,
   defaultTopologyScopeMode,
@@ -20,6 +19,8 @@ export type TopologyExplorerState = {
   data?: TopologyExplorerResponse;
   isLoading: boolean;
   error?: string;
+  syncState: "idle" | "syncing" | "ready" | "degraded" | "error";
+  lastError?: string | null;
   scopeMode: TopologyScopeMode;
   selectedRoomId: string;
   viewMode: ExplorerViewMode;
@@ -77,13 +78,13 @@ function resolveSearchFeedback(searchQuery: string, searchResultIds: string[]): 
   return searchResultIds.length > 0 ? "ready" : "not_found";
 }
 
-const isJsdomEnvironment = typeof navigator !== "undefined" && /jsdom/i.test(navigator.userAgent);
-
 export function createTopologyExplorerState(): TopologyExplorerState {
   return {
     data: undefined,
     isLoading: false,
     error: undefined,
+    syncState: "idle",
+    lastError: undefined,
     scopeMode: defaultTopologyScopeMode,
     selectedRoomId: defaultTopologyRoomId,
     viewMode: "graph",
@@ -105,8 +106,7 @@ export const useTopologyExplorerStore = create<TopologyExplorerStore>((set, get)
     set({ isLoading: true, error: undefined });
 
     try {
-      const rawData = await apiClient.getTopologyExplorer();
-      const data = isJsdomEnvironment ? rawData : pruneTopologyExplorerResponse(rawData);
+      const data = await apiClient.getTopologyExplorer();
       set((state) => {
         const searchResultIds = resolveSearchResults(data, state.searchQuery, state.layerFilter);
         const selectedNodeId =
@@ -118,6 +118,8 @@ export const useTopologyExplorerStore = create<TopologyExplorerStore>((set, get)
           data,
           isLoading: false,
           selectedNodeId,
+          syncState: data.sync_state ?? "ready",
+          lastError: data.last_error,
           searchResultIds,
           searchFeedback: resolveSearchFeedback(state.searchQuery, searchResultIds),
         };

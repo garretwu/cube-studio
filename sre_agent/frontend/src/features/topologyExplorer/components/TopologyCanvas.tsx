@@ -25,7 +25,7 @@ import {
   formatTopologyType,
   getTopologyTypeIconAsset,
 } from "../formatters";
-import { isSyntheticGpuAggregateNode, isSyntheticServiceAggregateNode } from "../selectors";
+import { isSyntheticBmcAggregateNode, isSyntheticGpuAggregateNode, isSyntheticServiceAggregateNode } from "../selectors";
 import {
   DEFAULT_FIT_PADDING,
   FOCUSED_FIT_PADDING,
@@ -82,6 +82,7 @@ type ExplorerFlowNodeData = {
   node: TopologyObject;
   selected: boolean;
   searchHit: boolean;
+  typeHighlighted: boolean;
   dimmed: boolean;
   neighborDepth: number;
   metrics: TopologyCanvasMetrics;
@@ -259,11 +260,14 @@ function getAggregateTypeLabel(node: TopologyObject) {
   if (rawType === "gpu") {
     return "GPU";
   }
+  if (rawType === "bmc") {
+    return "BMC";
+  }
   return rawType === "pod" ? "Pod" : "\u670d\u52a1\u7ec4";
 }
 
 function getNodeSummary(node: TopologyObject) {
-  if (isSyntheticServiceAggregateNode(node) || isSyntheticGpuAggregateNode(node)) {
+  if (isSyntheticServiceAggregateNode(node) || isSyntheticGpuAggregateNode(node) || isSyntheticBmcAggregateNode(node)) {
     return `\u805a\u5408 ${getAggregateCount(node)} \u4e2a${getAggregateTypeLabel(node)}\u5bf9\u8c61\uff0c\u70b9\u51fb\u5c55\u5f00\u67e5\u770b\u3002`;
   }
 
@@ -368,8 +372,8 @@ function getModifiedHandleStyle(position: Position, metrics: TopologyCanvasMetri
 }
 
 function ExplorerNode({ data }: NodeProps<Node<ExplorerFlowNodeData>>) {
-  const { node, selected, searchHit, dimmed, neighborDepth, metrics, variant, onSelectNode } = data;
-  const isAggregate = isSyntheticServiceAggregateNode(node) || isSyntheticGpuAggregateNode(node);
+  const { node, selected, searchHit, typeHighlighted, dimmed, neighborDepth, metrics, variant, onSelectNode } = data;
+  const isAggregate = isSyntheticServiceAggregateNode(node) || isSyntheticGpuAggregateNode(node) || isSyntheticBmcAggregateNode(node);
   const aggregateCount = getAggregateCount(node);
   const handleStyle = { ...HANDLE_STYLE, top: metrics.nodeCircleSize / 2 + 2 };
   const statusLabel = formatTopologyStatus(node.status);
@@ -385,6 +389,7 @@ function ExplorerNode({ data }: NodeProps<Node<ExplorerFlowNodeData>>) {
           "topology-flow-node--minimal",
           selected ? "topology-flow-node--selected" : "",
           searchHit ? "topology-flow-node--search-hit" : "",
+          typeHighlighted ? "topology-flow-node--type-highlighted" : "",
           dimmed ? "topology-flow-node--dimmed" : "",
           isAggregate ? "topology-flow-node--aggregate" : "",
         ]
@@ -441,6 +446,7 @@ function ExplorerNode({ data }: NodeProps<Node<ExplorerFlowNodeData>>) {
         `topology-flow-node--${node.status}`,
         selected ? "topology-flow-node--selected" : "",
         searchHit ? "topology-flow-node--search-hit" : "",
+        typeHighlighted ? "topology-flow-node--type-highlighted" : "",
         dimmed ? "topology-flow-node--dimmed" : "",
       ]
         .filter(Boolean)
@@ -559,6 +565,7 @@ const TopologyCanvas = forwardRef<TopologyCanvasHandle, TopologyCanvasProps>(fun
       const inSelectionChain = neighborDepths.has(node.id);
       const dimmedBySelection = Boolean(selectedNodeId) && node.id !== selectedNodeId && !inSelectionChain;
       const dimmedByType = hasTypeHighlight && !highlightSet.has(node.type);
+      const typeHighlighted = hasTypeHighlight && highlightSet.has(node.type);
       const dimmed = dimmedBySelection || dimmedByType;
 
       return {
@@ -572,6 +579,7 @@ const TopologyCanvas = forwardRef<TopologyCanvasHandle, TopologyCanvasProps>(fun
           node,
           selected: node.id === selectedNodeId,
           searchHit: matchedNodeIds.includes(node.id),
+          typeHighlighted,
           dimmed,
           neighborDepth,
           metrics,
@@ -698,9 +706,10 @@ const TopologyCanvas = forwardRef<TopologyCanvasHandle, TopologyCanvasProps>(fun
         (neighborDepths.has(edge.source) && neighborDepths.has(edge.target));
       const sourceType = nodeTypeById.get(edge.source);
       const targetType = nodeTypeById.get(edge.target);
-      const isTypeMatched =
-        !hasTypeHighlight ||
-        (Boolean(sourceType && highlightSet.has(sourceType)) && Boolean(targetType && highlightSet.has(targetType)));
+      const sourceMatched = Boolean(sourceType && highlightSet.has(sourceType));
+      const targetMatched = Boolean(targetType && highlightSet.has(targetType));
+      const isTypeMatched = !hasTypeHighlight || sourceMatched || targetMatched;
+      const isPureTypeMatch = hasTypeHighlight && sourceMatched && targetMatched;
       const stroke = getEdgeColor(edge, variant);
       const shouldShowLabel =
         variant === "modified"
@@ -764,13 +773,17 @@ const TopologyCanvas = forwardRef<TopologyCanvasHandle, TopologyCanvasProps>(fun
                   : 1.4,
           opacity:
             hasTypeHighlight
-              ? isTypeMatched
+              ? isPureTypeMatch
                 ? variant === "modified"
-                  ? 0.86
-                  : 0.88
-                : variant === "modified"
-                  ? 0.14
-                  : 0.08
+                  ? 0.72
+                  : 0.78
+                : isTypeMatched
+                  ? variant === "modified"
+                    ? 0.32
+                    : 0.36
+                  : variant === "modified"
+                    ? 0.14
+                    : 0.08
               : variant === "modified"
                 ? isConnectedToFocus
                   ? 0.98

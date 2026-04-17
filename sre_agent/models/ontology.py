@@ -14,6 +14,7 @@ from sre_agent.models.common import StrictFrozenModel
 class EntityType(str, Enum):
     """Canonical ontology entity types."""
 
+    CLUSTER = "cluster"
     RACK = "rack"
     NODE = "node"
     GPU = "gpu"
@@ -38,7 +39,7 @@ class EntityType(str, Enum):
             "switches": "switch",
             "service": "inference_service",
             "services": "inference_service",
-            "cluster": "k8s_cluster",
+            "cluster": "cluster",
             "pod": "k8s_pod",
             "metric": "metric_endpoint",
             "metrics": "metric_endpoint",
@@ -108,4 +109,3 @@ __all__ = [
     "OntologyEdge",
     "Relationship",
 ]
-

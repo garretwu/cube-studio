@@ -1,7 +1,7 @@
 ﻿import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 
-import type { TopologyObject } from "../api/types";
+import type { TopologyExplorerResponse, TopologyObject } from "../api/types";
 import type { TopologyCanvasHandle } from "../features/topologyExplorer/components/TopologyCanvas";
 import TopologyExplorer from "../features/topologyExplorer/components/TopologyExplorer";
 import {
@@ -39,6 +39,94 @@ type ExpandedAggregateMeta = {
   memberIds: string[];
 };
 
+type PodAggregateResolution = {
+  aggregateId: string;
+  label: string;
+  memberIds: string[];
+};
+
+function isNamespaceGroupNode(node: TopologyObject | undefined): node is TopologyObject {
+  return node?.type === "service" && String(node.attributes.kind ?? "").toLowerCase() === "namespace_group";
+}
+
+function isPodNode(node: TopologyObject | undefined): node is TopologyObject {
+  if (!node) {
+    return false;
+  }
+  return node.type === "pod" || String(node.attributes.rawType ?? "").trim().toLowerCase() === "pod";
+}
+
+function resolvePodAggregateOwnerId(
+  data: TopologyExplorerResponse,
+  podId: string,
+  nodeMap: Map<string, TopologyObject>,
+) {
+  const pod = nodeMap.get(podId);
+  if (!isPodNode(pod)) {
+    return undefined;
+  }
+
+  const namespaceFromAttributes =
+    typeof pod.attributes.namespace === "string" && pod.attributes.namespace.trim()
+      ? pod.attributes.namespace.trim()
+      : undefined;
+  const namespaceNodeById =
+    namespaceFromAttributes ? nodeMap.get(`ns:${namespaceFromAttributes}`) : undefined;
+  if (isNamespaceGroupNode(namespaceNodeById)) {
+    return namespaceNodeById.id;
+  }
+
+  const namespaceNodeFromEdges = data.edges
+    .filter((edge) => edge.source === podId || edge.target === podId)
+    .map((edge) => (edge.source === podId ? nodeMap.get(edge.target) : nodeMap.get(edge.source)))
+    .find((candidate) => isNamespaceGroupNode(candidate));
+
+  if (isNamespaceGroupNode(namespaceNodeFromEdges)) {
+    return namespaceNodeFromEdges.id;
+  }
+
+  if (namespaceFromAttributes) {
+    return `ns:${namespaceFromAttributes}`;
+  }
+
+  return "unassigned";
+}
+
+function resolvePodAggregateForNode(
+  data: TopologyExplorerResponse | undefined,
+  nodeId: string,
+): PodAggregateResolution | undefined {
+  if (!data) {
+    return undefined;
+  }
+  const nodeMap = new Map(data.nodes.map((node) => [node.id, node]));
+  const targetNode = nodeMap.get(nodeId);
+  if (!isPodNode(targetNode)) {
+    return undefined;
+  }
+
+  const ownerId = resolvePodAggregateOwnerId(data, nodeId, nodeMap);
+  if (!ownerId) {
+    return undefined;
+  }
+
+  const memberIds = data.nodes
+    .filter((node) => isPodNode(node))
+    .filter((node) => resolvePodAggregateOwnerId(data, node.id, nodeMap) === ownerId)
+    .map((node) => node.id);
+  if (memberIds.length < 2) {
+    return undefined;
+  }
+
+  const namespaceNode = nodeMap.get(ownerId);
+  const label = `${namespaceNode?.name ?? ownerId} · ${memberIds.length} Pods`;
+  return {
+    aggregateId: `aggregate:${ownerId}:pod`,
+    label,
+    memberIds,
+  };
+}
+
 function TopologyPage({ variant = "modified" }: TopologyPageProps) {
   const canvasRef = useRef<TopologyCanvasHandle | null>(null);
   const navigate = useNavigate();
@@ -49,6 +137,8 @@ function TopologyPage({ variant = "modified" }: TopologyPageProps) {
     data,
     isLoading,
     error,
+    syncState,
+    lastError,
     scopeMode,
     selectedRoomId,
     viewMode,
@@ -183,6 +273,16 @@ function TopologyPage({ variant = "modified" }: TopologyPageProps) {
     }
 
     if (isModifiedVariant) {
+      const aggregate = resolvePodAggregateForNode(topologyPageData, targetId);
+      if (aggregate) {
+        setExpandedAggregateIds((current) =>
+          current.includes(aggregate.aggregateId) ? current : [...current, aggregate.aggregateId],
+        );
+        setExpandedAggregateMeta((current) => ({
+          ...current,
+          [aggregate.aggregateId]: aggregate,
+        }));
+      }
       setSelectedNodeId(targetId);
     }
 
@@ -191,6 +291,18 @@ function TopologyPage({ variant = "modified" }: TopologyPageProps) {
   };
 
   const handleSearchResultSelect = (nodeId: string) => {
+    if (isModifiedVariant) {
+      const aggregate = resolvePodAggregateForNode(topologyPageData, nodeId);
+      if (aggregate) {
+        setExpandedAggregateIds((current) =>
+          current.includes(aggregate.aggregateId) ? current : [...current, aggregate.aggregateId],
+        );
+        setExpandedAggregateMeta((current) => ({
+          ...current,
+          [aggregate.aggregateId]: aggregate,
+        }));
+      }
+    }
     setSelectedNodeId(nodeId);
     setViewMode("graph");
     focusNode(nodeId);
@@ -252,6 +364,8 @@ function TopologyPage({ variant = "modified" }: TopologyPageProps) {
           canvasRef={canvasRef}
           error={error}
           filterPanelOpen={filterPanelOpen}
+          lastError={lastError}
+          syncState={syncState}
           graphEdges={stageTopology.edges}
           graphNodes={stageTopology.nodes}
           hasSourceData={Boolean(topologyPageData?.nodes?.length)}
@@ -306,7 +420,5 @@ function TopologyPage({ variant = "modified" }: TopologyPageProps) {
 }
 
 export default TopologyPage;
-
-
 
 

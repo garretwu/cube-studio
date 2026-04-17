@@ -123,6 +123,8 @@ export type TopologyExplorerResponse = {
   edges: TopologyRelation[];
   paths: TopologyPath[];
   lastUpdated: string;
+  sync_state?: "idle" | "syncing" | "ready" | "degraded" | "error";
+  last_error?: string | null;
 };
 
 export type SREApiEnvelope<T> = {

@@ -40,9 +40,10 @@ export type ImpactTopology = {
 };
 
 export const GLOBAL_TOPOLOGY_SERVICE_NODE_LIMIT = 20;
-export const MODIFIED_SERVICE_AGGREGATE_MIN_MEMBERS = 4;
+export const MODIFIED_SERVICE_AGGREGATE_MIN_MEMBERS = 2;
 export const SYNTHETIC_SERVICE_AGGREGATE_KIND = "serviceAggregate";
 export const SYNTHETIC_GPU_AGGREGATE_KIND = "gpuAggregate";
+export const SYNTHETIC_BMC_AGGREGATE_KIND = "bmcAggregate";
 
 export function isSyntheticTopologyNode(node: TopologyObject) {
   return typeof node.attributes.syntheticKind === "string";
@@ -56,10 +57,49 @@ export function isSyntheticGpuAggregateNode(node: TopologyObject) {
   return node.attributes.syntheticKind === SYNTHETIC_GPU_AGGREGATE_KIND;
 }
 
+export function isSyntheticBmcAggregateNode(node: TopologyObject) {
+  return node.attributes.syntheticKind === SYNTHETIC_BMC_AGGREGATE_KIND;
+}
+
+function isNamespaceGroupServiceNode(node: TopologyObject | undefined) {
+  if (!node) {
+    return false;
+  }
+  return node.type === "service" && String(node.attributes.kind ?? "").toLowerCase() === "namespace_group";
+}
+
+function isMainViewHiddenServiceNode(node: TopologyObject) {
+  return node.type === "service" && !isNamespaceGroupServiceNode(node);
+}
+
 export function getSyntheticAggregateGroupId(node: TopologyObject) {
   const value = node.attributes.aggregateGroupId;
   return typeof value === "string" ? value : undefined;
 }
+
+function isSecondaryRelationEdge(
+  edge: TopologyRelation,
+  nodeMap: Map<string, TopologyObject>,
+) {
+  const source = nodeMap.get(edge.source);
+  const target = nodeMap.get(edge.target);
+  if (!source || !target) {
+    return false;
+  }
+  const isPodNodePair =
+    (source.type === "pod" && target.type === "node") ||
+    (source.type === "node" && target.type === "pod");
+  return edge.relationType === "runs_on" && isPodNodePair;
+}
+
+function filterGlobalPrimaryEdges(
+  edges: TopologyRelation[],
+  nodes: TopologyObject[],
+) {
+  const nodeMap = toLookupMap(nodes);
+  return edges.filter((edge) => !isSecondaryRelationEdge(edge, nodeMap));
+}
+
 function isGlobalTopologyCappedNode(node: TopologyObject) {
   return node.layer === "service";
 }
@@ -82,8 +122,11 @@ export function getGlobalTopologyDisplayData(
       !isGlobalTopologyCappedNode(node) || visibleServiceNodeIds.has(node.id),
   );
   const visibleNodeIds = new Set(nodes.map((node) => node.id));
-  const edges = response.edges.filter(
-    (edge) => visibleNodeIds.has(edge.source) && visibleNodeIds.has(edge.target),
+  const edges = filterGlobalPrimaryEdges(
+    response.edges.filter(
+      (edge) => visibleNodeIds.has(edge.source) && visibleNodeIds.has(edge.target),
+    ),
+    nodes,
   );
 
   return {
@@ -235,10 +278,22 @@ function buildModifiedAggregatedTopology(
     if (node.type !== "pod" && String(node.attributes.rawType ?? "").trim().toLowerCase() !== "pod") {
       return;
     }
-    const ownerService = (incoming.get(node.id) ?? [])
-      .map((edge) => nodeMap.get(edge.source))
-      .find((candidate) => Boolean(candidate && candidate.type === "service"));
-    const serviceKey = ownerService?.id ?? "unassigned";
+    const namespaceFromAttributes =
+      typeof node.attributes.namespace === "string" && node.attributes.namespace.trim()
+        ? node.attributes.namespace.trim()
+        : undefined;
+    const namespaceNodeById =
+      namespaceFromAttributes ? nodeMap.get(`ns:${namespaceFromAttributes}`) : undefined;
+    const namespaceNodeFromEdges = [...(incoming.get(node.id) ?? []), ...(outgoing.get(node.id) ?? [])]
+      .map((edge) => (edge.source === node.id ? nodeMap.get(edge.target) : nodeMap.get(edge.source)))
+      .find((candidate) => isNamespaceGroupServiceNode(candidate));
+    const ownerNamespaceNode = isNamespaceGroupServiceNode(namespaceNodeById)
+      ? namespaceNodeById
+      : namespaceNodeFromEdges;
+    const serviceKey =
+      ownerNamespaceNode?.id ??
+      (namespaceFromAttributes ? `ns:${namespaceFromAttributes}` : undefined) ??
+      "unassigned";
     const aggregateGroupId = `aggregate:${serviceKey}:pod`;
     const list = groupedMembers.get(aggregateGroupId) ?? [];
     list.push(node);
@@ -251,6 +306,17 @@ function buildModifiedAggregatedTopology(
     }
     const hostNodeId = getGpuHostNodeId(node, nodeMap, outgoing, incoming) ?? "unassigned";
     const aggregateGroupId = `aggregate-gpu:${hostNodeId}`;
+    const list = groupedMembers.get(aggregateGroupId) ?? [];
+    list.push(node);
+    groupedMembers.set(aggregateGroupId, list);
+  });
+
+  response.nodes.forEach((node) => {
+    if (node.type !== "bmc") {
+      return;
+    }
+    const hostNodeId = getBmcHostNodeId(node, nodeMap, outgoing, incoming) ?? "unassigned";
+    const aggregateGroupId = `aggregate-bmc:${hostNodeId}`;
     const list = groupedMembers.get(aggregateGroupId) ?? [];
     list.push(node);
     groupedMembers.set(aggregateGroupId, list);
@@ -315,6 +381,61 @@ function buildModifiedAggregatedTopology(
           aggregateMemberIds: members.map((node) => node.id),
           aggregateExpanded: false,
           fixedMemberIds: fixedMembers.map((node) => node.id),
+        },
+      });
+      return;
+    }
+
+    if (aggregateGroupId.startsWith("aggregate-bmc:")) {
+      const hostNodeId = aggregateGroupId.slice("aggregate-bmc:".length) || "unassigned";
+
+      // Always aggregate BMCs (even 1 per host) to keep topology clean.
+      // When expanded, return early so individual BMC nodes stay visible.
+      if (expandedAggregateIds.has(aggregateGroupId)) {
+        return;
+      }
+
+      members.forEach((node) => {
+        replacementMap.set(node.id, aggregateGroupId);
+      });
+
+      const hostNode = nodeMap.get(hostNodeId);
+      const hostLabel = hostNode?.name ?? hostNodeId;
+      const aggregateStatus = getHighestStatus(members);
+      const latestUpdatedAt = members
+        .map((node) => node.updatedAt)
+        .sort((left, right) => right.localeCompare(left))[0] ?? response.lastUpdated;
+      const sharedTags = unique(members.flatMap((node) => node.tags));
+      const cluster = members.find((node) => Boolean(node.cluster))?.cluster;
+      const rack = members.find((node) => Boolean(node.rack))?.rack;
+
+      aggregateNodes.push({
+        id: aggregateGroupId,
+        name: `BMC ${hostLabel}`,
+        type: "bmc",
+        status: aggregateStatus,
+        layer: "physical",
+        domain: members[0].domain,
+        region: members[0].region,
+        zone: members[0].zone,
+        cluster,
+        rack,
+        summary: `Aggregated ${members.length} BMC objects.`,
+        tags: sharedTags,
+        updatedAt: latestUpdatedAt,
+        metrics: {
+          aggregatedObjects: members.length,
+          abnormalObjects: members.filter((node) => node.status === "abnormal").length,
+          impactedObjects: members.filter((node) => node.status === "impacted").length,
+        },
+        attributes: {
+          syntheticKind: SYNTHETIC_BMC_AGGREGATE_KIND,
+          aggregateGroupId,
+          aggregateCount: members.length,
+          aggregateHostId: hostNodeId,
+          aggregateRawType: "bmc",
+          aggregateMemberIds: members.map((node) => node.id),
+          aggregateExpanded: false,
         },
       });
       return;
@@ -402,9 +523,11 @@ function buildModifiedAggregatedTopology(
       source.startsWith("aggregate:") ||
       target.startsWith("aggregate:") ||
       source.startsWith("aggregate-gpu:") ||
-      target.startsWith("aggregate-gpu:");
-    const sourceIsAggregate = source.startsWith("aggregate:") || source.startsWith("aggregate-gpu:");
-    const targetIsAggregate = target.startsWith("aggregate:") || target.startsWith("aggregate-gpu:");
+      target.startsWith("aggregate-gpu:") ||
+      source.startsWith("aggregate-bmc:") ||
+      target.startsWith("aggregate-bmc:");
+    const sourceIsAggregate = source.startsWith("aggregate:") || source.startsWith("aggregate-gpu:") || source.startsWith("aggregate-bmc:");
+    const targetIsAggregate = target.startsWith("aggregate:") || target.startsWith("aggregate-gpu:") || target.startsWith("aggregate-bmc:");
     const sourceNode = nodeMap.get(source);
     const targetNode = nodeMap.get(target);
     const mergeKey =
@@ -908,9 +1031,12 @@ export function getVisibleTopology(
     filters.layerFilter,
   );
   const visibleNodeIds = new Set(visibleNodes.map((node) => node.id));
-  const directEdges = response.edges.filter(
-    (edge) =>
-      visibleNodeIds.has(edge.source) && visibleNodeIds.has(edge.target),
+  const directEdges = filterGlobalPrimaryEdges(
+    response.edges.filter(
+      (edge) =>
+        visibleNodeIds.has(edge.source) && visibleNodeIds.has(edge.target),
+    ),
+    visibleNodes,
   );
   const aggregatedEdges =
     filters.layerFilter === "all"
@@ -1056,7 +1182,9 @@ export function buildTopologyTree(
         const services = serviceEdges
           .filter((edge) => edge.target === node.id)
           .map((edge) => nodeMap.get(edge.source))
-          .filter((service): service is TopologyObject => Boolean(service))
+          .filter(
+            (service): service is TopologyObject => Boolean(service) && isNamespaceGroupServiceNode(service),
+          )
           .map<TopologyTreeNode>((service) => ({
             id: service.id,
             label: service.name,
@@ -1107,7 +1235,10 @@ export function buildTopologyTree(
       objectType: cluster.type,
       children: response.nodes
         .filter(
-          (node) => node.type === "service" && node.cluster === cluster.id,
+          (node) =>
+            node.type === "service" &&
+            isNamespaceGroupServiceNode(node) &&
+            node.cluster === cluster.id,
         )
         .map((service) => ({
           id: service.id,
@@ -1200,11 +1331,13 @@ function filterEssentialTopologyEdges(nodes: TopologyObject[], edges: TopologyRe
   const allowedPairs = new Set([
     "cluster:switch",
     "node:port",
+    "node:pod",
     "gpu:node",
     "bmc:node",
     "gpu:service",
     "node:service",
     "pod:service",
+    "service:service",
     "port:switch",
   ]);
 
@@ -1284,6 +1417,25 @@ function getGpuHostNodeId(
   return fallbackHost;
 }
 
+function getBmcHostNodeId(
+  bmc: TopologyObject,
+  nodeMap: Map<string, TopologyObject>,
+  _outgoing: Map<string, TopologyRelation[]>,
+  incoming: Map<string, TopologyRelation[]>,
+) {
+  // BMC has an incoming "depends_on" edge from the host node (node → bmc via "manages" relation).
+  const incomingEdge = (incoming.get(bmc.id) ?? []).find(
+    (edge) => edge.relationType === "depends_on" || edge.relationType === "contains",
+  );
+  const incomingSource = incomingEdge ? nodeMap.get(incomingEdge.source) : undefined;
+  if (incomingSource?.type === "node") {
+    return incomingSource.id;
+  }
+
+  const fallbackHost = typeof bmc.attributes.host === "string" ? bmc.attributes.host : undefined;
+  return fallbackHost;
+}
+
 export function getStageTopology(
   response: TopologyExplorerResponse | undefined,
   filters: TopologyStageFilters,
@@ -1304,21 +1456,26 @@ export function getStageTopology(
     filters.searchResultIds ??
     searchTopologyObjects(
       filters.layerFilter === "all"
-        ? scopedResponse.nodes
-        : scopedResponse.nodes.filter((node) => node.layer === filters.layerFilter),
+        ? scopedResponse.nodes.filter((node) => !isMainViewHiddenServiceNode(node))
+        : scopedResponse.nodes.filter(
+            (node) => node.layer === filters.layerFilter && !isMainViewHiddenServiceNode(node),
+          ),
       filters.searchQuery,
     ).map((node) => node.id);
   const contextIds = filters.searchQuery.trim()
     ? getDirectNeighborContextIds(scopedResponse, new Set(searchResultIds))
     : new Set(scopedResponse.nodes.map((node) => node.id));
   const visibleNodes = filterByLayer(
-    scopedResponse.nodes.filter((node) => contextIds.has(node.id)),
+    scopedResponse.nodes.filter((node) => contextIds.has(node.id) && !isMainViewHiddenServiceNode(node)),
     filters.layerFilter,
   );
   const visibleNodeIds = new Set(visibleNodes.map((node) => node.id));
-  const directEdges = scopedResponse.edges.filter(
-    (edge) =>
-      visibleNodeIds.has(edge.source) && visibleNodeIds.has(edge.target),
+  const directEdges = filterGlobalPrimaryEdges(
+    scopedResponse.edges.filter(
+      (edge) =>
+        visibleNodeIds.has(edge.source) && visibleNodeIds.has(edge.target),
+    ),
+    visibleNodes,
   );
   const aggregatedEdges =
     filters.layerFilter === "all"
@@ -1345,8 +1502,8 @@ export function getModifiedSearchResultIds(
 
   const searchNodes =
     layerFilter === "all"
-      ? response.nodes
-      : response.nodes.filter((node) => node.layer === layerFilter);
+      ? response.nodes.filter((node) => !isMainViewHiddenServiceNode(node))
+      : response.nodes.filter((node) => node.layer === layerFilter && !isMainViewHiddenServiceNode(node));
 
   return searchTopologyObjects(searchNodes, searchQuery)
     .filter((node) => !isSyntheticTopologyNode(node))
@@ -1383,13 +1540,16 @@ export function getModifiedStageTopology(
     ? getDirectNeighborContextIds(aggregatedResponse, new Set(searchResultIds))
     : new Set(aggregatedResponse.nodes.map((node) => node.id));
   const visibleNodes = filterByLayer(
-    aggregatedResponse.nodes.filter((node) => contextIds.has(node.id)),
+    aggregatedResponse.nodes.filter((node) => contextIds.has(node.id) && !isMainViewHiddenServiceNode(node)),
     filters.layerFilter,
   );
   const visibleNodeIds = new Set(visibleNodes.map((node) => node.id));
-  const directEdges = aggregatedResponse.edges.filter(
-    (edge) =>
-      visibleNodeIds.has(edge.source) && visibleNodeIds.has(edge.target),
+  const directEdges = filterGlobalPrimaryEdges(
+    aggregatedResponse.edges.filter(
+      (edge) =>
+        visibleNodeIds.has(edge.source) && visibleNodeIds.has(edge.target),
+    ),
+    visibleNodes,
   );
   const essentialEdges = filterEssentialTopologyEdges(visibleNodes, directEdges);
   const aggregatedEdges =

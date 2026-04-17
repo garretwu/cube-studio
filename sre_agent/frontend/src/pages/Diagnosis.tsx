@@ -9,9 +9,10 @@
   type ReactNode,
   type UIEvent,
 } from "react";
-import { useParams } from "react-router-dom";
+import { useNavigate, useParams } from "react-router-dom";
 
 import { buildBackendWsUrl } from "../api/ws";
+import type { Alert } from "../api/types";
 import { AppIcon } from "../components/ui";
 import { useWebSocket } from "../hooks/useWebSocket";
 import { useDiagnosisStore } from "../store/diagnosisStore";
@@ -48,6 +49,13 @@ const TOOL_RESULT_TIMEOUT_MS = 15_000;
 const STREAM_COMPLETION_BUFFER_MS = 640;
 const AUTO_SCROLL_BOTTOM_THRESHOLD_PX = 48;
 const SYSTEM_EVENT_PREFIX_PATTERN = /^\[(?:system|\u7cfb\u7edf)\]\s*/i;
+const TERMINAL_SESSION_STATUSES = new Set([
+  "resolved",
+  "closed",
+  "rejected",
+  "failed",
+  "completed",
+]);
 const APPROVAL_KEY_DETAIL_PATTERNS = [
   /^\u5ba1\u6279\u53cd\u9988\s*[:\uff1a]/i,
   /^\u6267\u884c\u8fb9\u754c\s*[:\uff1a]/i,
@@ -215,6 +223,11 @@ function getRunPhaseLabel(phase: Extract<DiagnosisTimelineItem, { kind: "run" }>
     return "full rollout";
   }
   return "execution";
+}
+
+function isTerminalSessionStatus(status?: string | null) {
+  const normalized = String(status ?? "").trim().toLowerCase();
+  return normalized.length > 0 && TERMINAL_SESSION_STATUSES.has(normalized);
 }
 
 
@@ -654,6 +667,30 @@ function splitThinkingAndConclusion(content: string): {
   return {
     thinking: thinking.length > 0 ? thinking : null,
     conclusion,
+  };
+}
+
+function buildRealtimeEntryAlert(prompt: string): Alert {
+  const now = new Date().toISOString();
+  const fingerprintSeed = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  return {
+    alert_name: "ManualDiagnosisRequest",
+    severity: "warning",
+    labels: {
+      source: "diagnosis-ui",
+      mode: "manual",
+      prompt: prompt.slice(0, 120),
+    },
+    annotations: {
+      summary: "Manual diagnosis requested from /diagnosis",
+      description: prompt,
+    },
+    starts_at: now,
+    fingerprint: `manual-${fingerprintSeed}`,
+    status: "firing",
+    source: "diagnosis-ui",
+    summary: "Manual diagnosis request",
+    description: prompt,
   };
 }
 
@@ -2314,9 +2351,10 @@ function markTimelineToolTimeout(
 }
 
 function DiagnosisPage() {
+  const navigate = useNavigate();
   const params = useParams<{ sessionId?: string }>();
   const routeSessionId = (params.sessionId ?? "").trim();
-  const shouldBootstrapLiveSession = routeSessionId.length > 0;
+  const shouldBootstrapLiveSession = true;
   const [draft, setDraft] = useState("");
   const [demoTimeline, setDemoTimeline] = useState<
     DiagnosisTimelineItem[]
@@ -2401,7 +2439,11 @@ function DiagnosisPage() {
     canApprove,
     approvalBlockReason,
     bootstrapSession,
+    startStreamingDiagnosis,
     sendMessage,
+    isStreamingDiagnosis,
+    streamingPhase,
+    liveThinking,
     approvePlan,
     applyEvent,
     setConnectionState,
@@ -2412,10 +2454,11 @@ function DiagnosisPage() {
     [events, localAuditRecords, messages, session],
   );
   const hasLiveSession =
-    shouldBootstrapLiveSession &&
     bootstrapStatus === "ready" &&
     Boolean(session) &&
     Boolean(activeSessionId);
+  const shouldRenderLiveTimeline = shouldBootstrapLiveSession;
+  const isLiveSessionTerminal = isTerminalSessionStatus(session?.status);
 
   useEffect(() => {
     if (!shouldBootstrapLiveSession) {
@@ -2724,7 +2767,7 @@ function DiagnosisPage() {
   }, [waitForLiveToolTerminal, waitForMessageStream]);
 
   useEffect(() => {
-    if (!hasLiveSession) {
+    if (!shouldRenderLiveTimeline) {
       initializedLiveSessionIdRef.current = null;
       liveQueueTokenRef.current += 1;
       liveQueuedItemsRef.current = [];
@@ -2755,24 +2798,48 @@ function DiagnosisPage() {
       return;
     }
 
+    if (
+      isLiveSessionTerminal &&
+      sourceTimeline.length > 0 &&
+      liveDisplayedIdsRef.current.size === 0 &&
+      liveQueuedItemsRef.current.length === 0 &&
+      !liveQueueProcessingRef.current
+    ) {
+      liveDisplayedIdsRef.current = new Set(sourceTimeline.map((item) => item.id));
+      setLiveTimeline(sourceTimeline);
+      return;
+    }
+
+    if (isLiveSessionTerminal) {
+      liveQueueTokenRef.current += 1;
+      liveQueuedItemsRef.current = [];
+      liveQueuedIdsRef.current = new Set();
+      liveDisplayedIdsRef.current = new Set(sourceTimeline.map((item) => item.id));
+      clearLiveToolWaiters();
+      setLiveTimeline(sourceTimeline);
+      return;
+    }
+
     setLiveTimeline((current) =>
-      current.map((item) => {
-        const latest = sourceById.get(item.id);
-        if (!latest) {
-          return item;
-        }
+      current
+        .filter((item) => sourceById.has(item.id))
+        .map((item) => {
+          const latest = sourceById.get(item.id);
+          if (!latest) {
+            return item;
+          }
 
-        if (
-          item.kind === "tool" &&
-          latest.kind === "tool" &&
-          item.status === "timeout" &&
-          latest.status === "loading"
-        ) {
-          return item;
-        }
+          if (
+            item.kind === "tool" &&
+            latest.kind === "tool" &&
+            item.status === "timeout" &&
+            latest.status === "loading"
+          ) {
+            return item;
+          }
 
-        return latest;
-      }),
+          return latest;
+        }),
     );
 
     const queuedItems = sourceTimeline.filter(
@@ -2791,11 +2858,12 @@ function DiagnosisPage() {
   }, [
     activeSessionId,
     clearLiveToolWaiters,
-    hasLiveSession,
+    shouldRenderLiveTimeline,
     liveView.timeline,
     processLiveQueue,
     routeSessionId,
     session?.session_id,
+    isLiveSessionTerminal,
   ]);
 
   const waitForDemoDelay = useCallback((delayMs: number, runToken: number) => {
@@ -3406,8 +3474,16 @@ function DiagnosisPage() {
       return;
     }
 
-    startDemo(content);
-  }, [activeSessionId, draft, hasLiveSession, sendMessage, startDemo]);
+    const pendingSessionId = startStreamingDiagnosis(
+      buildRealtimeEntryAlert(content),
+      [],
+      (sessionId) => {
+        navigate(`/diagnosis/${sessionId}`, { replace: true });
+      },
+    );
+    setDraft("");
+    navigate(`/diagnosis/${pendingSessionId}`);
+  }, [activeSessionId, draft, hasLiveSession, navigate, sendMessage, startStreamingDiagnosis]);
 
   const handleInputKeyDown = useCallback(
     (event: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -3427,7 +3503,7 @@ function DiagnosisPage() {
   );
 
   const websocketEnabled =
-    shouldBootstrapLiveSession &&
+    shouldRenderLiveTimeline &&
     import.meta.env.VITE_WS_ENABLED === "true" &&
     Boolean(activeSessionId);
   const websocketUrl = useMemo(
@@ -3446,33 +3522,33 @@ function DiagnosisPage() {
     setConnectionState(ws.state);
   }, [setConnectionState, ws.state]);
 
-  const activeRawTimeline = hasLiveSession ? liveTimeline : demoTimeline;
+  const activeRawTimeline = shouldRenderLiveTimeline ? liveTimeline : demoTimeline;
   const groupedTimeline = useMemo(
     () =>
       groupExecutionRunTimeline(
         activeRawTimeline,
-        hasLiveSession
+        shouldRenderLiveTimeline
           ? `${activeSessionId ?? session?.session_id ?? "live"}-execution-run`
           : "demo-execution-run",
       ),
-    [activeRawTimeline, activeSessionId, hasLiveSession, session?.session_id],
+    [activeRawTimeline, activeSessionId, session?.session_id, shouldRenderLiveTimeline],
   );
   const activeTimeline = useMemo<DiagnosisRenderableTimelineItem[]>(
     () =>
-      hasLiveSession
+      shouldRenderLiveTimeline
         ? groupedTimeline
         : buildDemoExecutionCardTimeline(groupedTimeline),
-    [groupedTimeline, hasLiveSession],
+    [groupedTimeline, shouldRenderLiveTimeline],
   );
-  const activeSummary = hasLiveSession ? liveView.summary : demoSummary;
-  const activePlan = hasLiveSession ? liveView.plan : demoPlan;
+  const activeSummary = shouldRenderLiveTimeline ? liveView.summary : demoSummary;
+  const activePlan = shouldRenderLiveTimeline ? liveView.plan : demoPlan;
   const activeReportReady = activeTimeline.some((item) => item.kind === "report");
   const activeApprovalStatusLabel =
-    hasLiveSession && session ? formatWorkflowStatus(session.status) : "\u5f85\u5ba1\u6279";
+    shouldRenderLiveTimeline && session ? formatWorkflowStatus(session.status) : "\u5f85\u5ba1\u6279";
   const approvalSurfaceOpen =
     Boolean(activePlan) &&
     activeReportReady &&
-    (hasLiveSession ? approvalOverlayOpen : demoApprovalCardOpen);
+    (shouldRenderLiveTimeline ? approvalOverlayOpen : demoApprovalCardOpen);
 
   const isFeedNearBottom = useCallback((element: HTMLDivElement) => {
     const distanceFromBottom =
@@ -3632,12 +3708,39 @@ function DiagnosisPage() {
   const composerDisabled =
     (shouldBootstrapLiveSession ? isLoadingSession : false) ||
     isSendingMessage ||
+    isStreamingDiagnosis ||
     demoState === "running";
-  const introCopy = hasLiveSession
+  const introCopy = shouldRenderLiveTimeline
     ? "\u5f53\u524d\u9875\u9762\u6b63\u5728\u6d88\u8d39\u771f\u5b9e\u8bca\u65ad\u4f1a\u8bdd\uff0c\u5e76\u6309\u7edf\u4e00\u6d41\u7a0b\u5448\u73b0\u601d\u8003\u3001\u5de5\u5177\u8c03\u7528\u3001\u6839\u56e0\u5206\u6790\u4e0e\u5ba1\u6279\u6267\u884c\u3002"
     : demoState === "idle"
       ? "\u8f93\u5165\u8bca\u65ad\u95ee\u9898\u540e\uff0c\u9875\u9762\u4f1a\u6309\u8f83\u6162\u8282\u594f\u56de\u653e\u5b8c\u6574\u8bca\u65ad\u8fc7\u7a0b\uff0c\u65b9\u4fbf\u9010\u6b65\u67e5\u770b\u6bcf\u4e00\u6b21\u601d\u8003\u4e0e\u5de5\u5177\u8c03\u7528\u3002"
       : "\u5f53\u524d\u6b63\u5728\u6309\u6162\u901f\u56de\u653e\u8bca\u65ad\u6d41\u7a0b\u3002";
+
+  const showLivePendingPlaceholder =
+    shouldRenderLiveTimeline &&
+    activeTimeline.length === 0 &&
+    (isStreamingDiagnosis ||
+      isLoadingSession ||
+      Boolean(routeSessionId) ||
+      Boolean(activeSessionId));
+
+  const pendingThinkingPlaceholder = useMemo<Extract<DiagnosisTimelineItem, { kind: "thinking" }>>(
+    () => ({
+      id: "live-thinking-placeholder",
+      kind: "thinking",
+      title: "Agent is analyzing the request",
+      content: liveThinking?.content?.trim()
+        ? liveThinking.content
+        : streamingPhase === "bootstrapping"
+          ? "Initializing the diagnosis stream and preparing context."
+          : streamingPhase === "waiting_first_content"
+            ? "Waiting for the first reasoning block from the diagnosis engine."
+            : "Collecting the next reasoning block...",
+      timestamp: new Date().toISOString(),
+      status: "thinking",
+    }),
+    [liveThinking?.content, streamingPhase],
+  );
 
   return (
     <div className="page-grid diagnosis-workspace-page">
@@ -3659,15 +3762,15 @@ function DiagnosisPage() {
                 </>
               ) : (
                 <>
-                  <ToneBadge tone={hasLiveSession ? "success" : "accent"}>
-                    {hasLiveSession
+                  <ToneBadge tone={shouldRenderLiveTimeline ? "success" : "accent"}>
+                    {shouldRenderLiveTimeline
                       ? "\u5b9e\u65f6\u4f1a\u8bdd"
                       : "\u6f14\u793a\u6a21\u5f0f"}
                   </ToneBadge>
-                  {hasLiveSession && activeSessionId ? (
+                  {shouldRenderLiveTimeline && activeSessionId ? (
                     <ToneBadge tone="neutral">{activeSessionId}</ToneBadge>
                   ) : null}
-                  {hasLiveSession ? (
+                  {shouldRenderLiveTimeline ? (
                     <ToneBadge
                       tone={connectionState === "open" ? "success" : "warning"}
                     >{`\u5b9e\u65f6\u94fe\u8def ${connectionState}`}</ToneBadge>
@@ -3688,17 +3791,28 @@ function DiagnosisPage() {
             >
               <div className="diagnosis-workspace-feed__content">
                 {activeTimeline.length === 0 ? (
-                <div className="diagnosis-workspace-empty-state">
-                  <div className="diagnosis-workspace-empty-state__icon">
-                    <AppIcon name="aiChat" size={18} />
-                  </div>
-                  <h2>Welcome to the RCA Agent</h2>
-                  <p>
-                    Type your request below to trigger the ReAct diagnostic
-                    process, or use the pre-filled example.
-                  </p>
-                </div>
-              ) : (
+                  showLivePendingPlaceholder ? (
+                    <ThinkingBlock
+                      animate
+                      item={pendingThinkingPlaceholder}
+                    />
+                  ) : shouldRenderLiveTimeline ? (
+                    <div className="diagnosis-workspace-inline-note">
+                      Submit a request to start a realtime diagnosis session.
+                    </div>
+                  ) : (
+                    <div className="diagnosis-workspace-empty-state">
+                      <div className="diagnosis-workspace-empty-state__icon">
+                        <AppIcon name="aiChat" size={18} />
+                      </div>
+                      <h2>Welcome to the RCA Agent</h2>
+                      <p>
+                        Type your request below to trigger the ReAct diagnostic
+                        process, or use the pre-filled example.
+                      </p>
+                    </div>
+                  )
+                ) : (
                 activeTimeline.map((item) => {
                   if (item.kind === "message") {
                     const shouldAnimateAssistantMessage =
@@ -3723,7 +3837,7 @@ function DiagnosisPage() {
 
                   if (item.kind === "thinking") {
                     const shouldAnimateThinking =
-                      !hasLiveSession && item.status === "thinking";
+                      shouldRenderLiveTimeline && item.status === "thinking";
                     return (
                       <ThinkingBlock
                         animate={shouldAnimateThinking}
@@ -3765,7 +3879,7 @@ function DiagnosisPage() {
                 })
               )}
 
-              {hasLiveSession && traceStatus === "empty" ? (
+              {shouldRenderLiveTimeline && traceStatus === "empty" ? (
                 <div className="diagnosis-workspace-inline-note">
                   The live session has not produced trace entries yet. The input
                   remains available while waiting for incremental diagnosis
@@ -3791,7 +3905,7 @@ function DiagnosisPage() {
             </div>
             {approvalSurfaceOpen ? (
               <div className="diagnosis-workspace-approval-layer">
-                {!hasLiveSession ? (
+                {!shouldRenderLiveTimeline ? (
                   <DemoApprovalCard
                     isSubmitting={isSubmittingDemoApproval}
                     onApprove={handleApproveDemoPlan}
@@ -3822,7 +3936,7 @@ function DiagnosisPage() {
                   onExpandReject={() => setApprovalRejectEditorOpen(true)}
                   onReject={() => void handleRejectPlan()}
                   onRejectReasonChange={setApprovalReason}
-                  open={hasLiveSession && approvalOverlayOpen}
+                  open={shouldRenderLiveTimeline && approvalOverlayOpen}
                   plan={activePlan}
                   planVersion={latestPlanVersion}
                   rejectExpanded={approvalRejectEditorOpen}
@@ -3844,7 +3958,7 @@ function DiagnosisPage() {
                   onChange={(event) => setDraft(event.target.value)}
                   onKeyDown={handleInputKeyDown}
                   placeholder={
-                    hasLiveSession
+                    shouldRenderLiveTimeline
                       ? "Continue the current diagnosis session, for example: explain why these root-cause candidates were selected."
                       : "Ask the agent to diagnose an issue... (Press Enter to start)"
                   }
@@ -3853,12 +3967,12 @@ function DiagnosisPage() {
                 />
                 <div className="diagnosis-workspace-composer__actions">
                   <p className="diagnosis-workspace-composer__hint">
-                    {hasLiveSession
+                    {shouldRenderLiveTimeline
                       ? "The live data stream is preserved and rendered with Toolcall pacing and hierarchy."
                       : "Without an active session, local demo mode runs and replays a slower Toolcall-style diagnosis flow."}
                   </p>
                   <div className="diagnosis-workspace-composer__buttons">
-                    {!hasLiveSession && demoTimeline.length > 0 ? (
+                    {!shouldRenderLiveTimeline && demoTimeline.length > 0 ? (
                       <button
                         className="diagnosis-workspace-send-btn diagnosis-workspace-send-btn--secondary"
                         onClick={() =>
@@ -3895,4 +4009,3 @@ function DiagnosisPage() {
   );
 }
 export default DiagnosisPage;
-

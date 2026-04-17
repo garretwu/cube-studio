@@ -22,7 +22,7 @@ function buildAggregateLabelFixture(edges: TopologyExplorerResponse["edges"]): T
     summary: "fixture",
     tags: [],
     updatedAt: now,
-    attributes: {},
+    attributes: { kind: "namespace_group" },
   };
 
   return {
@@ -131,6 +131,7 @@ describe("topology modified selectors", () => {
       : [];
 
     expect(aggregateMemberIds.length).toBeGreaterThan(0);
+    expect(aggregateNode?.id).toMatch(/^aggregate:(ns:|unassigned)/);
 
     const expandedStage = getModifiedStageTopology(
       topologyExplorerOnlineMock,
@@ -145,6 +146,190 @@ describe("topology modified selectors", () => {
 
     expect(expandedStage.nodes.some((node) => node.id === aggregateNode!.id)).toBe(false);
     expect(expandedStage.nodes.some((node) => aggregateMemberIds.includes(node.id))).toBe(true);
+  });
+
+  it("aggregates pods by namespace and keeps unassigned pods isolated", () => {
+    const now = "2026-04-16T00:00:00.000Z";
+    const fixture: TopologyExplorerResponse = {
+      site: {
+        id: "site-1",
+        name: "site-1",
+        region: "cn",
+        zone: "z1",
+        domain: "aidc",
+        summary: "fixture",
+      },
+      nodes: [
+        {
+          id: "ns:service",
+          name: "service",
+          type: "service",
+          status: "healthy",
+          layer: "service",
+          domain: "aidc",
+          region: "cn",
+          zone: "z1",
+          summary: "namespace group",
+          tags: [],
+          updatedAt: now,
+          attributes: { kind: "namespace_group", namespace: "service" },
+        },
+        {
+          id: "ns:infra",
+          name: "infra",
+          type: "service",
+          status: "healthy",
+          layer: "service",
+          domain: "aidc",
+          region: "cn",
+          zone: "z1",
+          summary: "namespace group",
+          tags: [],
+          updatedAt: now,
+          attributes: { kind: "namespace_group", namespace: "infra" },
+        },
+        {
+          id: "pod:service:demo-0",
+          name: "service/demo-0",
+          type: "pod",
+          status: "healthy",
+          layer: "service",
+          domain: "aidc",
+          region: "cn",
+          zone: "z1",
+          summary: "pod",
+          tags: [],
+          updatedAt: now,
+          attributes: { namespace: "service" },
+        },
+        {
+          id: "pod:service:demo-1",
+          name: "service/demo-1",
+          type: "pod",
+          status: "healthy",
+          layer: "service",
+          domain: "aidc",
+          region: "cn",
+          zone: "z1",
+          summary: "pod",
+          tags: [],
+          updatedAt: now,
+          attributes: { namespace: "service" },
+        },
+        {
+          id: "pod:infra:demo-0",
+          name: "infra/demo-0",
+          type: "pod",
+          status: "healthy",
+          layer: "service",
+          domain: "aidc",
+          region: "cn",
+          zone: "z1",
+          summary: "pod",
+          tags: [],
+          updatedAt: now,
+          attributes: { namespace: "infra" },
+        },
+        {
+          id: "pod:infra:demo-1",
+          name: "infra/demo-1",
+          type: "pod",
+          status: "healthy",
+          layer: "service",
+          domain: "aidc",
+          region: "cn",
+          zone: "z1",
+          summary: "pod",
+          tags: [],
+          updatedAt: now,
+          attributes: { namespace: "infra" },
+        },
+        {
+          id: "pod:orphan:0",
+          name: "orphan/0",
+          type: "pod",
+          status: "healthy",
+          layer: "service",
+          domain: "aidc",
+          region: "cn",
+          zone: "z1",
+          summary: "pod",
+          tags: [],
+          updatedAt: now,
+          attributes: {},
+        },
+        {
+          id: "pod:orphan:1",
+          name: "orphan/1",
+          type: "pod",
+          status: "healthy",
+          layer: "service",
+          domain: "aidc",
+          region: "cn",
+          zone: "z1",
+          summary: "pod",
+          tags: [],
+          updatedAt: now,
+          attributes: {},
+        },
+      ],
+      edges: [
+        {
+          id: "e1",
+          source: "ns:service",
+          target: "pod:service:demo-0",
+          relationType: "contains",
+          status: "healthy",
+          isCritical: false,
+          impactLevel: "low",
+          label: "part_of",
+        },
+        {
+          id: "e2",
+          source: "ns:service",
+          target: "pod:service:demo-1",
+          relationType: "contains",
+          status: "healthy",
+          isCritical: false,
+          impactLevel: "low",
+          label: "part_of",
+        },
+        {
+          id: "e3",
+          source: "ns:infra",
+          target: "pod:infra:demo-0",
+          relationType: "contains",
+          status: "healthy",
+          isCritical: false,
+          impactLevel: "low",
+          label: "part_of",
+        },
+        {
+          id: "e4",
+          source: "ns:infra",
+          target: "pod:infra:demo-1",
+          relationType: "contains",
+          status: "healthy",
+          isCritical: false,
+          impactLevel: "low",
+          label: "part_of",
+        },
+      ],
+      paths: [],
+      lastUpdated: now,
+    };
+
+    const stage = getModifiedStageTopology(fixture, {
+      layerFilter: "all",
+      searchQuery: "",
+    });
+
+    const aggregateIds = stage.nodes
+      .filter((node) => isSyntheticServiceAggregateNode(node))
+      .map((node) => node.id);
+    expect(aggregateIds).toContain("aggregate:ns:service:pod");
+    expect(aggregateIds).toContain("aggregate:ns:infra:pod");
+    expect(aggregateIds).toContain("aggregate:unassigned:pod");
   });
 
   it("aggregates GPU nodes per host node on the modified stage", () => {
@@ -187,6 +372,121 @@ describe("topology modified selectors", () => {
 
     expect(stage.nodes.some((node) => node.id === firstPodNode!.id)).toBe(true);
     expect(searchResultIds.every((id) => stage.searchResultIds.includes(id))).toBe(true);
+  });
+
+  it("hides svc:* nodes in modified main stage but keeps ns:* and pod nodes", () => {
+    const now = "2026-04-16T00:00:00.000Z";
+    const fixture: TopologyExplorerResponse = {
+      site: {
+        id: "site-1",
+        name: "site-1",
+        region: "cn",
+        zone: "z1",
+        domain: "aidc",
+        summary: "fixture",
+      },
+      nodes: [
+        {
+          id: "cluster:aidc-lab",
+          name: "aidc-lab",
+          type: "cluster",
+          status: "healthy",
+          layer: "physical",
+          domain: "aidc",
+          region: "cn",
+          zone: "z1",
+          summary: "cluster",
+          tags: [],
+          updatedAt: now,
+          attributes: {},
+        },
+        {
+          id: "ns:service",
+          name: "service",
+          type: "service",
+          status: "healthy",
+          layer: "service",
+          domain: "aidc",
+          region: "cn",
+          zone: "z1",
+          summary: "namespace group",
+          tags: [],
+          updatedAt: now,
+          attributes: { kind: "namespace_group", namespace: "service", cluster_id: "k8s:aidc-lab" },
+        },
+        {
+          id: "svc:service:demo",
+          name: "service/demo",
+          type: "service",
+          status: "healthy",
+          layer: "service",
+          domain: "aidc",
+          region: "cn",
+          zone: "z1",
+          summary: "k8s service",
+          tags: [],
+          updatedAt: now,
+          attributes: { namespace: "service", cluster_id: "k8s:aidc-lab" },
+        },
+        {
+          id: "pod:service:demo-0",
+          name: "service/demo-0",
+          type: "pod",
+          status: "healthy",
+          layer: "service",
+          domain: "aidc",
+          region: "cn",
+          zone: "z1",
+          summary: "pod",
+          tags: [],
+          updatedAt: now,
+          attributes: { namespace: "service" },
+        },
+      ],
+      edges: [
+        {
+          id: "e1",
+          source: "pod:service:demo-0",
+          target: "svc:service:demo",
+          relationType: "depends_on",
+          status: "healthy",
+          isCritical: false,
+          impactLevel: "low",
+          label: "serves",
+        },
+        {
+          id: "e2",
+          source: "pod:service:demo-0",
+          target: "ns:service",
+          relationType: "contains",
+          status: "healthy",
+          isCritical: false,
+          impactLevel: "low",
+          label: "part_of",
+        },
+      ],
+      paths: [],
+      lastUpdated: now,
+    };
+
+    const stage = getModifiedStageTopology(fixture, {
+      layerFilter: "all",
+      searchQuery: "",
+    });
+
+    expect(stage.nodes.some((node) => node.id.startsWith("svc:"))).toBe(false);
+    expect(stage.nodes.some((node) => node.id === "ns:service")).toBe(true);
+    expect(stage.nodes.some((node) => node.id.startsWith("pod:service:"))).toBe(true);
+  });
+
+  it("hides svc:* nodes in default stage and prevents service search from returning hidden svc ids", () => {
+    const stage = getStageTopology(topologyExplorerOnlineMock, {
+      layerFilter: "all",
+      searchQuery: "external-model-service",
+    });
+
+    expect(stage.nodes.some((node) => node.id.startsWith("svc:"))).toBe(false);
+    expect(stage.searchResultIds.some((id) => id.startsWith("svc:"))).toBe(false);
   });
   it("formats aggregated edge labels as relation(count) when merged relations are homogeneous", () => {
     const fixture = buildAggregateLabelFixture([

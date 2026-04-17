@@ -1141,6 +1141,45 @@ function resolveExecutionRunId(data: Record<string, unknown>, sessionId: string)
   return `${sessionId}-execution-run`;
 }
 
+function getStreamFirstTimelinePriority(item: DiagnosisTimelineItem) {
+  if (item.kind === "thinking") {
+    return 0;
+  }
+  if (item.kind === "tool") {
+    return 1;
+  }
+  if (item.kind === "message") {
+    return 2;
+  }
+  if (item.kind === "run") {
+    return 3;
+  }
+  if (item.kind === "system") {
+    return 4;
+  }
+  if (item.kind === "report") {
+    return 5;
+  }
+  return 99;
+}
+
+function keepLatestSingleReportItem(timeline: DiagnosisTimelineItem[]) {
+  let latestReportIndex = -1;
+  for (let index = 0; index < timeline.length; index += 1) {
+    if (timeline[index]?.kind === "report") {
+      latestReportIndex = index;
+    }
+  }
+
+  if (latestReportIndex < 0) {
+    return timeline;
+  }
+
+  return timeline.filter(
+    (item, index) => item.kind !== "report" || index === latestReportIndex,
+  );
+}
+
 function extractExecutionMetricLines(details: string[]) {
   const metricPatterns = [
     "\u6307\u6807",
@@ -1813,6 +1852,11 @@ export function buildDiagnosisLiveView(
       if (timeGap !== 0) {
         return timeGap;
       }
+      const priorityGap =
+        getStreamFirstTimelinePriority(left.item) - getStreamFirstTimelinePriority(right.item);
+      if (priorityGap !== 0) {
+        return priorityGap;
+      }
       return left.order - right.order;
     })
     .map((entry) => entry.item);
@@ -1842,9 +1886,10 @@ export function buildDiagnosisLiveView(
         return timeGap;
       })
     : groupedTimeline;
+  const dedupedTimeline = keepLatestSingleReportItem(timeline);
 
   return {
-    timeline,
+    timeline: dedupedTimeline,
     candidates,
     hypotheses,
     propagationChain,
