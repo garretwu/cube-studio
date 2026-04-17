@@ -47,6 +47,105 @@ function getHostNodeId(
   return connected?.id;
 }
 
+function buildServiceHostStageFixture() {
+  const now = "2026-04-17T00:00:00.000Z";
+  return {
+    site: {
+      id: "site-1",
+      name: "Fixture Site",
+      region: "cn",
+      zone: "z1",
+      domain: "aidc",
+      summary: "fixture",
+    },
+    nodes: [
+      {
+        id: "cluster:aidc-lab",
+        name: "aidc-lab",
+        type: "cluster" as const,
+        status: "healthy" as const,
+        layer: "physical" as const,
+        domain: "aidc",
+        region: "cn",
+        zone: "z1",
+        summary: "cluster",
+        tags: [],
+        updatedAt: now,
+        attributes: {},
+      },
+      {
+        id: "node:worker-1",
+        name: "worker-1",
+        type: "node" as const,
+        status: "healthy" as const,
+        layer: "compute" as const,
+        domain: "aidc",
+        region: "cn",
+        zone: "z1",
+        cluster: "k8s:aidc-lab",
+        summary: "node",
+        tags: [],
+        updatedAt: now,
+        attributes: { cluster_id: "k8s:aidc-lab" },
+      },
+      {
+        id: "ns:service",
+        name: "service",
+        type: "service" as const,
+        status: "healthy" as const,
+        layer: "service" as const,
+        domain: "aidc",
+        region: "cn",
+        zone: "z1",
+        cluster: "k8s:aidc-lab",
+        summary: "namespace group",
+        tags: [],
+        updatedAt: now,
+        attributes: { kind: "namespace_group", namespace: "service", cluster_id: "k8s:aidc-lab" },
+      },
+      {
+        id: "svc:service:demo-a",
+        name: "service/demo-a",
+        type: "service" as const,
+        status: "healthy" as const,
+        layer: "service" as const,
+        domain: "aidc",
+        region: "cn",
+        zone: "z1",
+        cluster: "k8s:aidc-lab",
+        summary: "service",
+        tags: [],
+        updatedAt: now,
+        attributes: { namespace: "service", cluster_id: "k8s:aidc-lab" },
+      },
+    ],
+    edges: [
+      {
+        id: "e-contain",
+        source: "svc:service:demo-a",
+        target: "ns:service",
+        relationType: "contains" as const,
+        status: "healthy" as const,
+        isCritical: false,
+        impactLevel: "low" as const,
+        label: "part_of",
+      },
+      {
+        id: "e-host",
+        source: "svc:service:demo-a",
+        target: "node:worker-1",
+        relationType: "runs_on" as const,
+        status: "healthy" as const,
+        isCritical: false,
+        impactLevel: "low" as const,
+        label: "hosted_on",
+      },
+    ],
+    paths: [],
+    lastUpdated: now,
+  };
+}
+
 describe("modified topology layout", () => {
   it("keeps the modified layered view spread horizontally instead of collapsing into a single vertical strip", () => {
     const stage = getModifiedStageTopology(topologyExplorerOnlineMock, {
@@ -113,26 +212,30 @@ describe("modified topology layout", () => {
     const workers = groupByType("node");
     const services = groupByType("service");
     const pods = groupByType("pod");
+    const serviceLane = [...services, ...pods];
 
     expect(clusters.length).toBeGreaterThan(0);
     expect(switches.length).toBeGreaterThan(0);
     expect(ports.length).toBeGreaterThan(0);
     expect(workers.length).toBeGreaterThan(0);
-    expect(services.length).toBeGreaterThan(0);
     expect(pods.length).toBeGreaterThan(0);
+    expect(serviceLane.length).toBeGreaterThan(0);
 
     const clusterX = median(clusters.map((point) => point.x));
     const switchX = median(switches.map((point) => point.x));
     const portX = median(ports.map((item) => item.position.x));
     const workerX = median(workers.map((point) => point.x));
-    const serviceX = median(services.map((point) => point.x));
+    const serviceLaneX = median(serviceLane.map((point) => point.x));
     const podX = median(pods.map((point) => point.x));
 
     expect(clusterX).toBeLessThan(switchX);
     expect(switchX).toBeLessThan(portX);
     expect(portX).toBeLessThan(workerX);
-    expect(workerX).toBeLessThan(serviceX);
-    expect(serviceX).toBeLessThan(podX);
+    expect(workerX).toBeLessThan(serviceLaneX);
+    if (services.length > 0) {
+      const serviceX = median(services.map((point) => point.x));
+      expect(serviceX).toBeLessThanOrEqual(podX);
+    }
 
     const clusterY = median(clusters.map((point) => point.y));
     const portsByParent = new Map<string, Array<{ x: number; y: number }>>();
@@ -283,5 +386,28 @@ describe("modified topology layout", () => {
         expect(distance).toBeGreaterThanOrEqual(left.radius + right.radius);
       }
     }
+  });
+
+  it("anchors namespace-group service nodes beside their host worker rows through synthesized host edges", () => {
+    const stage = getModifiedStageTopology(buildServiceHostStageFixture(), {
+      layerFilter: "all",
+      searchQuery: "",
+    });
+
+    const positions = computeModifiedHybridLayout(
+      stage.nodes,
+      stage.edges,
+      "layered",
+      TOPOLOGY_CANVAS_METRICS.modified,
+    );
+
+    const servicePos = positions.get("ns:service");
+    const hostPos = positions.get("node:worker-1");
+
+    expect(servicePos).toBeDefined();
+    expect(hostPos).toBeDefined();
+    expect(stage.edges.some((edge) => edge.source === "ns:service" && edge.target === "node:worker-1")).toBe(true);
+    expect(servicePos!.x).toBeGreaterThan(hostPos!.x);
+    expect(Math.abs(servicePos!.y - hostPos!.y)).toBeLessThanOrEqual(220);
   });
 });

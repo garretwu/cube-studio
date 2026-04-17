@@ -828,22 +828,6 @@ function getReportTimelineTimestamp(
   return latestNarrativeTimestamp ?? session?.alert.starts_at;
 }
 
-function buildTraceNextAction(entry: ThinkingStep) {
-  if (entry.action_type === "tool_call" && entry.tool_name) {
-    const serviceHint =
-      typeof entry.tool_params?.service === "string" && entry.tool_params.service.trim().length > 0
-        ? ` for ${entry.tool_params.service}`
-        : "";
-    return `Next action: call ${entry.tool_name}${serviceHint} to validate this hypothesis.`;
-  }
-
-  if (entry.action_type === "conclude") {
-    return "Next action: synthesize the current evidence and provide the root-cause conclusion.";
-  }
-
-  return "Next action: continue gathering discriminative evidence to narrow the root cause.";
-}
-
 function isSyntheticRemediationMessage(message: ChatMessage) {
   const eventType = String(message.metadata?.["event_type"] ?? "").trim().toLowerCase();
   return [
@@ -1702,19 +1686,6 @@ export function buildDiagnosisLiveView(
           timestamp: entry.timestamp,
           toolName: entry.tool_name,
           status: "completed",
-        },
-      });
-
-      timelineItems.push({
-        order: timelineItems.length,
-        timestamp: entry.timestamp,
-        item: {
-          id: `trace-next-action-${index + 1}-${entry.timestamp}`,
-          kind: "message",
-          role: "assistant",
-          content: buildTraceNextAction(entry),
-          timestamp: entry.timestamp,
-          label: "Next action",
         },
       });
 

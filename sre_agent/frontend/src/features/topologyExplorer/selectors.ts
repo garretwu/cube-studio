@@ -72,6 +72,10 @@ function isMainViewHiddenServiceNode(node: TopologyObject) {
   return node.type === "service" && !isNamespaceGroupServiceNode(node);
 }
 
+function isNodeObject(node: TopologyObject | undefined) {
+  return node?.type === "node";
+}
+
 export function getSyntheticAggregateGroupId(node: TopologyObject) {
   const value = node.attributes.aggregateGroupId;
   return typeof value === "string" ? value : undefined;
@@ -104,6 +108,99 @@ function isGlobalTopologyCappedNode(node: TopologyObject) {
   return node.layer === "service";
 }
 
+function buildServiceGroupHostEdges(
+  response: TopologyExplorerResponse,
+) {
+  const nodeMap = toLookupMap(response.nodes);
+  const outgoing = getOutgoing(response.edges);
+  const existingEdgeKeys = new Set(
+    response.edges.map((edge) => `${edge.source}:${edge.target}:${edge.relationType}`),
+  );
+  const aggregated = new Map<
+    string,
+    {
+      namespaceGroupId: string;
+      hostNodeId: string;
+      count: number;
+    }
+  >();
+
+  response.nodes.forEach((node) => {
+    if (!isMainViewHiddenServiceNode(node)) {
+      return;
+    }
+
+    const namespaceGroupIdFromEdge = (outgoing.get(node.id) ?? [])
+      .find((edge) => edge.relationType === "contains" && isNamespaceGroupServiceNode(nodeMap.get(edge.target)))
+      ?.target;
+    const namespaceFromAttributes =
+      typeof node.attributes.namespace === "string" && node.attributes.namespace.trim()
+        ? node.attributes.namespace.trim()
+        : undefined;
+    const namespaceGroupId =
+      namespaceGroupIdFromEdge ??
+      (namespaceFromAttributes && isNamespaceGroupServiceNode(nodeMap.get(`ns:${namespaceFromAttributes}`))
+        ? `ns:${namespaceFromAttributes}`
+        : undefined);
+    if (!namespaceGroupId) {
+      return;
+    }
+
+    (outgoing.get(node.id) ?? []).forEach((edge) => {
+      if (edge.relationType !== "runs_on") {
+        return;
+      }
+      if (!isNodeObject(nodeMap.get(edge.target))) {
+        return;
+      }
+      const key = `${namespaceGroupId}:${edge.target}`;
+      const current = aggregated.get(key);
+      aggregated.set(key, {
+        namespaceGroupId,
+        hostNodeId: edge.target,
+        count: (current?.count ?? 0) + 1,
+      });
+    });
+  });
+
+  return [...aggregated.values()]
+    .filter(({ namespaceGroupId, hostNodeId }) => !existingEdgeKeys.has(`${namespaceGroupId}:${hostNodeId}:runs_on`))
+    .map<TopologyRelation>(({ namespaceGroupId, hostNodeId, count }) => ({
+      id: `edge-service-group-host-${namespaceGroupId}-${hostNodeId}`,
+      source: namespaceGroupId,
+      target: hostNodeId,
+      relationType: "runs_on",
+      status: "healthy",
+      isCritical: false,
+      impactLevel: "low",
+      label: count > 1 ? `运行于(${count})` : "运行于",
+      isAggregated: true,
+    }));
+}
+
+function getAugmentedTopologyEdges(
+  response: TopologyExplorerResponse,
+) {
+  const serviceGroupHostEdges = buildServiceGroupHostEdges(response);
+  if (serviceGroupHostEdges.length === 0) {
+    return response.edges;
+  }
+  return [...response.edges, ...serviceGroupHostEdges];
+}
+
+function getAugmentedTopologyResponse(
+  response: TopologyExplorerResponse,
+): TopologyExplorerResponse {
+  const edges = getAugmentedTopologyEdges(response);
+  if (edges === response.edges) {
+    return response;
+  }
+  return {
+    ...response,
+    edges,
+  };
+}
+
 export function getGlobalTopologyDisplayData(
   response: TopologyExplorerResponse | undefined,
 ) {
@@ -111,26 +208,28 @@ export function getGlobalTopologyDisplayData(
     return undefined;
   }
 
+  const augmentedResponse = getAugmentedTopologyResponse(response);
+
   const visibleServiceNodeIds = new Set(
-    response.nodes
+    augmentedResponse.nodes
       .filter((node) => isGlobalTopologyCappedNode(node))
       .slice(0, GLOBAL_TOPOLOGY_SERVICE_NODE_LIMIT)
       .map((node) => node.id),
   );
-  const nodes = response.nodes.filter(
+  const nodes = augmentedResponse.nodes.filter(
     (node) =>
       !isGlobalTopologyCappedNode(node) || visibleServiceNodeIds.has(node.id),
   );
   const visibleNodeIds = new Set(nodes.map((node) => node.id));
   const edges = filterGlobalPrimaryEdges(
-    response.edges.filter(
+    augmentedResponse.edges.filter(
       (edge) => visibleNodeIds.has(edge.source) && visibleNodeIds.has(edge.target),
     ),
     nodes,
   );
 
   return {
-    ...response,
+    ...augmentedResponse,
     nodes,
     edges,
   };
@@ -1115,12 +1214,13 @@ export function getRelationsForNode(
     };
   }
 
-  const nodeMap = toLookupMap(response.nodes);
-  const upstream = response.edges
+  const augmentedResponse = getAugmentedTopologyResponse(response);
+  const nodeMap = toLookupMap(augmentedResponse.nodes);
+  const upstream = augmentedResponse.edges
     .filter((edge) => edge.target === nodeId)
     .map((edge) => nodeMap.get(edge.source))
     .filter((node): node is TopologyObject => Boolean(node));
-  const downstream = response.edges
+  const downstream = augmentedResponse.edges
     .filter((edge) => edge.source === nodeId)
     .map((edge) => nodeMap.get(edge.target))
     .filter((node): node is TopologyObject => Boolean(node));
@@ -1331,7 +1431,6 @@ function filterEssentialTopologyEdges(nodes: TopologyObject[], edges: TopologyRe
   const allowedPairs = new Set([
     "cluster:switch",
     "node:port",
-    "node:pod",
     "gpu:node",
     "bmc:node",
     "gpu:service",
@@ -1525,14 +1624,15 @@ export function getModifiedStageTopology(
     };
   }
 
+  const augmentedResponse = getAugmentedTopologyResponse(response);
   const searchResultIds =
     filters.searchResultIds ??
-    getModifiedSearchResultIds(response, filters.layerFilter, filters.searchQuery);
+    getModifiedSearchResultIds(augmentedResponse, filters.layerFilter, filters.searchQuery);
   const priorityNodeIds = unique([
     ...searchResultIds,
     ...(options.priorityNodeIds ?? []),
   ]);
-  const aggregatedResponse = buildModifiedAggregatedTopology(response, {
+  const aggregatedResponse = buildModifiedAggregatedTopology(augmentedResponse, {
     expandedAggregateIds: options.expandedAggregateIds,
     priorityNodeIds,
   });
@@ -1583,7 +1683,8 @@ export function getObjectTopologyDetail(
     };
   }
 
-  const nodeMap = toLookupMap(response.nodes);
+  const augmentedResponse = getAugmentedTopologyResponse(response);
+  const nodeMap = toLookupMap(augmentedResponse.nodes);
   const focalNode = nodeMap.get(nodeId);
   if (!focalNode) {
     return {
@@ -1611,8 +1712,8 @@ export function getObjectTopologyDetail(
 
   return {
     focalNode,
-    nodes: response.nodes.filter((node) => contextIds.has(node.id)),
-    edges: response.edges.filter(
+    nodes: augmentedResponse.nodes.filter((node) => contextIds.has(node.id)),
+    edges: augmentedResponse.edges.filter(
       (edge) => edge.source === nodeId || edge.target === nodeId,
     ),
     upstream,

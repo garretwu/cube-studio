@@ -54,7 +54,7 @@ function TopologyObjectPage() {
     }
 
     window.requestAnimationFrame(() => {
-      canvasRef.current?.focusNode(detail.focalNode!.id);
+      canvasRef.current?.fitView("balanced");
     });
   }, [detail.focalNode?.id]);
 
@@ -65,7 +65,7 @@ function TopologyObjectPage() {
   };
 
   return (
-    <div className="page-grid topology-modified-page topology-object-page">
+    <div className="page-grid topology-modified-page topology-object-page topology-route topology-route--modified">
       <h1 className="visually-hidden">对象拓扑详情</h1>
       <section className="page-stage topology-modified-stage">
         <div className="topology-object-header">
@@ -98,7 +98,7 @@ function TopologyObjectPage() {
             <AppButton size="sm" variant="secondary" onClick={() => canvasRef.current?.fitView()}>
               适配
             </AppButton>
-            <AppButton size="sm" variant="secondary" onClick={() => canvasRef.current?.recenter(detail.focalNode?.id)}>
+            <AppButton size="sm" variant="secondary" onClick={() => canvasRef.current?.fitView("balanced")}>
               重置
             </AppButton>
           </div>
@@ -153,10 +153,12 @@ function TopologyObjectPage() {
                   matchedNodeIds={[detail.focalNode.id]}
                   neighborDepths={neighborDepths}
                   nodes={detail.nodes}
+                  objectFocusNodeId={detail.focalNode.id}
                   onHoverNode={() => undefined}
                   onSelectNode={navigateToObject}
                   onZoomChange={setZoomPercent}
                   selectedNodeId={detail.focalNode.id}
+                  variant="modified"
                 />
               </div>
             </section>
@@ -168,6 +170,4 @@ function TopologyObjectPage() {
 }
 
 export default TopologyObjectPage;
-
-
 

@@ -45,17 +45,9 @@ const DEMO_EVENT_SLOWDOWN = 4.5;
 const DEMO_MIN_TOOL_LOADING_DWELL_MS = 3500;
 const DEMO_APPROVAL_CARD_DELAY_MS = 320;
 const DEMO_APPROVAL_SUBMIT_DELAY_MS = 720;
-const TOOL_RESULT_TIMEOUT_MS = 15_000;
 const STREAM_COMPLETION_BUFFER_MS = 640;
 const AUTO_SCROLL_BOTTOM_THRESHOLD_PX = 48;
 const SYSTEM_EVENT_PREFIX_PATTERN = /^\[(?:system|\u7cfb\u7edf)\]\s*/i;
-const TERMINAL_SESSION_STATUSES = new Set([
-  "resolved",
-  "closed",
-  "rejected",
-  "failed",
-  "completed",
-]);
 const APPROVAL_KEY_DETAIL_PATTERNS = [
   /^\u5ba1\u6279\u53cd\u9988\s*[:\uff1a]/i,
   /^\u6267\u884c\u8fb9\u754c\s*[:\uff1a]/i,
@@ -224,12 +216,6 @@ function getRunPhaseLabel(phase: Extract<DiagnosisTimelineItem, { kind: "run" }>
   }
   return "execution";
 }
-
-function isTerminalSessionStatus(status?: string | null) {
-  const normalized = String(status ?? "").trim().toLowerCase();
-  return normalized.length > 0 && TERMINAL_SESSION_STATUSES.has(normalized);
-}
-
 
 type DemoExecutionStageKey =
   | "execution_started"
@@ -2262,94 +2248,6 @@ function ApprovalOverlay({
   );
 }
 
-function findTimelineToolStatus(
-  timelineItems: DiagnosisTimelineItem[],
-  toolId: string,
-) {
-  for (const item of timelineItems) {
-    if (item.kind === "tool" && item.id === toolId) {
-      return item.status;
-    }
-    if (item.kind === "run") {
-      const tool = item.tools.find((entry) => entry.id === toolId);
-      if (tool) {
-        return tool.status;
-      }
-    }
-  }
-  return undefined;
-}
-
-function getLoadingToolIds(item: DiagnosisTimelineItem) {
-  if (item.kind === "tool" && item.status === "loading") {
-    return [item.id];
-  }
-  if (item.kind === "run") {
-    return item.tools
-      .filter((tool) => tool.status === "loading")
-      .map((tool) => tool.id);
-  }
-  return [];
-}
-
-function markTimelineToolTimeout(
-  timelineItems: DiagnosisTimelineItem[],
-  toolId: string,
-): DiagnosisTimelineItem[] {
-  const timeoutSummary = "Timed out after 15s waiting for tool_result.";
-  return timelineItems.map((item) => {
-    if (item.kind === "tool") {
-      if (item.id !== toolId || item.status !== "loading") {
-        return item;
-      }
-      return {
-        ...item,
-        status: "timeout" as const,
-        summaryLines: item.summaryLines.includes(timeoutSummary)
-          ? item.summaryLines
-          : [...item.summaryLines, timeoutSummary],
-      };
-    }
-
-    if (item.kind !== "run") {
-      return item;
-    }
-
-    let changed = false;
-    const tools = item.tools.map((tool) => {
-      if (tool.id !== toolId || tool.status !== "loading") {
-        return tool;
-      }
-      changed = true;
-      return {
-        ...tool,
-        status: "timeout" as const,
-        summaryLines: tool.summaryLines.includes(timeoutSummary)
-          ? tool.summaryLines
-          : [...tool.summaryLines, timeoutSummary],
-      };
-    });
-
-    if (!changed) {
-      return item;
-    }
-
-    const steps = item.steps.map((step) =>
-      step.toolIds.includes(toolId) && step.status === "running"
-        ? { ...step, status: "timeout" as const, statusTone: "danger" as const }
-        : step,
-    );
-
-    return {
-      ...item,
-      status: "timeout" as const,
-      currentStageLabel: "\u6267\u884c\u8d85\u65f6",
-      tools,
-      steps,
-    };
-  });
-}
-
 function DiagnosisPage() {
   const navigate = useNavigate();
   const params = useParams<{ sessionId?: string }>();
@@ -2407,18 +2305,6 @@ function DiagnosisPage() {
   const demoThinkingStartedAtRef = useRef<Map<string, number>>(new Map());
   const demoToolLoadingStartedAtRef = useRef<Map<string, number>>(new Map());
 
-  const liveToolWaiterResolversRef = useRef<Map<string, () => void>>(new Map());
-  const liveToolTimeoutTimersRef = useRef<Map<string, number>>(new Map());
-
-  const liveTimelineRef = useRef<DiagnosisTimelineItem[]>([]);
-  const liveQueuedItemsRef = useRef<DiagnosisTimelineItem[]>([]);
-  const liveQueuedIdsRef = useRef<Set<string>>(new Set());
-  const liveDisplayedIdsRef = useRef<Set<string>>(new Set());
-  const liveQueueProcessingRef = useRef(false);
-  const liveQueueTokenRef = useRef(0);
-  const latestLiveSourceByIdRef = useRef<
-    Map<string, DiagnosisTimelineItem>
-  >(new Map());
   const initializedLiveSessionIdRef = useRef<string | null>(null);
 
   const {
@@ -2428,7 +2314,6 @@ function DiagnosisPage() {
     events,
     localAuditRecords,
     bootstrapStatus,
-    traceStatus,
     isLoadingSession,
     isSendingMessage,
     connectionState,
@@ -2444,6 +2329,7 @@ function DiagnosisPage() {
     isStreamingDiagnosis,
     streamingPhase,
     liveThinking,
+    liveFinalAnswer,
     approvePlan,
     applyEvent,
     setConnectionState,
@@ -2453,12 +2339,43 @@ function DiagnosisPage() {
     () => buildDiagnosisLiveView(session, messages, events, localAuditRecords),
     [events, localAuditRecords, messages, session],
   );
+  const liveTimelineSource = useMemo<DiagnosisTimelineItem[]>(() => {
+    const timeline = [...liveView.timeline];
+    if (
+      liveThinking &&
+      liveThinking.status === "thinking" &&
+      liveThinking.content.trim().length > 0 &&
+      (liveThinking.node ?? "").trim().toLowerCase() !== "bootstrap"
+    ) {
+      timeline.push({
+        id: liveThinking.round_id ?? `live-thinking-${liveThinking.thought_key}`,
+        kind: "thinking",
+        title: "Agent is analyzing the request",
+        content: liveThinking.content,
+        timestamp: liveThinking.timestamp,
+        toolName: liveThinking.tool_name ?? undefined,
+        status: "thinking",
+      });
+    }
+
+    if (liveFinalAnswer?.content.trim()) {
+      timeline.push({
+        id: liveFinalAnswer.id,
+        kind: "message",
+        role: "assistant",
+        content: liveFinalAnswer.content,
+        timestamp: liveFinalAnswer.timestamp,
+        label: "Agent response",
+      });
+    }
+
+    return timeline;
+  }, [liveFinalAnswer, liveThinking, liveView.timeline]);
   const hasLiveSession =
     bootstrapStatus === "ready" &&
     Boolean(session) &&
     Boolean(activeSessionId);
   const shouldRenderLiveTimeline = shouldBootstrapLiveSession;
-  const isLiveSessionTerminal = isTerminalSessionStatus(session?.status);
 
   useEffect(() => {
     if (!shouldBootstrapLiveSession) {
@@ -2542,18 +2459,6 @@ function DiagnosisPage() {
     demoToolLoadingStartedAtRef.current.clear();
   }, []);
 
-  const clearLiveToolWaiters = useCallback(() => {
-    for (const timeoutId of liveToolTimeoutTimersRef.current.values()) {
-      window.clearTimeout(timeoutId);
-    }
-    liveToolTimeoutTimersRef.current.clear();
-
-    for (const resolver of liveToolWaiterResolversRef.current.values()) {
-      resolver();
-    }
-    liveToolWaiterResolversRef.current.clear();
-  }, []);
-
   useEffect(
     () => () => {
       clearDemoTimers();
@@ -2561,13 +2466,11 @@ function DiagnosisPage() {
       clearPendingMessageStreams();
       clearPendingThinkingStreams();
       clearDemoToolLoadingStates();
-      clearLiveToolWaiters();
     },
     [
       clearDemoApprovalTimers,
       clearDemoTimers,
       clearDemoToolLoadingStates,
-      clearLiveToolWaiters,
       clearPendingMessageStreams,
       clearPendingThinkingStreams,
     ],
@@ -2665,205 +2568,27 @@ function DiagnosisPage() {
     [],
   );
 
-  const resolveLiveToolWaitersIfReady = useCallback(
-    (timelineItems: DiagnosisTimelineItem[]) => {
-      for (const [toolId, resolver] of [
-        ...liveToolWaiterResolversRef.current.entries(),
-      ]) {
-        const status = findTimelineToolStatus(timelineItems, toolId);
-        if (status && status !== "loading") {
-          resolver();
-        }
-      }
-    },
-    [],
-  );
-
-  useEffect(() => {
-    liveTimelineRef.current = liveTimeline;
-    resolveLiveToolWaitersIfReady(liveTimeline);
-  }, [liveTimeline, resolveLiveToolWaitersIfReady]);
-
-  const waitForLiveToolTerminal = useCallback((toolId: string) => {
-    return new Promise<void>((resolve) => {
-      const existingToolStatus = findTimelineToolStatus(
-        liveTimelineRef.current,
-        toolId,
-      );
-      if (existingToolStatus && existingToolStatus !== "loading") {
-        resolve();
-        return;
-      }
-
-      let settled = false;
-      const settle = (timedOut: boolean) => {
-        if (settled) {
-          return;
-        }
-        settled = true;
-
-        const timeoutTimerId = liveToolTimeoutTimersRef.current.get(toolId);
-        if (timeoutTimerId) {
-          window.clearTimeout(timeoutTimerId);
-          liveToolTimeoutTimersRef.current.delete(toolId);
-        }
-
-        liveToolWaiterResolversRef.current.delete(toolId);
-
-        if (timedOut) {
-          setLiveTimeline((current) => markTimelineToolTimeout(current, toolId));
-        }
-
-        resolve();
-      };
-
-      liveToolWaiterResolversRef.current.set(toolId, () => settle(false));
-      const timeoutTimerId = window.setTimeout(
-        () => settle(true),
-        TOOL_RESULT_TIMEOUT_MS,
-      );
-      liveToolTimeoutTimersRef.current.set(toolId, timeoutTimerId);
-    });
-  }, []);
-
-  const processLiveQueue = useCallback(async () => {
-    if (liveQueueProcessingRef.current) {
-      return;
-    }
-
-    const queueToken = liveQueueTokenRef.current;
-    liveQueueProcessingRef.current = true;
-
-    try {
-      while (
-        liveQueuedItemsRef.current.length > 0 &&
-        queueToken === liveQueueTokenRef.current
-      ) {
-        const queuedItem = liveQueuedItemsRef.current.shift();
-        if (!queuedItem) {
-          continue;
-        }
-
-        liveQueuedIdsRef.current.delete(queuedItem.id);
-        const nextItem =
-          latestLiveSourceByIdRef.current.get(queuedItem.id) ?? queuedItem;
-
-        liveDisplayedIdsRef.current.add(nextItem.id);
-        setLiveTimeline((current) => [...current, nextItem]);
-
-        if (nextItem.kind === "message" && nextItem.role === "assistant") {
-          await waitForMessageStream(nextItem.id, nextItem.content);
-          continue;
-        }
-
-        const loadingToolIds = getLoadingToolIds(nextItem);
-        for (const loadingToolId of loadingToolIds) {
-          await waitForLiveToolTerminal(loadingToolId);
-        }
-      }
-    } finally {
-      liveQueueProcessingRef.current = false;
-    }
-  }, [waitForLiveToolTerminal, waitForMessageStream]);
-
   useEffect(() => {
     if (!shouldRenderLiveTimeline) {
       initializedLiveSessionIdRef.current = null;
-      liveQueueTokenRef.current += 1;
-      liveQueuedItemsRef.current = [];
-      liveQueuedIdsRef.current = new Set();
-      liveDisplayedIdsRef.current = new Set();
-      latestLiveSourceByIdRef.current = new Map();
-      clearLiveToolWaiters();
       setLiveTimeline([]);
       return;
     }
 
     const currentSessionId =
       activeSessionId ?? session?.session_id ?? routeSessionId;
-    const sourceTimeline = liveView.timeline;
-    const sourceById = new Map(sourceTimeline.map((item) => [item.id, item]));
-    latestLiveSourceByIdRef.current = sourceById;
-
+    const sourceTimeline = liveTimelineSource;
     if (initializedLiveSessionIdRef.current !== currentSessionId) {
       initializedLiveSessionIdRef.current = currentSessionId;
-      liveQueueTokenRef.current += 1;
-      liveQueuedItemsRef.current = [];
-      liveQueuedIdsRef.current = new Set();
-      liveDisplayedIdsRef.current = new Set(
-        sourceTimeline.map((item) => item.id),
-      );
-      clearLiveToolWaiters();
-      setLiveTimeline(sourceTimeline);
-      return;
     }
 
-    if (
-      isLiveSessionTerminal &&
-      sourceTimeline.length > 0 &&
-      liveDisplayedIdsRef.current.size === 0 &&
-      liveQueuedItemsRef.current.length === 0 &&
-      !liveQueueProcessingRef.current
-    ) {
-      liveDisplayedIdsRef.current = new Set(sourceTimeline.map((item) => item.id));
-      setLiveTimeline(sourceTimeline);
-      return;
-    }
-
-    if (isLiveSessionTerminal) {
-      liveQueueTokenRef.current += 1;
-      liveQueuedItemsRef.current = [];
-      liveQueuedIdsRef.current = new Set();
-      liveDisplayedIdsRef.current = new Set(sourceTimeline.map((item) => item.id));
-      clearLiveToolWaiters();
-      setLiveTimeline(sourceTimeline);
-      return;
-    }
-
-    setLiveTimeline((current) =>
-      current
-        .filter((item) => sourceById.has(item.id))
-        .map((item) => {
-          const latest = sourceById.get(item.id);
-          if (!latest) {
-            return item;
-          }
-
-          if (
-            item.kind === "tool" &&
-            latest.kind === "tool" &&
-            item.status === "timeout" &&
-            latest.status === "loading"
-          ) {
-            return item;
-          }
-
-          return latest;
-        }),
-    );
-
-    const queuedItems = sourceTimeline.filter(
-      (item) =>
-        !liveDisplayedIdsRef.current.has(item.id) &&
-        !liveQueuedIdsRef.current.has(item.id),
-    );
-
-    if (queuedItems.length > 0) {
-      queuedItems.forEach((item) => {
-        liveQueuedIdsRef.current.add(item.id);
-      });
-      liveQueuedItemsRef.current.push(...queuedItems);
-      void processLiveQueue();
-    }
+    setLiveTimeline(sourceTimeline);
   }, [
     activeSessionId,
-    clearLiveToolWaiters,
     shouldRenderLiveTimeline,
-    liveView.timeline,
-    processLiveQueue,
+    liveTimelineSource,
     routeSessionId,
     session?.session_id,
-    isLiveSessionTerminal,
   ]);
 
   const waitForDemoDelay = useCallback((delayMs: number, runToken: number) => {
@@ -3793,7 +3518,7 @@ function DiagnosisPage() {
                 {activeTimeline.length === 0 ? (
                   showLivePendingPlaceholder ? (
                     <ThinkingBlock
-                      animate
+                      animate={false}
                       item={pendingThinkingPlaceholder}
                     />
                   ) : shouldRenderLiveTimeline ? (
@@ -3816,6 +3541,7 @@ function DiagnosisPage() {
                 activeTimeline.map((item) => {
                   if (item.kind === "message") {
                     const shouldAnimateAssistantMessage =
+                      !shouldRenderLiveTimeline &&
                       item.role === "assistant" &&
                       activeStreamingMessageId === item.id;
 
@@ -3837,7 +3563,7 @@ function DiagnosisPage() {
 
                   if (item.kind === "thinking") {
                     const shouldAnimateThinking =
-                      shouldRenderLiveTimeline && item.status === "thinking";
+                      !shouldRenderLiveTimeline && item.status === "thinking";
                     return (
                       <ThinkingBlock
                         animate={shouldAnimateThinking}
@@ -3878,14 +3604,6 @@ function DiagnosisPage() {
                   return <ToolCard item={item} key={item.id} />;
                 })
               )}
-
-              {shouldRenderLiveTimeline && traceStatus === "empty" ? (
-                <div className="diagnosis-workspace-inline-note">
-                  The live session has not produced trace entries yet. The input
-                  remains available while waiting for incremental diagnosis
-                  events.
-                </div>
-              ) : null}
 
               {inlineError ? (
                 <div

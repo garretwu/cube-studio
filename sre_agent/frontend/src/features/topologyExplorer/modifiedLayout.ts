@@ -169,6 +169,10 @@ type AnchoredLaneItem = {
   tieBreaker: string;
 };
 
+type ExpandedLaneItem = AnchoredLaneItem & {
+  preferredX?: number;
+};
+
 function placeLaneByAnchors(items: AnchoredLaneItem[], minGap: number) {
   const normalizedGap = Math.max(1, Math.round(minGap));
   const sorted = [...items].sort((left, right) => {
@@ -205,6 +209,40 @@ function placeLaneByAnchors(items: AnchoredLaneItem[], minGap: number) {
   }
 
   return new Map(placed.map((item) => [item.id, item.y]));
+}
+
+function placeExpandedLane(
+  items: ExpandedLaneItem[],
+  options: {
+    startX: number;
+    startY: number;
+    rowGap: number;
+    columnGap: number;
+    maxRows: number;
+  },
+) {
+  const { startX, startY, rowGap, columnGap, maxRows } = options;
+  const normalizedMaxRows = Math.max(1, Math.round(maxRows));
+  const sorted = [...items].sort((left, right) => {
+    if (left.anchorY !== right.anchorY) {
+      return left.anchorY - right.anchorY;
+    }
+    return left.tieBreaker.localeCompare(right.tieBreaker, "zh-Hans-CN");
+  });
+
+  return new Map(
+    sorted.map((item, index) => {
+      const columnIndex = Math.floor(index / normalizedMaxRows);
+      const rowIndex = index % normalizedMaxRows;
+      return [
+        item.id,
+        {
+          x: Math.round((item.preferredX ?? startX) + columnIndex * columnGap),
+          y: Math.round(startY + rowIndex * rowGap),
+        },
+      ];
+    }),
+  );
 }
 function getNetworkFamilyKey(node: TopologyObject) {
   const delimiterIndex = node.id.indexOf(":");
@@ -688,8 +726,35 @@ function createLayeredTargets(
     });
 
   const serviceLaneYById = placeLaneByAnchors(serviceAnchors, serviceLaneGap);
+  const serviceColumnGap = Math.round(metrics.nodeWidth * 0.92);
+  const serviceFlowStartY = Math.round(metrics.layerYOffset + metrics.nodeHeight * 0.48);
+  const serviceFlowPositions = placeExpandedLane(
+    serviceAnchors.map((item) => {
+      const serviceNode = nodeById.get(item.id);
+      const hasComputeDependency =
+        serviceNode?.type === "service" &&
+        getRelatedIdsByType(serviceNode.id, "gpu", ["depends_on", "runs_on", "contains"]).length > 0;
+      const hasDownstreamPods =
+        serviceNode?.type === "service" &&
+        getRelatedIdsByType(serviceNode.id, "pod", ["depends_on", "contains", "runs_on"]).length > 0;
+      const isBridgeService = Boolean(hasComputeDependency && hasDownstreamPods);
+      return {
+        ...item,
+        preferredX: isBridgeService ? serviceBridgeX : serviceX,
+      };
+    }),
+    {
+      startX: serviceX,
+      startY: serviceFlowStartY,
+      rowGap: serviceLaneGap,
+      columnGap: serviceColumnGap,
+      // Keep namespace service groups in a compact vertical lane near the host side.
+      maxRows: Math.max(1, serviceAnchors.length),
+    },
+  );
   serviceAnchors.forEach((item) => {
-    const y = serviceLaneYById.get(item.id) ?? Math.round(item.anchorY);
+    const fallbackY = serviceLaneYById.get(item.id) ?? Math.round(item.anchorY);
+    const position = serviceFlowPositions.get(item.id) ?? { x: serviceX, y: fallbackY };
     const serviceNode = nodeById.get(item.id);
     const hasComputeDependency =
       serviceNode?.type === "service" &&
@@ -698,8 +763,8 @@ function createLayeredTargets(
       serviceNode?.type === "service" &&
       getRelatedIdsByType(serviceNode.id, "pod", ["depends_on", "contains", "runs_on"]).length > 0;
     const isBridgeService = Boolean(hasComputeDependency && hasDownstreamPods);
-    positions.set(item.id, { x: isBridgeService ? serviceBridgeX : serviceX, y });
-    serviceYById.set(item.id, y);
+    positions.set(item.id, { x: isBridgeService ? Math.min(position.x, serviceBridgeX) : position.x, y: position.y });
+    serviceYById.set(item.id, position.y);
   });
 
   const podsByService = new Map<string, TopologyObject[]>();
@@ -763,9 +828,19 @@ function createLayeredTargets(
     });
 
   const podLaneYById = placeLaneByAnchors(podAnchors, podLaneGap);
+  const podColumnGap = Math.round(metrics.nodeWidth * 1.1);
+  const podFlowStartY = Math.round(metrics.layerYOffset + metrics.nodeHeight * 0.48);
+  const podFlowPositions = placeExpandedLane(podAnchors, {
+    startX: podX,
+    startY: podFlowStartY,
+    rowGap: podLaneGap,
+    columnGap: podColumnGap,
+    maxRows: 10,
+  });
   podAnchors.forEach((item) => {
-    const y = podLaneYById.get(item.id) ?? Math.round(item.anchorY);
-    positions.set(item.id, { x: podX, y });
+    const fallbackY = podLaneYById.get(item.id) ?? Math.round(item.anchorY);
+    const position = podFlowPositions.get(item.id) ?? { x: podX, y: fallbackY };
+    positions.set(item.id, position);
   });
   const resolveHostForBranchNode = (entity: TopologyObject) => {
     const connectedHost = getRelatedIdsByType(entity.id, "node", ["contains", "runs_on", "connects_to", "depends_on"])[0];
@@ -1113,3 +1188,97 @@ export function computeModifiedHybridLayout(
   return positions;
 }
 
+function placeObjectLane(
+  positions: Map<string, { x: number; y: number }>,
+  items: TopologyObject[],
+  x: number,
+  centerY: number,
+  gap: number,
+) {
+  const ordered = [...items].sort((left, right) => left.name.localeCompare(right.name, "zh-Hans-CN"));
+  ordered.forEach((node, index) => {
+    positions.set(node.id, {
+      x,
+      y: Math.round(centerY + getCenteredOffset(index, ordered.length, gap)),
+    });
+  });
+}
+
+export function computeObjectFocusLayout(
+  nodes: TopologyObject[],
+  edges: TopologyRelation[],
+  focalNodeId: string | undefined,
+  metrics: TopologyCanvasMetrics,
+) {
+  const positions = new Map<string, { x: number; y: number }>();
+  if (nodes.length === 0) {
+    return positions;
+  }
+
+  const fallbackFocalId = focalNodeId && nodes.some((node) => node.id === focalNodeId) ? focalNodeId : nodes[0]?.id;
+  if (!fallbackFocalId) {
+    return positions;
+  }
+
+  const nodeById = new Map(nodes.map((node) => [node.id, node]));
+  const focal = nodeById.get(fallbackFocalId);
+  if (!focal) {
+    return positions;
+  }
+
+  const lanes = {
+    upstream: [] as TopologyObject[],
+    downstream: [] as TopologyObject[],
+    upper: [] as TopologyObject[],
+    lower: [] as TopologyObject[],
+    detached: [] as TopologyObject[],
+  };
+  const assigned = new Set<string>([focal.id]);
+  const pushLane = (lane: keyof typeof lanes, nodeId: string) => {
+    const node = nodeById.get(nodeId);
+    if (!node || assigned.has(node.id)) {
+      return;
+    }
+    lanes[lane].push(node);
+    assigned.add(node.id);
+  };
+
+  edges.forEach((edge) => {
+    if (edge.source !== focal.id && edge.target !== focal.id) {
+      return;
+    }
+
+    if (edge.relationType === "contains") {
+      pushLane(edge.target === focal.id ? "upper" : "lower", edge.target === focal.id ? edge.source : edge.target);
+      return;
+    }
+
+    if (edge.target === focal.id) {
+      pushLane("upstream", edge.source);
+      return;
+    }
+
+    pushLane("downstream", edge.target);
+  });
+
+  nodes.forEach((node) => {
+    if (!assigned.has(node.id)) {
+      lanes.detached.push(node);
+    }
+  });
+
+  const centerX = Math.round(metrics.nodeWidth * 4.1);
+  const centerY = Math.round(metrics.nodeHeight * 2.35);
+  const horizontalGap = Math.round(metrics.nodeWidth * 2.7);
+  const verticalGap = Math.round(metrics.nodeHeight * 1.55);
+  const laneGap = Math.round(metrics.nodeHeight * 1.3);
+
+  positions.set(focal.id, { x: centerX, y: centerY });
+  placeObjectLane(positions, lanes.upstream, centerX - horizontalGap, centerY, laneGap);
+  placeObjectLane(positions, lanes.downstream, centerX + horizontalGap, centerY, laneGap);
+  placeObjectLane(positions, lanes.upper, centerX, centerY - verticalGap, Math.round(laneGap * 0.9));
+  placeObjectLane(positions, lanes.lower, centerX, centerY + verticalGap, Math.round(laneGap * 0.9));
+  placeObjectLane(positions, lanes.detached, centerX + horizontalGap, centerY + verticalGap, laneGap);
+
+  return positions;
+}

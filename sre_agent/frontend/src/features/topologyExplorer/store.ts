@@ -3,6 +3,7 @@ import { create } from "zustand";
 import { apiClient } from "../../api/client";
 import type { TopologyExplorerResponse } from "../../api/types";
 import { getGlobalTopologyDisplayData, searchTopologyObjects } from "./selectors";
+import { pruneTopologyExplorerResponse } from "./topologyPrune";
 import {
   defaultTopologyRoomId,
   defaultTopologyScopeMode,
@@ -106,7 +107,7 @@ export const useTopologyExplorerStore = create<TopologyExplorerStore>((set, get)
     set({ isLoading: true, error: undefined });
 
     try {
-      const data = await apiClient.getTopologyExplorer();
+      const data = pruneTopologyExplorerResponse(await apiClient.getTopologyExplorer());
       set((state) => {
         const searchResultIds = resolveSearchResults(data, state.searchQuery, state.layerFilter);
         const selectedNodeId =

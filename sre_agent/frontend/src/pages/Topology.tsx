@@ -386,7 +386,7 @@ function TopologyPage({ variant = "modified" }: TopologyPageProps) {
             resetExplorerView();
             setExpandedAggregateIds([]);
             setExpandedAggregateMeta({});
-            window.requestAnimationFrame(() => canvasRef.current?.fitView());
+            window.requestAnimationFrame(() => canvasRef.current?.fitView("balanced"));
           }}
           onScopeModeChange={setScopeMode}
           onSearchQueryChange={setSearchQuery}
@@ -420,5 +420,4 @@ function TopologyPage({ variant = "modified" }: TopologyPageProps) {
 }
 
 export default TopologyPage;
-
 

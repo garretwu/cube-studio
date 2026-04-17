@@ -151,8 +151,8 @@ describe("buildDiagnosisLiveView tool matching", () => {
   });
 });
 
-describe("buildDiagnosisLiveView next-action narration", () => {
-  it("injects a next-action assistant message right after tool-call thinking", () => {
+describe("buildDiagnosisLiveView live trace narration", () => {
+  it("does not inject synthetic next-action assistant messages for tool-call thinking", () => {
     const session = createSession([
       {
         step: 1,
@@ -173,18 +173,13 @@ describe("buildDiagnosisLiveView next-action narration", () => {
     const view = buildDiagnosisLiveView(session, []);
 
     expect(view.timeline[0]?.kind).toBe("thinking");
-    expect(view.timeline[1]?.kind).toBe("message");
-    expect(view.timeline[2]?.kind).toBe("tool");
-
-    const nextAction = view.timeline[1];
-    if (nextAction?.kind === "message") {
-      expect(nextAction.role).toBe("assistant");
-      expect(nextAction.label).toBe("Next action");
-      expect(nextAction.content).toContain("query_metrics");
-    }
+    expect(view.timeline[1]?.kind).toBe("tool");
+    expect(view.timeline.some((item) => item.kind === "message" && item.label === "Next action")).toBe(false);
+    const tool = view.timeline.find((item) => item.kind === "tool");
+    expect(tool?.kind === "tool" ? tool.toolName : undefined).toBe("query_metrics");
   });
 
-  it("injects a next-action assistant message after conclude thinking", () => {
+  it("does not inject synthetic next-action assistant messages after conclude thinking", () => {
     const session = createSession([
       {
         step: 1,
@@ -196,16 +191,10 @@ describe("buildDiagnosisLiveView next-action narration", () => {
 
     const view = buildDiagnosisLiveView(session, []);
 
-    expect(view.timeline).toHaveLength(2);
+    expect(view.timeline).toHaveLength(1);
     expect(view.timeline[0]?.kind).toBe("thinking");
-    expect(view.timeline[1]?.kind).toBe("message");
-
-    const nextAction = view.timeline[1];
-    if (nextAction?.kind === "message") {
-      expect(nextAction.role).toBe("assistant");
-      expect(nextAction.label).toBe("Next action");
-      expect(nextAction.content).toContain("root-cause conclusion");
-    }  });
+    expect(view.timeline.some((item) => item.kind === "message" && item.label === "Next action")).toBe(false);
+  });
 });
 describe("diagnosis report timeline item", () => {
   it("places the report item in the timeline before remediation system events", () => {

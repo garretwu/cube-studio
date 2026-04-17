@@ -4,12 +4,14 @@ import type { TopologyExplorerResponse } from "../../api/types";
 import { topologyExplorerOnlineMock } from "../../mocks/topologyExplorerOnlineMock";
 import {
   getGlobalTopologyDisplayData,
+  getObjectTopologyDetail,
   getModifiedSearchResultIds,
   getModifiedStageTopology,
   getStageTopology,
   isSyntheticGpuAggregateNode,
   isSyntheticServiceAggregateNode,
 } from "./selectors";
+import { pruneTopologyExplorerResponse } from "./topologyPrune";
 
 
 function buildAggregateLabelFixture(edges: TopologyExplorerResponse["edges"]): TopologyExplorerResponse {
@@ -69,6 +71,167 @@ function buildAggregateLabelFixture(edges: TopologyExplorerResponse["edges"]): T
     lastUpdated: now,
   };
 }
+
+function buildServiceHostFixture(): TopologyExplorerResponse {
+  const now = "2026-04-17T00:00:00.000Z";
+
+  return {
+    site: {
+      id: "site-1",
+      name: "Fixture Site",
+      region: "cn",
+      zone: "z1",
+      domain: "aidc",
+      summary: "fixture",
+    },
+    nodes: [
+      {
+        id: "cluster:aidc-lab",
+        name: "aidc-lab",
+        type: "cluster",
+        status: "healthy",
+        layer: "physical",
+        domain: "aidc",
+        region: "cn",
+        zone: "z1",
+        summary: "cluster",
+        tags: [],
+        updatedAt: now,
+        attributes: {},
+      },
+      {
+        id: "node:worker-1",
+        name: "worker-1",
+        type: "node",
+        status: "healthy",
+        layer: "compute",
+        domain: "aidc",
+        region: "cn",
+        zone: "z1",
+        cluster: "k8s:aidc-lab",
+        summary: "node",
+        tags: [],
+        updatedAt: now,
+        attributes: { cluster_id: "k8s:aidc-lab" },
+      },
+      {
+        id: "node:worker-2",
+        name: "worker-2",
+        type: "node",
+        status: "healthy",
+        layer: "compute",
+        domain: "aidc",
+        region: "cn",
+        zone: "z1",
+        cluster: "k8s:aidc-lab",
+        summary: "node",
+        tags: [],
+        updatedAt: now,
+        attributes: { cluster_id: "k8s:aidc-lab" },
+      },
+      {
+        id: "ns:service",
+        name: "service",
+        type: "service",
+        status: "healthy",
+        layer: "service",
+        domain: "aidc",
+        region: "cn",
+        zone: "z1",
+        cluster: "k8s:aidc-lab",
+        summary: "namespace group",
+        tags: [],
+        updatedAt: now,
+        attributes: { kind: "namespace_group", namespace: "service", cluster_id: "k8s:aidc-lab" },
+      },
+      {
+        id: "svc:service:demo-a",
+        name: "service/demo-a",
+        type: "service",
+        status: "healthy",
+        layer: "service",
+        domain: "aidc",
+        region: "cn",
+        zone: "z1",
+        cluster: "k8s:aidc-lab",
+        summary: "service",
+        tags: [],
+        updatedAt: now,
+        attributes: { namespace: "service", cluster_id: "k8s:aidc-lab" },
+      },
+      {
+        id: "svc:service:demo-b",
+        name: "service/demo-b",
+        type: "service",
+        status: "healthy",
+        layer: "service",
+        domain: "aidc",
+        region: "cn",
+        zone: "z1",
+        cluster: "k8s:aidc-lab",
+        summary: "service",
+        tags: [],
+        updatedAt: now,
+        attributes: { namespace: "service", cluster_id: "k8s:aidc-lab" },
+      },
+    ],
+    edges: [
+      {
+        id: "e-ns-svc-a",
+        source: "svc:service:demo-a",
+        target: "ns:service",
+        relationType: "contains",
+        status: "healthy",
+        isCritical: false,
+        impactLevel: "low",
+        label: "part_of",
+      },
+      {
+        id: "e-ns-svc-b",
+        source: "svc:service:demo-b",
+        target: "ns:service",
+        relationType: "contains",
+        status: "healthy",
+        isCritical: false,
+        impactLevel: "low",
+        label: "part_of",
+      },
+      {
+        id: "e-host-a",
+        source: "svc:service:demo-a",
+        target: "node:worker-1",
+        relationType: "runs_on",
+        status: "healthy",
+        isCritical: false,
+        impactLevel: "low",
+        label: "hosted_on",
+      },
+      {
+        id: "e-host-b",
+        source: "svc:service:demo-b",
+        target: "node:worker-1",
+        relationType: "runs_on",
+        status: "healthy",
+        isCritical: false,
+        impactLevel: "low",
+        label: "hosted_on",
+      },
+      {
+        id: "e-host-c",
+        source: "svc:service:demo-b",
+        target: "node:worker-2",
+        relationType: "runs_on",
+        status: "healthy",
+        isCritical: false,
+        impactLevel: "low",
+        label: "hosted_on",
+      },
+    ],
+    paths: [],
+    lastUpdated: now,
+  };
+}
+
 describe("topology modified selectors", () => {
   it("keeps switch ports as independent port objects instead of switch nodes", () => {
     const switchNode = topologyExplorerOnlineMock.nodes.find((node) => node.id === "sw-200g");
@@ -146,6 +309,31 @@ describe("topology modified selectors", () => {
 
     expect(expandedStage.nodes.some((node) => node.id === aggregateNode!.id)).toBe(false);
     expect(expandedStage.nodes.some((node) => aggregateMemberIds.includes(node.id))).toBe(true);
+  });
+
+  it("does not generate modified namespace aggregates for pruned namespaces", () => {
+    const pruned = pruneTopologyExplorerResponse(topologyExplorerOnlineMock);
+    const stage = getModifiedStageTopology(pruned, {
+      layerFilter: "all",
+      searchQuery: "",
+    });
+    const aggregateNamespaces = stage.nodes
+      .filter((node) => isSyntheticServiceAggregateNode(node))
+      .map((node) => String(node.id).replace(/^aggregate:ns:/, "").replace(/:pod$/, ""))
+      .sort((left, right) => left.localeCompare(right));
+
+    expect(aggregateNamespaces).toEqual([
+      "ai-models",
+      "ceph-csi",
+      "cert-manager",
+      "dify",
+      "infra",
+      "jupyter",
+      "nvidia-dcgm",
+      "service",
+      "storage-system",
+    ]);
+    expect(getModifiedSearchResultIds(pruned, "all", "monitoring")).toEqual([]);
   });
 
   it("aggregates pods by namespace and keeps unassigned pods isolated", () => {
@@ -488,6 +676,53 @@ describe("topology modified selectors", () => {
     expect(stage.nodes.some((node) => node.id.startsWith("svc:"))).toBe(false);
     expect(stage.searchResultIds.some((id) => id.startsWith("svc:"))).toBe(false);
   });
+
+  it("synthesizes visible namespace-group to node host edges on the default stage", () => {
+    const fixture = buildServiceHostFixture();
+
+    const stage = getStageTopology(fixture, {
+      layerFilter: "all",
+      searchQuery: "",
+    });
+
+    const hostEdges = stage.edges.filter(
+      (edge) => edge.source === "ns:service" && edge.relationType === "runs_on",
+    );
+
+    expect(hostEdges).toHaveLength(2);
+    expect(hostEdges.find((edge) => edge.target === "node:worker-1")?.label).toBe("运行于(2)");
+    expect(hostEdges.find((edge) => edge.target === "node:worker-2")?.label).toBe("运行于");
+    expect(stage.nodes.some((node) => node.id.startsWith("svc:"))).toBe(false);
+  });
+
+  it("does not synthesize namespace-group host edges when no hidden service-host edges exist", () => {
+    const fixture = buildServiceHostFixture();
+    fixture.edges = fixture.edges.filter((edge) => edge.relationType !== "runs_on");
+
+    const stage = getStageTopology(fixture, {
+      layerFilter: "all",
+      searchQuery: "",
+    });
+
+    expect(
+      stage.edges.some((edge) => edge.source === "ns:service" && edge.target.startsWith("node:")),
+    ).toBe(false);
+  });
+
+  it("shows node and namespace-group as neighbors in object topology detail through synthesized host edges", () => {
+    const fixture = buildServiceHostFixture();
+
+    const serviceDetail = getObjectTopologyDetail(fixture, "ns:service");
+    expect(serviceDetail.downstream.map((node) => node.id)).toEqual(
+      expect.arrayContaining(["node:worker-1", "node:worker-2"]),
+    );
+    expect(serviceDetail.edges.some((edge) => edge.source === "ns:service" && edge.target === "node:worker-1")).toBe(true);
+
+    const nodeDetail = getObjectTopologyDetail(fixture, "node:worker-1");
+    expect(nodeDetail.upstream.map((node) => node.id)).toContain("ns:service");
+    expect(nodeDetail.neighbors.map((node) => node.id)).toContain("ns:service");
+  });
+
   it("formats aggregated edge labels as relation(count) when merged relations are homogeneous", () => {
     const fixture = buildAggregateLabelFixture([
       {

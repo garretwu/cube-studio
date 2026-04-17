@@ -13,6 +13,7 @@ const reactFlowMock = vi.hoisted(() => {
   const instance = {
     fitView: vi.fn(),
     fitBounds: vi.fn(),
+    setViewport: vi.fn(),
     zoomIn: vi.fn(),
     zoomOut: vi.fn(),
     setCenter: vi.fn(),
@@ -38,6 +39,7 @@ const reactFlowMock = vi.hoisted(() => {
       instanceNodes = [];
       shouldInit = true;
       instance.fitView.mockClear();
+      instance.setViewport.mockClear();
       instance.zoomIn.mockClear();
       instance.zoomOut.mockClear();
       instance.fitBounds.mockClear();
@@ -102,6 +104,8 @@ function renderCanvas(ref = createRef<TopologyCanvasHandle>()) {
 describe("TopologyCanvas", () => {
   beforeEach(() => {
     reactFlowMock.reset();
+    Object.defineProperty(HTMLElement.prototype, "clientWidth", { configurable: true, value: 960 });
+    Object.defineProperty(HTMLElement.prototype, "clientHeight", { configurable: true, value: 640 });
   });
 
   it("exposes imperative handle methods and proxies to ReactFlow instance", async () => {
@@ -130,6 +134,55 @@ describe("TopologyCanvas", () => {
     expect(reactFlowMock.instance.zoomIn).toHaveBeenCalled();
     expect(reactFlowMock.instance.zoomOut).toHaveBeenCalled();
     expect(reactFlowMock.instance.setCenter).toHaveBeenCalled();
+  });
+
+  it("keeps full fit routed through ReactFlow fitView", async () => {
+    const ref = renderCanvas();
+
+    await waitFor(() => {
+      expect(ref.current).not.toBeNull();
+    });
+
+    reactFlowMock.instance.fitView.mockClear();
+    reactFlowMock.instance.setViewport.mockClear();
+    ref.current?.fitView("full");
+
+    expect(reactFlowMock.instance.fitView).toHaveBeenCalled();
+    expect(reactFlowMock.instance.setViewport).not.toHaveBeenCalled();
+  });
+
+  it("uses balanced fit to compensate visual insets", async () => {
+    const ref = createRef<TopologyCanvasHandle>();
+    render(
+      <TopologyCanvas
+        ref={ref}
+        edges={sampleEdges}
+        layoutPreset="layered"
+        matchedNodeIds={[]}
+        neighborDepths={new Map()}
+        nodes={sampleNodes}
+        onHoverNode={() => undefined}
+        onSelectNode={() => undefined}
+        variant="modified"
+        viewInsets={{ left: 320, right: 80, top: 24, bottom: 24 }}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(ref.current).not.toBeNull();
+    });
+
+    reactFlowMock.instance.setViewport.mockClear();
+    ref.current?.fitView("balanced");
+
+    expect(reactFlowMock.instance.setViewport).toHaveBeenCalled();
+    const [viewport] = reactFlowMock.instance.setViewport.mock.calls.at(-1) ?? [];
+    expect(viewport).toEqual(
+      expect.objectContaining({
+        zoom: expect.any(Number),
+      }),
+    );
+    expect((viewport as { zoom: number }).zoom).toBeGreaterThanOrEqual(0.42);
   });
 
   it("keeps handle available when onInit is not fired", async () => {

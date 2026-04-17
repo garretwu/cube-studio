@@ -197,6 +197,18 @@ function TopologyExplorer({
   const canRenderOverlay = !isLoading && !error && hasSourceData;
   const fullscreenSupported =
     typeof document !== "undefined" && typeof document.documentElement.requestFullscreen === "function";
+  const canvasViewInsets = useMemo(
+    () =>
+      variant === "modified"
+        ? {
+            left: secondaryPanelOpen ? 328 : 72,
+            right: filterPanelOpen ? 452 : 88,
+            top: 24,
+            bottom: 24,
+          }
+        : undefined,
+    [filterPanelOpen, secondaryPanelOpen, variant],
+  );
 
   const legendItems = useMemo(() => {
     const counts = allNodes.reduce<Record<string, number>>((accumulator, node) => {
@@ -676,6 +688,7 @@ function TopologyExplorer({
             onSelectNode={handleCanvasSelect}
             onZoomChange={setZoomPercent}
             selectedNodeId={selectedNodeId}
+            viewInsets={canvasViewInsets}
             variant={variant}
           />
         )}

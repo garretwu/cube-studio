@@ -33,7 +33,7 @@ import {
   type TopologyCanvasMetrics,
   type TopologyCanvasVariant,
 } from "../canvasConfig";
-import { computeModifiedHybridLayout } from "../modifiedLayout";
+import { computeModifiedHybridLayout, computeObjectFocusLayout } from "../modifiedLayout";
 import {
   deriveModifiedEdgeBundles,
   deriveModifiedEdgeRouting,
@@ -57,6 +57,8 @@ type TopologyCanvasProps = {
   neighborDepths: Map<string, number>;
   layoutPreset: ExplorerLayoutPreset;
   variant?: TopologyCanvasVariant;
+  objectFocusNodeId?: string;
+  viewInsets?: TopologyCanvasViewInsets;
   onSelectNode: (nodeId: string) => void;
   onHoverNode: (nodeId?: string) => void;
   onZoomChange?: (zoomPercent: number) => void;
@@ -64,8 +66,17 @@ type TopologyCanvasProps = {
   onCanvasInteraction?: () => void;
 };
 
+export type TopologyCanvasFitMode = "full" | "balanced";
+
+export type TopologyCanvasViewInsets = {
+  left?: number;
+  right?: number;
+  top?: number;
+  bottom?: number;
+};
+
 export type TopologyCanvasHandle = {
-  fitView: () => void;
+  fitView: (mode?: TopologyCanvasFitMode) => void;
   zoomIn: () => void;
   zoomOut: () => void;
   recenter: (nodeId?: string) => void;
@@ -518,6 +529,8 @@ const TopologyCanvas = forwardRef<TopologyCanvasHandle, TopologyCanvasProps>(fun
     neighborDepths,
     layoutPreset,
     variant = "default",
+    objectFocusNodeId,
+    viewInsets,
     onSelectNode,
     onHoverNode,
     onZoomChange,
@@ -552,10 +565,12 @@ const TopologyCanvas = forwardRef<TopologyCanvasHandle, TopologyCanvasProps>(fun
 
   const layoutPositions = useMemo(
     () =>
-      variant === "modified"
+      variant === "modified" && objectFocusNodeId
+        ? computeObjectFocusLayout(nodes, edges, objectFocusNodeId, metrics)
+        : variant === "modified"
         ? computeModifiedHybridLayout(nodes, edges, layoutPreset, metrics)
         : getBasePositions(nodes, layoutPreset, metrics),
-    [edges, layoutPreset, metrics, nodes, variant],
+    [edges, layoutPreset, metrics, nodes, objectFocusNodeId, variant],
   );
 
   const flowNodes = useMemo<Node<ExplorerFlowNodeData>[]>(() => {
@@ -835,6 +850,98 @@ const TopologyCanvas = forwardRef<TopologyCanvasHandle, TopologyCanvasProps>(fun
     timeoutHandlesRef.current.push(timeoutHandle);
   };
 
+  const getFlowNodeBounds = () => {
+    const visibleNodes = flowNodesRef.current;
+    if (visibleNodes.length === 0) {
+      return undefined;
+    }
+
+    const bounds = visibleNodes.reduce(
+      (accumulator, node) => {
+        const width = node.width ?? metrics.nodeWidth;
+        const height = node.height ?? metrics.nodeHeight;
+        return {
+          minX: Math.min(accumulator.minX, node.position.x),
+          minY: Math.min(accumulator.minY, node.position.y),
+          maxX: Math.max(accumulator.maxX, node.position.x + width),
+          maxY: Math.max(accumulator.maxY, node.position.y + height),
+        };
+      },
+      {
+        minX: Number.POSITIVE_INFINITY,
+        minY: Number.POSITIVE_INFINITY,
+        maxX: Number.NEGATIVE_INFINITY,
+        maxY: Number.NEGATIVE_INFINITY,
+      },
+    );
+
+    if (!Number.isFinite(bounds.minX) || !Number.isFinite(bounds.minY)) {
+      return undefined;
+    }
+
+    return {
+      ...bounds,
+      width: Math.max(metrics.nodeWidth, bounds.maxX - bounds.minX),
+      height: Math.max(metrics.nodeHeight, bounds.maxY - bounds.minY),
+      centerX: (bounds.minX + bounds.maxX) / 2,
+      centerY: (bounds.minY + bounds.maxY) / 2,
+    };
+  };
+
+  const applyBalancedFit = (duration: number) => {
+    const host = canvasHostRef.current;
+    const bounds = getFlowNodeBounds();
+    if (!instance || !host || !bounds) {
+      instance?.fitView({ duration, padding: DEFAULT_FIT_PADDING });
+      return;
+    }
+
+    const width = host.clientWidth;
+    const height = host.clientHeight;
+    if (width <= 0 || height <= 0) {
+      instance.fitView({ duration, padding: DEFAULT_FIT_PADDING });
+      return;
+    }
+
+    const insets = viewInsets ?? {};
+    const left = insets.left ?? 0;
+    const right = insets.right ?? 0;
+    const top = insets.top ?? 0;
+    const bottom = insets.bottom ?? 0;
+    const availableWidth = Math.max(260, width - left - right);
+    const availableHeight = Math.max(220, height - top - bottom);
+    const paddedWidth = bounds.width / Math.max(0.2, 1 - DEFAULT_FIT_PADDING * 2);
+    const paddedHeight = bounds.height / Math.max(0.2, 1 - DEFAULT_FIT_PADDING * 2);
+    const rawZoom = Math.min(availableWidth / paddedWidth, availableHeight / paddedHeight);
+    const minZoom = objectFocusNodeId ? 0.86 : variant === "modified" ? 0.42 : 0.35;
+    const maxZoom = objectFocusNodeId ? 1.28 : 1.18;
+    const zoom = clamp(rawZoom, minZoom, maxZoom);
+    const targetScreenX = left + availableWidth / 2;
+    const targetScreenY = top + availableHeight / 2;
+
+    instance.setViewport(
+      {
+        x: Math.round(targetScreenX - bounds.centerX * zoom),
+        y: Math.round(targetScreenY - bounds.centerY * zoom),
+        zoom,
+      },
+      { duration },
+    );
+  };
+
+  const applyFitView = (mode: TopologyCanvasFitMode, duration: number) => {
+    if (!instance) {
+      return;
+    }
+
+    if (mode === "balanced") {
+      applyBalancedFit(duration);
+      return;
+    }
+
+    instance.fitView({ duration, padding: DEFAULT_FIT_PADDING });
+  };
+
   useEffect(() => {
     const host = canvasHostRef.current;
 
@@ -851,7 +958,7 @@ const TopologyCanvas = forwardRef<TopologyCanvasHandle, TopologyCanvasProps>(fun
 
       window.cancelAnimationFrame(frame);
       frame = window.requestAnimationFrame(() => {
-        instance.fitView({ duration: 0, padding: DEFAULT_FIT_PADDING });
+        applyFitView(variant === "modified" ? "balanced" : "full", 0);
         onZoomChange?.(Math.round(instance.getZoom() * 100));
       });
     });
@@ -862,7 +969,7 @@ const TopologyCanvas = forwardRef<TopologyCanvasHandle, TopologyCanvasProps>(fun
       window.cancelAnimationFrame(frame);
       resizeObserver.disconnect();
     };
-  }, [flowEdges.length, flowNodes.length, instance, layoutPreset, onZoomChange, variant]);
+  }, [flowEdges.length, flowNodes.length, instance, layoutPreset, onZoomChange, variant, viewInsets]);
 
   useEffect(() => {
     return () => {
@@ -879,18 +986,18 @@ const TopologyCanvas = forwardRef<TopologyCanvasHandle, TopologyCanvasProps>(fun
     }
 
     const frame = window.requestAnimationFrame(() => {
-      instance.fitView({ duration: 220, padding: DEFAULT_FIT_PADDING });
+      applyFitView(variant === "modified" ? "balanced" : "full", 220);
       scheduleSyncZoom(240);
     });
 
     return () => window.cancelAnimationFrame(frame);
-  }, [instance, layoutPreset, nodeKey, variant]);
+  }, [instance, layoutPreset, nodeKey, objectFocusNodeId, variant, viewInsets]);
 
   useImperativeHandle(
     ref,
     () => ({
-      fitView: () => {
-        instance?.fitView({ duration: 220, padding: DEFAULT_FIT_PADDING });
+      fitView: (mode = "full") => {
+        applyFitView(mode, 220);
         scheduleSyncZoom(220);
       },
       zoomIn: () => {
@@ -915,14 +1022,14 @@ const TopologyCanvas = forwardRef<TopologyCanvasHandle, TopologyCanvasProps>(fun
         }
 
         if (!nodeId) {
-          instance.fitView({ duration: 220, padding: DEFAULT_FIT_PADDING });
+          applyFitView(variant === "modified" ? "balanced" : "full", 220);
           scheduleSyncZoom(220);
           return;
         }
 
         const node = flowNodesRef.current.find((candidate) => candidate.id === nodeId);
         if (!node) {
-          instance.fitView({ duration: 220, padding: DEFAULT_FIT_PADDING });
+          applyFitView(variant === "modified" ? "balanced" : "full", 220);
           scheduleSyncZoom(220);
           return;
         }
@@ -958,7 +1065,7 @@ const TopologyCanvas = forwardRef<TopologyCanvasHandle, TopologyCanvasProps>(fun
         scheduleSyncZoom(240);
       },
     }),
-    [instance, metrics, onZoomChange, variant],
+    [instance, metrics, objectFocusNodeId, onZoomChange, variant, viewInsets],
   );
 
   return (
@@ -1063,4 +1170,3 @@ const TopologyCanvas = forwardRef<TopologyCanvasHandle, TopologyCanvasProps>(fun
 });
 
 export default TopologyCanvas;
-

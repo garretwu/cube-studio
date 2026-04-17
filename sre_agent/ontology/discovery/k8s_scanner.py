@@ -166,16 +166,7 @@ class K8sScanner:
                     properties={"namespace": namespace},
                 )
             )
-            if node_name:
-                edges.append(
-                    OntologyEdge(
-                        source_id=pod_id,
-                        target_id=node_name,
-                        relation=RelationType.HOSTED_ON,
-                        properties={"namespace": namespace},
-                    )
-                )
-                if node_name not in linked_nodes:
+            if node_name and node_name not in linked_nodes:
                     linked_nodes.add(node_name)
                     edges.append(
                         OntologyEdge(

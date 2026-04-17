@@ -276,8 +276,12 @@ describe("DiagnosisPage sequential playback", () => {
     renderLivePage("/diagnosis/sess-live-pending");
 
     expect(screen.getByText("Thinking...")).toBeInTheDocument();
+    expect(screen.getByText("Collecting evidence from live streams...")).toBeInTheDocument();
     expect(
       screen.queryByText(/Submit a request to start a realtime diagnosis session/i),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(/The live session has not produced trace entries yet/i),
     ).not.toBeInTheDocument();
   });
 
@@ -791,7 +795,7 @@ describe("DiagnosisPage sequential playback", () => {
     expect(container.querySelectorAll(".diagnosis-workspace-run-block").length).toBe(0);
     expect(screen.queryByText(/vllm_p95_ms/i)).not.toBeInTheDocument();
   });
-  it("marks a live loading tool as timeout after 15 seconds and continues the queue", async () => {
+  it("renders live timeline directly without timeout pacing", async () => {
     let timelineSource: DiagnosisTimelineItem[] = [];
     mockedBuildLiveView.mockImplementation(() => ({
       timeline: timelineSource,
@@ -859,16 +863,11 @@ describe("DiagnosisPage sequential playback", () => {
     await advance(200);
 
     expect(screen.getByText("running")).toBeInTheDocument();
-    expect(screen.queryByText("post-timeout")).not.toBeInTheDocument();
-
-    await advance(15000);
-    await advance(1200);
-
-    expect(screen.getByText("timeout")).toBeInTheDocument();
     expect(screen.getByText("post-timeout")).toBeInTheDocument();
+    expect(screen.queryByText("timeout")).not.toBeInTheDocument();
   });
 
-  it("renders history immediately in live mode and serializes only incremental events", async () => {
+  it("renders history and incremental live events immediately without replaying next-action narration", async () => {
     let timelineSource: DiagnosisTimelineItem[] = [
       {
         id: "history-msg-1",
@@ -891,6 +890,13 @@ describe("DiagnosisPage sequential playback", () => {
       activeSessionId: "sess-live-history",
       bootstrapStatus: "ready",
       traceStatus: "ready",
+      liveThinking: {
+        thought_key: "sess-live-history:reason",
+        timestamp: "2026-04-08T11:10:03.000Z",
+        content: "streaming-current-thought",
+        status: "thinking",
+        active_tools: [],
+      },
       messages: [],
       bootstrapSession: vi.fn().mockResolvedValue(undefined),
     });
@@ -925,11 +931,10 @@ describe("DiagnosisPage sequential playback", () => {
     await advance(120);
 
     expect(screen.getByText("history-ready")).toBeInTheDocument();
-    expect(screen.queryByText("incremental-two")).not.toBeInTheDocument();
-
-    await advance(5000);
-
+    expect(screen.getByText("streaming-current-thought")).toBeInTheDocument();
     expect(screen.getByText("incremental-one")).toBeInTheDocument();
+    expect(screen.getByText("incremental-two")).toBeInTheDocument();
+    expect(screen.queryByText(/Next action:/i)).not.toBeInTheDocument();
     expect(container.querySelectorAll(".diagnosis-workspace-message-row")).toHaveLength(3);
   });
 });

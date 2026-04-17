@@ -62,12 +62,51 @@ const mockTopologyResponse: TopologyExplorerResponse = {
       updatedAt: "2026-04-16T00:00:00.000Z",
       attributes: { namespace: "service" },
     },
+    {
+      id: "ns:monitoring",
+      name: "monitoring",
+      type: "service",
+      status: "healthy",
+      layer: "service",
+      domain: "aidc",
+      region: "AIDC-CN",
+      zone: "zone-a",
+      summary: "namespace group",
+      tags: [],
+      updatedAt: "2026-04-16T00:00:00.000Z",
+      attributes: { kind: "namespace_group", namespace: "monitoring", cluster_id: "k8s:aidc-lab" },
+    },
+    {
+      id: "pod:monitoring:prometheus-0",
+      name: "monitoring/prometheus-0",
+      type: "pod",
+      status: "healthy",
+      layer: "service",
+      domain: "aidc",
+      region: "AIDC-CN",
+      zone: "zone-a",
+      summary: "pod",
+      tags: [],
+      updatedAt: "2026-04-16T00:00:00.000Z",
+      attributes: { namespace: "monitoring" },
+    },
   ],
   edges: [
     {
       id: "e1",
       source: "pod:service:demo-0",
       target: "ns:service",
+      relationType: "contains",
+      status: "healthy",
+      isCritical: false,
+      impactLevel: "low",
+      label: "part_of",
+      isAggregated: false,
+    },
+    {
+      id: "e2",
+      source: "pod:monitoring:prometheus-0",
+      target: "ns:monitoring",
       relationType: "contains",
       status: "healthy",
       isCritical: false,
@@ -97,5 +136,18 @@ describe("topology store", () => {
     expect(state.data?.nodes.some((node) => node.id === "ns:service")).toBe(true);
     expect(state.data?.nodes.some((node) => node.id === "pod:service:demo-0")).toBe(true);
   });
-});
 
+  it("prunes excluded namespaces before storing data and searching", async () => {
+    vi.mocked(apiClient.getTopologyExplorer).mockResolvedValue(mockTopologyResponse);
+
+    await useTopologyExplorerStore.getState().fetchTopologyExplorer();
+    useTopologyExplorerStore.getState().setSearchQuery("monitoring");
+    const state = useTopologyExplorerStore.getState();
+
+    expect(state.data?.nodes.some((node) => node.id === "ns:monitoring")).toBe(false);
+    expect(state.data?.nodes.some((node) => node.id === "pod:monitoring:prometheus-0")).toBe(false);
+    expect(state.data?.edges.some((edge) => edge.id === "e2")).toBe(false);
+    expect(state.searchResultIds).toEqual([]);
+    expect(state.searchFeedback).toBe("not_found");
+  });
+});

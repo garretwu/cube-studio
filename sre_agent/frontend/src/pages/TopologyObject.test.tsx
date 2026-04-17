@@ -4,12 +4,29 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { vi } from "vitest";
 
+import { apiClient } from "../api/client";
+import type { TopologyExplorerResponse } from "../api/types";
 import { createTopologyExplorerState, useTopologyExplorerStore } from "../features/topologyExplorer/store";
 import TopologyObjectPage from "./TopologyObject";
 import TopologyPage from "./Topology";
 
+const topologyCanvasMock = vi.hoisted(() => ({
+  latestProps: undefined as Record<string, unknown> | undefined,
+  fitView: vi.fn(),
+  zoomIn: vi.fn(),
+  zoomOut: vi.fn(),
+}));
+
 vi.mock("../features/topologyExplorer/components/TopologyCanvas", () => {
-  const MockTopologyCanvas = React.forwardRef(function MockTopologyCanvas() {
+  const MockTopologyCanvas = React.forwardRef(function MockTopologyCanvas(props: Record<string, unknown>, ref) {
+    topologyCanvasMock.latestProps = props;
+    React.useImperativeHandle(ref, () => ({
+      fitView: topologyCanvasMock.fitView,
+      zoomIn: topologyCanvasMock.zoomIn,
+      zoomOut: topologyCanvasMock.zoomOut,
+      recenter: vi.fn(),
+      focusNode: vi.fn(),
+    }));
     return <div data-testid="mock-topology-canvas" />;
   });
 
@@ -18,6 +35,136 @@ vi.mock("../features/topologyExplorer/components/TopologyCanvas", () => {
     default: MockTopologyCanvas,
   };
 });
+
+vi.mock("../api/client", () => ({
+  apiClient: {
+    getTopologyExplorer: vi.fn(),
+  },
+}));
+
+function buildTopologyObjectFixture(): TopologyExplorerResponse {
+  const now = "2026-04-17T00:00:00.000Z";
+  return {
+    site: {
+      id: "site-1",
+      name: "Fixture Site",
+      region: "cn",
+      zone: "z1",
+      domain: "aidc",
+      summary: "fixture",
+    },
+    nodes: [
+      {
+        id: "svc:service:demo-agent",
+        name: "service/demo-agent",
+        type: "service",
+        status: "healthy",
+        layer: "service",
+        domain: "aidc",
+        region: "cn",
+        zone: "z1",
+        cluster: "k8s:aidc-lab",
+        summary: "service",
+        tags: [],
+        updatedAt: now,
+        attributes: { namespace: "service", cluster_id: "k8s:aidc-lab" },
+      },
+      {
+        id: "ns:service",
+        name: "service",
+        type: "service",
+        status: "healthy",
+        layer: "service",
+        domain: "aidc",
+        region: "cn",
+        zone: "z1",
+        cluster: "k8s:aidc-lab",
+        summary: "namespace group",
+        tags: [],
+        updatedAt: now,
+        attributes: { kind: "namespace_group", namespace: "service", cluster_id: "k8s:aidc-lab" },
+      },
+      {
+        id: "wj-lab-ctl-02",
+        name: "wj-lab-ctl-02",
+        type: "node",
+        status: "healthy",
+        layer: "compute",
+        domain: "aidc",
+        region: "cn",
+        zone: "z1",
+        cluster: "k8s:aidc-lab",
+        summary: "node",
+        tags: [],
+        updatedAt: now,
+        attributes: { cluster_id: "k8s:aidc-lab" },
+      },
+      {
+        id: "pod:service:demo-agent-0",
+        name: "service/demo-agent-0",
+        type: "pod",
+        status: "healthy",
+        layer: "service",
+        domain: "aidc",
+        region: "cn",
+        zone: "z1",
+        cluster: "k8s:aidc-lab",
+        summary: "pod",
+        tags: [],
+        updatedAt: now,
+        attributes: { namespace: "service" },
+      },
+      {
+        id: "sw-200g:200GE1/0/1",
+        name: "200GE1/0/1",
+        type: "port",
+        status: "healthy",
+        layer: "network",
+        domain: "aidc",
+        region: "cn",
+        zone: "z1",
+        summary: "port",
+        tags: [],
+        updatedAt: now,
+        attributes: {},
+      },
+    ],
+    edges: [
+      {
+        id: "e-service-ns",
+        source: "svc:service:demo-agent",
+        target: "ns:service",
+        relationType: "contains",
+        status: "healthy",
+        isCritical: false,
+        impactLevel: "low",
+        label: "part_of",
+      },
+      {
+        id: "e-service-node",
+        source: "svc:service:demo-agent",
+        target: "wj-lab-ctl-02",
+        relationType: "runs_on",
+        status: "healthy",
+        isCritical: false,
+        impactLevel: "low",
+        label: "hosted_on",
+      },
+      {
+        id: "e-service-pod",
+        source: "svc:service:demo-agent",
+        target: "pod:service:demo-agent-0",
+        relationType: "depends_on",
+        status: "healthy",
+        isCritical: false,
+        impactLevel: "low",
+        label: "serves",
+      },
+    ],
+    paths: [],
+    lastUpdated: now,
+  };
+}
 
 function renderObjectRoute(initialEntry: string) {
   return render(
@@ -31,11 +178,17 @@ function renderObjectRoute(initialEntry: string) {
 }
 
 describe("TopologyObjectPage", () => {
-  const focalServiceId = "svc-ns:monitoring";
+  const focalServiceId = "svc:service:demo-agent";
   const encodedFocalServiceId = encodeURIComponent(focalServiceId);
 
   beforeEach(() => {
+    topologyCanvasMock.latestProps = undefined;
+    topologyCanvasMock.fitView.mockClear();
+    topologyCanvasMock.zoomIn.mockClear();
+    topologyCanvasMock.zoomOut.mockClear();
     useTopologyExplorerStore.setState(createTopologyExplorerState());
+    vi.mocked(apiClient.getTopologyExplorer).mockReset();
+    vi.mocked(apiClient.getTopologyExplorer).mockResolvedValue(buildTopologyObjectFixture());
   });
 
   it("renders the two-column object topology layout for a focal object", async () => {
@@ -47,6 +200,29 @@ describe("TopologyObjectPage", () => {
 
     expect(screen.getByTestId("topology-object-inspector")).toBeInTheDocument();
     expect(screen.getByTestId("mock-topology-canvas")).toBeInTheDocument();
+    expect(topologyCanvasMock.latestProps).toEqual(
+      expect.objectContaining({
+        objectFocusNodeId: focalServiceId,
+        variant: "modified",
+      }),
+    );
+    await waitFor(() => {
+      expect(topologyCanvasMock.fitView).toHaveBeenCalledWith("balanced");
+    });
+  });
+
+  it("uses full fit for adapt and balanced fit for reset", async () => {
+    const user = userEvent.setup();
+    renderObjectRoute(`/topology/object/${encodedFocalServiceId}`);
+
+    await screen.findByTestId("topology-object-layout");
+    topologyCanvasMock.fitView.mockClear();
+
+    await user.click(screen.getByRole("button", { name: "适配" }));
+    expect(topologyCanvasMock.fitView).toHaveBeenCalledWith();
+
+    await user.click(screen.getByRole("button", { name: "重置" }));
+    expect(topologyCanvasMock.fitView).toHaveBeenCalledWith("balanced");
   });
 
   it("shows isolate mode chrome and can return to the global topology page", async () => {
