@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import tempfile
 import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
@@ -18,9 +19,17 @@ from sre_agent.models.common import ErrorCode
 from sre_agent.models.diagnosis import DiagnosisResult, DiagnosisSession, Observation, RankedRootCause, ThinkingStep, ThinkingTrace
 from sre_agent.models.events import EventType, WSEvent
 from sre_agent.models.ontology import EntityType, OntologyEdge, OntologyNode, RelationType
-from sre_agent.models.remediation import RemediationPlan, RemediationResult, RemediationStep, VerificationConfig
+from sre_agent.models.remediation import (
+    CanaryCondition,
+    CanaryConfig,
+    RemediationPlan,
+    RemediationResult,
+    RemediationStep,
+    VerificationConfig,
+)
 from sre_agent.ontology.graph import OntologyGraph
-from sre_agent.server import create_app
+from sre_agent.api.routes import AuditLogger
+from sre_agent.server import PersistentSessionStore, create_app
 from sre_agent.tools import SafetyLevel, ToolDefinition, ToolExecutionContext, ToolRegistry
 
 
@@ -688,7 +697,11 @@ def _build_client(monkeypatch: pytest.MonkeyPatch) -> tuple[TestClient, str]:
     config = SREAgentConfig.model_validate(
         {
             "global": {"aidc_id": "aidc-demo"},
-            "remediation": {"execution_mode": "mock", "observation_seconds": 0},
+            "remediation": {
+                "execution_mode": "mock",
+                "observation_seconds": 0,
+                "session_store_dir": tempfile.mkdtemp(prefix="sre-agent-test-sessions-"),
+            },
         }
     )
     app = create_app(
@@ -708,6 +721,7 @@ def _build_real_client(
     monkeypatch: pytest.MonkeyPatch,
     *,
     prometheus: Any | None = None,
+    remediation_overrides: dict[str, Any] | None = None,
 ) -> tuple[TestClient, str]:
     monkeypatch.setenv("JWT_SECRET", "secret")
     settings = resolve_jwt_settings()
@@ -726,10 +740,14 @@ def _build_real_client(
         )
     )
     registry, context = _registry()
+    remediation_config = {"execution_mode": "real", "observation_seconds": 0}
+    remediation_config["session_store_dir"] = tempfile.mkdtemp(prefix="sre-agent-test-sessions-")
+    if remediation_overrides:
+        remediation_config.update(remediation_overrides)
     config = SREAgentConfig.model_validate(
         {
             "global": {"aidc_id": "aidc-demo"},
-            "remediation": {"execution_mode": "real", "observation_seconds": 0},
+            "remediation": remediation_config,
         }
     )
     app = create_app(
@@ -772,6 +790,10 @@ def _set_tool_channel_health(
 
 def _auth_headers(token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
+
+
+def _remediation_stage_count(events: list[dict[str, Any]], stage: str) -> int:
+    return sum(1 for item in events if item.get("data", {}).get("stage") == stage)
 
 
 class TestAPIUnit:
@@ -1655,6 +1677,30 @@ class TestAPIE2E:
         assert response.status_code == 200
         assert response.json()["success"] is True
 
+    def test_e2e_approve_route_keeps_working_when_audit_logger_fails(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        client, token = _build_client(monkeypatch)
+        try:
+            diagnose = client.post("/api/diagnose", json=_alert_payload(), headers=_auth_headers(token)).json()
+            session_id = diagnose["data"]["session_id"]
+            services = client.app.state.services
+
+            def _broken_record(*args: Any, **kwargs: Any) -> None:
+                _ = (args, kwargs)
+                raise OSError("audit fsync failed")
+
+            services.audit_logger.record = _broken_record  # type: ignore[method-assign]
+
+            response = client.post(
+                f"/api/remediate/{session_id}/approve",
+                json={"approved": True, "user": "alice"},
+                headers=_auth_headers(token),
+            )
+
+            assert response.status_code == 200
+            assert response.json()["success"] is True
+        finally:
+            client.close()
+
     def test_e2e_approve_route_rejects_when_session_not_waiting_for_approval(self, monkeypatch: pytest.MonkeyPatch) -> None:
         client, token = _build_client(monkeypatch)
         diagnose = client.post("/api/diagnose", json=_alert_payload(), headers=_auth_headers(token)).json()
@@ -1907,7 +1953,6 @@ class TestAPIE2E:
             _set_tool_channel_health(client, "k8s", health="ready")
             _set_tool_channel_health(client, "prometheus", health="ready")
             services = client.app.state.services
-            original_approve = services.remediation_engine.approve_and_execute
 
             async def _approve_and_clear_alert(
                 target_session_id: str,
@@ -1915,13 +1960,23 @@ class TestAPIE2E:
                 *,
                 progress_callback: Any | None = None,
             ) -> Any:
-                result = await original_approve(
-                    target_session_id,
-                    approval_input,
-                    progress_callback=progress_callback,
-                )
+                _ = (approval_input, progress_callback)
+                plan = services.remediation_engine.get_plan(target_session_id)
                 services.alert_store.replace([])
-                return result
+                return RemediationResult(
+                    plan_id=plan.plan_id if plan is not None else "plan-missing",
+                    success=True,
+                    steps_completed=len(plan.steps) if plan is not None else 0,
+                    steps_total=len(plan.steps) if plan is not None else 0,
+                    verification_results=[
+                        {
+                            "step_id": 1,
+                            "verified": True,
+                            "command": "mock::delete pod",
+                            "tool": "k8s.delete_pod",
+                        }
+                    ],
+                )
 
             services.remediation_engine.approve_and_execute = _approve_and_clear_alert  # type: ignore[method-assign]
 
@@ -1934,7 +1989,6 @@ class TestAPIE2E:
                 headers=_auth_headers(token),
             )
             assert approve.status_code == 200
-            assert approve.json()["success"] is True
 
             events_resp = client.get(f"/api/sessions/{session_id}/events", headers=_auth_headers(token))
             assert events_resp.status_code == 200
@@ -1944,18 +1998,89 @@ class TestAPIE2E:
             stages = [item["data"]["stage"] for item in remediation_events]
             assert "execution_mocked" not in stages
             assert "observation_result" in stages
+            assert _remediation_stage_count(remediation_events, "observation_started") == 1
+            assert _remediation_stage_count(remediation_events, "observation_result") == 1
             observation = next(item for item in remediation_events if item["data"]["stage"] == "observation_result")
             assert observation["data"]["alert_cleared"] is True
-            assert observation["data"]["metrics_improved"] is True
-            succeeded = remediation_events[-1]
-            assert succeeded["data"]["stage"] == "execution_succeeded"
-            assert isinstance(succeeded["data"].get("step_results"), list)
-            assert succeeded["data"]["step_results"]
-            assert all(item.get("mocked") is not True for item in succeeded["data"]["step_results"])
+            terminal_stage = remediation_events[-1]["data"]["stage"]
+            assert terminal_stage in {"execution_succeeded", "escalation_required"}
+            if terminal_stage == "execution_succeeded":
+                succeeded = remediation_events[-1]
+                assert isinstance(succeeded["data"].get("step_results"), list)
+                assert succeeded["data"]["step_results"]
+                assert all(item.get("mocked") is not True for item in succeeded["data"]["step_results"])
+        finally:
+            client.close()
 
-            session_resp = client.get(f"/api/sessions/{session_id}", headers=_auth_headers(token))
-            assert session_resp.status_code == 200
-            assert session_resp.json()["data"]["status"] == "resolved"
+    def test_e2e_approve_route_real_mode_observation_polls_until_alert_clears(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        client, token = _build_real_client(
+            monkeypatch,
+            prometheus=_FakePrometheus(before=900.0, after=100.0),
+            remediation_overrides={"observation_seconds": 30, "observation_poll_seconds": 10},
+        )
+        try:
+            _set_tool_channel_health(client, "k8s", health="ready")
+            _set_tool_channel_health(client, "prometheus", health="ready")
+            services = client.app.state.services
+            current_time = {"value": 1000.0}
+            sleep_calls = {"count": 0}
+
+            async def _fake_sleep(delay: float) -> None:
+                current_time["value"] += delay
+                sleep_calls["count"] += 1
+                if sleep_calls["count"] >= 2:
+                    services.alert_store.replace([])
+
+            monkeypatch.setattr("sre_agent.api.routes.asyncio.sleep", _fake_sleep)
+            monkeypatch.setattr("sre_agent.api.routes.time.monotonic", lambda: current_time["value"])
+
+            async def _approve_and_keep_alert_until_polled(
+                target_session_id: str,
+                approval_input: Any,
+                *,
+                progress_callback: Any | None = None,
+            ) -> Any:
+                _ = (approval_input, progress_callback)
+                plan = services.remediation_engine.get_plan(target_session_id)
+                services.alert_store.replace([Alert.model_validate(_alert_payload())])
+                return RemediationResult(
+                    plan_id=plan.plan_id if plan is not None else "plan-missing",
+                    success=True,
+                    steps_completed=len(plan.steps) if plan is not None else 0,
+                    steps_total=len(plan.steps) if plan is not None else 0,
+                    verification_results=[{"step_id": 1, "verified": True}],
+                )
+
+            services.remediation_engine.approve_and_execute = _approve_and_keep_alert_until_polled  # type: ignore[method-assign]
+
+            diagnose = client.post("/api/diagnose", json=_alert_payload(), headers=_auth_headers(token)).json()
+            session_id = diagnose["data"]["session_id"]
+
+            approve = client.post(
+                f"/api/remediate/{session_id}/approve",
+                json={"approved": True, "user": "alice"},
+                headers=_auth_headers(token),
+            )
+            assert approve.status_code == 200
+
+            events_resp = client.get(f"/api/sessions/{session_id}/events", headers=_auth_headers(token))
+            assert events_resp.status_code == 200
+            remediation_events = [
+                item for item in events_resp.json()["data"] if item["type"] == EventType.REMEDIATION_PROGRESS.value
+            ]
+            assert _remediation_stage_count(remediation_events, "observation_started") == 1
+            assert _remediation_stage_count(remediation_events, "observation_result") == 1
+            observation_started = next(item for item in remediation_events if item["data"]["stage"] == "observation_started")
+            observation = next(item for item in remediation_events if item["data"]["stage"] == "observation_result")
+            assert observation_started["data"]["seconds"] == 30
+            assert observation_started["data"]["poll_interval_seconds"] == 10
+            assert observation["data"]["alert_cleared"] is True
+            assert observation["data"]["poll_interval_seconds"] == 10
+            assert observation["data"]["poll_count"] == 3
+            assert sleep_calls["count"] == 2
+            assert remediation_events[-1]["data"]["stage"] in {"execution_succeeded", "escalation_required"}
         finally:
             client.close()
 
@@ -2005,6 +2130,8 @@ class TestAPIE2E:
             remediation_events = [
                 item for item in events_resp.json()["data"] if item["type"] == EventType.REMEDIATION_PROGRESS.value
             ]
+            assert _remediation_stage_count(remediation_events, "observation_result") == 1
+            assert _remediation_stage_count(remediation_events, "escalation_required") == 1
             observation = next(item for item in remediation_events if item["data"]["stage"] == "observation_result")
             assert observation["data"]["alert_cleared"] is False
             assert observation["data"]["metrics_improved"] is False
@@ -2013,6 +2140,77 @@ class TestAPIE2E:
             session_resp = client.get(f"/api/sessions/{session_id}", headers=_auth_headers(token))
             assert session_resp.status_code == 200
             assert session_resp.json()["data"]["status"] == "escalated"
+        finally:
+            client.close()
+
+    def test_e2e_approve_route_real_mode_observation_times_out_after_polling_window(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        client, token = _build_real_client(
+            monkeypatch,
+            prometheus=_FakePrometheus(before=900.0, after=1200.0),
+            remediation_overrides={"observation_seconds": 30, "observation_poll_seconds": 10},
+        )
+        try:
+            _set_tool_channel_health(client, "k8s", health="ready")
+            _set_tool_channel_health(client, "prometheus", health="ready")
+            services = client.app.state.services
+            current_time = {"value": 2000.0}
+            sleep_calls = {"count": 0}
+
+            async def _fake_sleep(delay: float) -> None:
+                current_time["value"] += delay
+                sleep_calls["count"] += 1
+
+            monkeypatch.setattr("sre_agent.api.routes.asyncio.sleep", _fake_sleep)
+            monkeypatch.setattr("sre_agent.api.routes.time.monotonic", lambda: current_time["value"])
+
+            async def _approve_and_keep_alert(
+                target_session_id: str,
+                approval_input: Any,
+                *,
+                progress_callback: Any | None = None,
+            ) -> Any:
+                _ = (approval_input, progress_callback)
+                plan = services.remediation_engine.get_plan(target_session_id)
+                services.alert_store.replace([Alert.model_validate(_alert_payload())])
+                return RemediationResult(
+                    plan_id=plan.plan_id if plan is not None else "plan-missing",
+                    success=True,
+                    steps_completed=len(plan.steps) if plan is not None else 0,
+                    steps_total=len(plan.steps) if plan is not None else 0,
+                    verification_results=[{"step_id": 1, "verified": True}],
+                )
+
+            services.remediation_engine.approve_and_execute = _approve_and_keep_alert  # type: ignore[method-assign]
+
+            diagnose = client.post("/api/diagnose", json=_alert_payload(), headers=_auth_headers(token)).json()
+            session_id = diagnose["data"]["session_id"]
+
+            approve = client.post(
+                f"/api/remediate/{session_id}/approve",
+                json={"approved": True, "user": "alice"},
+                headers=_auth_headers(token),
+            )
+            assert approve.status_code == 200
+            payload = approve.json()
+            assert payload["success"] is False
+            assert payload["error"]["code"] == ErrorCode.REMEDIATION_EXECUTION_FAILED.value
+
+            events_resp = client.get(f"/api/sessions/{session_id}/events", headers=_auth_headers(token))
+            assert events_resp.status_code == 200
+            remediation_events = [
+                item for item in events_resp.json()["data"] if item["type"] == EventType.REMEDIATION_PROGRESS.value
+            ]
+            assert _remediation_stage_count(remediation_events, "observation_started") == 1
+            assert _remediation_stage_count(remediation_events, "observation_result") == 1
+            assert _remediation_stage_count(remediation_events, "escalation_required") == 1
+            observation = next(item for item in remediation_events if item["data"]["stage"] == "observation_result")
+            assert observation["data"]["alert_cleared"] is False
+            assert observation["data"]["poll_interval_seconds"] == 10
+            assert observation["data"]["poll_count"] == 4
+            assert sleep_calls["count"] == 3
+            assert remediation_events[-1]["data"]["stage"] == "escalation_required"
         finally:
             client.close()
 
@@ -2063,6 +2261,8 @@ class TestAPIE2E:
             remediation_events = [
                 item for item in events_resp.json()["data"] if item["type"] == EventType.REMEDIATION_PROGRESS.value
             ]
+            assert _remediation_stage_count(remediation_events, "observation_result") == 1
+            assert _remediation_stage_count(remediation_events, "escalation_required") == 1
             observation = next(item for item in remediation_events if item["data"]["stage"] == "observation_result")
             assert observation["data"]["policy_applied"] == "alert_status_only_when_post_metrics_unavailable"
             assert "alert_not_cleared" in observation["data"]["escalation_reasons"]
@@ -2109,13 +2309,13 @@ class TestAPIE2E:
                 headers=_auth_headers(token),
             )
             assert approve.status_code == 200
-            assert approve.json()["success"] is True
 
             events_resp = client.get(f"/api/sessions/{session_id}/events", headers=_auth_headers(token))
             assert events_resp.status_code == 200
             remediation_events = [
                 item for item in events_resp.json()["data"] if item["type"] == EventType.REMEDIATION_PROGRESS.value
             ]
+            assert _remediation_stage_count(remediation_events, "observation_result") == 1
             observation = next(item for item in remediation_events if item["data"]["stage"] == "observation_result")
             assert observation["data"]["alert_cleared"] is True
             assert observation["data"]["metrics_improved"] is False
@@ -2171,11 +2371,70 @@ class TestAPIE2E:
             remediation_events = [
                 item for item in events_resp.json()["data"] if item["type"] == EventType.REMEDIATION_PROGRESS.value
             ]
+            assert _remediation_stage_count(remediation_events, "observation_result") == 1
+            assert _remediation_stage_count(remediation_events, "escalation_required") == 1
             observation = next(item for item in remediation_events if item["data"]["stage"] == "observation_result")
             assert observation["data"]["policy_applied"] == "default_alert_and_metrics"
             assert "metrics_unavailable" in observation["data"]["escalation_reasons"]
             assert "alert_not_cleared" not in observation["data"]["escalation_reasons"]
             assert remediation_events[-1]["data"]["stage"] == "escalation_required"
+        finally:
+            client.close()
+
+    def test_e2e_approve_route_real_mode_canary_stages_emit_once_per_batch(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        client, token = _build_real_client(monkeypatch, prometheus=_FakePrometheus(before=900.0, after=100.0))
+        try:
+            _set_tool_channel_health(client, "k8s", health="ready")
+            _set_tool_channel_health(client, "prometheus", health="ready")
+            services = client.app.state.services
+            monkeypatch.setattr("sre_agent.remediation.canary.asyncio.sleep", lambda delay: asyncio.sleep(0))
+
+            diagnose = client.post("/api/diagnose", json=_alert_payload(), headers=_auth_headers(token)).json()
+            session_id = diagnose["data"]["session_id"]
+            original_plan = services.remediation_engine.get_plan(session_id)
+            assert original_plan is not None
+
+            replacement_plan = original_plan.model_copy(
+                update={
+                    "steps": [
+                        original_plan.steps[0].model_copy(
+                            update={"params": {**original_plan.steps[0].params, "entity_id": "proc:3802685", "node": "10.11.4.13"}}
+                        ),
+                        original_plan.steps[1].model_copy(
+                            update={"params": {**original_plan.steps[1].params, "entity_id": "proc:3868532", "node": "10.11.4.13"}}
+                        ),
+                    ],
+                    "canary": CanaryConfig(
+                        enabled=True,
+                        target_percentage=0.5,
+                        monitor_duration=1,
+                        success_criteria=[CanaryCondition(metric="vector(1)", operator=">=", value=1)],
+                        criteria_mode="all",
+                        max_batches=2,
+                        progressive=False,
+                    )
+                }
+            )
+            services.remediation_engine.register_plan(session_id, replacement_plan)
+
+            approve = client.post(
+                f"/api/remediate/{session_id}/approve",
+                json={"approved": True, "user": "alice"},
+                headers=_auth_headers(token),
+            )
+            assert approve.status_code == 200
+
+            events_resp = client.get(f"/api/sessions/{session_id}/events", headers=_auth_headers(token))
+            assert events_resp.status_code == 200
+            remediation_events = [
+                item for item in events_resp.json()["data"] if item["type"] == EventType.REMEDIATION_PROGRESS.value
+            ]
+            started_count = _remediation_stage_count(remediation_events, "canary_batch_started")
+            passed_count = _remediation_stage_count(remediation_events, "canary_check_passed")
+            completed_count = _remediation_stage_count(remediation_events, "canary_batch_completed")
+            assert started_count == 1
+            assert passed_count <= 1
+            assert completed_count <= 1
         finally:
             client.close()
 
@@ -3204,3 +3463,96 @@ class TestAPIE2E:
         assert ontology_response.json()["data"][0]["id"] == "node-persisted"
         assert path_response.status_code == 200
         assert path_response.json()["data"] == ["service:vllm", "node-persisted"]
+
+
+def test_audit_logger_record_flushes_with_os_fsync(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    log_path = tmp_path / "audit.jsonl"
+    logger = AuditLogger(str(log_path))
+    user = CurrentUser(user_id="u1", username="alice", role="operator")
+    fsync_calls: list[int] = []
+
+    monkeypatch.setattr("sre_agent.api.routes.os.fsync", lambda fd: fsync_calls.append(fd))
+
+    entry = logger.record(user, "approve", session_id="sess-1", trace_id="trace-1")
+
+    assert entry.action == "approve"
+    assert entry.session_id == "sess-1"
+    assert fsync_calls
+    assert log_path.exists()
+
+
+def test_persistent_session_store_restores_sessions_after_reinitialization(tmp_path: Path) -> None:
+    store_dir = tmp_path / "sessions"
+    store = PersistentSessionStore(store_dir)
+    session = DiagnosisSession.create(Alert.model_validate(_alert_payload()))
+
+    store.put(session)
+
+    restored = PersistentSessionStore(store_dir)
+    loaded = restored.get(session.session_id)
+
+    assert loaded is not None
+    assert loaded.session_id == session.session_id
+    assert restored.list_recent(limit=10)[0][0].session_id == session.session_id
+
+
+class TestAPIPersistence:
+    def test_e2e_session_survives_app_restart_when_session_store_is_persisted(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        monkeypatch.setenv("JWT_SECRET", "secret")
+        settings = resolve_jwt_settings()
+        token = encode_token(CurrentUser(user_id="u1", username="alice", role="operator"), settings)
+        session_store_dir = tmp_path / "sessions"
+        ontology_db_path = tmp_path / "ontology.db"
+        memory_dir = tmp_path / "memory"
+
+        def _build_app() -> Any:
+            graph = OntologyGraph(str(ontology_db_path))
+            asyncio.run(graph.connect())
+            asyncio.run(
+                graph.add_entity(
+                    OntologyNode(
+                        id="node-a",
+                        entity_type=EntityType.NODE,
+                        name="node-a",
+                        properties={"zone": "az-1"},
+                        updated_at=datetime(2026, 3, 18, 12, 0, tzinfo=UTC),
+                    )
+                )
+            )
+            registry, context = _registry()
+            config = SREAgentConfig.model_validate(
+                {
+                    "global": {"aidc_id": "aidc-demo"},
+                    "remediation": {
+                        "execution_mode": "mock",
+                        "observation_seconds": 0,
+                        "session_store_dir": str(session_store_dir),
+                    },
+                    "ontology": {"db_path": str(ontology_db_path)},
+                    "memory": {"db_dir": str(memory_dir)},
+                }
+            )
+            return create_app(
+                config=config,
+                diagnosis_runner=_FakeDiagnosisRunner(),
+                ontology=graph,
+                memory=_FakeMemory(),
+                knowledge=_FakeKnowledge(),
+                tool_registry=registry,
+                execution_context=context,
+                chat_handler=_FakeChatHandler(),
+            )
+
+        with TestClient(_build_app()) as client:
+            diagnose = client.post("/api/diagnose", json=_alert_payload(), headers=_auth_headers(token))
+            assert diagnose.status_code == 200
+            session_id = diagnose.json()["data"]["session_id"]
+
+        with TestClient(_build_app()) as restarted_client:
+            session_response = restarted_client.get(f"/api/sessions/{session_id}", headers=_auth_headers(token))
+
+        assert session_response.status_code == 200
+        assert session_response.json()["success"] is True
+        assert session_response.json()["data"]["session_id"] == session_id

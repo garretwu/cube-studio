@@ -867,6 +867,92 @@ describe("DiagnosisPage sequential playback", () => {
     expect(screen.queryByText("timeout")).not.toBeInTheDocument();
   });
 
+  it("shows approval failure as an approval error instead of a diagnosis error", async () => {
+    mockedBuildLiveView.mockReturnValue({
+      timeline: [
+        createReportItem({
+          id: "live-report-approval-error",
+          summary: {
+            ...baseSummary,
+            title: "根因诊断",
+            subtitle: "Live approval failure summary",
+          },
+          planStatusLabel: "修复方案已生成，等待审批",
+          planStatusTone: "warning",
+        }),
+      ],
+      candidates: [],
+      summary: {
+        ...baseSummary,
+        title: "根因诊断",
+        subtitle: "Live approval failure summary",
+      },
+      plan: {
+        ...basePlan,
+        steps: [
+          {
+            id: "step-1",
+            title: "Drain canary first",
+            detail: "kubectl | wait 120s | verify wait",
+            status: "pending",
+          },
+        ],
+      },
+    });
+
+    resetDiagnosisStore({
+      session: createApprovalSession("sess-live-approval-error"),
+      activeSessionId: "sess-live-approval-error",
+      bootstrapStatus: "ready",
+      traceStatus: "ready",
+      approvalOverlayOpen: true,
+      latestPlanVersion: 3,
+      canApprove: true,
+      error: "修复执行审批失败：Request failed with status 500.",
+      bootstrapSession: vi.fn().mockResolvedValue(undefined),
+    });
+
+    renderLivePage("/diagnosis/sess-live-approval-error");
+
+    expect(screen.getByText("修复执行审批失败：Request failed with status 500.")).toBeInTheDocument();
+    expect(screen.queryByText("诊断报错")).not.toBeInTheDocument();
+    expect(screen.getByTestId("diagnosis-report-card")).toBeInTheDocument();
+  });
+
+  it("shows a warning note for partial bootstrap degradation without blocking the live diagnosis view", async () => {
+    const reportItem = createReportItem({
+      id: "report-partial-bootstrap",
+      summary: {
+        ...baseSummary,
+        title: "GPU contention on worker-03",
+        impactSummary: "Diagnosis result remains available while supplemental data is still loading.",
+      },
+    });
+
+    mockedBuildLiveView.mockReturnValue({
+      timeline: [reportItem],
+      candidates: [],
+      summary: reportItem.summary,
+      plan: undefined,
+    });
+
+    resetDiagnosisStore({
+      session: createLiveSession("sess-partial-bootstrap"),
+      activeSessionId: "sess-partial-bootstrap",
+      bootstrapStatus: "ready",
+      traceStatus: "ready",
+      error:
+        "部分补充信息加载较慢，诊断结果仍可查看：对话历史未完全加载（Request timed out while waiting for the backend. Please retry.）",
+      bootstrapSession: vi.fn().mockResolvedValue(undefined),
+    });
+
+    renderLivePage("/diagnosis/sess-partial-bootstrap");
+
+    expect(screen.getByText(/部分补充信息加载较慢，诊断结果仍可查看/u)).toBeInTheDocument();
+    expect(screen.queryByText("timeout of 10000ms exceeded")).not.toBeInTheDocument();
+    expect(screen.getByText("GPU contention on worker-03")).toBeInTheDocument();
+  });
+
   it("renders history and incremental live events immediately without replaying next-action narration", async () => {
     let timelineSource: DiagnosisTimelineItem[] = [
       {

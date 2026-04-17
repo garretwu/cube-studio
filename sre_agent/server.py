@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import re
@@ -136,6 +137,90 @@ class InMemorySessionStore:
                     continue
                 payload.append((session, updated_at))
             return payload
+
+
+class PersistentSessionStore(InMemorySessionStore):
+    def __init__(self, storage_dir: str | Path) -> None:
+        super().__init__()
+        self._storage_dir = Path(storage_dir)
+        self._storage_dir.mkdir(parents=True, exist_ok=True)
+        self._load_existing_sessions()
+
+    def put(self, session: DiagnosisSession) -> None:
+        updated_at = datetime.now(UTC)
+        with self._lock:
+            self._sessions[session.session_id] = session
+            self._updated_at[session.session_id] = updated_at
+            self._persist_session_unlocked(session=session, updated_at=updated_at)
+
+    def update_status(self, session_id: str, *, status: str, outcome: str | None = None) -> DiagnosisSession | None:
+        with self._lock:
+            session = self._sessions.get(session_id)
+            if session is None:
+                return None
+            updates: dict[str, Any] = {"status": status}
+            if outcome is not None:
+                updates["outcome"] = outcome
+            updated = session.model_copy(update=updates)
+            updated_at = datetime.now(UTC)
+            self._sessions[session_id] = updated
+            self._updated_at[session_id] = updated_at
+            self._persist_session_unlocked(session=updated, updated_at=updated_at)
+            return updated
+
+    def transition_status(
+        self,
+        session_id: str,
+        *,
+        expected_statuses: set[str],
+        status: str,
+        outcome: str | None = None,
+    ) -> DiagnosisSession | None:
+        with self._lock:
+            session = self._sessions.get(session_id)
+            if session is None or session.status not in expected_statuses:
+                return None
+            updates: dict[str, Any] = {"status": status}
+            if outcome is not None:
+                updates["outcome"] = outcome
+            updated = session.model_copy(update=updates)
+            updated_at = datetime.now(UTC)
+            self._sessions[session_id] = updated
+            self._updated_at[session_id] = updated_at
+            self._persist_session_unlocked(session=updated, updated_at=updated_at)
+            return updated
+
+    def _load_existing_sessions(self) -> None:
+        loaded = 0
+        for path in sorted(self._storage_dir.glob("*.json")):
+            try:
+                raw = json.loads(path.read_text(encoding="utf-8"))
+                session_payload = raw.get("session")
+                updated_at_raw = raw.get("updated_at")
+                if not isinstance(session_payload, dict):
+                    continue
+                session = DiagnosisSession.model_validate(session_payload)
+                updated_at = datetime.fromisoformat(str(updated_at_raw)) if updated_at_raw else datetime.now(UTC)
+                if updated_at.tzinfo is None:
+                    updated_at = updated_at.replace(tzinfo=UTC)
+                self._sessions[session.session_id] = session
+                self._updated_at[session.session_id] = updated_at.astimezone(UTC)
+                loaded += 1
+            except Exception as exc:  # noqa: BLE001
+                LOGGER.warning("failed to restore session from %s: %s", path, exc)
+        if loaded:
+            LOGGER.info("restored %s persisted diagnosis sessions from %s", loaded, self._storage_dir)
+
+    def _persist_session_unlocked(self, *, session: DiagnosisSession, updated_at: datetime) -> None:
+        payload = {
+            "session_id": session.session_id,
+            "updated_at": updated_at.astimezone(UTC).isoformat(),
+            "session": session.model_dump(mode="json"),
+        }
+        target = self._storage_dir / f"{session.session_id}.json"
+        tmp_target = target.with_suffix(".json.tmp")
+        tmp_target.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp_target.replace(target)
 
 
 class InMemoryLoopStore:
@@ -2455,7 +2540,7 @@ def create_app(
         statuses=bootstrap_result.statuses,
         remediation_engine=engine,
     )
-    session_store = InMemorySessionStore()
+    session_store = PersistentSessionStore(cfg.remediation.session_store_dir)
     loop_store = InMemoryLoopStore()
     publisher = InMemoryTracePublisher(
         max_events_per_session=_resolve_ws_max_events_per_session(cfg),

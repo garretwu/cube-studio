@@ -6,9 +6,9 @@ import asyncio
 import hashlib
 import json
 import inspect
+import logging
 import os
 import re
-import sys
 import time
 from datetime import UTC, datetime
 from pathlib import Path
@@ -39,6 +39,8 @@ from sre_agent.remediation.engine import RollbackResult
 from sre_agent.runtime.token_estimation import estimate_token_count
 from sre_agent.concurrency.resource_lock import ResourceLockedError
 from sre_agent.skills import SkillRegistry
+
+LOGGER = logging.getLogger(__name__)
 
 
 class ChatMessage(BaseModel):
@@ -1151,13 +1153,6 @@ def build_api_router() -> APIRouter:
         )
         stage_to_event_type: dict[str, EventType] = {
             "execution_mocked": EventType.EXECUTION_MOCKED,
-            "observation_started": EventType.OBSERVATION_STARTED,
-            "observation_result": EventType.OBSERVATION_RESULT,
-            "escalation_required": EventType.ESCALATION_REQUIRED,
-            "canary_batch_started": EventType.REMEDIATION_PROGRESS,
-            "canary_batch_completed": EventType.REMEDIATION_PROGRESS,
-            "canary_check_passed": EventType.REMEDIATION_PROGRESS,
-            "canary_check_failed": EventType.REMEDIATION_PROGRESS,
         }
         mapped_event_type = stage_to_event_type.get(stage)
         if mapped_event_type is not None:
@@ -1447,16 +1442,34 @@ def build_api_router() -> APIRouter:
         session: DiagnosisSession,
         pre_check: RemediationCheckSnapshot | None,
         observation_seconds: int,
+        observation_poll_seconds: int,
     ) -> tuple[bool, dict[str, Any], RemediationEvidence]:
+        total_observation_seconds = max(0, int(observation_seconds))
+        poll_interval_seconds = max(1, int(observation_poll_seconds))
         await _publish_remediation_progress(
             services,
             session_id=session.session_id,
             stage="observation_started",
-            details={"seconds": observation_seconds},
+            details={
+                "seconds": total_observation_seconds,
+                "poll_interval_seconds": poll_interval_seconds,
+            },
         )
-        await asyncio.sleep(max(0, int(observation_seconds)))
         plan = services.remediation_engine.get_plan(session.session_id)
+        observation_started_at = time.monotonic()
+        poll_count = 0
         post_check = await _capture_check_snapshot(services, session=session, plan=plan)
+        while True:
+            poll_count += 1
+            post_alert = post_check.alert
+            if post_alert is not None and post_alert.available and not post_alert.is_firing:
+                break
+            elapsed_seconds = time.monotonic() - observation_started_at
+            remaining_seconds = total_observation_seconds - elapsed_seconds
+            if remaining_seconds <= 0:
+                break
+            await asyncio.sleep(min(float(poll_interval_seconds), max(0.0, remaining_seconds)))
+            post_check = await _capture_check_snapshot(services, session=session, plan=plan)
         pre_alert = pre_check.alert if pre_check is not None else None
         post_alert = post_check.alert
         alert_cleared = bool(post_alert is not None and post_alert.available and not post_alert.is_firing)
@@ -1500,6 +1513,9 @@ def build_api_router() -> APIRouter:
         details = {
             "alert_cleared": alert_cleared,
             "metrics_improved": metrics_improved,
+            "observation_seconds": total_observation_seconds,
+            "poll_interval_seconds": poll_interval_seconds,
+            "poll_count": poll_count,
             "metrics_checked": len(metric_reviews),
             "baseline_alert": pre_alert.model_dump(mode="json") if pre_alert is not None else None,
             "baseline_metrics": [item.model_dump(mode="json") for item in (pre_check.metrics if pre_check is not None else [])],
@@ -2393,7 +2409,15 @@ def build_api_router() -> APIRouter:
     ) -> SREResponse[RemediationResult]:
         services = _services(request)
         trace_id = _trace_id(request)
-        services.audit_logger.record(user, "approve", session_id=session_id, trace_id=trace_id)
+        try:
+            services.audit_logger.record(user, "approve", session_id=session_id, trace_id=trace_id)
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.exception(
+                "audit logger failed during remediation approval: session_id=%s trace_id=%s",
+                session_id,
+                trace_id,
+                exc_info=exc,
+            )
         get_latest_plan_version = getattr(services.remediation_engine, "get_latest_plan_version", None)
         latest_plan_version = int(get_latest_plan_version(session_id)) if callable(get_latest_plan_version) else 0
         if latest_plan_version <= 0:
@@ -2529,13 +2553,14 @@ def build_api_router() -> APIRouter:
         app_config = getattr(request.app.state, "config", None)
         remediation_cfg = getattr(app_config, "remediation", None)
         observation_seconds = int(getattr(remediation_cfg, "observation_seconds", 180) or 180) if remediation_cfg else 180
+        observation_poll_seconds = (
+            int(getattr(remediation_cfg, "observation_poll_seconds", 10) or 10) if remediation_cfg else 10
+        )
         execution_timeout_seconds = (
             int(getattr(remediation_cfg, "execution_timeout_seconds", 600) or 600) if remediation_cfg else 600
         )
         execution_timeout_seconds = max(1, execution_timeout_seconds)
-        is_test_runtime = bool(os.getenv("PYTEST_CURRENT_TEST") or "pytest" in sys.modules)
-        if is_test_runtime:
-            observation_seconds = 0
+        observation_poll_seconds = max(1, observation_poll_seconds)
         workflow_started_at = time.monotonic()
         pre_check: RemediationCheckSnapshot | None = None
 
@@ -2631,7 +2656,7 @@ def build_api_router() -> APIRouter:
 
         step_results = _extract_step_results(result)
         if result.success:
-            if getattr(services.remediation_engine, "execution_mode", "real") == "mock" and not is_test_runtime:
+            if getattr(services.remediation_engine, "execution_mode", "real") == "mock":
                 await _publish_remediation_progress(
                     services,
                     session_id=session_id,
@@ -2655,6 +2680,7 @@ def build_api_router() -> APIRouter:
                         session=session,
                         pre_check=pre_check,
                         observation_seconds=observation_seconds,
+                        observation_poll_seconds=observation_poll_seconds,
                     ),
                     timeout=remaining_timeout,
                 )

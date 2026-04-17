@@ -43,6 +43,10 @@ memory:
   db_dir: ./data/memory_lab
   vector_index_dir: ./data/memory_vectors_lab
 
+remediation:
+  observation_seconds: 600
+  observation_poll_seconds: 10
+
 ontology:
   db_path: ./data/ontology.lab.db
   discovery:

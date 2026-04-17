@@ -1,0 +1,87 @@
+import { render, screen } from "@testing-library/react";
+import { describe, expect, it } from "vitest";
+
+import type { SessionEvent } from "../api/types";
+import RemediationTimeline from "./RemediationTimeline";
+
+describe("RemediationTimeline", () => {
+  it("renders unique canary and observation stages once when the backend emits one event per stage", () => {
+    const events: SessionEvent[] = [
+      {
+        schema_version: "1",
+        type: "remediation_progress",
+        session_id: "sess-canary-unique",
+        timestamp: "2026-04-17T15:16:00.000Z",
+        data: {
+          event_id: "101",
+          stage: "canary_batch_started",
+          batch: "canary-1",
+          batch_index: 1,
+          batch_total: 2,
+          message: "灰度批次 1/2 开始，覆盖 1 个目标: proc:3802685",
+        },
+      },
+      {
+        schema_version: "1",
+        type: "remediation_progress",
+        session_id: "sess-canary-unique",
+        timestamp: "2026-04-17T15:18:00.000Z",
+        data: {
+          event_id: "102",
+          stage: "canary_check_passed",
+          batch: "canary-1",
+          batch_index: 1,
+          message: "验证灰度批次 1 的成功条件 (观察窗口 120s)",
+        },
+      },
+      {
+        schema_version: "1",
+        type: "remediation_progress",
+        session_id: "sess-canary-unique",
+        timestamp: "2026-04-17T15:18:01.000Z",
+        data: {
+          event_id: "103",
+          stage: "canary_batch_completed",
+          batch: "canary-1",
+          batch_index: 1,
+          batch_total: 2,
+          message: "灰度批次 1/2 完成，覆盖 1 个目标",
+        },
+      },
+      {
+        schema_version: "1",
+        type: "remediation_progress",
+        session_id: "sess-canary-unique",
+        timestamp: "2026-04-17T15:20:00.000Z",
+        data: {
+          event_id: "104",
+          stage: "observation_started",
+          seconds: 120,
+          poll_interval_seconds: 10,
+          message: "进入观察阶段，持续 120 秒",
+        },
+      },
+      {
+        schema_version: "1",
+        type: "remediation_progress",
+        session_id: "sess-canary-unique",
+        timestamp: "2026-04-17T15:22:00.000Z",
+        data: {
+          event_id: "105",
+          stage: "observation_result",
+          alert_cleared: true,
+          metrics_improved: true,
+          message: "观察结果：alert_cleared=true，metrics_improved=true，告警状态 firing -> resolved",
+        },
+      },
+    ];
+
+    render(<RemediationTimeline events={events} sessionId="sess-canary-unique" />);
+
+    expect(screen.getAllByText("灰度批次 1/2 开始，覆盖 1 个目标: proc:3802685")).toHaveLength(1);
+    expect(screen.getAllByText("验证灰度批次 1 的成功条件 (观察窗口 120s)")).toHaveLength(1);
+    expect(screen.getAllByText("灰度批次 1/2 完成，覆盖 1 个目标")).toHaveLength(1);
+    expect(screen.getAllByText("进入观察阶段，持续 120 秒")).toHaveLength(1);
+    expect(screen.getAllByText("观察结果：alert_cleared=true，metrics_improved=true，告警状态 firing -> resolved")).toHaveLength(1);
+  });
+});

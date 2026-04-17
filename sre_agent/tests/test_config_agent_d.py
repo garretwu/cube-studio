@@ -115,3 +115,25 @@ def test_load_config_applies_reason_timeout_tuning_values(tmp_path: Path) -> Non
     assert config.agent.ttft_external_process_default_node == "10.11.4.13"
     assert config.agent.step_timeout_sec == 240
     assert config.agent.total_timeout_sec == 900
+
+
+def test_load_config_applies_remediation_observation_polling_defaults(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        "\n".join(
+            [
+                "global:",
+                "  aidc_id: aidc-remediation-observe",
+                "remediation:",
+                "  observation_seconds: 600",
+                "  observation_poll_seconds: 10",
+                "  execution_timeout_seconds: 900",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    config = load_config(config_path)
+    assert config.remediation.observation_seconds == 600
+    assert config.remediation.observation_poll_seconds == 10
+    assert config.remediation.execution_timeout_seconds == 900
