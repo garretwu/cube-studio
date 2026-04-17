@@ -1,4 +1,4 @@
-﻿import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   Navigate,
   Route,
@@ -30,34 +30,34 @@ const rootPageChrome: Record<
 > = {
   "/topology": {
     title: "拓扑",
-    subtitle: "展示实体关系与依赖路径",
+    subtitle: "实时查看服务拓扑与依赖状态。",
     contentSpacing: "compact",
     contentMode: "workspace",
   },
   "/alerts": {
     title: "告警",
-    subtitle: "查看异常告警并进入诊断处置",
+    subtitle: "跟踪进行中事件的告警信号、级别与责任归属。",
     contentSpacing: "compact",
   },
   "/diagnosis": {
     title: "诊断",
-    subtitle: "基于证据链收敛根因结论",
+    subtitle: "查看诊断流程与修复执行时间线。",
     contentSpacing: "compact",
     contentMode: "workspace",
   },
   "/remediation": {
     title: "修复",
-    subtitle: "汇总修复方案并跟踪执行状态",
+    subtitle: "查看修复方案、执行状态与回滚选项。",
     contentSpacing: "compact",
   },
   "/knowledge": {
     title: "知识",
-    subtitle: "统一检索运维知识与操作手册",
+    subtitle: "浏览排障知识与可复用故障手册。",
     contentSpacing: "compact",
   },
   "/skills": {
     title: "技能",
-    subtitle: "管理智能技能与当前可用能力",
+    subtitle: "管理诊断技能并跟踪技能执行洞察。",
     contentSpacing: "compact",
   },
 };
@@ -165,11 +165,9 @@ function AppRoutes() {
         path="/knowledge/:knowledgeBaseId"
         element={<KnowledgeDetailPage />}
       />
-      <Route path="/topology/object/:nodeId" element={<TopologyObjectPage />} />
-      <Route
-        path="/topology-modified"
-        element={<Navigate to="/topology" replace />}
-      />
+      <Route path="/topology/object/:nodeId/*" element={<TopologyObjectPage />} />
+      <Route path="/topology-modified" element={<Navigate to="/topology" replace />} />
+      <Route path="/topology-modified/object/:nodeId/*" element={<TopologyObjectPage />} />
       <Route
         path="/alerts-modified"
         element={<Navigate to="/alerts" replace />}
@@ -211,7 +209,7 @@ function App() {
           setHistorySessions([]);
           setHistoryLoading(false);
           setHistoryLoadError(
-            error instanceof Error ? error.message : "历史会话加载失败",
+            error instanceof Error ? error.message : "加载诊断历史失败。",
           );
         }
       });
@@ -235,7 +233,7 @@ function App() {
   );
   const sections = [
     {
-      title: "主导航",
+      title: "导航",
       collapseBehavior: "icon-only" as const,
       items: visibleRoutes.map((route) => ({
         key: route.key,
@@ -246,7 +244,7 @@ function App() {
       })),
     },
     {
-      title: "历史频道",
+      title: "诊断历史",
       collapseBehavior: "hide" as const,
       items: historySessions.map((session) => ({
         key: session.session_id,
@@ -259,25 +257,24 @@ function App() {
         onClick: () => navigate(`/history/${session.session_id}`),
       })),
       emptyLabel: historyLoading
-        ? "正在同步历史 session..."
+        ? "正在加载诊断会话..."
         : historyLoadError
-          ? "历史 session 加载失败"
-          : "暂无历史 session",
+          ? "诊断会话加载失败"
+          : "暂无诊断会话",
     },
   ];
 
   return (
     <AppShell
-      adminLabel="管理员"
-      brandSubtitle="AIDC 智能运维指挥台"
+      adminLabel="SRE 控制台"
+      brandSubtitle="AIDC 智能运维工作台"
       contentMode={pageChrome.contentMode}
       contentSpacing={pageChrome.contentSpacing}
-      helpLabel="帮助中心"
+      helpLabel="帮助文档"
       sections={sections}
-      siteLabel="AIDC-001"
       subtitle={pageChrome.subtitle}
       title={pageChrome.title}
-      userMeta="站点值班 / 智能运维"
+      userMeta="平台团队 / Auto-SRE"
       userName="Miaomiao Zhou"
       onBrandClick={() => navigate("/design-tokens")}
     >

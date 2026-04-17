@@ -8,7 +8,6 @@ type AppShellProps = {
   children: ReactNode;
   sections: SidebarNavSection[];
   helpLabel: string;
-  siteLabel: string;
   userName: string;
   userMeta: string;
   adminLabel: string;
@@ -25,7 +24,6 @@ function AppShell({
   children,
   sections,
   helpLabel,
-  siteLabel,
   userName,
   userMeta,
   adminLabel,
@@ -63,7 +61,6 @@ function AppShell({
           adminLabel={adminLabel}
           eyebrow={eyebrow}
           helpLabel={helpLabel}
-          siteLabel={siteLabel}
           subtitle={subtitle}
           title={title}
           userMeta={userMeta}
@@ -84,3 +81,4 @@ function AppShell({
 }
 
 export default AppShell;
+

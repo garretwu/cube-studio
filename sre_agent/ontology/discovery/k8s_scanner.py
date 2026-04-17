@@ -93,13 +93,23 @@ class K8sScanner:
         edges: list[OntologyEdge] = []
         normalized_cluster = cluster_name.strip() or "lab-cluster"
         cluster_id = normalized_cluster if normalized_cluster.startswith("k8s:") else f"k8s:{normalized_cluster}"
-        cluster_display_name = normalized_cluster[4:] if normalized_cluster.startswith("k8s:") else normalized_cluster
+        # NOTE: Do NOT create a K8S_CLUSTER node here — the cluster entity is owned by
+        # static topology (discover_static_snapshot).  Hybrid merge deduplicates, but
+        # skipping creation avoids an unnecessary entity entirely.
+
+        # Namespace service group node: aggregates pods and services under a namespace
+        ns_group_id = f"ns:{namespace}"
         nodes.append(
             OntologyNode(
-                id=cluster_id,
-                entity_type=EntityType.K8S_CLUSTER,
-                name=cluster_display_name,
-                properties={"source": "k8s"},
+                id=ns_group_id,
+                entity_type=EntityType.INFERENCE_SERVICE,
+                name=namespace,
+                properties={
+                    "namespace": namespace,
+                    "kind": "namespace_group",
+                    "cluster_id": cluster_id,
+                    "source": "k8s",
+                },
                 status="online",
                 updated_at=now,
             )
@@ -147,24 +157,16 @@ class K8sScanner:
                     updated_at=now,
                 )
             )
+            # pod → namespace group
             edges.append(
                 OntologyEdge(
                     source_id=pod_id,
-                    target_id=cluster_id,
+                    target_id=ns_group_id,
                     relation=RelationType.PART_OF,
                     properties={"namespace": namespace},
                 )
             )
-            if node_name:
-                edges.append(
-                    OntologyEdge(
-                        source_id=pod_id,
-                        target_id=node_name,
-                        relation=RelationType.HOSTED_ON,
-                        properties={"namespace": namespace},
-                    )
-                )
-                if node_name not in linked_nodes:
+            if node_name and node_name not in linked_nodes:
                     linked_nodes.add(node_name)
                     edges.append(
                         OntologyEdge(
@@ -215,6 +217,15 @@ class K8sScanner:
                     properties={"namespace": namespace},
                 )
             )
+            # service → namespace group
+            edges.append(
+                OntologyEdge(
+                    source_id=service_id,
+                    target_id=ns_group_id,
+                    relation=RelationType.PART_OF,
+                    properties={"namespace": namespace},
+                )
+            )
 
             service_pod_names = await self._resolve_service_pod_names(
                 namespace=namespace,
@@ -240,14 +251,6 @@ class K8sScanner:
                             },
                             status="Unknown",
                             updated_at=now,
-                        )
-                    )
-                    edges.append(
-                        OntologyEdge(
-                            source_id=pod_id,
-                            target_id=cluster_id,
-                            relation=RelationType.PART_OF,
-                            properties={"namespace": namespace},
                         )
                     )
                 edges.append(

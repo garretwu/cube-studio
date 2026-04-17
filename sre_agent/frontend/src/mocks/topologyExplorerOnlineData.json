@@ -20,7 +20,7 @@
     {
       "id": "bmc:worker-01",
       "name": "BMC worker-01",
-      "type": "node",
+      "type": "bmc_endpoint",
       "status": "healthy",
       "layer": "compute",
       "domain": "aidc",
@@ -50,7 +50,7 @@
     {
       "id": "bmc:worker-02",
       "name": "BMC worker-02",
-      "type": "node",
+      "type": "bmc_endpoint",
       "status": "healthy",
       "layer": "compute",
       "domain": "aidc",
@@ -80,7 +80,7 @@
     {
       "id": "bmc:worker-03",
       "name": "BMC worker-03",
-      "type": "node",
+      "type": "bmc_endpoint",
       "status": "healthy",
       "layer": "compute",
       "domain": "aidc",
@@ -110,7 +110,7 @@
     {
       "id": "bmc:worker-04",
       "name": "BMC worker-04",
-      "type": "node",
+      "type": "bmc_endpoint",
       "status": "healthy",
       "layer": "compute",
       "domain": "aidc",
@@ -140,7 +140,7 @@
     {
       "id": "bmc:worker-05",
       "name": "BMC worker-05",
-      "type": "node",
+      "type": "bmc_endpoint",
       "status": "healthy",
       "layer": "compute",
       "domain": "aidc",
@@ -170,7 +170,7 @@
     {
       "id": "bmc:worker-06",
       "name": "BMC worker-06",
-      "type": "node",
+      "type": "bmc_endpoint",
       "status": "healthy",
       "layer": "compute",
       "domain": "aidc",
@@ -590,7 +590,7 @@
       "id": "pod:ai-models:ai-models-load-tester-546d7ff9d-6zvh7",
       "name": "ai-models/ai-models-load-tester-546d7ff9d-6zvh7",
       "type": "pod",
-      "status": "healthy",
+      "status": "abnormal",
       "layer": "service",
       "domain": "aidc",
       "region": "AIDC-CN",
@@ -12804,7 +12804,7 @@
     {
       "id": "sw-200g:200GE1/0/1",
       "name": "200GE1/0/1",
-      "type": "switch",
+      "type": "switch_port",
       "status": "healthy",
       "layer": "network",
       "domain": "aidc",
@@ -12837,7 +12837,7 @@
     {
       "id": "sw-200g:200GE1/0/2",
       "name": "200GE1/0/2",
-      "type": "switch",
+      "type": "switch_port",
       "status": "healthy",
       "layer": "network",
       "domain": "aidc",
@@ -12870,7 +12870,7 @@
     {
       "id": "sw-200g:200GE1/0/3",
       "name": "200GE1/0/3",
-      "type": "switch",
+      "type": "switch_port",
       "status": "healthy",
       "layer": "network",
       "domain": "aidc",
@@ -12903,7 +12903,7 @@
     {
       "id": "sw-200g:200GE1/0/4",
       "name": "200GE1/0/4",
-      "type": "switch",
+      "type": "switch_port",
       "status": "healthy",
       "layer": "network",
       "domain": "aidc",
@@ -12936,7 +12936,7 @@
     {
       "id": "sw-200g:200GE1/0/5",
       "name": "200GE1/0/5",
-      "type": "switch",
+      "type": "switch_port",
       "status": "healthy",
       "layer": "network",
       "domain": "aidc",
@@ -12969,7 +12969,7 @@
     {
       "id": "sw-200g:200GE1/0/6",
       "name": "200GE1/0/6",
-      "type": "switch",
+      "type": "switch_port",
       "status": "healthy",
       "layer": "network",
       "domain": "aidc",
@@ -12992,6 +12992,238 @@
       },
       "position": {
         "x": 384,
+        "y": 872
+      },
+      "size": {
+        "width": 216,
+        "height": 108
+      }
+    },
+    {
+      "id": "sw-25G",
+      "name": "sw-25G",
+      "type": "switch",
+      "status": "healthy",
+      "layer": "network",
+      "domain": "aidc",
+      "region": "AIDC-CN",
+      "zone": "zone-a",
+      "cluster": null,
+      "rack": null,
+      "slot": null,
+      "summary": "sw-25G (switch)",
+      "tags": [
+        "real-test"
+      ],
+      "metrics": null,
+      "attributes": {
+        "name": "sw-25G",
+        "type": "H3C S6520X-54QC",
+        "status": "online",
+        "source": "real-test",
+        "mgmt_host": "10.11.8.53",
+        "inventory_source": "sre_agent/conf/live_inventory.lab.yaml"
+      },
+      "position": {
+        "x": 888,
+        "y": 104
+      },
+      "size": {
+        "width": 216,
+        "height": 108
+      }
+    },
+    {
+      "id": "sw-25G:25GE1/0/1",
+      "name": "25GE1/0/1",
+      "type": "switch_port",
+      "status": "healthy",
+      "layer": "network",
+      "domain": "aidc",
+      "region": "AIDC-CN",
+      "zone": "zone-a",
+      "cluster": null,
+      "rack": null,
+      "slot": null,
+      "summary": "25GE1/0/1 (switch_port)",
+      "tags": [
+        "static-fallback"
+      ],
+      "metrics": null,
+      "attributes": {
+        "name": "25GE1/0/1",
+        "status": "up",
+        "speed_gbps": 25,
+        "source": "static-fallback",
+        "mapping_source": "inventory_heuristic"
+      },
+      "position": {
+        "x": 888,
+        "y": 232
+      },
+      "size": {
+        "width": 216,
+        "height": 108
+      }
+    },
+    {
+      "id": "sw-25G:25GE1/0/2",
+      "name": "25GE1/0/2",
+      "type": "switch_port",
+      "status": "healthy",
+      "layer": "network",
+      "domain": "aidc",
+      "region": "AIDC-CN",
+      "zone": "zone-a",
+      "cluster": null,
+      "rack": null,
+      "slot": null,
+      "summary": "25GE1/0/2 (switch_port)",
+      "tags": [
+        "static-fallback"
+      ],
+      "metrics": null,
+      "attributes": {
+        "name": "25GE1/0/2",
+        "status": "up",
+        "speed_gbps": 25,
+        "source": "static-fallback",
+        "mapping_source": "inventory_heuristic"
+      },
+      "position": {
+        "x": 888,
+        "y": 360
+      },
+      "size": {
+        "width": 216,
+        "height": 108
+      }
+    },
+    {
+      "id": "sw-25G:25GE1/0/3",
+      "name": "25GE1/0/3",
+      "type": "switch_port",
+      "status": "healthy",
+      "layer": "network",
+      "domain": "aidc",
+      "region": "AIDC-CN",
+      "zone": "zone-a",
+      "cluster": null,
+      "rack": null,
+      "slot": null,
+      "summary": "25GE1/0/3 (switch_port)",
+      "tags": [
+        "static-fallback"
+      ],
+      "metrics": null,
+      "attributes": {
+        "name": "25GE1/0/3",
+        "status": "up",
+        "speed_gbps": 25,
+        "source": "static-fallback",
+        "mapping_source": "inventory_heuristic"
+      },
+      "position": {
+        "x": 888,
+        "y": 488
+      },
+      "size": {
+        "width": 216,
+        "height": 108
+      }
+    },
+    {
+      "id": "sw-25G:25GE1/0/4",
+      "name": "25GE1/0/4",
+      "type": "switch_port",
+      "status": "healthy",
+      "layer": "network",
+      "domain": "aidc",
+      "region": "AIDC-CN",
+      "zone": "zone-a",
+      "cluster": null,
+      "rack": null,
+      "slot": null,
+      "summary": "25GE1/0/4 (switch_port)",
+      "tags": [
+        "static-fallback"
+      ],
+      "metrics": null,
+      "attributes": {
+        "name": "25GE1/0/4",
+        "status": "up",
+        "speed_gbps": 25,
+        "source": "static-fallback",
+        "mapping_source": "inventory_heuristic"
+      },
+      "position": {
+        "x": 888,
+        "y": 616
+      },
+      "size": {
+        "width": 216,
+        "height": 108
+      }
+    },
+    {
+      "id": "sw-25G:25GE1/0/5",
+      "name": "25GE1/0/5",
+      "type": "switch_port",
+      "status": "healthy",
+      "layer": "network",
+      "domain": "aidc",
+      "region": "AIDC-CN",
+      "zone": "zone-a",
+      "cluster": null,
+      "rack": null,
+      "slot": null,
+      "summary": "25GE1/0/5 (switch_port)",
+      "tags": [
+        "static-fallback"
+      ],
+      "metrics": null,
+      "attributes": {
+        "name": "25GE1/0/5",
+        "status": "up",
+        "speed_gbps": 25,
+        "source": "static-fallback",
+        "mapping_source": "inventory_heuristic"
+      },
+      "position": {
+        "x": 888,
+        "y": 744
+      },
+      "size": {
+        "width": 216,
+        "height": 108
+      }
+    },
+    {
+      "id": "sw-25G:25GE1/0/6",
+      "name": "25GE1/0/6",
+      "type": "switch_port",
+      "status": "healthy",
+      "layer": "network",
+      "domain": "aidc",
+      "region": "AIDC-CN",
+      "zone": "zone-a",
+      "cluster": null,
+      "rack": null,
+      "slot": null,
+      "summary": "25GE1/0/6 (switch_port)",
+      "tags": [
+        "static-fallback"
+      ],
+      "metrics": null,
+      "attributes": {
+        "name": "25GE1/0/6",
+        "status": "up",
+        "speed_gbps": 25,
+        "source": "static-fallback",
+        "mapping_source": "inventory_heuristic"
+      },
+      "position": {
+        "x": 888,
         "y": 872
       },
       "size": {
@@ -13033,7 +13265,7 @@
       "id": "wj-lab-cpt-02",
       "name": "wj-lab-cpt-02",
       "type": "node",
-      "status": "healthy",
+      "status": "impacted",
       "layer": "compute",
       "domain": "aidc",
       "region": "AIDC-CN",
@@ -13325,8 +13557,8 @@
       "attributes": {
         "role": "cpu",
         "source": "static-fallback",
-        "switch": "sw-200g",
-        "port": "200GE1/0/4"
+        "switch": "sw-25G",
+        "port": "25GE1/0/4"
       },
       "position": {
         "x": 636,
@@ -13357,8 +13589,8 @@
       "attributes": {
         "role": "cpu",
         "source": "static-fallback",
-        "switch": "sw-200g",
-        "port": "200GE1/0/5"
+        "switch": "sw-25G",
+        "port": "25GE1/0/5"
       },
       "position": {
         "x": 636,
@@ -13389,8 +13621,8 @@
       "attributes": {
         "role": "cpu",
         "source": "static-fallback",
-        "switch": "sw-200g",
-        "port": "200GE1/0/6"
+        "switch": "sw-25G",
+        "port": "25GE1/0/6"
       },
       "position": {
         "x": 636,
@@ -22072,6 +22304,17 @@
       "isAggregated": false
     },
     {
+      "id": "edge-787a-k8s:aidc-lab-sw-25G",
+      "source": "k8s:aidc-lab",
+      "target": "sw-25G",
+      "relationType": "connects_to",
+      "status": "healthy",
+      "impactLevel": "low",
+      "label": "connects_to",
+      "isCritical": false,
+      "isAggregated": false
+    },
+    {
       "id": "edge-788-sw-200g:200GE1/0/1-worker-01",
       "source": "sw-200g:200GE1/0/1",
       "target": "worker-01",
@@ -22138,17 +22381,6 @@
       "isAggregated": false
     },
     {
-      "id": "edge-794-sw-200g:200GE1/0/4-worker-04",
-      "source": "sw-200g:200GE1/0/4",
-      "target": "worker-04",
-      "relationType": "connects_to",
-      "status": "healthy",
-      "impactLevel": "low",
-      "label": "connected_to",
-      "isCritical": false,
-      "isAggregated": false
-    },
-    {
       "id": "edge-795-sw-200g:200GE1/0/5-sw-200g",
       "source": "sw-200g:200GE1/0/5",
       "target": "sw-200g",
@@ -22156,17 +22388,6 @@
       "status": "healthy",
       "impactLevel": "low",
       "label": "part_of",
-      "isCritical": false,
-      "isAggregated": false
-    },
-    {
-      "id": "edge-796-sw-200g:200GE1/0/5-worker-05",
-      "source": "sw-200g:200GE1/0/5",
-      "target": "worker-05",
-      "relationType": "connects_to",
-      "status": "healthy",
-      "impactLevel": "low",
-      "label": "connected_to",
       "isCritical": false,
       "isAggregated": false
     },
@@ -22182,8 +22403,129 @@
       "isAggregated": false
     },
     {
-      "id": "edge-798-sw-200g:200GE1/0/6-worker-06",
-      "source": "sw-200g:200GE1/0/6",
+      "id": "edge-798-sw-25G:25GE1/0/1-sw-25G",
+      "source": "sw-25G:25GE1/0/1",
+      "target": "sw-25G",
+      "relationType": "contains",
+      "status": "healthy",
+      "impactLevel": "low",
+      "label": "part_of",
+      "isCritical": false,
+      "isAggregated": false
+    },
+    {
+      "id": "edge-799-sw-25G:25GE1/0/1-worker-01",
+      "source": "sw-25G:25GE1/0/1",
+      "target": "worker-01",
+      "relationType": "connects_to",
+      "status": "healthy",
+      "impactLevel": "low",
+      "label": "connected_to",
+      "isCritical": false,
+      "isAggregated": false
+    },
+    {
+      "id": "edge-800-sw-25G:25GE1/0/2-sw-25G",
+      "source": "sw-25G:25GE1/0/2",
+      "target": "sw-25G",
+      "relationType": "contains",
+      "status": "healthy",
+      "impactLevel": "low",
+      "label": "part_of",
+      "isCritical": false,
+      "isAggregated": false
+    },
+    {
+      "id": "edge-801-sw-25G:25GE1/0/2-worker-02",
+      "source": "sw-25G:25GE1/0/2",
+      "target": "worker-02",
+      "relationType": "connects_to",
+      "status": "healthy",
+      "impactLevel": "low",
+      "label": "connected_to",
+      "isCritical": false,
+      "isAggregated": false
+    },
+    {
+      "id": "edge-802-sw-25G:25GE1/0/3-sw-25G",
+      "source": "sw-25G:25GE1/0/3",
+      "target": "sw-25G",
+      "relationType": "contains",
+      "status": "healthy",
+      "impactLevel": "low",
+      "label": "part_of",
+      "isCritical": false,
+      "isAggregated": false
+    },
+    {
+      "id": "edge-803-sw-25G:25GE1/0/3-worker-03",
+      "source": "sw-25G:25GE1/0/3",
+      "target": "worker-03",
+      "relationType": "connects_to",
+      "status": "healthy",
+      "impactLevel": "low",
+      "label": "connected_to",
+      "isCritical": false,
+      "isAggregated": false
+    },
+    {
+      "id": "edge-804-sw-25G:25GE1/0/4-sw-25G",
+      "source": "sw-25G:25GE1/0/4",
+      "target": "sw-25G",
+      "relationType": "contains",
+      "status": "healthy",
+      "impactLevel": "low",
+      "label": "part_of",
+      "isCritical": false,
+      "isAggregated": false
+    },
+    {
+      "id": "edge-805-sw-25G:25GE1/0/4-worker-04",
+      "source": "sw-25G:25GE1/0/4",
+      "target": "worker-04",
+      "relationType": "connects_to",
+      "status": "healthy",
+      "impactLevel": "low",
+      "label": "connected_to",
+      "isCritical": false,
+      "isAggregated": false
+    },
+    {
+      "id": "edge-806-sw-25G:25GE1/0/5-sw-25G",
+      "source": "sw-25G:25GE1/0/5",
+      "target": "sw-25G",
+      "relationType": "contains",
+      "status": "healthy",
+      "impactLevel": "low",
+      "label": "part_of",
+      "isCritical": false,
+      "isAggregated": false
+    },
+    {
+      "id": "edge-807-sw-25G:25GE1/0/5-worker-05",
+      "source": "sw-25G:25GE1/0/5",
+      "target": "worker-05",
+      "relationType": "connects_to",
+      "status": "healthy",
+      "impactLevel": "low",
+      "label": "connected_to",
+      "isCritical": false,
+      "isAggregated": false
+    },
+    {
+      "id": "edge-808-sw-25G:25GE1/0/6-sw-25G",
+      "source": "sw-25G:25GE1/0/6",
+      "target": "sw-25G",
+      "relationType": "contains",
+      "status": "healthy",
+      "impactLevel": "low",
+      "label": "part_of",
+      "isCritical": false,
+      "isAggregated": false
+    },
+    {
+      "id": "edge-809-sw-25G:25GE1/0/6-worker-06",
+      "source": "sw-25G:25GE1/0/6",
       "target": "worker-06",
       "relationType": "connects_to",
       "status": "healthy",

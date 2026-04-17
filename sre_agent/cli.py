@@ -80,6 +80,13 @@ def _resolve_cli_live_inventory_path(config: SREAgentConfig) -> Path:
     return Path(configured_path)
 
 
+def _resolve_cli_unified_inventory_path(config: SREAgentConfig) -> Path | None:
+    configured_path = str(config.ontology.discovery.unified_inventory_path or "").strip()
+    if not configured_path:
+        return None
+    return Path(configured_path)
+
+
 def _load_live_inventory(path: Path) -> dict[str, Any]:
     try:
         payload = topology_discovery.load_live_inventory(path)
@@ -101,13 +108,13 @@ async def _scan_live_sources(
     config: SREAgentConfig,
     raw_config: dict[str, Any],
 ) -> tuple[list[Any], list[Any], dict[str, dict[str, int]]]:
-    discovery_config = config.ontology.discovery
+    k8s_namespaces, cluster_name, prom_targets = topology_discovery.resolve_discovery_runtime_inputs(config)
     try:
         return await topology_discovery.scan_live_sources(
             raw_config,
-            k8s_namespaces=list(discovery_config.k8s_namespaces),
-            k8s_cluster_name=str(discovery_config.k8s_cluster_name).strip() or "lab-cluster",
-            prometheus_targets=dict(discovery_config.prometheus_targets),
+            k8s_namespaces=k8s_namespaces,
+            k8s_cluster_name=cluster_name,
+            prometheus_targets=prom_targets,
         )
     except Exception as exc:  # noqa: BLE001
         raise click.ClickException(f"live discovery failed: {exc}") from exc
@@ -117,7 +124,12 @@ async def _discover_topology_live(config: SREAgentConfig, refresh_only: bool) ->
     if not refresh_only:
         raise click.ClickException("live discovery requires --refresh-only to avoid mixing stale topology")
 
-    inventory = _load_live_inventory(_resolve_cli_live_inventory_path(config))
+    unified_path = _resolve_cli_unified_inventory_path(config)
+    if unified_path is not None:
+        unified_payload = topology_discovery.load_unified_inventory(unified_path)
+        inventory = topology_discovery.build_live_inventory_from_unified(unified_payload)
+    else:
+        inventory = _load_live_inventory(_resolve_cli_live_inventory_path(config))
     nodes, edges, scanner_counts = await _scan_live_sources(config, inventory)
 
     graph = OntologyGraph(db_path=config.ontology.db_path)

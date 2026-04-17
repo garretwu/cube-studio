@@ -68,12 +68,20 @@ INITIAL_HISTORY = [
 
 message_store: dict[str, list[dict[str, Any]]] = {SESSION_ID: deepcopy(INITIAL_HISTORY)}
 session_store: dict[str, dict[str, Any]] = {SESSION_ID: deepcopy(SESSION_TEMPLATE)}
+event_store: dict[str, list[dict[str, Any]]] = {SESSION_ID: []}
 
 
 class ChatPayload(BaseModel):
     session_id: str
     content: str
     search_text: str | None = None
+
+
+class ApprovalPayload(BaseModel):
+    approved: bool
+    user: str | None = "ui-operator"
+    reason: str | None = None
+    plan_version: int | None = None
 
 
 class ConnectionManager:
@@ -145,6 +153,23 @@ async def get_sessions(limit: int = 50) -> list[dict[str, Any]]:
     return [build_session_summary(session)][: max(1, int(limit))]
 
 
+@app.get("/api/sessions/{session_id}")
+async def get_session(session_id: str) -> dict[str, Any]:
+    return deepcopy(session_store.get(session_id, session_store[SESSION_ID]))
+
+
+@app.get("/api/sessions/{session_id}/events")
+async def get_session_events(session_id: str, limit: int = 200, after: str | None = None) -> list[dict[str, Any]]:
+    events = event_store.get(session_id, [])
+    if after:
+        try:
+            start = next(index + 1 for index, event in enumerate(events) if event.get("event_id") == after)
+        except StopIteration:
+            start = 0
+        events = events[start:]
+    return deepcopy(events[-max(1, int(limit)):])
+
+
 @app.get("/api/diagnosis/sessions")
 async def get_diagnosis_sessions(limit: int = 50) -> list[dict[str, Any]]:
     session = session_store[SESSION_ID]
@@ -181,8 +206,42 @@ async def post_chat_message(payload: ChatPayload) -> dict[str, Any]:
 
     session = session_store.setdefault(session_id, deepcopy(SESSION_TEMPLATE))
     session["diagnosis_result"] = diagnosis_result
-    session["status"] = "running"
+    session["status"] = "approval_required"
     return {"reply": assistant_message}
+
+
+@app.post("/api/remediate/{session_id}/approve")
+async def approve_remediation(session_id: str, payload: ApprovalPayload) -> dict[str, Any]:
+    session = session_store.setdefault(session_id, deepcopy(SESSION_TEMPLATE))
+    if not payload.approved:
+        session["status"] = "rejected"
+        await emit_event(
+            session_id,
+            "remediation_progress",
+            {"stage": "approval_rejected", "user": payload.user, "reason": payload.reason or ""},
+            0,
+        )
+        return {"success": False, "error": {"message": payload.reason or "approval denied"}}
+
+    session["status"] = "remediating"
+    await emit_event(
+        session_id,
+        "remediation_progress",
+        {"stage": "execution_started", "user": payload.user, "plan_version": payload.plan_version or 1},
+        0,
+    )
+    await stream_remediation(session_id)
+    return {
+        "success": True,
+        "data": {
+            "plan_id": "plan-gpu-hotspot-v1",
+            "success": True,
+            "steps_completed": 2,
+            "steps_total": 2,
+            "duration_seconds": 7,
+            "error": None,
+        },
+    }
 
 
 @app.websocket("/ws/thinking-trace/{session_id}")
@@ -224,6 +283,8 @@ async def emit_event(session_id: str, event_type: str, data: dict[str, Any], del
         "timestamp": now_iso(),
         "data": data,
     }
+    event["event_id"] = f"{session_id}-{len(event_store.setdefault(session_id, [])) + 1}"
+    event_store.setdefault(session_id, []).append(deepcopy(event))
     await manager.broadcast(session_id, event)
     persist_trace(session_id, event)
 
@@ -252,6 +313,61 @@ def persist_trace(session_id: str, event: dict[str, Any]) -> None:
                 "timestamp": event["timestamp"],
             }
         )
+
+
+
+async def stream_remediation(session_id: str) -> None:
+    async def emit(stage: str, data: dict[str, Any] | None = None, delay: float = 0.6) -> None:
+        payload = {"stage": stage}
+        if data:
+            payload.update(data)
+        await emit_event(session_id, "remediation_progress", payload, delay)
+
+    await emit("canary_started", {"skill_id": "builtin-vllm-diagnosis", "progress": 10, "progress_label": "canary 10%"}, 0.6)
+    await emit_event(
+        session_id,
+        "tool_call",
+        {"tool_name": "run_skill", "params": {"skill_id": "builtin-vllm-diagnosis", "phase": "canary"}},
+        0.2,
+    )
+    await emit("canary_progress", {"progress": 45, "progress_label": "first batch", "vllm_p95_ms": 1720}, 0.8)
+    await emit("canary_progress", {"progress": 80, "progress_label": "metrics converging", "gpu_util": 74}, 0.8)
+    await emit_event(
+        session_id,
+        "tool_result",
+        {
+            "tool_name": "run_skill",
+            "params": {"skill_id": "builtin-vllm-diagnosis", "phase": "canary"},
+            "result": {"vllm_p95_ms": 1680, "inference_error_rate": 0.004},
+        },
+        0.2,
+    )
+    await emit("canary_succeeded", {"progress": 100, "progress_label": "waiting metrics feedback"}, 0.5)
+    await emit("observation_result", {"metrics_improved": True, "alert_cleared": True}, 0.7)
+    session_store.setdefault(session_id, deepcopy(SESSION_TEMPLATE))["status"] = "remediating"
+    await emit("full_rollout_started", {"progress": 35, "progress_label": "gradual rollout"}, 0.6)
+    await emit_event(
+        session_id,
+        "tool_call",
+        {"tool_name": "run_skill", "params": {"skill_id": "builtin-platform-health", "phase": "full_rollout_observation"}},
+        0.2,
+    )
+    await emit("full_rollout_progress", {"progress": 72, "progress_label": "full rollout"}, 0.8)
+    await emit("full_rollout_succeeded", {"progress": 100, "progress_label": "waiting full metrics"}, 0.8)
+    await emit_event(
+        session_id,
+        "tool_result",
+        {
+            "tool_name": "run_skill",
+            "params": {"skill_id": "builtin-platform-health", "phase": "full_rollout_observation"},
+            "result": {"vllm_p95_ms": 1420, "inference_error_rate": 0.001, "alert_status": "resolved"},
+        },
+        0.2,
+    )
+    session_store.setdefault(session_id, deepcopy(SESSION_TEMPLATE))["status"] = "resolved"
+    await emit("alert_recovered", {"progress": 100, "progress_label": "alert resolved"}, 0.6)
+    session_store.setdefault(session_id, deepcopy(SESSION_TEMPLATE))["status"] = "closed"
+    await emit("session_closed", {"progress": 100, "progress_label": "session closed"}, 0.4)
 
 
 async def stream_diagnosis(session_id: str, content: str) -> tuple[str, dict[str, Any]]:
@@ -305,6 +421,38 @@ async def stream_diagnosis(session_id: str, content: str) -> tuple[str, dict[str
         "impact_summary": impact_summary,
         "confidence": 0.9 if continuation_mode else 0.88,
         "next_action": "Keep the investigation in the same session and attach one more round of evidence before remediation.",
+        "recommended_fix": {
+            "plan_id": "plan-gpu-hotspot-v1",
+            "root_cause": root_cause,
+            "description": "Canary the hot-node drain, observe metrics, then roll out the repair.",
+            "steps": [
+                {
+                    "step_id": 1,
+                    "description": "Shift 10% traffic away from node-gpu-01 and run vLLM diagnosis skill.",
+                    "tool": "run_skill",
+                    "params": {"skill_id": "builtin-vllm-diagnosis", "phase": "canary"},
+                    "verification": {"method": "wait", "wait_seconds": 60},
+                    "timeout": 120,
+                },
+                {
+                    "step_id": 2,
+                    "description": "Apply the traffic repair globally after metrics confirm the canary.",
+                    "tool": "run_skill",
+                    "params": {"skill_id": "builtin-platform-health", "phase": "full_rollout"},
+                    "verification": {"method": "wait", "wait_seconds": 120},
+                    "timeout": 240,
+                },
+            ],
+            "canary": {
+                "enabled": True,
+                "target_percentage": 10,
+                "monitor_duration": 60,
+                "success_criteria": [{"metric": "vllm_p95_ms", "operator": "<=", "value": 1800}],
+            },
+            "estimated_impact": "low",
+            "confidence": 0.88,
+            "priority": "P1",
+        },
     }
 
     continuity_hint = (
@@ -383,4 +531,3 @@ async def stream_diagnosis(session_id: str, content: str) -> tuple[str, dict[str
 if __name__ == "__main__":
     with contextlib.suppress(KeyboardInterrupt):
         uvicorn.run(app, host="127.0.0.1", port=8787, log_level="info")
-

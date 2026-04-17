@@ -12,6 +12,8 @@ const reactFlowMock = vi.hoisted(() => {
 
   const instance = {
     fitView: vi.fn(),
+    fitBounds: vi.fn(),
+    setViewport: vi.fn(),
     zoomIn: vi.fn(),
     zoomOut: vi.fn(),
     setCenter: vi.fn(),
@@ -37,8 +39,10 @@ const reactFlowMock = vi.hoisted(() => {
       instanceNodes = [];
       shouldInit = true;
       instance.fitView.mockClear();
+      instance.setViewport.mockClear();
       instance.zoomIn.mockClear();
       instance.zoomOut.mockClear();
+      instance.fitBounds.mockClear();
       instance.setCenter.mockClear();
       instance.getZoom.mockClear();
       instance.getZoom.mockReturnValue(1.1);
@@ -53,9 +57,12 @@ vi.mock("@xyflow/react", async () => {
 
   return {
     Background: () => null,
+    BackgroundVariant: { Dots: "dots" },
+    BaseEdge: () => null,
     Handle: () => null,
     MarkerType: { ArrowClosed: "arrow-closed" },
-    Position: { Left: "left", Right: "right" },
+    Position: { Left: "left", Right: "right", Top: "top", Bottom: "bottom" },
+    getBezierPath: () => ["M 0,0 C 1,1 2,2 3,3", 0, 0],
     ReactFlow: (props: Record<string, unknown>) => {
       reactFlowMock.setLatestProps(props);
 
@@ -81,19 +88,13 @@ function renderCanvas(ref = createRef<TopologyCanvasHandle>()) {
       ref={ref}
       edges={sampleEdges}
       hoveredNodeId={sampleNodes[1]?.id}
-      lastUpdated={topologyExplorerMock.lastUpdated}
-      layerFilter="all"
       layoutPreset="layered"
       matchedNodeIds={[sampleNodes[2]?.id ?? ""]}
       neighborDepths={new Map([[sampleNodes[0]?.id ?? "", 0]])}
       nodes={sampleNodes}
       onHoverNode={() => undefined}
-      onReadyStateChange={() => undefined}
       onSelectNode={() => undefined}
-      searchQuery="svc"
       selectedNodeId={sampleNodes[0]?.id}
-      statusFilter="abnormal"
-      summaryFilter="impacted"
     />,
   );
 
@@ -103,9 +104,11 @@ function renderCanvas(ref = createRef<TopologyCanvasHandle>()) {
 describe("TopologyCanvas", () => {
   beforeEach(() => {
     reactFlowMock.reset();
+    Object.defineProperty(HTMLElement.prototype, "clientWidth", { configurable: true, value: 960 });
+    Object.defineProperty(HTMLElement.prototype, "clientHeight", { configurable: true, value: 640 });
   });
 
-  it("exports the current graph view with positions, filters, and metadata", async () => {
+  it("exposes imperative handle methods and proxies to ReactFlow instance", async () => {
     reactFlowMock.setInstanceNodes(
       sampleNodes.map((node, index) => ({
         id: node.id,
@@ -121,99 +124,76 @@ describe("TopologyCanvas", () => {
       expect(ref.current).not.toBeNull();
     });
 
-    const payload = ref.current?.exportView();
-    expect(payload).not.toBeNull();
-    expect(payload?.meta.source).toBe("topology-modified-canvas");
-    expect(payload?.meta.viewMode).toBe("graph");
-    expect(payload?.meta.layoutPreset).toBe("layered");
-    expect(payload?.meta.zoomPercent).toBe(110);
-    expect(payload?.filters).toEqual({
-      statusFilter: "abnormal",
-      layerFilter: "all",
-      summaryFilter: "impacted",
-      searchQuery: "svc",
-    });
-    expect(payload?.focus.selectedNodeId).toBe(sampleNodes[0]?.id);
-    expect(payload?.focus.hoveredNodeId).toBe(sampleNodes[1]?.id);
-    expect(payload?.focus.matchedNodeIds).toEqual([sampleNodes[2]?.id]);
-    expect(payload?.nodes[0]).toEqual(
-      expect.objectContaining({
-        id: sampleNodes[0]?.id,
-        position: { x: 100, y: 160 },
-        size: { width: 240, height: 120 },
-      }),
-    );
-    expect(payload?.edges[0]).toEqual(
-      expect.objectContaining({
-        id: sampleEdges[0]?.id,
-        source: sampleEdges[0]?.source,
-        target: sampleEdges[0]?.target,
-      }),
-    );
+    ref.current?.fitView();
+    ref.current?.zoomIn();
+    ref.current?.zoomOut();
+    ref.current?.recenter(sampleNodes[0]?.id);
+    ref.current?.focusNode(sampleNodes[1]?.id ?? "");
+
+    expect(reactFlowMock.instance.fitView).toHaveBeenCalled();
+    expect(reactFlowMock.instance.zoomIn).toHaveBeenCalled();
+    expect(reactFlowMock.instance.zoomOut).toHaveBeenCalled();
+    expect(reactFlowMock.instance.setCenter).toHaveBeenCalled();
   });
 
-  it("prefers dragged node positions when exporting", async () => {
-    reactFlowMock.setInstanceNodes(
-      sampleNodes.map((node, index) => ({
-        id: node.id,
-        position: { x: 20 + index * 50, y: 30 + index * 40 },
-        width: 216,
-        height: 108,
-      })),
-    );
-
+  it("keeps full fit routed through ReactFlow fitView", async () => {
     const ref = renderCanvas();
 
     await waitFor(() => {
       expect(ref.current).not.toBeNull();
     });
 
-    const latestProps = reactFlowMock.getLatestProps() as {
-      onNodeDragStop?: (event: unknown, node: { id: string; position: { x: number; y: number } }) => void;
-    } | null;
+    reactFlowMock.instance.fitView.mockClear();
+    reactFlowMock.instance.setViewport.mockClear();
+    ref.current?.fitView("full");
 
-    latestProps?.onNodeDragStop?.({}, { id: sampleNodes[0]!.id, position: { x: 720, y: 460 } });
-
-    const payload = ref.current?.exportView();
-    const draggedNode = payload?.nodes.find((node) => node.id === sampleNodes[0]?.id);
-    expect(draggedNode?.position).toEqual({ x: 720, y: 460 });
+    expect(reactFlowMock.instance.fitView).toHaveBeenCalled();
+    expect(reactFlowMock.instance.setViewport).not.toHaveBeenCalled();
   });
 
-  it("returns null when the canvas instance is unavailable or there are no nodes", async () => {
-    reactFlowMock.setShouldInit(false);
-
-    const ref = renderCanvas();
-
-    await waitFor(() => {
-      expect(ref.current).not.toBeNull();
-    });
-    expect(ref.current?.exportView()).toBeNull();
-
-    reactFlowMock.reset();
-    reactFlowMock.setInstanceNodes([]);
-    const emptyRef = createRef<TopologyCanvasHandle>();
+  it("uses balanced fit to compensate visual insets", async () => {
+    const ref = createRef<TopologyCanvasHandle>();
     render(
       <TopologyCanvas
-        ref={emptyRef}
-        edges={[]}
-        lastUpdated={topologyExplorerMock.lastUpdated}
-        layerFilter="all"
+        ref={ref}
+        edges={sampleEdges}
         layoutPreset="layered"
         matchedNodeIds={[]}
         neighborDepths={new Map()}
-        nodes={[]}
+        nodes={sampleNodes}
         onHoverNode={() => undefined}
-        onReadyStateChange={() => undefined}
         onSelectNode={() => undefined}
-        searchQuery=""
-        statusFilter="all"
-        summaryFilter="all"
+        variant="modified"
+        viewInsets={{ left: 320, right: 80, top: 24, bottom: 24 }}
       />,
     );
 
     await waitFor(() => {
-      expect(emptyRef.current).not.toBeNull();
+      expect(ref.current).not.toBeNull();
     });
-    expect(emptyRef.current?.exportView()).toBeNull();
+
+    reactFlowMock.instance.setViewport.mockClear();
+    ref.current?.fitView("balanced");
+
+    expect(reactFlowMock.instance.setViewport).toHaveBeenCalled();
+    const [viewport] = reactFlowMock.instance.setViewport.mock.calls.at(-1) ?? [];
+    expect(viewport).toEqual(
+      expect.objectContaining({
+        zoom: expect.any(Number),
+      }),
+    );
+    expect((viewport as { zoom: number }).zoom).toBeGreaterThanOrEqual(0.42);
+  });
+
+  it("keeps handle available when onInit is not fired", async () => {
+    reactFlowMock.setShouldInit(false);
+    const ref = renderCanvas();
+
+    await waitFor(() => {
+      expect(ref.current).not.toBeNull();
+    });
+
+    expect(() => ref.current?.fitView()).not.toThrow();
+    expect(() => ref.current?.recenter()).not.toThrow();
   });
 });

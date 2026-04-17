@@ -1,4 +1,4 @@
-import { AppIcon, type AppIconName } from "./AppIcon";
+﻿import { AppIcon, type AppIconName } from "./AppIcon";
 import { cn } from "./cn";
 
 export type SidebarNavItem = {
@@ -42,10 +42,10 @@ function SidebarNav({
 
   return (
     <>
-      <div className={cn("shell-brand", collapsed && "shell-brand--collapsed")} aria-label="QinClaw brand">
+      <div className={cn("shell-brand", collapsed && "shell-brand--collapsed")} aria-label="QinClaw 品牌">
         <div className="shell-brand__identity">
           <button
-            aria-label="Open design tokens"
+            aria-label="打开设计令牌"
             className="shell-brand__trigger"
             onClick={onBrandClick}
             type="button"
@@ -61,10 +61,10 @@ function SidebarNav({
         </div>
         {onToggleCollapsed ? (
           <button
-            aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+            aria-label={collapsed ? "展开侧边栏" : "收起侧边栏"}
             className="shell-brand__collapse"
             onClick={onToggleCollapsed}
-            title={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+            title={collapsed ? "展开侧边栏" : "收起侧边栏"}
             type="button"
           >
             <AppIcon name={collapsed ? "right" : "left"} size={14} />
@@ -118,7 +118,7 @@ function SidebarNav({
                               <span
                                 aria-hidden="true"
                                 className={cn("nav-item__status", `nav-item__status--${item.status}`)}
-                                title={item.status === "diagnosing" ? "Diagnosing" : "Completed"}
+                                title={item.status === "diagnosing" ? "诊断中" : "已完成"}
                               >
                                 <AppIcon name={item.status === "diagnosing" ? "timeCircle" : "checkmarkCircle"} size={12} />
                               </span>
@@ -142,3 +142,4 @@ function SidebarNav({
 }
 
 export default SidebarNav;
+

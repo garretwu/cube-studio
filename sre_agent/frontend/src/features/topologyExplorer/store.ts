@@ -3,24 +3,34 @@ import { create } from "zustand";
 import { apiClient } from "../../api/client";
 import type { TopologyExplorerResponse } from "../../api/types";
 import { getGlobalTopologyDisplayData, searchTopologyObjects } from "./selectors";
+import { pruneTopologyExplorerResponse } from "./topologyPrune";
+import {
+  defaultTopologyRoomId,
+  defaultTopologyScopeMode,
+} from "./uiConfig";
 import type {
   ExplorerLayerFilter,
   ExplorerLayoutPreset,
   ExplorerViewMode,
   SearchFeedback,
+  TopologyScopeMode,
 } from "./types";
 
 export type TopologyExplorerState = {
   data?: TopologyExplorerResponse;
   isLoading: boolean;
   error?: string;
+  syncState: "idle" | "syncing" | "ready" | "degraded" | "error";
+  lastError?: string | null;
+  scopeMode: TopologyScopeMode;
+  selectedRoomId: string;
   viewMode: ExplorerViewMode;
   selectedNodeId?: string;
   searchQuery: string;
   searchResultIds: string[];
   searchFeedback: SearchFeedback;
   layerFilter: ExplorerLayerFilter;
-  legendOpen: boolean;
+  secondaryPanelOpen: boolean;
   filterPanelOpen: boolean;
   layoutPreset: ExplorerLayoutPreset;
   hoveredNodeId?: string;
@@ -28,15 +38,16 @@ export type TopologyExplorerState = {
 
 export type TopologyExplorerStore = TopologyExplorerState & {
   fetchTopologyExplorer: () => Promise<void>;
+  setScopeMode: (scopeMode: TopologyScopeMode) => void;
+  setSelectedRoomId: (selectedRoomId: string) => void;
   setViewMode: (viewMode: ExplorerViewMode) => void;
   setSelectedNodeId: (selectedNodeId?: string) => void;
   setSearchQuery: (searchQuery: string) => void;
   focusFirstSearchResult: () => string | undefined;
   setLayerFilter: (layerFilter: ExplorerLayerFilter) => void;
-  setLegendOpen: (legendOpen: boolean) => void;
+  setSecondaryPanelOpen: (secondaryPanelOpen: boolean) => void;
   setFilterPanelOpen: (filterPanelOpen: boolean) => void;
   setLayoutPreset: (layoutPreset: ExplorerLayoutPreset) => void;
-  cycleLayoutPreset: () => void;
   setHoveredNodeId: (hoveredNodeId?: string) => void;
   resetExplorerView: () => void;
 };
@@ -73,13 +84,17 @@ export function createTopologyExplorerState(): TopologyExplorerState {
     data: undefined,
     isLoading: false,
     error: undefined,
+    syncState: "idle",
+    lastError: undefined,
+    scopeMode: defaultTopologyScopeMode,
+    selectedRoomId: defaultTopologyRoomId,
     viewMode: "graph",
     selectedNodeId: undefined,
     searchQuery: "",
     searchResultIds: [],
     searchFeedback: "idle",
     layerFilter: "all",
-    legendOpen: false,
+    secondaryPanelOpen: true,
     filterPanelOpen: false,
     layoutPreset: "layered",
     hoveredNodeId: undefined,
@@ -92,7 +107,7 @@ export const useTopologyExplorerStore = create<TopologyExplorerStore>((set, get)
     set({ isLoading: true, error: undefined });
 
     try {
-      const data = await apiClient.getTopologyExplorer();
+      const data = pruneTopologyExplorerResponse(await apiClient.getTopologyExplorer());
       set((state) => {
         const searchResultIds = resolveSearchResults(data, state.searchQuery, state.layerFilter);
         const selectedNodeId =
@@ -104,6 +119,8 @@ export const useTopologyExplorerStore = create<TopologyExplorerStore>((set, get)
           data,
           isLoading: false,
           selectedNodeId,
+          syncState: data.sync_state ?? "ready",
+          lastError: data.last_error,
           searchResultIds,
           searchFeedback: resolveSearchFeedback(state.searchQuery, searchResultIds),
         };
@@ -113,6 +130,8 @@ export const useTopologyExplorerStore = create<TopologyExplorerStore>((set, get)
       set({ error: message, isLoading: false });
     }
   },
+  setScopeMode: (scopeMode) => set({ scopeMode }),
+  setSelectedRoomId: (selectedRoomId) => set({ selectedRoomId }),
   setViewMode: (viewMode) => set({ viewMode }),
   setSelectedNodeId: (selectedNodeId) => set({ selectedNodeId }),
   setSearchQuery: (searchQuery) =>
@@ -165,13 +184,9 @@ export const useTopologyExplorerStore = create<TopologyExplorerStore>((set, get)
         selectedNodeId: shouldResetSelection ? searchResultIds[0] : state.selectedNodeId,
       };
     }),
-  setLegendOpen: (legendOpen) => set({ legendOpen }),
+  setSecondaryPanelOpen: (secondaryPanelOpen) => set({ secondaryPanelOpen }),
   setFilterPanelOpen: (filterPanelOpen) => set({ filterPanelOpen }),
-  setLayoutPreset: (layoutPreset) => set({ layoutPreset }),
-  cycleLayoutPreset: () =>
-    set((state) => ({
-      layoutPreset: state.layoutPreset === "layered" ? "domain" : "layered",
-    })),
+  setLayoutPreset: (layoutPreset) => set({ layoutPreset: layoutPreset === "domain" ? "layered" : layoutPreset }),
   setHoveredNodeId: (hoveredNodeId) => set({ hoveredNodeId }),
   resetExplorerView: () =>
     set((state) => ({

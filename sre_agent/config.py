@@ -103,6 +103,7 @@ class OntologyDiscoveryConfig(BaseModel):
     mode: str = "static"
     auto_discovery: bool = True
     refresh_interval_seconds: int = 120
+    unified_inventory_path: str | None = None
     live_inventory_path: str = "fault_injector/fault-injector-test.yaml"
     live_fallback_to_static: bool = True
     k8s_cluster_name: str = "lab-cluster"

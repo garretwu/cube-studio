@@ -5,7 +5,6 @@ import StatusChip from "./StatusChip";
 
 type TopbarProps = {
   helpLabel: string;
-  siteLabel: string;
   userName: string;
   userMeta: string;
   adminLabel: ReactNode;
@@ -16,7 +15,6 @@ type TopbarProps = {
 
 function Topbar({
   helpLabel,
-  siteLabel,
   userName,
   userMeta,
   adminLabel,
@@ -30,9 +28,12 @@ function Topbar({
     <header className={hasContent ? "topbar" : "topbar topbar--actions-only"}>
       {hasContent ? (
         <div className="topbar__content">
-          {eyebrow ? <p className="topbar__eyebrow">{eyebrow}</p> : null}
-          {title ? <h2 className="topbar__title">{title}</h2> : null}
-          {subtitle ? <p className="topbar__copy">{subtitle}</p> : null}
+          <div className="topbar__heading">
+            {eyebrow ? <p className="topbar__eyebrow">{eyebrow}</p> : null}
+            {title ? <h2 className="topbar__title">{title}</h2> : null}
+            {subtitle ? <p className="topbar__copy">{subtitle}</p> : null}
+          </div>
+          <div className="topbar__inline-slot" id="topbar-inline-slot" />
         </div>
       ) : null}
 
@@ -40,7 +41,6 @@ function Topbar({
         <AppButton iconLeft="help" size="sm" variant="secondary">
           {helpLabel}
         </AppButton>
-        <StatusChip tone="accent">{siteLabel}</StatusChip>
         <div className="topbar-user">
           <div className="topbar-user__avatar">SZ</div>
           <div>
@@ -55,3 +55,4 @@ function Topbar({
 }
 
 export default Topbar;
+

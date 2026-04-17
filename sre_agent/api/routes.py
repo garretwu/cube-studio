@@ -134,7 +134,7 @@ class TopologyExplorerObject(BaseModel):
 
     id: str
     name: str
-    type: Literal["rack", "node", "gpu", "switch", "service", "pod", "cluster"]
+    type: Literal["rack", "node", "gpu", "switch", "port", "service", "pod", "cluster", "bmc"]
     status: Literal["healthy", "abnormal", "impacted", "maintenance"]
     layer: Literal["physical", "network", "compute", "service"]
     domain: str
@@ -185,6 +185,8 @@ class TopologyExplorerResponse(BaseModel):
     edges: list[TopologyExplorerRelation] = Field(default_factory=list)
     paths: list[TopologyExplorerPath] = Field(default_factory=list)
     lastUpdated: datetime
+    sync_state: Literal["idle", "syncing", "ready", "degraded", "error"] = "idle"
+    last_error: str | None = None
 
 
 class AlertSnapshotResponse(BaseModel):
@@ -359,11 +361,13 @@ def build_api_router() -> APIRouter:
                 normalized.append({"value": edge})
         return normalized
 
-    def _map_topology_entity_type(entity_type: str) -> Literal["rack", "node", "gpu", "switch", "service", "pod", "cluster"]:
+    def _map_topology_entity_type(entity_type: str) -> Literal["rack", "node", "gpu", "switch", "port", "service", "pod", "cluster", "bmc"]:
         value = str(entity_type or "").strip().lower()
         if "gpu" in value:
             return "gpu"
-        if "switch" in value or "port" in value or "network" in value:
+        if "switch_port" in value:
+            return "port"
+        if "switch" in value or "network" in value:
             return "switch"
         if "cluster" in value:
             return "cluster"
@@ -373,6 +377,8 @@ def build_api_router() -> APIRouter:
             return "service"
         if "rack" in value:
             return "rack"
+        if "bmc" in value:
+            return "bmc"
         return "node"
 
     def _map_topology_status(status: str | None) -> Literal["healthy", "abnormal", "impacted", "maintenance"]:
@@ -386,13 +392,13 @@ def build_api_router() -> APIRouter:
         return "healthy"
 
     def _map_topology_layer(
-        entity_type: Literal["rack", "node", "gpu", "switch", "service", "pod", "cluster"],
+        entity_type: Literal["rack", "node", "gpu", "switch", "port", "service", "pod", "cluster", "bmc"],
     ) -> Literal["physical", "network", "compute", "service"]:
-        if entity_type in {"switch", "rack"}:
+        if entity_type in {"switch", "port", "rack"}:
             return "network"
         if entity_type in {"gpu", "node"}:
             return "compute"
-        if entity_type == "cluster":
+        if entity_type in {"cluster", "bmc"}:
             return "physical"
         return "service"
 
@@ -447,8 +453,13 @@ def build_api_router() -> APIRouter:
             namespace = str(attrs.get("namespace") or "").strip()
             cluster_id = str(attrs.get("cluster") or attrs.get("cluster_id") or "").strip()
             raw_name = str(node.get("name") or node.get("id") or "")
+            node_kind = str(attrs.get("kind") or "").strip().lower()
             display_name = raw_name
-            if entity_type in {"pod", "service"} and namespace:
+            if entity_type == "service" and node_kind == "namespace_group":
+                # Namespace group is the canonical "service group" object.
+                # Show namespace only (not namespace/namespace) to avoid visual duplicates.
+                display_name = namespace or raw_name
+            elif entity_type in {"pod", "service"} and namespace:
                 display_name = f"{namespace}/{raw_name}"
 
             pod_phase_raw = attrs.get("phase", node.get("status", "Unknown"))
@@ -529,6 +540,8 @@ def build_api_router() -> APIRouter:
             edges=explorer_edges,
             paths=[],
             lastUpdated=last_updated,
+            sync_state=status_payload.sync_state,
+            last_error=status_payload.last_error,
         )
 
     def _compact_affected_entity(entity: Any) -> dict[str, Any]:
