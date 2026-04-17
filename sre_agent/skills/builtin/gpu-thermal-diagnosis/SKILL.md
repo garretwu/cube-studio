@@ -1,5 +1,5 @@
 ---
-name: gpu-thermal-diagnosis
+name: Gpu Thermal Diagnosis
 description: >
   GPU温度异常专项诊断技能。当用户报告GPU温度过高、thermal throttling、风扇异常、
   散热系统故障、频繁降频、推理性能退化与温度关联等问题时触发。

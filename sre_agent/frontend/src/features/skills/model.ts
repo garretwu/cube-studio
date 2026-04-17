@@ -101,8 +101,42 @@ export function filterSkillMarkdownForDisplay(markdown: string): string {
   const lines = markdown.split(/\r?\n/);
   const visible: string[] = [];
   let index = 0;
+  const hasFrontmatter = (lines[0] ?? "").trim() === "---";
+  let inFrontmatter = false;
+  let skippingTagsBlock = false;
   while (index < lines.length) {
     const line = lines[index] ?? "";
+    if (hasFrontmatter && line.trim() === "---") {
+      if (!inFrontmatter && index === 0) {
+        inFrontmatter = true;
+        visible.push(line);
+        index += 1;
+        continue;
+      }
+      if (inFrontmatter) {
+        inFrontmatter = false;
+        skippingTagsBlock = false;
+      }
+      visible.push(line);
+      index += 1;
+      continue;
+    }
+    if (inFrontmatter) {
+      if (skippingTagsBlock) {
+        if (/^\s*-\s+/.test(line) || !line.trim()) {
+          index += 1;
+          continue;
+        }
+        skippingTagsBlock = false;
+      }
+      const tagsMatch = line.match(/^\s*tags\s*:\s*(.*)$/i);
+      if (tagsMatch) {
+        const tagsRemainder = (tagsMatch[1] ?? "").trim();
+        skippingTagsBlock = !tagsRemainder;
+        index += 1;
+        continue;
+      }
+    }
     const headingMatch = line.match(/^##\s+(.+?)\s*$/);
     if (headingMatch) {
       const headingText = (headingMatch[1] ?? "").trim();

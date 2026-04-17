@@ -3864,13 +3864,10 @@ async def act_node(
                         cached_skill_listing = listing_data
             merged_call_key = _build_pending_tool_call_dedupe_key(tool_name, tool_args)
             latest_same_call = _find_latest_tool_run_by_dedupe_key(tool_runs, merged_call_key)
-            latest_tool_run = next((item for item in reversed(tool_runs) if isinstance(item, dict)), None)
-            can_reuse_consecutive_call = (
+            can_reuse_session_call = (
                 latest_same_call is not None
-                and latest_tool_run is latest_same_call
                 and bool(latest_same_call.get("success", False))
             )
-
             if cached_skill_listing is not None:
                 result = ToolResult(
                     tool=tool_name,
@@ -3879,20 +3876,30 @@ async def act_node(
                     error="",
                 )
                 serialized_source = "cooldown_cache"
-            elif can_reuse_consecutive_call:
+            elif can_reuse_session_call:
+                reused_step = int(latest_same_call.get("step", 0) or 0) if isinstance(latest_same_call, dict) else 0
+                reused_data = _safe_jsonable(latest_same_call.get("data")) if isinstance(latest_same_call, dict) else None
                 result = ToolResult(
                     tool=tool_name,
                     success=True,
-                    data=_safe_jsonable(latest_same_call.get("data")),
+                    data={
+                        "duplicate_suppressed": True,
+                        "reused_previous_result": True,
+                        "reused_from_step": reused_step,
+                        "summary": "duplicate suppressed, reused previous successful result summary",
+                        "original_data": reused_data,
+                    },
                     error="",
                 )
-                serialized_source = "repeat_cache_reuse"
+                serialized_source = "duplicate_suppressed"
                 force_final_turn = True
                 suppressed_reasons.append(
                     {
                         "reason": "cross_round_duplicate",
                         "tool": tool_name,
+                        "dedupe_key": merged_call_key,
                         "fingerprint": _build_tool_call_fingerprint(latest_same_call),
+                        "reused_from_step": reused_step,
                         "reused": True,
                     }
                 )
@@ -4005,62 +4012,81 @@ async def act_node(
                 except asyncio.TimeoutError:
                     result = ToolResult(tool=tool_name, success=False, data=None, error=f"tool timed out after {state['step_timeout_sec']}s")
                 serialized_source = "tool"
-        serialized = _canonicalize_tool_run(
-            {
-                "step": len(tool_runs) + 1,
-                "tool": tool_name,
-                "params": tool_args,
-                "success": result.success,
-                "data": result.data,
-                "error": result.error,
-            },
-            session_id=str(state.get("session_id", "unknown")),
-            source=serialized_source,
-        )
-        # 璁板綍宸ュ叿鎵ц缁撴灉鍒版棩蹇楁枃浠?
-        _log_tool_execution(
-            session_id=str(state.get("session_id", "unknown")),
-            step=serialized["step"],
-            tool_name=tool_name,
-            tool_args=tool_args,
-            result={
-                "success": result.success,
-                "data": _safe_jsonable(result.data),
-                "error": result.error,
-            },
-        )
-        tool_runs.append(serialized)
-        counts_for_loop_guard = str(serialized_source).strip() not in {
-            "cooldown_cache",
-            "repeat_cache_reuse",
-            "ttft_family_cache_reuse",
-            "ttft_total_cache_reuse",
-        }
-        if counts_for_loop_guard:
-            fingerprint = _build_tool_call_fingerprint(serialized)
-            if fingerprint and fingerprint == loop_guard.get("recent_fingerprint"):
-                loop_guard["repeat_count"] = int(loop_guard.get("repeat_count", 0) or 0) + 1
-            else:
-                loop_guard["recent_fingerprint"] = fingerprint
-                loop_guard["repeat_count"] = 1
-            family_fingerprint = _tool_family_fingerprint(serialized)
-            if family_fingerprint and family_fingerprint == loop_guard.get("recent_family_fingerprint"):
-                loop_guard["family_repeat_count"] = int(loop_guard.get("family_repeat_count", 0) or 0) + 1
-            else:
-                loop_guard["recent_family_fingerprint"] = family_fingerprint
-                loop_guard["family_repeat_count"] = 1
-            if int(loop_guard.get("repeat_count", 0) or 0) > int(loop_guard.get("threshold", 2) or 2):
-                if not bool(loop_guard.get("triggered", False)):
-                    loop_guard["triggered"] = True
-                    loop_guard["trigger_step"] = serialized["step"]
-                    loop_guard_triggered = True
-                force_final_turn = True
-            if int(loop_guard.get("family_repeat_count", 0) or 0) > int(loop_guard.get("family_threshold", 2) or 2):
-                if not bool(loop_guard.get("triggered", False)):
-                    loop_guard["triggered"] = True
-                    loop_guard["trigger_step"] = serialized["step"]
-                    loop_guard_triggered = True
-                force_final_turn = True
+        if serialized_source != "duplicate_suppressed":
+            serialized = _canonicalize_tool_run(
+                {
+                    "step": len(tool_runs) + 1,
+                    "tool": tool_name,
+                    "params": tool_args,
+                    "success": result.success,
+                    "data": result.data,
+                    "error": result.error,
+                },
+                session_id=str(state.get("session_id", "unknown")),
+                source=serialized_source,
+            )
+            # 璁板綍宸ュ叿鎵ц缁撴灉鍒版棩蹇楁枃浠?
+            _log_tool_execution(
+                session_id=str(state.get("session_id", "unknown")),
+                step=serialized["step"],
+                tool_name=tool_name,
+                tool_args=tool_args,
+                result={
+                    "success": result.success,
+                    "data": _safe_jsonable(result.data),
+                    "error": result.error,
+                },
+            )
+            tool_runs.append(serialized)
+            counts_for_loop_guard = str(serialized_source).strip() not in {
+                "cooldown_cache",
+                "repeat_cache_reuse",
+                "ttft_family_cache_reuse",
+                "ttft_total_cache_reuse",
+            }
+            if counts_for_loop_guard:
+                fingerprint = _build_tool_call_fingerprint(serialized)
+                if fingerprint and fingerprint == loop_guard.get("recent_fingerprint"):
+                    loop_guard["repeat_count"] = int(loop_guard.get("repeat_count", 0) or 0) + 1
+                else:
+                    loop_guard["recent_fingerprint"] = fingerprint
+                    loop_guard["repeat_count"] = 1
+                family_fingerprint = _tool_family_fingerprint(serialized)
+                if family_fingerprint and family_fingerprint == loop_guard.get("recent_family_fingerprint"):
+                    loop_guard["family_repeat_count"] = int(loop_guard.get("family_repeat_count", 0) or 0) + 1
+                else:
+                    loop_guard["recent_family_fingerprint"] = family_fingerprint
+                    loop_guard["family_repeat_count"] = 1
+                if int(loop_guard.get("repeat_count", 0) or 0) > int(loop_guard.get("threshold", 2) or 2):
+                    if not bool(loop_guard.get("triggered", False)):
+                        loop_guard["triggered"] = True
+                        loop_guard["trigger_step"] = serialized["step"]
+                        loop_guard_triggered = True
+                    force_final_turn = True
+                if int(loop_guard.get("family_repeat_count", 0) or 0) > int(loop_guard.get("family_threshold", 2) or 2):
+                    if not bool(loop_guard.get("triggered", False)):
+                        loop_guard["triggered"] = True
+                        loop_guard["trigger_step"] = serialized["step"]
+                        loop_guard_triggered = True
+                    force_final_turn = True
+        else:
+            log_stream_lifecycle_event(
+                session_id=str(state.get("session_id", "unknown")),
+                step=int(state.get("step_count", 0) or 0) + 1,
+                mode="duplicate_suppressed",
+                stage="act_node",
+                status="suppressed",
+                reason="identical tool call with normalized args already succeeded in this session",
+                node=tool_name,
+                event_type="tool_call_suppressed",
+                pending_tool_calls_count=len(pending),
+                step_count=int(state.get("step_count", 0) or 0),
+                max_steps=int(state.get("max_steps", 0) or 0),
+                extra={
+                    "dedupe_key": merged_call_key,
+                    "tool_args": _safe_jsonable(tool_args),
+                },
+            )
         messages.append(
             ToolMessage(
                 tool_call_id=str(tool_call.get("id", "")),
@@ -4073,18 +4099,19 @@ async def act_node(
                 name=tool_name,
             )
         )
-        observation_entries.append(
-            {
-                "type": "observation",
-                "tool": tool_name,
-                "params": tool_args,
-                "result": {
-                    "success": result.success,
-                    "data": _safe_jsonable(result.data),
-                    "error": result.error,
-                },
-            }
-        )
+        if serialized_source != "duplicate_suppressed":
+            observation_entries.append(
+                {
+                    "type": "observation",
+                    "tool": tool_name,
+                    "params": tool_args,
+                    "result": {
+                        "success": result.success,
+                        "data": _safe_jsonable(result.data),
+                        "error": result.error,
+                    },
+                }
+            )
     updated_trace_items = [*state.get("trace_items", []), *observation_entries]
     if loop_guard_triggered:
         updated_trace_items.append(
@@ -4135,6 +4162,8 @@ async def act_node(
                         "reason": reason,
                         "tool": suppressed.get("tool"),
                         "fingerprint": suppressed.get("fingerprint"),
+                        "dedupe_key": suppressed.get("dedupe_key"),
+                        "reused_from_step": suppressed.get("reused_from_step"),
                         "reused": reused,
                     },
                 }

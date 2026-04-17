@@ -21,6 +21,9 @@ const testSkill: SkillDescriptor = {
   markdown_content: [
     "---",
     "name: Topology Navigator",
+    "tags:",
+    "  - gpu",
+    "  - thermal",
     "description: Aggregate topology relations and surface the most relevant dependency path.",
     "---",
     "",
@@ -61,6 +64,8 @@ describe("SkillDetailPage", () => {
     expect(screen.getByText("builtin-topology-navigator")).toBeInTheDocument();
     expect(screen.getByText("只读")).toBeInTheDocument();
     expect(screen.getByText("name: Topology Navigator")).toBeInTheDocument();
+    expect(screen.queryByText("tags:")).not.toBeInTheDocument();
+    expect(screen.queryByText("- gpu")).not.toBeInTheDocument();
     expect(screen.getByText("id: builtin-topology-navigator")).toBeInTheDocument();
     expect(screen.getByText("## Usage")).toBeInTheDocument();
     expect(screen.queryByText("## 环境配置")).not.toBeInTheDocument();

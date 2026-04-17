@@ -1167,6 +1167,260 @@ tags:
                 )
             )
 
+    async def test_cross_round_identical_tool_call_is_suppressed_without_new_tool_run(self) -> None:
+        llm = _FakeLLM(
+            [
+                AIMessage(
+                    content="Collect pod list.",
+                    tool_calls=[
+                        {
+                            "name": "k8s.list_pods",
+                            "args": {"namespace": "default"},
+                            "id": "call-1",
+                            "type": "tool_call",
+                        }
+                    ],
+                ),
+                AIMessage(
+                    content="Collect pod list again.",
+                    tool_calls=[
+                        {
+                            "name": "k8s.list_pods",
+                            "args": {"namespace": "default"},
+                            "id": "call-2",
+                            "type": "tool_call",
+                        }
+                    ],
+                ),
+                AIMessage(
+                    content=json.dumps(
+                        {
+                            "thought": "重复同参工具调用已抑制，进入总结。",
+                            "diagnosis": {
+                                "root_cause": "重复调用已被抑制。",
+                                "root_cause_layer": "service",
+                                "root_cause_entities": ["default"],
+                                "confidence": 0.7,
+                                "impact_summary": "同参重复调用不会新增工具执行。",
+                                "affected_services": ["demo"],
+                                "triage_priority": "P3",
+                                "diagnosis_certainty": "probable",
+                            },
+                            "remediation_plan": None,
+                        }
+                    )
+                ),
+            ]
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            result = await run_diagnosis(
+                query="Diagnose duplicate list pod calls across rounds.",
+                context=_happy_context(),
+                variables={},
+                llm=llm,
+                step_timeout_sec=5.0,
+                total_timeout_sec=10.0,
+                checkpoint_dir=tmpdir,
+                allowed_tool_names=["k8s.list_pods"],
+                max_steps=8,
+            )
+
+            executed_tools = [item["tool"] for item in result["tool_runs"]]
+            self.assertEqual(executed_tools.count("k8s.list_pods"), 1)
+            trace_items = list(result.get("trace_items", []))
+            self.assertTrue(
+                any(
+                    isinstance(item, dict)
+                    and str((item.get("tool_params") or {}).get("kind", "")) == "duplicate_tool_suppressed"
+                    and str((item.get("tool_params") or {}).get("reason", "")) == "cross_round_duplicate"
+                    for item in trace_items
+                )
+            )
+
+    async def test_cross_round_identical_tool_call_allows_retry_after_failure(self) -> None:
+        llm = _FakeLLM(
+            [
+                AIMessage(
+                    content="Query fan status.",
+                    tool_calls=[
+                        {
+                            "name": "bmc.get_fan_status",
+                            "args": {"node": "10.11.4.13"},
+                            "id": "call-1",
+                            "type": "tool_call",
+                        }
+                    ],
+                ),
+                AIMessage(
+                    content="Retry fan status with same params.",
+                    tool_calls=[
+                        {
+                            "name": "bmc.get_fan_status",
+                            "args": {"node": "10.11.4.13"},
+                            "id": "call-2",
+                            "type": "tool_call",
+                        }
+                    ],
+                ),
+                AIMessage(
+                    content=json.dumps(
+                        {
+                            "thought": "工具失败后允许同参重试。",
+                            "diagnosis": {
+                                "root_cause": "BMC 通道不可用导致查询失败。",
+                                "root_cause_layer": "platform",
+                                "root_cause_entities": ["10.11.4.13"],
+                                "confidence": 0.6,
+                                "impact_summary": "同参失败调用不会被去重抑制。",
+                                "affected_services": ["demo"],
+                                "triage_priority": "P2",
+                                "diagnosis_certainty": "probable",
+                            },
+                            "remediation_plan": None,
+                        }
+                    )
+                ),
+            ]
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            result = await run_diagnosis(
+                query="Diagnose bmc fan status retries.",
+                context=_happy_context(),
+                variables={},
+                llm=llm,
+                step_timeout_sec=5.0,
+                total_timeout_sec=10.0,
+                checkpoint_dir=tmpdir,
+                allowed_tool_names=["bmc.get_fan_status"],
+                max_steps=8,
+            )
+
+            bmc_runs = [item for item in result["tool_runs"] if item.get("tool") == "bmc.get_fan_status"]
+            self.assertEqual(len(bmc_runs), 2)
+            self.assertTrue(all(not bool(item.get("success", True)) for item in bmc_runs))
+
+    async def test_cross_round_dedup_considers_equivalent_arg_order(self) -> None:
+        llm = _FakeLLM(
+            [
+                AIMessage(
+                    content="Run command once.",
+                    tool_calls=[
+                        {
+                            "name": "ssh.run_command",
+                            "args": {"node": "10.11.4.13", "command": "nvidia-smi -L"},
+                            "id": "call-1",
+                            "type": "tool_call",
+                        }
+                    ],
+                ),
+                AIMessage(
+                    content="Run same command with reordered args.",
+                    tool_calls=[
+                        {
+                            "name": "ssh.run_command",
+                            "args": {"command": "nvidia-smi -L", "node": "10.11.4.13"},
+                            "id": "call-2",
+                            "type": "tool_call",
+                        }
+                    ],
+                ),
+                AIMessage(
+                    content=json.dumps(
+                        {
+                            "thought": "参数顺序不同但语义相同，重复调用已抑制。",
+                            "diagnosis": {
+                                "root_cause": "重复命令调用已被去重。",
+                                "root_cause_layer": "service",
+                                "root_cause_entities": ["10.11.4.13"],
+                                "confidence": 0.68,
+                                "impact_summary": "参数顺序差异不再导致重复执行。",
+                                "affected_services": ["demo"],
+                                "triage_priority": "P3",
+                                "diagnosis_certainty": "probable",
+                            },
+                            "remediation_plan": None,
+                        }
+                    )
+                ),
+            ]
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            result = await run_diagnosis(
+                query="Diagnose duplicate ssh command with reordered args.",
+                context=_happy_context(),
+                variables={"namespace": "nvidia-dcgm"},
+                llm=llm,
+                step_timeout_sec=5.0,
+                total_timeout_sec=10.0,
+                checkpoint_dir=tmpdir,
+                allowed_tool_names=["ssh.run_command"],
+                max_steps=8,
+            )
+
+            ssh_runs = [item for item in result["tool_runs"] if item.get("tool") == "ssh.run_command"]
+            self.assertEqual(len(ssh_runs), 1)
+
+    async def test_cross_round_dedup_uses_normalized_params_with_runtime_defaults(self) -> None:
+        llm = _FakeLLM(
+            [
+                AIMessage(
+                    content="Collect NIC counters with explicit namespace.",
+                    tool_calls=[
+                        {
+                            "name": "network.get_nic_counters",
+                            "args": {"node": "10.11.4.13", "namespace": "nvidia-dcgm"},
+                            "id": "call-1",
+                            "type": "tool_call",
+                        }
+                    ],
+                ),
+                AIMessage(
+                    content="Collect NIC counters again with different namespace argument.",
+                    tool_calls=[
+                        {
+                            "name": "network.get_nic_counters",
+                            "args": {"node": "10.11.4.13", "namespace": "other-ns"},
+                            "id": "call-2",
+                            "type": "tool_call",
+                        }
+                    ],
+                ),
+                AIMessage(
+                    content=json.dumps(
+                        {
+                            "thought": "runtime defaults 归一化后判定为重复调用。",
+                            "diagnosis": {
+                                "root_cause": "NIC 无新增异常证据。",
+                                "root_cause_layer": "network",
+                                "root_cause_entities": ["10.11.4.13"],
+                                "confidence": 0.62,
+                                "impact_summary": "归一化参数后重复查询被抑制。",
+                                "affected_services": ["demo"],
+                                "triage_priority": "P3",
+                                "diagnosis_certainty": "probable",
+                            },
+                            "remediation_plan": None,
+                        }
+                    )
+                ),
+            ]
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            result = await run_diagnosis(
+                query="Diagnose duplicate NIC counter calls after normalization.",
+                context=_happy_context(),
+                variables={"namespace": "nvidia-dcgm"},
+                llm=llm,
+                step_timeout_sec=5.0,
+                total_timeout_sec=10.0,
+                checkpoint_dir=tmpdir,
+                allowed_tool_names=["network.get_nic_counters"],
+                max_steps=8,
+            )
+
+            nic_runs = [item for item in result["tool_runs"] if item.get("tool") == "network.get_nic_counters"]
+            self.assertEqual(len(nic_runs), 1)
+
     async def test_loop_guard_triggers_on_repeated_prometheus_family_calls(self) -> None:
         llm = _FakeLLM(
             [
