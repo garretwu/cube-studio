@@ -419,6 +419,23 @@ description: Diagnose vLLM latency with a Claude-style skill.
             self.assertEqual(llm.calls[0]["tool_choice"], "required")
             self.assertIn(str(llm.calls[-1]["tool_choice"]), {"auto", "none"})
             self.assertEqual(result["tool_runs"][-1]["data"]["status"], "success")
+            system_prompts = []
+            tool_ledger_sections = []
+            for call in llm.calls:
+                for message in call.get("messages", []):
+                    role = str(getattr(message, "type", "") or "").strip()
+                    content = str(getattr(message, "content", "") or "")
+                    if role == "system":
+                        system_prompts.append(content)
+                    if role == "human":
+                        evidence_kind = str((getattr(message, "additional_kwargs", {}) or {}).get("evidence_kind", "") or "").strip()
+                        if evidence_kind == "tool_ledger":
+                            tool_ledger_sections.append(content)
+            self.assertTrue(any("Active skill guidance:" in text for text in system_prompts))
+            self.assertTrue(any("# vLLM Diagnosis" in text for text in system_prompts))
+            self.assertTrue(tool_ledger_sections)
+            self.assertTrue(any('"content_len":' in text for text in tool_ledger_sections))
+            self.assertFalse(any("# vLLM Diagnosis" in text for text in tool_ledger_sections))
 
     async def test_first_round_binds_only_skill_tools_when_available(self) -> None:
         llm = _FakeLLM(
@@ -920,6 +937,18 @@ tags:
         self.assertIn("skills.run_skill", prompt)
         self.assertNotIn("Current turn guidance:", prompt)
         self.assertIn("k8s.apply_manifest", prompt)
+
+    async def test_prompt_includes_active_skill_guidance_when_provided(self) -> None:
+        registry = build_default_registry()
+        prompt = build_system_prompt(
+            registry,
+            allowed_tool_names=["skills.list_skills", "skills.load_skill", "skills.read_skill_ref", "skills.run_skill"],
+            active_skill_id="builtin-gpu-thermal-diagnosis",
+            active_skill_content="# GPU Thermal Diagnosis\nStep 1: collect fan status",
+        )
+        self.assertIn("Active skill guidance:", prompt)
+        self.assertIn("active_skill_id: builtin-gpu-thermal-diagnosis", prompt)
+        self.assertIn("# GPU Thermal Diagnosis", prompt)
 
     async def test_tc_evidence_forces_consistent_root_cause_when_initial_conclusion_is_ambiguous(self) -> None:
         llm = _FakeLLM(

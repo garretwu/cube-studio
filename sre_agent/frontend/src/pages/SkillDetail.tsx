@@ -4,6 +4,7 @@ import { useNavigate, useParams } from "react-router-dom";
 import { apiClient } from "../api/client";
 import { AppButton, SectionHeader, StatusChip, SurfaceCard } from "../components/ui";
 import {
+  filterSkillMarkdownForDisplay,
   formatSkillLifecycleLabel,
   formatSkillScopeLabel,
   getSkillLifecycleTone,
@@ -60,7 +61,7 @@ function SkillDetailPage() {
     if (!skill) {
       return [] as string[];
     }
-    return skill.markdown_content.split(/\r?\n/);
+    return filterSkillMarkdownForDisplay(skill.markdown_content).split(/\r?\n/);
   }, [skill]);
 
   const updatedAt = formatDateTimeParts(skill?.updated_at);

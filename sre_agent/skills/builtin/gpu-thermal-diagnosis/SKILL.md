@@ -20,7 +20,26 @@ tags:
 
 ## 环境配置
 
-节点IP、SSH凭证、BMC凭证等环境信息统一在 `gpu-thermal-diagnosis/references/inventory.md` 中管理。执行本 skill 前先调用 `file.read` 读取该文件（`path`: `sre_agent/skills/builtin/gpu-thermal-diagnosis/references/inventory.md`），再进行后续工具调用。
+### wj-lab-cpt-04 环境详情
+
+- **K8s节点名**: wj-lab-cpt-04
+- **SSH访问**: `ssh yuyonghao@10.11.4.13` (需sudo权限)
+- **BMC访问**: `https://10.11.8.13` (用户: admin, TLS验证: 关闭)
+- **Prometheus**: `http://10.11.4.3:31260`
+- **角色**: CPU节点（挂载GPU用于推理/训练）
+
+## 前置约束
+
+本 skill 仅允许使用以下工具，禁止调用其他读工具如gpu.get_metrics，gpu.get_processes：
+
+| 工具名称 | 用途说明 |
+|----------|----------|
+| `skills.list_skills` | 查询可用 skill 列表 |
+| `skills.load_skill` | 加载 skill 详细内容 |
+| `skills.read_skill_ref` | 读取 skill 参考文档（如 inventory.md） |
+| `skills.run_skill` | 执行 skill 内置脚本 |
+| `ssh.run_command` | 通过 SSH 执行远程命令。**必填参数**: `node`（节点名/IP）、`command`（shell命令）。示例: `{"node": "10.11.4.13", "command": "nvidia-smi --query-gpu=index,temperature.gpu,fan.speed --format=csv"}` |
+| `bmc.get_fan_status` | 查询 BMC 风扇状态（Fan Mode、PWM、RPM）。**必填参数**: `node`（节点名）。示例: `{"node": "10.11.4.13"}` |
 
 ## 快速诊断决策树
 

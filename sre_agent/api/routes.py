@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 import json
 import inspect
+import logging
 import os
 import re
 import sys
@@ -39,6 +40,9 @@ from sre_agent.remediation.engine import RollbackResult
 from sre_agent.runtime.token_estimation import estimate_token_count
 from sre_agent.concurrency.resource_lock import ResourceLockedError
 from sre_agent.skills import SkillRegistry
+from sre_agent.agent.nodes import log_stream_lifecycle_event
+
+LOGGER = logging.getLogger(__name__)
 
 
 class ChatMessage(BaseModel):
@@ -2160,13 +2164,65 @@ def build_api_router() -> APIRouter:
         from sse_starlette.sse import EventSourceResponse
 
         async def event_generator():
+            latest_session_id = ""
+            last_event_type = ""
+            LOGGER.info(
+                "diagnose_stream connected alert=%s fingerprint=%s extra_alerts=%s",
+                prepared_alert.alert_name,
+                prepared_alert.fingerprint,
+                len(extra_alerts),
+            )
             try:
                 async for event in runner.astream_diagnose(prepared_alert, extra_alerts=extra_alerts):
+                    latest_session_id = str(event.get("session_id", "")).strip() or latest_session_id
+                    last_event_type = str(event.get("type", "")).strip() or last_event_type
                     yield {
                         "event": event.get("type", "message"),
                         "data": json.dumps(event, ensure_ascii=False, default=str),
                     }
+            except asyncio.CancelledError:
+                LOGGER.warning(
+                    "diagnose_stream cancelled session=%s alert=%s last_event_type=%s reason=client_disconnect_or_request_cancelled",
+                    latest_session_id,
+                    prepared_alert.alert_name,
+                    last_event_type,
+                )
+                if latest_session_id:
+                    log_stream_lifecycle_event(
+                        session_id=latest_session_id,
+                        step=0,
+                        mode="stream_cancelled",
+                        stage="diagnose_stream.event_generator",
+                        status="cancelled",
+                        reason="client_disconnect_or_request_cancelled",
+                        event_type=last_event_type,
+                        pending_tool_calls_count=0,
+                        step_count=0,
+                        max_steps=0,
+                    )
+                raise
             except Exception as exc:  # noqa: BLE001
+                LOGGER.exception(
+                    "diagnose_stream error session=%s alert=%s last_event_type=%s error=%s",
+                    latest_session_id,
+                    prepared_alert.alert_name,
+                    last_event_type,
+                    exc,
+                )
+                if latest_session_id:
+                    log_stream_lifecycle_event(
+                        session_id=latest_session_id,
+                        step=0,
+                        mode="stream_exception",
+                        stage="diagnose_stream.event_generator",
+                        status="failed",
+                        reason=str(exc).strip() or exc.__class__.__name__,
+                        event_type=last_event_type,
+                        pending_tool_calls_count=0,
+                        step_count=0,
+                        max_steps=0,
+                        extra={"exception_type": exc.__class__.__name__},
+                    )
                 yield {
                     "event": "error",
                     "data": json.dumps({"message": str(exc)}),

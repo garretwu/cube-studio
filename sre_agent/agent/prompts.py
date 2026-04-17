@@ -129,6 +129,8 @@ def build_system_prompt(
     allowed_tool_names: Iterable[str] | None = None,
     available_skills: Iterable[dict[str, Any]] | None = None,
     preferred_skill: dict[str, Any] | None = None,
+    active_skill_id: str | None = None,
+    active_skill_content: str | None = None,
 ) -> str:
     read_only_block = render_tool_reference_block(
         registry,
@@ -141,8 +143,32 @@ def build_system_prompt(
         safety_levels=[SafetyLevel.LOW, SafetyLevel.MEDIUM, SafetyLevel.HIGH, SafetyLevel.CRITICAL],
         title="Write-tool schema reference (not callable in this phase)",
     )
-    blocks = [BASE_SYSTEM_PROMPT, read_only_block, write_block]
+    active_skill_block = render_active_skill_guidance_block(
+        skill_id=active_skill_id,
+        skill_content=active_skill_content,
+    )
+    blocks = [BASE_SYSTEM_PROMPT]
+    if active_skill_block:
+        blocks.append(active_skill_block)
+    blocks.extend([read_only_block, write_block])
     return "\n\n".join(blocks)
+
+
+def render_active_skill_guidance_block(
+    *,
+    skill_id: str | None,
+    skill_content: str | None,
+) -> str:
+    content = str(skill_content or "").strip()
+    if not content:
+        return ""
+    normalized_skill_id = str(skill_id or "").strip() or "unknown-skill"
+    return (
+        "Active skill guidance:\n"
+        f"- active_skill_id: {normalized_skill_id}\n"
+        "SKILL.md content (verbatim):\n"
+        f"{content}"
+    )
 
 
 def render_tool_reference_block(

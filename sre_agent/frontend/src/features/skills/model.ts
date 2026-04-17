@@ -9,6 +9,8 @@ export type SkillViewModel = SkillDescriptor & {
   markdown_content: string;
 };
 
+const HIDDEN_SKILL_SECTION_HEADERS = new Set(["环境配置", "前置约束"]);
+
 function buildYamlList(items: string[]) {
   if (!items.length) {
     return ["  - none"];
@@ -90,4 +92,30 @@ export function normalizeSkill(skill: SkillDescriptor): SkillViewModel {
 
 export function normalizeSkills(skills: SkillDescriptor[]) {
   return skills.map(normalizeSkill);
+}
+
+export function filterSkillMarkdownForDisplay(markdown: string): string {
+  if (!markdown.trim()) {
+    return markdown;
+  }
+  const lines = markdown.split(/\r?\n/);
+  const visible: string[] = [];
+  let index = 0;
+  while (index < lines.length) {
+    const line = lines[index] ?? "";
+    const headingMatch = line.match(/^##\s+(.+?)\s*$/);
+    if (headingMatch) {
+      const headingText = (headingMatch[1] ?? "").trim();
+      if (HIDDEN_SKILL_SECTION_HEADERS.has(headingText)) {
+        index += 1;
+        while (index < lines.length && !/^##\s+/.test(lines[index] ?? "")) {
+          index += 1;
+        }
+        continue;
+      }
+    }
+    visible.push(line);
+    index += 1;
+  }
+  return visible.join("\n");
 }

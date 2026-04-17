@@ -196,6 +196,48 @@ def _log_llm_interaction(
         _llm_logger.exception("Failed to log LLM interaction")
 
 
+def log_stream_lifecycle_event(
+    *,
+    session_id: str,
+    step: int | None,
+    mode: str,
+    stage: str = "",
+    status: str = "",
+    reason: str = "",
+    node: str = "",
+    event_type: str = "",
+    pending_tool_calls_count: int | None = None,
+    step_count: int | None = None,
+    max_steps: int | None = None,
+    extra: dict[str, Any] | None = None,
+) -> None:
+    """Write stream lifecycle diagnostics to the per-session JSONL log."""
+    try:
+        LLM_LOG_DIR.mkdir(parents=True, exist_ok=True)
+        log_file = LLM_LOG_DIR / f"{session_id}.jsonl"
+        log_entry = {
+            "timestamp": datetime.now(UTC).isoformat(),
+            "session_id": str(session_id or "").strip(),
+            "step": int(step or 0),
+            "mode": str(mode or "").strip(),
+            "stage": str(stage or "").strip(),
+            "status": str(status or "").strip(),
+            "reason": str(reason or "").strip(),
+            "node": str(node or "").strip(),
+            "event_type": str(event_type or "").strip(),
+            "pending_tool_calls_count": (
+                int(pending_tool_calls_count) if pending_tool_calls_count is not None else None
+            ),
+            "step_count": int(step_count) if step_count is not None else None,
+            "max_steps": int(max_steps) if max_steps is not None else None,
+            "extra": _safe_jsonable(extra or {}),
+        }
+        with log_file.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(log_entry, ensure_ascii=False) + "\n")
+    except Exception:  # noqa: BLE001
+        _llm_logger.exception("Failed to log stream lifecycle event")
+
+
 async def _invoke_llm_message(llm: Any, messages: list[Any], *, timeout: float) -> AIMessage:
     async def _run() -> AIMessage:
         stream = getattr(llm, "astream", None)
@@ -273,9 +315,14 @@ async def reason_node(
         persist_state_snapshot(updated.get("checkpoint_dir"), updated["session_id"], "reason-timeout", updated)
         return updated
 
+    active_skill_id, active_skill_content = _extract_active_skill_guidance(
+        [dict(item) for item in list(state.get("tool_runs", []) or []) if isinstance(item, dict)]
+    )
     system_prompt = build_system_prompt(
         registry,
         allowed_tool_names=state.get("allowed_tool_names"),
+        active_skill_id=active_skill_id or None,
+        active_skill_content=active_skill_content or None,
     )
     messages = list(_coerce_messages(state.get("messages", [])))
     if not messages:
@@ -476,6 +523,23 @@ async def reason_node(
         state,
         pending_tool_calls,
     )
+    # 忽略无参数的 tool_call，避免模型给出空 args 导致无效执行循环。
+    dropped_empty_arg_calls = [
+        call
+        for call in pending_tool_calls
+        if not isinstance(call.get("args"), dict) or len(call.get("args") or {}) == 0
+    ]
+    if dropped_empty_arg_calls:
+        _llm_logger.info(
+            "Ignoring %d tool_calls with empty/missing args: %s",
+            len(dropped_empty_arg_calls),
+            [str(call.get("name", "")).strip() for call in dropped_empty_arg_calls],
+        )
+        pending_tool_calls = [
+            call
+            for call in pending_tool_calls
+            if isinstance(call.get("args"), dict) and len(call.get("args") or {}) > 0
+        ]
     raw_response_text = _extract_text(response.content)
 
     # 记录 LLM 交互到日志文件
@@ -508,6 +572,55 @@ async def reason_node(
         }
     )
 
+    # 检测诊断完成信号：如果 LLM 明确表示诊断已完成，忽略后续 tool_calls
+    # 使用正则匹配诊断完成的关键表达
+    _DIAGNOSIS_COMPLETE_PATTERN = re.compile(
+        r"(诊断结论|诊断结果|诊断)(已经|已)?明确|"
+        r"(诊断|根因)(已经|已)?(很|非常)?清晰|"
+        r"(诊断|根因)(已经|已)?(很|非常)?清楚|"
+        r"诊断(已经|已)?完成|"
+        r"(基于|根据)(已有|已收集)?证据(，|,)?(完成|结束)?诊断|"
+        r"(可以|现在|即将)(给出|提供)?最终诊断|"
+        r"最终诊断(结论|结果)?|"
+        r"无需(进一步|更多|继续)?(证据|信息)?收集|"
+        r"(证据|信息)收集(已经|已)?完成|"
+        r"(no\s+need|not\s+need)\s+(for\s+)?(further|additional|more)\s+(evidence|information|data)|"
+        r"(diagnosis|diagnostic)(\s+is|\s+has)?\s+(complete|concluded|final|clear)|"
+        r"final\s+diagnosis",
+        re.IGNORECASE,
+    )
+    diagnosis_complete_detected = False
+    if raw_response_text:
+        if _DIAGNOSIS_COMPLETE_PATTERN.search(raw_response_text):
+            diagnosis_complete_detected = True
+
+    parsed_final_json: ReasoningEnvelope | None = None
+    # 在 final_json 轮，如果已经能解析出 diagnosis/remediation，则忽略后续工具调用并直接收敛。
+    if interaction_mode == "final_json" and raw_response_text:
+        try:
+            candidate = _parse_reasoning_output(raw_response_text)
+        except Exception:  # noqa: BLE001
+            candidate = _build_fallback_reasoning_output(
+                query=str(state.get("query", "")).strip(),
+                content=raw_response_text,
+            )
+        if candidate.diagnosis is not None or candidate.remediation_plan is not None:
+            parsed_final_json = candidate
+            if pending_tool_calls:
+                _llm_logger.info(
+                    "Final JSON parse succeeded; ignoring %d trailing tool_calls and finalizing directly",
+                    len(pending_tool_calls),
+                )
+                pending_tool_calls = []
+
+    # 如果检测到诊断完成信号，忽略 tool_calls，直接进入 finalize
+    if diagnosis_complete_detected and pending_tool_calls:
+        _llm_logger.info(
+            "Diagnosis complete signal detected, ignoring %d tool_calls",
+            len(pending_tool_calls),
+        )
+        pending_tool_calls = []
+
     if pending_tool_calls:
         updated_trace.append(
             {
@@ -534,27 +647,30 @@ async def reason_node(
         persist_state_snapshot(updated.get("checkpoint_dir"), updated["session_id"], "reason", updated)
         return updated
 
-    try:
-        parsed = _parse_reasoning_output(raw_response_text)
-    except Exception:  # noqa: BLE001
-        parsed = _build_fallback_reasoning_output(
-            query=str(state.get("query", "")).strip(),
-            content=raw_response_text,
-        )
-    if parsed.diagnosis is None:
-        parsed = _build_fallback_reasoning_output(
-            query=str(state.get("query", "")).strip(),
-            content=raw_response_text,
-        )
-        if parsed.diagnosis is None:
-            parsed = ReasoningEnvelope(
-                thought="已将非 JSON 模型输出转换为结构化的低置信度诊断结果。",
-                diagnosis=_build_fallback_final_output(
-                    query=str(state.get("query", "")).strip(),
-                    content=raw_response_text,
-                ).diagnosis,
-                remediation_plan=None,
+    if parsed_final_json is not None:
+        parsed = parsed_final_json
+    else:
+        try:
+            parsed = _parse_reasoning_output(raw_response_text)
+        except Exception:  # noqa: BLE001
+            parsed = _build_fallback_reasoning_output(
+                query=str(state.get("query", "")).strip(),
+                content=raw_response_text,
             )
+        if parsed.diagnosis is None:
+            parsed = _build_fallback_reasoning_output(
+                query=str(state.get("query", "")).strip(),
+                content=raw_response_text,
+            )
+            if parsed.diagnosis is None:
+                parsed = ReasoningEnvelope(
+                    thought="已将非 JSON 模型输出转换为结构化的低置信度诊断结果。",
+                    diagnosis=_build_fallback_final_output(
+                        query=str(state.get("query", "")).strip(),
+                        content=raw_response_text,
+                    ).diagnosis,
+                    remediation_plan=None,
+                )
     final_thought = parsed.thought
     raw_remediation_plan = parsed.remediation_plan
     evidence_signals = _extract_evidence_signals(list(state.get("tool_runs", []) or []))
@@ -1053,6 +1169,33 @@ def _find_latest_successful_skill_load(tool_runs: list[dict[str, Any]]) -> dict[
         if isinstance(data, dict):
             return run
     return None
+
+
+def _extract_active_skill_guidance(tool_runs: list[dict[str, Any]]) -> tuple[str, str]:
+    for run in reversed(tool_runs):
+        if not isinstance(run, dict):
+            continue
+        if str(run.get("tool", "")).strip() != "skills.load_skill":
+            continue
+        if not bool(run.get("success", False)):
+            continue
+        key_fields = run.get("key_fields")
+        if not isinstance(key_fields, dict):
+            key_fields = {}
+        data = run.get("data")
+        if not isinstance(data, dict):
+            data = {}
+
+        skill_id = str(
+            key_fields.get("skill_id")
+            or data.get("skill_id")
+            or (run.get("params") or {}).get("skill_id")
+            or ""
+        ).strip()
+        content = str(key_fields.get("content") or data.get("content") or "").strip()
+        if content:
+            return skill_id, content
+    return "", ""
 
 
 def _choose_skill_script_to_run(load_run: dict[str, Any], tool_runs: list[dict[str, Any]]) -> tuple[str, str]:
@@ -2226,9 +2369,19 @@ def _render_tool_run_for_prompt(item: dict[str, Any]) -> dict[str, Any]:
     # Include key_fields for specific tools that have useful data summaries
     key_fields = _safe_jsonable(item.get("key_fields"))
     if key_fields and isinstance(key_fields, dict):
-        # For BMC/GPU tools and skills.load_skill, include full key_fields as output_summary (no compression)
         tool = str(item.get("tool", "") or "").strip()
-        if tool.startswith("bmc.") or tool.startswith("gpu.") or tool == "skills.load_skill":
+        if tool == "skills.load_skill":
+            content = str(key_fields.get("content", "") or "")
+            rendered["output_summary"] = {
+                "skill_id": str(key_fields.get("skill_id", "") or ""),
+                "skill_name": str(key_fields.get("skill_name", "") or ""),
+                "recommended_tools": key_fields.get("recommended_tools") if isinstance(key_fields.get("recommended_tools"), list) else [],
+                "scripts": key_fields.get("scripts") if isinstance(key_fields.get("scripts"), list) else [],
+                "references": key_fields.get("references") if isinstance(key_fields.get("references"), list) else [],
+                "content_len": len(content),
+            }
+        # For BMC/GPU tools, include full key_fields as output_summary (no compression)
+        elif tool.startswith("bmc.") or tool.startswith("gpu."):
             rendered["output_summary"] = key_fields  # Pass full content, no truncation
         else:
             rendered["key_fields"] = _compact_prompt_value(key_fields, max_items=4, max_keys=6, max_string=96)

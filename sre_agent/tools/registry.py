@@ -318,24 +318,25 @@ class ToolRegistry:
 def build_default_registry() -> ToolRegistry:
     """Build the default Agent-B tool layout."""
     from sre_agent.tools.readonly import bmc, file, gpu, k8s, knowledge, logs, memory, network, ontology, platform, process, prometheus, skills, ssh
+    from sre_agent.tools.write import bmc as write_bmc
     from sre_agent.tools.write import k8s as write_k8s
     from sre_agent.tools.write import network as write_network
     from sre_agent.tools.write import remediation as write_remediation
 
     registry = ToolRegistry()
 
-    # readonly/file.py
-    registry.register(
-        ToolDefinition(
-            name="file.read",
-            description="Read a local file and return full content.",
-            safety_level=SafetyLevel.READ_ONLY,
-            params_schema={"type": "object", "required": ["path"]},
-            tags=("file", "readonly"),
-            command_template="cat {path}",
-        ),
-        file.read,
-    )
+    # # readonly/file.py
+    # registry.register(
+    #     ToolDefinition(
+    #         name="file.read",
+    #         description="Read a local file and return full content.",
+    #         safety_level=SafetyLevel.READ_ONLY,
+    #         params_schema={"type": "object", "required": ["path"]},
+    #         tags=("file", "readonly"),
+    #         command_template="cat {path}",
+    #     ),
+    #     file.read,
+    # )
 
     # readonly/k8s.py
     registry.register(
@@ -732,6 +733,30 @@ def build_default_registry() -> ToolRegistry:
             tags=("bmc", "readonly"),
         ),
         bmc.get_power,
+    )
+
+    # write/bmc.py
+    registry.register(
+        ToolDefinition(
+            name="bmc.set_fan_control",
+            description="Set BMC fan control mode (Auto/Manual) and PWM value via Redfish web API.",
+            safety_level=SafetyLevel.HIGH,
+            params_schema={
+                "type": "object",
+                "required": ["bmc_host", "mode"],
+                "properties": {
+                    "bmc_host": {"type": "string", "description": "BMC host IP address"},
+                    "mode": {"type": "string", "enum": ["Auto", "Manual"], "description": "Fan control mode"},
+                    "pwm": {"type": "integer", "minimum": 0, "maximum": 100, "description": "PWM percentage for Manual mode"},
+                    "fan_index": {"type": "integer", "default": 0, "description": "Fan index"},
+                    "fan_bp_index": {"type": "integer", "default": 255, "description": "Fan backplane index"},
+                    "verify_tls": {"type": "boolean", "default": True, "description": "Verify TLS certificate"},
+                },
+            },
+            tags=("bmc", "write"),
+            needs_approval=True,
+        ),
+        write_bmc.set_fan_control,
     )
 
     # readonly/platform.py

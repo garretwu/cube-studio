@@ -21,6 +21,7 @@ from fastapi import FastAPI
 from lib.channels.alert import AlertChannel
 from lib.channels.knowledge import DifyKnowledgeStoreAdapter
 from sre_agent.agent import ConversationalAgent, run_diagnosis, run_diagnosis_stream
+from sre_agent.agent.nodes import log_stream_lifecycle_event
 from sre_agent.agent.prompts import build_alert_diagnosis_prompt
 from sre_agent.agent.graph import get_last_llm_runtime_diagnostics
 from sre_agent.alerts_filter import build_blocked_alert_name_set, filter_blocked_alerts, normalize_alert_name
@@ -1017,143 +1018,318 @@ class StreamingDiagnosisRunner:
         buffered_done_event: dict[str, Any] | None = None
         emitted_event_types: set[str] = set()
 
-        async for event in run_diagnosis_stream(
-            query=query,
-            context=self._execution_context,
-            variables=runtime_variables,
-            tool_registry=self._tool_registry,
-            step_timeout_sec=self._config.agent.step_timeout_sec,
-            total_timeout_sec=self._config.agent.total_timeout_sec,
-            checkpoint_dir=None,
-            alert_snapshot=enriched_alert.model_dump(mode="json"),
-            topology_context=topology_context,
-            extra_alerts=extra_alerts_payload,
-            allowed_tool_names=allowed_tool_names,
-            reasoning_context_strategy=_resolve_reasoning_context_strategy(self._config),
-            reasoning_overflow_behavior=_resolve_reasoning_overflow_behavior(self._config),
-            reasoning_input_target_tokens=_resolve_reasoning_input_target_tokens(self._config),
-            reasoning_model_family=_resolve_reasoning_model_family(self._config),
-        ):
-            if final_session_id is None:
-                final_session_id = event.get("session_id")
+        def _log_finalize_stage(
+            *,
+            stage: str,
+            status: str,
+            reason: str = "",
+            session_hint: str = "",
+            event_type: str = "",
+            extra: dict[str, Any] | None = None,
+        ) -> None:
+            sid = str(session_hint or final_session_id or "").strip()
+            if not sid:
+                return
+            log_stream_lifecycle_event(
+                session_id=sid,
+                step=int(final_state.get("step_count", 0) or 0) + 1,
+                mode="stream_event",
+                stage=stage,
+                status=status,
+                reason=reason,
+                event_type=event_type,
+                pending_tool_calls_count=0,
+                step_count=int(final_state.get("step_count", 0) or 0),
+                max_steps=int(self._config.agent.max_steps or 0),
+                extra=extra or {},
+            )
+            if status in {"failed", "cancelled"}:
+                LOGGER.warning(
+                    "stream finalize stage=%s status=%s session=%s reason=%s extra=%s",
+                    stage,
+                    status,
+                    sid,
+                    reason,
+                    extra or {},
+                )
+            else:
+                LOGGER.info(
+                    "stream finalize stage=%s status=%s session=%s reason=%s",
+                    stage,
+                    status,
+                    sid,
+                    reason,
+                )
 
-            event_type = str(event.get("type", "")).strip().lower()
-            if event_type == EventType.DONE.value:
-                buffered_done_event = dict(event) if isinstance(event, dict) else None
-                continue
+        _log_finalize_stage(
+            stage="iter_stream",
+            status="started",
+            reason="begin streaming iteration",
+            event_type="stream_iter_start",
+        )
+        try:
+            async for event in run_diagnosis_stream(
+                query=query,
+                context=self._execution_context,
+                variables=runtime_variables,
+                tool_registry=self._tool_registry,
+                step_timeout_sec=self._config.agent.step_timeout_sec,
+                total_timeout_sec=self._config.agent.total_timeout_sec,
+                checkpoint_dir=None,
+                alert_snapshot=enriched_alert.model_dump(mode="json"),
+                topology_context=topology_context,
+                extra_alerts=extra_alerts_payload,
+                allowed_tool_names=allowed_tool_names,
+                reasoning_context_strategy=_resolve_reasoning_context_strategy(self._config),
+                reasoning_overflow_behavior=_resolve_reasoning_overflow_behavior(self._config),
+                reasoning_input_target_tokens=_resolve_reasoning_input_target_tokens(self._config),
+                reasoning_model_family=_resolve_reasoning_model_family(self._config),
+            ):
+                if final_session_id is None:
+                    final_session_id = event.get("session_id")
 
-            # Track state from node_completed events for session persistence.
-            if event.get("type") == "node_completed" and isinstance(event.get("data"), dict):
-                data = event["data"]
-                if data.get("diagnosis_result") is not None:
-                    final_state["diagnosis_result"] = data["diagnosis_result"]
-                if data.get("remediation_plan") is not None:
-                    final_state["remediation_plan"] = data["remediation_plan"]
-                if data.get("status") is not None:
-                    final_state["status"] = data["status"]
-                if data.get("step_count") is not None:
-                    final_state["step_count"] = data["step_count"]
-                if data.get("plan_missing_reason") is not None:
-                    final_state["plan_missing_reason"] = data["plan_missing_reason"]
-                raw_trace_items = data.get("new_trace_items")
-                if isinstance(raw_trace_items, list):
-                    for raw_item in raw_trace_items:
-                        if not isinstance(raw_item, dict):
-                            continue
-                        trace_item = self._trace_item_from_stream_snapshot(raw_item)
-                        if trace_item is not None:
-                            final_trace_items.append(trace_item)
+                event_type = str(event.get("type", "")).strip().lower()
+                if event_type == EventType.DONE.value:
+                    buffered_done_event = dict(event) if isinstance(event, dict) else None
+                    continue
 
-            # Publish key events to WebSocket for backward compatibility.
-            event_type = event.get("type", "")
-            if event_type in {
-                EventType.DIAGNOSIS_STARTED.value,
-                EventType.TOKEN_DELTA.value,
-                EventType.NODE_STARTED.value,
-                EventType.NODE_COMPLETED.value,
-                EventType.TOOL_STARTED.value,
-                EventType.TOOL_COMPLETED.value,
-                EventType.ERROR.value,
-            }:
-                try:
-                    await self._trace_publisher.publish(event)
-                except Exception:  # noqa: BLE001
-                    pass
+                # Track state from node_completed events for session persistence.
+                if event.get("type") == "node_completed" and isinstance(event.get("data"), dict):
+                    _log_finalize_stage(
+                        stage="cache_final_state",
+                        status="started",
+                        reason="processing node_completed event",
+                        event_type="node_completed",
+                    )
+                    data = event["data"]
+                    if data.get("diagnosis_result") is not None:
+                        final_state["diagnosis_result"] = data["diagnosis_result"]
+                    if data.get("remediation_plan") is not None:
+                        final_state["remediation_plan"] = data["remediation_plan"]
+                    if data.get("status") is not None:
+                        final_state["status"] = data["status"]
+                    if data.get("step_count") is not None:
+                        final_state["step_count"] = data["step_count"]
+                    if data.get("plan_missing_reason") is not None:
+                        final_state["plan_missing_reason"] = data["plan_missing_reason"]
+                    raw_trace_items = data.get("new_trace_items")
+                    if isinstance(raw_trace_items, list):
+                        for raw_item in raw_trace_items:
+                            if not isinstance(raw_item, dict):
+                                continue
+                            trace_item = self._trace_item_from_stream_snapshot(raw_item)
+                            if trace_item is not None:
+                                final_trace_items.append(trace_item)
+                    _log_finalize_stage(
+                        stage="cache_final_state",
+                        status="completed",
+                        reason="cached node_completed snapshot",
+                        event_type="node_completed",
+                        extra={"trace_items_cached": len(final_trace_items)},
+                    )
 
-            emitted_event_types.add(event_type)
-            yield event
+                # Publish key events to WebSocket for backward compatibility.
+                event_type = event.get("type", "")
+                if event_type in {
+                    EventType.DIAGNOSIS_STARTED.value,
+                    EventType.TOKEN_DELTA.value,
+                    EventType.NODE_STARTED.value,
+                    EventType.NODE_COMPLETED.value,
+                    EventType.TOOL_STARTED.value,
+                    EventType.TOOL_COMPLETED.value,
+                    EventType.ERROR.value,
+                }:
+                    try:
+                        await self._trace_publisher.publish(event)
+                    except Exception:  # noqa: BLE001
+                        pass
+
+                emitted_event_types.add(event_type)
+                yield event
+            _log_finalize_stage(
+                stage="iter_stream",
+                status="completed",
+                reason="stream iteration finished",
+                event_type="stream_iter_end",
+                extra={"buffered_done_exists": bool(buffered_done_event)},
+            )
+        except asyncio.CancelledError:
+            _log_finalize_stage(
+                stage="iter_stream",
+                status="cancelled",
+                reason="stream_task_cancelled",
+                event_type="stream_cancelled",
+            )
+            raise
+        except Exception as exc:  # noqa: BLE001
+            _log_finalize_stage(
+                stage="iter_stream",
+                status="failed",
+                reason=str(exc).strip() or exc.__class__.__name__,
+                event_type="stream_exception",
+                extra={"exception_type": exc.__class__.__name__},
+            )
+            raise
 
         # Persist the completed session.
         if final_session_id:
-            final_state.setdefault("status", "diagnosed")
-            final_state.setdefault("step_count", 0)
-            if final_trace_items:
-                final_state["trace_items"] = final_trace_items
-            completed = _diagnosis_session_from_state(alert=enriched_alert, state=final_state)
-            completed = completed.model_copy(update={"session_id": final_session_id})
-            plan = self._extract_recommended_fix(completed)
-            if plan is not None:
-                self._remediation_engine.register_plan(final_session_id, plan)
-                completed = completed.model_copy(update={"status": "approval_required"})
-            elif completed.status == "diagnosing":
-                completed = completed.model_copy(update={"status": "diagnosed"})
-            self._session_store.put(completed)
+            _log_finalize_stage(
+                stage="persist_session",
+                status="started",
+                reason="persisting final session snapshot",
+                event_type="persist_start",
+                session_hint=final_session_id,
+            )
+            try:
+                final_state.setdefault("status", "diagnosed")
+                final_state.setdefault("step_count", 0)
+                if final_trace_items:
+                    final_state["trace_items"] = final_trace_items
+                completed = _diagnosis_session_from_state(alert=enriched_alert, state=final_state)
+                completed = completed.model_copy(update={"session_id": final_session_id})
+                plan = self._extract_recommended_fix(completed)
+                if plan is not None:
+                    self._remediation_engine.register_plan(final_session_id, plan)
+                    completed = completed.model_copy(update={"status": "approval_required"})
+                elif completed.status == "diagnosing":
+                    completed = completed.model_copy(update={"status": "diagnosed"})
+                self._session_store.put(completed)
+            except Exception as exc:  # noqa: BLE001
+                _log_finalize_stage(
+                    stage="persist_session",
+                    status="failed",
+                    reason=str(exc).strip() or exc.__class__.__name__,
+                    event_type="persist_exception",
+                    session_hint=final_session_id,
+                    extra={"exception_type": exc.__class__.__name__},
+                )
+                raise
+            _log_finalize_stage(
+                stage="persist_session",
+                status="completed",
+                reason="session persisted",
+                event_type="persist_done",
+                session_hint=final_session_id,
+                extra={"final_status": completed.status},
+            )
 
-            supplemental_events: list[dict[str, Any]] = []
-            if completed.diagnosis_result is not None and EventType.DIAGNOSIS_RESULT.value not in emitted_event_types:
-                supplemental_events.append(
-                    {
-                        "type": EventType.DIAGNOSIS_RESULT.value,
-                        "session_id": final_session_id,
-                        "data": completed.diagnosis_result.model_dump(mode="json"),
-                    }
+            try:
+                supplemental_events: list[dict[str, Any]] = []
+                _log_finalize_stage(
+                    stage="emit_supplemental_events",
+                    status="started",
+                    reason="building supplemental events",
+                    event_type="supplemental_prepare",
+                    session_hint=final_session_id,
                 )
-            if plan is not None and EventType.APPROVAL_REQUIRED.value not in emitted_event_types:
-                plan_version = self._remediation_engine.get_latest_plan_version(final_session_id)
-                supplemental_events.append(
-                    {
-                        "type": EventType.APPROVAL_REQUIRED.value,
-                        "session_id": final_session_id,
-                        "data": {
-                            "plan_id": plan.plan_id,
-                            "plan_version": plan_version,
-                        },
-                    }
-                )
-            if plan is None:
-                supplemental_events.append(
-                    {
-                        "type": EventType.REMEDIATION_PROGRESS.value,
-                        "session_id": final_session_id,
-                        "data": {
-                            "stage": "plan_unavailable",
-                            "message": self._build_plan_unavailable_reason(
-                                completed,
-                                final_state.get("plan_missing_reason"),
-                            ),
-                        },
-                    }
-                )
+                if completed.diagnosis_result is not None and EventType.DIAGNOSIS_RESULT.value not in emitted_event_types:
+                    supplemental_events.append(
+                        {
+                            "type": EventType.DIAGNOSIS_RESULT.value,
+                            "session_id": final_session_id,
+                            "data": completed.diagnosis_result.model_dump(mode="json"),
+                        }
+                    )
+                if plan is not None and EventType.APPROVAL_REQUIRED.value not in emitted_event_types:
+                    plan_version = self._remediation_engine.get_latest_plan_version(final_session_id)
+                    supplemental_events.append(
+                        {
+                            "type": EventType.APPROVAL_REQUIRED.value,
+                            "session_id": final_session_id,
+                            "data": {
+                                "plan_id": plan.plan_id,
+                                "plan_version": plan_version,
+                            },
+                        }
+                    )
+                if plan is None:
+                    supplemental_events.append(
+                        {
+                            "type": EventType.REMEDIATION_PROGRESS.value,
+                            "session_id": final_session_id,
+                            "data": {
+                                "stage": "plan_unavailable",
+                                "message": self._build_plan_unavailable_reason(
+                                    completed,
+                                    final_state.get("plan_missing_reason"),
+                                ),
+                            },
+                        }
+                    )
 
-            for supplemental in supplemental_events:
-                emitted_event_types.add(str(supplemental.get("type", "")).strip().lower())
-                try:
-                    await self._trace_publisher.publish(supplemental)
-                except Exception:  # noqa: BLE001
-                    pass
-                yield supplemental
+                for supplemental in supplemental_events:
+                    emitted_event_types.add(str(supplemental.get("type", "")).strip().lower())
+                    try:
+                        await self._trace_publisher.publish(supplemental)
+                    except Exception as exc:  # noqa: BLE001
+                        _log_finalize_stage(
+                            stage="emit_supplemental_events",
+                            status="failed",
+                            reason=str(exc).strip() or exc.__class__.__name__,
+                            event_type="supplemental_publish_exception",
+                            session_hint=final_session_id,
+                            extra={
+                                "exception_type": exc.__class__.__name__,
+                                "supplemental_type": str(supplemental.get("type", "")).strip(),
+                            },
+                        )
+                        continue
+                    yield supplemental
+                _log_finalize_stage(
+                    stage="emit_supplemental_events",
+                    status="completed",
+                    reason="supplemental events emitted",
+                    event_type="supplemental_done",
+                    session_hint=final_session_id,
+                    extra={
+                        "supplemental_count": len(supplemental_events),
+                        "emitted_event_types_count": len(emitted_event_types),
+                    },
+                )
+            except Exception as exc:  # noqa: BLE001
+                _log_finalize_stage(
+                    stage="emit_supplemental_events",
+                    status="failed",
+                    reason=str(exc).strip() or exc.__class__.__name__,
+                    event_type="supplemental_exception",
+                    session_hint=final_session_id,
+                    extra={"exception_type": exc.__class__.__name__},
+                )
+                raise
 
         done_event = buffered_done_event or {
             "type": EventType.DONE.value,
             "session_id": final_session_id or "",
             "data": {},
         }
+        _log_finalize_stage(
+            stage="emit_done",
+            status="started",
+            reason="emitting done event",
+            event_type="done_prepare",
+            session_hint=str(done_event.get("session_id", "") or final_session_id or ""),
+            extra={"buffered_done_exists": bool(buffered_done_event)},
+        )
         if final_session_id and not str(done_event.get("session_id", "")).strip():
             done_event = {**done_event, "session_id": final_session_id}
         try:
             await self._trace_publisher.publish(done_event)
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception as exc:  # noqa: BLE001
+            _log_finalize_stage(
+                stage="emit_done",
+                status="failed",
+                reason=str(exc).strip() or exc.__class__.__name__,
+                event_type="done_publish_exception",
+                session_hint=str(done_event.get("session_id", "") or final_session_id or ""),
+                extra={"exception_type": exc.__class__.__name__},
+            )
+        _log_finalize_stage(
+            stage="emit_done",
+            status="completed",
+            reason="done event emitted",
+            event_type="done",
+            session_hint=str(done_event.get("session_id", "") or final_session_id or ""),
+        )
         yield done_event
 
     @staticmethod
