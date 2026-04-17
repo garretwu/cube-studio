@@ -547,6 +547,100 @@ tags:
         )
         self.assertEqual(result["tool_runs"][0]["tool"], "skills.list_skills")
 
+    async def test_load_skill_success_adds_persistent_skill_summary_trace(self) -> None:
+        llm = _FakeLLM(
+            [
+                AIMessage(
+                    content="Find relevant skills first.",
+                    tool_calls=[
+                        {
+                            "name": "skills.list_skills",
+                            "args": {"query": "gpu thermal diagnosis"},
+                            "id": "call-1",
+                            "type": "tool_call",
+                        }
+                    ],
+                ),
+                AIMessage(
+                    content="Load matched skill.",
+                    tool_calls=[
+                        {
+                            "name": "skills.load_skill",
+                            "args": {"skill_id": "gpu-thermal-diagnosis"},
+                            "id": "call-2",
+                            "type": "tool_call",
+                        }
+                    ],
+                ),
+                AIMessage(
+                    content=json.dumps(
+                        {
+                            "thought": "Skill summary is enough for this test.",
+                            "diagnosis": {
+                                "root_cause": "skill loaded",
+                                "root_cause_layer": "service",
+                                "root_cause_entities": ["service:test"],
+                                "confidence": 0.6,
+                                "impact_summary": "Loaded skill and produced summary trace.",
+                                "affected_services": ["service:test"],
+                                "triage_priority": "P3",
+                                "diagnosis_certainty": "probable",
+                            },
+                            "remediation_plan": None,
+                        }
+                    )
+                ),
+            ]
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            skill_root = Path(tmpdir) / "skills"
+            skill_dir = skill_root / "gpu-thermal-diagnosis"
+            skill_dir.mkdir(parents=True, exist_ok=True)
+            (skill_dir / "SKILL.md").write_text(
+                """---
+name: GPU Thermal Diagnosis
+description: >
+  GPU温度异常专项诊断技能。当用户报告GPU温度过高、thermal throttling、风扇异常、
+  散热系统故障、频繁降频、推理性能退化与温度关联等问题时触发。
+  适用场景：GPUTemperatureHigh告警、thermal throttle、GPU降频、风扇转速异常、
+  机房环境温度问题、机柜风道问题、BMC风扇控制策略异常。
+---
+
+# GPU Thermal Diagnosis
+""",
+                encoding="utf-8",
+            )
+
+            from sre_agent.skills import SkillRegistry
+
+            result = await run_diagnosis(
+                query="Diagnose GPU thermal issue with skills first.",
+                context=_happy_context(),
+                variables={},
+                llm=llm,
+                step_timeout_sec=5.0,
+                total_timeout_sec=10.0,
+                checkpoint_dir=None,
+                allowed_tool_names=[
+                    "skills.list_skills",
+                    "skills.load_skill",
+                    "skills.read_skill_ref",
+                    "skills.run_skill",
+                ],
+                skill_registry=SkillRegistry(root=skill_root),
+            )
+
+        trace_items = [item for item in result.get("trace_items", []) if isinstance(item, dict)]
+        self.assertTrue(
+            any(
+                str((item.get("tool_params") or {}).get("kind", "")) == "skill_load_summary"
+                and "GPU Thermal Diagnosis" in str(item.get("content", ""))
+                and "适用场景：GPUTemperatureHigh告警" in str(item.get("content", ""))
+                for item in trace_items
+            )
+        )
+
     async def test_first_round_rejects_unbound_tool_calls_from_provider(self) -> None:
         llm = _FakeLLM(
             [
