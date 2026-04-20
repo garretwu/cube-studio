@@ -19,6 +19,10 @@ Rules:
   4. `skills.run_skill`
 - If there is a highly relevant skill that directly matches the current alert or failure pattern, prefer using the skill first instead of decomposing the investigation into many low-level tools.
 - Prefer using skill tools when they can accelerate diagnosis, but keep the overall loop tool-driven.
+- If a skill is matched and loaded successfully, you MUST execute diagnosis by following the SKILL.md workflow strictly:
+  1. prioritize the ordered steps and command intent in SKILL.md,
+  2. prefer executing SKILL.md commands via available tools (e.g. `ssh.run_command`) when equivalent native tools are unavailable,
+  3. do not skip SKILL.md key evidence-collection steps before final diagnosis.
 - Skill execution is a two-step process:
   1. call `skills.load_skill` and inspect the returned `scripts` list,
   2. then call `skills.run_skill` with both `skill_id` and one concrete `script` from that list.
@@ -125,6 +129,8 @@ def build_system_prompt(
     allowed_tool_names: Iterable[str] | None = None,
     available_skills: Iterable[dict[str, Any]] | None = None,
     preferred_skill: dict[str, Any] | None = None,
+    active_skill_id: str | None = None,
+    active_skill_content: str | None = None,
 ) -> str:
     read_only_block = render_tool_reference_block(
         registry,
@@ -137,8 +143,32 @@ def build_system_prompt(
         safety_levels=[SafetyLevel.LOW, SafetyLevel.MEDIUM, SafetyLevel.HIGH, SafetyLevel.CRITICAL],
         title="Write-tool schema reference (not callable in this phase)",
     )
-    blocks = [BASE_SYSTEM_PROMPT, read_only_block, write_block]
+    active_skill_block = render_active_skill_guidance_block(
+        skill_id=active_skill_id,
+        skill_content=active_skill_content,
+    )
+    blocks = [BASE_SYSTEM_PROMPT]
+    if active_skill_block:
+        blocks.append(active_skill_block)
+    blocks.extend([read_only_block, write_block])
     return "\n\n".join(blocks)
+
+
+def render_active_skill_guidance_block(
+    *,
+    skill_id: str | None,
+    skill_content: str | None,
+) -> str:
+    content = str(skill_content or "").strip()
+    if not content:
+        return ""
+    normalized_skill_id = str(skill_id or "").strip() or "unknown-skill"
+    return (
+        "Active skill guidance:\n"
+        f"- active_skill_id: {normalized_skill_id}\n"
+        "SKILL.md content (verbatim):\n"
+        f"{content}"
+    )
 
 
 def render_tool_reference_block(

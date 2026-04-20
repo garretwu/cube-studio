@@ -151,10 +151,13 @@ class ThinkingTrace(StrictFrozenModel):
         next_step = 1
         for item in trace_dicts:
             if item.get("type") == "thought":
+                action = str(item.get("action", "tool_call")).strip().lower()
+                # Normalize action to valid ActionType (same logic as graph.py:398)
+                normalized_action = action if action in {"tool_call", "conclude", "remediate"} else "tool_call"
                 step = ThinkingStep(
                     step=int(item.get("step", next_step)),
                     thought=str(item.get("content", "")),
-                    action_type=str(item.get("action", "tool_call")),  # type: ignore[arg-type]
+                    action_type=normalized_action,  # type: ignore[arg-type]
                     thought_key=item.get("thought_key"),
                     tool_name=item.get("tool_name"),
                     tool_params=item.get("tool_params"),

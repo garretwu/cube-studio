@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import re
 from collections.abc import AsyncIterator
@@ -17,6 +18,7 @@ from sre_agent.agent.nodes import (
     decide_node,
     finalize_node,
     initialize_state,
+    log_stream_lifecycle_event,
     observe_node,
     reason_node,
     route_after_decide,
@@ -27,6 +29,8 @@ from sre_agent.config import resolve_llm_runtime_settings
 from sre_agent.models.events import EventType
 from sre_agent.skills import SkillExecutor, SkillPolicy, SkillRegistry
 from sre_agent.tools import ToolExecutionContext, ToolRegistry, build_default_registry
+
+LOGGER = logging.getLogger(__name__)
 
 
 class PassthroughGuardrails:
@@ -655,6 +659,13 @@ def create_sre_graph(
     return graph.compile(checkpointer=create_checkpointer())
 
 
+def _compute_graph_recursion_limit(max_steps: int) -> int:
+    # LangGraph recursion_limit counts graph transitions (not business step_count).
+    # One diagnosis "step" may traverse multiple graph nodes, so keep a safety multiplier.
+    safe_steps = max(1, int(max_steps))
+    return max(50, safe_steps * 6)
+
+
 async def run_diagnosis(
     *,
     query: str,
@@ -682,6 +693,7 @@ async def run_diagnosis(
     reasoning_model_family: str | None = None,
 ) -> SREAgentState:
     active_session_id = session_id or uuid4().hex
+    recursion_limit = _compute_graph_recursion_limit(max_steps)
     graph = create_sre_graph(
         llm=llm,
         guardrails=guardrails,
@@ -730,7 +742,10 @@ async def run_diagnosis(
         result = await asyncio.wait_for(
             graph.ainvoke(
                 initial_state,
-                config={"configurable": {"thread_id": active_session_id}},
+                config={
+                    "configurable": {"thread_id": active_session_id},
+                    "recursion_limit": recursion_limit,
+                },
             ),
             timeout=total_timeout_sec,
         )
@@ -780,6 +795,7 @@ async def run_diagnosis_stream(
     SSE endpoint can relay directly to the frontend.
     """
     active_session_id = session_id or uuid4().hex
+    recursion_limit = _compute_graph_recursion_limit(max_steps)
     graph = create_sre_graph(
         llm=llm,
         guardrails=guardrails,
@@ -807,6 +823,21 @@ async def run_diagnosis_stream(
         reasoning_input_target_tokens=reasoning_input_target_tokens,
         reasoning_model_family=reasoning_model_family,
     )
+    log_stream_lifecycle_event(
+        session_id=active_session_id,
+        step=0,
+        mode="stream_started",
+        stage="run_diagnosis_stream",
+        status="started",
+        reason="stream initialized",
+        step_count=int(initial_state.get("step_count", 0) or 0),
+        max_steps=int(initial_state.get("max_steps", max_steps) or max_steps),
+        pending_tool_calls_count=len(list(initial_state.get("pending_tool_calls", []) or [])),
+        extra={
+            "step_timeout_sec": float(step_timeout_sec),
+            "total_timeout_sec": float(total_timeout_sec),
+        },
+    )
 
     yield {
         "type": EventType.DIAGNOSIS_STARTED.value,
@@ -824,6 +855,18 @@ async def run_diagnosis_stream(
 
     async def _run() -> None:
         nonlocal final_state
+        log_stream_lifecycle_event(
+            session_id=active_session_id,
+            step=int(final_state.get("step_count", 0) or 0) + 1,
+            mode="stream_event",
+            stage="_run",
+            status="started",
+            reason="enter event loop",
+            step_count=int(final_state.get("step_count", 0) or 0),
+            max_steps=int(final_state.get("max_steps", max_steps) or max_steps),
+            pending_tool_calls_count=len(list(final_state.get("pending_tool_calls", []) or [])),
+            event_type="run_loop_start",
+        )
         active_node_runs: dict[str, str] = {}
         node_started_at: dict[tuple[str, str], datetime] = {}
         last_trace_count = 0
@@ -852,12 +895,35 @@ async def run_diagnosis_stream(
 
         async for event in graph.astream_events(
             initial_state,
-            config={"configurable": {"thread_id": active_session_id}},
+            config={
+                "configurable": {"thread_id": active_session_id},
+                "recursion_limit": recursion_limit,
+            },
             version="v2",
         ):
             kind = event.get("event", "")
             name = event.get("name", "")
             data = event.get("data", {})
+            if kind in {"on_chain_start", "on_chain_end", "on_tool_start", "on_tool_end"}:
+                LOGGER.debug(
+                    "stream event session=%s kind=%s name=%s",
+                    active_session_id,
+                    kind,
+                    name,
+                )
+                log_stream_lifecycle_event(
+                    session_id=active_session_id,
+                    step=int(final_state.get("step_count", 0) or 0) + 1,
+                    mode="stream_event",
+                    stage="_run",
+                    status="observed",
+                    reason="graph event",
+                    node=name if kind.startswith("on_chain_") else "",
+                    event_type=kind,
+                    pending_tool_calls_count=len(list(final_state.get("pending_tool_calls", []) or [])),
+                    step_count=int(final_state.get("step_count", 0) or 0),
+                    max_steps=int(final_state.get("max_steps", max_steps) or max_steps),
+                )
 
             if kind == "on_chat_model_stream":
                 chunk = data.get("chunk")
@@ -995,12 +1061,37 @@ async def run_diagnosis_stream(
                     "session_id": active_session_id,
                     "data": tool_data,
                 }
+        log_stream_lifecycle_event(
+            session_id=active_session_id,
+            step=int(final_state.get("step_count", 0) or 0) + 1,
+            mode="stream_event",
+            stage="_run",
+            status="completed",
+            reason="event loop finished",
+            step_count=int(final_state.get("step_count", 0) or 0),
+            max_steps=int(final_state.get("max_steps", max_steps) or max_steps),
+            pending_tool_calls_count=len(list(final_state.get("pending_tool_calls", []) or [])),
+            event_type="run_loop_end",
+        )
 
     try:
         async with asyncio.timeout(total_timeout_sec):
             async for event in _run():
                 yield event
     except TimeoutError:
+        log_stream_lifecycle_event(
+            session_id=active_session_id,
+            step=int(final_state.get("step_count", 0) or 0) + 1,
+            mode="stream_timeout",
+            stage="run_diagnosis_stream",
+            status="timeout",
+            reason="total_timeout_exceeded",
+            step_count=int(final_state.get("step_count", 0) or 0),
+            max_steps=int(final_state.get("max_steps", max_steps) or max_steps),
+            pending_tool_calls_count=len(list(final_state.get("pending_tool_calls", []) or [])),
+            event_type="timeout",
+            extra={"total_timeout_sec": float(total_timeout_sec)},
+        )
         yield {
             "type": EventType.ERROR.value,
             "session_id": active_session_id,
@@ -1009,6 +1100,35 @@ async def run_diagnosis_stream(
                 "terminal_reason": "timeout",
             },
         }
+    except asyncio.CancelledError:
+        log_stream_lifecycle_event(
+            session_id=active_session_id,
+            step=int(final_state.get("step_count", 0) or 0) + 1,
+            mode="stream_cancelled",
+            stage="run_diagnosis_stream",
+            status="cancelled",
+            reason="stream_task_cancelled",
+            step_count=int(final_state.get("step_count", 0) or 0),
+            max_steps=int(final_state.get("max_steps", max_steps) or max_steps),
+            pending_tool_calls_count=len(list(final_state.get("pending_tool_calls", []) or [])),
+            event_type="cancelled",
+        )
+        raise
+    except Exception as exc:  # noqa: BLE001
+        log_stream_lifecycle_event(
+            session_id=active_session_id,
+            step=int(final_state.get("step_count", 0) or 0) + 1,
+            mode="stream_exception",
+            stage="run_diagnosis_stream",
+            status="failed",
+            reason=str(exc).strip() or exc.__class__.__name__,
+            step_count=int(final_state.get("step_count", 0) or 0),
+            max_steps=int(final_state.get("max_steps", max_steps) or max_steps),
+            pending_tool_calls_count=len(list(final_state.get("pending_tool_calls", []) or [])),
+            event_type="exception",
+            extra={"exception_type": exc.__class__.__name__},
+        )
+        raise
 
     # Yield the final done event.
     final_status = final_state.get("status", "completed")
@@ -1017,6 +1137,18 @@ async def run_diagnosis_stream(
         final_status,
         has_diagnosis_result=final_state.get("diagnosis_result") is not None,
     ) or "done"
+    log_stream_lifecycle_event(
+        session_id=active_session_id,
+        step=int(final_state.get("step_count", 0) or 0) + 1,
+        mode="stream_done_emitted",
+        stage="run_diagnosis_stream",
+        status=str(final_status or "").strip() or "completed",
+        reason=str(final_terminal_reason or "").strip() or "done",
+        step_count=int(final_state.get("step_count", 0) or 0),
+        max_steps=int(final_state.get("max_steps", max_steps) or max_steps),
+        pending_tool_calls_count=len(list(final_state.get("pending_tool_calls", []) or [])),
+        event_type="done",
+    )
     yield {
         "type": "done",
         "session_id": active_session_id,
