@@ -4099,46 +4099,47 @@ async def act_node(
                 name=tool_name,
             )
         )
-        if serialized_source != "duplicate_suppressed":
-            observation_entries.append(
-                {
-                    "type": "observation",
-                    "tool": tool_name,
-                    "params": tool_args,
-                    "result": {
-                        "success": result.success,
-                        "data": _safe_jsonable(result.data),
-                        "error": result.error,
-                    },
-                }
-            )
-            if tool_name == "skills.load_skill" and bool(result.success):
-                load_data = result.data if isinstance(result.data, dict) else {}
-                skill_name = str(load_data.get("name", "") or "").strip()
-                # Use metadata description directly; keep full text for frontend trace visibility.
-                skill_description = " ".join(str(load_data.get("description", "") or "").split()).strip()
-                skill_id = str(load_data.get("skill_id", "") or "").strip()
-                summary_parts: list[str] = []
-                if skill_name:
-                    summary_parts.append(f"名称：{skill_name}。")
-                if skill_description:
-                    summary_parts.append(f"描述：{skill_description}")
-                if summary_parts:
-                    observation_entries.append(
-                        {
-                            "type": "thought",
-                            "step": state.get("step_count", 0) + 1,
-                            "content": "已加载技能。".join(summary_parts),
-                            "action": "observe",
-                            "confidence": None,
-                            "tool_params": {
-                                "kind": "skill_load_summary",
-                                "skill_id": skill_id,
-                                "skill_name": skill_name,
-                                "description": skill_description,
-                            },
-                        }
-                    )
+        # Always append one observation so frontend can close the "tool loading" state,
+        # including duplicate-suppressed calls that intentionally do not enter tool_runs.
+        observation_entries.append(
+            {
+                "type": "observation",
+                "tool": tool_name,
+                "params": tool_args,
+                "result": {
+                    "success": result.success,
+                    "data": _safe_jsonable(result.data),
+                    "error": result.error,
+                },
+            }
+        )
+        if serialized_source != "duplicate_suppressed" and tool_name == "skills.load_skill" and bool(result.success):
+            load_data = result.data if isinstance(result.data, dict) else {}
+            skill_name = str(load_data.get("name", "") or "").strip()
+            # Use metadata description directly; keep full text for frontend trace visibility.
+            skill_description = " ".join(str(load_data.get("description", "") or "").split()).strip()
+            skill_id = str(load_data.get("skill_id", "") or "").strip()
+            summary_parts: list[str] = []
+            if skill_name:
+                summary_parts.append(f"名称：{skill_name}。")
+            if skill_description:
+                summary_parts.append(f"描述：{skill_description}")
+            if summary_parts:
+                observation_entries.append(
+                    {
+                        "type": "thought",
+                        "step": state.get("step_count", 0) + 1,
+                        "content": "已加载技能。".join(summary_parts),
+                        "action": "observe",
+                        "confidence": None,
+                        "tool_params": {
+                            "kind": "skill_load_summary",
+                            "skill_id": skill_id,
+                            "skill_name": skill_name,
+                            "description": skill_description,
+                        },
+                    }
+                )
     updated_trace_items = [*state.get("trace_items", []), *observation_entries]
     if loop_guard_triggered:
         updated_trace_items.append(
