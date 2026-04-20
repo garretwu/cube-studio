@@ -96,8 +96,8 @@ const SESSION_BACKFILL_THROTTLE_MS = 1200;
 const PENDING_SESSION_PREFIX = "pending-";
 const sessionBackfillLastRunAt = new Map<string, number>();
 const sessionBackfillInFlight = new Set<string>();
-
 type EventLike = Pick<WSEvent, "type" | "session_id" | "timestamp" | "data">;
+const APPROVAL_EVENT_POLL_MS = 1000;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -311,6 +311,32 @@ function sortCompletedThinkingRounds(
     return new Date(left.timestamp).getTime() - new Date(right.timestamp).getTime();
   });
   return next;
+}
+
+function wait(ms: number) {
+  return new Promise<void>((resolve) => window.setTimeout(resolve, ms));
+}
+
+function toReadableErrorMessage(error: unknown, fallback: string): string {
+  if (error instanceof Error) {
+    const message = error.message.trim();
+    if (message) {
+      return message;
+    }
+  }
+  return fallback;
+}
+
+function formatBootstrapPartialWarning(parts: string[]): string | undefined {
+  if (parts.length === 0) {
+    return undefined;
+  }
+  return `部分补充信息加载较慢，诊断结果仍可查看：${parts.join("；")}`;
+}
+
+function formatApprovalErrorMessage(error: unknown, approved: boolean): string {
+  const suffix = toReadableErrorMessage(error, approved ? "审批操作失败" : "拒绝审批失败");
+  return approved ? `修复执行审批失败：${suffix}` : `审批请求失败：${suffix}`;
 }
 
 function toThinkingStep(event: WSEvent, fallbackStep: number): ThinkingStep | null {
@@ -592,7 +618,15 @@ function getEventIdentity(event: EventLike): string {
   if (eventId) {
     return `id:${eventId}`;
   }
-  return `${event.type}:${event.timestamp}:${JSON.stringify(event.data ?? {})}`;
+  const data = isRecord(event.data) ? event.data : {};
+  if (event.type === "remediation_progress") {
+    const stage = String(data.stage ?? "").trim();
+    const seconds = new Date(event.timestamp).getTime() / 1000;
+    const rounded = Math.round(seconds / 2) * 2;
+    return `remediation:${stage}:${rounded}`;
+  }
+  const { _stream_source: _, _stream_seq: __, ...cleanData } = data;
+  return `${event.type}:${event.timestamp}:${JSON.stringify(cleanData)}`;
 }
 
 function mergeSessionEvents(current: SessionEvent[], incoming: SessionEvent[]): SessionEvent[] {
@@ -833,6 +867,7 @@ function buildPlanDetailLines(
     `审批时间：${formatDateTime(timestamp)}`,
     `方案版本：${planVersion ? `v${planVersion}` : "--"}`,
     `方案 ID：${plan?.plan_id ?? "--"}`,
+    "审批反馈：已经完成执行确认",
     `方案标题：${plan?.root_cause ?? "--"}`,
     `方案说明：${plan?.description ?? "--"}`,
   ];
@@ -876,7 +911,7 @@ function buildApprovalAuditRecord(
     dedupeKey: `approval-result-${approved ? "approved" : "rejected"}-${versionLabel}`,
     timestamp,
     summary: approved
-      ? `[系统] 已审批，通过执行（${versionLabel}，审批人 ${approver}）`
+      ? `[系统] 已经完成执行确认（${versionLabel}，审批人 ${approver}）`
       : `[系统] 已审批，拒绝执行（原因：${reason || "--"}）`,
     details,
     statusTone: approved ? "success" : "danger",
@@ -1160,8 +1195,29 @@ export const useDiagnosisStore = create<DiagnosisState>((set, get) => ({
         return;
       }
 
-      const messages = await apiClient.getChatHistory(resolvedSessionId);
-      const events = await apiClient.getSessionEvents(resolvedSessionId).catch(() => []);
+      const warningParts: string[] = [];
+      const [messagesResult, eventsResult] = await Promise.allSettled([
+        apiClient.getChatHistory(resolvedSessionId),
+        apiClient.getSessionEvents(resolvedSessionId),
+      ]);
+      const messages =
+        messagesResult.status === "fulfilled"
+          ? messagesResult.value
+          : [];
+      if (messagesResult.status === "rejected") {
+        warningParts.push(
+          `对话历史未完全加载（${toReadableErrorMessage(messagesResult.reason, "history unavailable")})`,
+        );
+      }
+      const events =
+        eventsResult.status === "fulfilled"
+          ? eventsResult.value
+          : [];
+      if (eventsResult.status === "rejected") {
+        warningParts.push(
+          `会话事件未完全加载（${toReadableErrorMessage(eventsResult.reason, "events unavailable")})`,
+        );
+      }
       const traceStatus: TraceStatus = (session.trace?.steps ?? []).length > 0 ? "ready" : "empty";
       const approvalState = deriveApprovalState(session, events);
       const localAuditRecords = loadLocalAuditRecords(resolvedSessionId);
@@ -1195,11 +1251,11 @@ export const useDiagnosisStore = create<DiagnosisState>((set, get) => ({
         streamingPhase: "idle",
         streamSequenceCounter: 0,
         roundSequenceCounter: 0,
-        error: undefined,
+        error: formatBootstrapPartialWarning(warningParts),
       });
     } catch (error) {
       set({
-        error: error instanceof Error ? error.message : "加载会话失败",
+        error: toReadableErrorMessage(error, "加载会话失败"),
         isLoadingSession: false,
         bootstrapStatus: "error",
         traceStatus: "unknown",
@@ -1339,17 +1395,6 @@ export const useDiagnosisStore = create<DiagnosisState>((set, get) => ({
       approvalOverlayOpen: false,
     });
 
-    try {
-      await apiClient.approveRemediation(sessionId, input.approved, user, planVersion);
-    } catch (error) {
-      set({
-        isApprovingPlan: false,
-        error: error instanceof Error ? error.message : "审批操作失败",
-        approvalOverlayOpen: true,
-      });
-      throw error;
-    }
-
     const approvalRecord = buildApprovalAuditRecord(
       sessionId,
       get().session,
@@ -1358,6 +1403,58 @@ export const useDiagnosisStore = create<DiagnosisState>((set, get) => ({
     );
     const nextLocalAuditRecords = upsertLocalAuditRecord(get().localAuditRecords, approvalRecord);
     persistLocalAuditRecords(sessionId, nextLocalAuditRecords);
+
+    set((state) => ({
+      localAuditRecords: nextLocalAuditRecords,
+      session: input.approved && state.session
+        ? { ...state.session, status: "remediating" }
+        : state.session,
+      approvalOverlayOpen: false,
+    }));
+
+    let keepPollingApprovalEvents = input.approved;
+    const pollApprovalEvents = async () => {
+      while (keepPollingApprovalEvents) {
+        await wait(APPROVAL_EVENT_POLL_MS);
+        if (!keepPollingApprovalEvents) {
+          return;
+        }
+        try {
+          const [polledSession, polledEvents] = await Promise.all([
+            apiClient.getDiagnosisSession(sessionId).catch(() => get().session ?? null),
+            apiClient.getSessionEvents(sessionId).catch(() => get().events),
+          ]);
+          const approvalState = deriveApprovalState(polledSession ?? undefined, polledEvents);
+          set({
+            session: polledSession ?? undefined,
+            events: polledEvents,
+            localAuditRecords: nextLocalAuditRecords,
+            ...approvalState,
+            isApprovingPlan: true,
+            approvalOverlayOpen: false,
+          });
+        } catch {
+          // Keep the approval request path authoritative; polling is only a live-progress bridge.
+        }
+      }
+    };
+    const pollingPromise = pollApprovalEvents();
+
+    try {
+      await apiClient.approveRemediation(sessionId, input.approved, user, planVersion);
+    } catch (error) {
+      keepPollingApprovalEvents = false;
+      void pollingPromise.catch(() => undefined);
+      set({
+        isApprovingPlan: false,
+        error: formatApprovalErrorMessage(error, input.approved),
+        approvalOverlayOpen: true,
+      });
+      throw error;
+    }
+
+    keepPollingApprovalEvents = false;
+    void pollingPromise.catch(() => undefined);
 
     const session = await apiClient.getDiagnosisSession(sessionId).catch(() => get().session ?? null);
     const events = await apiClient.getSessionEvents(sessionId).catch(() => []);
@@ -2004,16 +2101,28 @@ export const useDiagnosisStore = create<DiagnosisState>((set, get) => ({
       if (event.type === "remediation_progress" && nextSession) {
         const data = isRecord(event.data) ? event.data : {};
         const stage = String(data.stage ?? "").trim().toLowerCase();
-        if (stage === "execution_started") {
+        if (["execution_started", "canary_started", "canary_progress", "canary_batch_progress", "full_rollout_started", "full_rollout_progress"].includes(stage)) {
           nextSession = {
             ...nextSession,
-            status: "remediating",
+            status: stage.includes("canary") ? "validating" : "remediating",
           };
         }
-        if (stage === "execution_succeeded") {
+        if (["canary_succeeded", "canary_completed", "observation_started", "observation_result"].includes(stage)) {
+          nextSession = {
+            ...nextSession,
+            status: "validating",
+          };
+        }
+        if (["execution_succeeded", "full_rollout_succeeded", "alert_recovered"].includes(stage)) {
           nextSession = {
             ...nextSession,
             status: "resolved",
+          };
+        }
+        if (stage === "session_closed") {
+          nextSession = {
+            ...nextSession,
+            status: "closed",
           };
         }
         if (stage === "execution_failed") {
@@ -2062,7 +2171,7 @@ export const useDiagnosisStore = create<DiagnosisState>((set, get) => ({
         streamingPhase: nextStreamingPhase,
         roundSequenceCounter: nextRoundSequenceCounter,
         traceStatus:
-          nextEntries.length > 0 || event.type === "diagnosis_result"
+          nextEntries.length > 0
             ? "ready"
             : state.traceStatus,
       };
@@ -2090,9 +2199,9 @@ export const useDiagnosisStore = create<DiagnosisState>((set, get) => ({
         labels: alert.labels ?? {},
         annotations: alert.annotations ?? {},
         fingerprint: alert.fingerprint,
-        summary: alert.summary,
-        description: alert.description,
-        source: alert.source,
+        summary: alert.summary ?? undefined,
+        description: alert.description ?? undefined,
+        source: alert.source ?? undefined,
         status: alert.status,
       },
       topologyContext: null,
@@ -2214,7 +2323,6 @@ export const useDiagnosisStore = create<DiagnosisState>((set, get) => ({
                 : state.liveThinking;
             return {
               isStreamingDiagnosis: false,
-              liveThinking: finalizedLiveThinking,
               liveFinalAnswer: state.liveFinalAnswer
                 ? { ...state.liveFinalAnswer, status: "completed" }
                 : state.liveFinalAnswer,

@@ -1,4 +1,4 @@
-﻿import axios from "axios";
+import axios from "axios";
 
 import type {
   Alert,
@@ -31,6 +31,7 @@ import type {
   TopologyExplorerResponse,
   TopologyLayer,
   TopologyObjectStatus,
+  TopologyObjectType,
   TopologySnapshot,
   TopologyStatus,
 } from "./types";
@@ -41,6 +42,9 @@ const api = axios.create({
 });
 const DIAGNOSE_REQUEST_TIMEOUT_MS = 120000;
 const CHAT_REQUEST_TIMEOUT_MS = 120000;
+const DIAGNOSIS_SESSION_REQUEST_TIMEOUT_MS = 30000;
+const DIAGNOSIS_EVENTS_REQUEST_TIMEOUT_MS = 30000;
+const DIAGNOSIS_CHAT_HISTORY_REQUEST_TIMEOUT_MS = 20000;
 const DIAGNOSE_SESSION_POLL_MS = 2000;
 const DIAGNOSE_SESSION_POLL_ATTEMPTS = 30;
 const BLOCKED_ALERT_NAMES = new Set([
@@ -58,6 +62,30 @@ const BLOCKED_ALERT_NAMES = new Set([
 
 let hasWarnedAboutDevFallback = false;
 
+function normalizeRequestErrorMessage(error: unknown): string {
+  let message = error instanceof Error ? error.message : "Unknown request error";
+  if (axios.isAxiosError(error)) {
+    const code = error.code ?? "";
+    const axiosMessage = String(error.message ?? "");
+    const isTimeout =
+      code === "ECONNABORTED" ||
+      axiosMessage.toLowerCase().includes("timeout");
+    if (isTimeout) {
+      return "Request timed out while waiting for the backend. Please retry.";
+    }
+    if (code === "ERR_NETWORK") {
+      return "Network/CORS error: backend unreachable or blocked by browser policy. Check backend status, VITE_API_BASE_URL, and CORS.";
+    }
+    if (error.response?.status === 401) {
+      return "Unauthorized: invalid or expired bearer token.";
+    }
+    if (error.response?.status) {
+      return `Request failed with status ${error.response.status}.`;
+    }
+  }
+  return message;
+}
+
 api.interceptors.request.use((config) => {
   const traceId = `sre-ui-${Date.now()}`;
   config.headers = config.headers ?? {};
@@ -71,21 +99,7 @@ api.interceptors.request.use((config) => {
 
 api.interceptors.response.use(
   (response) => response,
-  (error) => {
-    let message = error instanceof Error ? error.message : "Unknown request error";
-    if (axios.isAxiosError(error)) {
-      const code = error.code ?? "";
-      if (code === "ERR_NETWORK") {
-        message =
-          "Network/CORS error: backend unreachable or blocked by browser policy. Check backend status, VITE_API_BASE_URL, and CORS.";
-      } else if (error.response?.status === 401) {
-        message = "Unauthorized: invalid or expired bearer token.";
-      } else if (error.response?.status) {
-        message = `Request failed with status ${error.response.status}.`;
-      }
-    }
-    return Promise.reject(new Error(message));
-  },
+  (error) => Promise.reject(new Error(normalizeRequestErrorMessage(error))),
 );
 
 function isHtmlShellPayload(payload: unknown) {
@@ -197,7 +211,9 @@ function isHttpStatusError(error: unknown, status: number): boolean {
 
 async function getDiagnosisSessionById(sessionId: string): Promise<DiagnosisSession> {
   try {
-    const response = await api.get<SREApiEnvelope<DiagnosisSession> | DiagnosisSession>(`/api/sessions/${sessionId}`);
+    const response = await api.get<SREApiEnvelope<DiagnosisSession> | DiagnosisSession>(`/api/sessions/${sessionId}`, {
+      timeout: DIAGNOSIS_SESSION_REQUEST_TIMEOUT_MS,
+    });
     return unwrapPayload(response.data);
   } catch (error) {
     if (!isHttpStatusError(error, 404)) {
@@ -206,6 +222,7 @@ async function getDiagnosisSessionById(sessionId: string): Promise<DiagnosisSess
     // Compatibility fallback for backends that only expose the legacy session endpoint.
     const legacyResponse = await api.get<SREApiEnvelope<DiagnosisSession> | DiagnosisSession>("/api/diagnosis/session/current", {
       params: { session_id: sessionId },
+      timeout: DIAGNOSIS_SESSION_REQUEST_TIMEOUT_MS,
     });
     return unwrapPayload(legacyResponse.data);
   }
@@ -235,8 +252,8 @@ function normalizeSeverity(value: string): SessionSummary["severity"] {
 function mapSummaryToDiagnosisSummary(item: SessionSummary): DiagnosisSessionSummary {
   return {
     session_id: item.session_id,
-    title: `${item.alert_name} · ${item.severity.toUpperCase()}`,
-    summary: item.outcome ? `状态 ${item.status}，结果 ${item.outcome}` : `状态 ${item.status}`,
+    title: `${item.alert_name} \u00b7 ${item.severity.toUpperCase()}`,
+    summary: item.outcome ? `\u72b6\u6001 ${item.status}\uff0c\u7ed3\u679c ${item.outcome}` : `\u72b6\u6001 ${item.status}`,
     started_at: item.updated_at,
     updated_at: item.updated_at,
     status: item.status,
@@ -251,12 +268,18 @@ function mapSummaryToDiagnosisSummary(item: SessionSummary): DiagnosisSessionSum
   };
 }
 
-function mapEntityTypeToExplorerType(entityType: string): "rack" | "node" | "gpu" | "switch" | "service" | "pod" | "cluster" {
+function mapEntityTypeToExplorerType(entityType: string): TopologyObjectType {
   const value = entityType.toLowerCase();
+  if (value.includes("bmc")) {
+    return "bmc";
+  }
   if (value.includes("gpu")) {
     return "gpu";
   }
-  if (value.includes("switch") || value.includes("port") || value.includes("network")) {
+  if (value.includes("port")) {
+    return "port";
+  }
+  if (value.includes("switch") || value.includes("network")) {
     return "switch";
   }
   if (value.includes("cluster")) {
@@ -289,10 +312,10 @@ function mapNodeStatus(status: string | null | undefined): TopologyObjectStatus 
 }
 
 function mapLayer(type: ReturnType<typeof mapEntityTypeToExplorerType>): TopologyLayer {
-  if (type === "switch" || type === "rack") {
+  if (type === "switch" || type === "port" || type === "rack") {
     return "network";
   }
-  if (type === "gpu" || type === "node") {
+  if (type === "gpu" || type === "node" || type === "bmc") {
     return "compute";
   }
   if (type === "cluster") {
@@ -769,7 +792,7 @@ export const apiClient = {
         });
       }
 
-      throw new Error("诊断请求已提交，但会话尚未返回；请稍后在诊断/历史频道刷新查看。");
+      throw new Error("\u8bca\u65ad\u8bf7\u6c42\u5df2\u63d0\u4ea4\uff0c\u4f46\u4f1a\u8bdd\u5c1a\u672a\u8fd4\u56de\uff1b\u8bf7\u7a0d\u540e\u5728\u8bca\u65ad/\u5386\u53f2\u9891\u9053\u5237\u65b0\u67e5\u770b\u3002");
     }
   },
 
@@ -890,6 +913,7 @@ export const apiClient = {
   getSessionEvents: async (sessionId: string, limit = 200, after?: string) => {
     const response = await api.get<SREApiEnvelope<SessionEvent[]> | SessionEvent[]>(`/api/sessions/${sessionId}/events`, {
       params: { limit, after },
+      timeout: DIAGNOSIS_EVENTS_REQUEST_TIMEOUT_MS,
     });
     return unwrapPayload(response.data);
   },
@@ -938,16 +962,15 @@ export const apiClient = {
             batchStatusMap.set(batch, { batch, progress: 0, status: "pending" });
           }
         } else if (stage === "canary_batch_completed") {
-          const batchCompleted = Number(data.steps_completed ?? 0);
-          const batchTotal = Number(data.steps_total ?? 1);
-          const pct = batchTotal > 0 ? Math.round((batchCompleted / batchTotal) * 100) : 100;
-          batchStatusMap.set(batch, { batch, progress: pct, status: "resolved" });
+          batchStatusMap.set(batch, { batch, progress: 100, status: "resolved" });
         } else if (stage === "canary_check_failed") {
           const existing = batchStatusMap.get(batch);
           batchStatusMap.set(batch, { batch, progress: existing?.progress ?? 0, status: "failed" });
         } else if (stage === "canary_check_passed") {
-          const existing = batchStatusMap.get(batch);
-          batchStatusMap.set(batch, { batch, progress: existing?.progress ?? 50, status: "validating" });
+          const batchCompleted = Number(data.batch_completed ?? 0);
+          const batchTotal = Number(data.batch_total ?? 1);
+          const pct = batchTotal > 0 ? Math.round((batchCompleted / batchTotal) * 100) : 50;
+          batchStatusMap.set(batch, { batch, progress: pct, status: "validating" });
         }
       }
       // Also track remediating/validating for step-level progress when no canary events
@@ -1073,6 +1096,7 @@ export const apiClient = {
   getChatHistory: async (sessionId?: string) => {
     const response = await api.get<SREApiEnvelope<ChatMessage[]> | ChatMessage[]>("/api/chat/history", {
       params: sessionId ? { session_id: sessionId } : undefined,
+      timeout: DIAGNOSIS_CHAT_HISTORY_REQUEST_TIMEOUT_MS,
     });
     return unwrapPayload(response.data);
   },
@@ -1253,7 +1277,7 @@ export const apiClient = {
             if (matched) {
               return matched;
             }
-            throw new Error("未找到对应技能");
+            throw new Error("\u672a\u627e\u5230\u5bf9\u5e94\u6280\u80fd");
           }
           throw error;
         }
@@ -1290,4 +1314,3 @@ export const apiClient = {
 };
 
 export type ApiClient = typeof apiClient;
-

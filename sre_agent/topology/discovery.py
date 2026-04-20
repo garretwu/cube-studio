@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -24,7 +25,7 @@ from sre_agent.ontology.discovery.switch_scanner import SwitchScanner
 LOGGER = logging.getLogger(__name__)
 
 _DISCOVER_ALL_K8S_NAMESPACE_TOKENS = frozenset({"*", "all"})
-_EXCLUDED_DYNAMIC_K8S_NAMESPACES = frozenset({"kube-system"})
+_ENV_VAR_PATTERN = re.compile(r"^\$\{([A-Za-z_][A-Za-z0-9_]*)\}$")
 
 
 def _summary_counts(nodes: list[OntologyNode], edges: list[OntologyEdge]) -> dict[str, int]:
@@ -78,6 +79,332 @@ def load_lab_seed_records(config: SREAgentConfig) -> list[dict[str, Any]]:
         return []
     return [record for record in records if isinstance(record, dict)]
 
+
+def _resolve_env_reference(value: Any) -> Any:
+    if isinstance(value, str):
+        match = _ENV_VAR_PATTERN.match(value.strip())
+        if not match:
+            return value
+        env_name = match.group(1)
+        return os.getenv(env_name, value)
+    if isinstance(value, list):
+        return [_resolve_env_reference(item) for item in value]
+    if isinstance(value, dict):
+        return {key: _resolve_env_reference(raw) for key, raw in value.items()}
+    return value
+
+
+def _relation_from_text(value: Any) -> RelationType:
+    normalized = str(value or "").strip().lower()
+    if normalized in {"part_of", "contains", "contain"}:
+        return RelationType.PART_OF
+    if normalized in {"connected_to", "connects_to", "connect"}:
+        return RelationType.CONNECTED_TO
+    if normalized in {"hosted_on", "runs_on", "run_on"}:
+        return RelationType.HOSTED_ON
+    if normalized in {"serves"}:
+        return RelationType.SERVES
+    if normalized in {"depends_on", "depends"}:
+        return RelationType.DEPENDS_ON
+    if normalized in {"manages", "manage"}:
+        return RelationType.MANAGES
+    if normalized in {"monitors", "monitor"}:
+        return RelationType.MONITORS
+    raise RuntimeError(f"unsupported relation in static_relations: {value}")
+
+
+def _resolve_unified_inventory_path(config: SREAgentConfig) -> Path | None:
+    value = str(config.ontology.discovery.unified_inventory_path or "").strip()
+    if not value:
+        return None
+    return Path(value)
+
+
+def _validate_unified_static_topology(static_topology: dict[str, Any]) -> None:
+    required_sections = (
+        "clusters",
+        "switches",
+        "switch_ports",
+        "nodes",
+        "gpus",
+        "bmc_endpoints",
+        "static_relations",
+    )
+    for section in required_sections:
+        if section not in static_topology:
+            raise RuntimeError(f"unified static_topology missing section: {section}")
+        if not isinstance(static_topology.get(section), list):
+            raise RuntimeError(f"unified static_topology.{section} must be a list")
+
+    clusters = static_topology["clusters"]
+    switches = static_topology["switches"]
+    switch_ports = static_topology["switch_ports"]
+    nodes = static_topology["nodes"]
+    gpus = static_topology["gpus"]
+    bmc_endpoints = static_topology["bmc_endpoints"]
+    static_relations = static_topology["static_relations"]
+
+    cluster_ids = {str(item.get("id", "")).strip() for item in clusters if isinstance(item, dict)}
+    switch_ids = {str(item.get("id", "")).strip() for item in switches if isinstance(item, dict)}
+    port_ids = {str(item.get("id", "")).strip() for item in switch_ports if isinstance(item, dict)}
+    node_ids = {str(item.get("id", "")).strip() for item in nodes if isinstance(item, dict)}
+    gpu_ids = {str(item.get("id", "")).strip() for item in gpus if isinstance(item, dict)}
+    bmc_ids = {str(item.get("id", "")).strip() for item in bmc_endpoints if isinstance(item, dict)}
+    all_ids = cluster_ids | switch_ids | port_ids | node_ids | gpu_ids | bmc_ids
+    if "" in all_ids:
+        raise RuntimeError("unified static_topology entities must provide non-empty id")
+    if len(all_ids) != (
+        len(cluster_ids) + len(switch_ids) + len(port_ids) + len(node_ids) + len(gpu_ids) + len(bmc_ids)
+    ):
+        raise RuntimeError("unified static_topology contains duplicate entity id")
+
+    for port in switch_ports:
+        if not isinstance(port, dict):
+            continue
+        switch_id = str(port.get("switch_id", "")).strip()
+        connected_node_id = str(port.get("connected_node_id", "")).strip()
+        if switch_id and switch_id not in switch_ids:
+            raise RuntimeError(f"switch_port references unknown switch_id={switch_id}")
+        if connected_node_id and connected_node_id not in node_ids:
+            raise RuntimeError(f"switch_port references unknown connected_node_id={connected_node_id}")
+
+    for gpu in gpus:
+        if not isinstance(gpu, dict):
+            continue
+        node_id = str(gpu.get("node_id", "")).strip()
+        if node_id and node_id not in node_ids:
+            raise RuntimeError(f"gpu references unknown node_id={node_id}")
+
+    for bmc in bmc_endpoints:
+        if not isinstance(bmc, dict):
+            continue
+        node_id = str(bmc.get("node_id", "")).strip()
+        if node_id and node_id not in node_ids:
+            raise RuntimeError(f"bmc_endpoint references unknown node_id={node_id}")
+
+    for relation in static_relations:
+        if not isinstance(relation, dict):
+            continue
+        source_id = str(relation.get("source_id", "")).strip()
+        target_id = str(relation.get("target_id", "")).strip()
+        if source_id not in all_ids:
+            raise RuntimeError(f"static_relations references unknown source_id={source_id}")
+        if target_id not in all_ids:
+            raise RuntimeError(f"static_relations references unknown target_id={target_id}")
+        _relation_from_text(relation.get("relation"))
+
+
+def _validate_unified_dynamic_discovery(dynamic_discovery: dict[str, Any]) -> None:
+    required_sections = (
+        "k8s",
+        "prometheus",
+        "node_providers",
+        "switch_providers",
+        "discovery_policies",
+    )
+    for section in required_sections:
+        if section not in dynamic_discovery:
+            raise RuntimeError(f"unified dynamic_discovery missing section: {section}")
+        if not isinstance(dynamic_discovery.get(section), dict):
+            raise RuntimeError(f"unified dynamic_discovery.{section} must be a mapping")
+
+    workers = dynamic_discovery["node_providers"].get("workers", [])
+    if not isinstance(workers, list) or not workers:
+        raise RuntimeError("unified dynamic_discovery.node_providers.workers must be a non-empty list")
+
+    switches = dynamic_discovery["switch_providers"].get("switches", {})
+    if not isinstance(switches, dict) or not switches:
+        raise RuntimeError("unified dynamic_discovery.switch_providers.switches must be a non-empty mapping")
+
+    prometheus = dynamic_discovery["prometheus"]
+    if not str(prometheus.get("url", "")).strip():
+        raise RuntimeError("unified dynamic_discovery.prometheus.url is required")
+    baseline_queries = prometheus.get("baseline_queries", {})
+    if not isinstance(baseline_queries, dict) or not baseline_queries:
+        raise RuntimeError("unified dynamic_discovery.prometheus.baseline_queries must be a non-empty mapping")
+
+
+def _normalize_unified_inventory(payload: dict[str, Any]) -> dict[str, Any]:
+    static_topology = payload.get("static_topology")
+    dynamic_discovery = payload.get("dynamic_discovery")
+    if not isinstance(static_topology, dict):
+        raise RuntimeError("unified ontology config requires static_topology mapping")
+    if not isinstance(dynamic_discovery, dict):
+        raise RuntimeError("unified ontology config requires dynamic_discovery mapping")
+    _validate_unified_static_topology(static_topology)
+    _validate_unified_dynamic_discovery(dynamic_discovery)
+    return payload
+
+
+def load_unified_inventory(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        raise RuntimeError(f"missing unified ontology config: {path}")
+    payload = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    if not isinstance(payload, dict):
+        raise RuntimeError(f"unified ontology config must be a mapping: {path}")
+    resolved = _resolve_env_reference(payload)
+    if not isinstance(resolved, dict):
+        raise RuntimeError(f"unified ontology config must be a mapping after env expansion: {path}")
+    return _normalize_unified_inventory(resolved)
+
+
+def _build_switch_payloads_from_unified(static_topology: dict[str, Any]) -> list[dict[str, Any]]:
+    switch_items = static_topology.get("switches", [])
+    port_items = static_topology.get("switch_ports", [])
+    ports_by_switch: dict[str, list[dict[str, Any]]] = {}
+    for port in port_items:
+        if not isinstance(port, dict):
+            continue
+        switch_id = str(port.get("switch_id", "")).strip()
+        port_id = str(port.get("id", "")).strip()
+        port_name = str(port.get("name", "")).strip()
+        if not switch_id or not port_id or not port_name:
+            continue
+        list_ref = ports_by_switch.setdefault(switch_id, [])
+        list_ref.append(
+            {
+                "id": port_id,
+                "name": port_name,
+                "connected_to": str(port.get("connected_node_id", "")).strip() or None,
+                "status": str(port.get("status", "up")),
+                "speed_gbps": port.get("speed_gbps"),
+            }
+        )
+
+    payloads: list[dict[str, Any]] = []
+    for switch in switch_items:
+        if not isinstance(switch, dict):
+            continue
+        switch_id = str(switch.get("id", "")).strip()
+        switch_name = str(switch.get("name", "")).strip() or switch_id
+        if not switch_id:
+            continue
+        payloads.append(
+            {
+                "id": switch_id,
+                "name": switch_name,
+                "type": switch.get("type"),
+                "status": str(switch.get("status", "online")),
+                "source": switch.get("source", "unified_static"),
+                "ports": ports_by_switch.get(switch_id, []),
+            }
+        )
+    return payloads
+
+
+def _build_lab_seed_records_from_unified(static_topology: dict[str, Any]) -> list[dict[str, Any]]:
+    gpus = static_topology.get("gpus", [])
+    bmc_endpoints = static_topology.get("bmc_endpoints", [])
+    nodes = static_topology.get("nodes", [])
+    gpus_by_node: dict[str, list[str]] = {}
+    for gpu in gpus:
+        if not isinstance(gpu, dict):
+            continue
+        node_id = str(gpu.get("node_id", "")).strip()
+        gpu_id = str(gpu.get("id", "")).strip()
+        if not node_id or not gpu_id:
+            continue
+        gpus_by_node.setdefault(node_id, []).append(gpu_id)
+
+    bmc_ip_by_node: dict[str, str] = {}
+    for bmc in bmc_endpoints:
+        if not isinstance(bmc, dict):
+            continue
+        node_id = str(bmc.get("node_id", "")).strip()
+        ip = str(bmc.get("ip", "")).strip()
+        if node_id and ip:
+            bmc_ip_by_node[node_id] = ip
+
+    records: list[dict[str, Any]] = []
+    for node in nodes:
+        if not isinstance(node, dict):
+            continue
+        node_id = str(node.get("id", "")).strip()
+        if not node_id:
+            continue
+        records.append(
+            {
+                "id": node_id,
+                "name": str(node.get("name", node_id)).strip() or node_id,
+                "role": node.get("role", "unknown"),
+                "source": node.get("source", "unified_static"),
+                "status": str(node.get("status", "online")),
+                "bmc_ip": bmc_ip_by_node.get(node_id, ""),
+                "switch": node.get("switch_id"),
+                "port": node.get("port_id"),
+                "gpu_ids": sorted(gpus_by_node.get(node_id, [])),
+            }
+        )
+    return records
+
+
+def _cluster_nodes_from_unified(static_topology: dict[str, Any]) -> list[OntologyNode]:
+    now = datetime.now(UTC)
+    clusters = static_topology.get("clusters", [])
+    nodes: list[OntologyNode] = []
+    for cluster in clusters:
+        if not isinstance(cluster, dict):
+            continue
+        cluster_id = str(cluster.get("id", "")).strip()
+        if not cluster_id:
+            continue
+        nodes.append(
+            OntologyNode(
+                id=cluster_id,
+                entity_type=EntityType.CLUSTER,
+                name=str(cluster.get("name", cluster_id)).strip() or cluster_id,
+                properties={
+                    "source": cluster.get("source", "unified_static"),
+                    "domain": cluster.get("domain"),
+                    "region": cluster.get("region"),
+                    "zone": cluster.get("zone"),
+                },
+                status=str(cluster.get("status", "online")),
+                updated_at=now,
+            )
+        )
+    return nodes
+
+
+def _cluster_edges_from_unified(static_topology: dict[str, Any]) -> list[OntologyEdge]:
+    edges: list[OntologyEdge] = []
+    clusters = static_topology.get("clusters", [])
+    for cluster in clusters:
+        if not isinstance(cluster, dict):
+            continue
+        cluster_id = str(cluster.get("id", "")).strip()
+        for switch_id_raw in cluster.get("switch_ids", []) if isinstance(cluster.get("switch_ids"), list) else []:
+            switch_id = str(switch_id_raw).strip()
+            if not cluster_id or not switch_id:
+                continue
+            edges.append(
+                OntologyEdge(
+                    source_id=cluster_id,
+                    target_id=switch_id,
+                    relation=RelationType.PART_OF,
+                    properties={"source": "unified_static", "semantic": "cluster_contains_switch"},
+                )
+            )
+
+    for raw in static_topology.get("static_relations", []):
+        if not isinstance(raw, dict):
+            continue
+        source_id = str(raw.get("source_id", "")).strip()
+        target_id = str(raw.get("target_id", "")).strip()
+        if not source_id or not target_id:
+            continue
+        edges.append(
+            OntologyEdge(
+                source_id=source_id,
+                target_id=target_id,
+                relation=_relation_from_text(raw.get("relation")),
+                properties={
+                    "source": "unified_static",
+                    "relation_semantic": raw.get("semantic"),
+                },
+            )
+        )
+    return edges
 
 def lab_seed_topology(records: list[dict[str, Any]]) -> tuple[list[OntologyNode], list[OntologyEdge]]:
     now = datetime.now(UTC)
@@ -159,6 +486,29 @@ def lab_seed_topology(records: list[dict[str, Any]]) -> tuple[list[OntologyNode]
 async def discover_static_snapshot(
     config: SREAgentConfig,
 ) -> tuple[list[OntologyNode], list[OntologyEdge], dict[str, dict[str, int]]]:
+    unified_path = _resolve_unified_inventory_path(config)
+    if unified_path is not None:
+        unified_payload = load_unified_inventory(unified_path)
+        static_topology = unified_payload["static_topology"]
+        switch_nodes, switch_edges = await SwitchScanner(channel=None).scan(
+            _build_switch_payloads_from_unified(static_topology)
+        )
+        lab_nodes, lab_edges = lab_seed_topology(_build_lab_seed_records_from_unified(static_topology))
+        cluster_nodes = _cluster_nodes_from_unified(static_topology)
+        relation_edges = _cluster_edges_from_unified(static_topology)
+        nodes = _dedupe_nodes([*switch_nodes, *lab_nodes, *cluster_nodes])
+        edges = _dedupe_edges([*switch_edges, *lab_edges, *relation_edges])
+        scanner_counts = {
+            "switch": _summary_counts(switch_nodes, switch_edges),
+            "lab_seed": _summary_counts(lab_nodes, lab_edges),
+            "cluster": _summary_counts(cluster_nodes, relation_edges),
+        }
+        return nodes, edges, scanner_counts
+
+    LOGGER.warning(
+        "ontology unified_inventory_path not configured; using legacy static discovery fields "
+        "(ontology.discovery.switches + lab_seed)"
+    )
     scanner = SwitchScanner(channel=None)
     switch_nodes, switch_edges = await scanner.scan(switch_payloads(config))
     lab_nodes, lab_edges = lab_seed_topology(load_lab_seed_records(config))
@@ -197,6 +547,66 @@ def load_live_inventory(path: Path) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise RuntimeError(f"live inventory must be a mapping: {path}")
     return _normalize_inventory(payload)
+
+
+def build_live_inventory_from_unified(unified_payload: dict[str, Any]) -> dict[str, Any]:
+    dynamic_discovery = unified_payload.get("dynamic_discovery", {})
+    if not isinstance(dynamic_discovery, dict):
+        raise RuntimeError("unified ontology config missing dynamic_discovery mapping")
+    node_providers = dynamic_discovery.get("node_providers", {})
+    switch_providers = dynamic_discovery.get("switch_providers", {})
+    prometheus = dynamic_discovery.get("prometheus", {})
+
+    workers = node_providers.get("workers", []) if isinstance(node_providers, dict) else []
+    switches = switch_providers.get("switches", {}) if isinstance(switch_providers, dict) else {}
+    monitor = {
+        "prometheus_url": prometheus.get("url"),
+        "baseline_queries": prometheus.get("baseline_queries", {}),
+        "prometheus_targets": prometheus.get("targets", {}),
+    }
+    return _normalize_inventory(
+        {
+            "inventory": {"workers": workers},
+            "switches": switches,
+            "monitor": monitor,
+        }
+    )
+
+
+def resolve_discovery_runtime_inputs(
+    config: SREAgentConfig,
+) -> tuple[list[str], str, dict[str, str]]:
+    discovery_cfg = config.ontology.discovery
+    namespaces = list(discovery_cfg.k8s_namespaces)
+    cluster_name = str(discovery_cfg.k8s_cluster_name).strip() or "lab-cluster"
+    prom_targets = dict(discovery_cfg.prometheus_targets)
+    unified_path = _resolve_unified_inventory_path(config)
+    if unified_path is None:
+        return namespaces, cluster_name, prom_targets
+
+    unified_payload = load_unified_inventory(unified_path)
+    dynamic_discovery = unified_payload["dynamic_discovery"]
+    k8s_cfg = dynamic_discovery.get("k8s", {}) if isinstance(dynamic_discovery, dict) else {}
+    prometheus_cfg = dynamic_discovery.get("prometheus", {}) if isinstance(dynamic_discovery, dict) else {}
+
+    if not namespaces:
+        raw_namespaces = k8s_cfg.get("namespaces", []) if isinstance(k8s_cfg, dict) else []
+        if isinstance(raw_namespaces, list):
+            namespaces = [str(item).strip() for item in raw_namespaces if str(item).strip()]
+    if not cluster_name or cluster_name == "lab-cluster":
+        configured_name = str(k8s_cfg.get("cluster_name", "")).strip() if isinstance(k8s_cfg, dict) else ""
+        if configured_name:
+            cluster_name = configured_name
+    if not prom_targets:
+        raw_targets = prometheus_cfg.get("targets", {}) if isinstance(prometheus_cfg, dict) else {}
+        if isinstance(raw_targets, dict):
+            prom_targets = {
+                str(alias): str(target)
+                for alias, target in raw_targets.items()
+                if str(alias).strip() and str(target).strip()
+            }
+
+    return namespaces, cluster_name, prom_targets
 
 
 class _LiveK8sDiscoveryChannel:
@@ -297,6 +707,13 @@ def _normalize_k8s_namespace_allowlist(k8s_namespaces: list[str] | None) -> list
     return allowlist
 
 
+def _should_exclude_dynamic_k8s_namespace(namespace: str) -> bool:
+    """Exclude only Kubernetes system namespaces by prefix."""
+
+    normalized = namespace.strip().casefold()
+    return normalized.startswith("kube")
+
+
 async def _resolve_k8s_namespaces(
     channel: Any,
     k8s_namespaces: list[str] | None,
@@ -309,7 +726,7 @@ async def _resolve_k8s_namespaces(
     filtered: list[str] = []
     for item in discovered:
         namespace = str(item or "").strip()
-        if not namespace or namespace in _EXCLUDED_DYNAMIC_K8S_NAMESPACES:
+        if not namespace or _should_exclude_dynamic_k8s_namespace(namespace):
             continue
         if namespace not in filtered:
             filtered.append(namespace)
@@ -584,12 +1001,11 @@ def _merge_static_dynamic_nodes(
 async def discover_k8s_workload_snapshot(
     config: SREAgentConfig,
 ) -> tuple[list[OntologyNode], list[OntologyEdge], dict[str, dict[str, int]]]:
-    discovery_cfg = config.ontology.discovery
     effective_kubeconfig = os.getenv("SRE_KUBECONFIG", "").strip() or "~/.kube/config"
-    cluster_name = str(discovery_cfg.k8s_cluster_name).strip() or "lab-cluster"
+    namespaces, cluster_name, _prom_targets = resolve_discovery_runtime_inputs(config)
 
     k8s_channel = _LiveK8sDiscoveryChannel(kubeconfig=effective_kubeconfig)
-    namespaces = await _resolve_k8s_namespaces(k8s_channel, discovery_cfg.k8s_namespaces)
+    namespaces = await _resolve_k8s_namespaces(k8s_channel, namespaces)
     nodes: list[OntologyNode] = []
     edges: list[OntologyEdge] = []
     for namespace in namespaces:
@@ -610,12 +1026,53 @@ async def discover_hybrid_snapshot(
 ) -> tuple[list[OntologyNode], list[OntologyEdge], dict[str, dict[str, int]], str | None]:
     static_nodes, static_edges, static_counts = await discover_static_snapshot(config)
     static_node_ids = {node.id for node in static_nodes}
+    fallback_reason: str | None = None
     try:
         dynamic_nodes, dynamic_edges, dynamic_counts = await discover_k8s_workload_snapshot(config)
     except Exception as exc:  # noqa: BLE001
-        fallback_reason = f"dynamic K8s workload discovery failed, retained static snapshot: {exc}"
+        fallback_reason = f"K8s workload discovery failed: {exc}"
         LOGGER.warning(fallback_reason)
-        return static_nodes, static_edges, static_counts, fallback_reason
+        dynamic_nodes: list[OntologyNode] = []
+        dynamic_edges: list[OntologyEdge] = []
+        dynamic_counts: dict[str, dict[str, int]] = {"k8s_workload": {"nodes": 0, "edges": 0}, "k8s_error": {"detail": 1}}
+
+    # Deduplicate cluster entities: K8s creates k8s:<name> while static uses cluster:<name>.
+    # When both exist for the same cluster name, keep the static one and remap dynamic edges.
+    static_cluster_map: dict[str, str] = {}  # k8s cluster name → static cluster id
+    for node in static_nodes:
+        is_static_cluster = node.entity_type == EntityType.CLUSTER or str(node.id).startswith("cluster:")
+        if not is_static_cluster:
+            continue
+        # Extract name from "cluster:<name>"
+        cluster_name = node.id.split(":", 1)[1] if ":" in node.id else node.id
+        cluster_name = cluster_name.strip()
+        if cluster_name:
+            static_cluster_map[cluster_name] = node.id
+
+    k8s_cluster_ids_to_remove: set[str] = set()
+    for node in dynamic_nodes:
+        if node.entity_type == EntityType.K8S_CLUSTER:
+            # Extract name from "k8s:<name>"
+            cluster_name = node.id.split(":", 1)[1] if ":" in node.id else node.id
+            if cluster_name in static_cluster_map:
+                k8s_cluster_ids_to_remove.add(node.id)
+
+    if k8s_cluster_ids_to_remove:
+        dynamic_nodes = [n for n in dynamic_nodes if n.id not in k8s_cluster_ids_to_remove]
+        # Remap edges: replace k8s:<name> targets with cluster:<name>
+        remap: dict[str, str] = {}
+        for k8s_id in k8s_cluster_ids_to_remove:
+            k8s_name = k8s_id.split(":", 1)[1] if ":" in k8s_id else k8s_id
+            remap[k8s_id] = static_cluster_map[k8s_name]
+        dynamic_edges = [
+            OntologyEdge(
+                source_id=remap.get(e.source_id, e.source_id),
+                target_id=remap.get(e.target_id, e.target_id),
+                relation=e.relation,
+                properties=e.properties,
+            )
+            for e in dynamic_edges
+        ]
 
     hosted_node_ids = {
         edge.target_id
@@ -640,7 +1097,7 @@ async def discover_hybrid_snapshot(
     merged_nodes = _merge_static_dynamic_nodes(static_nodes, [*dynamic_nodes, *placeholder_nodes])
     merged_edges = _dedupe_edges([*static_edges, *dynamic_edges])
     scanner_counts = {**static_counts, **dynamic_counts}
-    return merged_nodes, merged_edges, scanner_counts, None
+    return merged_nodes, merged_edges, scanner_counts, fallback_reason
 
 
 async def discover_live_snapshot(
@@ -649,11 +1106,21 @@ async def discover_live_snapshot(
     inventory_path: Path | None = None,
 ) -> tuple[list[OntologyNode], list[OntologyEdge], dict[str, dict[str, int]]]:
     discovery_cfg = config.ontology.discovery
-    path = inventory_path or Path(discovery_cfg.live_inventory_path)
-    raw_inventory = load_live_inventory(path)
-    k8s_namespaces = list(discovery_cfg.k8s_namespaces)
-    cluster_name = str(discovery_cfg.k8s_cluster_name).strip() or "lab-cluster"
-    prom_targets = dict(discovery_cfg.prometheus_targets)
+    unified_path = _resolve_unified_inventory_path(config)
+    if inventory_path is not None:
+        raw_inventory = load_live_inventory(inventory_path)
+    elif unified_path is not None:
+        unified_payload = load_unified_inventory(unified_path)
+        raw_inventory = build_live_inventory_from_unified(unified_payload)
+    else:
+        LOGGER.warning(
+            "ontology unified_inventory_path not configured; using legacy live inventory path "
+            "(ontology.discovery.live_inventory_path)"
+        )
+        path = Path(discovery_cfg.live_inventory_path)
+        raw_inventory = load_live_inventory(path)
+
+    k8s_namespaces, cluster_name, prom_targets = resolve_discovery_runtime_inputs(config)
     return await scan_live_sources(
         raw_inventory,
         k8s_namespaces=k8s_namespaces,

@@ -1,4 +1,11 @@
 import type { ReactNode } from "react";
+import topologyClusterSymbol from "../../assets/topology-icons/topology-cluster-symbol.svg";
+import topologyDatacenterSymbol from "../../assets/topology-icons/topology-datacenter-symbol.svg";
+import topologyGpuSymbol from "../../assets/topology-icons/topology-gpu-symbol.svg";
+import topologyRackSymbol from "../../assets/topology-icons/topology-rack-symbol.svg";
+import topologyServerSymbol from "../../assets/topology-icons/topology-server-symbol.svg";
+import topologyServiceSymbol from "../../assets/topology-icons/topology-service-symbol.svg";
+import topologySwitchSymbol from "../../assets/topology-icons/topology-switch-symbol.svg";
 
 export type AppIconVariant = "outline" | "fill";
 
@@ -81,6 +88,12 @@ const CANONICAL_ICON_NAMES = [
   "cancelCircle",
   "upload",
   "refresh",
+  "minus",
+  "mapPin",
+  "filterFunnel",
+  "targetFocus",
+  "frameExpand",
+  "frameCollapse",
 ] as const;
 
 export type CanonicalAppIconName = (typeof CANONICAL_ICON_NAMES)[number];
@@ -144,6 +157,9 @@ function renderWithPlate(plate: IconPlate, outline: ReactNode) {
       {outline}
     </>
   );
+}
+function renderExternalIcon(source: string) {
+  return <image href={source} preserveAspectRatio="xMidYMid meet" width="24" height="24" x="0" y="0" />;
 }
 
 const iconRegistry: Record<CanonicalAppIconName, IconSpec> = {
@@ -766,105 +782,28 @@ const iconRegistry: Record<CanonicalAppIconName, IconSpec> = {
       ),
   },
   clusterMesh: {
-    plate: "square",
     keywords: ["cluster", "mesh", "topology"],
-    outline: ({ strokeWidth }) =>
-      outlineGroup(
-        <>
-          <circle cx="8" cy="8" r="2.1" />
-          <circle cx="16" cy="8" r="2.1" />
-          <circle cx="12" cy="16" r="2.1" />
-          <path d="M9.8 9.2 10.9 13.5" />
-          <path d="M14.2 9.2 13.1 13.5" />
-          <path d="M10.3 8h3.4" />
-        </>,
-        strokeWidth,
-      ),
+    outline: () => renderExternalIcon(topologyClusterSymbol),
   },
   serverRack: {
-    plate: "square",
     keywords: ["rack", "cabinet", "server-rack"],
-    outline: ({ strokeWidth }) =>
-      outlineGroup(
-        <>
-          <rect x="7" y="4.5" width="10" height="15" rx="2.4" />
-          <path d="M9.5 8h5" />
-          <path d="M9.5 12h5" />
-          <path d="M9.5 16h5" />
-          <path d="M15.8 8h.01" />
-          <path d="M15.8 12h.01" />
-          <path d="M15.8 16h.01" />
-        </>,
-        strokeWidth,
-      ),
+    outline: () => renderExternalIcon(topologyRackSymbol),
   },
   serverNode: {
-    plate: "square",
     keywords: ["node", "server", "compute"],
-    outline: ({ strokeWidth }) =>
-      outlineGroup(
-        <>
-          <rect x="4.8" y="7" width="14.4" height="10" rx="2.8" />
-          <path d="M7.5 10h6.5" />
-          <path d="M7.5 13h6.5" />
-          <circle cx="16.3" cy="10" r=".7" fill="currentColor" stroke="none" />
-          <circle cx="16.3" cy="13" r=".7" fill="currentColor" stroke="none" />
-        </>,
-        strokeWidth,
-      ),
+    outline: () => renderExternalIcon(topologyServerSymbol),
   },
   gpuChip: {
-    plate: "square",
     keywords: ["gpu", "chip", "accelerator"],
-    outline: ({ strokeWidth }) =>
-      outlineGroup(
-        <>
-          <rect x="7.5" y="7.5" width="9" height="9" rx="2.2" />
-          <path d="M10 10h4" />
-          <path d="M10 13h4" />
-          <path d="M9 5.5v2" />
-          <path d="M12 5.5v2" />
-          <path d="M15 5.5v2" />
-          <path d="M9 16.5v2" />
-          <path d="M12 16.5v2" />
-          <path d="M15 16.5v2" />
-          <path d="M5.5 9h2" />
-          <path d="M5.5 12h2" />
-          <path d="M5.5 15h2" />
-          <path d="M16.5 9h2" />
-          <path d="M16.5 12h2" />
-          <path d="M16.5 15h2" />
-        </>,
-        strokeWidth,
-      ),
+    outline: () => renderExternalIcon(topologyGpuSymbol),
   },
   networkSwitch: {
-    plate: "square",
     keywords: ["switch", "network", "fabric"],
-    outline: ({ strokeWidth }) =>
-      outlineGroup(
-        <>
-          <rect x="4.8" y="8" width="14.4" height="8" rx="2.6" />
-          <path d="M7.5 11h.01" />
-          <path d="M10.5 11h.01" />
-          <path d="M13.5 11h.01" />
-          <path d="M16.5 11h.01" />
-          <path d="M9 14h6" />
-        </>,
-        strokeWidth,
-      ),
+    outline: () => renderExternalIcon(topologySwitchSymbol),
   },
   servicePulse: {
-    plate: "square",
     keywords: ["service", "application", "pulse"],
-    outline: ({ strokeWidth }) =>
-      outlineGroup(
-        <>
-          <rect x="5.5" y="6" width="13" height="12" rx="3.2" />
-          <path d="M7.8 12h2.1l1.3-2.1 2.1 4.2 1.5-2.1H16.2" />
-        </>,
-        strokeWidth,
-      ),
+    outline: () => renderExternalIcon(topologyServiceSymbol),
   },
   infoCircle: {
     plate: "circle",
@@ -998,6 +937,75 @@ const iconRegistry: Record<CanonicalAppIconName, IconSpec> = {
           <path d="M4 16.5V20h3.5" />
           <path d="M18.5 10A7 7 0 0 0 6.2 6.3L4 8.5" />
           <path d="M5.5 14A7 7 0 0 0 17.8 17.7l2.2-2.2" />
+        </>,
+        strokeWidth,
+      ),
+  },
+  minus: {
+    plate: "square",
+    keywords: ["remove", "zoom-out"],
+    outline: ({ strokeWidth }) => outlineGroup(<path d="M7 12h10" />, strokeWidth),
+  },
+  mapPin: {
+    keywords: ["location", "room", "site"],
+    outline: () => renderExternalIcon(topologyDatacenterSymbol),
+  },
+  filterFunnel: {
+    plate: "square",
+    keywords: ["filter", "funnel"],
+    outline: ({ strokeWidth }) =>
+      outlineGroup(
+        <path d="M5 6h14l-5.3 6v4.3L10.3 18V12L5 6Z" />,
+        strokeWidth,
+      ),
+  },
+  targetFocus: {
+    plate: "circle",
+    keywords: ["target", "locate", "focus"],
+    outline: ({ strokeWidth }) =>
+      outlineGroup(
+        <>
+          <circle cx="12" cy="12" r="4" />
+          <path d="M12 4.5v2.2" />
+          <path d="M12 17.3v2.2" />
+          <path d="M4.5 12h2.2" />
+          <path d="M17.3 12h2.2" />
+        </>,
+        strokeWidth,
+      ),
+  },
+  frameExpand: {
+    plate: "square",
+    keywords: ["fullscreen", "expand"],
+    outline: ({ strokeWidth }) =>
+      outlineGroup(
+        <>
+          <path d="M9 5H5v4" />
+          <path d="m5 5 5 5" />
+          <path d="M15 5h4v4" />
+          <path d="m19 5-5 5" />
+          <path d="M5 15v4h4" />
+          <path d="m5 19 5-5" />
+          <path d="M19 15v4h-4" />
+          <path d="m19 19-5-5" />
+        </>,
+        strokeWidth,
+      ),
+  },
+  frameCollapse: {
+    plate: "square",
+    keywords: ["fullscreen-exit", "collapse"],
+    outline: ({ strokeWidth }) =>
+      outlineGroup(
+        <>
+          <path d="M9 9H5V5" />
+          <path d="m5 9 4-4" />
+          <path d="M15 9h4V5" />
+          <path d="m19 9-4-4" />
+          <path d="M9 15H5v4" />
+          <path d="m5 15 4 4" />
+          <path d="M15 15h4v4" />
+          <path d="m19 15-4 4" />
         </>,
         strokeWidth,
       ),

@@ -25,7 +25,7 @@ export const appRoutes: AppRoute[] = [
     label: "拓扑",
     section: "operations",
     icon: "topology",
-    element: <TopologyPage />,
+    element: <TopologyPage variant="modified" />,
   },
   {
     key: "alertsModified",

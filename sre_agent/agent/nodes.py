@@ -4988,7 +4988,7 @@ def _build_ttft_kill_process_plan_candidate(
             "monitor_duration": 60,
             "success_criteria": [],
             "criteria_mode": "all",
-            "max_batches": 2,
+            "max_batches": len(steps),
             "auto_rollback_on_regression": True,
             "progressive": False,
         }

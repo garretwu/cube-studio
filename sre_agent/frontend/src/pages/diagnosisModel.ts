@@ -1,4 +1,4 @@
-import type { ChatMessage, DiagnosisLocalAuditRecord, DiagnosisResult, DiagnosisSession, LiveFinalAnswerBlock, LiveThinkingBlock, Observation, SessionEvent, ThinkingStep } from "../api/types";
+import type { ChatMessage, DiagnosisLocalAuditRecord, DiagnosisResult, DiagnosisSession, Observation, SessionEvent, ThinkingStep } from "../api/types";
 import { formatDateTime, formatDateTimeParts } from "../utils/format";
 
 type ChipTone = "neutral" | "accent" | "success" | "warning" | "danger" | "info";
@@ -14,13 +14,98 @@ type TimelineSortItem = {
 export type DiagnosisSystemEventView = {
   id: string;
   kind: "system";
-  eventKind: "approval_result" | "execution_progress";
+  eventKind:
+    | "approval_result"
+    | "canary_progress"
+    | "execution_progress"
+    | "metric_feedback"
+    | "alert_recovery"
+    | "session_closed";
   summary: string;
   details: string[];
   timestamp: string;
   statusTone: ChipTone;
+  progress?: {
+    label: string;
+    value: number;
+    helper?: string;
+  };
   source: "optimistic" | "event" | "local_audit";
   dedupeKey: string;
+  stage?: string;
+  runId?: string;
+  isExecutionRunEvent?: boolean;
+  metricLines?: string[];
+};
+
+export type DiagnosisReportTimelineItem = {
+  id: string;
+  kind: "report";
+  timestamp: string;
+  summary: DiagnosisSummaryView;
+  candidates: DiagnosisCandidateView[];
+  hypotheses?: DiagnosisHypothesisView[];
+  propagationChain?: DiagnosisPropagationStepView[];
+  planStatusLabel?: string;
+  planStatusTone?: ChipTone;
+};
+
+export type DiagnosisRunStatus = "running" | "success" | "error" | "timeout";
+
+export type DiagnosisRunToolView = {
+  id: string;
+  toolName: string;
+  params: Record<string, unknown>;
+  timestamp: string;
+  status: TimelineToolStatus;
+  summaryLines: string[];
+  rawResult?: Record<string, unknown> | null;
+  stepId?: string;
+};
+
+export type DiagnosisRunStepView = {
+  id: string;
+  eventKind: DiagnosisSystemEventView["eventKind"];
+  stage?: string;
+  title: string;
+  summary: string;
+  details: string[];
+  timestamp: string;
+  status: DiagnosisRunStatus;
+  statusTone: ChipTone;
+  progress?: DiagnosisSystemEventView["progress"];
+  metricLines: string[];
+  toolIds: string[];
+};
+
+export type DiagnosisRunPhase = "single" | "canary" | "full";
+
+export type DiagnosisRunTimelineItem = {
+  id: string;
+  kind: "run";
+  runId: string;
+  phase: DiagnosisRunPhase;
+  title: string;
+  timestamp: string;
+  status: DiagnosisRunStatus;
+  progress: {
+    label: string;
+    value: number;
+    helper?: string;
+  };
+  currentStageLabel: string;
+  startedAt: string;
+  updatedAt: string;
+  steps: DiagnosisRunStepView[];
+  tools: DiagnosisRunToolView[];
+  metrics: string[];
+};
+
+type DiagnosisSystemRecord = DiagnosisLocalAuditRecord & {
+  stage?: string;
+  runId?: string;
+  isExecutionRunEvent?: boolean;
+  metricLines?: string[];
 };
 
 export type DiagnosisTimelineItem =
@@ -41,7 +126,6 @@ export type DiagnosisTimelineItem =
       toolName?: string | null;
       status: "thinking" | "completed";
       thoughtDurationSec?: number;
-      roundSeq?: number;
     }
   | DiagnosisSystemEventView
   | {
@@ -53,7 +137,9 @@ export type DiagnosisTimelineItem =
       status: TimelineToolStatus;
       summaryLines: string[];
       rawResult?: Record<string, unknown> | null;
-    };
+    }
+  | DiagnosisReportTimelineItem
+  | DiagnosisRunTimelineItem;
 
 export type DiagnosisCandidateView = {
   id: string;
@@ -131,6 +217,11 @@ export type DiagnosisPlanView = {
   steps: DiagnosisPlanStepView[];
 };
 
+type DiagnosisPlanStatusView = {
+  label: string;
+  tone: ChipTone;
+};
+
 export type DiagnosisLiveView = {
   timeline: DiagnosisTimelineItem[];
   candidates: DiagnosisCandidateView[];
@@ -205,6 +296,16 @@ const LATIN_MOJIBAKE_PATTERN = /[\u00C0-\u00FF]/;
 const CJK_PATTERN = /[\u3400-\u9FFF]/g;
 const REPLACEMENT_CHAR_PATTERN = /\uFFFD/g;
 
+const ANSI_ESCAPE_PATTERN = /\u001b\[[0-?]*[ -/]*[@-~]/g;
+const UNICODE_FORMAT_CHARS_PATTERN = /[\u200B-\u200F\u202A-\u202E\u2060-\u206F\uFEFF]/g;
+
+function stripControlCharacters(text: string) {
+  return text
+    .replace(ANSI_ESCAPE_PATTERN, "")
+    .replace(UNICODE_FORMAT_CHARS_PATTERN, "")
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, "");
+}
+
 function countMatches(text: string, pattern: RegExp) {
   const matched = text.match(pattern);
   return matched ? matched.length : 0;
@@ -256,7 +357,7 @@ function repairUtf8Mojibake(text: string) {
 }
 
 export function normalizeDiagnosisDisplayText(text: string) {
-  let current = text;
+  let current = stripControlCharacters(text);
 
   for (let index = 0; index < 3; index += 1) {
     const decodedUnicode = decodeUnicodeEscapes(current);
@@ -267,7 +368,7 @@ export function normalizeDiagnosisDisplayText(text: string) {
     current = repairedMojibake;
   }
 
-  return current;
+  return stripControlCharacters(current);
 }
 
 function normalizeStringList(values: string[] | undefined) {
@@ -441,11 +542,29 @@ function formatParamsSummary(params: Record<string, unknown>) {
 
 function buildSummary(session: DiagnosisSession | undefined): DiagnosisSummaryView | undefined {
   const result = session?.diagnosis_result;
-  if (!result) {
-    return undefined;
-  }
-
   const updatedLabels = getUpdatedLabelParts(getLatestTraceTimestamp(session));
+  if (!result) {
+    return session
+      ? {
+          title: "\u6839\u56e0\u8bca\u65ad",
+          subtitle: "\u5f53\u524d\u4f1a\u8bdd\u5c1a\u672a\u5f62\u6210\u6700\u7ec8\u8bca\u65ad\u7ed3\u8bba\u3002",
+          certaintyLabel: "\u5206\u6790\u4e2d",
+          certaintyTone: "info",
+          confidenceLabel: "--",
+          confidenceRawLabel: "--",
+          priorityLabel: undefined,
+          sessionLabel: session.session_id,
+          updatedTimeLabel: updatedLabels.updatedTimeLabel,
+          updatedDateTimeLabel: updatedLabels.updatedDateTimeLabel,
+          affectedServices: [],
+          impactSummary: "\u7b49\u5f85\u63a8\u7406\u601d\u8003\u8f68\u8ff9\u4e0e\u5de5\u5177\u89c2\u5bdf\u7ed3\u679c\u3002",
+          rootCause: undefined,
+          rootCauseLayer: undefined,
+          rootCauseLayerLabel: "\u5c42\u7ea7",
+          rootCauseEntities: [],
+        }
+      : undefined;
+  }
 
   return {
     title: "\u6839\u56e0\u8bca\u65ad",
@@ -591,7 +710,7 @@ function buildPropagationChain(session: DiagnosisSession | undefined): Diagnosis
 }
 
 function buildPlan(session: DiagnosisSession | undefined): DiagnosisPlanView | undefined {
-  const plan = extractRecommendedPlan(session);
+  const plan = session?.diagnosis_result?.recommended_fix;
   if (!plan) {
     return undefined;
   }
@@ -617,70 +736,96 @@ function buildPlan(session: DiagnosisSession | undefined): DiagnosisPlanView | u
   };
 }
 
-function extractRecommendedPlan(session: DiagnosisSession | undefined) {
-  if (!session?.diagnosis_result) {
-    return null;
+function buildPlanStatus(session: DiagnosisSession | undefined, plan: DiagnosisPlanView | undefined): DiagnosisPlanStatusView | undefined {
+  if (!plan) {
+    return undefined;
   }
-  if (session.diagnosis_result.recommended_fix) {
-    return session.diagnosis_result.recommended_fix;
+
+  const normalizedStatus = String(session?.status ?? "").trim().toLowerCase();
+  switch (normalizedStatus) {
+    case "approval_required":
+      return {
+        label: "\u4fee\u590d\u65b9\u6848\u5df2\u751f\u6210\uff0c\u7b49\u5f85\u5ba1\u6279",
+        tone: "warning",
+      };
+    case "approved":
+    case "remediating":
+    case "validating":
+      return {
+        label: "\u4fee\u590d\u6d41\u7a0b\u5df2\u542f\u52a8\uff0c\u6b63\u5728\u6267\u884c\u4e0e\u9a8c\u8bc1",
+        tone: "accent",
+      };
+    case "rejected":
+      return {
+        label: "\u4fee\u590d\u65b9\u6848\u672a\u901a\u8fc7\u5ba1\u6279",
+        tone: "danger",
+      };
+    case "resolved":
+    case "closed":
+      return {
+        label: "\u4fee\u590d\u6d41\u7a0b\u5df2\u5b8c\u6210",
+        tone: "success",
+      };
+    default:
+      return {
+        label: "\u4fee\u590d\u65b9\u6848\u5df2\u5907\u59a5",
+        tone: "info",
+      };
   }
-  const ranked = [...(session.diagnosis_result.ranked_candidates ?? [])].sort((left, right) => {
-    const lhs = Number(left.rank ?? Number.POSITIVE_INFINITY);
-    const rhs = Number(right.rank ?? Number.POSITIVE_INFINITY);
-    return lhs - rhs;
-  });
-  for (const candidate of ranked) {
-    if (candidate.recommended_fix) {
-      return candidate.recommended_fix;
-    }
-  }
-  return null;
 }
 
-function buildTraceNextAction(entry: ThinkingStep): string | undefined {
-  if (typeof entry.next_action === "string" && entry.next_action.trim().length > 0) {
-    return entry.next_action.trim();
+function buildReportTimelineItem(
+  session: DiagnosisSession | undefined,
+  timestamp: string | undefined,
+  summary: DiagnosisSummaryView | undefined,
+  candidates: DiagnosisCandidateView[],
+  hypotheses: DiagnosisHypothesisView[],
+  propagationChain: DiagnosisPropagationStepView[],
+  plan: DiagnosisPlanView | undefined,
+): DiagnosisReportTimelineItem | undefined {
+  if (!session?.diagnosis_result || !summary || !timestamp) {
+    return undefined;
   }
-  return undefined;
+
+  const planStatus = buildPlanStatus(session, plan);
+  return {
+    id: `diagnosis-report-${session.session_id}`,
+    kind: "report",
+    timestamp,
+    summary,
+    candidates,
+    hypotheses,
+    propagationChain,
+    planStatusLabel: planStatus?.label,
+    planStatusTone: planStatus?.tone,
+  };
 }
 
-function getThinkingBaseKey(entry: ThinkingStep, fallback: string): string {
-  if (typeof entry.thought_key === "string" && entry.thought_key.trim().length > 0) {
-    return entry.thought_key.trim();
+function getReportTimelineTimestamp(
+  session: DiagnosisSession | undefined,
+  timeline: DiagnosisTimelineItem[],
+) {
+  const latestTraceTimestamp = getLatestTraceTimestamp(session);
+  if (latestTraceTimestamp) {
+    return latestTraceTimestamp;
   }
-  return fallback;
-}
 
-function buildTraceThinkingIdSuffix(entry: ThinkingStep, index: number): string {
-  const baseKey = getThinkingBaseKey(entry, `${index + 1}-${entry.timestamp}`);
-  const stepPart = Number.isFinite(entry.step) ? String(entry.step) : `${index + 1}`;
-  const timestampPart = entry.timestamp || `index-${index + 1}`;
-  return `${baseKey}-${stepPart}-${timestampPart}`;
-}
+  const latestAssistantTimestamp = [...timeline]
+    .reverse()
+    .find(
+      (
+        item,
+      ): item is Extract<DiagnosisTimelineItem, { kind: "message" }> =>
+        item.kind === "message" && item.role === "assistant",
+    )?.timestamp;
+  if (latestAssistantTimestamp) {
+    return latestAssistantTimestamp;
+  }
 
-function buildLiveThinkingIdSuffix(liveThinking: LiveThinkingBlock): string {
-  const explicitRoundId =
-    typeof liveThinking.round_id === "string" && liveThinking.round_id.trim().length > 0
-      ? liveThinking.round_id.trim()
-      : null;
-  if (explicitRoundId) {
-    return explicitRoundId;
-  }
-  const thoughtKey = liveThinking.thought_key.trim();
-  if (thoughtKey.length > 0) {
-    return `${thoughtKey}-${liveThinking.timestamp}`;
-  }
-  return `live-${liveThinking.timestamp}`;
-}
-
-function buildThinkingTitle(actionType: ThinkingStep["action_type"], node?: string | null) {
-  if (node === "finalize" || actionType === "conclude") {
-    return "Agent is converging on the diagnosis";
-  }
-  if (actionType === "tool_call") {
-    return "Agent is planning a tool call";
-  }
-  return "Agent is expanding diagnostic context";
+  const latestNarrativeTimestamp = [...timeline]
+    .reverse()
+    .find((item) => item.kind !== "system" && item.kind !== "report")?.timestamp;
+  return latestNarrativeTimestamp ?? session?.alert.starts_at;
 }
 
 function isSyntheticRemediationMessage(message: ChatMessage) {
@@ -699,10 +844,10 @@ function isSyntheticRemediationMessage(message: ChatMessage) {
 function buildPlanStepDetailLines(plan: DiagnosisSession["diagnosis_result"] | undefined) {
   const steps = plan?.recommended_fix?.steps ?? [];
   if (steps.length === 0) {
-    return ["执行步骤：--"];
+    return ["\u6267\u884c\u6b65\u9aa4\uff1a--"];
   }
 
-  return steps.map((step, index) => `步骤 ${index + 1}：${normalizeDiagnosisDisplayText(step.description)}`);
+  return steps.map((step, index) => "\u6b65\u9aa4 " + (index + 1) + "\uff1a" + normalizeDiagnosisDisplayText(step.description));
 }
 
 function getSystemRecordPriority(source: DiagnosisLocalAuditRecord["source"]) {
@@ -743,89 +888,381 @@ function buildApprovalResultFromExecutionEvent(
 
   const plan = session?.diagnosis_result?.recommended_fix;
   const planVersion = normalizePlanVersion(data.plan_version) ?? parsePlanVersionFromPlanId(plan?.plan_id) ?? null;
-  const versionLabel = planVersion ? `v${planVersion}` : "v?";
+  const versionLabel = planVersion ? "v" + planVersion : "v?";
   const approver = resolveRecordUser(data);
   const details = [
-    `审批时间：${formatDateTime(event.timestamp)}`,
-    `方案版本：${planVersion ? `v${planVersion}` : "--"}`,
-    `方案 ID：${plan?.plan_id ?? "--"}`,
-    `审批人：${approver}`,
-    "审批动作：同意，通过执行",
-    `方案标题：${plan ? normalizeDiagnosisDisplayText(plan.root_cause) : "--"}`,
+    "\u5ba1\u6279\u65f6\u95f4\uff1a" + formatDateTime(event.timestamp),
+    "\u65b9\u6848\u7248\u672c\uff1a" + (planVersion ? "v" + planVersion : "--"),
+    "\u65b9\u6848 ID\uff1a" + (plan?.plan_id ?? "--"),
+    "\u5ba1\u6279\u4eba\uff1a" + approver,
+    "\u5ba1\u6279\u52a8\u4f5c\uff1a\u540c\u610f\uff0c\u8fdb\u5165\u6267\u884c",
+    "\u65b9\u6848\u6807\u9898\uff1a" + (plan ? normalizeDiagnosisDisplayText(plan.root_cause) : "--"),
     ...buildPlanStepDetailLines(session?.diagnosis_result),
   ];
 
   return {
-    id: `event-approval-approved-${event.timestamp}`,
+    id: "event-approval-approved-" + event.timestamp,
     sessionId: event.session_id,
     eventKind: "approval_result",
     source: "event",
-    dedupeKey: `approval-result-approved-${versionLabel}`,
+    dedupeKey: "approval-result-approved-" + versionLabel,
     timestamp: event.timestamp,
-    summary: `[系统] 已审批，通过执行（${versionLabel}，审批人 ${approver}）`,
+    summary: "[\u7cfb\u7edf] \u5df2\u5b8c\u6210\u6267\u884c\u786e\u8ba4\uff08" + versionLabel + "\uff0c\u5ba1\u6279\u4eba " + approver + "\uff09",
     details,
     statusTone: "success",
   };
 }
 
-function getExecutionStageLabel(stage: string) {
+function hasCanaryPlan(session: DiagnosisSession | undefined) {
+  return Boolean(session?.diagnosis_result?.recommended_fix?.canary?.enabled);
+}
+
+function clampProgress(value: unknown): number | null {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) {
+    return null;
+  }
+  return Math.max(0, Math.min(100, Math.round(parsed)));
+}
+
+function getExecutionStageLabel(stage: string, session?: DiagnosisSession) {
+  const canaryEnabled = hasCanaryPlan(session);
   switch (stage) {
+    case "approval_confirmed":
+      return "\u5ba1\u6279\u786e\u8ba4";
     case "execution_started":
-      return "开始执行";
+      return canaryEnabled ? "\u5f00\u59cb\u6267\u884c" : "\u5f00\u59cb\u6267\u884c";
+    case "canary_started":
+      return "\u5f00\u59cb\u7070\u5ea6\u6267\u884c";
+    case "canary_progress":
+    case "canary_batch_progress":
+      return "\u7070\u5ea6\u6267\u884c\u4e2d";
+    case "canary_succeeded":
+    case "canary_completed":
+      return "\u7070\u5ea6\u6267\u884c\u6210\u529f";
+    case "observation_started":
+      return "\u7070\u5ea6\u89c2\u5bdf\u4e2d";
+    case "observation_result":
+      return "\u7070\u5ea6\u89c2\u5bdf\u7ed3\u679c";
+    case "full_rollout_started":
+      return "\u5f00\u59cb\u5168\u91cf\u4fee\u590d";
+    case "full_rollout_progress":
+      return "\u5168\u91cf\u4fee\u590d\u4e2d";
+    case "full_rollout_succeeded":
+      return "\u5168\u91cf\u4fee\u590d\u6210\u529f";
+    case "alert_recovered":
+      return "\u544a\u8b66\u5df2\u6062\u590d";
+    case "session_closed":
+      return "\u4f1a\u8bdd\u5df2\u5173\u95ed";
+    case "execution_mocked":
+      return "\u6a21\u62df\u6267\u884c\u5b8c\u6210";
     case "execution_succeeded":
-      return "执行成功";
+      return canaryEnabled ? "\u5168\u91cf\u4fee\u590d\u6210\u529f" : "\u6267\u884c\u6210\u529f";
     case "execution_failed":
-      return "执行失败";
+      return "\u6267\u884c\u5931\u8d25";
     case "execution_timeout":
-      return "执行超时";
+      return "\u6267\u884c\u8d85\u65f6";
+    case "escalation_required":
+      return "\u9700\u8981\u5347\u7ea7\u5904\u7406";
     default:
-      return stage || "执行进度";
+      return stage || "\u6267\u884c\u72b6\u6001\u66f4\u65b0";
   }
 }
 
 function getExecutionStageTone(stage: string): ChipTone {
   switch (stage) {
-    case "execution_started":
-      return "warning";
+    case "approval_confirmed":
+    case "canary_succeeded":
+    case "canary_completed":
+    case "observation_result":
+    case "full_rollout_succeeded":
+    case "alert_recovered":
+    case "session_closed":
+    case "execution_mocked":
     case "execution_succeeded":
       return "success";
     case "execution_failed":
     case "execution_timeout":
+    case "escalation_required":
       return "danger";
+    case "execution_started":
+    case "canary_started":
+    case "canary_progress":
+    case "canary_batch_progress":
+    case "observation_started":
+    case "full_rollout_started":
+    case "full_rollout_progress":
+      return "warning";
     default:
       return "info";
   }
 }
 
-function buildExecutionProgressRecord(event: SessionEvent): DiagnosisLocalAuditRecord | null {
-  if (event.type !== "remediation_progress") {
+function getExecutionEventKind(stage: string): DiagnosisSystemEventView["eventKind"] {
+  if (["canary_started", "canary_progress", "canary_batch_progress", "canary_succeeded", "canary_completed"].includes(stage)) {
+    return "canary_progress";
+  }
+  if (["observation_started", "observation_result"].includes(stage)) {
+    return "metric_feedback";
+  }
+  if (stage === "alert_recovered") {
+    return "alert_recovery";
+  }
+  if (stage === "session_closed") {
+    return "session_closed";
+  }
+  return "execution_progress";
+}
+
+function getDefaultExecutionMessage(
+  stage: string,
+  data: Record<string, unknown>,
+  session: DiagnosisSession | undefined,
+) {
+  const rawMessage = typeof data.message === "string" && data.message.trim()
+    ? normalizeDiagnosisDisplayText(data.message)
+    : "";
+  if (rawMessage) {
+    return rawMessage;
+  }
+
+  const canaryEnabled = hasCanaryPlan(session);
+  if (stage === "approval_confirmed") {
+    return "\u5ba1\u6279\u901a\u8fc7\uff0c\u51c6\u5907\u5f00\u59cb\u6267\u884c";
+  }
+  if (stage === "execution_started" && canaryEnabled) {
+    return "\u5ba1\u6279\u901a\u8fc7\uff0c\u5148\u8fdb\u5165\u7070\u5ea6\u6267\u884c\u5e76\u6301\u7eed\u89c2\u6d4b";
+  }
+  if (stage === "canary_started") {
+    return "\u5f00\u59cb\u7070\u5ea6\u6267\u884c\uff0c\u8c03\u7528\u8bca\u65ad skill \u8fdb\u884c\u5c0f\u6d41\u91cf\u9a8c\u8bc1";
+  }
+  if (stage === "canary_succeeded" || stage === "canary_completed") {
+    return "\u7070\u5ea6\u6279\u6b21\u9a8c\u8bc1\u901a\u8fc7\uff0c\u7ee7\u7eed\u89c2\u5bdf\u6307\u6807\u540e\u518d\u63a8\u8fdb\u5168\u91cf";
+  }
+  if (stage === "observation_started") {
+    return "\u5f00\u59cb\u7070\u5ea6\u89c2\u5bdf\uff0c\u6301\u7eed\u91c7\u96c6\u5ef6\u8fdf\u548c\u9519\u8bef\u7387\u6307\u6807";
+  }
+  if (stage === "observation_result") {
+    const ok = data.metrics_improved === true && data.alert_cleared !== false;
+    return ok
+      ? "\u89c2\u5bdf\u7ed3\u8bba\u826f\u597d\uff0c\u51c6\u5907\u63a8\u8fdb\u5168\u91cf\u4fee\u590d"
+      : "\u89c2\u5bdf\u7ed3\u8bba\u672a\u901a\u8fc7\uff0c\u5efa\u8bae\u6682\u505c\u5168\u91cf\u5e76\u7ee7\u7eed\u6392\u67e5";
+  }
+  if (stage === "full_rollout_started") {
+    return "\u5f00\u59cb\u5168\u91cf\u4fee\u590d";
+  }
+  if (stage === "full_rollout_succeeded") {
+    return "\u5168\u91cf\u4fee\u590d\u5b8c\u6210\uff0c\u6301\u7eed\u89c2\u5bdf\u786e\u8ba4\u4e1a\u52a1\u6062\u590d";
+  }
+  if (stage === "alert_recovered") {
+    return "\u76f8\u5173\u62a5\u8b66\u5df2\u7ecf\u6062\u590d";
+  }
+  if (stage === "session_closed") {
+    return "\u6267\u884c\u4f1a\u8bdd\u5df2\u7ed3\u675f";
+  }
+  if (stage === "execution_succeeded" && canaryEnabled) {
+    return "\u5168\u91cf\u4fee\u590d\u6210\u529f\uff0c\u6d41\u7a0b\u6267\u884c\u5b8c\u6210";
+  }
+  return "";
+}
+
+function getExecutionProgress(
+  stage: string,
+  data: Record<string, unknown>,
+  session: DiagnosisSession | undefined,
+): DiagnosisSystemEventView["progress"] | undefined {
+  const explicitProgress = clampProgress(data.progress ?? data.progress_percent ?? data.percentage);
+  const canaryEnabled = hasCanaryPlan(session);
+  let value = explicitProgress;
+
+  if (value === null) {
+    if (stage === "execution_started" && canaryEnabled) value = 5;
+    else if (stage === "canary_started") value = 10;
+    else if (stage === "canary_progress" || stage === "canary_batch_progress") value = 50;
+    else if (stage === "canary_succeeded" || stage === "canary_completed") value = 100;
+    else if (stage === "full_rollout_started") value = 20;
+    else if (stage === "full_rollout_progress") value = 65;
+    else if (stage === "full_rollout_succeeded" || stage === "execution_succeeded") value = 100;
+    else if (stage === "alert_recovered" || stage === "session_closed") value = 100;
+  }
+
+  if (value === null) {
+    return undefined;
+  }
+
+  const label =
+    stage.includes("canary") || (stage === "execution_started" && canaryEnabled)
+      ? "\u7070\u5ea6\u8fdb\u5ea6"
+      : stage.includes("full_rollout")
+        ? "\u5168\u91cf\u8fdb\u5ea6"
+        : "\u6267\u884c\u8fdb\u5ea6";
+  const helper = typeof data.progress_label === "string" && data.progress_label.trim()
+    ? normalizeDiagnosisDisplayText(data.progress_label)
+    : typeof data.batch === "string" && data.batch.trim()
+      ? normalizeDiagnosisDisplayText(data.batch)
+      : undefined;
+
+  return { label, value, helper };
+}
+
+function resolveExecutionRunId(data: Record<string, unknown>, sessionId: string) {
+  const idKeys = [
+    "rollout_id",
+    "rolloutId",
+    "trace_id",
+    "traceId",
+    "task_id",
+    "taskId",
+    "execution_id",
+    "executionId",
+  ];
+  for (const key of idKeys) {
+    const value = data[key];
+    if (typeof value === "string" && value.trim()) {
+      return value.trim();
+    }
+  }
+  return `${sessionId}-execution-run`;
+}
+
+function getStreamFirstTimelinePriority(item: DiagnosisTimelineItem) {
+  if (item.kind === "thinking") {
+    return 0;
+  }
+  if (item.kind === "tool") {
+    return 1;
+  }
+  if (item.kind === "message") {
+    return 2;
+  }
+  if (item.kind === "run") {
+    return 3;
+  }
+  if (item.kind === "system") {
+    return 4;
+  }
+  if (item.kind === "report") {
+    return 5;
+  }
+  return 99;
+}
+
+function keepLatestSingleReportItem(timeline: DiagnosisTimelineItem[]) {
+  let latestReportIndex = -1;
+  for (let index = 0; index < timeline.length; index += 1) {
+    if (timeline[index]?.kind === "report") {
+      latestReportIndex = index;
+    }
+  }
+
+  if (latestReportIndex < 0) {
+    return timeline;
+  }
+
+  return timeline.filter(
+    (item, index) => item.kind !== "report" || index === latestReportIndex,
+  );
+}
+
+function extractExecutionMetricLines(details: string[]) {
+  const metricPatterns = [
+    "\u6307\u6807",
+    "\u62a5\u8b66",
+    "p95",
+    "p99",
+    "\u9519\u8bef\u7387",
+    "error",
+    "GPU",
+    "util",
+    "\u961f\u5217",
+    "\u5ef6\u8fdf",
+    "latency",
+  ];
+  return details.filter((detail) => {
+    const normalized = detail.toLowerCase();
+    return metricPatterns.some((pattern) => normalized.includes(pattern.toLowerCase()));
+  });
+}
+
+function buildExecutionProgressRecord(
+  event: SessionEvent,
+  session: DiagnosisSession | undefined,
+): DiagnosisSystemRecord | null {
+  if (event.type !== "remediation_progress" && event.type !== "observation_result") {
     return null;
   }
 
   const data = isRecord(event.data) ? event.data : {};
-  const stage = String(data.stage ?? "").trim().toLowerCase();
-  if (!["execution_started", "execution_succeeded", "execution_failed", "execution_timeout"].includes(stage)) {
+  const stage = String(data.stage ?? event.type ?? "").trim().toLowerCase();
+  const supportedStages = [
+    "approval_confirmed",
+    "execution_started",
+    "canary_started",
+    "canary_progress",
+    "canary_batch_progress",
+    "canary_succeeded",
+    "canary_completed",
+    "observation_started",
+    "observation_result",
+    "full_rollout_started",
+    "full_rollout_progress",
+    "full_rollout_succeeded",
+    "execution_mocked",
+    "execution_succeeded",
+    "execution_failed",
+    "execution_timeout",
+    "escalation_required",
+    "alert_recovered",
+    "session_closed",
+  ];
+  if (!supportedStages.includes(stage)) {
     return null;
   }
 
-  const stageLabel = getExecutionStageLabel(stage);
-  const message = typeof data.message === "string" && data.message.trim()
-    ? normalizeDiagnosisDisplayText(data.message)
-    : "";
+  const stageLabel = getExecutionStageLabel(stage, session);
+  const message = getDefaultExecutionMessage(stage, data, session);
   const operator = resolveRecordUser(data);
+  const runId = resolveExecutionRunId(data, event.session_id);
+  const progress = getExecutionProgress(stage, data, session);
   const details = [
-    `状态时间：${formatDateTime(event.timestamp)}`,
-    `执行阶段：${stageLabel}`,
-    `执行人：${operator}`,
+    "\u6267\u884c\u65f6\u95f4\uff1a" + formatDateTime(event.timestamp),
+    "\u6267\u884c\u9636\u6bb5\uff1a" + stageLabel,
+    "\u6267\u884c\u4eba\uff1a" + operator,
   ];
 
   if (message) {
-    details.push(`执行说明：${message}`);
+    details.push("\u6267\u884c\u8bf4\u660e\uff1a" + message);
+  }
+
+  const skillId = typeof data.skill_id === "string" && data.skill_id.trim()
+    ? data.skill_id.trim()
+    : typeof data.skill === "string" && data.skill.trim()
+      ? data.skill.trim()
+      : "";
+  if (skillId) {
+    details.push("\u8c03\u7528 skill\uff1a" + skillId);
+  }
+
+  if (progress) {
+    details.push(
+      progress.label
+      + "\uff1a"
+      + progress.value
+      + "%"
+      + (progress.helper ? "\uff08" + progress.helper + "\uff09" : ""),
+    );
+  }
+
+  if (typeof data.metrics_improved === "boolean") {
+    details.push("\u6307\u6807\u53cd\u9988\uff1a" + (data.metrics_improved ? "\u5df2\u6062\u590d" : "\u672a\u6062\u590d"));
+  }
+  if (typeof data.alert_cleared === "boolean") {
+    details.push("\u544a\u8b66\u72b6\u6001\uff1a" + (data.alert_cleared ? "\u5df2\u6062\u590d" : "\u672a\u6062\u590d"));
   }
 
   const timeoutSeconds = Number(data.timeout_seconds ?? 0);
   if (Number.isFinite(timeoutSeconds) && timeoutSeconds > 0) {
-    details.push(`超时上限：${timeoutSeconds}s`);
+    details.push("\u8d85\u65f6\u4e0a\u9650\uff1a" + timeoutSeconds + "s");
   }
 
   const stepResults = Array.isArray(data.step_results) ? data.step_results : [];
@@ -835,19 +1272,26 @@ function buildExecutionProgressRecord(event: SessionEvent): DiagnosisLocalAuditR
     }
     const tool = typeof step.tool === "string" ? step.tool : "step";
     const command = typeof step.command === "string" ? step.command : "";
-    details.push(`细节 ${index + 1}：${tool}${command ? ` | ${normalizeDiagnosisDisplayText(command)}` : ""}`);
+    details.push("\u7ec6\u8282 " + (index + 1) + "\uff1a" + tool + (command ? " | " + normalizeDiagnosisDisplayText(command) : ""));
   });
 
+  const metricLines = extractExecutionMetricLines(details);
+
   return {
-    id: `event-${stage}-${event.timestamp}`,
+    id: "event-" + stage + "-" + event.timestamp,
     sessionId: event.session_id,
-    eventKind: "execution_progress",
+    eventKind: getExecutionEventKind(stage),
     source: "event",
-    dedupeKey: `execution-progress-${stage}-${event.timestamp}`,
+    dedupeKey: "execution-progress-" + stage + "-" + event.timestamp,
     timestamp: event.timestamp,
-    summary: message ? `[系统] ${stageLabel}：${message}` : `[系统] ${stageLabel}`,
+    summary: message ? "[\u7cfb\u7edf] " + stageLabel + "\uff1a" + message : "[\u7cfb\u7edf] " + stageLabel,
     details,
     statusTone: getExecutionStageTone(stage),
+    stage,
+    runId,
+    isExecutionRunEvent: true,
+    metricLines,
+    progress,
   };
 }
 
@@ -859,12 +1303,12 @@ function buildSystemRecords(
   const eventDerived = events.flatMap((event) => {
     const items = [
       buildApprovalResultFromExecutionEvent(event, session),
-      buildExecutionProgressRecord(event),
-    ].filter((item): item is DiagnosisLocalAuditRecord => Boolean(item));
+      buildExecutionProgressRecord(event, session),
+    ].filter((item): item is DiagnosisSystemRecord => Boolean(item));
     return items;
   });
 
-  const deduped = new Map<string, DiagnosisLocalAuditRecord>();
+  const deduped = new Map<string, DiagnosisSystemRecord>();
   [...localAuditRecords, ...eventDerived].forEach((record) => {
     const existing = deduped.get(record.dedupeKey);
     if (!existing || getSystemRecordPriority(record.source) >= getSystemRecordPriority(existing.source)) {
@@ -877,14 +1321,343 @@ function buildSystemRecords(
   });
 }
 
+function isExecutionRunSystemItem(
+  item: DiagnosisTimelineItem,
+): item is DiagnosisSystemEventView {
+  return (
+    item.kind === "system" &&
+    item.eventKind !== "approval_result" &&
+    item.eventKind !== "metric_feedback" &&
+    item.eventKind !== "alert_recovery" &&
+    item.eventKind !== "session_closed" &&
+    (item.isExecutionRunEvent === true ||
+      [
+        "canary_progress",
+        "execution_progress",
+      ].includes(item.eventKind))
+  );
+}
+function getRunStepStatus(item: DiagnosisSystemEventView): DiagnosisRunStatus {
+  const normalizedSummary = item.summary.toLowerCase();
+  if (item.statusTone === "danger") {
+    return normalizedSummary.includes("timeout") || item.summary.includes("\u8d85\u65f6")
+      ? "timeout"
+      : "error";
+  }
+  if (item.statusTone === "success") {
+    return "success";
+  }
+  return "running";
+}
+
+function getRunStatusFromSteps(steps: DiagnosisRunStepView[]): DiagnosisRunStatus {
+  const latest = steps[steps.length - 1];
+  if (!latest) {
+    return "running";
+  }
+  return latest.status;
+}
+
+function getRunStepTitle(item: DiagnosisSystemEventView) {
+  if (item.stage) {
+    return getExecutionStageLabel(item.stage);
+  }
+  const normalizedSummary = item.summary.replace(/^\[\u7cfb\u7edf\]\s*/, "");
+  const [title] = normalizedSummary.split(/[\uff1a:]/);
+  return title?.trim() || "\u6267\u884c\u8fdb\u5ea6";
+}
+
+function getRunProgress(
+  steps: DiagnosisRunStepView[],
+  status: DiagnosisRunStatus,
+): DiagnosisRunTimelineItem["progress"] {
+  const latestProgress = [...steps].reverse().find((step) => step.progress)?.progress;
+  if (latestProgress) {
+    return latestProgress;
+  }
+  return {
+    label: "\u6267\u884c\u8fdb\u5ea6",
+    value: status === "running" ? 5 : 100,
+  };
+}
+
+function dedupeRunLines(lines: string[]) {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  lines.forEach((line) => {
+    const normalized = normalizeDiagnosisDisplayText(line).trim();
+    if (!normalized || seen.has(normalized)) {
+      return;
+    }
+    seen.add(normalized);
+    result.push(normalized);
+  });
+  return result;
+}
+
+function createRunStep(item: DiagnosisSystemEventView): DiagnosisRunStepView {
+  const title = getRunStepTitle(item);
+  const metricLines = item.metricLines ?? extractExecutionMetricLines(item.details);
+  return {
+    id: `run-step-${item.id}`,
+    eventKind: item.eventKind,
+    stage: item.stage,
+    title,
+    summary: item.summary,
+    details: item.details,
+    timestamp: item.timestamp,
+    status: getRunStepStatus(item),
+    statusTone: item.statusTone,
+    progress: item.progress,
+    metricLines,
+    toolIds: [],
+  };
+}
+
+function createRunTool(
+  item: Extract<DiagnosisTimelineItem, { kind: "tool" }>,
+  stepId: string | undefined,
+): DiagnosisRunToolView {
+  return {
+    id: item.id,
+    toolName: item.toolName,
+    params: item.params,
+    timestamp: item.timestamp,
+    status: item.status,
+    summaryLines: item.summaryLines,
+    rawResult: item.rawResult,
+    stepId,
+  };
+}
+
+function getRunPhaseForStep(step: DiagnosisRunStepView): DiagnosisRunPhase {
+  const stage = (step.stage ?? "").toLowerCase();
+  if (stage.includes("full_rollout")) {
+    return "full";
+  }
+  if (["execution_succeeded", "execution_failed", "execution_timeout", "execution_mocked"].includes(stage)) {
+    return "full";
+  }
+  if (
+    stage.includes("canary") ||
+    stage === "execution_started" ||
+    stage === "approval_confirmed" ||
+    stage === "observation_started"
+  ) {
+    return "canary";
+  }
+  if (step.eventKind === "canary_progress") {
+    return "canary";
+  }
+  if (step.eventKind === "execution_progress" && step.title.includes("\u5168\u91cf")) {
+    return "full";
+  }
+  return "single";
+}
+
+type RunSegment = {
+  phase: DiagnosisRunPhase;
+  steps: DiagnosisRunStepView[];
+  tools: DiagnosisRunToolView[];
+  firstIndex: number;
+};
+
+function splitRunSegments(
+  stepItems: Array<{ index: number; step: DiagnosisRunStepView }>,
+  tools: DiagnosisRunToolView[],
+): RunSegment[] {
+  if (stepItems.length === 0) {
+    return [];
+  }
+
+  const steps = stepItems.map((item) => item.step);
+  const phases = steps.map((step) => getRunPhaseForStep(step));
+  const firstFullIndex = phases.findIndex((phase) => phase === "full");
+  const hasCanaryPhase = phases.some((phase) => phase === "canary");
+
+  if (firstFullIndex <= 0 || !hasCanaryPhase) {
+    return [
+      {
+        phase: hasCanaryPhase ? "canary" : "single",
+        steps,
+        tools,
+        firstIndex: stepItems[0]?.index ?? 0,
+      },
+    ];
+  }
+
+  const canaryStepItems = stepItems.slice(0, firstFullIndex);
+  const fullStepItems = stepItems.slice(firstFullIndex);
+  const canarySteps = canaryStepItems.map((item) => item.step);
+  const fullSteps = fullStepItems.map((item) => item.step);
+  const canaryStepIds = new Set(canarySteps.map((step) => step.id));
+  const fullStepIds = new Set(fullSteps.map((step) => step.id));
+  const canaryTools: DiagnosisRunToolView[] = [];
+  const fullTools: DiagnosisRunToolView[] = [];
+  const fullStartAt = new Date(fullSteps[0]?.timestamp ?? 0).getTime();
+
+  tools.forEach((tool) => {
+    if (tool.stepId && fullStepIds.has(tool.stepId)) {
+      fullTools.push(tool);
+      return;
+    }
+    if (tool.stepId && canaryStepIds.has(tool.stepId)) {
+      canaryTools.push(tool);
+      return;
+    }
+
+    const toolTime = new Date(tool.timestamp).getTime();
+    if (Number.isFinite(toolTime) && toolTime >= fullStartAt) {
+      fullTools.push(tool);
+      return;
+    }
+
+    canaryTools.push(tool);
+  });
+
+  const segments: RunSegment[] = [
+    {
+      phase: "canary",
+      steps: canarySteps,
+      tools: canaryTools,
+      firstIndex: canaryStepItems[0]?.index ?? 0,
+    },
+    {
+      phase: "full",
+      steps: fullSteps,
+      tools: fullTools,
+      firstIndex: fullStepItems[0]?.index ?? 0,
+    },
+  ];
+  return segments.filter((segment) => segment.steps.length > 0);
+}
+
+function getRunTitle(
+  phase: DiagnosisRunPhase,
+  steps: DiagnosisRunStepView[],
+) {
+  if (phase === "canary") {
+    return "\u7070\u5ea6\u89c2\u5bdf";
+  }
+  if (phase === "full") {
+    return "\u5168\u91cf\u4fee\u590d";
+  }
+  return steps.some((step) => step.eventKind === "canary_progress")
+    ? "\u7070\u5ea6\u6267\u884c"
+    : "\u6267\u884c\u6d41\u7a0b";
+}
+
+function buildRunTimelineItem(
+  runId: string,
+  phase: DiagnosisRunPhase,
+  steps: DiagnosisRunStepView[],
+  tools: DiagnosisRunToolView[],
+): DiagnosisRunTimelineItem {
+  const status = getRunStatusFromSteps(steps);
+  const latestStep = steps[steps.length - 1];
+  const startedAt =
+    steps[0]?.timestamp ?? tools[0]?.timestamp ?? new Date(0).toISOString();
+  const updatedAt =
+    latestStep?.timestamp ??
+    tools[tools.length - 1]?.timestamp ??
+    steps[0]?.timestamp ??
+    new Date(0).toISOString();
+  return {
+    id: `execution-run-${runId}-${phase}-${steps[0]?.id ?? "0"}`,
+    kind: "run",
+    runId,
+    phase,
+    title: getRunTitle(phase, steps),
+    timestamp: updatedAt,
+    status,
+    progress: getRunProgress(steps, status),
+    currentStageLabel: latestStep?.title ?? "\u6267\u884c\u8fdb\u5ea6",
+    startedAt,
+    updatedAt,
+    steps,
+    tools,
+    metrics: dedupeRunLines(steps.flatMap((step) => step.metricLines)).slice(0, 4),
+  };
+}
+
+export function groupExecutionRunTimeline(
+  timeline: DiagnosisTimelineItem[],
+  fallbackRunId = "execution-run",
+): DiagnosisTimelineItem[] {
+  const runBuckets = new Map<
+    string,
+    { steps: Array<{ index: number; step: DiagnosisRunStepView }>; tools: DiagnosisRunToolView[] }
+  >();
+  const consumedIds = new Set<string>();
+  let activeRunId: string | null = null;
+
+  const getBucket = (runId: string) => {
+    const existing = runBuckets.get(runId);
+    if (existing) {
+      return existing;
+    }
+    const created = { steps: [], tools: [] };
+    runBuckets.set(runId, created);
+    return created;
+  };
+
+  timeline.forEach((item, index) => {
+    if (item.kind === "run") {
+      activeRunId = item.runId;
+      return;
+    }
+
+    if (isExecutionRunSystemItem(item)) {
+      const runId = item.runId ?? fallbackRunId;
+      const bucket = getBucket(runId);
+      bucket.steps.push({ index, step: createRunStep(item) });
+      consumedIds.add(item.id);
+      activeRunId = runId;
+      return;
+    }
+
+    if (item.kind === "tool" && activeRunId) {
+      const bucket = runBuckets.get(activeRunId);
+      const latestStepEntry = bucket?.steps[bucket.steps.length - 1];
+      const latestStep = latestStepEntry?.step;
+      if (bucket && latestStep) {
+        bucket.tools.push(createRunTool(item, latestStep.id));
+        latestStep.toolIds.push(item.id);
+        consumedIds.add(item.id);
+      }
+    }
+  });
+
+  const runItemsByFirstIndex = new Map<number, DiagnosisRunTimelineItem[]>();
+  for (const [runId, bucket] of runBuckets.entries()) {
+    const segments = splitRunSegments(bucket.steps, bucket.tools);
+    segments.forEach((segment) => {
+      const runItem = buildRunTimelineItem(runId, segment.phase, segment.steps, segment.tools);
+      const existing = runItemsByFirstIndex.get(segment.firstIndex) ?? [];
+      existing.push(runItem);
+      runItemsByFirstIndex.set(segment.firstIndex, existing);
+    });
+  }
+
+  const grouped: DiagnosisTimelineItem[] = [];
+  timeline.forEach((item, index) => {
+    const runItems = runItemsByFirstIndex.get(index);
+    if (runItems) {
+      grouped.push(...runItems);
+    }
+    if (!consumedIds.has(item.id)) {
+      grouped.push(item);
+    }
+  });
+
+  return grouped;
+}
+
 export function buildDiagnosisLiveView(
   session: DiagnosisSession | undefined,
   messages: ChatMessage[],
   events: SessionEvent[] = [],
   localAuditRecords: DiagnosisLocalAuditRecord[] = [],
-  liveThinking?: LiveThinkingBlock | null,
-  liveFinalAnswer?: LiveFinalAnswerBlock | null,
-  completedThinkingRounds: LiveThinkingBlock[] = [],
 ): DiagnosisLiveView {
   const timelineItems: TimelineSortItem[] = [];
   const traceEntries = session?.trace?.steps ?? [];
@@ -897,44 +1670,28 @@ export function buildDiagnosisLiveView(
     }
 
     if (isThinkingStep(entry)) {
-      const idSuffix = buildTraceThinkingIdSuffix(entry, index);
       timelineItems.push({
         order: timelineItems.length,
         timestamp: entry.timestamp,
         item: {
-          id: `trace-thinking-${idSuffix}`,
+          id: `trace-thinking-${index + 1}-${entry.timestamp}`,
           kind: "thinking",
-          title: buildThinkingTitle(entry.action_type),
+          title:
+            entry.action_type === "tool_call"
+              ? "Agent is planning a tool call"
+              : entry.action_type === "conclude"
+                ? "Agent is converging on the diagnosis"
+                : "Agent is expanding diagnostic context",
           content: entry.thought,
           timestamp: entry.timestamp,
           toolName: entry.tool_name,
           status: "completed",
-          thoughtDurationSec:
-            typeof entry.thought_duration_sec === "number" && Number.isFinite(entry.thought_duration_sec)
-              ? Math.max(1, Math.round(entry.thought_duration_sec))
-              : undefined,
         },
       });
 
-      const backendNextAction = buildTraceNextAction(entry);
-      if (backendNextAction) {
-        timelineItems.push({
-          order: timelineItems.length,
-          timestamp: entry.timestamp,
-          item: {
-            id: `trace-next-action-${idSuffix}`,
-            kind: "message",
-            role: "assistant",
-            content: backendNextAction,
-            timestamp: entry.timestamp,
-            label: "Next action",
-          },
-        });
-      }
-
       if (entry.action_type === "tool_call" && entry.tool_name) {
         const toolItem: Extract<DiagnosisTimelineItem, { kind: "tool" }> = {
-          id: `trace-tool-${idSuffix}-${entry.tool_name}`,
+          id: `trace-tool-${index + 1}-${entry.timestamp}`,
           kind: "tool",
           toolName: entry.tool_name,
           params: entry.tool_params ?? {},
@@ -974,7 +1731,7 @@ export function buildDiagnosisLiveView(
       order: timelineItems.length,
       timestamp: entry.timestamp,
       item: {
-        id: `trace-orphan-tool-${index + 1}-${entry.timestamp}-${entry.tool}`,
+        id: `trace-orphan-tool-${index + 1}-${entry.timestamp}`,
         kind: "tool",
         toolName: entry.tool,
         params: entry.params,
@@ -1037,106 +1794,6 @@ export function buildDiagnosisLiveView(
     });
   });
 
-  completedThinkingRounds.forEach((round) => {
-    if (round.thought_key.trim().length === 0) {
-      return;
-    }
-    const idSuffix = buildLiveThinkingIdSuffix(round);
-    timelineItems.push({
-      order: timelineItems.length,
-      timestamp: round.timestamp,
-      item: {
-        id: `stream-thinking-${idSuffix}`,
-        kind: "thinking",
-        title: buildThinkingTitle(
-          round.tool_name ? "tool_call" : round.node === "finalize" ? "conclude" : "remediate",
-          round.node,
-        ),
-        content: round.content,
-        timestamp: round.timestamp,
-        toolName: round.tool_name,
-        status: "completed",
-        roundSeq: typeof round.round_seq === "number" ? round.round_seq : undefined,
-        thoughtDurationSec:
-          typeof round.thought_duration_sec === "number" && Number.isFinite(round.thought_duration_sec)
-            ? Math.max(1, Math.round(round.thought_duration_sec))
-            : undefined,
-      },
-    });
-  });
-
-  if (liveThinking && liveThinking.thought_key.trim().length > 0) {
-    const idSuffix = buildLiveThinkingIdSuffix(liveThinking);
-    timelineItems.push({
-      order: timelineItems.length,
-      timestamp: liveThinking.timestamp,
-      item: {
-        id: `stream-thinking-${idSuffix}`,
-        kind: "thinking",
-        title: buildThinkingTitle(
-          liveThinking.tool_name ? "tool_call" : liveThinking.node === "finalize" ? "conclude" : "remediate",
-          liveThinking.node,
-        ),
-        content: liveThinking.content,
-        timestamp: liveThinking.timestamp,
-        toolName: liveThinking.tool_name,
-        status: liveThinking.status,
-        roundSeq: typeof liveThinking.round_seq === "number" ? liveThinking.round_seq : undefined,
-        thoughtDurationSec:
-          typeof liveThinking.thought_duration_sec === "number" && Number.isFinite(liveThinking.thought_duration_sec)
-            ? Math.max(1, Math.round(liveThinking.thought_duration_sec))
-            : undefined,
-      },
-    });
-
-    if (typeof liveThinking.next_action === "string" && liveThinking.next_action.trim().length > 0) {
-      timelineItems.push({
-        order: timelineItems.length,
-        timestamp: liveThinking.timestamp,
-        item: {
-          id: `trace-next-action-${idSuffix}`,
-          kind: "message",
-          role: "assistant",
-          content: liveThinking.next_action.trim(),
-          timestamp: liveThinking.timestamp,
-          label: "Next action",
-        },
-      });
-    }
-
-    liveThinking.active_tools.forEach((tool, toolIndex) => {
-      timelineItems.push({
-        order: timelineItems.length,
-        timestamp: liveThinking.timestamp,
-        item: {
-          id: `trace-tool-${idSuffix}-${tool.tool}-${toolIndex + 1}`,
-          kind: "tool",
-          toolName: tool.tool,
-          params: tool.params,
-          timestamp: liveThinking.timestamp,
-          status: "loading",
-          summaryLines: ["Waiting for tool result..."],
-          rawResult: undefined,
-        },
-      });
-    });
-  }
-
-  if (liveFinalAnswer && liveFinalAnswer.content.trim().length > 0) {
-    timelineItems.push({
-      order: timelineItems.length,
-      timestamp: liveFinalAnswer.timestamp,
-      item: {
-        id: liveFinalAnswer.id,
-        kind: "message",
-        role: "assistant",
-        content: liveFinalAnswer.content,
-        timestamp: liveFinalAnswer.timestamp,
-        label: liveFinalAnswer.status === "streaming" ? "诊断结论生成中" : "诊断结论",
-      },
-    });
-  }
-
   buildSystemRecords(session, events, localAuditRecords).forEach((record, index) => {
     timelineItems.push({
       order: timelineItems.length + index,
@@ -1149,50 +1806,66 @@ export function buildDiagnosisLiveView(
         details: record.details.map((detail) => normalizeDiagnosisDisplayText(detail)),
         timestamp: record.timestamp,
         statusTone: record.statusTone,
+        progress: record.progress,
         source: record.source,
         dedupeKey: record.dedupeKey,
+        stage: record.stage,
+        runId: record.runId,
+        isExecutionRunEvent: record.isExecutionRunEvent,
+        metricLines: record.metricLines?.map((line) => normalizeDiagnosisDisplayText(line)),
       },
     });
   });
 
-  const dedupedTimeline = new Map<string, TimelineSortItem>();
-  timelineItems.forEach((entry, index) => {
-    dedupedTimeline.set(entry.item.id, {
-      ...entry,
-      order: index,
-    });
-  });
-
-  const sortedTimeline = [...dedupedTimeline.values()]
+  const sortedTimeline = [...timelineItems]
     .sort((left, right) => {
-      const leftRoundSeq =
-        left.item.kind === "thinking" && typeof left.item.roundSeq === "number"
-          ? left.item.roundSeq
-          : null;
-      const rightRoundSeq =
-        right.item.kind === "thinking" && typeof right.item.roundSeq === "number"
-          ? right.item.roundSeq
-          : null;
-      if (leftRoundSeq !== null && rightRoundSeq !== null && leftRoundSeq !== rightRoundSeq) {
-        return leftRoundSeq - rightRoundSeq;
-      }
       const timeGap = new Date(left.timestamp).getTime() - new Date(right.timestamp).getTime();
       if (timeGap !== 0) {
         return timeGap;
       }
+      const priorityGap =
+        getStreamFirstTimelinePriority(left.item) - getStreamFirstTimelinePriority(right.item);
+      if (priorityGap !== 0) {
+        return priorityGap;
+      }
       return left.order - right.order;
     })
     .map((entry) => entry.item);
+  const groupedTimeline = groupExecutionRunTimeline(
+    sortedTimeline,
+    `${session?.session_id ?? "diagnosis"}-execution-run`,
+  );
 
   const latestTimelineTimestamp = sortedTimeline[sortedTimeline.length - 1]?.timestamp ?? getLatestTraceTimestamp(session);
+  const candidates = buildCandidates(session);
+  const hypotheses = buildHypotheses(session);
+  const propagationChain = buildPropagationChain(session);
+  const summary = resolveSummaryTimestamp(buildSummary(session), latestTimelineTimestamp);
+  const plan = buildPlan(session);
+  const reportItem = buildReportTimelineItem(
+    session,
+    getReportTimelineTimestamp(session, sortedTimeline),
+    summary,
+    candidates,
+    hypotheses,
+    propagationChain,
+    plan,
+  );
+  const timeline = reportItem
+    ? [...groupedTimeline, reportItem].sort((left, right) => {
+        const timeGap = new Date(left.timestamp).getTime() - new Date(right.timestamp).getTime();
+        return timeGap;
+      })
+    : groupedTimeline;
+  const dedupedTimeline = keepLatestSingleReportItem(timeline);
 
   return {
-    timeline: sortedTimeline,
-    candidates: buildCandidates(session),
-    hypotheses: buildHypotheses(session),
-    propagationChain: buildPropagationChain(session),
-    summary: resolveSummaryTimestamp(buildSummary(session), latestTimelineTimestamp),
-    plan: buildPlan(session),
+    timeline: dedupedTimeline,
+    candidates,
+    hypotheses,
+    propagationChain,
+    summary,
+    plan,
   };
 }
 
@@ -1384,6 +2057,15 @@ export function buildDiagnosisDemoScenario(prompt: string): DiagnosisDemoScenari
       confidenceLabel: getConfidenceLabel(diagnosisResult.confidence),
       steps: [],
     } satisfies DiagnosisPlanView);
+  const reportItem = buildReportTimelineItem(
+    demoSession,
+    new Date(now + 3720).toISOString(),
+    summary,
+    candidates,
+    hypotheses,
+    propagationChain,
+    plan,
+  );
 
   const initialTimeline: DiagnosisTimelineItem[] = [
       {
@@ -1574,6 +2256,15 @@ export function buildDiagnosisDemoScenario(prompt: string): DiagnosisDemoScenari
           label: "\u6700\u7ec8\u7ed3\u8bba",
         },
       },
+      ...(reportItem
+        ? ([
+            {
+              delayMs: 3720,
+              type: "append",
+              item: reportItem,
+            },
+          ] satisfies DiagnosisDemoEvent[])
+        : []),
       {
         delayMs: 3860,
         type: "complete",

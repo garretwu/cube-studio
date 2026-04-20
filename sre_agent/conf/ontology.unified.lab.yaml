@@ -1,0 +1,557 @@
+static_topology:
+  clusters:
+    - id: cluster:aidc-lab
+      name: aidc-lab
+      source: unified_static
+      status: online
+      region: cn
+      zone: zone-a
+      domain: aidc
+      switch_ids:
+        - sw-200g
+        - sw-25g
+
+  switches:
+    - id: sw-200g
+      name: sw-200g
+      type: H3C S9855-24B8D
+      source: unified_static
+      status: online
+      mgmt_host: 10.11.8.52
+    - id: sw-25g
+      name: sw-25g
+      type: H3C S9855-24B8D
+      source: unified_static
+      status: online
+      mgmt_host: 10.11.8.51
+
+  switch_ports:
+    # --- sw-200g: GPU + Storage nodes, NIC roce200 ---
+    - id: sw-200g:200GE1/0/1
+      name: 200GE1/0/1
+      switch_id: sw-200g
+      connected_node_id: wj-lab-cpt-01
+      nic: roce200
+      status: up
+      speed_gbps: 200
+    - id: sw-200g:200GE1/0/2
+      name: 200GE1/0/2
+      switch_id: sw-200g
+      connected_node_id: wj-lab-cpt-02
+      nic: roce200
+      status: up
+      speed_gbps: 200
+    - id: sw-200g:200GE1/0/3
+      name: 200GE1/0/3
+      switch_id: sw-200g
+      connected_node_id: wj-lab-cpt-03
+      nic: roce200
+      status: up
+      speed_gbps: 200
+    - id: sw-200g:200GE1/0/4
+      name: 200GE1/0/4
+      switch_id: sw-200g
+      connected_node_id: wj-lab-cpt-04
+      nic: roce200
+      status: up
+      speed_gbps: 200
+    - id: sw-200g:200GE1/0/13
+      name: 200GE1/0/13
+      switch_id: sw-200g
+      connected_node_id: wj-lab-stor-01
+      nic: roce200
+      status: up
+      speed_gbps: 200
+    - id: sw-200g:200GE1/0/14
+      name: 200GE1/0/14
+      switch_id: sw-200g
+      connected_node_id: wj-lab-stor-02
+      nic: roce200
+      status: up
+      speed_gbps: 200
+    - id: sw-200g:200GE1/0/15
+      name: 200GE1/0/15
+      switch_id: sw-200g
+      connected_node_id: wj-lab-stor-03
+      nic: roce200
+      status: up
+      speed_gbps: 200
+    # --- sw-25g: ALL nodes, NIC ens2f0np0 ---
+    - id: sw-25g:WGE1/0/1
+      name: WGE1/0/1
+      switch_id: sw-25g
+      connected_node_id: wj-lab-cpt-01
+      nic: ens2f0np0
+      status: up
+      speed_gbps: 25
+    - id: sw-25g:WGE1/0/2
+      name: WGE1/0/2
+      switch_id: sw-25g
+      connected_node_id: wj-lab-cpt-02
+      nic: ens2f0np0
+      status: up
+      speed_gbps: 25
+    - id: sw-25g:WGE1/0/3
+      name: WGE1/0/3
+      switch_id: sw-25g
+      connected_node_id: wj-lab-cpt-03
+      nic: ens2f0np0
+      status: up
+      speed_gbps: 25
+    - id: sw-25g:WGE1/0/4
+      name: WGE1/0/4
+      switch_id: sw-25g
+      connected_node_id: wj-lab-cpt-04
+      nic: ens2f0np0
+      status: up
+      speed_gbps: 25
+    - id: sw-25g:WGE1/0/5
+      name: WGE1/0/5
+      switch_id: sw-25g
+      connected_node_id: wj-lab-ctl-01
+      nic: ens2f0np0
+      status: up
+      speed_gbps: 25
+    - id: sw-25g:WGE1/0/6
+      name: WGE1/0/6
+      switch_id: sw-25g
+      connected_node_id: wj-lab-ctl-02
+      nic: ens2f0np0
+      status: up
+      speed_gbps: 25
+    - id: sw-25g:WGE1/0/7
+      name: WGE1/0/7
+      switch_id: sw-25g
+      connected_node_id: wj-lab-ctl-03
+      nic: ens2f0np0
+      status: up
+      speed_gbps: 25
+    - id: sw-25g:WGE1/0/8
+      name: WGE1/0/8
+      switch_id: sw-25g
+      connected_node_id: wj-lab-stor-01
+      nic: ens2f0np0
+      status: up
+      speed_gbps: 25
+    - id: sw-25g:WGE1/0/9
+      name: WGE1/0/9
+      switch_id: sw-25g
+      connected_node_id: wj-lab-stor-02
+      nic: ens2f0np0
+      status: up
+      speed_gbps: 25
+    - id: sw-25g:WGE1/0/10
+      name: WGE1/0/10
+      switch_id: sw-25g
+      connected_node_id: wj-lab-stor-03
+      nic: ens2f0np0
+      status: up
+      speed_gbps: 25
+
+  nodes:
+    # --- GPU nodes: 200G (roce200) + 25G (ens2f0np0) ---
+    - id: wj-lab-cpt-01
+      name: wj-lab-cpt-01
+      role: gpu
+      source: unified_static
+      status: online
+      switch_ports:
+        - switch_id: sw-200g
+          port_id: sw-200g:200GE1/0/1
+          nic: roce200
+        - switch_id: sw-25g
+          port_id: sw-25g:WGE1/0/1
+          nic: ens2f0np0
+    - id: wj-lab-cpt-02
+      name: wj-lab-cpt-02
+      role: gpu
+      source: unified_static
+      status: online
+      switch_ports:
+        - switch_id: sw-200g
+          port_id: sw-200g:200GE1/0/2
+          nic: roce200
+        - switch_id: sw-25g
+          port_id: sw-25g:WGE1/0/2
+          nic: ens2f0np0
+    - id: wj-lab-cpt-03
+      name: wj-lab-cpt-03
+      role: gpu
+      source: unified_static
+      status: online
+      switch_ports:
+        - switch_id: sw-200g
+          port_id: sw-200g:200GE1/0/3
+          nic: roce200
+        - switch_id: sw-25g
+          port_id: sw-25g:WGE1/0/3
+          nic: ens2f0np0
+    - id: wj-lab-cpt-04
+      name: wj-lab-cpt-04
+      role: gpu
+      source: unified_static
+      status: online
+      switch_ports:
+        - switch_id: sw-200g
+          port_id: sw-200g:200GE1/0/4
+          nic: roce200
+        - switch_id: sw-25g
+          port_id: sw-25g:WGE1/0/4
+          nic: ens2f0np0
+    # --- CPU/control nodes: 25G only (ens2f0np0) ---
+    - id: wj-lab-ctl-01
+      name: wj-lab-ctl-01
+      role: cpu
+      source: unified_static
+      status: online
+      switch_ports:
+        - switch_id: sw-25g
+          port_id: sw-25g:WGE1/0/5
+          nic: ens2f0np0
+    - id: wj-lab-ctl-02
+      name: wj-lab-ctl-02
+      role: cpu
+      source: unified_static
+      status: online
+      switch_ports:
+        - switch_id: sw-25g
+          port_id: sw-25g:WGE1/0/6
+          nic: ens2f0np0
+    - id: wj-lab-ctl-03
+      name: wj-lab-ctl-03
+      role: cpu
+      source: unified_static
+      status: online
+      switch_ports:
+        - switch_id: sw-25g
+          port_id: sw-25g:WGE1/0/7
+          nic: ens2f0np0
+    # --- Storage nodes: 200G (roce200) + 25G (ens2f0np0) ---
+    - id: wj-lab-stor-01
+      name: wj-lab-stor-01
+      role: storage
+      source: unified_static
+      status: online
+      switch_ports:
+        - switch_id: sw-200g
+          port_id: sw-200g:200GE1/0/13
+          nic: roce200
+        - switch_id: sw-25g
+          port_id: sw-25g:WGE1/0/8
+          nic: ens2f0np0
+    - id: wj-lab-stor-02
+      name: wj-lab-stor-02
+      role: storage
+      source: unified_static
+      status: online
+      switch_ports:
+        - switch_id: sw-200g
+          port_id: sw-200g:200GE1/0/14
+          nic: roce200
+        - switch_id: sw-25g
+          port_id: sw-25g:WGE1/0/9
+          nic: ens2f0np0
+    - id: wj-lab-stor-03
+      name: wj-lab-stor-03
+      role: storage
+      source: unified_static
+      status: online
+      switch_ports:
+        - switch_id: sw-200g
+          port_id: sw-200g:200GE1/0/15
+          nic: roce200
+        - switch_id: sw-25g
+          port_id: sw-25g:WGE1/0/10
+          nic: ens2f0np0
+
+  gpus:
+    - id: gpu:wj-lab-cpt-01:0
+      node_id: wj-lab-cpt-01
+    - id: gpu:wj-lab-cpt-01:1
+      node_id: wj-lab-cpt-01
+    - id: gpu:wj-lab-cpt-01:2
+      node_id: wj-lab-cpt-01
+    - id: gpu:wj-lab-cpt-01:3
+      node_id: wj-lab-cpt-01
+    - id: gpu:wj-lab-cpt-02:0
+      node_id: wj-lab-cpt-02
+    - id: gpu:wj-lab-cpt-02:1
+      node_id: wj-lab-cpt-02
+    - id: gpu:wj-lab-cpt-02:2
+      node_id: wj-lab-cpt-02
+    - id: gpu:wj-lab-cpt-02:3
+      node_id: wj-lab-cpt-02
+    - id: gpu:wj-lab-cpt-03:0
+      node_id: wj-lab-cpt-03
+    - id: gpu:wj-lab-cpt-03:1
+      node_id: wj-lab-cpt-03
+    - id: gpu:wj-lab-cpt-03:2
+      node_id: wj-lab-cpt-03
+    - id: gpu:wj-lab-cpt-03:3
+      node_id: wj-lab-cpt-03
+    - id: gpu:wj-lab-cpt-04:0
+      node_id: wj-lab-cpt-04
+    - id: gpu:wj-lab-cpt-04:1
+      node_id: wj-lab-cpt-04
+    - id: gpu:wj-lab-cpt-04:2
+      node_id: wj-lab-cpt-04
+    - id: gpu:wj-lab-cpt-04:3
+      node_id: wj-lab-cpt-04
+
+  bmc_endpoints:
+    - id: bmc:wj-lab-cpt-01
+      node_id: wj-lab-cpt-01
+      ip: 10.11.8.10
+    - id: bmc:wj-lab-cpt-02
+      node_id: wj-lab-cpt-02
+      ip: 10.11.8.11
+    - id: bmc:wj-lab-cpt-03
+      node_id: wj-lab-cpt-03
+      ip: 10.11.8.12
+    - id: bmc:wj-lab-cpt-04
+      node_id: wj-lab-cpt-04
+      ip: 10.11.8.13
+    - id: bmc:wj-lab-ctl-01
+      node_id: wj-lab-ctl-01
+      ip: 10.11.8.2
+    - id: bmc:wj-lab-ctl-02
+      node_id: wj-lab-ctl-02
+      ip: 10.11.8.3
+    - id: bmc:wj-lab-ctl-03
+      node_id: wj-lab-ctl-03
+      ip: 10.11.8.4
+    - id: bmc:wj-lab-stor-01
+      node_id: wj-lab-stor-01
+      ip: 10.11.8.20
+    - id: bmc:wj-lab-stor-02
+      node_id: wj-lab-stor-02
+      ip: 10.11.8.21
+    - id: bmc:wj-lab-stor-03
+      node_id: wj-lab-stor-03
+      ip: 10.11.8.22
+
+  static_relations:
+    - source_id: cluster:aidc-lab
+      target_id: sw-200g
+      relation: part_of
+      semantic: cluster_contains_switch
+    - source_id: cluster:aidc-lab
+      target_id: sw-25g
+      relation: part_of
+      semantic: cluster_contains_switch
+    - source_id: wj-lab-cpt-01
+      target_id: bmc:wj-lab-cpt-01
+      relation: manages
+      semantic: node_manages_bmc
+    - source_id: wj-lab-cpt-02
+      target_id: bmc:wj-lab-cpt-02
+      relation: manages
+      semantic: node_manages_bmc
+    - source_id: wj-lab-cpt-03
+      target_id: bmc:wj-lab-cpt-03
+      relation: manages
+      semantic: node_manages_bmc
+    - source_id: wj-lab-cpt-04
+      target_id: bmc:wj-lab-cpt-04
+      relation: manages
+      semantic: node_manages_bmc
+    - source_id: wj-lab-ctl-01
+      target_id: bmc:wj-lab-ctl-01
+      relation: manages
+      semantic: node_manages_bmc
+    - source_id: wj-lab-ctl-02
+      target_id: bmc:wj-lab-ctl-02
+      relation: manages
+      semantic: node_manages_bmc
+    - source_id: wj-lab-ctl-03
+      target_id: bmc:wj-lab-ctl-03
+      relation: manages
+      semantic: node_manages_bmc
+    - source_id: wj-lab-stor-01
+      target_id: bmc:wj-lab-stor-01
+      relation: manages
+      semantic: node_manages_bmc
+    - source_id: wj-lab-stor-02
+      target_id: bmc:wj-lab-stor-02
+      relation: manages
+      semantic: node_manages_bmc
+    - source_id: wj-lab-stor-03
+      target_id: bmc:wj-lab-stor-03
+      relation: manages
+      semantic: node_manages_bmc
+
+dynamic_discovery:
+  k8s:
+    cluster_name: aidc-lab
+    namespaces:
+      - ai-models
+      - aihub
+      - ceph-csi
+      - cert-manager
+      - dify
+      - envoy-ai-gateway-system
+      - envoy-gateway-system
+      - infra
+      - istio-system
+      - jupyter
+      - kagent
+      - llm
+      - llm-d
+      - logging
+      - lws-system
+      - monitoring
+      - nvidia-dcgm
+      - nvidia-device-plugin
+      - service
+      - storage-system
+    kubeconfig: sre_agent/conf/kube.conf
+
+  prometheus:
+    url: http://10.11.4.3:31260
+    baseline_queries:
+      cpu_util: avg(1 - rate(node_cpu_seconds_total{mode="idle"}[5m]))
+      memory_util: avg(1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes))
+      gpu_util: avg(DCGM_FI_DEV_GPU_UTIL)
+      gpu_memory_used_mb: avg(DCGM_FI_DEV_FB_USED)
+      gpu_power_watts: avg(DCGM_FI_DEV_POWER_USAGE)
+    targets:
+      cpu_util: wj-lab-cpt-01
+      memory_util: wj-lab-cpt-04
+      gpu_util: wj-lab-cpt-01
+      gpu_memory_used_mb: wj-lab-cpt-02
+      gpu_power_watts: wj-lab-cpt-03
+
+  node_providers:
+    workers:
+      - name: wj-lab-cpt-01
+        role: gpu
+        ssh:
+          host: 10.11.4.10
+          port: 22
+          user: yuyonghao
+          password: ${SRE_WORKER_01_SSH_PASSWORD}
+          timeout: 30
+          use_sudo: true
+        redfish:
+          bmc_host: 10.11.8.10
+          username: admin
+          password: ${SRE_REDFISH_PASSWORD}
+          verify_tls: false
+          timeout: 30
+      - name: wj-lab-cpt-02
+        role: gpu
+        ssh:
+          host: 10.11.4.11
+          port: 22
+          user: yuyonghao
+          password: ${SRE_WORKER_02_SSH_PASSWORD}
+          timeout: 30
+          use_sudo: true
+        redfish:
+          bmc_host: 10.11.8.11
+          username: admin
+          password: ${SRE_REDFISH_PASSWORD}
+          verify_tls: false
+          timeout: 30
+      - name: wj-lab-cpt-03
+        role: gpu
+        ssh:
+          host: 10.11.4.12
+          port: 22
+          user: yuyonghao
+          password: ${SRE_WORKER_03_SSH_PASSWORD}
+          timeout: 30
+          use_sudo: true
+        redfish:
+          bmc_host: 10.11.8.12
+          username: admin
+          password: ${SRE_REDFISH_PASSWORD}
+          verify_tls: false
+          timeout: 30
+      - name: wj-lab-cpt-04
+        role: cpu
+        ssh:
+          host: 10.11.4.13
+          port: 22
+          user: yuyonghao
+          password: ${SRE_WORKER_04_SSH_PASSWORD}
+          timeout: 30
+          use_sudo: true
+        redfish:
+          bmc_host: 10.11.8.13
+          username: admin
+          password: ${SRE_REDFISH_PASSWORD}
+          verify_tls: false
+          timeout: 30
+      - name: wj-lab-ctl-01
+        role: cpu
+        ssh:
+          host: 10.11.4.2
+          port: 22
+          user: yuyonghao
+          password: ${SRE_WORKER_01_SSH_PASSWORD}
+          timeout: 30
+          use_sudo: true
+        redfish:
+          bmc_host: 10.11.8.2
+          username: admin
+          password: ${SRE_REDFISH_PASSWORD}
+          verify_tls: false
+          timeout: 30
+      - name: wj-lab-ctl-02
+        role: cpu
+        ssh:
+          host: 10.11.4.3
+          port: 22
+          user: yuyonghao
+          password: ${SRE_WORKER_02_SSH_PASSWORD}
+          timeout: 30
+          use_sudo: true
+        redfish:
+          bmc_host: 10.11.8.3
+          username: admin
+          password: ${SRE_REDFISH_PASSWORD}
+          verify_tls: false
+          timeout: 30
+      - name: wj-lab-ctl-03
+        role: cpu
+        ssh:
+          host: 10.11.4.4
+          port: 22
+          user: yuyonghao
+          password: ${SRE_WORKER_03_SSH_PASSWORD}
+          timeout: 30
+          use_sudo: true
+        redfish:
+          bmc_host: 10.11.8.4
+          username: admin
+          password: ${SRE_REDFISH_PASSWORD}
+          verify_tls: false
+          timeout: 30
+
+  switch_providers:
+    switches:
+      sw-200g:
+        host: 10.11.8.52
+        port: 830
+        username: apitest
+        password: ${SRE_SWITCH_200G_PASSWORD}
+        timeout: 30
+        type: H3C S9855-24B8D
+        description: 200G Data Network Switch
+      sw-25g:
+        host: 10.11.8.51
+        port: 830
+        username: apitest
+        password: ${SRE_SWITCH_25G_PASSWORD}
+        timeout: 30
+        type: H3C S9855-24B8D
+        description: 25G Data Network Switch
+
+  discovery_policies:
+    fallback_to_static: false
+    secondary_relations:
+      - relation: runs_on
+        source_type: pod
+        target_type: node
+        default_visibility: hidden_in_global

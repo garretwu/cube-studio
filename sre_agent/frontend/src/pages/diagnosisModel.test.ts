@@ -151,34 +151,8 @@ describe("buildDiagnosisLiveView tool matching", () => {
   });
 });
 
-describe("buildDiagnosisLiveView next-action narration", () => {
-  it("prefers backend-provided next_action and thought_duration_sec fields", () => {
-    const session = createSession([
-      {
-        step: 1,
-        timestamp: "2026-04-08T10:35:01.000Z",
-        thought: "Inspect queue depth before concluding",
-        action_type: "conclude",
-        next_action: "Next action: use backend supplied narration.",
-        thought_duration_sec: 12,
-      },
-    ]);
-
-    const view = buildDiagnosisLiveView(session, []);
-    const thinking = view.timeline[0];
-    const nextAction = view.timeline[1];
-
-    expect(thinking?.kind).toBe("thinking");
-    if (thinking?.kind === "thinking") {
-      expect(thinking.thoughtDurationSec).toBe(12);
-    }
-    expect(nextAction?.kind).toBe("message");
-    if (nextAction?.kind === "message") {
-      expect(nextAction.content).toBe("Next action: use backend supplied narration.");
-    }
-  });
-
-  it("injects a next-action assistant message right after tool-call thinking", () => {
+describe("buildDiagnosisLiveView live trace narration", () => {
+  it("does not inject synthetic next-action assistant messages for tool-call thinking", () => {
     const session = createSession([
       {
         step: 1,
@@ -187,7 +161,6 @@ describe("buildDiagnosisLiveView next-action narration", () => {
         action_type: "tool_call",
         tool_name: "query_metrics",
         tool_params: { service: "auth-svc" },
-        next_action: "Next action: call query_metrics for auth-svc and compare p95 with baseline.",
       },
       {
         tool: "query_metrics",
@@ -200,18 +173,13 @@ describe("buildDiagnosisLiveView next-action narration", () => {
     const view = buildDiagnosisLiveView(session, []);
 
     expect(view.timeline[0]?.kind).toBe("thinking");
-    expect(view.timeline[1]?.kind).toBe("message");
-    expect(view.timeline[2]?.kind).toBe("tool");
-
-    const nextAction = view.timeline[1];
-    if (nextAction?.kind === "message") {
-      expect(nextAction.role).toBe("assistant");
-      expect(nextAction.label).toBe("Next action");
-      expect(nextAction.content).toBe("Next action: call query_metrics for auth-svc and compare p95 with baseline.");
-    }
+    expect(view.timeline[1]?.kind).toBe("tool");
+    expect(view.timeline.some((item) => item.kind === "message" && item.label === "Next action")).toBe(false);
+    const tool = view.timeline.find((item) => item.kind === "tool");
+    expect(tool?.kind === "tool" ? tool.toolName : undefined).toBe("query_metrics");
   });
 
-  it("does not inject next-action narration when backend next_action is missing", () => {
+  it("does not inject synthetic next-action assistant messages after conclude thinking", () => {
     const session = createSession([
       {
         step: 1,
@@ -225,208 +193,100 @@ describe("buildDiagnosisLiveView next-action narration", () => {
 
     expect(view.timeline).toHaveLength(1);
     expect(view.timeline[0]?.kind).toBe("thinking");
-    expect(view.timeline[0]?.kind).not.toBe("message");
+    expect(view.timeline.some((item) => item.kind === "message" && item.label === "Next action")).toBe(false);
   });
 });
-
-describe("buildDiagnosisLiveView live thinking merge", () => {
-  it("builds deterministic live ids from thought_key+timestamp when round_id is absent", () => {
-    const view = buildDiagnosisLiveView(
-      createSession([]),
-      [],
-      [],
-      [],
-      {
-        thought_key: "run-reason-1:reason",
-        node: "reason",
-        run_id: "run-reason-1",
-        timestamp: "2026-04-08T11:00:01.000Z",
-        content: "Streaming reasoning",
-        status: "thinking",
-        tool_name: "query_metrics",
-        active_tools: [{ tool: "query_metrics", params: { service: "auth-svc" } }],
-      },
-    );
-
-    expect(view.timeline[0]).toMatchObject({
-      id: "stream-thinking-run-reason-1:reason-2026-04-08T11:00:01.000Z",
-      kind: "thinking",
-      status: "thinking",
-      content: "Streaming reasoning",
-    });
-    expect(view.timeline[1]).toMatchObject({
-      id: "trace-tool-run-reason-1:reason-2026-04-08T11:00:01.000Z-query_metrics-1",
-      kind: "tool",
-      status: "loading",
-      toolName: "query_metrics",
-    });
-  });
-
-  it("prefers round_id for live thinking/tool ids", () => {
-    const view = buildDiagnosisLiveView(
-      createSession([]),
-      [],
-      [],
-      [],
-      {
-        round_id: "round-reason-2",
-        thought_key: "run-reason-1:reason",
-        node: "reason",
-        run_id: "run-reason-1",
-        timestamp: "2026-04-08T11:00:05.000Z",
-        content: "Streaming reasoning round 2",
-        status: "thinking",
-        tool_name: "query_metrics",
-        active_tools: [{ tool: "query_metrics", params: { service: "auth-svc" }, round_id: "round-reason-2" }],
-      },
-    );
-
-    expect(view.timeline[0]).toMatchObject({
-      id: "stream-thinking-round-reason-2",
-      kind: "thinking",
-      status: "thinking",
-    });
-    expect(view.timeline[1]).toMatchObject({
-      id: "trace-tool-round-reason-2-query_metrics-1",
-      kind: "tool",
-      status: "loading",
-    });
-  });
-
-  it("places live final answer content after the active thinking/tool stream", () => {
-    const view = buildDiagnosisLiveView(
-      createSession([]),
-      [],
-      [],
-      [],
-      {
-        thought_key: "run-reason-1:reason",
-        node: "reason",
-        run_id: "run-reason-1",
-        timestamp: "2026-04-08T11:00:01.000Z",
-        content: "Streaming reasoning",
-        status: "thinking",
-        tool_name: "query_metrics",
-        active_tools: [{ tool: "query_metrics", params: { service: "auth-svc" } }],
-      },
-      {
-        id: "live-final-sess-1",
-        timestamp: "2026-04-08T11:00:04.000Z",
-        content: "诊断结论：Node contention。",
-        status: "streaming",
-      },
-    );
-
-    expect(view.timeline.map((item) => item.kind)).toEqual(["thinking", "tool", "message"]);
-    const finalMessage = view.timeline[2];
-    expect(finalMessage).toMatchObject({
-      id: "live-final-sess-1",
-      kind: "message",
-      label: "诊断结论生成中",
-      content: "诊断结论：Node contention。",
-    });
-  });
-
-  it("places completedThinkingRounds before the active liveThinking round", () => {
-    const view = buildDiagnosisLiveView(
-      createSession([]),
-      [],
-      [],
-      [],
-      {
-        round_id: "round-live-2",
-        thought_key: "run-live:reason",
-        node: "reason",
-        run_id: "run-live",
-        timestamp: "2026-04-08T11:20:04.000Z",
-        content: "round 2 thinking",
-        status: "thinking",
-        tool_name: null,
-        active_tools: [],
-      },
-      null,
-      [
+describe("diagnosis report timeline item", () => {
+  it("places the report item in the timeline before remediation system events", () => {
+    const session: DiagnosisSession = {
+      ...createSession([
         {
-          round_id: "round-live-1",
-          thought_key: "run-live:reason",
-          node: "reason",
-          run_id: "run-live",
-          timestamp: "2026-04-08T11:20:02.000Z",
-          content: "round 1 completed",
-          status: "completed",
-          tool_name: null,
-          active_tools: [],
+          step: 1,
+          timestamp: "2026-04-08T10:55:01.000Z",
+          thought: "Evidence is sufficient to conclude",
+          action_type: "conclude",
         },
-      ],
-    );
+      ]),
+      status: "approval_required",
+      diagnosis_result: {
+        root_cause: "GPU contention",
+        root_cause_layer: "platform",
+        root_cause_entities: ["node:worker-03"],
+        confidence: 0.91,
+        hypotheses: [
+          {
+            description: "GPU contention",
+            status: "confirmed",
+            evidence_for: ["GPU util remains above 99%"],
+            evidence_against: [],
+            confidence: 0.91,
+          },
+        ],
+        impact_summary: "impact",
+        affected_services: ["auth-svc"],
+        triage_priority: "P1",
+        diagnosis_certainty: "confirmed",
+        recommended_fix: {
+          plan_id: "plan-gpu-v3",
+          root_cause: "GPU contention",
+          description: "Drain the hot node first",
+          steps: [
+            {
+              step_id: 1,
+              description: "Drain worker-03 canary",
+              tool: "kubectl",
+              params: { node: "worker-03" },
+              verification: { method: "wait", wait_seconds: 60 },
+              timeout: 120,
+            },
+          ],
+          estimated_impact: "low",
+          confidence: 0.91,
+          priority: "P1",
+        },
+      },
+    };
 
-    const thinkingItems = view.timeline.filter(
-      (item): item is Extract<DiagnosisTimelineItem, { kind: "thinking" }> => item.kind === "thinking",
-    );
-    expect(thinkingItems).toHaveLength(2);
-    expect(thinkingItems[0]).toMatchObject({
-      id: "stream-thinking-round-live-1",
-      status: "completed",
-      content: "round 1 completed",
-    });
-    expect(thinkingItems[1]).toMatchObject({
-      id: "stream-thinking-round-live-2",
-      status: "thinking",
-      content: "round 2 thinking",
-    });
+    const events = [
+      {
+        schema_version: "1",
+        type: "remediation_progress" as const,
+        session_id: session.session_id,
+        timestamp: "2026-04-08T10:55:15.000Z",
+        data: {
+          stage: "execution_started",
+          approver: "alice",
+          plan_version: 3,
+          message: "begin remediation",
+        },
+      },
+    ];
+
+    const view = buildDiagnosisLiveView(session, [], events, []);
+    const reportIndex = view.timeline.findIndex((item) => item.kind === "report");
+    const systemIndex = view.timeline.findIndex((item) => item.kind === "system");
+
+    expect(reportIndex).toBeGreaterThan(-1);
+    expect(systemIndex).toBeGreaterThan(reportIndex);
+
+    const reportItem = view.timeline[reportIndex];
+    if (reportItem?.kind === "report") {
+      expect(reportItem.summary.rootCause).toBe("GPU contention");
+      expect(reportItem.planStatusLabel).toContain("\u5ba1\u6279");
+    }
   });
-});
 
-describe("buildDiagnosisLiveView trace thinking ids", () => {
-  it("keeps multiple thinking items when trace reuses the same thought_key across rounds", () => {
-    const session = createSession([
-      {
-        step: 1,
-        timestamp: "2026-04-08T11:10:01.000Z",
-        thought: "round 1",
-        action_type: "conclude",
-        thought_key: "run-reason-dup:reason",
-      },
-      {
-        step: 2,
-        timestamp: "2026-04-08T11:10:03.000Z",
-        thought: "round 2",
-        action_type: "conclude",
-        thought_key: "run-reason-dup:reason",
-      },
-    ]);
-
-    const view = buildDiagnosisLiveView(session, []);
-    const thinkingItems = view.timeline.filter(
-      (item): item is Extract<DiagnosisTimelineItem, { kind: "thinking" }> => item.kind === "thinking",
+  it("emits the demo report item before the complete event", () => {
+    const scenario = buildDiagnosisDemoScenario("Analyze auth-svc latency spike");
+    const reportAppendIndex = scenario.events.findIndex(
+      (event) => event.type === "append" && event.item.kind === "report",
+    );
+    const completeIndex = scenario.events.findIndex(
+      (event) => event.type === "complete",
     );
 
-    expect(thinkingItems).toHaveLength(2);
-    expect(thinkingItems[0]?.id).not.toBe(thinkingItems[1]?.id);
-    expect(thinkingItems[0]?.content).toBe("round 1");
-    expect(thinkingItems[1]?.content).toBe("round 2");
-  });
-});
-
-describe("buildDiagnosisLiveView summary timing", () => {
-  it("does not create an RCA summary before a diagnosis result exists", () => {
-    const session = createSession([
-      {
-        step: 1,
-        timestamp: "2026-04-08T10:55:01.000Z",
-        thought: "Gathering evidence before making a conclusion",
-        action_type: "tool_call",
-        tool_name: "query_metrics",
-        tool_params: { service: "auth-svc" },
-      },
-    ]);
-
-    const view = buildDiagnosisLiveView(session, []);
-
-    expect(view.summary).toBeUndefined();
-    expect(view.candidates).toEqual([]);
-    expect(view.hypotheses).toEqual([]);
-    expect(view.propagationChain).toEqual([]);
+    expect(reportAppendIndex).toBeGreaterThan(-1);
+    expect(completeIndex).toBeGreaterThan(reportAppendIndex);
   });
 });
 
@@ -574,77 +434,6 @@ describe("diagnosis summary metadata", () => {
   });
 });
 
-describe("diagnosis plan extraction", () => {
-  it("falls back to the top-ranked candidate recommended_fix when diagnosis_result.recommended_fix is missing", () => {
-    const session: DiagnosisSession = {
-      session_id: "sess-plan-fallback",
-      alert: baseAlert,
-      status: "approval_required",
-      duration_seconds: 0,
-      diagnosis_result: {
-        root_cause: "GPU contention",
-        root_cause_layer: "platform",
-        root_cause_entities: ["node:worker-03"],
-        confidence: 0.78,
-        hypotheses: [],
-        impact_summary: "impact",
-        affected_services: ["auth-svc"],
-        triage_priority: "P2",
-        diagnosis_certainty: "probable",
-        ranked_candidates: [
-          {
-            rank: 2,
-            root_cause: "Secondary candidate",
-            root_cause_layer: "service",
-            root_cause_entities: [],
-            confidence: 0.61,
-            evidence_summary: "secondary",
-          },
-          {
-            rank: 1,
-            root_cause: "Primary candidate",
-            root_cause_layer: "platform",
-            root_cause_entities: ["node:worker-03"],
-            confidence: 0.78,
-            evidence_summary: "primary",
-            recommended_fix: {
-              plan_id: "plan-primary-v1",
-              root_cause: "Primary candidate",
-              description: "Drain worker-03",
-              steps: [
-                {
-                  step_id: 1,
-                  description: "Drain canary",
-                  tool: "kubectl",
-                  params: { node: "worker-03" },
-                  verification: { method: "wait", wait_seconds: 60 },
-                  timeout: 120,
-                },
-              ],
-              estimated_impact: "low",
-              confidence: 0.78,
-              priority: "P2",
-            },
-          },
-        ],
-      },
-    };
-
-    const view = buildDiagnosisLiveView(session, []);
-
-    expect(view.plan).toMatchObject({
-      title: "Primary candidate",
-      description: "Drain worker-03",
-      priorityLabel: "P2",
-    });
-    expect(view.plan?.steps).toHaveLength(1);
-    expect(view.plan?.steps[0]).toMatchObject({
-      title: "Drain canary",
-      toolName: "kubectl",
-    });
-  });
-});
-
 
 describe("diagnosis remediation audit timeline", () => {
   it("builds a single approval result plus execution progress system events", () => {
@@ -692,8 +481,8 @@ describe("diagnosis remediation audit timeline", () => {
         source: "optimistic" as const,
         dedupeKey: "approval-result-approved-v3",
         timestamp: "2026-04-08T11:00:00.000Z",
-        summary: "[系统] 已审批，通过执行（v3，审批人 alice）",
-        details: ["审批时间：2026/04/08 19:00:00"],
+        summary: "[\u7cfb\u7edf] \u5df2\u5b8c\u6210\u6267\u884c\u786e\u8ba4\uff08v3\uff0c\u5ba1\u6279\u4eba alice\uff09",
+        details: ["\u5ba1\u6279\u65f6\u95f4\uff1a2026/04/08 19:00:00"],
         statusTone: "success" as const,
       },
     ];
@@ -708,7 +497,7 @@ describe("diagnosis remediation audit timeline", () => {
           stage: "execution_started",
           approver: "alice",
           plan_version: 3,
-          message: "开始执行步骤 1",
+          message: "\u5f00\u59cb\u6267\u884c\u6b65\u9aa4 1",
         },
       },
       {
@@ -719,25 +508,256 @@ describe("diagnosis remediation audit timeline", () => {
         data: {
           stage: "execution_succeeded",
           user: "system",
-          message: "金丝雀批次验证通过",
+          message: "\u91d1\u4e1d\u96c0\u6279\u6b21\u9a8c\u8bc1\u901a\u8fc7",
         },
       },
     ];
 
     const view = buildDiagnosisLiveView(session, [], events, localAuditRecords);
     const systemItems = view.timeline.filter((item) => item.kind === "system");
+    const runItems = view.timeline.filter((item) => item.kind === "run");
 
-    expect(systemItems).toHaveLength(3);
+    expect(runItems).toHaveLength(2);
+    expect(systemItems).toHaveLength(1);
     const approvalItems = systemItems.filter(
       (item) => item.kind === "system" && item.eventKind === "approval_result",
     );
     expect(approvalItems).toHaveLength(1);
-    expect(approvalItems[0]?.summary).toContain("审批人 alice");
-    expect(systemItems.map((item) => item.summary)).toEqual(
+    expect(approvalItems[0]?.summary).toContain("\u5ba1\u6279\u4eba alice");
+
+    const allRunSummaries = runItems.flatMap((item) => item.steps.map((step) => step.summary));
+    expect(allRunSummaries).toEqual(
       expect.arrayContaining([
-        "[系统] 开始执行：开始执行步骤 1",
-        "[系统] 执行成功：金丝雀批次验证通过",
+        "[\u7cfb\u7edf] \u5f00\u59cb\u6267\u884c\uff1a\u5f00\u59cb\u6267\u884c\u6b65\u9aa4 1",
+        "[\u7cfb\u7edf] \u6267\u884c\u6210\u529f\uff1a\u91d1\u4e1d\u96c0\u6279\u6b21\u9a8c\u8bc1\u901a\u8fc7",
       ]),
     );
+    expect(runItems.some((item) => item.phase === "canary")).toBe(true);
+    expect(runItems.some((item) => item.phase === "full")).toBe(true);
   });
+
+  it("splits canary and full rollout into separate run blocks and keeps metric feedback as a system event", () => {
+    const session: DiagnosisSession = {
+      session_id: "sess-canary-1",
+      alert: baseAlert,
+      status: "validating",
+      duration_seconds: 0,
+      diagnosis_result: {
+        root_cause: "GPU contention",
+        root_cause_layer: "platform",
+        root_cause_entities: ["node:worker-03"],
+        confidence: 0.9,
+        hypotheses: [],
+        impact_summary: "impact",
+        affected_services: ["vllm-serving"],
+        triage_priority: "P1",
+        diagnosis_certainty: "confirmed",
+        recommended_fix: {
+          plan_id: "plan-gpu-v1",
+          root_cause: "GPU contention",
+          description: "Canary first",
+          steps: [
+            {
+              step_id: 1,
+              description: "Shift canary traffic",
+              tool: "traffic_shift",
+              params: { node: "worker-03" },
+              verification: { method: "wait", wait_seconds: 60 },
+              timeout: 120,
+            },
+          ],
+          canary: {
+            enabled: true,
+            target_percentage: 10,
+            monitor_duration: 15,
+            success_criteria: [{ metric: "vllm_p95_ms", operator: "<=", value: 1800 }],
+          },
+          estimated_impact: "low",
+          confidence: 0.9,
+          priority: "P1",
+        },
+      },
+    };
+
+    const events = [
+      {
+        schema_version: "1",
+        type: "remediation_progress" as const,
+        session_id: "sess-canary-1",
+        timestamp: "2026-04-08T11:01:00.000Z",
+        data: { stage: "canary_started", skill_id: "builtin-vllm-diagnosis", progress: 10 },
+      },
+      {
+        schema_version: "1",
+        type: "remediation_progress" as const,
+        session_id: "sess-canary-1",
+        timestamp: "2026-04-08T11:02:00.000Z",
+        data: { stage: "canary_succeeded" },
+      },
+      {
+        schema_version: "1",
+        type: "remediation_progress" as const,
+        session_id: "sess-canary-1",
+        timestamp: "2026-04-08T11:03:00.000Z",
+        data: { stage: "observation_result", metrics_improved: true, alert_cleared: true },
+      },
+      {
+        schema_version: "1",
+        type: "remediation_progress" as const,
+        session_id: "sess-canary-1",
+        timestamp: "2026-04-08T11:04:00.000Z",
+        data: { stage: "full_rollout_started", progress: 35 },
+      },
+      {
+        schema_version: "1",
+        type: "remediation_progress" as const,
+        session_id: "sess-canary-1",
+        timestamp: "2026-04-08T11:05:00.000Z",
+        data: { stage: "alert_recovered" },
+      },
+      {
+        schema_version: "1",
+        type: "remediation_progress" as const,
+        session_id: "sess-canary-1",
+        timestamp: "2026-04-08T11:06:00.000Z",
+        data: { stage: "session_closed" },
+      },
+    ];
+
+    const view = buildDiagnosisLiveView(session, [], events, []);
+    const runItems = view.timeline.filter((item) => item.kind === "run");
+    const metricFeedbackItems = view.timeline.filter(
+      (item) => item.kind === "system" && item.eventKind === "metric_feedback",
+    );
+    const recoveryItems = view.timeline.filter(
+      (item) => item.kind === "system" && item.eventKind === "alert_recovery",
+    );
+    const closeItems = view.timeline.filter(
+      (item) => item.kind === "system" && item.eventKind === "session_closed",
+    );
+
+    expect(runItems).toHaveLength(2);
+    expect(runItems.find((item) => item.phase === "canary")?.steps).toHaveLength(2);
+    expect(runItems.find((item) => item.phase === "full")?.steps.map((item) => item.summary)).toEqual(
+      expect.arrayContaining([
+        "[\u7cfb\u7edf] \u5f00\u59cb\u5168\u91cf\u4fee\u590d\uff1a\u5f00\u59cb\u5168\u91cf\u4fee\u590d",
+      ]),
+    );
+    expect(metricFeedbackItems).toHaveLength(1);
+    expect(recoveryItems).toHaveLength(1);
+    expect(closeItems).toHaveLength(1);
+  });
+
+  it("groups execution stages by explicit run identifiers before falling back to session order", () => {
+    const session = createSession([]);
+    const events = [
+      {
+        schema_version: "1",
+        type: "remediation_progress" as const,
+        session_id: "sess-live-1",
+        timestamp: "2026-04-08T11:01:00.000Z",
+        data: { stage: "canary_started", rollout_id: "rollout-a", progress: 10 },
+      },
+      {
+        schema_version: "1",
+        type: "remediation_progress" as const,
+        session_id: "sess-live-1",
+        timestamp: "2026-04-08T11:02:00.000Z",
+        data: { stage: "canary_progress", rollout_id: "rollout-b", progress: 30 },
+      },
+      {
+        schema_version: "1",
+        type: "remediation_progress" as const,
+        session_id: "sess-live-1",
+        timestamp: "2026-04-08T11:03:00.000Z",
+        data: { stage: "canary_succeeded", rollout_id: "rollout-a", progress: 100 },
+      },
+      {
+        schema_version: "1",
+        type: "remediation_progress" as const,
+        session_id: "sess-live-1",
+        timestamp: "2026-04-08T11:04:00.000Z",
+        data: { stage: "full_rollout_started", progress: 35 },
+      },
+      {
+        schema_version: "1",
+        type: "remediation_progress" as const,
+        session_id: "sess-live-1",
+        timestamp: "2026-04-08T11:05:00.000Z",
+        data: { stage: "full_rollout_succeeded", progress: 100 },
+      },
+    ];
+
+    const view = buildDiagnosisLiveView(session, [], events, []);
+    const runItems = view.timeline.filter((item) => item.kind === "run");
+
+    expect(runItems.map((item) => item.runId)).toEqual([
+      "rollout-a",
+      "rollout-b",
+      "sess-live-1-execution-run",
+    ]);
+    expect(runItems.find((item) => item.runId === "rollout-a")?.steps).toHaveLength(2);
+    expect(runItems.find((item) => item.runId === "sess-live-1-execution-run")?.steps).toHaveLength(2);
+  });
+
+  it("keeps normal chat, diagnostic tools, and reports outside execution run blocks", () => {
+    const session: DiagnosisSession = {
+      ...createSession([
+        {
+          step: 1,
+          timestamp: "2026-04-08T10:59:00.000Z",
+          thought: "Check metrics before remediation",
+          action_type: "tool_call",
+          tool_name: "query_metrics",
+          tool_params: { service: "auth-svc" },
+        },
+        {
+          tool: "query_metrics",
+          params: { service: "auth-svc" },
+          result: { p95: "5.2s" },
+          timestamp: "2026-04-08T10:59:10.000Z",
+        },
+      ]),
+      diagnosis_result: {
+        root_cause: "GPU contention",
+        root_cause_layer: "platform",
+        root_cause_entities: ["node:worker-03"],
+        confidence: 0.9,
+        hypotheses: [],
+        impact_summary: "impact",
+        affected_services: ["auth-svc"],
+        triage_priority: "P1",
+        diagnosis_certainty: "confirmed",
+      },
+    };
+    const events = [
+      {
+        schema_version: "1",
+        type: "remediation_progress" as const,
+        session_id: "sess-live-1",
+        timestamp: "2026-04-08T11:01:00.000Z",
+        data: { stage: "canary_started", progress: 10 },
+      },
+    ];
+
+    const view = buildDiagnosisLiveView(
+      session,
+      [
+        {
+          id: "user-chat-1",
+          role: "user",
+          content: "explain impact",
+          created_at: "2026-04-08T11:02:00.000Z",
+        },
+      ],
+      events,
+      [],
+    );
+
+    expect(view.timeline.some((item) => item.kind === "message")).toBe(true);
+    expect(view.timeline.some((item) => item.kind === "tool")).toBe(true);
+    expect(view.timeline.some((item) => item.kind === "report")).toBe(true);
+    expect(view.timeline.filter((item) => item.kind === "run")).toHaveLength(1);
+  });
+
 });

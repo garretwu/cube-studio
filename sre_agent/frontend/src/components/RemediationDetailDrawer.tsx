@@ -169,8 +169,9 @@ function getCanaryProgress(overview?: RemediationOverview): number | null {
   if (!overview?.plan.canary?.enabled) return null;
   const batches = overview.progress.batch_status ?? [];
   if (batches.length > 0) {
-    const canaryBatch = batches.find((item) => /canary/i.test(item.batch)) ?? batches[0];
-    return Math.max(0, Math.min(100, Math.round(Number(canaryBatch.progress ?? 0))));
+    const totalBatches = batches.length;
+    const completedBatches = batches.filter((b) => b.status === "resolved").length;
+    return Math.round((completedBatches / totalBatches) * 100);
   }
   if (String(overview.progress.status ?? "").trim().toLowerCase() === "resolved") return 100;
   return getOverallProgress(overview);
@@ -244,8 +245,12 @@ export default function RemediationDetailDrawer({
   const totalSteps = Number(drawerOverview?.progress.total_steps ?? detailSteps.length);
   const overallProgress = getOverallProgress(drawerOverview ?? undefined);
   const canaryProgress = getCanaryProgress(drawerOverview ?? undefined);
+  const batchStatusArr = drawerOverview?.progress.batch_status ?? [];
+  const totalBatches = batchStatusArr.length || Number(drawerOverview?.plan.canary?.max_batches ?? 0);
+  const completedBatches = batchStatusArr.filter((b) => b.status === "resolved").length;
+  const currentBatchIndex = Math.min(completedBatches + 1, totalBatches);
   const canaryStrategy = drawerOverview?.plan.canary?.enabled
-    ? `${formatPercent(drawerOverview.plan.canary.target_percentage)} / ${drawerOverview.plan.canary.monitor_duration}s 观察`
+    ? `批次 ${currentBatchIndex}/${totalBatches}`
     : "未启用灰度";
   const canaryProgressSummary = drawerOverview?.plan.canary?.enabled
     ? `${canaryProgress ?? 0}% · ${canaryStrategy}`
@@ -458,12 +463,12 @@ export default function RemediationDetailDrawer({
                     <span className="remediation-plan-overview__fact-label">当前推进</span>
                     <p className="remediation-plan-overview__fact-value">
                       {drawerOverview.plan.canary?.enabled
-                        ? `灰度进度 ${canaryProgress ?? 0}% ，全量进度 ${overallProgress}%`
+                        ? `灰度进度 ${canaryProgress ?? 0}% ，已完成 ${completedBatches}/${totalBatches} 批次`
                         : `当前未启用灰度，正在按全量步骤推进，整体进度 ${overallProgress}%`}
                     </p>
                     <p className="remediation-plan-overview__fact-meta">
                       {drawerOverview.plan.canary?.enabled
-                        ? `当前观察 ${formatPercent(drawerOverview.plan.canary.target_percentage)} 流量，观察窗口 ${drawerOverview.plan.canary.monitor_duration}s；已完成 ${completedSteps} / ${totalSteps} 个执行步骤。`
+                        ? `观察窗口 ${drawerOverview.plan.canary.monitor_duration}s；已完成 ${completedSteps} / ${totalSteps} 个执行步骤。`
                         : `当前已完成 ${completedSteps} / ${totalSteps} 个执行步骤，系统将按既定步骤继续执行。`}
                     </p>
                     <div className="progress-track remediation-progress-track remediation-progress-track--canary">

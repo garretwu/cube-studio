@@ -82,6 +82,97 @@ describe("useDiagnosisStore", () => {
     expect(state.messages).toEqual([]);
   });
 
+  it("surfaces approve API failures as remediation approval errors without clearing the session", async () => {
+    const approvalSession = {
+      ...diagnosisSession,
+      session_id: "sess-approval-error",
+      status: "approval_required" as const,
+    };
+    server.use(
+      http.post("/api/remediate/:sessionId/approve", async () =>
+        HttpResponse.json({ message: "backend boom" }, { status: 500 })),
+    );
+    useDiagnosisStore.setState((state) => ({
+      ...state,
+      session: approvalSession,
+      activeSessionId: approvalSession.session_id,
+      bootstrapStatus: "ready",
+      traceStatus: "ready",
+      latestPlanVersion: 3,
+      canApprove: true,
+      approvalOverlayOpen: true,
+    }));
+
+    await expect(useDiagnosisStore.getState().approvePlan(true)).rejects.toThrow("Request failed with status 500.");
+
+    const state = useDiagnosisStore.getState();
+    expect(state.session?.session_id).toBe("sess-approval-error");
+    expect(state.error).toBe("修复执行审批失败：Request failed with status 500.");
+    expect(state.approvalOverlayOpen).toBe(true);
+    expect(state.isApprovingPlan).toBe(false);
+  });
+
+  it("keeps diagnosis bootstrap ready when chat history request fails", async () => {
+    server.use(
+      http.get("/api/chat/history", async () => HttpResponse.json({ message: "upstream timeout" }, { status: 504 })),
+    );
+
+    await useDiagnosisStore.getState().bootstrapSession();
+
+    const state = useDiagnosisStore.getState();
+    expect(state.bootstrapStatus).toBe("ready");
+    expect(state.session?.session_id).toBe(diagnosisSession.session_id);
+    expect(state.messages).toEqual([]);
+    expect(state.error).toContain("部分补充信息加载较慢");
+    expect(state.error).toContain("对话历史未完全加载");
+  });
+
+  it("keeps diagnosis bootstrap ready when session events request fails", async () => {
+    server.use(
+      http.get("/api/sessions/:sessionId/events", async () => HttpResponse.json({ message: "gateway timeout" }, { status: 504 })),
+    );
+
+    await useDiagnosisStore.getState().bootstrapSession();
+
+    const state = useDiagnosisStore.getState();
+    expect(state.bootstrapStatus).toBe("ready");
+    expect(state.session?.session_id).toBe(diagnosisSession.session_id);
+    expect(state.events).toEqual([]);
+    expect(state.error).toContain("部分补充信息加载较慢");
+    expect(state.error).toContain("会话事件未完全加载");
+  });
+
+  it("keeps diagnosis bootstrap ready when chat history and events both fail", async () => {
+    server.use(
+      http.get("/api/chat/history", async () => HttpResponse.json({ message: "upstream timeout" }, { status: 504 })),
+      http.get("/api/sessions/:sessionId/events", async () => HttpResponse.json({ message: "gateway timeout" }, { status: 504 })),
+    );
+
+    await useDiagnosisStore.getState().bootstrapSession();
+
+    const state = useDiagnosisStore.getState();
+    expect(state.bootstrapStatus).toBe("ready");
+    expect(state.session?.session_id).toBe(diagnosisSession.session_id);
+    expect(state.messages).toEqual([]);
+    expect(state.events).toEqual([]);
+    expect(state.error).toContain("对话历史未完全加载");
+    expect(state.error).toContain("会话事件未完全加载");
+  });
+
+  it("keeps diagnosis bootstrap in error state when the session request fails", async () => {
+    server.use(
+      http.get("/api/sessions", async () => HttpResponse.json([{ session_id: diagnosisSession.session_id }])),
+      http.get("/api/sessions/:sessionId", async () => HttpResponse.json({ message: "backend timeout" }, { status: 504 })),
+    );
+
+    await useDiagnosisStore.getState().bootstrapSession();
+
+    const state = useDiagnosisStore.getState();
+    expect(state.bootstrapStatus).toBe("error");
+    expect(state.session).toBeUndefined();
+    expect(state.error).toContain("Request failed with status 504");
+  });
+
   it("applies websocket events into trace data without appending synthetic chat messages", async () => {
     await useDiagnosisStore.getState().bootstrapSession();
 

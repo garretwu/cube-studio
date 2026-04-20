@@ -1,4 +1,4 @@
-import type { KeyboardEventHandler, ReactNode } from "react";
+import type { KeyboardEventHandler, ReactNode, Ref } from "react";
 
 import { cn } from "./cn";
 
@@ -12,6 +12,8 @@ type AppInputProps = {
   multiline?: boolean;
   rows?: number;
   disabled?: boolean;
+  autoFocus?: boolean;
+  inputRef?: Ref<HTMLInputElement | HTMLTextAreaElement>;
   onKeyDown?: KeyboardEventHandler<HTMLInputElement | HTMLTextAreaElement>;
 };
 
@@ -25,6 +27,8 @@ function AppInput({
   multiline = false,
   rows = 4,
   disabled = false,
+  autoFocus = false,
+  inputRef,
   onKeyDown,
 }: AppInputProps) {
   return (
@@ -33,21 +37,25 @@ function AppInput({
         {prefix ? <span className="app-input__adornment">{prefix}</span> : null}
         {multiline ? (
           <textarea
+            autoFocus={autoFocus}
             className="app-input__textarea"
             disabled={disabled}
             onChange={(event) => onChange(event.target.value)}
             onKeyDown={onKeyDown}
             placeholder={placeholder}
+            ref={inputRef as Ref<HTMLTextAreaElement> | undefined}
             rows={rows}
             value={value}
           />
         ) : (
           <input
+            autoFocus={autoFocus}
             className="app-input__control"
             disabled={disabled}
             onChange={(event) => onChange(event.target.value)}
             onKeyDown={onKeyDown}
             placeholder={placeholder}
+            ref={inputRef as Ref<HTMLInputElement> | undefined}
             value={value}
           />
         )}

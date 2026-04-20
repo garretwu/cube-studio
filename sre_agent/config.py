@@ -104,6 +104,7 @@ class OntologyDiscoveryConfig(BaseModel):
     mode: str = "static"
     auto_discovery: bool = True
     refresh_interval_seconds: int = 120
+    unified_inventory_path: str | None = None
     live_inventory_path: str = "fault_injector/fault-injector-test.yaml"
     live_fallback_to_static: bool = True
     k8s_cluster_name: str = "lab-cluster"
@@ -184,12 +185,14 @@ class RemediationConfig(BaseModel):
     model_config = ConfigDict(extra="allow")
 
     wal_dir: str = "./data/wal"
+    session_store_dir: str = "./data/sessions"
     approval_timeout: int = 300
     default_policy: str = "human_confirm"
     dry_run: bool = False
     max_concurrent_remediations: int = 2
     execution_mode: str = "real"
-    observation_seconds: int = 240
+    observation_seconds: int = 600
+    observation_poll_seconds: int = 10
     execution_timeout_seconds: int = 900
 
 
