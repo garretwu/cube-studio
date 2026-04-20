@@ -23,7 +23,6 @@ RUN apt-get update \
         python3.11-dev \
     && rm -rf /var/lib/apt/lists/*
 
-COPY fault_injector/requirements.txt /app/fault_injector/requirements.txt
 COPY sre_agent/requirements.txt /app/sre_agent/requirements.txt
 COPY sre_agent/frontend/package.json /app/sre_agent/frontend/package.json
 COPY sre_agent/frontend/package-lock.json /app/sre_agent/frontend/package-lock.json

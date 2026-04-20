@@ -196,6 +196,48 @@ def _log_llm_interaction(
         _llm_logger.exception("Failed to log LLM interaction")
 
 
+def log_stream_lifecycle_event(
+    *,
+    session_id: str,
+    step: int | None,
+    mode: str,
+    stage: str = "",
+    status: str = "",
+    reason: str = "",
+    node: str = "",
+    event_type: str = "",
+    pending_tool_calls_count: int | None = None,
+    step_count: int | None = None,
+    max_steps: int | None = None,
+    extra: dict[str, Any] | None = None,
+) -> None:
+    """Write stream lifecycle diagnostics to the per-session JSONL log."""
+    try:
+        LLM_LOG_DIR.mkdir(parents=True, exist_ok=True)
+        log_file = LLM_LOG_DIR / f"{session_id}.jsonl"
+        log_entry = {
+            "timestamp": datetime.now(UTC).isoformat(),
+            "session_id": str(session_id or "").strip(),
+            "step": int(step or 0),
+            "mode": str(mode or "").strip(),
+            "stage": str(stage or "").strip(),
+            "status": str(status or "").strip(),
+            "reason": str(reason or "").strip(),
+            "node": str(node or "").strip(),
+            "event_type": str(event_type or "").strip(),
+            "pending_tool_calls_count": (
+                int(pending_tool_calls_count) if pending_tool_calls_count is not None else None
+            ),
+            "step_count": int(step_count) if step_count is not None else None,
+            "max_steps": int(max_steps) if max_steps is not None else None,
+            "extra": _safe_jsonable(extra or {}),
+        }
+        with log_file.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(log_entry, ensure_ascii=False) + "\n")
+    except Exception:  # noqa: BLE001
+        _llm_logger.exception("Failed to log stream lifecycle event")
+
+
 async def _invoke_llm_message(llm: Any, messages: list[Any], *, timeout: float) -> AIMessage:
     async def _run() -> AIMessage:
         stream = getattr(llm, "astream", None)
@@ -273,9 +315,14 @@ async def reason_node(
         persist_state_snapshot(updated.get("checkpoint_dir"), updated["session_id"], "reason-timeout", updated)
         return updated
 
+    active_skill_id, active_skill_content = _extract_active_skill_guidance(
+        [dict(item) for item in list(state.get("tool_runs", []) or []) if isinstance(item, dict)]
+    )
     system_prompt = build_system_prompt(
         registry,
         allowed_tool_names=state.get("allowed_tool_names"),
+        active_skill_id=active_skill_id or None,
+        active_skill_content=active_skill_content or None,
     )
     messages = list(_coerce_messages(state.get("messages", [])))
     if not messages:
@@ -476,6 +523,23 @@ async def reason_node(
         state,
         pending_tool_calls,
     )
+    # 忽略无参数的 tool_call，避免模型给出空 args 导致无效执行循环。
+    dropped_empty_arg_calls = [
+        call
+        for call in pending_tool_calls
+        if not isinstance(call.get("args"), dict) or len(call.get("args") or {}) == 0
+    ]
+    if dropped_empty_arg_calls:
+        _llm_logger.info(
+            "Ignoring %d tool_calls with empty/missing args: %s",
+            len(dropped_empty_arg_calls),
+            [str(call.get("name", "")).strip() for call in dropped_empty_arg_calls],
+        )
+        pending_tool_calls = [
+            call
+            for call in pending_tool_calls
+            if isinstance(call.get("args"), dict) and len(call.get("args") or {}) > 0
+        ]
     raw_response_text = _extract_text(response.content)
 
     # 记录 LLM 交互到日志文件
@@ -508,6 +572,55 @@ async def reason_node(
         }
     )
 
+    # 检测诊断完成信号：如果 LLM 明确表示诊断已完成，忽略后续 tool_calls
+    # 使用正则匹配诊断完成的关键表达
+    _DIAGNOSIS_COMPLETE_PATTERN = re.compile(
+        r"(诊断结论|诊断结果|诊断)(已经|已)?明确|"
+        r"(诊断|根因)(已经|已)?(很|非常)?清晰|"
+        r"(诊断|根因)(已经|已)?(很|非常)?清楚|"
+        r"诊断(已经|已)?完成|"
+        r"(基于|根据)(已有|已收集)?证据(，|,)?(完成|结束)?诊断|"
+        r"(可以|现在|即将)(给出|提供)?最终诊断|"
+        r"最终诊断(结论|结果)?|"
+        r"无需(进一步|更多|继续)?(证据|信息)?收集|"
+        r"(证据|信息)收集(已经|已)?完成|"
+        r"(no\s+need|not\s+need)\s+(for\s+)?(further|additional|more)\s+(evidence|information|data)|"
+        r"(diagnosis|diagnostic)(\s+is|\s+has)?\s+(complete|concluded|final|clear)|"
+        r"final\s+diagnosis",
+        re.IGNORECASE,
+    )
+    diagnosis_complete_detected = False
+    if raw_response_text:
+        if _DIAGNOSIS_COMPLETE_PATTERN.search(raw_response_text):
+            diagnosis_complete_detected = True
+
+    parsed_final_json: ReasoningEnvelope | None = None
+    # 在 final_json 轮，如果已经能解析出 diagnosis/remediation，则忽略后续工具调用并直接收敛。
+    if interaction_mode == "final_json" and raw_response_text:
+        try:
+            candidate = _parse_reasoning_output(raw_response_text)
+        except Exception:  # noqa: BLE001
+            candidate = _build_fallback_reasoning_output(
+                query=str(state.get("query", "")).strip(),
+                content=raw_response_text,
+            )
+        if candidate.diagnosis is not None or candidate.remediation_plan is not None:
+            parsed_final_json = candidate
+            if pending_tool_calls:
+                _llm_logger.info(
+                    "Final JSON parse succeeded; ignoring %d trailing tool_calls and finalizing directly",
+                    len(pending_tool_calls),
+                )
+                pending_tool_calls = []
+
+    # 如果检测到诊断完成信号，忽略 tool_calls，直接进入 finalize
+    if diagnosis_complete_detected and pending_tool_calls:
+        _llm_logger.info(
+            "Diagnosis complete signal detected, ignoring %d tool_calls",
+            len(pending_tool_calls),
+        )
+        pending_tool_calls = []
+
     if pending_tool_calls:
         updated_trace.append(
             {
@@ -534,27 +647,30 @@ async def reason_node(
         persist_state_snapshot(updated.get("checkpoint_dir"), updated["session_id"], "reason", updated)
         return updated
 
-    try:
-        parsed = _parse_reasoning_output(raw_response_text)
-    except Exception:  # noqa: BLE001
-        parsed = _build_fallback_reasoning_output(
-            query=str(state.get("query", "")).strip(),
-            content=raw_response_text,
-        )
-    if parsed.diagnosis is None:
-        parsed = _build_fallback_reasoning_output(
-            query=str(state.get("query", "")).strip(),
-            content=raw_response_text,
-        )
-        if parsed.diagnosis is None:
-            parsed = ReasoningEnvelope(
-                thought="已将非 JSON 模型输出转换为结构化的低置信度诊断结果。",
-                diagnosis=_build_fallback_final_output(
-                    query=str(state.get("query", "")).strip(),
-                    content=raw_response_text,
-                ).diagnosis,
-                remediation_plan=None,
+    if parsed_final_json is not None:
+        parsed = parsed_final_json
+    else:
+        try:
+            parsed = _parse_reasoning_output(raw_response_text)
+        except Exception:  # noqa: BLE001
+            parsed = _build_fallback_reasoning_output(
+                query=str(state.get("query", "")).strip(),
+                content=raw_response_text,
             )
+        if parsed.diagnosis is None:
+            parsed = _build_fallback_reasoning_output(
+                query=str(state.get("query", "")).strip(),
+                content=raw_response_text,
+            )
+            if parsed.diagnosis is None:
+                parsed = ReasoningEnvelope(
+                    thought="已将非 JSON 模型输出转换为结构化的低置信度诊断结果。",
+                    diagnosis=_build_fallback_final_output(
+                        query=str(state.get("query", "")).strip(),
+                        content=raw_response_text,
+                    ).diagnosis,
+                    remediation_plan=None,
+                )
     final_thought = parsed.thought
     raw_remediation_plan = parsed.remediation_plan
     evidence_signals = _extract_evidence_signals(list(state.get("tool_runs", []) or []))
@@ -1053,6 +1169,33 @@ def _find_latest_successful_skill_load(tool_runs: list[dict[str, Any]]) -> dict[
         if isinstance(data, dict):
             return run
     return None
+
+
+def _extract_active_skill_guidance(tool_runs: list[dict[str, Any]]) -> tuple[str, str]:
+    for run in reversed(tool_runs):
+        if not isinstance(run, dict):
+            continue
+        if str(run.get("tool", "")).strip() != "skills.load_skill":
+            continue
+        if not bool(run.get("success", False)):
+            continue
+        key_fields = run.get("key_fields")
+        if not isinstance(key_fields, dict):
+            key_fields = {}
+        data = run.get("data")
+        if not isinstance(data, dict):
+            data = {}
+
+        skill_id = str(
+            key_fields.get("skill_id")
+            or data.get("skill_id")
+            or (run.get("params") or {}).get("skill_id")
+            or ""
+        ).strip()
+        content = str(key_fields.get("content") or data.get("content") or "").strip()
+        if content:
+            return skill_id, content
+    return "", ""
 
 
 def _choose_skill_script_to_run(load_run: dict[str, Any], tool_runs: list[dict[str, Any]]) -> tuple[str, str]:
@@ -1587,7 +1730,24 @@ def _compact_prompt_value(
 
 
 def _json_line(value: Any) -> str:
-    return json.dumps(_compact_prompt_value(_safe_jsonable(value)), ensure_ascii=False, sort_keys=True)
+    """Convert value to JSON, with special handling for skills.load_skill output_summary."""
+    safe_value = _safe_jsonable(value)
+    # Preserve output_summary for skills.load_skill entries (don't compress)
+    if isinstance(safe_value, list):
+        preserved_output_summaries: dict[int, Any] = {}
+        for i, item in enumerate(safe_value):
+            if isinstance(item, dict) and item.get("tool") == "skills.load_skill" and "output_summary" in item:
+                preserved_output_summaries[i] = item["output_summary"]
+                # Temporarily remove to prevent compression
+                item.pop("output_summary")
+        # Now compress
+        compacted = _compact_prompt_value(safe_value)
+        # Restore preserved output_summaries
+        for i, preserved in preserved_output_summaries.items():
+            if isinstance(compacted, list) and i < len(compacted) and isinstance(compacted[i], dict):
+                compacted[i]["output_summary"] = preserved
+        return json.dumps(compacted, ensure_ascii=False, sort_keys=True)
+    return json.dumps(_compact_prompt_value(safe_value), ensure_ascii=False, sort_keys=True)
 
 
 def _truncate_prompt_note(text: str, *, max_chars: int = 320) -> str:
@@ -2055,6 +2215,8 @@ def _build_tool_prompt_fields(
         prompt_summary, key_fields = _summarize_gpu_metrics(data)
     elif tool == "gpu.get_processes":
         prompt_summary, key_fields = _summarize_gpu_processes(data)
+    elif tool == "skills.load_skill":
+        prompt_summary, key_fields = _summarize_skill_load(data)
     else:
         prompt_summary, item_count, key_fields = _summarize_generic_data(data)
     if item_count is None:
@@ -2159,6 +2321,38 @@ def _summarize_gpu_processes(data: Any) -> tuple[str, dict[str, Any]]:
     return prompt_summary, key_fields
 
 
+def _summarize_skill_load(data: Any) -> tuple[str, dict[str, Any]]:
+    """Summarize skills.load_skill result for prompt - pass full SKILL.md content to LLM."""
+    if not isinstance(data, dict):
+        return "kind=unknown", None
+
+    skill_id = str(data.get("skill_id", "") or "").strip()
+    skill_name = str(data.get("name", "") or "").strip()
+    content = str(data.get("content", "") or "").strip()  # Full SKILL.md content
+    recommended_tools = data.get("recommended_tools", [])
+    scripts = data.get("scripts", [])
+    references = data.get("references", [])
+    description = str(data.get("description", "") or "").strip()
+
+    # Build key_fields with full content (no truncation)
+    key_fields: dict[str, Any] = {
+        "skill_id": skill_id,
+        "skill_name": skill_name,
+        "description": description,
+        "recommended_tools": recommended_tools if isinstance(recommended_tools, list) else [],
+        "scripts": scripts if isinstance(scripts, list) else [],
+        "references": references if isinstance(references, list) else [],
+        "content": content,  # Full SKILL.md content, no truncation
+    }
+
+    # Build prompt summary
+    tool_count = len(recommended_tools) if isinstance(recommended_tools, list) else 0
+    script_count = len(scripts) if isinstance(scripts, list) else 0
+    prompt_summary = f"skill={skill_id or skill_name}; tools={tool_count}; scripts={script_count}; content_len={len(content)}"
+
+    return prompt_summary, key_fields
+
+
 def _render_tool_run_for_prompt(item: dict[str, Any]) -> dict[str, Any]:
     rendered = {
         "step": int(item.get("step", 0) or 0),
@@ -2175,13 +2369,22 @@ def _render_tool_run_for_prompt(item: dict[str, Any]) -> dict[str, Any]:
     # Include key_fields for specific tools that have useful data summaries
     key_fields = _safe_jsonable(item.get("key_fields"))
     if key_fields and isinstance(key_fields, dict):
-        # For BMC/GPU tools, include full key_fields as output_summary
         tool = str(item.get("tool", "") or "").strip()
-        if tool.startswith("bmc.") or tool.startswith("gpu."):
-            rendered["output_summary"] = key_fields
+        if tool == "skills.load_skill":
+            content = str(key_fields.get("content", "") or "")
+            rendered["output_summary"] = {
+                "skill_id": str(key_fields.get("skill_id", "") or ""),
+                "skill_name": str(key_fields.get("skill_name", "") or ""),
+                "recommended_tools": key_fields.get("recommended_tools") if isinstance(key_fields.get("recommended_tools"), list) else [],
+                "scripts": key_fields.get("scripts") if isinstance(key_fields.get("scripts"), list) else [],
+                "references": key_fields.get("references") if isinstance(key_fields.get("references"), list) else [],
+                "content_len": len(content),
+            }
+        # For BMC/GPU tools, include full key_fields as output_summary (no compression)
+        elif tool.startswith("bmc.") or tool.startswith("gpu."):
+            rendered["output_summary"] = key_fields  # Pass full content, no truncation
         else:
             rendered["key_fields"] = _compact_prompt_value(key_fields, max_items=4, max_keys=6, max_string=96)
-    return rendered
     return rendered
 
 
@@ -3661,13 +3864,10 @@ async def act_node(
                         cached_skill_listing = listing_data
             merged_call_key = _build_pending_tool_call_dedupe_key(tool_name, tool_args)
             latest_same_call = _find_latest_tool_run_by_dedupe_key(tool_runs, merged_call_key)
-            latest_tool_run = next((item for item in reversed(tool_runs) if isinstance(item, dict)), None)
-            can_reuse_consecutive_call = (
+            can_reuse_session_call = (
                 latest_same_call is not None
-                and latest_tool_run is latest_same_call
                 and bool(latest_same_call.get("success", False))
             )
-
             if cached_skill_listing is not None:
                 result = ToolResult(
                     tool=tool_name,
@@ -3676,20 +3876,30 @@ async def act_node(
                     error="",
                 )
                 serialized_source = "cooldown_cache"
-            elif can_reuse_consecutive_call:
+            elif can_reuse_session_call:
+                reused_step = int(latest_same_call.get("step", 0) or 0) if isinstance(latest_same_call, dict) else 0
+                reused_data = _safe_jsonable(latest_same_call.get("data")) if isinstance(latest_same_call, dict) else None
                 result = ToolResult(
                     tool=tool_name,
                     success=True,
-                    data=_safe_jsonable(latest_same_call.get("data")),
+                    data={
+                        "duplicate_suppressed": True,
+                        "reused_previous_result": True,
+                        "reused_from_step": reused_step,
+                        "summary": "duplicate suppressed, reused previous successful result summary",
+                        "original_data": reused_data,
+                    },
                     error="",
                 )
-                serialized_source = "repeat_cache_reuse"
+                serialized_source = "duplicate_suppressed"
                 force_final_turn = True
                 suppressed_reasons.append(
                     {
                         "reason": "cross_round_duplicate",
                         "tool": tool_name,
+                        "dedupe_key": merged_call_key,
                         "fingerprint": _build_tool_call_fingerprint(latest_same_call),
+                        "reused_from_step": reused_step,
                         "reused": True,
                     }
                 )
@@ -3802,62 +4012,81 @@ async def act_node(
                 except asyncio.TimeoutError:
                     result = ToolResult(tool=tool_name, success=False, data=None, error=f"tool timed out after {state['step_timeout_sec']}s")
                 serialized_source = "tool"
-        serialized = _canonicalize_tool_run(
-            {
-                "step": len(tool_runs) + 1,
-                "tool": tool_name,
-                "params": tool_args,
-                "success": result.success,
-                "data": result.data,
-                "error": result.error,
-            },
-            session_id=str(state.get("session_id", "unknown")),
-            source=serialized_source,
-        )
-        # 璁板綍宸ュ叿鎵ц缁撴灉鍒版棩蹇楁枃浠?
-        _log_tool_execution(
-            session_id=str(state.get("session_id", "unknown")),
-            step=serialized["step"],
-            tool_name=tool_name,
-            tool_args=tool_args,
-            result={
-                "success": result.success,
-                "data": _safe_jsonable(result.data),
-                "error": result.error,
-            },
-        )
-        tool_runs.append(serialized)
-        counts_for_loop_guard = str(serialized_source).strip() not in {
-            "cooldown_cache",
-            "repeat_cache_reuse",
-            "ttft_family_cache_reuse",
-            "ttft_total_cache_reuse",
-        }
-        if counts_for_loop_guard:
-            fingerprint = _build_tool_call_fingerprint(serialized)
-            if fingerprint and fingerprint == loop_guard.get("recent_fingerprint"):
-                loop_guard["repeat_count"] = int(loop_guard.get("repeat_count", 0) or 0) + 1
-            else:
-                loop_guard["recent_fingerprint"] = fingerprint
-                loop_guard["repeat_count"] = 1
-            family_fingerprint = _tool_family_fingerprint(serialized)
-            if family_fingerprint and family_fingerprint == loop_guard.get("recent_family_fingerprint"):
-                loop_guard["family_repeat_count"] = int(loop_guard.get("family_repeat_count", 0) or 0) + 1
-            else:
-                loop_guard["recent_family_fingerprint"] = family_fingerprint
-                loop_guard["family_repeat_count"] = 1
-            if int(loop_guard.get("repeat_count", 0) or 0) > int(loop_guard.get("threshold", 2) or 2):
-                if not bool(loop_guard.get("triggered", False)):
-                    loop_guard["triggered"] = True
-                    loop_guard["trigger_step"] = serialized["step"]
-                    loop_guard_triggered = True
-                force_final_turn = True
-            if int(loop_guard.get("family_repeat_count", 0) or 0) > int(loop_guard.get("family_threshold", 2) or 2):
-                if not bool(loop_guard.get("triggered", False)):
-                    loop_guard["triggered"] = True
-                    loop_guard["trigger_step"] = serialized["step"]
-                    loop_guard_triggered = True
-                force_final_turn = True
+        if serialized_source != "duplicate_suppressed":
+            serialized = _canonicalize_tool_run(
+                {
+                    "step": len(tool_runs) + 1,
+                    "tool": tool_name,
+                    "params": tool_args,
+                    "success": result.success,
+                    "data": result.data,
+                    "error": result.error,
+                },
+                session_id=str(state.get("session_id", "unknown")),
+                source=serialized_source,
+            )
+            # 璁板綍宸ュ叿鎵ц缁撴灉鍒版棩蹇楁枃浠?
+            _log_tool_execution(
+                session_id=str(state.get("session_id", "unknown")),
+                step=serialized["step"],
+                tool_name=tool_name,
+                tool_args=tool_args,
+                result={
+                    "success": result.success,
+                    "data": _safe_jsonable(result.data),
+                    "error": result.error,
+                },
+            )
+            tool_runs.append(serialized)
+            counts_for_loop_guard = str(serialized_source).strip() not in {
+                "cooldown_cache",
+                "repeat_cache_reuse",
+                "ttft_family_cache_reuse",
+                "ttft_total_cache_reuse",
+            }
+            if counts_for_loop_guard:
+                fingerprint = _build_tool_call_fingerprint(serialized)
+                if fingerprint and fingerprint == loop_guard.get("recent_fingerprint"):
+                    loop_guard["repeat_count"] = int(loop_guard.get("repeat_count", 0) or 0) + 1
+                else:
+                    loop_guard["recent_fingerprint"] = fingerprint
+                    loop_guard["repeat_count"] = 1
+                family_fingerprint = _tool_family_fingerprint(serialized)
+                if family_fingerprint and family_fingerprint == loop_guard.get("recent_family_fingerprint"):
+                    loop_guard["family_repeat_count"] = int(loop_guard.get("family_repeat_count", 0) or 0) + 1
+                else:
+                    loop_guard["recent_family_fingerprint"] = family_fingerprint
+                    loop_guard["family_repeat_count"] = 1
+                if int(loop_guard.get("repeat_count", 0) or 0) > int(loop_guard.get("threshold", 2) or 2):
+                    if not bool(loop_guard.get("triggered", False)):
+                        loop_guard["triggered"] = True
+                        loop_guard["trigger_step"] = serialized["step"]
+                        loop_guard_triggered = True
+                    force_final_turn = True
+                if int(loop_guard.get("family_repeat_count", 0) or 0) > int(loop_guard.get("family_threshold", 2) or 2):
+                    if not bool(loop_guard.get("triggered", False)):
+                        loop_guard["triggered"] = True
+                        loop_guard["trigger_step"] = serialized["step"]
+                        loop_guard_triggered = True
+                    force_final_turn = True
+        else:
+            log_stream_lifecycle_event(
+                session_id=str(state.get("session_id", "unknown")),
+                step=int(state.get("step_count", 0) or 0) + 1,
+                mode="duplicate_suppressed",
+                stage="act_node",
+                status="suppressed",
+                reason="identical tool call with normalized args already succeeded in this session",
+                node=tool_name,
+                event_type="tool_call_suppressed",
+                pending_tool_calls_count=len(pending),
+                step_count=int(state.get("step_count", 0) or 0),
+                max_steps=int(state.get("max_steps", 0) or 0),
+                extra={
+                    "dedupe_key": merged_call_key,
+                    "tool_args": _safe_jsonable(tool_args),
+                },
+            )
         messages.append(
             ToolMessage(
                 tool_call_id=str(tool_call.get("id", "")),
@@ -3870,18 +4099,46 @@ async def act_node(
                 name=tool_name,
             )
         )
-        observation_entries.append(
-            {
-                "type": "observation",
-                "tool": tool_name,
-                "params": tool_args,
-                "result": {
-                    "success": result.success,
-                    "data": _safe_jsonable(result.data),
-                    "error": result.error,
-                },
-            }
-        )
+        if serialized_source != "duplicate_suppressed":
+            observation_entries.append(
+                {
+                    "type": "observation",
+                    "tool": tool_name,
+                    "params": tool_args,
+                    "result": {
+                        "success": result.success,
+                        "data": _safe_jsonable(result.data),
+                        "error": result.error,
+                    },
+                }
+            )
+            if tool_name == "skills.load_skill" and bool(result.success):
+                load_data = result.data if isinstance(result.data, dict) else {}
+                skill_name = str(load_data.get("name", "") or "").strip()
+                # Use metadata description directly; keep full text for frontend trace visibility.
+                skill_description = " ".join(str(load_data.get("description", "") or "").split()).strip()
+                skill_id = str(load_data.get("skill_id", "") or "").strip()
+                summary_parts: list[str] = []
+                if skill_name:
+                    summary_parts.append(f"名称：{skill_name}。")
+                if skill_description:
+                    summary_parts.append(f"描述：{skill_description}")
+                if summary_parts:
+                    observation_entries.append(
+                        {
+                            "type": "thought",
+                            "step": state.get("step_count", 0) + 1,
+                            "content": "已加载技能。".join(summary_parts),
+                            "action": "observe",
+                            "confidence": None,
+                            "tool_params": {
+                                "kind": "skill_load_summary",
+                                "skill_id": skill_id,
+                                "skill_name": skill_name,
+                                "description": skill_description,
+                            },
+                        }
+                    )
     updated_trace_items = [*state.get("trace_items", []), *observation_entries]
     if loop_guard_triggered:
         updated_trace_items.append(
@@ -3932,6 +4189,8 @@ async def act_node(
                         "reason": reason,
                         "tool": suppressed.get("tool"),
                         "fingerprint": suppressed.get("fingerprint"),
+                        "dedupe_key": suppressed.get("dedupe_key"),
+                        "reused_from_step": suppressed.get("reused_from_step"),
                         "reused": reused,
                     },
                 }

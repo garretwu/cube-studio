@@ -21,6 +21,9 @@ const testSkill: SkillDescriptor = {
   markdown_content: [
     "---",
     "name: Topology Navigator",
+    "tags:",
+    "  - gpu",
+    "  - thermal",
     "description: Aggregate topology relations and surface the most relevant dependency path.",
     "---",
     "",
@@ -29,6 +32,15 @@ const testSkill: SkillDescriptor = {
     "id: builtin-topology-navigator",
     "scope: builtin",
     "```",
+    "",
+    "## 环境配置",
+    "- should hide this section",
+    "",
+    "## 前置约束",
+    "- should hide this section too",
+    "",
+    "## Usage",
+    "- keep this section visible",
   ].join("\n"),
 };
 
@@ -52,7 +64,13 @@ describe("SkillDetailPage", () => {
     expect(screen.getByText("builtin-topology-navigator")).toBeInTheDocument();
     expect(screen.getByText("只读")).toBeInTheDocument();
     expect(screen.getByText("name: Topology Navigator")).toBeInTheDocument();
+    expect(screen.queryByText("tags:")).not.toBeInTheDocument();
+    expect(screen.queryByText("- gpu")).not.toBeInTheDocument();
     expect(screen.getByText("id: builtin-topology-navigator")).toBeInTheDocument();
+    expect(screen.getByText("## Usage")).toBeInTheDocument();
+    expect(screen.queryByText("## 环境配置")).not.toBeInTheDocument();
+    expect(screen.queryByText("## 前置约束")).not.toBeInTheDocument();
+    expect(screen.queryByText("should hide this section")).not.toBeInTheDocument();
     expect(screen.getByText("read:ontology")).toBeInTheDocument();
     expect(screen.queryByText("刷新详情")).not.toBeInTheDocument();
     expect(screen.queryByText(/保存或发布/)).not.toBeInTheDocument();

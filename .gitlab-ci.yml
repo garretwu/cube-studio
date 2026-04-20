@@ -162,7 +162,6 @@ build_sre_agent_base:
     - if: '$CI_COMMIT_BRANCH == $SRE_CI_BRANCH && $FORCE_BASE_BUILD == "1"'
     - if: '$CI_COMMIT_BRANCH == $SRE_CI_BRANCH && $CI_PIPELINE_SOURCE != "schedule"'
       changes:
-        - fault_injector/requirements.txt
         - sre_agent/requirements.txt
         - sre_agent/docker/Dockerfile.base
         - sre_agent/frontend/package.json

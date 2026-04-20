@@ -9,6 +9,8 @@ export type SkillViewModel = SkillDescriptor & {
   markdown_content: string;
 };
 
+const HIDDEN_SKILL_SECTION_HEADERS = new Set(["环境配置", "前置约束"]);
+
 function buildYamlList(items: string[]) {
   if (!items.length) {
     return ["  - none"];
@@ -90,4 +92,64 @@ export function normalizeSkill(skill: SkillDescriptor): SkillViewModel {
 
 export function normalizeSkills(skills: SkillDescriptor[]) {
   return skills.map(normalizeSkill);
+}
+
+export function filterSkillMarkdownForDisplay(markdown: string): string {
+  if (!markdown.trim()) {
+    return markdown;
+  }
+  const lines = markdown.split(/\r?\n/);
+  const visible: string[] = [];
+  let index = 0;
+  const hasFrontmatter = (lines[0] ?? "").trim() === "---";
+  let inFrontmatter = false;
+  let skippingTagsBlock = false;
+  while (index < lines.length) {
+    const line = lines[index] ?? "";
+    if (hasFrontmatter && line.trim() === "---") {
+      if (!inFrontmatter && index === 0) {
+        inFrontmatter = true;
+        visible.push(line);
+        index += 1;
+        continue;
+      }
+      if (inFrontmatter) {
+        inFrontmatter = false;
+        skippingTagsBlock = false;
+      }
+      visible.push(line);
+      index += 1;
+      continue;
+    }
+    if (inFrontmatter) {
+      if (skippingTagsBlock) {
+        if (/^\s*-\s+/.test(line) || !line.trim()) {
+          index += 1;
+          continue;
+        }
+        skippingTagsBlock = false;
+      }
+      const tagsMatch = line.match(/^\s*tags\s*:\s*(.*)$/i);
+      if (tagsMatch) {
+        const tagsRemainder = (tagsMatch[1] ?? "").trim();
+        skippingTagsBlock = !tagsRemainder;
+        index += 1;
+        continue;
+      }
+    }
+    const headingMatch = line.match(/^##\s+(.+?)\s*$/);
+    if (headingMatch) {
+      const headingText = (headingMatch[1] ?? "").trim();
+      if (HIDDEN_SKILL_SECTION_HEADERS.has(headingText)) {
+        index += 1;
+        while (index < lines.length && !/^##\s+/.test(lines[index] ?? "")) {
+          index += 1;
+        }
+        continue;
+      }
+    }
+    visible.push(line);
+    index += 1;
+  }
+  return visible.join("\n");
 }

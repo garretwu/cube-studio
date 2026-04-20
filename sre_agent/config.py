@@ -75,6 +75,7 @@ class AgentRuntimeConfig(BaseModel):
     reason_preserve_recent_messages: int = 6
     step_timeout_sec: float = 120.0
     total_timeout_sec: float = 600.0
+    max_steps: int = 50
 
 
 class SwitchPortDiscoveryConfig(BaseModel):

@@ -419,6 +419,23 @@ description: Diagnose vLLM latency with a Claude-style skill.
             self.assertEqual(llm.calls[0]["tool_choice"], "required")
             self.assertIn(str(llm.calls[-1]["tool_choice"]), {"auto", "none"})
             self.assertEqual(result["tool_runs"][-1]["data"]["status"], "success")
+            system_prompts = []
+            tool_ledger_sections = []
+            for call in llm.calls:
+                for message in call.get("messages", []):
+                    role = str(getattr(message, "type", "") or "").strip()
+                    content = str(getattr(message, "content", "") or "")
+                    if role == "system":
+                        system_prompts.append(content)
+                    if role == "human":
+                        evidence_kind = str((getattr(message, "additional_kwargs", {}) or {}).get("evidence_kind", "") or "").strip()
+                        if evidence_kind == "tool_ledger":
+                            tool_ledger_sections.append(content)
+            self.assertTrue(any("Active skill guidance:" in text for text in system_prompts))
+            self.assertTrue(any("# vLLM Diagnosis" in text for text in system_prompts))
+            self.assertTrue(tool_ledger_sections)
+            self.assertTrue(any('"content_len":' in text for text in tool_ledger_sections))
+            self.assertFalse(any("# vLLM Diagnosis" in text for text in tool_ledger_sections))
 
     async def test_first_round_binds_only_skill_tools_when_available(self) -> None:
         llm = _FakeLLM(
@@ -529,6 +546,100 @@ tags:
             ["skills.list_skills", "skills.load_skill", "skills.read_skill_ref", "skills.run_skill"],
         )
         self.assertEqual(result["tool_runs"][0]["tool"], "skills.list_skills")
+
+    async def test_load_skill_success_adds_persistent_skill_summary_trace(self) -> None:
+        llm = _FakeLLM(
+            [
+                AIMessage(
+                    content="Find relevant skills first.",
+                    tool_calls=[
+                        {
+                            "name": "skills.list_skills",
+                            "args": {"query": "gpu thermal diagnosis"},
+                            "id": "call-1",
+                            "type": "tool_call",
+                        }
+                    ],
+                ),
+                AIMessage(
+                    content="Load matched skill.",
+                    tool_calls=[
+                        {
+                            "name": "skills.load_skill",
+                            "args": {"skill_id": "gpu-thermal-diagnosis"},
+                            "id": "call-2",
+                            "type": "tool_call",
+                        }
+                    ],
+                ),
+                AIMessage(
+                    content=json.dumps(
+                        {
+                            "thought": "Skill summary is enough for this test.",
+                            "diagnosis": {
+                                "root_cause": "skill loaded",
+                                "root_cause_layer": "service",
+                                "root_cause_entities": ["service:test"],
+                                "confidence": 0.6,
+                                "impact_summary": "Loaded skill and produced summary trace.",
+                                "affected_services": ["service:test"],
+                                "triage_priority": "P3",
+                                "diagnosis_certainty": "probable",
+                            },
+                            "remediation_plan": None,
+                        }
+                    )
+                ),
+            ]
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            skill_root = Path(tmpdir) / "skills"
+            skill_dir = skill_root / "gpu-thermal-diagnosis"
+            skill_dir.mkdir(parents=True, exist_ok=True)
+            (skill_dir / "SKILL.md").write_text(
+                """---
+name: GPU Thermal Diagnosis
+description: >
+  GPU温度异常专项诊断技能。当用户报告GPU温度过高、thermal throttling、风扇异常、
+  散热系统故障、频繁降频、推理性能退化与温度关联等问题时触发。
+  适用场景：GPUTemperatureHigh告警、thermal throttle、GPU降频、风扇转速异常、
+  机房环境温度问题、机柜风道问题、BMC风扇控制策略异常。
+---
+
+# GPU Thermal Diagnosis
+""",
+                encoding="utf-8",
+            )
+
+            from sre_agent.skills import SkillRegistry
+
+            result = await run_diagnosis(
+                query="Diagnose GPU thermal issue with skills first.",
+                context=_happy_context(),
+                variables={},
+                llm=llm,
+                step_timeout_sec=5.0,
+                total_timeout_sec=10.0,
+                checkpoint_dir=None,
+                allowed_tool_names=[
+                    "skills.list_skills",
+                    "skills.load_skill",
+                    "skills.read_skill_ref",
+                    "skills.run_skill",
+                ],
+                skill_registry=SkillRegistry(root=skill_root),
+            )
+
+        trace_items = [item for item in result.get("trace_items", []) if isinstance(item, dict)]
+        self.assertTrue(
+            any(
+                str((item.get("tool_params") or {}).get("kind", "")) == "skill_load_summary"
+                and "GPU Thermal Diagnosis" in str(item.get("content", ""))
+                and "适用场景：GPUTemperatureHigh告警" in str(item.get("content", ""))
+                for item in trace_items
+            )
+        )
 
     async def test_first_round_rejects_unbound_tool_calls_from_provider(self) -> None:
         llm = _FakeLLM(
@@ -921,6 +1032,18 @@ tags:
         self.assertNotIn("Current turn guidance:", prompt)
         self.assertIn("k8s.apply_manifest", prompt)
 
+    async def test_prompt_includes_active_skill_guidance_when_provided(self) -> None:
+        registry = build_default_registry()
+        prompt = build_system_prompt(
+            registry,
+            allowed_tool_names=["skills.list_skills", "skills.load_skill", "skills.read_skill_ref", "skills.run_skill"],
+            active_skill_id="builtin-gpu-thermal-diagnosis",
+            active_skill_content="# GPU Thermal Diagnosis\nStep 1: collect fan status",
+        )
+        self.assertIn("Active skill guidance:", prompt)
+        self.assertIn("active_skill_id: builtin-gpu-thermal-diagnosis", prompt)
+        self.assertIn("# GPU Thermal Diagnosis", prompt)
+
     async def test_tc_evidence_forces_consistent_root_cause_when_initial_conclusion_is_ambiguous(self) -> None:
         llm = _FakeLLM(
             [
@@ -1137,6 +1260,260 @@ tags:
                     for item in trace_items
                 )
             )
+
+    async def test_cross_round_identical_tool_call_is_suppressed_without_new_tool_run(self) -> None:
+        llm = _FakeLLM(
+            [
+                AIMessage(
+                    content="Collect pod list.",
+                    tool_calls=[
+                        {
+                            "name": "k8s.list_pods",
+                            "args": {"namespace": "default"},
+                            "id": "call-1",
+                            "type": "tool_call",
+                        }
+                    ],
+                ),
+                AIMessage(
+                    content="Collect pod list again.",
+                    tool_calls=[
+                        {
+                            "name": "k8s.list_pods",
+                            "args": {"namespace": "default"},
+                            "id": "call-2",
+                            "type": "tool_call",
+                        }
+                    ],
+                ),
+                AIMessage(
+                    content=json.dumps(
+                        {
+                            "thought": "重复同参工具调用已抑制，进入总结。",
+                            "diagnosis": {
+                                "root_cause": "重复调用已被抑制。",
+                                "root_cause_layer": "service",
+                                "root_cause_entities": ["default"],
+                                "confidence": 0.7,
+                                "impact_summary": "同参重复调用不会新增工具执行。",
+                                "affected_services": ["demo"],
+                                "triage_priority": "P3",
+                                "diagnosis_certainty": "probable",
+                            },
+                            "remediation_plan": None,
+                        }
+                    )
+                ),
+            ]
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            result = await run_diagnosis(
+                query="Diagnose duplicate list pod calls across rounds.",
+                context=_happy_context(),
+                variables={},
+                llm=llm,
+                step_timeout_sec=5.0,
+                total_timeout_sec=10.0,
+                checkpoint_dir=tmpdir,
+                allowed_tool_names=["k8s.list_pods"],
+                max_steps=8,
+            )
+
+            executed_tools = [item["tool"] for item in result["tool_runs"]]
+            self.assertEqual(executed_tools.count("k8s.list_pods"), 1)
+            trace_items = list(result.get("trace_items", []))
+            self.assertTrue(
+                any(
+                    isinstance(item, dict)
+                    and str((item.get("tool_params") or {}).get("kind", "")) == "duplicate_tool_suppressed"
+                    and str((item.get("tool_params") or {}).get("reason", "")) == "cross_round_duplicate"
+                    for item in trace_items
+                )
+            )
+
+    async def test_cross_round_identical_tool_call_allows_retry_after_failure(self) -> None:
+        llm = _FakeLLM(
+            [
+                AIMessage(
+                    content="Query fan status.",
+                    tool_calls=[
+                        {
+                            "name": "bmc.get_fan_status",
+                            "args": {"node": "10.11.4.13"},
+                            "id": "call-1",
+                            "type": "tool_call",
+                        }
+                    ],
+                ),
+                AIMessage(
+                    content="Retry fan status with same params.",
+                    tool_calls=[
+                        {
+                            "name": "bmc.get_fan_status",
+                            "args": {"node": "10.11.4.13"},
+                            "id": "call-2",
+                            "type": "tool_call",
+                        }
+                    ],
+                ),
+                AIMessage(
+                    content=json.dumps(
+                        {
+                            "thought": "工具失败后允许同参重试。",
+                            "diagnosis": {
+                                "root_cause": "BMC 通道不可用导致查询失败。",
+                                "root_cause_layer": "platform",
+                                "root_cause_entities": ["10.11.4.13"],
+                                "confidence": 0.6,
+                                "impact_summary": "同参失败调用不会被去重抑制。",
+                                "affected_services": ["demo"],
+                                "triage_priority": "P2",
+                                "diagnosis_certainty": "probable",
+                            },
+                            "remediation_plan": None,
+                        }
+                    )
+                ),
+            ]
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            result = await run_diagnosis(
+                query="Diagnose bmc fan status retries.",
+                context=_happy_context(),
+                variables={},
+                llm=llm,
+                step_timeout_sec=5.0,
+                total_timeout_sec=10.0,
+                checkpoint_dir=tmpdir,
+                allowed_tool_names=["bmc.get_fan_status"],
+                max_steps=8,
+            )
+
+            bmc_runs = [item for item in result["tool_runs"] if item.get("tool") == "bmc.get_fan_status"]
+            self.assertEqual(len(bmc_runs), 2)
+            self.assertTrue(all(not bool(item.get("success", True)) for item in bmc_runs))
+
+    async def test_cross_round_dedup_considers_equivalent_arg_order(self) -> None:
+        llm = _FakeLLM(
+            [
+                AIMessage(
+                    content="Run command once.",
+                    tool_calls=[
+                        {
+                            "name": "ssh.run_command",
+                            "args": {"node": "10.11.4.13", "command": "nvidia-smi -L"},
+                            "id": "call-1",
+                            "type": "tool_call",
+                        }
+                    ],
+                ),
+                AIMessage(
+                    content="Run same command with reordered args.",
+                    tool_calls=[
+                        {
+                            "name": "ssh.run_command",
+                            "args": {"command": "nvidia-smi -L", "node": "10.11.4.13"},
+                            "id": "call-2",
+                            "type": "tool_call",
+                        }
+                    ],
+                ),
+                AIMessage(
+                    content=json.dumps(
+                        {
+                            "thought": "参数顺序不同但语义相同，重复调用已抑制。",
+                            "diagnosis": {
+                                "root_cause": "重复命令调用已被去重。",
+                                "root_cause_layer": "service",
+                                "root_cause_entities": ["10.11.4.13"],
+                                "confidence": 0.68,
+                                "impact_summary": "参数顺序差异不再导致重复执行。",
+                                "affected_services": ["demo"],
+                                "triage_priority": "P3",
+                                "diagnosis_certainty": "probable",
+                            },
+                            "remediation_plan": None,
+                        }
+                    )
+                ),
+            ]
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            result = await run_diagnosis(
+                query="Diagnose duplicate ssh command with reordered args.",
+                context=_happy_context(),
+                variables={"namespace": "nvidia-dcgm"},
+                llm=llm,
+                step_timeout_sec=5.0,
+                total_timeout_sec=10.0,
+                checkpoint_dir=tmpdir,
+                allowed_tool_names=["ssh.run_command"],
+                max_steps=8,
+            )
+
+            ssh_runs = [item for item in result["tool_runs"] if item.get("tool") == "ssh.run_command"]
+            self.assertEqual(len(ssh_runs), 1)
+
+    async def test_cross_round_dedup_uses_normalized_params_with_runtime_defaults(self) -> None:
+        llm = _FakeLLM(
+            [
+                AIMessage(
+                    content="Collect NIC counters with explicit namespace.",
+                    tool_calls=[
+                        {
+                            "name": "network.get_nic_counters",
+                            "args": {"node": "10.11.4.13", "namespace": "nvidia-dcgm"},
+                            "id": "call-1",
+                            "type": "tool_call",
+                        }
+                    ],
+                ),
+                AIMessage(
+                    content="Collect NIC counters again with different namespace argument.",
+                    tool_calls=[
+                        {
+                            "name": "network.get_nic_counters",
+                            "args": {"node": "10.11.4.13", "namespace": "other-ns"},
+                            "id": "call-2",
+                            "type": "tool_call",
+                        }
+                    ],
+                ),
+                AIMessage(
+                    content=json.dumps(
+                        {
+                            "thought": "runtime defaults 归一化后判定为重复调用。",
+                            "diagnosis": {
+                                "root_cause": "NIC 无新增异常证据。",
+                                "root_cause_layer": "network",
+                                "root_cause_entities": ["10.11.4.13"],
+                                "confidence": 0.62,
+                                "impact_summary": "归一化参数后重复查询被抑制。",
+                                "affected_services": ["demo"],
+                                "triage_priority": "P3",
+                                "diagnosis_certainty": "probable",
+                            },
+                            "remediation_plan": None,
+                        }
+                    )
+                ),
+            ]
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            result = await run_diagnosis(
+                query="Diagnose duplicate NIC counter calls after normalization.",
+                context=_happy_context(),
+                variables={"namespace": "nvidia-dcgm"},
+                llm=llm,
+                step_timeout_sec=5.0,
+                total_timeout_sec=10.0,
+                checkpoint_dir=tmpdir,
+                allowed_tool_names=["network.get_nic_counters"],
+                max_steps=8,
+            )
+
+            nic_runs = [item for item in result["tool_runs"] if item.get("tool") == "network.get_nic_counters"]
+            self.assertEqual(len(nic_runs), 1)
 
     async def test_loop_guard_triggers_on_repeated_prometheus_family_calls(self) -> None:
         llm = _FakeLLM(
