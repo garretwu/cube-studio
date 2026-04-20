@@ -6,6 +6,9 @@ import type { WSEvent } from "../api/types";
 type UseWebSocketOptions = {
   enabled?: boolean;
   maxBufferedMessages?: number;
+  getToken?: () => string | Promise<string>;
+  onAuthFailure?: (reason: string) => void | Promise<void>;
+  shouldReconnect?: () => boolean;
 };
 
 export function useWebSocket(url: string, onEvent: (event: WSEvent) => void, options: UseWebSocketOptions = {}) {
@@ -15,10 +18,13 @@ export function useWebSocket(url: string, onEvent: (event: WSEvent) => void, opt
     () =>
       new ManagedWebSocket(url, {
         maxBufferedMessages: options.maxBufferedMessages,
+        getToken: options.getToken,
+        onAuthFailure: options.onAuthFailure,
+        shouldReconnect: options.shouldReconnect,
         onEvent,
         onStateChange: setState,
       }),
-    [onEvent, options.maxBufferedMessages, url],
+    [onEvent, options.getToken, options.maxBufferedMessages, options.onAuthFailure, options.shouldReconnect, url],
   );
 
   useEffect(() => {

@@ -16,6 +16,7 @@ type AppShellProps = {
   subtitle?: string;
   contentSpacing?: "default" | "compact";
   contentMode?: "default" | "workspace";
+  contentWidthMode?: "default" | "full";
   brandSubtitle?: string;
   onBrandClick?: () => void;
 };
@@ -32,6 +33,7 @@ function AppShell({
   subtitle,
   contentSpacing = "default",
   contentMode = "default",
+  contentWidthMode = "default",
   brandSubtitle,
   onBrandClick,
 }: AppShellProps) {
@@ -71,6 +73,7 @@ function AppShell({
             "shell-content",
             contentSpacing === "compact" && "shell-content--compact-page-chrome",
             contentMode === "workspace" && "shell-content--workspace-page",
+            contentWidthMode === "full" && "shell-content--full-width",
           )}
         >
           {children}
@@ -81,4 +84,3 @@ function AppShell({
 }
 
 export default AppShell;
-

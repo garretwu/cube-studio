@@ -25,9 +25,9 @@ inference:
       #api_key: "sk-Qkh1q5wqcnb8u4EG4W4qkQ"
       model: "Qwen3-32B-FP8"
 
-  max_tokens: 1024
+  max_tokens: 256
   # concurrency: 256
-  concurrency: 16
+  concurrency: 1
   duration_seconds: 36000
   prompt_pool_size: 128
   stream: false

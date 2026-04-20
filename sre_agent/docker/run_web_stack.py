@@ -13,6 +13,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from sre_agent.scripts.start_frontend_backend import (  # noqa: E402
+    DEFAULT_BOOTSTRAP_TOKEN_EXPIRE_SECONDS,
     _resolve_config_path,
     build_runtime_env,
     ensure_frontend_dependencies,
@@ -53,6 +54,15 @@ def main() -> int:
     backend_port = int(str(os.environ.get("BACKEND_PORT", "8000")).strip() or "8000")
     frontend_port = int(str(os.environ.get("FRONTEND_PORT", "8080")).strip() or "8080")
     api_mode = str(os.environ.get("STARTUP_API_MODE", "proxy")).strip() or "proxy"
+    token_expire_seconds = int(
+        str(
+            os.environ.get(
+                "STARTUP_TOKEN_EXPIRE_SECONDS",
+                str(DEFAULT_BOOTSTRAP_TOKEN_EXPIRE_SECONDS),
+            )
+        ).strip()
+        or str(DEFAULT_BOOTSTRAP_TOKEN_EXPIRE_SECONDS)
+    )
 
     frontend_dir = REPO_ROOT / "sre_agent" / "frontend"
     ensure_frontend_dependencies(frontend_dir)
@@ -65,8 +75,14 @@ def main() -> int:
         api_mode=api_mode,
         role="operator",
         username="container-ui",
-        token_expire_seconds=8 * 3600,
+        token_expire_seconds=token_expire_seconds,
         llm_mode="openai_compatible_api",
+    )
+    print(
+        "[auth] token_expire_seconds="
+        f"{_info.get('token_expire_seconds', str(token_expire_seconds))} "
+        f"jwt_secret_source={_info.get('jwt_secret_source', 'unknown')}",
+        flush=True,
     )
 
     resolved_config_path = str(_resolve_config_path(config_path))

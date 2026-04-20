@@ -15,10 +15,20 @@ from pathlib import Path
 from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, ConfigDict, Field
 
 from sre_agent.alerts_filter import build_blocked_alert_name_set, is_blocked_alert
-from sre_agent.auth.jwt import CurrentUser, get_current_user
+from sre_agent.auth.jwt import (
+    CurrentUser,
+    TokenDecodeError,
+    decode_token,
+    decode_refresh_token,
+    encode_access_token,
+    encode_refresh_token,
+    extract_expiry_datetime,
+    get_current_user,
+)
 from sre_agent.auth.rbac import require_role
 from sre_agent.models.alert import Alert
 from sre_agent.models.common import ErrorCode, SREError, SREResponse
@@ -44,6 +54,7 @@ from sre_agent.agent.nodes import log_stream_lifecycle_event
 LOGGER = logging.getLogger(__name__)
 
 LOGGER = logging.getLogger(__name__)
+auth_security = HTTPBearer(auto_error=False)
 
 
 class ChatMessage(BaseModel):
@@ -71,6 +82,33 @@ class ChatHistoryMessage(BaseModel):
     tool_name: str | None = None
     metadata: dict[str, Any] | None = None
     display: dict[str, Any] | None = None
+
+
+class AuthTokenResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    access_token: str
+    refresh_token: str
+    token_type: Literal["Bearer"] = "Bearer"
+    expires_at: datetime
+    refresh_expires_at: datetime
+    server_boot_id: str
+    auth_error_kind: Literal["expired", "invalid_signature", "missing", "unknown"] = "unknown"
+
+
+class AuthRefreshRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    refresh_token: str = Field(min_length=1)
+
+
+class AuthStatusResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    server_boot_id: str
+    access_token_expires_at: datetime | None = None
+    skew_hint_seconds: int = 30
+    auth_error_kind: Literal["expired", "invalid_signature", "missing", "unknown"] = "unknown"
 
 
 class OntologyQueryRequest(BaseModel):
@@ -341,6 +379,67 @@ def build_api_router() -> APIRouter:
 
     def _services(request: Request) -> Any:
         return request.app.state.services
+
+    def _server_boot_id(request: Request) -> str:
+        return str(getattr(request.app.state, "server_boot_id", "") or "").strip()
+
+    def _access_token_ttl_seconds() -> int:
+        raw = str(os.getenv("SRE_DEMO_ACCESS_TOKEN_EXPIRE_SECONDS", "1800")).strip()
+        try:
+            return max(60, int(raw))
+        except ValueError:
+            return 1800
+
+    def _refresh_token_ttl_seconds() -> int:
+        raw = str(os.getenv("SRE_DEMO_REFRESH_TOKEN_EXPIRE_SECONDS", "86400")).strip()
+        try:
+            return max(300, int(raw))
+        except ValueError:
+            return 86400
+
+    def _demo_auto_bootstrap_enabled() -> bool:
+        raw = str(os.getenv("SRE_DEMO_AUTO_BOOTSTRAP_ENABLED", "false")).strip().lower()
+        return raw in {"1", "true", "yes", "on"}
+
+    def _demo_bootstrap_user() -> CurrentUser:
+        username = str(os.getenv("SRE_DEMO_BOOTSTRAP_USERNAME", "container-ui")).strip() or "container-ui"
+        role = str(os.getenv("SRE_DEMO_BOOTSTRAP_ROLE", "operator")).strip().lower() or "operator"
+        if role not in {"viewer", "operator", "admin"}:
+            role = "operator"
+        return CurrentUser(user_id="demo-bootstrap", username=username, role=role)
+
+    def _build_auth_token_response(request: Request, user: CurrentUser) -> AuthTokenResponse:
+        settings = getattr(request.app.state, "jwt_settings", None)
+        if settings is None:
+            raise HTTPException(status_code=500, detail="jwt settings not configured")
+        access_ttl = _access_token_ttl_seconds()
+        refresh_ttl = _refresh_token_ttl_seconds()
+        access_token = encode_access_token(user, settings, expire_seconds=access_ttl)
+        refresh_token = encode_refresh_token(user, settings, expire_seconds=refresh_ttl)
+        expires_at = extract_expiry_datetime(access_token, settings)
+        refresh_expires_at = extract_expiry_datetime(refresh_token, settings)
+        return AuthTokenResponse(
+            access_token=access_token,
+            refresh_token=refresh_token,
+            expires_at=expires_at,
+            refresh_expires_at=refresh_expires_at,
+            server_boot_id=_server_boot_id(request),
+            auth_error_kind="unknown",
+        )
+
+    def _optional_current_user(
+        request: Request,
+        credentials: HTTPAuthorizationCredentials | None,
+    ) -> tuple[CurrentUser | None, Literal["expired", "invalid_signature", "missing", "unknown"]]:
+        if credentials is None:
+            return None, "missing"
+        settings = getattr(request.app.state, "jwt_settings", None)
+        if settings is None:
+            return None, "unknown"
+        try:
+            return decode_token(credentials.credentials, settings), "unknown"
+        except TokenDecodeError as exc:
+            return None, exc.kind
 
     def _normalize_ontology_entities(entities: list[Any]) -> list[dict[str, Any]]:
         normalized: list[dict[str, Any]] = []
@@ -2137,6 +2236,61 @@ def build_api_router() -> APIRouter:
                 data={"plan_id": plan.plan_id, "plan_version": plan_version},
             )
         return SREResponse(success=True, data=session, trace_id=_trace_id(request))
+
+    @router.post("/auth/token")
+    async def issue_auth_token(
+        request: Request,
+        user: CurrentUser = Depends(require_role("viewer", "operator", "admin")),
+    ) -> SREResponse[AuthTokenResponse]:
+        _ = user
+        payload = _build_auth_token_response(request, user)
+        return SREResponse(success=True, data=payload, trace_id=_trace_id(request))
+
+    @router.post("/auth/bootstrap")
+    async def bootstrap_auth_token(
+        request: Request,
+    ) -> SREResponse[AuthTokenResponse]:
+        if not _demo_auto_bootstrap_enabled():
+            raise HTTPException(status_code=404, detail="demo auth bootstrap is disabled")
+        payload = _build_auth_token_response(request, _demo_bootstrap_user())
+        return SREResponse(success=True, data=payload, trace_id=_trace_id(request))
+
+    @router.post("/auth/refresh")
+    async def refresh_auth_token(
+        payload: AuthRefreshRequest,
+        request: Request,
+    ) -> SREResponse[AuthTokenResponse]:
+        settings = getattr(request.app.state, "jwt_settings", None)
+        if settings is None:
+            raise HTTPException(status_code=500, detail="jwt settings not configured")
+        try:
+            refreshed_user = decode_refresh_token(payload.refresh_token, settings)
+        except TokenDecodeError as exc:
+            raise HTTPException(status_code=401, detail=str(exc)) from exc
+        data = _build_auth_token_response(request, refreshed_user)
+        return SREResponse(success=True, data=data, trace_id=_trace_id(request))
+
+    @router.get("/auth/status")
+    async def auth_status(
+        request: Request,
+        credentials: HTTPAuthorizationCredentials | None = Depends(auth_security),
+    ) -> SREResponse[AuthStatusResponse]:
+        user, auth_error_kind = _optional_current_user(request, credentials)
+        expires_at: datetime | None = None
+        if user is not None and credentials is not None:
+            settings = getattr(request.app.state, "jwt_settings", None)
+            if settings is not None:
+                try:
+                    expires_at = extract_expiry_datetime(credentials.credentials, settings)
+                except TokenDecodeError as exc:
+                    auth_error_kind = exc.kind
+        response = AuthStatusResponse(
+            server_boot_id=_server_boot_id(request),
+            access_token_expires_at=expires_at,
+            skew_hint_seconds=30,
+            auth_error_kind=auth_error_kind,
+        )
+        return SREResponse(success=True, data=response, trace_id=_trace_id(request))
 
     @router.post("/diagnose/start")
     async def diagnose_start(

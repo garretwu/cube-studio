@@ -8691,7 +8691,7 @@
 
 .diagnosis-workspace-message-row__body {
   min-width: 0;
-  max-width: min(78%, 880px);
+  max-width: min(86%, 1240px);
   position: relative;
   display: grid;
   gap: 6px;
@@ -8703,7 +8703,7 @@
 
 .diagnosis-workspace-process-row__body {
   min-width: 0;
-  max-width: min(88%, 980px);
+  max-width: min(94%, 1440px);
 }
 
 .diagnosis-workspace-message-row__hover-time {

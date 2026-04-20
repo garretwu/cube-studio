@@ -6,9 +6,18 @@ import {
   useLocation,
   useNavigate,
 } from "react-router-dom";
+import { Button, Modal, Space } from "antd";
 
 import { apiClient } from "./api/client";
 import type { DiagnosisSessionSummary } from "./api/types";
+import {
+  getAuthRecoveryState,
+  hardReload,
+  recoverAuthSession,
+  startAuthSessionMonitor,
+  subscribeAuthRecoveryState,
+  type AuthRecoveryState,
+} from "./auth/tokenManager";
 import { AppShell } from "./components/ui";
 import { useAlertsRealtimeSync } from "./hooks/useAlertsRealtimeSync";
 import HistoryPage from "./pages/History";
@@ -26,6 +35,7 @@ const rootPageChrome: Record<
     subtitle: string;
     contentSpacing: "compact";
     contentMode?: "default" | "workspace";
+    contentWidthMode?: "default" | "full";
   }
 > = {
   "/topology": {
@@ -44,6 +54,7 @@ const rootPageChrome: Record<
     subtitle: "查看诊断流程与修复执行时间线。",
     contentSpacing: "compact",
     contentMode: "workspace",
+    contentWidthMode: "full",
   },
   "/remediation": {
     title: "修复",
@@ -91,6 +102,7 @@ function resolvePageChrome(pathname: string): {
   subtitle?: string;
   contentSpacing?: "default" | "compact";
   contentMode?: "default" | "workspace";
+  contentWidthMode?: "default" | "full";
 } {
   const rootChrome = rootPageChrome[pathname];
   if (rootChrome) {
@@ -102,6 +114,7 @@ function resolvePageChrome(pathname: string): {
       title: "诊断",
       contentSpacing: "compact",
       contentMode: "workspace",
+      contentWidthMode: "full",
     };
   }
 
@@ -124,6 +137,7 @@ function resolvePageChrome(pathname: string): {
       title: "诊断",
       contentSpacing: "compact",
       contentMode: "workspace",
+      contentWidthMode: "full",
     };
   }
 
@@ -190,6 +204,11 @@ function App() {
   >([]);
   const [historyLoading, setHistoryLoading] = useState(true);
   const [historyLoadError, setHistoryLoadError] = useState<string>("");
+  const [authRecoveryState, setAuthRecoveryState] = useState<AuthRecoveryState>(() => getAuthRecoveryState());
+  const [authRecoveryBusy, setAuthRecoveryBusy] = useState(false);
+
+  useEffect(() => startAuthSessionMonitor(), []);
+  useEffect(() => subscribeAuthRecoveryState(setAuthRecoveryState), []);
 
   useEffect(() => {
     let cancelled = false;
@@ -264,22 +283,51 @@ function App() {
     },
   ];
 
+  const retryAuthRecovery = async () => {
+    setAuthRecoveryBusy(true);
+    try {
+      await recoverAuthSession();
+    } finally {
+      setAuthRecoveryBusy(false);
+    }
+  };
+
   return (
-    <AppShell
-      adminLabel="SRE 控制台"
-      brandSubtitle="AIDC 智能运维工作台"
-      contentMode={pageChrome.contentMode}
-      contentSpacing={pageChrome.contentSpacing}
-      helpLabel="帮助文档"
-      sections={sections}
-      subtitle={pageChrome.subtitle}
-      title={pageChrome.title}
-      userMeta="平台团队 / Auto-SRE"
-      userName="Miaomiao Zhou"
-      onBrandClick={() => navigate("/design-tokens")}
-    >
-      <AppRoutes />
-    </AppShell>
+    <>
+      <AppShell
+        adminLabel="SRE 控制台"
+        brandSubtitle="AIDC 智能运维工作台"
+        contentMode={pageChrome.contentMode}
+        contentWidthMode={pageChrome.contentWidthMode}
+        contentSpacing={pageChrome.contentSpacing}
+        helpLabel="帮助文档"
+        sections={sections}
+        subtitle={pageChrome.subtitle}
+        title={pageChrome.title}
+        userMeta="平台团队 / Auto-SRE"
+        userName="Miaomiao Zhou"
+        onBrandClick={() => navigate("/design-tokens")}
+      >
+        <AppRoutes />
+      </AppShell>
+      <Modal
+        title="认证会话已失效"
+        open={authRecoveryState === "terminal"}
+        closable={false}
+        mask={{ closable: false }}
+        footer={
+          <Space>
+            <Button onClick={() => hardReload()}>强制刷新页面</Button>
+            <Button loading={authRecoveryBusy} onClick={() => void retryAuthRecovery()} type="primary">
+              重新认证
+            </Button>
+          </Space>
+        }
+      >
+        <p>检测到服务重启或签名密钥变化，当前会话无法自动恢复。</p>
+        <p>请先尝试“重新认证”；若仍失败，请点击“强制刷新页面”。</p>
+      </Modal>
+    </>
   );
 }
 

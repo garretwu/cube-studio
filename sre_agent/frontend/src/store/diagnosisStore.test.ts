@@ -24,6 +24,8 @@ describe("useDiagnosisStore", () => {
       isSendingMessage: false,
       isRevisingPlan: false,
       isApprovingPlan: false,
+      sessionResolveState: "resolved",
+      sessionResolveSource: "none",
       approvalOverlayOpen: false,
       currentPlanVersion: null,
       latestPlanVersion: null,
@@ -80,6 +82,45 @@ describe("useDiagnosisStore", () => {
     expect(state.bootstrapStatus).toBe("empty");
     expect(state.activeSessionId).toBeUndefined();
     expect(state.messages).toEqual([]);
+  });
+
+  it("redirects stale session id to latest available session", async () => {
+    server.use(
+      http.get("/api/sessions/sess-stale", async () => HttpResponse.json({ message: "session not found" }, { status: 404 })),
+      http.get("/api/sessions", async () =>
+        HttpResponse.json([
+          {
+            session_id: "sess-latest",
+            status: "diagnosing",
+            alert_name: "Latest session",
+            severity: "warning",
+            fingerprint: "sess-latest",
+            outcome: null,
+            duration_seconds: 2,
+            updated_at: "2026-04-20T00:00:02Z",
+          },
+        ]),
+      ),
+      http.get("/api/sessions/sess-latest", async () =>
+        HttpResponse.json({
+          ...diagnosisSession,
+          session_id: "sess-latest",
+          status: "diagnosing",
+          trace: { steps: [] },
+        }),
+      ),
+      http.get("/api/sessions/:sessionId/events", async () => HttpResponse.json([])),
+      http.get("/api/chat/history", async () => HttpResponse.json([])),
+    );
+
+    await useDiagnosisStore.getState().bootstrapSession("sess-stale");
+
+    const state = useDiagnosisStore.getState();
+    expect(state.bootstrapStatus).toBe("ready");
+    expect(state.activeSessionId).toBe("sess-latest");
+    expect(state.sessionResolveState).toBe("stale_redirected");
+    expect(state.sessionResolveSource).toBe("latest");
+    expect(state.error ?? "").toContain("会话已失效");
   });
 
   it("surfaces approve API failures as remediation approval errors without clearing the session", async () => {

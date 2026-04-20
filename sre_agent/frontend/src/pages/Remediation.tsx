@@ -1,10 +1,13 @@
 ﻿import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { apiClient } from "../api/client";
-import type { DiagnosisSessionSummary, RemediationOverview, SessionEvent } from "../api/types";
+import type { DiagnosisSessionSummary, RemediationOverview, SessionEvent, WSEvent } from "../api/types";
+import { buildBackendWsUrl } from "../api/ws";
+import { getAccessTokenSync, getAuthRecoveryState, hasAccessToken, recoverAuthSession } from "../auth/tokenManager";
 import ApprovalDialog from "../components/ApprovalDialog";
 import RemediationDetailDrawer from "../components/RemediationDetailDrawer";
 import { AppIcon, AppInput, MetricTile, StatusChip, SurfaceCard } from "../components/ui";
+import { useWebSocket } from "../hooks/useWebSocket";
 import { useRemediationStore } from "../store/remediationStore";
 import { formatPercent, formatTimestamp } from "../utils/format";
 
@@ -43,6 +46,8 @@ const STATUS_LABELS: Record<string, string> = {
 
 const TERMINAL_STATUSES = new Set(["resolved", "failed", "escalated", "timeout", "rejected"]);
 const ATTENTION_STATUSES = new Set(["failed", "escalated", "timeout", "rejected", "execution_failed", "rollback_failed"]);
+const LIVE_REFRESH_STATUSES = new Set(["approval_required", "awaiting_approval", "remediating", "validating"]);
+const REALTIME_FALLBACK_POLL_MS = 10000;
 const RELEVANT_OUTCOMES = new Set(["proposed_fix_ready", "resolved", "partially_resolved", "failed", "escalated", "rejected", "timeout"]);
 const RELEVANT_STATUSES = new Set([
   "approval_required",
@@ -159,8 +164,21 @@ function buildSearchText(record: RemediationRecord): string {
 }
 
 function RemediationPage() {
-  const { overview, events, approvalDialogOpen, fetchOverview, isLoading, setApprovalDialogOpen, setSessionId, submitApproval } =
-    useRemediationStore();
+  const {
+    overview,
+    events,
+    lastEventId,
+    realtimeState,
+    approvalDialogOpen,
+    fetchOverview,
+    reconcileEvents,
+    applyRealtimeEvent,
+    isLoading,
+    setApprovalDialogOpen,
+    setSessionId,
+    setRealtimeState,
+    submitApproval,
+  } = useRemediationStore();
   const [records, setRecords] = useState<RemediationRecord[]>([]);
   const [recordsLoading, setRecordsLoading] = useState(false);
   const [recordsError, setRecordsError] = useState<string | null>(null);
@@ -232,6 +250,93 @@ function RemediationPage() {
     () => records.find((record) => record.summary.session_id === selectedSessionId) ?? null,
     [records, selectedSessionId],
   );
+  const activeOverview =
+    selectedRecord && overview?.session_id === selectedRecord.summary.session_id
+      ? overview
+      : selectedRecord?.overview;
+  const activeStatus = String(
+    activeOverview?.progress.status ?? selectedRecord?.summary.status ?? "",
+  )
+    .trim()
+    .toLowerCase();
+  const websocketEnabled =
+    import.meta.env.VITE_WS_ENABLED === "true" &&
+    hasAccessToken() &&
+    getAuthRecoveryState() !== "terminal" &&
+    selectedSessionId.length > 0;
+  const shouldUseFallbackPolling =
+    selectedSessionId.length > 0 &&
+    LIVE_REFRESH_STATUSES.has(activeStatus) &&
+    realtimeState !== "open";
+  const realtimeChip = useMemo(() => {
+    if (!selectedSessionId) {
+      return { tone: "neutral" as const, label: "未选择会话" };
+    }
+    if (realtimeState === "open") {
+      return { tone: "success" as const, label: "实时已连接" };
+    }
+    if (shouldUseFallbackPolling) {
+      return { tone: "warning" as const, label: "实时降级：10s轮询" };
+    }
+    if (!websocketEnabled) {
+      return { tone: "neutral" as const, label: "实时未启用" };
+    }
+    if (realtimeState === "connecting") {
+      return { tone: "info" as const, label: "实时连接中" };
+    }
+    return { tone: "warning" as const, label: "实时通道中断" };
+  }, [realtimeState, selectedSessionId, shouldUseFallbackPolling, websocketEnabled]);
+  const websocketUrl = useMemo(
+    () => buildBackendWsUrl(`/ws/thinking-trace/${selectedSessionId || "pending"}`),
+    [selectedSessionId],
+  );
+  const handleRealtimeEvent = useCallback(
+    (event: WSEvent) => {
+      applyRealtimeEvent(event);
+    },
+    [applyRealtimeEvent],
+  );
+  const ws = useWebSocket(websocketUrl, handleRealtimeEvent, {
+    enabled: websocketEnabled,
+    maxBufferedMessages: 400,
+    getToken: () => getAccessTokenSync(),
+    onAuthFailure: async () => {
+      await recoverAuthSession();
+    },
+    shouldReconnect: () => getAuthRecoveryState() !== "terminal",
+  });
+  const previousWsStateRef = useRef<"connecting" | "open" | "closed" | "error">("closed");
+  useEffect(() => {
+    setRealtimeState(websocketEnabled ? ws.state : "closed");
+  }, [setRealtimeState, websocketEnabled, ws.state]);
+  useEffect(() => {
+    const previousState = previousWsStateRef.current;
+    if (
+      websocketEnabled &&
+      ws.state === "open" &&
+      previousState !== "open" &&
+      selectedSessionId
+    ) {
+      void reconcileEvents(selectedSessionId);
+    }
+    previousWsStateRef.current = ws.state;
+  }, [reconcileEvents, selectedSessionId, websocketEnabled, ws.state]);
+  useEffect(() => {
+    if (
+      !shouldUseFallbackPolling ||
+      !selectedSessionId ||
+      typeof window === "undefined"
+    ) {
+      return undefined;
+    }
+    const timer = window.setInterval(() => {
+      void reconcileEvents(selectedSessionId);
+    }, REALTIME_FALLBACK_POLL_MS);
+    void reconcileEvents(selectedSessionId);
+    return () => {
+      window.clearInterval(timer);
+    };
+  }, [reconcileEvents, selectedSessionId, shouldUseFallbackPolling]);
 
   const pendingApprovalCount = records.filter((record) => {
     const status = String(record.overview?.progress.status ?? record.summary.status ?? "").trim().toLowerCase();
@@ -299,6 +404,12 @@ function RemediationPage() {
                       {label}
                     </button>
                   ))}
+                </div>
+                <div className="status-row">
+                  <StatusChip tone={realtimeChip.tone}>{realtimeChip.label}</StatusChip>
+                  {lastEventId ? (
+                    <span className="remediation-record-table__status-meta">{`last_event_id=${lastEventId}`}</span>
+                  ) : null}
                 </div>
               </div>
 
@@ -419,7 +530,3 @@ function RemediationPage() {
 }
 
 export default RemediationPage;
-
-
-
-

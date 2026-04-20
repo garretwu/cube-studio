@@ -140,6 +140,25 @@ export type SREApiEnvelope<T> = {
   timestamp: string;
 };
 
+export type AuthErrorKind = "expired" | "invalid_signature" | "missing" | "unknown";
+
+export type AuthTokenResponse = {
+  access_token: string;
+  refresh_token: string;
+  token_type: "Bearer";
+  expires_at: string;
+  refresh_expires_at: string;
+  server_boot_id: string;
+  auth_error_kind: AuthErrorKind;
+};
+
+export type AuthStatusResponse = {
+  server_boot_id: string;
+  access_token_expires_at?: string | null;
+  skew_hint_seconds: number;
+  auth_error_kind: AuthErrorKind;
+};
+
 export type ThinkingStep = {
   step: number;
   timestamp: string;

@@ -7,6 +7,7 @@ import { useRemediationStore } from "./remediationStore";
 vi.mock("../api/client", () => ({
   apiClient: {
     getRemediationOverview: vi.fn(),
+    getSessionEvents: vi.fn(),
     getSessionLoop: vi.fn(),
     approveRemediation: vi.fn(),
   },
@@ -46,7 +47,7 @@ const remediationOverviewFixture: RemediationOverview = {
       type: "remediation_progress",
       session_id: "sess-1",
       timestamp: "2026-04-03T10:00:00Z",
-      data: { stage: "execution_succeeded", steps_completed: 1 },
+      data: { event_id: "1", stage: "execution_succeeded", steps_completed: 1 },
     },
   ],
 };
@@ -59,6 +60,8 @@ describe("remediationStore", () => {
       overview: undefined,
       events: [],
       sessionId: "",
+      lastEventId: undefined,
+      realtimeState: "closed",
       isLoading: false,
       approvalDialogOpen: false,
     });
@@ -74,6 +77,58 @@ describe("remediationStore", () => {
     expect(state.overview?.session_id).toBe("sess-1");
     expect(state.events).toHaveLength(1);
     expect(state.sessionId).toBe("sess-1");
+    expect(state.lastEventId).toBe("1");
+  });
+
+  it("applies realtime events into timeline and deduplicates by event_id", () => {
+    useRemediationStore.setState({
+      sessionId: "sess-1",
+      overview: remediationOverviewFixture,
+      events: remediationOverviewFixture.timeline ?? [],
+      lastEventId: "1",
+    });
+
+    const realtimeEvent = {
+      schema_version: "1.0",
+      type: "remediation_progress" as const,
+      session_id: "sess-1",
+      timestamp: "2026-04-03T10:00:01Z",
+      data: { event_id: "2", stage: "observation_started", message: "live update" },
+    };
+
+    useRemediationStore.getState().applyRealtimeEvent(realtimeEvent);
+    useRemediationStore.getState().applyRealtimeEvent(realtimeEvent);
+
+    const state = useRemediationStore.getState();
+    expect(state.events).toHaveLength(2);
+    expect(state.overview?.timeline).toHaveLength(2);
+    expect(state.lastEventId).toBe("2");
+  });
+
+  it("reconciles events incrementally by last_event_id", async () => {
+    useRemediationStore.setState({
+      sessionId: "sess-1",
+      overview: remediationOverviewFixture,
+      events: remediationOverviewFixture.timeline ?? [],
+      lastEventId: "1",
+    });
+    vi.mocked(apiClient.getSessionEvents).mockResolvedValue([
+      {
+        schema_version: "1.0",
+        type: "remediation_progress",
+        session_id: "sess-1",
+        timestamp: "2026-04-03T10:00:02Z",
+        data: { event_id: "2", stage: "observation_result", message: "reconcile update" },
+      },
+    ]);
+
+    await useRemediationStore.getState().reconcileEvents();
+
+    const state = useRemediationStore.getState();
+    expect(apiClient.getSessionEvents).toHaveBeenCalledWith("sess-1", 200, "1");
+    expect(state.events).toHaveLength(2);
+    expect(state.overview?.timeline).toHaveLength(2);
+    expect(state.lastEventId).toBe("2");
   });
 
   it("keeps refreshing overview when getSessionLoop fails after approval", async () => {

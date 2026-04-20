@@ -2850,7 +2850,9 @@ def create_app(
     app = FastAPI(title="AIDC Auto SRE Agent", lifespan=lifespan)
     app.state.config = cfg
     app.state.jwt_settings = jwt_settings
+    app.state.server_boot_id = uuid4().hex
     app.state.services = services
+    LOGGER.info("server boot id: %s", app.state.server_boot_id)
     _log_dependency_summary(
         cfg=cfg,
         services=services,

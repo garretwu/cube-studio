@@ -1,6 +1,11 @@
 ﻿import { create } from "zustand";
 
-import { apiClient, streamDiagnosis } from "../api/client";
+import {
+  apiClient,
+  streamDiagnosis,
+  type SessionResolveSource,
+  type SessionResolveState,
+} from "../api/client";
 import type {
   Alert,
   ChatMessage,
@@ -49,6 +54,8 @@ type DiagnosisState = {
   traceStatus: TraceStatus;
   isSendingMessage: boolean;
   connectionState: ConnectionState;
+  sessionResolveState: SessionResolveState;
+  sessionResolveSource: SessionResolveSource;
   error?: string;
   isRevisingPlan: boolean;
   isApprovingPlan: boolean;
@@ -75,6 +82,7 @@ type DiagnosisState = {
   activeStreamingTools: StreamingToolCall[];
   streamingAbortController: AbortController | null;
   bootstrapSession: (sessionId?: string) => Promise<void>;
+  reconcileSession: (sessionId?: string) => Promise<void>;
   sendMessage: (content: string) => Promise<ChatMessage | undefined>;
   revisePlan: (instruction: string) => Promise<void>;
   approvePlan: (input: ApprovalDecisionInput | boolean, reason?: string) => Promise<void>;
@@ -1051,6 +1059,8 @@ export const useDiagnosisStore = create<DiagnosisState>((set, get) => ({
   isSendingMessage: false,
   isRevisingPlan: false,
   isApprovingPlan: false,
+  sessionResolveState: "resolved",
+  sessionResolveSource: "none",
   approvalOverlayOpen: false,
   currentPlanVersion: null,
   latestPlanVersion: null,
@@ -1125,33 +1135,14 @@ export const useDiagnosisStore = create<DiagnosisState>((set, get) => ({
       roundSequenceCounter: 0,
       activeStreamingTools: [],
       streamingAbortController: null,
+      sessionResolveState: "resolved",
+      sessionResolveSource: explicitSessionId ? "url" : "none",
     });
 
     try {
-      let session: DiagnosisSession | null = null;
-      let resolvedSessionId = explicitSessionId;
-
-      if (!resolvedSessionId) {
-        session = await apiClient.getDiagnosisSession();
-        resolvedSessionId = session?.session_id;
-      } else {
-        for (let attempt = 0; attempt < 10; attempt += 1) {
-          try {
-            const currentSession = await apiClient.getDiagnosisSession(resolvedSessionId);
-            if (currentSession && currentSession.session_id === resolvedSessionId) {
-              session = currentSession;
-              break;
-            }
-          } catch (error) {
-            if (attempt === 9) {
-              throw error;
-            }
-          }
-          await new Promise((resolve) => {
-            globalThis.setTimeout(resolve, 1200);
-          });
-        }
-      }
+      const resolution = await apiClient.resolveActiveSession(explicitSessionId);
+      const session = resolution.session;
+      const resolvedSessionId = session?.session_id;
 
       if (!session || !resolvedSessionId) {
         set({
@@ -1190,12 +1181,17 @@ export const useDiagnosisStore = create<DiagnosisState>((set, get) => ({
           roundSequenceCounter: 0,
           activeStreamingTools: [],
           streamingAbortController: null,
+          sessionResolveState: resolution.state,
+          sessionResolveSource: resolution.source,
           error: undefined,
         });
         return;
       }
 
       const warningParts: string[] = [];
+      if (resolution.state === "stale_redirected") {
+        warningParts.push("会话已失效，已自动切换到最新可用会话。");
+      }
       const [messagesResult, eventsResult] = await Promise.allSettled([
         apiClient.getChatHistory(resolvedSessionId),
         apiClient.getSessionEvents(resolvedSessionId),
@@ -1251,6 +1247,8 @@ export const useDiagnosisStore = create<DiagnosisState>((set, get) => ({
         streamingPhase: "idle",
         streamSequenceCounter: 0,
         roundSequenceCounter: 0,
+        sessionResolveState: resolution.state,
+        sessionResolveSource: resolution.source,
         error: formatBootstrapPartialWarning(warningParts),
       });
     } catch (error) {
@@ -1288,8 +1286,17 @@ export const useDiagnosisStore = create<DiagnosisState>((set, get) => ({
         roundSequenceCounter: 0,
         activeStreamingTools: [],
         streamingAbortController: null,
+        sessionResolveState: "resolved",
+        sessionResolveSource: explicitSessionId ? "url" : "none",
       });
     }
+  },
+  reconcileSession: async (sessionId) => {
+    const resolvedSessionId = sessionId?.trim() || get().activeSessionId || get().session?.session_id;
+    if (!resolvedSessionId) {
+      return;
+    }
+    await runSessionBackfill(resolvedSessionId);
   },
   sendMessage: async (content: string) => {
     const message = content.trim();

@@ -228,11 +228,20 @@ export default function RemediationDetailDrawer({
 
   const drawerOverview = record && (record.summary.session_id === overview?.session_id ? overview : record.overview);
   const drawerEvents = useMemo(() => {
-    const allEvents = sortEvents(drawerOverview?.timeline ?? events);
+    const recordSessionId = record?.summary.session_id;
+    const realtimeEvents =
+      recordSessionId && overview?.session_id === recordSessionId
+        ? events.filter((event) => event.session_id === recordSessionId)
+        : [];
+    const sourceEvents =
+      realtimeEvents.length > 0
+        ? realtimeEvents
+        : drawerOverview?.timeline ?? events;
+    const allEvents = sortEvents(sourceEvents);
     const approvalIndex = allEvents.findIndex((event) => event.type === "approval_required");
     if (approvalIndex === -1) return allEvents;
     return allEvents.slice(approvalIndex);
-  }, [drawerOverview?.timeline, events]);
+  }, [drawerOverview?.timeline, events, overview?.session_id, record?.summary.session_id]);
   const drawerStatus = String(drawerOverview?.progress.status ?? record?.summary.status ?? "pending").trim();
   const drawerStartedAt = getExecutionStartedAt(drawerEvents);
   const drawerApprover = getApprover(drawerEvents);
@@ -732,7 +741,6 @@ export default function RemediationDetailDrawer({
     </div>
   );
 }
-
 
 
 

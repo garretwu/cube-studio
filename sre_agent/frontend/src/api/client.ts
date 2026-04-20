@@ -1,4 +1,14 @@
 import axios from "axios";
+import type { InternalAxiosRequestConfig } from "axios";
+
+import {
+  getAccessTokenSync,
+  getAuthRecoveryState,
+  recoverAuthSession,
+  setAuthErrorKind,
+  type AuthErrorKind,
+  updateServerBootId,
+} from "../auth/tokenManager";
 
 import type {
   Alert,
@@ -62,8 +72,46 @@ const BLOCKED_ALERT_NAMES = new Set([
 
 let hasWarnedAboutDevFallback = false;
 
+type RetriableAxiosRequestConfig = InternalAxiosRequestConfig & {
+  _authRetryAttempted?: boolean;
+};
+
+export type SessionResolveState = "resolved" | "stale_redirected" | "empty";
+export type SessionResolveSource = "url" | "remembered" | "latest" | "none";
+export type ActiveSessionResolution = {
+  session: DiagnosisSession | null;
+  state: SessionResolveState;
+  source: SessionResolveSource;
+  staleSessionId?: string;
+};
+
+export class ApiRequestError extends Error {
+  auth_error_kind: AuthErrorKind;
+
+  constructor(message: string, authErrorKind: AuthErrorKind = "unknown") {
+    super(message);
+    this.name = "ApiRequestError";
+    this.auth_error_kind = authErrorKind;
+  }
+}
+
+function classifyAuthErrorKindFromMessage(value: string): AuthErrorKind {
+  const normalized = value.toLowerCase();
+  if (normalized.includes("expired")) {
+    return "expired";
+  }
+  if (normalized.includes("signature")) {
+    return "invalid_signature";
+  }
+  if (normalized.includes("missing")) {
+    return "missing";
+  }
+  return "unknown";
+}
+
 function normalizeRequestErrorMessage(error: unknown): string {
   let message = error instanceof Error ? error.message : "Unknown request error";
+  let authErrorKind: AuthErrorKind = "unknown";
   if (axios.isAxiosError(error)) {
     const code = error.code ?? "";
     const axiosMessage = String(error.message ?? "");
@@ -77,7 +125,21 @@ function normalizeRequestErrorMessage(error: unknown): string {
       return "Network/CORS error: backend unreachable or blocked by browser policy. Check backend status, VITE_API_BASE_URL, and CORS.";
     }
     if (error.response?.status === 401) {
-      return "Unauthorized: invalid or expired bearer token.";
+      const detail = String(
+        (error.response.data as { detail?: unknown } | undefined)?.detail ?? "",
+      ).trim();
+      authErrorKind = classifyAuthErrorKindFromMessage(detail || axiosMessage);
+      setAuthErrorKind(authErrorKind);
+      if (authErrorKind === "expired") {
+        return "Unauthorized: bearer token expired. Attempting refresh.";
+      }
+      if (authErrorKind === "invalid_signature") {
+        return "Unauthorized: bearer token signature invalid (backend may have restarted). Please refresh auth session.";
+      }
+      if (authErrorKind === "missing") {
+        return "Unauthorized: bearer token is missing.";
+      }
+      return "Unauthorized: invalid bearer token.";
     }
     if (error.response?.status) {
       return `Request failed with status ${error.response.status}.`;
@@ -90,7 +152,7 @@ api.interceptors.request.use((config) => {
   const traceId = `sre-ui-${Date.now()}`;
   config.headers = config.headers ?? {};
   config.headers["x-trace-id"] = traceId;
-  const token = import.meta.env.VITE_API_TOKEN;
+  const token = getAccessTokenSync();
   if (token) {
     config.headers.Authorization = `Bearer ${token}`;
   }
@@ -98,8 +160,54 @@ api.interceptors.request.use((config) => {
 });
 
 api.interceptors.response.use(
-  (response) => response,
-  (error) => Promise.reject(new Error(normalizeRequestErrorMessage(error))),
+  (response) => {
+    const bootId = String(response.headers["x-server-boot-id"] ?? "").trim();
+    if (bootId) {
+      const changed = updateServerBootId(bootId);
+      if (changed) {
+        clearRememberedSessionId();
+        if (typeof window !== "undefined") {
+          window.dispatchEvent(new CustomEvent("sre:boot-id-changed", { detail: { bootId } }));
+        }
+      }
+    }
+    return response;
+  },
+  async (error) => {
+    if (getAuthRecoveryState() === "terminal") {
+      return Promise.reject(
+        new ApiRequestError(
+          "Authentication session is unrecoverable. Please re-authenticate or hard refresh the page.",
+          "invalid_signature",
+        ),
+      );
+    }
+    if (axios.isAxiosError(error) && error.response?.status === 401) {
+      const originalConfig = error.config as RetriableAxiosRequestConfig | undefined;
+      const requestUrl = String(originalConfig?.url ?? "");
+      const isAuthEndpoint =
+        requestUrl.includes("/api/auth/refresh") ||
+        requestUrl.includes("/api/auth/token") ||
+        requestUrl.includes("/api/auth/bootstrap");
+      if (originalConfig && !originalConfig._authRetryAttempted && !isAuthEndpoint) {
+        originalConfig._authRetryAttempted = true;
+        try {
+          const recovered = await recoverAuthSession();
+          if (recovered) {
+            const refreshed = getAccessTokenSync();
+            originalConfig.headers = originalConfig.headers ?? {};
+            originalConfig.headers.Authorization = `Bearer ${refreshed}`;
+            return await api.request(originalConfig);
+          }
+        } catch {
+          // fall through to normalized error
+        }
+      }
+    }
+    const message = normalizeRequestErrorMessage(error);
+    const authKind = classifyAuthErrorKindFromMessage(message);
+    return Promise.reject(new ApiRequestError(message, authKind));
+  },
 );
 
 function isHtmlShellPayload(payload: unknown) {
@@ -210,22 +318,68 @@ function isHttpStatusError(error: unknown, status: number): boolean {
 }
 
 async function getDiagnosisSessionById(sessionId: string): Promise<DiagnosisSession> {
-  try {
-    const response = await api.get<SREApiEnvelope<DiagnosisSession> | DiagnosisSession>(`/api/sessions/${sessionId}`, {
-      timeout: DIAGNOSIS_SESSION_REQUEST_TIMEOUT_MS,
-    });
-    return unwrapPayload(response.data);
-  } catch (error) {
-    if (!isHttpStatusError(error, 404)) {
+  const response = await api.get<SREApiEnvelope<DiagnosisSession> | DiagnosisSession>(`/api/sessions/${sessionId}`, {
+    timeout: DIAGNOSIS_SESSION_REQUEST_TIMEOUT_MS,
+  });
+  return unwrapPayload(response.data);
+}
+
+async function resolveLatestSessionFromSummaries(limit = 50): Promise<DiagnosisSession | null> {
+  const sessions = await apiClient.getSessions(limit);
+  for (const candidate of sessions) {
+    try {
+      const session = await getDiagnosisSessionById(candidate.session_id);
+      rememberSessionId(session.session_id);
+      return session;
+    } catch (error) {
+      if (isHttpStatusError(error, 404)) {
+        continue;
+      }
       throw error;
     }
-    // Compatibility fallback for backends that only expose the legacy session endpoint.
-    const legacyResponse = await api.get<SREApiEnvelope<DiagnosisSession> | DiagnosisSession>("/api/diagnosis/session/current", {
-      params: { session_id: sessionId },
-      timeout: DIAGNOSIS_SESSION_REQUEST_TIMEOUT_MS,
-    });
-    return unwrapPayload(legacyResponse.data);
   }
+  return null;
+}
+
+async function resolveActiveSession(sessionId?: string): Promise<ActiveSessionResolution> {
+  const explicit = (sessionId ?? "").trim();
+  const remembered = getRememberedSessionId().trim();
+  const resolved = explicit || remembered;
+  const resolveSource: SessionResolveSource = explicit ? "url" : remembered ? "remembered" : "none";
+
+  if (resolved) {
+    try {
+      const session = await getDiagnosisSessionById(resolved);
+      rememberSessionId(session.session_id);
+      return { session, state: "resolved", source: resolveSource };
+    } catch (error) {
+      if (!isHttpStatusError(error, 404)) {
+        throw error;
+      }
+      clearRememberedSessionId();
+      const fallback = await resolveLatestSessionFromSummaries(50);
+      if (fallback) {
+        return {
+          session: fallback,
+          state: "stale_redirected",
+          source: "latest",
+          staleSessionId: resolved,
+        };
+      }
+      return {
+        session: null,
+        state: "empty",
+        source: "none",
+        staleSessionId: resolved,
+      };
+    }
+  }
+
+  const latest = await resolveLatestSessionFromSummaries(50);
+  if (!latest) {
+    return { session: null, state: "empty", source: "none" };
+  }
+  return { session: latest, state: "resolved", source: "latest" };
 }
 
 function extractDuplicateSessionId(payload: SREApiEnvelope<LoopResult>): string {
@@ -609,7 +763,7 @@ export async function streamDiagnosis(
     "Content-Type": "application/json",
     "x-trace-id": `sre-ui-${Date.now()}`,
   };
-  const token = import.meta.env.VITE_API_TOKEN;
+  const token = getAccessTokenSync();
   if (token) {
     headers.Authorization = `Bearer ${token}`;
   }
@@ -657,8 +811,31 @@ export async function streamDiagnosis(
     return;
   }
 
+  if (response.status === 401) {
+    try {
+      const recovered = await recoverAuthSession();
+      if (recovered) {
+        const refreshed = getAccessTokenSync();
+        headers.Authorization = `Bearer ${refreshed}`;
+        response = await fetch(url, {
+          method: "POST",
+          headers,
+          body: JSON.stringify(alert),
+          signal,
+        });
+      } else {
+        throw new ApiRequestError(
+          "Unauthorized: auth session is unrecoverable. Please re-authenticate.",
+          "invalid_signature",
+        );
+      }
+    } catch {
+      throw new ApiRequestError("Unauthorized: bearer token expired or invalid.", "expired");
+    }
+  }
+
   if (!response.ok) {
-    throw new Error(`Request failed with status ${response.status}.`);
+    throw new ApiRequestError(`Request failed with status ${response.status}.`);
   }
 
   await consumeSseResponse(response, onEvent, signal);
@@ -826,53 +1003,20 @@ export const apiClient = {
 
   getDiagnosisSession: async (sessionId?: string) => {
     const explicit = (sessionId ?? "").trim();
-    const remembered = getRememberedSessionId().trim();
-    const resolved = explicit || remembered;
-    if (resolved) {
-      try {
-        const session = await getDiagnosisSessionById(resolved);
-        rememberSessionId(session.session_id);
-        return session;
-      } catch (error) {
-        if (explicit) {
-          if (isHttpStatusError(error, 404)) {
-            throw new Error("Diagnosis session was not found (404). Please select another history session or start a new diagnosis.");
-          }
-          throw error;
-        }
-        clearRememberedSessionId();
-      }
+    if (explicit) {
+      return getDiagnosisSessionById(explicit);
     }
+    const resolved = await resolveActiveSession();
+    return resolved.session;
+  },
 
-    const sessions = await apiClient.getSessions(50);
-    for (const candidate of sessions) {
-      try {
-        const session = await getDiagnosisSessionById(candidate.session_id);
-        rememberSessionId(session.session_id);
-        return session;
-      } catch (error) {
-        if (isHttpStatusError(error, 404)) {
-          continue;
-        }
-        throw error;
-      }
-    }
-    return null;
+  resolveActiveSession: async (sessionId?: string): Promise<ActiveSessionResolution> => {
+    return resolveActiveSession(sessionId);
   },
 
   getDiagnosisHistorySessions: async () => {
-    try {
-      const sessions = await apiClient.getSessions(50);
-      return sessions.map(mapSummaryToDiagnosisSummary);
-    } catch (primaryError) {
-      try {
-        const response = await api.get<SREApiEnvelope<SessionSummary[]> | SessionSummary[]>('/api/diagnosis/sessions');
-        const sessions = normalizeSessionSummaryList(unwrapPayload(response.data));
-        return sessions.map(mapSummaryToDiagnosisSummary);
-      } catch {
-        throw primaryError;
-      }
-    }
+    const sessions = await apiClient.getSessions(50);
+    return sessions.map(mapSummaryToDiagnosisSummary);
   },
 
   getSessionLoop: async (sessionId?: string) => {

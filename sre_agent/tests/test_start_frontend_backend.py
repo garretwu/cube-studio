@@ -249,6 +249,8 @@ def _runtime_info_template() -> dict[str, str]:
         "llm_local_probe_passed": "false",
         "llm_local_selected_model": "",
         "llm_local_base_url": "",
+        "token_expire_seconds": "3600",
+        "jwt_secret_source": "fixed",
         "config_path": str((Path(__file__).resolve().parents[2] / "sre_agent" / "conf" / "config.yaml")),
         "sre_kubeconfig": DEFAULT_KUBECONFIG_PATH,
     }

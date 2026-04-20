@@ -2,6 +2,7 @@ import { render } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { apiClient } from "../api/client";
+import { __resetTokenManagerForTests } from "../auth/tokenManager";
 import type { WSEvent } from "../api/types";
 import { useAlertStore } from "../store/alertStore";
 import { useAlertsRealtimeSync } from "./useAlertsRealtimeSync";
@@ -63,6 +64,7 @@ function resetStore() {
 describe("useAlertsRealtimeSync", () => {
   beforeEach(() => {
     vi.useFakeTimers();
+    __resetTokenManagerForTests();
     websocketState = "closed";
     emitWebsocketEvent = undefined;
     vi.stubEnv("VITE_API_TOKEN", "test-token");
@@ -72,6 +74,7 @@ describe("useAlertsRealtimeSync", () => {
 
   afterEach(() => {
     useAlertStore.getState().stopReconcile();
+    __resetTokenManagerForTests();
     vi.unstubAllEnvs();
     vi.useRealTimers();
     vi.restoreAllMocks();

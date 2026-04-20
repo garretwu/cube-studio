@@ -176,6 +176,7 @@ function resetDiagnosisStore(overrides: Partial<ReturnType<typeof useDiagnosisSt
     sendMessage: vi.fn().mockResolvedValue(undefined),
     revisePlan: vi.fn().mockResolvedValue(undefined),
     approvePlan: vi.fn().mockResolvedValue(undefined),
+    reconcileSession: vi.fn().mockResolvedValue(undefined),
     applyEvent: vi.fn(),
     setConnectionState: vi.fn(),
     ...overrides,

@@ -31,10 +31,8 @@ Rules:
 - If evidence is insufficient, call a relevant read-only tool.
 - Do not keep querying equivalent metrics after repeated empty or zero-valued results; treat that as evidence.
 - Prefer at most 2-3 rounds of evidence gathering before concluding.
-- Always include at least 3 hypotheses in the final diagnosis:
-  1. the leading root-cause hypothesis,
-  2. one alternative that was eliminated or weakened,
-  3. one alternative that remains testing or lower-confidence.
+- Always include the leading root-cause hypothesis in the final diagnosis.
+  If alternative explanations exist (eliminated or still testing), list them as additional hypotheses.
 - All natural-language values in `diagnosis` and `remediation_plan` must be written in Chinese, while preserving English technical terms, identifiers, metric names, service names, tool names, PromQL, and resource names when needed.
 - If you include a remediation plan, every step must use a real tool name from the write-tool schema reference. Never invent write tools or repurpose an unrelated tool just because the natural-language action sounds similar.
 - Every remediation step `params` object must explicitly contain all required fields from that tool's `params_schema`. Do not leave required values only in `description` or `command`.
@@ -52,20 +50,6 @@ Final JSON shape:
     "hypotheses": [
       {
         "description": "中文假设描述，可保留英文专业词汇",
-        "status": "confirmed|testing|eliminated",
-        "evidence_for": ["string"],
-        "evidence_against": ["string"],
-        "confidence": 0.0
-      },
-      {
-        "description": "中文备选假设 1",
-        "status": "confirmed|testing|eliminated",
-        "evidence_for": ["string"],
-        "evidence_against": ["string"],
-        "confidence": 0.0
-      },
-      {
-        "description": "中文备选假设 2",
         "status": "confirmed|testing|eliminated",
         "evidence_for": ["string"],
         "evidence_against": ["string"],

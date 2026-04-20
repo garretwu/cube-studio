@@ -279,36 +279,48 @@ describe("apiClient.getTopology", () => {
     expect(session).toBeNull();
   });
 
-  it("falls back to /api/diagnosis/session/current when /api/sessions/:id returns 404", async () => {
+  it("returns latest session when explicit session id is stale", async () => {
     window.localStorage.removeItem("sre_session_id");
-    let fallbackUsed = false;
 
     server.use(
       http.get("/api/sessions/sess-legacy", async () => HttpResponse.json({ message: "not found" }, { status: 404 })),
-      http.get("/api/diagnosis/session/current", async ({ request }) => {
-        const url = new URL(request.url);
-        fallbackUsed = url.searchParams.get("session_id") === "sess-legacy";
-        return HttpResponse.json({
-          session_id: "sess-legacy",
+      http.get("/api/sessions", async () =>
+        HttpResponse.json([
+          {
+            session_id: "sess-current",
+            status: "diagnosing",
+            alert_name: "Current",
+            severity: "warning",
+            fingerprint: "fp-current",
+            outcome: null,
+            duration_seconds: 1,
+            updated_at: "2026-03-26T00:00:02Z",
+          },
+        ]),
+      ),
+      http.get("/api/sessions/sess-current", async () =>
+        HttpResponse.json({
+          session_id: "sess-current",
           alert: {
-            alert_name: "VLLMInterTokenLatencyP95High",
+            alert_name: "Current",
             severity: "warning",
             labels: {},
             annotations: {},
             starts_at: "2026-03-26T00:00:00Z",
-            fingerprint: "fp-legacy",
+            fingerprint: "fp-current",
             status: "firing",
             source: "alertmanager",
           },
           status: "running",
           duration_seconds: 1,
-        });
-      }),
+        }),
+      ),
     );
 
-    const session = await apiClient.getDiagnosisSession("sess-legacy");
-    expect(session?.session_id).toBe("sess-legacy");
-    expect(fallbackUsed).toBe(true);
+    const resolved = await apiClient.resolveActiveSession("sess-legacy");
+    expect(resolved.session?.session_id).toBe("sess-current");
+    expect(resolved.state).toBe("stale_redirected");
+    expect(resolved.source).toBe("latest");
   });
 
   it("skips stale session summaries when detail lookups return 404", async () => {
@@ -340,7 +352,6 @@ describe("apiClient.getTopology", () => {
         ]),
       ),
       http.get("/api/sessions/sess-stale", async () => HttpResponse.json({ message: "not found" }, { status: 404 })),
-      http.get("/api/diagnosis/session/current", async () => HttpResponse.json({ message: "not found" }, { status: 404 })),
       http.get("/api/sessions/sess-good", async () =>
         HttpResponse.json({
           session_id: "sess-good",
@@ -362,6 +373,20 @@ describe("apiClient.getTopology", () => {
 
     const session = await apiClient.getDiagnosisSession();
     expect(session?.session_id).toBe("sess-good");
+  });
+
+  it("resolves empty when explicit stale session has no fallback candidates", async () => {
+    window.localStorage.removeItem("sre_session_id");
+    server.use(
+      http.get("/api/sessions/sess-stale-only", async () => HttpResponse.json({ message: "not found" }, { status: 404 })),
+      http.get("/api/sessions", async () => HttpResponse.json([])),
+    );
+
+    const resolved = await apiClient.resolveActiveSession("sess-stale-only");
+    expect(resolved.session).toBeNull();
+    expect(resolved.state).toBe("empty");
+    expect(resolved.source).toBe("none");
+    expect(window.localStorage.getItem("sre_session_id")).toBeNull();
   });
 
   it("uses remediate approve route", async () => {
@@ -672,29 +697,12 @@ describe("apiClient.getTopology", () => {
     expect(called).toBe(false);
   });
 
-  it("falls back to /api/diagnosis/sessions when /api/sessions fails", async () => {
+  it("throws when /api/sessions fails while loading diagnosis history", async () => {
     server.use(
       http.get("/api/sessions", async () => HttpResponse.json({ message: "boom" }, { status: 500 })),
-      http.get("/api/diagnosis/sessions", async () =>
-        HttpResponse.json([
-          {
-            session_id: "sess-fallback",
-            status: "diagnosed",
-            alert_name: "VLLMInterTokenLatencyP95High",
-            severity: "warning",
-            fingerprint: "fp-fallback",
-            outcome: null,
-            duration_seconds: 10,
-            updated_at: "2026-03-26T00:00:00Z",
-          },
-        ]),
-      ),
     );
 
-    const sessions = await apiClient.getDiagnosisHistorySessions();
-    expect(sessions).toHaveLength(1);
-    expect(sessions[0]?.session_id).toBe("sess-fallback");
-    expect(sessions[0]?.fingerprint).toBe("fp-fallback");
+    await expect(apiClient.getDiagnosisHistorySessions()).rejects.toThrow("Request failed with status 500.");
   });
   it("loads chat history from /api/chat/history", async () => {
     server.use(
@@ -787,7 +795,4 @@ describe("apiClient.getTopology", () => {
     expect(segmentsDatasetId).toBe("dataset-network");
   });
 });
-
-
-
 

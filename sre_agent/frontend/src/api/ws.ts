@@ -8,6 +8,9 @@ type ManagedWSOptions = {
   maxBatchSize?: number;
   reconnectBaseMs?: number;
   maxReconnectAttempts?: number;
+  getToken?: () => string | Promise<string>;
+  onAuthFailure?: (reason: string) => void | Promise<void>;
+  shouldReconnect?: () => boolean;
   onEvent?: (event: WSEvent) => void;
   onStateChange?: (state: "connecting" | "open" | "closed" | "error") => void;
 };
@@ -75,6 +78,9 @@ export class ManagedWebSocket {
       maxBatchSize: options.maxBatchSize ?? 10,
       reconnectBaseMs: options.reconnectBaseMs ?? 800,
       maxReconnectAttempts: options.maxReconnectAttempts ?? 6,
+      getToken: options.getToken ?? (() => ""),
+      onAuthFailure: options.onAuthFailure ?? (() => undefined),
+      shouldReconnect: options.shouldReconnect ?? (() => true),
       onEvent: options.onEvent ?? (() => undefined),
       onStateChange: options.onStateChange ?? (() => undefined),
     };
@@ -86,7 +92,24 @@ export class ManagedWebSocket {
     }
     this.closedManually = false;
     this.options.onStateChange("connecting");
-    this.socket = new WebSocket(this.buildConnectUrl());
+    const connectUrl = this.buildConnectUrl();
+    if (typeof connectUrl === "string") {
+      this.openSocket(connectUrl);
+      return;
+    }
+    void connectUrl
+      .then((url) => this.openSocket(url))
+      .catch(() => {
+        this.options.onStateChange("error");
+        this.scheduleReconnect();
+      });
+  }
+
+  private openSocket(connectUrl: string) {
+    if (this.closedManually) {
+      return;
+    }
+    this.socket = new WebSocket(connectUrl);
 
     this.socket.onopen = () => {
       this.reconnectAttempts = 0;
@@ -118,9 +141,20 @@ export class ManagedWebSocket {
       this.options.onStateChange("error");
     };
 
-    this.socket.onclose = () => {
+    this.socket.onclose = (event) => {
       this.options.onStateChange("closed");
       if (!this.closedManually) {
+        if (!this.options.shouldReconnect()) {
+          return;
+        }
+        const code = Number((event as { code?: number } | undefined)?.code ?? 0);
+        const reason = String((event as { reason?: string } | undefined)?.reason ?? "");
+        if (code === 4001 || reason.toLowerCase().includes("token")) {
+          Promise.resolve(this.options.onAuthFailure(reason))
+            .catch(() => undefined)
+            .finally(() => this.scheduleReconnect());
+          return;
+        }
         this.scheduleReconnect();
       }
     };
@@ -151,6 +185,10 @@ export class ManagedWebSocket {
   }
 
   private scheduleReconnect() {
+    if (!this.options.shouldReconnect()) {
+      this.options.onStateChange("closed");
+      return;
+    }
     if (this.reconnectAttempts >= this.options.maxReconnectAttempts) {
       this.options.onStateChange("closed");
       return;
@@ -160,17 +198,45 @@ export class ManagedWebSocket {
     window.setTimeout(() => this.connect(), timeout);
   }
 
-  private buildConnectUrl(): string {
-    if (!this.lastEventId) {
-      return this.url;
+  private buildConnectUrl(): string | Promise<string> {
+    try {
+      const maybeToken = this.options.getToken();
+      if (typeof maybeToken === "string") {
+        return this.formatConnectUrl(maybeToken.trim());
+      }
+      return Promise.resolve(maybeToken)
+        .then((token) => this.formatConnectUrl(String(token).trim()))
+        .catch(() => this.formatConnectUrl(""));
+    } catch {
+      return this.formatConnectUrl("");
     }
+  }
+
+  private formatConnectUrl(token: string): string {
     try {
       const parsed = new URL(this.url);
-      parsed.searchParams.set("last_event_id", this.lastEventId);
+      if (token) {
+        parsed.searchParams.set("token", token);
+      }
+      if (this.lastEventId) {
+        parsed.searchParams.set("last_event_id", this.lastEventId);
+      } else {
+        parsed.searchParams.delete("last_event_id");
+      }
       return parsed.toString();
     } catch {
       const separator = this.url.includes("?") ? "&" : "?";
-      return `${this.url}${separator}last_event_id=${encodeURIComponent(this.lastEventId)}`;
+      const params: string[] = [];
+      if (token) {
+        params.push(`token=${encodeURIComponent(token)}`);
+      }
+      if (this.lastEventId) {
+        params.push(`last_event_id=${encodeURIComponent(this.lastEventId)}`);
+      }
+      if (params.length === 0) {
+        return this.url;
+      }
+      return `${this.url}${separator}${params.join("&")}`;
     }
   }
 }
