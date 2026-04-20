@@ -140,6 +140,23 @@ describe("ManagedWebSocket", () => {
     expect(FakeWebSocket.instances.length).toBeGreaterThanOrEqual(2);
     ws.close();
   });
+
+  it("stops reconnecting when shouldReconnect returns false", async () => {
+    const ws = new ManagedWebSocket("ws://localhost/ws/alerts", {
+      reconnectBaseMs: 1,
+      shouldReconnect: () => false,
+    });
+
+    ws.connect();
+    expect(FakeWebSocket.instances).toHaveLength(1);
+    const first = FakeWebSocket.instances[0]!;
+    first.emitOpen();
+    first.emitClose(4001, "token invalid");
+
+    await vi.runAllTimersAsync();
+    expect(FakeWebSocket.instances).toHaveLength(1);
+    ws.close();
+  });
 });
 
 describe("buildBackendWsUrl", () => {

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef } from "react";
 
 import type { WSEvent } from "../api/types";
-import { getAccessTokenSync, hasAccessToken, refreshAccessToken } from "../auth/tokenManager";
+import { getAccessTokenSync, getAuthRecoveryState, hasAccessToken, recoverAuthSession } from "../auth/tokenManager";
 import { buildBackendWsUrl } from "../api/ws";
 import { useAlertStore } from "../store/alertStore";
 import { useWebSocket } from "./useWebSocket";
@@ -16,7 +16,7 @@ export function useAlertsRealtimeSync() {
   const setRealtimeEnabled = useAlertStore((state) => state.setRealtimeEnabled);
   const setRealtimeWsState = useAlertStore((state) => state.setRealtimeWsState);
 
-  const realtimeEnabled = hasAccessToken();
+  const realtimeEnabled = hasAccessToken() && getAuthRecoveryState() !== "terminal";
 
   const websocketUrl = useMemo(
     () =>
@@ -37,8 +37,9 @@ export function useAlertsRealtimeSync() {
     maxBufferedMessages: 400,
     getToken: () => getAccessTokenSync(),
     onAuthFailure: async () => {
-      await refreshAccessToken();
+      await recoverAuthSession();
     },
+    shouldReconnect: () => getAuthRecoveryState() !== "terminal",
   });
 
   useEffect(() => {

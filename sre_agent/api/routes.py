@@ -394,6 +394,17 @@ def build_api_router() -> APIRouter:
         except ValueError:
             return 86400
 
+    def _demo_auto_bootstrap_enabled() -> bool:
+        raw = str(os.getenv("SRE_DEMO_AUTO_BOOTSTRAP_ENABLED", "false")).strip().lower()
+        return raw in {"1", "true", "yes", "on"}
+
+    def _demo_bootstrap_user() -> CurrentUser:
+        username = str(os.getenv("SRE_DEMO_BOOTSTRAP_USERNAME", "container-ui")).strip() or "container-ui"
+        role = str(os.getenv("SRE_DEMO_BOOTSTRAP_ROLE", "operator")).strip().lower() or "operator"
+        if role not in {"viewer", "operator", "admin"}:
+            role = "operator"
+        return CurrentUser(user_id="demo-bootstrap", username=username, role=role)
+
     def _build_auth_token_response(request: Request, user: CurrentUser) -> AuthTokenResponse:
         settings = getattr(request.app.state, "jwt_settings", None)
         if settings is None:
@@ -2229,6 +2240,15 @@ def build_api_router() -> APIRouter:
     ) -> SREResponse[AuthTokenResponse]:
         _ = user
         payload = _build_auth_token_response(request, user)
+        return SREResponse(success=True, data=payload, trace_id=_trace_id(request))
+
+    @router.post("/auth/bootstrap")
+    async def bootstrap_auth_token(
+        request: Request,
+    ) -> SREResponse[AuthTokenResponse]:
+        if not _demo_auto_bootstrap_enabled():
+            raise HTTPException(status_code=404, detail="demo auth bootstrap is disabled")
+        payload = _build_auth_token_response(request, _demo_bootstrap_user())
         return SREResponse(success=True, data=payload, trace_id=_trace_id(request))
 
     @router.post("/auth/refresh")

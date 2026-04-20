@@ -3,7 +3,8 @@ import type { InternalAxiosRequestConfig } from "axios";
 
 import {
   getAccessTokenSync,
-  refreshAccessToken,
+  getAuthRecoveryState,
+  recoverAuthSession,
   setAuthErrorKind,
   type AuthErrorKind,
   updateServerBootId,
@@ -158,18 +159,31 @@ api.interceptors.response.use(
     return response;
   },
   async (error) => {
+    if (getAuthRecoveryState() === "terminal") {
+      return Promise.reject(
+        new ApiRequestError(
+          "Authentication session is unrecoverable. Please re-authenticate or hard refresh the page.",
+          "invalid_signature",
+        ),
+      );
+    }
     if (axios.isAxiosError(error) && error.response?.status === 401) {
       const originalConfig = error.config as RetriableAxiosRequestConfig | undefined;
       const requestUrl = String(originalConfig?.url ?? "");
       const isAuthEndpoint =
-        requestUrl.includes("/api/auth/refresh") || requestUrl.includes("/api/auth/token");
+        requestUrl.includes("/api/auth/refresh") ||
+        requestUrl.includes("/api/auth/token") ||
+        requestUrl.includes("/api/auth/bootstrap");
       if (originalConfig && !originalConfig._authRetryAttempted && !isAuthEndpoint) {
         originalConfig._authRetryAttempted = true;
         try {
-          const refreshed = await refreshAccessToken();
-          originalConfig.headers = originalConfig.headers ?? {};
-          originalConfig.headers.Authorization = `Bearer ${refreshed}`;
-          return await api.request(originalConfig);
+          const recovered = await recoverAuthSession();
+          if (recovered) {
+            const refreshed = getAccessTokenSync();
+            originalConfig.headers = originalConfig.headers ?? {};
+            originalConfig.headers.Authorization = `Bearer ${refreshed}`;
+            return await api.request(originalConfig);
+          }
         } catch {
           // fall through to normalized error
         }
@@ -738,14 +752,22 @@ export async function streamDiagnosis(
 
   if (response.status === 401) {
     try {
-      const refreshed = await refreshAccessToken();
-      headers.Authorization = `Bearer ${refreshed}`;
-      response = await fetch(url, {
-        method: "POST",
-        headers,
-        body: JSON.stringify(alert),
-        signal,
-      });
+      const recovered = await recoverAuthSession();
+      if (recovered) {
+        const refreshed = getAccessTokenSync();
+        headers.Authorization = `Bearer ${refreshed}`;
+        response = await fetch(url, {
+          method: "POST",
+          headers,
+          body: JSON.stringify(alert),
+          signal,
+        });
+      } else {
+        throw new ApiRequestError(
+          "Unauthorized: auth session is unrecoverable. Please re-authenticate.",
+          "invalid_signature",
+        );
+      }
     } catch {
       throw new ApiRequestError("Unauthorized: bearer token expired or invalid.", "expired");
     }

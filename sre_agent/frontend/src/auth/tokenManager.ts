@@ -1,6 +1,7 @@
 import type { SREApiEnvelope } from "../api/types";
 
 export type AuthErrorKind = "expired" | "invalid_signature" | "missing" | "unknown";
+export type AuthRecoveryState = "healthy" | "recovering" | "terminal";
 
 type AuthTokenPayload = {
   access_token: string;
@@ -31,9 +32,24 @@ let refreshToken = "";
 let accessExpiresAt: string | null = null;
 let serverBootId = "";
 let authErrorKind: AuthErrorKind = "unknown";
+let recoveryState: AuthRecoveryState = "healthy";
 let initialized = false;
 let refreshInFlight: Promise<string> | null = null;
+let recoveryInFlight: Promise<boolean> | null = null;
 let monitorTimer: number | null = null;
+const recoveryListeners = new Set<(state: AuthRecoveryState) => void>();
+
+class AuthHttpError extends Error {
+  status: number;
+  authKind: AuthErrorKind;
+
+  constructor(message: string, status: number, authKind: AuthErrorKind) {
+    super(message);
+    this.name = "AuthHttpError";
+    this.status = status;
+    this.authKind = authKind;
+  }
+}
 
 function isBrowser() {
   return typeof window !== "undefined";
@@ -58,12 +74,51 @@ function toAuthKind(value: unknown): AuthErrorKind {
   return "unknown";
 }
 
+function classifyAuthKindFromText(value: string): AuthErrorKind {
+  const normalized = value.trim().toLowerCase();
+  if (!normalized) {
+    return "unknown";
+  }
+  if (normalized.includes("signature")) {
+    return "invalid_signature";
+  }
+  if (normalized.includes("expired")) {
+    return "expired";
+  }
+  if (normalized.includes("missing")) {
+    return "missing";
+  }
+  return "unknown";
+}
+
+function setRecoveryState(next: AuthRecoveryState) {
+  if (recoveryState === next) {
+    return;
+  }
+  recoveryState = next;
+  recoveryListeners.forEach((listener) => {
+    try {
+      listener(next);
+    } catch {
+      // no-op: listeners should never break auth flow
+    }
+  });
+}
+
 function saveToStorage() {
   if (!isBrowser()) {
     return;
   }
-  window.localStorage.setItem(ACCESS_TOKEN_STORAGE_KEY, accessToken);
-  window.localStorage.setItem(REFRESH_TOKEN_STORAGE_KEY, refreshToken);
+  if (accessToken) {
+    window.localStorage.setItem(ACCESS_TOKEN_STORAGE_KEY, accessToken);
+  } else {
+    window.localStorage.removeItem(ACCESS_TOKEN_STORAGE_KEY);
+  }
+  if (refreshToken) {
+    window.localStorage.setItem(REFRESH_TOKEN_STORAGE_KEY, refreshToken);
+  } else {
+    window.localStorage.removeItem(REFRESH_TOKEN_STORAGE_KEY);
+  }
   if (accessExpiresAt) {
     window.localStorage.setItem(ACCESS_EXPIRES_AT_STORAGE_KEY, accessExpiresAt);
   } else {
@@ -113,7 +168,8 @@ function extractEnvelopeData<T>(payload: unknown): T {
   if (payload && typeof payload === "object" && "success" in (payload as Record<string, unknown>)) {
     const envelope = payload as SREApiEnvelope<T>;
     if (!envelope.success || envelope.data == null) {
-      throw new Error(envelope.error?.message ?? "auth response has no data");
+      const message = String(envelope.error?.message ?? "auth response has no data");
+      throw new AuthHttpError(message, 400, classifyAuthKindFromText(message));
     }
     return envelope.data;
   }
@@ -123,11 +179,19 @@ function extractEnvelopeData<T>(payload: unknown): T {
 function applyTokenPayload(payload: AuthTokenPayload) {
   accessToken = String(payload.access_token ?? "").trim();
   refreshToken = String(payload.refresh_token ?? refreshToken).trim();
-  accessExpiresAt = payload.expires_at ? String(payload.expires_at) : accessExpiresAt;
+  accessExpiresAt = payload.expires_at ? String(payload.expires_at) : null;
   if (payload.server_boot_id) {
     serverBootId = String(payload.server_boot_id);
   }
   authErrorKind = toAuthKind(payload.auth_error_kind);
+  saveToStorage();
+}
+
+function clearAuthTokens() {
+  accessToken = "";
+  refreshToken = "";
+  accessExpiresAt = null;
+  authErrorKind = "unknown";
   saveToStorage();
 }
 
@@ -143,7 +207,7 @@ async function postJson<T>(path: string, body: Record<string, unknown>, headers:
   });
   if (!response.ok) {
     const text = await response.text();
-    throw new Error(text || `request failed: ${response.status}`);
+    throw new AuthHttpError(text || `request failed: ${response.status}`, response.status, classifyAuthKindFromText(text));
   }
   const payload = await response.json();
   return extractEnvelopeData<T>(payload);
@@ -157,7 +221,7 @@ async function getJson<T>(path: string, headers: Record<string, string> = {}): P
   });
   if (!response.ok) {
     const text = await response.text();
-    throw new Error(text || `request failed: ${response.status}`);
+    throw new AuthHttpError(text || `request failed: ${response.status}`, response.status, classifyAuthKindFromText(text));
   }
   const payload = await response.json();
   return extractEnvelopeData<T>(payload);
@@ -172,6 +236,40 @@ function isTokenExpiringSoon() {
     return false;
   }
   return expiresAtMs - Date.now() <= REFRESH_AHEAD_MS;
+}
+
+async function issueBootstrapToken() {
+  const issued = await postJson<AuthTokenPayload>("/api/auth/bootstrap", {});
+  applyTokenPayload(issued);
+  return accessToken;
+}
+
+async function issueTokenFromRefreshOrAccess() {
+  if (refreshToken) {
+    const refreshed = await postJson<AuthTokenPayload>("/api/auth/refresh", { refresh_token: refreshToken });
+    applyTokenPayload(refreshed);
+    return accessToken;
+  }
+  if (!accessToken) {
+    throw new AuthHttpError("missing access token", 401, "missing");
+  }
+  const issued = await postJson<AuthTokenPayload>(
+    "/api/auth/token",
+    {},
+    { Authorization: `Bearer ${accessToken}` },
+  );
+  applyTokenPayload(issued);
+  return accessToken;
+}
+
+function shouldAttemptBootstrap(error: unknown) {
+  if (error instanceof AuthHttpError) {
+    if (error.authKind === "invalid_signature" || error.authKind === "missing") {
+      return true;
+    }
+    return error.status === 401;
+  }
+  return false;
 }
 
 export function getAccessTokenSync() {
@@ -194,6 +292,20 @@ export function getAuthErrorKind(): AuthErrorKind {
   return authErrorKind;
 }
 
+export function getAuthRecoveryState(): AuthRecoveryState {
+  initializeIfNeeded();
+  return recoveryState;
+}
+
+export function subscribeAuthRecoveryState(listener: (state: AuthRecoveryState) => void) {
+  initializeIfNeeded();
+  recoveryListeners.add(listener);
+  listener(recoveryState);
+  return () => {
+    recoveryListeners.delete(listener);
+  };
+}
+
 export function updateServerBootId(nextBootId: string) {
   initializeIfNeeded();
   const normalized = String(nextBootId ?? "").trim();
@@ -208,26 +320,23 @@ export function updateServerBootId(nextBootId: string) {
 
 export async function refreshAccessToken() {
   initializeIfNeeded();
+  if (recoveryState === "terminal") {
+    throw new Error("auth recovery is in terminal state");
+  }
   if (refreshInFlight) {
     return refreshInFlight;
   }
   refreshInFlight = (async () => {
     try {
-      if (refreshToken) {
-        const refreshed = await postJson<AuthTokenPayload>("/api/auth/refresh", { refresh_token: refreshToken });
-        applyTokenPayload(refreshed);
-        return accessToken;
+      return await issueTokenFromRefreshOrAccess();
+    } catch (error) {
+      if (!shouldAttemptBootstrap(error)) {
+        throw error;
       }
-      if (!accessToken) {
-        throw new Error("missing access token");
-      }
-      const issued = await postJson<AuthTokenPayload>(
-        "/api/auth/token",
-        {},
-        { Authorization: `Bearer ${accessToken}` },
-      );
-      applyTokenPayload(issued);
-      return accessToken;
+      clearAuthTokens();
+      const bootstrapped = await issueBootstrapToken();
+      setRecoveryState("healthy");
+      return bootstrapped;
     } finally {
       refreshInFlight = null;
     }
@@ -235,8 +344,32 @@ export async function refreshAccessToken() {
   return refreshInFlight;
 }
 
+export async function recoverAuthSession() {
+  initializeIfNeeded();
+  if (recoveryInFlight) {
+    return recoveryInFlight;
+  }
+  recoveryInFlight = (async () => {
+    setRecoveryState("recovering");
+    try {
+      await refreshAccessToken();
+      setRecoveryState("healthy");
+      return true;
+    } catch {
+      setRecoveryState("terminal");
+      return false;
+    } finally {
+      recoveryInFlight = null;
+    }
+  })();
+  return recoveryInFlight;
+}
+
 export async function checkAuthStatusAndHeal() {
   initializeIfNeeded();
+  if (recoveryState === "terminal") {
+    return;
+  }
   const headers: Record<string, string> = {};
   if (accessToken) {
     headers.Authorization = `Bearer ${accessToken}`;
@@ -248,8 +381,16 @@ export async function checkAuthStatusAndHeal() {
     accessExpiresAt = String(status.access_token_expires_at);
   }
   saveToStorage();
-  if (bootChanged || authErrorKind === "expired" || authErrorKind === "invalid_signature" || isTokenExpiringSoon()) {
-    await refreshAccessToken();
+  if (bootChanged || authErrorKind === "invalid_signature") {
+    await recoverAuthSession();
+    return;
+  }
+  if (authErrorKind === "expired" || isTokenExpiringSoon()) {
+    try {
+      await refreshAccessToken();
+    } catch {
+      setRecoveryState("terminal");
+    }
   }
 }
 
@@ -263,6 +404,9 @@ export function startAuthSessionMonitor(intervalMs = 60_000) {
     monitorTimer = null;
   }
   monitorTimer = window.setInterval(() => {
+    if (recoveryState === "terminal") {
+      return;
+    }
     void checkAuthStatusAndHeal().catch(() => undefined);
   }, Math.max(10_000, intervalMs));
   return () => {
@@ -273,14 +417,24 @@ export function startAuthSessionMonitor(intervalMs = 60_000) {
   };
 }
 
+export function hardReload() {
+  initializeIfNeeded();
+  clearAuthTokens();
+  if (isBrowser()) {
+    window.location.reload();
+  }
+}
+
 export function __resetTokenManagerForTests() {
   accessToken = "";
   refreshToken = "";
   accessExpiresAt = null;
   serverBootId = "";
   authErrorKind = "unknown";
+  setRecoveryState("healthy");
   initialized = false;
   refreshInFlight = null;
+  recoveryInFlight = null;
   if (monitorTimer !== null && isBrowser()) {
     window.clearInterval(monitorTimer);
   }
@@ -292,4 +446,5 @@ export function __resetTokenManagerForTests() {
     window.localStorage.removeItem(SERVER_BOOT_ID_STORAGE_KEY);
     window.localStorage.removeItem(AUTH_ERROR_KIND_STORAGE_KEY);
   }
+  recoveryListeners.clear();
 }

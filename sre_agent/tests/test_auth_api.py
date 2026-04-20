@@ -66,3 +66,34 @@ def test_auth_status_and_boot_id_header_present(monkeypatch: pytest.MonkeyPatch)
     payload = response.json()["data"]
     assert payload["server_boot_id"] == boot_id
     assert payload["auth_error_kind"] in {"unknown", "expired", "invalid_signature", "missing"}
+
+
+def test_auth_bootstrap_endpoint_disabled_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("SRE_DEMO_AUTO_BOOTSTRAP_ENABLED", raising=False)
+    app, _ = _build_app(monkeypatch)
+    client = TestClient(app)
+
+    response = client.post("/api/auth/bootstrap")
+
+    assert response.status_code == 404
+
+
+def test_auth_bootstrap_endpoint_issues_reusable_tokens_when_enabled(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("SRE_DEMO_AUTO_BOOTSTRAP_ENABLED", "true")
+    app, boot_id = _build_app(monkeypatch)
+    client = TestClient(app)
+
+    bootstrap_response = client.post("/api/auth/bootstrap")
+    assert bootstrap_response.status_code == 200
+    payload = bootstrap_response.json()["data"]
+    assert payload["access_token"]
+    assert payload["refresh_token"]
+    assert payload["server_boot_id"] == boot_id
+
+    status_response = client.get(
+        "/api/auth/status",
+        headers={"Authorization": f"Bearer {payload['access_token']}"},
+    )
+    assert status_response.status_code == 200
+    status_payload = status_response.json()["data"]
+    assert status_payload["auth_error_kind"] == "unknown"

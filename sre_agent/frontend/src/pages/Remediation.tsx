@@ -3,7 +3,7 @@
 import { apiClient } from "../api/client";
 import type { DiagnosisSessionSummary, RemediationOverview, SessionEvent, WSEvent } from "../api/types";
 import { buildBackendWsUrl } from "../api/ws";
-import { getAccessTokenSync, hasAccessToken, refreshAccessToken } from "../auth/tokenManager";
+import { getAccessTokenSync, getAuthRecoveryState, hasAccessToken, recoverAuthSession } from "../auth/tokenManager";
 import ApprovalDialog from "../components/ApprovalDialog";
 import RemediationDetailDrawer from "../components/RemediationDetailDrawer";
 import { AppIcon, AppInput, MetricTile, StatusChip, SurfaceCard } from "../components/ui";
@@ -262,6 +262,7 @@ function RemediationPage() {
   const websocketEnabled =
     import.meta.env.VITE_WS_ENABLED === "true" &&
     hasAccessToken() &&
+    getAuthRecoveryState() !== "terminal" &&
     selectedSessionId.length > 0;
   const shouldUseFallbackPolling =
     selectedSessionId.length > 0 &&
@@ -300,8 +301,9 @@ function RemediationPage() {
     maxBufferedMessages: 400,
     getToken: () => getAccessTokenSync(),
     onAuthFailure: async () => {
-      await refreshAccessToken();
+      await recoverAuthSession();
     },
+    shouldReconnect: () => getAuthRecoveryState() !== "terminal",
   });
   const previousWsStateRef = useRef<"connecting" | "open" | "closed" | "error">("closed");
   useEffect(() => {

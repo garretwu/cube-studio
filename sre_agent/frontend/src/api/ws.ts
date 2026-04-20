@@ -10,6 +10,7 @@ type ManagedWSOptions = {
   maxReconnectAttempts?: number;
   getToken?: () => string | Promise<string>;
   onAuthFailure?: (reason: string) => void | Promise<void>;
+  shouldReconnect?: () => boolean;
   onEvent?: (event: WSEvent) => void;
   onStateChange?: (state: "connecting" | "open" | "closed" | "error") => void;
 };
@@ -79,6 +80,7 @@ export class ManagedWebSocket {
       maxReconnectAttempts: options.maxReconnectAttempts ?? 6,
       getToken: options.getToken ?? (() => ""),
       onAuthFailure: options.onAuthFailure ?? (() => undefined),
+      shouldReconnect: options.shouldReconnect ?? (() => true),
       onEvent: options.onEvent ?? (() => undefined),
       onStateChange: options.onStateChange ?? (() => undefined),
     };
@@ -142,6 +144,9 @@ export class ManagedWebSocket {
     this.socket.onclose = (event) => {
       this.options.onStateChange("closed");
       if (!this.closedManually) {
+        if (!this.options.shouldReconnect()) {
+          return;
+        }
         const code = Number((event as { code?: number } | undefined)?.code ?? 0);
         const reason = String((event as { reason?: string } | undefined)?.reason ?? "");
         if (code === 4001 || reason.toLowerCase().includes("token")) {
@@ -180,6 +185,10 @@ export class ManagedWebSocket {
   }
 
   private scheduleReconnect() {
+    if (!this.options.shouldReconnect()) {
+      this.options.onStateChange("closed");
+      return;
+    }
     if (this.reconnectAttempts >= this.options.maxReconnectAttempts) {
       this.options.onStateChange("closed");
       return;
