@@ -76,6 +76,15 @@ type RetriableAxiosRequestConfig = InternalAxiosRequestConfig & {
   _authRetryAttempted?: boolean;
 };
 
+export type SessionResolveState = "resolved" | "stale_redirected" | "empty";
+export type SessionResolveSource = "url" | "remembered" | "latest" | "none";
+export type ActiveSessionResolution = {
+  session: DiagnosisSession | null;
+  state: SessionResolveState;
+  source: SessionResolveSource;
+  staleSessionId?: string;
+};
+
 export class ApiRequestError extends Error {
   auth_error_kind: AuthErrorKind;
 
@@ -154,7 +163,13 @@ api.interceptors.response.use(
   (response) => {
     const bootId = String(response.headers["x-server-boot-id"] ?? "").trim();
     if (bootId) {
-      void updateServerBootId(bootId);
+      const changed = updateServerBootId(bootId);
+      if (changed) {
+        clearRememberedSessionId();
+        if (typeof window !== "undefined") {
+          window.dispatchEvent(new CustomEvent("sre:boot-id-changed", { detail: { bootId } }));
+        }
+      }
     }
     return response;
   },
@@ -303,22 +318,68 @@ function isHttpStatusError(error: unknown, status: number): boolean {
 }
 
 async function getDiagnosisSessionById(sessionId: string): Promise<DiagnosisSession> {
-  try {
-    const response = await api.get<SREApiEnvelope<DiagnosisSession> | DiagnosisSession>(`/api/sessions/${sessionId}`, {
-      timeout: DIAGNOSIS_SESSION_REQUEST_TIMEOUT_MS,
-    });
-    return unwrapPayload(response.data);
-  } catch (error) {
-    if (!isHttpStatusError(error, 404)) {
+  const response = await api.get<SREApiEnvelope<DiagnosisSession> | DiagnosisSession>(`/api/sessions/${sessionId}`, {
+    timeout: DIAGNOSIS_SESSION_REQUEST_TIMEOUT_MS,
+  });
+  return unwrapPayload(response.data);
+}
+
+async function resolveLatestSessionFromSummaries(limit = 50): Promise<DiagnosisSession | null> {
+  const sessions = await apiClient.getSessions(limit);
+  for (const candidate of sessions) {
+    try {
+      const session = await getDiagnosisSessionById(candidate.session_id);
+      rememberSessionId(session.session_id);
+      return session;
+    } catch (error) {
+      if (isHttpStatusError(error, 404)) {
+        continue;
+      }
       throw error;
     }
-    // Compatibility fallback for backends that only expose the legacy session endpoint.
-    const legacyResponse = await api.get<SREApiEnvelope<DiagnosisSession> | DiagnosisSession>("/api/diagnosis/session/current", {
-      params: { session_id: sessionId },
-      timeout: DIAGNOSIS_SESSION_REQUEST_TIMEOUT_MS,
-    });
-    return unwrapPayload(legacyResponse.data);
   }
+  return null;
+}
+
+async function resolveActiveSession(sessionId?: string): Promise<ActiveSessionResolution> {
+  const explicit = (sessionId ?? "").trim();
+  const remembered = getRememberedSessionId().trim();
+  const resolved = explicit || remembered;
+  const resolveSource: SessionResolveSource = explicit ? "url" : remembered ? "remembered" : "none";
+
+  if (resolved) {
+    try {
+      const session = await getDiagnosisSessionById(resolved);
+      rememberSessionId(session.session_id);
+      return { session, state: "resolved", source: resolveSource };
+    } catch (error) {
+      if (!isHttpStatusError(error, 404)) {
+        throw error;
+      }
+      clearRememberedSessionId();
+      const fallback = await resolveLatestSessionFromSummaries(50);
+      if (fallback) {
+        return {
+          session: fallback,
+          state: "stale_redirected",
+          source: "latest",
+          staleSessionId: resolved,
+        };
+      }
+      return {
+        session: null,
+        state: "empty",
+        source: "none",
+        staleSessionId: resolved,
+      };
+    }
+  }
+
+  const latest = await resolveLatestSessionFromSummaries(50);
+  if (!latest) {
+    return { session: null, state: "empty", source: "none" };
+  }
+  return { session: latest, state: "resolved", source: "latest" };
 }
 
 function extractDuplicateSessionId(payload: SREApiEnvelope<LoopResult>): string {
@@ -942,53 +1003,20 @@ export const apiClient = {
 
   getDiagnosisSession: async (sessionId?: string) => {
     const explicit = (sessionId ?? "").trim();
-    const remembered = getRememberedSessionId().trim();
-    const resolved = explicit || remembered;
-    if (resolved) {
-      try {
-        const session = await getDiagnosisSessionById(resolved);
-        rememberSessionId(session.session_id);
-        return session;
-      } catch (error) {
-        if (explicit) {
-          if (isHttpStatusError(error, 404)) {
-            throw new Error("Diagnosis session was not found (404). Please select another history session or start a new diagnosis.");
-          }
-          throw error;
-        }
-        clearRememberedSessionId();
-      }
+    if (explicit) {
+      return getDiagnosisSessionById(explicit);
     }
+    const resolved = await resolveActiveSession();
+    return resolved.session;
+  },
 
-    const sessions = await apiClient.getSessions(50);
-    for (const candidate of sessions) {
-      try {
-        const session = await getDiagnosisSessionById(candidate.session_id);
-        rememberSessionId(session.session_id);
-        return session;
-      } catch (error) {
-        if (isHttpStatusError(error, 404)) {
-          continue;
-        }
-        throw error;
-      }
-    }
-    return null;
+  resolveActiveSession: async (sessionId?: string): Promise<ActiveSessionResolution> => {
+    return resolveActiveSession(sessionId);
   },
 
   getDiagnosisHistorySessions: async () => {
-    try {
-      const sessions = await apiClient.getSessions(50);
-      return sessions.map(mapSummaryToDiagnosisSummary);
-    } catch (primaryError) {
-      try {
-        const response = await api.get<SREApiEnvelope<SessionSummary[]> | SessionSummary[]>('/api/diagnosis/sessions');
-        const sessions = normalizeSessionSummaryList(unwrapPayload(response.data));
-        return sessions.map(mapSummaryToDiagnosisSummary);
-      } catch {
-        throw primaryError;
-      }
-    }
+    const sessions = await apiClient.getSessions(50);
+    return sessions.map(mapSummaryToDiagnosisSummary);
   },
 
   getSessionLoop: async (sessionId?: string) => {

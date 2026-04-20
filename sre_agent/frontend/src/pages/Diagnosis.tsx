@@ -697,7 +697,7 @@ function resolveInlineError(
     return {
       tone: "warning",
       message:
-        "The session could not be found (404). It may have expired or the backend detail endpoint is unavailable. You can still type below to start a new diagnosis.",
+        "The session is no longer available. The page will auto-switch to the latest session or empty state. You can start a new diagnosis anytime below.",
     };
   }
   if (/timed out while waiting for the backend/i.test(error)) {
@@ -2347,6 +2347,7 @@ function DiagnosisPage() {
     approvePlan,
     applyEvent,
     setConnectionState,
+    reconcileSession,
   } = useDiagnosisStore();
 
   const liveView = useMemo(
@@ -2397,6 +2398,43 @@ function DiagnosisPage() {
     }
     void bootstrapSession(routeSessionId);
   }, [bootstrapSession, routeSessionId, shouldBootstrapLiveSession]);
+
+  useEffect(() => {
+    if (!shouldBootstrapLiveSession || typeof window === "undefined") {
+      return;
+    }
+    const handler = () => {
+      void bootstrapSession(routeSessionId);
+    };
+    window.addEventListener("sre:boot-id-changed", handler);
+    return () => {
+      window.removeEventListener("sre:boot-id-changed", handler);
+    };
+  }, [bootstrapSession, routeSessionId, shouldBootstrapLiveSession]);
+
+  useEffect(() => {
+    if (!routeSessionId || !shouldBootstrapLiveSession) {
+      return;
+    }
+    if (bootstrapStatus === "empty") {
+      navigate("/diagnosis", { replace: true });
+      return;
+    }
+    if (bootstrapStatus !== "ready") {
+      return;
+    }
+    const resolvedSessionId = activeSessionId ?? session?.session_id ?? "";
+    if (resolvedSessionId && resolvedSessionId !== routeSessionId) {
+      navigate(`/diagnosis/${resolvedSessionId}`, { replace: true });
+    }
+  }, [
+    activeSessionId,
+    bootstrapStatus,
+    navigate,
+    routeSessionId,
+    session?.session_id,
+    shouldBootstrapLiveSession,
+  ]);
 
   useEffect(() => {
     setApprovalReason("");
@@ -3264,6 +3302,21 @@ function DiagnosisPage() {
   useEffect(() => {
     setConnectionState(ws.state);
   }, [setConnectionState, ws.state]);
+
+  useEffect(() => {
+    if (!shouldRenderLiveTimeline || !activeSessionId || ws.state === "open") {
+      return;
+    }
+    if (getAuthRecoveryState() === "terminal") {
+      return;
+    }
+    const timerId = window.setInterval(() => {
+      void reconcileSession(activeSessionId);
+    }, 7000);
+    return () => {
+      window.clearInterval(timerId);
+    };
+  }, [activeSessionId, reconcileSession, shouldRenderLiveTimeline, ws.state]);
 
   const activeRawTimeline = shouldRenderLiveTimeline ? liveTimeline : demoTimeline;
   const groupedTimeline = useMemo(
