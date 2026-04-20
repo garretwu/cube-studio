@@ -904,7 +904,7 @@ tags:
             self.assertEqual(llm.calls[1]["tool_choice"], "auto")
             diagnosis = DiagnosisResult.model_validate(result["diagnosis_result"])
             self.assertEqual(diagnosis.root_cause_layer, "platform")
-            self.assertGreaterEqual(len(diagnosis.hypotheses), 3)
+            self.assertGreaterEqual(len(diagnosis.hypotheses), 1)
             trace = ThinkingTrace.from_langraph_state(result["trace_items"])
             self.assertGreaterEqual(len(trace.steps), 3)
             snapshot_files = list(Path(tmpdir).glob(f"{result['session_id']}-*.json"))

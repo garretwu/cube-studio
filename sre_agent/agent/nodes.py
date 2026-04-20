@@ -4343,10 +4343,10 @@ def _normalize_hypotheses_payload(payload: dict[str, Any]) -> list[dict[str, Any
             continue
         normalized.append(item)
         seen_descriptions.add(key)
-        if len(normalized) >= 3:
+        if len(normalized) >= 1:
             break
 
-    return normalized[: max(3, len(normalized))]
+    return normalized
 
 
 def _clamp_confidence(value: Any, *, default: float) -> float:
