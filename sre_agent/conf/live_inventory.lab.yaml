@@ -1,6 +1,7 @@
 inventory:
   workers:
     - name: worker-01
+      k8s_node_name: wj-lab-cpt-01
       role: gpu
       ssh:
         host: 10.11.4.10
@@ -12,10 +13,11 @@ inventory:
       redfish:
         bmc_host: 10.11.8.10
         username: admin
-        password: REPLACE_ME
+        password: Admin@9000
         verify_tls: false
         timeout: 30
     - name: worker-02
+      k8s_node_name: wj-lab-cpt-02
       role: gpu
       ssh:
         host: 10.11.4.11
@@ -27,10 +29,11 @@ inventory:
       redfish:
         bmc_host: 10.11.8.11
         username: admin
-        password: REPLACE_ME
+        password: Admin@9000
         verify_tls: false
         timeout: 30
     - name: worker-03
+      k8s_node_name: wj-lab-cpt-03
       role: gpu
       ssh:
         host: 10.11.4.12
@@ -42,10 +45,11 @@ inventory:
       redfish:
         bmc_host: 10.11.8.12
         username: admin
-        password: REPLACE_ME
+        password: Admin@9000
         verify_tls: false
         timeout: 30
     - name: worker-04
+      k8s_node_name: wj-lab-cpt-04
       role: cpu
       ssh:
         host: 10.11.4.13
@@ -57,37 +61,39 @@ inventory:
       redfish:
         bmc_host: 10.11.8.13
         username: admin
-        password: REPLACE_ME
+        password: Admin@9000
         verify_tls: false
         timeout: 30
     - name: worker-05
+      k8s_node_name: wj-lab-cpt-05
       role: cpu
       ssh:
         host: 10.11.4.14
         port: 22
         user: yuyonghao
-        password: REPLACE_ME
+        password: "Yuyonghao@123"
         timeout: 30
         use_sudo: true
       redfish:
         bmc_host: 10.11.8.14
         username: admin
-        password: REPLACE_ME
+        password: Admin@9000
         verify_tls: false
         timeout: 30
     - name: worker-06
+      k8s_node_name: wj-lab-cpt-06
       role: cpu
       ssh:
         host: 10.11.4.15
         port: 22
         user: yuyonghao
-        password: REPLACE_ME
+        password: "Yuyonghao@123"
         timeout: 30
         use_sudo: true
       redfish:
         bmc_host: 10.11.8.15
         username: admin
-        password: REPLACE_ME
+        password: Admin@9000
         verify_tls: false
         timeout: 30
 
