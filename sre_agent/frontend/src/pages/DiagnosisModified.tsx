@@ -1,11 +1,14 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useParams } from "react-router-dom";
 
 import { buildBackendWsUrl } from "../api/ws";
-import { AppIcon, SectionHeader } from "../components/ui";
+import type { DiagnosisLocalAuditRecord, DiagnosisSession, SessionEvent } from "../api/types";
+import { AppIcon } from "../components/ui";
 import { useWebSocket } from "../hooks/useWebSocket";
 import { useDiagnosisStore } from "../store/diagnosisStore";
 import { formatDateTimeParts, formatTimestamp } from "../utils/format";
+import DiagnosisModifiedReportRail from "./DiagnosisModifiedReportRail";
+import { buildDiagnosisModifiedReportView } from "./diagnosisModifiedReportModel";
 import {
   buildDiagnosisModifiedDemoScenario,
   buildDiagnosisModifiedLiveView,
@@ -19,7 +22,13 @@ import {
 } from "./diagnosisModifiedModel";
 
 type BadgeTone = "neutral" | "accent" | "success" | "warning" | "danger" | "info";
-type ApprovalState = "pending" | "modifying" | "updating" | "approved" | "rejected";
+type ApprovalState = "pending" | "updating" | "approved" | "rejected";
+
+type ApprovalPlanResolution = {
+  label: string;
+  tone: BadgeTone;
+  description: string;
+};
 
 const DEMO_TEXT_SPEED_MS = 40;
 const DEMO_THINKING_COLLAPSE_DELAY_MS = 800;
@@ -27,9 +36,98 @@ const DEMO_EVENT_SLOWDOWN = 4.5;
 const DEMO_MIN_TOOL_LOADING_DWELL_MS = 3500;
 const TOOL_RESULT_TIMEOUT_MS = 15_000;
 const STREAM_COMPLETION_BUFFER_MS = 640;
+const DEMO_DEFAULT_PROMPT = "Analyze auth-svc latency and error-rate spike in the past hour";
+const FLOW_REMEDIATION_ENTRY_STATUSES = new Set([
+  "approval_required",
+  "awaiting_approval",
+  "approved",
+  "remediating",
+  "validating",
+  "resolved",
+  "closed",
+  "failed",
+  "timeout",
+  "escalated",
+]);
 
 function cn(...parts: Array<string | false | null | undefined>) {
   return parts.filter(Boolean).join(" ");
+}
+
+function buildRemediationPath(sessionId: string) {
+  return `/remediation?sessionId=${encodeURIComponent(sessionId)}`;
+}
+
+function getRemediationEntryLabel(status?: string) {
+  switch (String(status ?? "").trim().toLowerCase()) {
+    case "awaiting_approval":
+    case "approval_required":
+      return "\u5ba1\u6279\u4fee\u590d";
+    case "approved":
+    case "remediating":
+    case "validating":
+      return "\u67e5\u770b\u6267\u884c";
+    case "resolved":
+    case "closed":
+    case "failed":
+    case "timeout":
+    case "escalated":
+    case "rejected":
+      return "\u67e5\u770b\u4fee\u590d\u8bb0\u5f55";
+    default:
+      return "\u67e5\u770b\u4fee\u590d\u6982\u89c8";
+  }
+}
+
+function openRemediationPage(sessionId: string) {
+  window.open(buildRemediationPath(sessionId), "_blank", "noopener,noreferrer");
+}
+
+function RemediationJumpButton({
+  sessionId,
+  status,
+}: {
+  sessionId?: string;
+  status?: string;
+}) {
+  if (!sessionId) {
+    return null;
+  }
+
+  return (
+    <button
+      className="diagnosis-workspace-remediation-link"
+      onClick={() => openRemediationPage(sessionId)}
+      type="button"
+    >
+      {getRemediationEntryLabel(status)}
+    </button>
+  );
+}
+
+function shouldShowFlowRemediationEntry(status?: string) {
+  return FLOW_REMEDIATION_ENTRY_STATUSES.has(String(status ?? "").trim().toLowerCase());
+}
+
+function FlowRemediationEntry({
+  sessionId,
+  status,
+}: {
+  sessionId?: string;
+  status?: string;
+}) {
+  if (!sessionId || !shouldShowFlowRemediationEntry(status)) {
+    return null;
+  }
+
+  return (
+    <div
+      className="diagnosis-modified-trace-action-link"
+      data-testid="diagnosis-modified-flow-remediation-entry"
+    >
+      <RemediationJumpButton sessionId={sessionId} status={status} />
+    </div>
+  );
 }
 const THINK_TAG_BLOCK_PATTERN = /<think>([\s\S]*?)<\/think>/i;
 
@@ -65,7 +163,7 @@ function resolveInlineError(error?: string): { tone: "error" | "warning"; messag
     return {
       tone: "warning",
       message:
-        "The session could not be found (404). It may have expired or the backend detail endpoint is unavailable. You can still type below to start a new diagnosis.",
+        "The session could not be found (404). It may have expired or the backend detail endpoint is unavailable.",
     };
   }
   return { tone: "error", message: error };
@@ -125,6 +223,58 @@ function ToneBadge({ children, tone = "neutral" }: { children: ReactNode; tone?:
   return <span className={cn("diagnosis-modified-badge", `diagnosis-modified-badge--${tone}`)}>{children}</span>;
 }
 
+type TraceStepKind = "thought" | "tool_call" | "observation" | "decision" | "action_generated";
+
+const TRACE_STEP_META: Record<TraceStepKind, { label: string; glyph: string }> = {
+  thought: { label: "Thought / 推理", glyph: "T" },
+  tool_call: { label: "Tool Call / 工具调用", glyph: "C" },
+  observation: { label: "Observation / 观察结果", glyph: "O" },
+  decision: { label: "Decision / 形成判断", glyph: "D" },
+  action_generated: { label: "Action Generated / 生成修复动作", glyph: "A" },
+};
+
+function TraceStepFrame({
+  type,
+  title,
+  meta,
+  summary,
+  children,
+  className,
+  testId,
+}: {
+  type: TraceStepKind;
+  title: string;
+  meta?: string;
+  summary?: string;
+  children?: ReactNode;
+  className?: string;
+  testId?: string;
+}) {
+  const typeMeta = TRACE_STEP_META[type];
+
+  return (
+    <li
+      className={cn("diagnosis-modified-trace-step", `diagnosis-modified-trace-step--${type}`, className)}
+      data-testid={testId}
+    >
+      <div className="diagnosis-modified-trace-step__rail" aria-hidden="true">
+        <span>{typeMeta.glyph}</span>
+      </div>
+      <article className="diagnosis-modified-trace-step__body">
+        <header className="diagnosis-modified-trace-step__header">
+          <div>
+            <span className="diagnosis-modified-trace-step__type">{typeMeta.label}</span>
+            <h3 className="diagnosis-modified-trace-step__title">{title}</h3>
+          </div>
+          {meta ? <span className="diagnosis-modified-trace-step__meta">{meta}</span> : null}
+        </header>
+        {summary ? <p className="diagnosis-modified-trace-step__summary">{summary}</p> : null}
+        {children ? <div className="diagnosis-modified-trace-step__details">{children}</div> : null}
+      </article>
+    </li>
+  );
+}
+
 function StreamingText({
   text,
   animate = false,
@@ -160,11 +310,16 @@ function MessageRow({
   const hoverTime = formatTimestamp(item.timestamp);
 
   return (
-    <article className={cn("diagnosis-modified-message-row", isUser && "diagnosis-modified-message-row--user")} title={hoverTime}>
-      <div className="diagnosis-modified-message-row__body">
-        <span className="diagnosis-modified-message-row__hover-time" aria-hidden="true">
-          {hoverTime}
-        </span>
+    <TraceStepFrame
+      meta={hoverTime}
+      title={item.label ?? (isUser ? "补充输入" : "形成阶段判断")}
+      type={isUser ? "observation" : "decision"}
+    >
+      <div className={cn("diagnosis-modified-message-row", isUser && "diagnosis-modified-message-row--user")}>
+        <div className="diagnosis-modified-message-row__body">
+          <span className="diagnosis-modified-message-row__hover-time" aria-hidden="true">
+            {hoverTime}
+          </span>
         <p className="diagnosis-modified-message-row__text">
           <StreamingText
             animate={animate && !isUser}
@@ -173,7 +328,8 @@ function MessageRow({
           />
         </p>
       </div>
-    </article>
+      </div>
+    </TraceStepFrame>
   );
 }
 function ThinkingBlock({
@@ -198,9 +354,16 @@ function ThinkingBlock({
     return () => window.clearTimeout(timer);
   }, [isThinking, item.id]);
 
+  const durationLabel = formatThoughtDurationLabel(item.thoughtDurationSec ?? estimateThoughtDurationSecFromContent(item.content));
+
   return (
-    <article className="diagnosis-modified-process-row">
-      <div className="diagnosis-modified-process-row__body">
+    <TraceStepFrame
+      meta={isThinking ? "Thinking..." : durationLabel}
+      title={isThinking ? item.title || "正在推理" : "推理完成"}
+      type="thought"
+    >
+      <div className="diagnosis-modified-process-row">
+        <div className="diagnosis-modified-process-row__body">
         <button
           className={cn("diagnosis-modified-thinking__toggle", !isThinking && "diagnosis-modified-thinking__toggle--interactive")}
           onClick={() => {
@@ -219,8 +382,8 @@ function ThinkingBlock({
                 <AppIcon name="spark" size={11} />
               </span>
             ) : null}
-            <span className={cn("diagnosis-modified-thinking__label", isThinking && "diagnosis-modified-thinking__label--thinking")}>
-              {isThinking ? "Thinking..." : formatThoughtDurationLabel(item.thoughtDurationSec ?? estimateThoughtDurationSecFromContent(item.content))}
+          <span className={cn("diagnosis-modified-thinking__label", isThinking && "diagnosis-modified-thinking__label--thinking")}>
+              {isThinking ? item.title || "Thinking..." : "查看推理详情"}
             </span>
           </span>
           {item.toolName ? <span className="diagnosis-modified-thinking__tool">{item.toolName}</span> : null}
@@ -236,7 +399,8 @@ function ThinkingBlock({
           </div>
         ) : null}
       </div>
-    </article>
+      </div>
+    </TraceStepFrame>
   );
 }
 
@@ -254,8 +418,12 @@ function ToolCard({ item }: { item: Extract<DiagnosisModifiedTimelineItem, { kin
   }, [item.id, item.status]);
 
   return (
-    <article className="diagnosis-modified-process-row diagnosis-modified-process-row--tool">
-      <div className="diagnosis-modified-process-row__body">
+    <TraceStepFrame
+      title="执行工具调用"
+      type="tool_call"
+    >
+      <div className="diagnosis-modified-process-row diagnosis-modified-process-row--tool">
+        <div className="diagnosis-modified-process-row__body">
         <button
           className={cn(
             "diagnosis-modified-tool-card",
@@ -311,7 +479,54 @@ function ToolCard({ item }: { item: Extract<DiagnosisModifiedTimelineItem, { kin
           ) : null}
         </button>
       </div>
-    </article>
+      </div>
+    </TraceStepFrame>
+  );
+}
+
+function getActionGeneratedSummary(status?: string) {
+  switch (String(status ?? "").trim().toLowerCase()) {
+    case "approval_required":
+    case "awaiting_approval":
+      return "当前进入待审批阶段。";
+    case "approved":
+      return "修复建议已批准，等待执行链路推进。";
+    case "remediating":
+      return "修复动作正在执行。";
+    case "validating":
+      return "修复动作已进入验证阶段。";
+    case "resolved":
+    case "closed":
+      return "修复链路已完成收口。";
+    case "failed":
+    case "timeout":
+    case "escalated":
+      return "修复链路需要继续跟进。";
+    default:
+      return "已生成修复建议。";
+  }
+}
+
+function ActionGeneratedStep({
+  children,
+  plan,
+  status,
+}: {
+  children: ReactNode;
+  plan?: DiagnosisModifiedPlanView;
+  status?: string;
+}) {
+  return (
+    <TraceStepFrame
+      className="diagnosis-modified-trace-step--remediation"
+      meta={getRemediationEntryLabel(status)}
+      summary={getActionGeneratedSummary(status)}
+      testId="diagnosis-modified-action-generated-step"
+      title="已生成修复建议"
+      type="action_generated"
+    >
+      {children}
+    </TraceStepFrame>
   );
 }
 
@@ -453,59 +668,52 @@ function RCAReportCard({
     </section>
   );
 }
-function ApprovalPlanCard({ plan }: { plan: DiagnosisModifiedPlanView }) {
-  const [status, setStatus] = useState<ApprovalState>("pending");
-  const [modifyInput, setModifyInput] = useState("");
-  const [actions, setActions] = useState(plan.steps.map((step) => step.title));
+function getApprovalConfidenceMeta(label?: string) {
+  if (!label) {
+    return null;
+  }
 
-  useEffect(() => {
-    setStatus("pending");
-    setModifyInput("");
-    setActions(plan.steps.map((step) => step.title));
-  }, [plan]);
+  return /\u7f6e\u4fe1/u.test(label) ? label : `${label} \u7f6e\u4fe1`;
+}
 
-  const handleSubmitModify = useCallback(() => {
-    if (!modifyInput.trim()) {
-      return;
-    }
-
-    setStatus("updating");
-    window.setTimeout(() => {
-      setActions((current) =>
-        current.map((action, index) => {
-          if (index === 1) {
-            return "Only roll out to canary instances first, then observe Redis timeouts and error rate for 15 minutes before expanding scope.";
-          }
-          if (index === 2) {
-            return "Before moving to full rollout, add one more verification pass for database wait queue and cache hit ratio.";
-          }
-          return action;
-        }),
-      );
-      setModifyInput("");
-      setStatus("pending");
-    }, 1600);
-  }, [modifyInput]);
+function ApprovalPlanCard({
+  plan,
+  canApprove,
+  approvalBlockReason,
+  isSubmitting,
+  resolution,
+  onApprove,
+}: {
+  plan: DiagnosisModifiedPlanView;
+  canApprove: boolean;
+  approvalBlockReason?: string;
+  isSubmitting: boolean;
+  resolution: ApprovalPlanResolution | null;
+  onApprove: () => void;
+}) {
+  const statusTone = resolution?.tone ?? (canApprove ? "accent" : "neutral");
+  const statusLabel = resolution?.label ?? (canApprove ? "\u5f85\u5ba1\u6279" : "\u5f85\u5904\u7406");
+  const metaItems = [
+    plan.priorityLabel,
+    getApprovalConfidenceMeta(plan.confidenceLabel) ?? undefined,
+    plan.safetyLabel,
+    plan.canaryLabel,
+  ].filter((item): item is string => Boolean(item && item.trim().length > 0));
 
   return (
     <section
       className={cn(
         "diagnosis-modified-approval-card",
-        status === "approved" && "diagnosis-modified-approval-card--approved",
-        status === "rejected" && "diagnosis-modified-approval-card--rejected",
+        resolution?.tone === "success" && "diagnosis-modified-approval-card--approved",
+        resolution?.tone === "danger" && "diagnosis-modified-approval-card--rejected",
       )}
+      data-testid="diagnosis-modified-approval-surface"
     >
       <header className="diagnosis-modified-approval-card__header">
         <div>
           <div className="diagnosis-modified-approval-card__eyebrow">
-            <ToneBadge tone="neutral">Execution Plan</ToneBadge>
-            {status === "approved" ? (
-              <ToneBadge tone="success">Approved</ToneBadge>
-            ) : status === "rejected" ? (
-              <ToneBadge tone="danger">Rejected</ToneBadge>
-            ) : (
-              <ToneBadge tone="accent">Requires Approval</ToneBadge>
-            )}
+            <ToneBadge tone="neutral">\u8bca\u65ad\u4fee\u590d\u65b9\u6848</ToneBadge>
+            <ToneBadge tone={statusTone}>{statusLabel}</ToneBadge>
           </div>
           <h3 className="diagnosis-modified-approval-card__title">{plan.title}</h3>
           <p className="diagnosis-modified-approval-card__description">{plan.description}</p>
@@ -513,74 +721,65 @@ function ApprovalPlanCard({ plan }: { plan: DiagnosisModifiedPlanView }) {
       </header>
 
       <div className="diagnosis-modified-approval-card__body">
-        <div className="diagnosis-modified-approval-card__meta-row">
-          <ToneBadge tone="warning">{plan.priorityLabel}</ToneBadge>
-          <ToneBadge tone="neutral">{`AI Confidence ${plan.confidenceLabel}`}</ToneBadge>
-          {plan.safetyLabel ? <ToneBadge tone="info">{plan.safetyLabel}</ToneBadge> : null}
-          {plan.canaryLabel ? <ToneBadge tone="neutral">{plan.canaryLabel}</ToneBadge> : null}
-        </div>
+        {metaItems.length > 0 ? (
+          <div className="diagnosis-modified-approval-card__meta-row">
+            {metaItems.map((item) => (
+              <ToneBadge key={item} tone="neutral">
+                {item}
+              </ToneBadge>
+            ))}
+          </div>
+        ) : null}
+
+        {plan.impactSummary ? (
+          <section className="diagnosis-workspace-approval-surface__impact">
+            <span className="diagnosis-workspace-approval-surface__section-label">\u98ce\u9669\u5f71\u54cd</span>
+            <p>{plan.impactSummary}</p>
+          </section>
+        ) : null}
 
         <div className="diagnosis-modified-approval-card__actions-wrap">
-          {status === "updating" ? <div className="diagnosis-modified-approval-card__updating">Updating plan...</div> : null}
           <ol className="diagnosis-modified-approval-card__actions">
-            {actions.map((action, index) => (
-              <li key={`${action}-${index}`}>
+            {plan.steps.map((step, index) => (
+              <li key={step.id}>
                 <span>{index + 1}</span>
                 <div>
-                  <strong>{action}</strong>
-                  {plan.steps[index]?.detail ? <p>{plan.steps[index]?.detail}</p> : null}
-                  {plan.steps[index]?.paramsSummary ? <code>{plan.steps[index]?.paramsSummary}</code> : null}
+                  <strong>{step.title}</strong>
+                  {step.detail ? <p>{step.detail}</p> : null}
+                  {step.paramsSummary ? <code>{step.paramsSummary}</code> : null}
                 </div>
               </li>
             ))}
           </ol>
         </div>
 
-        {status === "pending" ? (
-          <div className="diagnosis-modified-approval-card__footer">
-            <button className="diagnosis-modified-action-btn diagnosis-modified-action-btn--primary" onClick={() => setStatus("approved")} type="button">
-              Approve & Execute
-            </button>
-            <button className="diagnosis-modified-action-btn" onClick={() => setStatus("rejected")} type="button">
-              Reject
-            </button>
-            <button className="diagnosis-modified-action-btn" onClick={() => setStatus("modifying")} type="button">
-              Modify Plan
-            </button>
-          </div>
+        {!resolution && approvalBlockReason ? (
+          <p className="diagnosis-workspace-approval-surface__note diagnosis-workspace-approval-surface__note--warning">
+            {approvalBlockReason}
+          </p>
         ) : null}
 
-        {status === "modifying" ? (
-          <div className="diagnosis-modified-approval-card__editor">
-            <p>Provide feedback to agent</p>
-            <div className="diagnosis-modified-approval-card__editor-row">
-              <textarea
-                onChange={(event) => setModifyInput(event.target.value)}
-                placeholder="Example: avoid a full rollout at once; start with canary verification first."
-                value={modifyInput}
-              />
-              <div>
-                <button
-                  className="diagnosis-modified-action-btn diagnosis-modified-action-btn--primary"
-                  disabled={!modifyInput.trim()}
-                  onClick={handleSubmitModify}
-                  type="button"
-                >
-                  Update Plan
-                </button>
-                <button className="diagnosis-modified-action-btn" onClick={() => setStatus("pending")} type="button">
-                  Cancel
-                </button>
-              </div>
-            </div>
-          </div>
+        {isSubmitting ? (
+          <div className="diagnosis-modified-approval-card__updating">\u6b63\u5728\u63d0\u4ea4\u5ba1\u6279...</div>
         ) : null}
 
-        {(status === "approved" || status === "rejected") ? (
+        {resolution ? (
           <div className="diagnosis-modified-approval-card__resolved">
-            <p>{status === "approved" ? "Plan approved. The agent will now execute the actions." : "Plan rejected. The agent will await further instructions."}</p>
+            <ToneBadge tone={resolution.tone}>{resolution.label}</ToneBadge>
+            <p>{resolution.description}</p>
           </div>
-        ) : null}
+        ) : (
+          <div className="diagnosis-modified-approval-card__footer">
+            <button
+              className="diagnosis-modified-action-btn diagnosis-modified-action-btn--primary"
+              disabled={isSubmitting || !canApprove}
+              onClick={onApprove}
+              type="button"
+            >
+              {isSubmitting ? "\u6b63\u5728\u63d0\u4ea4..." : "\u540c\u610f\u6267\u884c"}
+            </button>
+          </div>
+        )}
       </div>
     </section>
   );
@@ -590,17 +789,21 @@ function DiagnosisModifiedPage() {
   const params = useParams<{ sessionId?: string }>();
   const routeSessionId = (params.sessionId ?? "").trim();
   const shouldBootstrapLiveSession = routeSessionId.length > 0;
-  const [draft, setDraft] = useState("");
   const [demoTimeline, setDemoTimeline] = useState<DiagnosisModifiedTimelineItem[]>([]);
   const [demoCandidates, setDemoCandidates] = useState<DiagnosisModifiedCandidateView[]>([]);
   const [demoSummary, setDemoSummary] = useState<DiagnosisModifiedSummaryView | undefined>();
   const [demoPlan, setDemoPlan] = useState<DiagnosisModifiedPlanView | undefined>();
+  const [demoSession, setDemoSession] = useState<DiagnosisSession | undefined>();
+  const [demoEvents, setDemoEvents] = useState<SessionEvent[]>([]);
+  const [demoLocalAuditRecords, setDemoLocalAuditRecords] = useState<DiagnosisLocalAuditRecord[]>([]);
   const [demoHypotheses, setDemoHypotheses] = useState<DiagnosisModifiedHypothesisView[]>([]);
   const [demoPropagationChain, setDemoPropagationChain] = useState<DiagnosisModifiedPropagationStepView[]>([]);
-  const [demoState, setDemoState] = useState<"idle" | "running" | "complete">("idle");
   const [lastDemoPrompt, setLastDemoPrompt] = useState("");
   const [activeStreamingMessageId, setActiveStreamingMessageId] = useState<string | null>(null);
   const [liveTimeline, setLiveTimeline] = useState<DiagnosisModifiedTimelineItem[]>([]);
+  const [demoApprovalState, setDemoApprovalState] = useState<ApprovalState>("pending");
+  const [demoActionFeedback, setDemoActionFeedback] = useState<string | null>(null);
+  const [liveApprovalResolution, setLiveApprovalResolution] = useState<ApprovalPlanResolution | null>(null);
 
   const bottomRef = useRef<HTMLDivElement | null>(null);
   const demoTimerRef = useRef<number[]>([]);
@@ -630,14 +833,17 @@ function DiagnosisModifiedPage() {
     session,
     activeSessionId,
     messages,
+    events,
+    localAuditRecords,
     bootstrapStatus,
     traceStatus,
-    isLoadingSession,
-    isSendingMessage,
-    connectionState,
     error,
+    isApprovingPlan,
+    canApprove,
+    approvalBlockReason,
+    currentPlanVersion,
+    approvePlan,
     bootstrapSession,
-    sendMessage,
     applyEvent,
     setConnectionState,
   } = useDiagnosisStore();
@@ -652,6 +858,24 @@ function DiagnosisModifiedPage() {
     }
     void bootstrapSession(routeSessionId);
   }, [bootstrapSession, routeSessionId, shouldBootstrapLiveSession]);
+
+  useEffect(() => {
+    setLiveApprovalResolution(null);
+  }, [currentPlanVersion, session?.session_id]);
+
+  const handleApproveDemoPlan = useCallback(() => {
+    setDemoApprovalState("approved");
+    setDemoActionFeedback("\u5df2\u5728\u8bca\u65ad\u9875\u5185\u786e\u8ba4\u8be5\u4fee\u590d\u65b9\u6848\uff0c\u53ef\u7ee7\u7eed\u4ece\u6d41\u7a0b\u6216\u53f3\u4fa7\u67e5\u770b\u4fee\u590d\u8fdb\u5c55\u3002");
+  }, []);
+
+  const handleApproveLivePlan = useCallback(async () => {
+    await approvePlan({ approved: true });
+    setLiveApprovalResolution({
+      label: "\u5df2\u63d0\u4ea4",
+      tone: "success",
+      description: "\u4fee\u590d\u65b9\u6848\u5df2\u63d0\u4ea4\u5ba1\u6279\u6307\u4ee4\uff0c\u5373\u5c06\u8fdb\u5165\u6267\u884c\u94fe\u8def\u3002",
+    });
+  }, [approvePlan]);
 
   const clearDemoTimers = useCallback(() => {
     demoTimerRef.current.forEach((timerId) => window.clearTimeout(timerId));
@@ -1000,9 +1224,10 @@ function DiagnosisModifiedPage() {
       setDemoPropagationChain([]);
       setDemoSummary(undefined);
       setDemoPlan(undefined);
-      setDemoState("running");
+      setDemoSession(undefined);
+      setDemoApprovalState("pending");
+      setDemoActionFeedback(null);
       setLastDemoPrompt(normalizedPrompt);
-      setDraft("");
 
       void (async () => {
         let previousDelay = 0;
@@ -1146,6 +1371,11 @@ function DiagnosisModifiedPage() {
             return true;
           }
 
+          if (event.type === "update_candidates") {
+            setDemoCandidates(event.candidates);
+            return true;
+          }
+
           if (event.type === "update_tool") {
             if (!knownDemoToolIds.has(event.targetId)) {
               return false;
@@ -1225,8 +1455,8 @@ function DiagnosisModifiedPage() {
           setDemoPropagationChain(scenario.propagationChain ?? []);
           setDemoSummary(scenario.summary);
           setDemoPlan(scenario.plan);
+          setDemoSession(scenario.session);
           clearDemoToolLoadingStates();
-          setDemoState("complete");
           return true;
         };
 
@@ -1283,30 +1513,13 @@ function DiagnosisModifiedPage() {
     [clearDemoTimers, clearDemoToolLoadingStates, clearPendingMessageStreams, clearPendingThinkingStreams, waitForDemoDelay, waitForMessageStream, waitForThinkingStream],
   );
 
-  const handleSubmit = useCallback(() => {
-    const content = draft.trim();
-    if (!content) {
+  const handleStartDemo = useCallback(() => {
+    if (hasLiveSession) {
       return;
     }
 
-    if (hasLiveSession && activeSessionId) {
-      setDraft("");
-      void sendMessage(content);
-      return;
-    }
-
-    startDemo(content);
-  }, [activeSessionId, draft, hasLiveSession, sendMessage, startDemo]);
-
-  const handleInputKeyDown = useCallback(
-    (event: KeyboardEvent<HTMLTextAreaElement>) => {
-      if (event.key === "Enter" && !event.shiftKey) {
-        event.preventDefault();
-        handleSubmit();
-      }
-    },
-    [handleSubmit],
-  );
+    startDemo(lastDemoPrompt || DEMO_DEFAULT_PROMPT);
+  }, [hasLiveSession, lastDemoPrompt, startDemo]);
 
   const handleRealtimeEvent = useCallback(
     (event: Parameters<typeof applyEvent>[0]) => {
@@ -1334,165 +1547,251 @@ function DiagnosisModifiedPage() {
   }, [setConnectionState, ws.state]);
 
   const activeTimeline = hasLiveSession ? liveTimeline : demoTimeline;
+  const activeTraceItems = useMemo(
+    () =>
+      activeTimeline.filter(
+        (item, index) => !(index === 0 && item.kind === "message" && item.role === "user"),
+      ),
+    [activeTimeline],
+  );
   const activeCandidates = hasLiveSession ? liveView.candidates : demoCandidates;
-  const activeHypotheses = hasLiveSession ? liveView.hypotheses ?? [] : demoHypotheses;
-  const activePropagationChain = hasLiveSession ? liveView.propagationChain ?? [] : demoPropagationChain;
   const activeSummary = hasLiveSession ? liveView.summary : demoSummary;
   const activePlan = hasLiveSession ? liveView.plan : demoPlan;
+  const activeSession = hasLiveSession ? session : demoSession;
+  const activeEvents = hasLiveSession ? events : demoEvents;
+  const activeLocalAuditRecords = hasLiveSession ? localAuditRecords : demoLocalAuditRecords;
+
+  const reportView = useMemo(
+    () =>
+      buildDiagnosisModifiedReportView({
+        session: activeSession,
+        timeline: activeTimeline,
+        candidates: activeCandidates,
+        summary: activeSummary,
+        plan: activePlan,
+        events: activeEvents,
+        localAuditRecords: activeLocalAuditRecords,
+      }),
+    [
+      activeCandidates,
+      activeEvents,
+      activeLocalAuditRecords,
+      activePlan,
+      activeSession,
+      activeSummary,
+      activeTimeline,
+    ],
+  );
+
+  const remediationActionContent = useMemo(() => {
+    if (!activeSession?.session_id) {
+      return undefined;
+    }
+
+    return (
+      <RemediationJumpButton
+        sessionId={activeSession.session_id}
+        status={activeSession.status}
+      />
+    );
+  }, [activeSession]);
+
+  const flowRemediationEntry = useMemo(() => {
+    if (!activeSession?.session_id || activeTimeline.length === 0) {
+      return null;
+    }
+
+    return (
+      <FlowRemediationEntry
+        sessionId={activeSession.session_id}
+        status={activeSession.status}
+      />
+    );
+  }, [activeSession, activeTimeline.length]);
+
+
+  const inlineApprovalSurface = useMemo(() => {
+    if (!activePlan || !activeSession) {
+      return null;
+    }
+
+    const normalizedStatus = String(activeSession.status ?? "").trim().toLowerCase();
+    const shouldShowPendingSurface = hasLiveSession
+      ? normalizedStatus === "approval_required" || normalizedStatus === "awaiting_approval"
+      : normalizedStatus === "approval_required";
+
+    const resolution: ApprovalPlanResolution | null = hasLiveSession
+      ? liveApprovalResolution
+      : demoApprovalState === "approved"
+        ? {
+            label: "\u5df2\u6279\u51c6",
+            tone: "success" as const,
+            description:
+              demoActionFeedback ??
+              "\u5f53\u524d\u4fee\u590d\u65b9\u6848\u5df2\u5728\u8bca\u65ad\u9875\u5185\u6279\u51c6\u3002",
+          }
+        : null;
+
+    if (!shouldShowPendingSurface && !resolution) {
+      return null;
+    }
+
+    return (
+      <ApprovalPlanCard
+        approvalBlockReason={resolution ? undefined : hasLiveSession ? approvalBlockReason : undefined}
+        canApprove={hasLiveSession ? canApprove : demoApprovalState === "pending"}
+        isSubmitting={hasLiveSession ? isApprovingPlan : demoApprovalState === "updating"}
+        onApprove={hasLiveSession ? () => void handleApproveLivePlan() : handleApproveDemoPlan}
+        plan={activePlan}
+        resolution={resolution}
+      />
+    );
+  }, [
+    activePlan,
+    activeSession,
+    approvalBlockReason,
+    canApprove,
+    demoActionFeedback,
+    demoApprovalState,
+    handleApproveDemoPlan,
+    handleApproveLivePlan,
+    hasLiveSession,
+    isApprovingPlan,
+    liveApprovalResolution,
+  ]);
+
+  const actionGeneratedStep = useMemo(() => {
+    if (!flowRemediationEntry && !inlineApprovalSurface) {
+      return null;
+    }
+
+    return (
+      <ActionGeneratedStep plan={activePlan} status={activeSession?.status}>
+        {flowRemediationEntry}
+        {inlineApprovalSurface}
+      </ActionGeneratedStep>
+    );
+  }, [activePlan, activeSession?.status, flowRemediationEntry, inlineApprovalSurface]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
-  }, [activePlan, activeSummary, activeTimeline]);
+  }, [activeTimeline]);
 
   const inlineError = useMemo(
     () => (shouldBootstrapLiveSession ? resolveInlineError(error) : null),
     [error, shouldBootstrapLiveSession],
   );
 
-  const composerDisabled =
-    (shouldBootstrapLiveSession ? isLoadingSession : false) || isSendingMessage || demoState === "running";
-  const introCopy = hasLiveSession
-    ? "当前页面正在消费真实诊断会话，并按统一流程呈现思考、工具调用、根因分析与审批执行。"
-    : demoState === "idle"
-      ? "输入诊断问题后，页面会按较慢节奏回放完整诊断过程，方便逐步查看每一次思考与工具调用。"
-      : "当前正在按慢速回放诊断流程。";
-
   return (
     <div className="page-grid diagnosis-modified-page">
-      <div className="page-intro">
-        <SectionHeader
-          title="诊断（修改）"
-          description={introCopy}
-          actions={
-            <div className="diagnosis-modified-shell__header-actions">
-              <div className="diagnosis-modified-shell__badges">
-                <ToneBadge tone={hasLiveSession ? "success" : "accent"}>{hasLiveSession ? "实时会话" : "演示模式"}</ToneBadge>
-                {hasLiveSession && activeSessionId ? <ToneBadge tone="neutral">{activeSessionId}</ToneBadge> : null}
-                {hasLiveSession ? <ToneBadge tone={connectionState === "open" ? "success" : "warning"}>{`实时链路 ${connectionState}`}</ToneBadge> : null}
+      <section className="diagnosis-modified-shell diagnosis-modified-shell--split-layout">
+        <div
+          className="diagnosis-modified-shell__body diagnosis-modified-shell__body--split"
+          data-layout="trace-report"
+          data-testid="diagnosis-modified-split-workspace"
+        >
+          <div
+            aria-label="诊断轨迹"
+            className="diagnosis-modified-main-pane"
+            data-testid="diagnosis-modified-main-pane"
+          >
+            <header className="diagnosis-modified-pane-header diagnosis-modified-pane-header--trace">
+              <div>
+                <p>Thinking Trace</p>
+                <h2>诊断轨迹</h2>
               </div>
-            </div>
-          }
-        />
-      </div>
-
-      <section className="diagnosis-modified-shell">
-        <div className="diagnosis-modified-shell__body">
-          <div className="diagnosis-modified-feed">
-            {activeTimeline.length === 0 ? (
-              <div className="diagnosis-modified-empty-state">
-                <div className="diagnosis-modified-empty-state__icon">
-                  <AppIcon name="aiChat" size={18} />
+              <span>实时推理链路</span>
+            </header>
+            <div className="diagnosis-modified-feed" data-testid="diagnosis-modified-timeline">
+              {activeTimeline.length === 0 ? (
+                <div className="diagnosis-modified-empty-state">
+                  <div className="diagnosis-modified-empty-state__icon">
+                    <AppIcon name="aiChat" size={18} />
+                  </div>
+                  <h2>Ready to Start Diagnosis and Remediation</h2>
+                  <p>Inspect reasoning and tool calls on the left; the report on the right stays synchronized.</p>
+                  {!hasLiveSession ? (
+                    <button
+                      className="diagnosis-modified-action-btn diagnosis-modified-action-btn--primary"
+                      onClick={handleStartDemo}
+                      type="button"
+                    >
+                      Start Demo
+                    </button>
+                  ) : null}
                 </div>
-                <h2>Welcome to the RCA Agent</h2>
-                <p>Type your request below to trigger the ReAct diagnostic process, or use the pre-filled example.</p>
-              </div>
-            ) : (
-              activeTimeline.map((item) => {
-                if (item.kind === "message") {
-                  const shouldAnimateAssistantMessage =
-                    item.role === "assistant" && activeStreamingMessageId === item.id;
+              ) : (
+                <ol className="diagnosis-modified-trace-list" data-testid="diagnosis-modified-trace-list">
+                  {activeTraceItems.map((item) => {
+                    if (item.kind === "message") {
+                      const shouldAnimateAssistantMessage =
+                        item.role === "assistant" && activeStreamingMessageId === item.id;
 
-                  return (
-                    <MessageRow
-                      animate={shouldAnimateAssistantMessage}
-                      item={item}
-                      key={item.id}
-                      onStreamComplete={
-                        shouldAnimateAssistantMessage
-                          ? () => {
-                              resolveMessageStream(item.id);
-                            }
-                          : undefined
-                      }
-                    />
-                  );
-                }
+                      return (
+                        <MessageRow
+                          animate={shouldAnimateAssistantMessage}
+                          item={item}
+                          key={item.id}
+                          onStreamComplete={
+                            shouldAnimateAssistantMessage
+                              ? () => {
+                                  resolveMessageStream(item.id);
+                                }
+                              : undefined
+                          }
+                        />
+                      );
+                    }
 
-                if (item.kind === "thinking") {
-                  const shouldAnimateThinking = !hasLiveSession && item.status === "thinking";
-                  return (
-                    <ThinkingBlock
-                      animate={shouldAnimateThinking}
-                      item={item}
-                      key={item.id}
-                      onStreamComplete={
-                        shouldAnimateThinking
-                          ? () => {
-                              resolveThinkingStream(item.id);
-                            }
-                          : undefined
-                      }
-                    />
-                  );
-                }
+                    if (item.kind === "thinking") {
+                      const shouldAnimateThinking = !hasLiveSession && item.status === "thinking";
+                      return (
+                        <ThinkingBlock
+                          animate={shouldAnimateThinking}
+                          item={item}
+                          key={item.id}
+                          onStreamComplete={
+                            shouldAnimateThinking
+                              ? () => {
+                                  resolveThinkingStream(item.id);
+                                }
+                              : undefined
+                          }
+                        />
+                      );
+                    }
 
-                return <ToolCard item={item} key={item.id} />;
-              })
-            )}
+                    return <ToolCard item={item} key={item.id} />;
+                  })}
 
-            {hasLiveSession && traceStatus === "empty" ? (
-              <div className="diagnosis-modified-inline-note">
-                The live session has not produced trace entries yet. The input remains available while waiting for incremental diagnosis events.
-              </div>
-            ) : null}
+                  {actionGeneratedStep}
+                </ol>
+              )}
 
-            {inlineError ? (
-              <div
-                className={cn(
-                  "diagnosis-modified-inline-note",
-                  inlineError.tone === "error" ? "diagnosis-modified-inline-note--error" : "diagnosis-modified-inline-note--warning",
-                )}
-              >
-                {inlineError.message}
-              </div>
-            ) : null}
+              {hasLiveSession && traceStatus === "empty" ? (
+                <div className="diagnosis-modified-inline-note">
+                  Live session has not produced new trace entries yet.
+                </div>
+              ) : null}
 
-            {activeSummary ? <RCAReportCard candidates={activeCandidates} hypotheses={activeHypotheses} propagationChain={activePropagationChain} summary={activeSummary} timeline={activeTimeline} /> : null}
-            {activePlan ? <ApprovalPlanCard plan={activePlan} /> : null}
-            <div ref={bottomRef} />
-          </div>
-        </div>
-
-        <footer className="diagnosis-modified-shell__footer">
-          <div className="diagnosis-modified-composer">
-            <textarea
-              className="diagnosis-modified-composer__input"
-              disabled={composerDisabled}
-              onChange={(event) => setDraft(event.target.value)}
-              onKeyDown={handleInputKeyDown}
-              placeholder={
-                hasLiveSession
-                  ? "Continue the current diagnosis session, for example: explain why these root-cause candidates were selected."
-                  : "Ask the agent to diagnose an issue... (Press Enter to start)"
-              }
-              rows={1}
-              value={draft}
-            />
-            <div className="diagnosis-modified-composer__actions">
-              <p className="diagnosis-modified-composer__hint">
-                {hasLiveSession
-                  ? "The live data stream is preserved and rendered with Toolcall pacing and hierarchy."
-                  : "Without an active session, local demo mode runs and replays a slower Toolcall-style diagnosis flow."}
-              </p>
-              <div className="diagnosis-modified-composer__buttons">
-                {!hasLiveSession && demoTimeline.length > 0 ? (
-                  <button className="diagnosis-modified-send-btn diagnosis-modified-send-btn--secondary" onClick={() => startDemo(lastDemoPrompt || draft || "Analyze auth-svc latency and error-rate spike in the past hour")} type="button">
-                    Replay
-                  </button>
-                ) : null}
-                <button
-                  className="diagnosis-modified-send-btn"
-                  disabled={composerDisabled || !draft.trim()}
-                  onClick={handleSubmit}
-                  type="button"
+              {inlineError ? (
+                <div
+                  className={cn(
+                    "diagnosis-modified-inline-note",
+                    inlineError.tone === "error"
+                      ? "diagnosis-modified-inline-note--error"
+                      : "diagnosis-modified-inline-note--warning",
+                  )}
                 >
-                  <AppIcon name="send" size={14} />
-                </button>
-              </div>
+                  {inlineError.message}
+                </div>
+              ) : null}
+              <div ref={bottomRef} />
             </div>
           </div>
-          <p className="diagnosis-modified-shell__footer-note">Agent can make mistakes. Consider verifying important information.</p>
-        </footer>
+
+          <DiagnosisModifiedReportRail actionContent={remediationActionContent} view={reportView} />
+        </div>
       </section>
     </div>
   );

@@ -1,4 +1,4 @@
-﻿import { render, waitFor, within } from "@testing-library/react";
+import { render, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
 
@@ -15,7 +15,7 @@ describe("RemediationPage", () => {
       expect(container.querySelector(".remediation-record-table__row")).toBeTruthy();
     });
 
-    expect(queryByText(/修复记录加载失败/)).toBeNull();
+    expect(queryByText(/锟睫革拷锟斤拷录锟斤拷锟斤拷失锟斤拷/)).toBeNull();
   });
 
   it("opens the selected record in a right-side drawer and closes it", async () => {
@@ -41,15 +41,15 @@ describe("RemediationPage", () => {
 
     const scoped = within(drawer!);
     expect(drawer!.querySelector(".remediation-plan-overview__facts")).toBeTruthy();
-    expect(scoped.getByRole("button", { name: /返回修复列表/ })).toBeTruthy();
+    expect(scoped.getByRole("button", { name: /\u8fd4\u56de\u4fee\u590d\u5217\u8868/ })).toBeTruthy();
 
-    const stepButton = scoped.getByRole("button", { name: /查看步骤 1 详情/ });
+    const stepButton = scoped.getByRole("button", { name: /\u67e5\u770b\u6b65\u9aa4 1 \u8be6\u60c5/ });
     await user.click(stepButton);
 
-    expect(scoped.getByText("步骤 1 详情")).toBeTruthy();
-    expect(scoped.getByText("执行参数")).toBeTruthy();
+    expect(scoped.getByText("\u6b65\u9aa4 1 \u8be6\u60c5")).toBeTruthy();
+    expect(scoped.getByText("\u6267\u884c\u53c2\u6570")).toBeTruthy();
 
-    await user.click(scoped.getByRole("button", { name: /返回修复列表/ }));
+    await user.click(scoped.getByRole("button", { name: /\u8fd4\u56de\u4fee\u590d\u5217\u8868/ }));
 
     await waitFor(() => {
       expect(container.querySelector(".remediation-drawer__panel")).toBeFalsy();
@@ -66,8 +66,9 @@ describe("RemediationPage", () => {
       return panel;
     });
 
-    expect(within(drawer!).getByText("VLLM 延迟过高 · CRITICAL")).toBeInTheDocument();
+    expect(within(drawer!).getByText("VLLM \u5ef6\u8fdf\u8fc7\u9ad8 \u00b7 CRITICAL")).toBeInTheDocument();
     window.history.pushState({}, "", "/");
   });
 });
+
 

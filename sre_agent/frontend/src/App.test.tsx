@@ -91,7 +91,7 @@ describe("App shell", () => {
     );
 
     await waitFor(() => {
-      expect(screen.getByRole("button", { name: "拓扑" }).className).toContain("nav-item--active");
+      expect(screen.getByRole("button", { name: "AIDC档案" }).className).toContain("nav-item--active");
     });
   });
 
@@ -223,4 +223,6 @@ describe("App shell", () => {
     expect(modifiedAlertsButton.className).toContain("nav-item--active");
   });
 });
+
+
 

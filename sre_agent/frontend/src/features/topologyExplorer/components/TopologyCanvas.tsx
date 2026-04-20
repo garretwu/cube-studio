@@ -43,6 +43,14 @@ import {
 } from "../modifiedEdgeRouting";
 import type { ExplorerLayoutPreset } from "../types";
 
+type ExpandedAggregateMetaEntry = {
+  aggregateId: string;
+  label: string;
+  memberIds: string[];
+};
+
+type ExpandedAggregateMetaMap = Record<string, ExpandedAggregateMetaEntry>;
+
 type TopologyCanvasProps = {
   nodes: TopologyObject[];
   edges: TopologyRelation[];
@@ -50,7 +58,7 @@ type TopologyCanvasProps = {
   hoveredNodeId?: string;
   highlightedTypes?: TopologyObject["type"][];
   expandedAggregateIds?: string[];
-  expandedAggregateMeta?: Record<string, { aggregateId: string; label: string; memberIds: string[] }>;
+  expandedAggregateMeta?: ExpandedAggregateMetaMap;
   onCollapseAggregate?: (aggregateId: string) => void;
   forceEdgeLabels?: boolean;
   matchedNodeIds: string[];
@@ -83,6 +91,7 @@ type ExplorerFlowNodeData = {
   selected: boolean;
   searchHit: boolean;
   dimmed: boolean;
+  isGroupMember: boolean;
   neighborDepth: number;
   metrics: TopologyCanvasMetrics;
   variant: TopologyCanvasVariant;
@@ -270,6 +279,49 @@ function getNodeSummary(node: TopologyObject) {
   return node.summary;
 }
 
+export function getExpandedAggregateMemberIdSet(
+  expandedAggregateIds: string[] | undefined,
+  expandedAggregateMeta: ExpandedAggregateMetaMap | undefined,
+) {
+  const memberIdSet = new Set<string>();
+  const aggregateIds = expandedAggregateIds ?? [];
+  const meta = expandedAggregateMeta ?? {};
+
+  aggregateIds.forEach((aggregateId) => {
+    const entry = meta[aggregateId];
+    if (!entry) {
+      return;
+    }
+    entry.memberIds.forEach((memberId) => memberIdSet.add(memberId));
+  });
+
+  return memberIdSet;
+}
+
+export function getGroupExpansionNodeVisualState({
+  nodeId,
+  hasExpandedAggregate,
+  expandedMemberIdSet,
+}: {
+  nodeId: string;
+  hasExpandedAggregate: boolean;
+  expandedMemberIdSet: Set<string>;
+}) {
+  if (!hasExpandedAggregate) {
+    return {
+      isGroupMember: false,
+      dimmedByExpandedGroup: false,
+      zIndex: undefined as number | undefined,
+    };
+  }
+
+  const isGroupMember = expandedMemberIdSet.has(nodeId);
+  return {
+    isGroupMember,
+    dimmedByExpandedGroup: !isGroupMember,
+    zIndex: isGroupMember ? 6 : 1,
+  };
+}
 export function shouldShowModifiedEdgeLabel({
   selectedNodeId,
   activeEdgeId,
@@ -368,7 +420,7 @@ function getModifiedHandleStyle(position: Position, metrics: TopologyCanvasMetri
 }
 
 function ExplorerNode({ data }: NodeProps<Node<ExplorerFlowNodeData>>) {
-  const { node, selected, searchHit, dimmed, neighborDepth, metrics, variant, onSelectNode } = data;
+  const { node, selected, searchHit, dimmed, isGroupMember, neighborDepth, metrics, variant, onSelectNode } = data;
   const isAggregate = isSyntheticServiceAggregateNode(node) || isSyntheticGpuAggregateNode(node);
   const aggregateCount = getAggregateCount(node);
   const handleStyle = { ...HANDLE_STYLE, top: metrics.nodeCircleSize / 2 + 2 };
@@ -387,6 +439,7 @@ function ExplorerNode({ data }: NodeProps<Node<ExplorerFlowNodeData>>) {
           searchHit ? "topology-flow-node--search-hit" : "",
           dimmed ? "topology-flow-node--dimmed" : "",
           isAggregate ? "topology-flow-node--aggregate" : "",
+          isGroupMember ? "topology-flow-node--group-member" : "",
         ]
           .filter(Boolean)
           .join(" ")}
@@ -535,6 +588,11 @@ const TopologyCanvas = forwardRef<TopologyCanvasHandle, TopologyCanvasProps>(fun
   const metrics = TOPOLOGY_CANVAS_METRICS[variant];
   const highlightSet = useMemo(() => new Set(highlightedTypes ?? []), [highlightedTypes]);
   const hasTypeHighlight = (highlightedTypes?.length ?? 0) > 0;
+  const expandedMemberIdSet = useMemo(
+    () => getExpandedAggregateMemberIdSet(expandedAggregateIds, expandedAggregateMeta),
+    [expandedAggregateIds, expandedAggregateMeta],
+  );
+  const hasExpandedAggregate = expandedMemberIdSet.size > 0;
   const nodeTypeById = useMemo(() => new Map(nodes.map((node) => [node.id, node.type] as const)), [nodes]);
 
   if (layoutRef.current !== layoutPreset || nodeKeyRef.current !== nodeKey || variantRef.current !== variant) {
@@ -559,13 +617,19 @@ const TopologyCanvas = forwardRef<TopologyCanvasHandle, TopologyCanvasProps>(fun
       const inSelectionChain = neighborDepths.has(node.id);
       const dimmedBySelection = Boolean(selectedNodeId) && node.id !== selectedNodeId && !inSelectionChain;
       const dimmedByType = hasTypeHighlight && !highlightSet.has(node.type);
-      const dimmed = dimmedBySelection || dimmedByType;
+      const groupVisualState = getGroupExpansionNodeVisualState({
+        nodeId: node.id,
+        hasExpandedAggregate,
+        expandedMemberIdSet,
+      });
+      const dimmed = dimmedBySelection || dimmedByType || groupVisualState.dimmedByExpandedGroup;
 
       return {
         id: node.id,
         type: "assetNode",
         position,
         draggable: true,
+        zIndex: groupVisualState.zIndex,
         width: metrics.nodeWidth,
         height: metrics.nodeHeight,
         data: {
@@ -573,6 +637,7 @@ const TopologyCanvas = forwardRef<TopologyCanvasHandle, TopologyCanvasProps>(fun
           selected: node.id === selectedNodeId,
           searchHit: matchedNodeIds.includes(node.id),
           dimmed,
+          isGroupMember: groupVisualState.isGroupMember,
           neighborDepth,
           metrics,
           variant,
@@ -581,6 +646,8 @@ const TopologyCanvas = forwardRef<TopologyCanvasHandle, TopologyCanvasProps>(fun
       };
     });
   }, [
+    expandedMemberIdSet,
+    hasExpandedAggregate,
     hasTypeHighlight,
     highlightSet,
     layoutPositions,
@@ -641,13 +708,13 @@ const TopologyCanvas = forwardRef<TopologyCanvasHandle, TopologyCanvasProps>(fun
         data: {
           aggregateId: entry.aggregateId,
           label: entry.label,
-          count: entry.memberIds.length,
+          count: memberNodes.length,
           onCollapse: onCollapseAggregate,
         },
         style: {
           width,
           height,
-          zIndex: 0,
+          zIndex: 4,
         },
       });
     });

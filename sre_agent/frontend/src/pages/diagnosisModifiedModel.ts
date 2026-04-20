@@ -111,6 +111,7 @@ export type DiagnosisModifiedPlanView = {
   confidenceLabel: string;
   safetyLabel?: string;
   canaryLabel?: string;
+  impactSummary?: string;
   steps: DiagnosisModifiedPlanStepView[];
 };
 
@@ -128,6 +129,11 @@ export type DiagnosisModifiedDemoEvent =
       delayMs: number;
       type: "append";
       item: DiagnosisModifiedTimelineItem;
+    }
+  | {
+      delayMs: number;
+      type: "update_candidates";
+      candidates: DiagnosisModifiedCandidateView[];
     }
   | {
       delayMs: number;
@@ -156,6 +162,7 @@ export type DiagnosisModifiedDemoScenario = {
   propagationChain?: DiagnosisModifiedPropagationStepView[];
   summary: DiagnosisModifiedSummaryView;
   plan: DiagnosisModifiedPlanView;
+  session?: DiagnosisSession;
 };
 
 function isThinkingStep(entry: ThinkingStep | Observation): entry is ThinkingStep {
@@ -471,6 +478,7 @@ function buildPlan(session: DiagnosisSession | undefined): DiagnosisModifiedPlan
     safetyLabel: plan.safety_level,
     canaryLabel:
       plan.canary?.enabled ? `\u91d1\u4e1d\u96c0 ${plan.canary.target_percentage}% | \u89c2\u6d4b ${plan.canary.monitor_duration}m` : undefined,
+    impactSummary: plan.estimated_impact,
     steps: plan.steps.map((step, index) => ({
       id: `${plan.plan_id}-${step.step_id}-${index}`,
       title: step.description,
@@ -842,6 +850,21 @@ export function buildDiagnosisModifiedDemoScenario(prompt: string): DiagnosisMod
   const hypotheses = buildHypotheses(demoSession);
   const propagationChain = buildPropagationChain(demoSession);
 
+  const initialCandidates: DiagnosisModifiedCandidateView[] = candidates.map((candidate) => {
+    const normalizedConfidence = Number.isFinite(candidate.confidence)
+      ? Math.max(0, Math.min(1, candidate.confidence))
+      : 0;
+    const seeded = Math.max(0.18, Math.min(0.72, normalizedConfidence * 0.55));
+    return {
+      ...candidate,
+      confidence: seeded,
+      confidenceLabel: `${Math.round(seeded * 100)}%`,
+      isPrimary: false,
+      statusLabel: `候选 ${candidate.rank ?? "-"}`,
+      statusTone: "neutral",
+    };
+  });
+
   const plan =
     buildPlan(demoSession) ??
     ({
@@ -870,26 +893,44 @@ export function buildDiagnosisModifiedDemoScenario(prompt: string): DiagnosisMod
         item: {
           id: thinkingOneId,
           kind: "thinking",
-          title: "\u7406\u89e3\u7528\u6237\u8bf7\u6c42",
-          content: `\u5148\u786e\u8ba4 ${serviceName} \u7684\u5173\u952e\u6307\u6807\uff0c\u518d\u7ed3\u5408\u8282\u70b9\u8d44\u6e90\u3001\u9519\u8bef\u65e5\u5fd7\u548c\u90e8\u7f72\u8bb0\u5f55\u7f29\u5c0f\u6392\u67e5\u8303\u56f4\u3002`,
+          title: "\u6b63\u5728\u6784\u5efa\u4e0a\u4e0b\u6587...",
+          content: `\u6b63\u5728\u805a\u5408 ${serviceName} \u7684\u544a\u8b66\u3001\u5386\u53f2\u4f1a\u8bdd\u3001\u5173\u952e\u6307\u6807\u4e0e\u6700\u8fd1\u53d8\u66f4\uff0c\u5148\u5efa\u7acb\u8bca\u65ad\u57fa\u7ebf\u518d\u8fdb\u5165\u6839\u56e0\u5206\u6790\u3002`,
           timestamp: new Date(now + 240).toISOString(),
           status: "thinking",
         },
       },
       {
-        delayMs: 480,
+        delayMs: 560,
+        type: "update_thinking",
+        targetId: thinkingOneId,
+        status: "completed",
+      },
+      {
+        delayMs: 700,
+        type: "append",
+        item: {
+          id: `demo-assistant-context-summary-${now}`,
+          kind: "message",
+          role: "assistant",
+          content: `\u4e0a\u4e0b\u6587\u6784\u5efa\u5b8c\u6210\uff1a\u672c\u6b21\u5f02\u5e38\u96c6\u4e2d\u5728 ${serviceName} \u63a8\u7406\u94fe\u8def\uff0c\u544a\u8b66\u7a97\u53e3\u5185\u5ef6\u8fdf\u62ac\u5347\u4e0e\u8282\u70b9\u8d44\u6e90\u5360\u7528\u540c\u6b65\u51fa\u73b0\uff0c\u4f18\u5148\u6392\u67e5\u8282\u70b9\u7ea7\u8d44\u6e90\u4e89\u7528\u3002`,
+          timestamp: new Date(now + 700).toISOString(),
+          label: "\u4e0a\u4e0b\u6587\u7ed3\u8bba",
+        },
+      },
+      {
+        delayMs: 980,
         type: "append",
         item: {
           id: `demo-assistant-next-step-1-${now}`,
           kind: "message",
           role: "assistant",
-          content: `\u7b2c\u4e00\u6b65\u4f1a\u5148\u62c9\u53d6 ${serviceName} \u7684\u5173\u952e\u6307\u6807\uff0c\u786e\u8ba4\u5ef6\u8fdf\u4e0e\u8d44\u6e90\u4f7f\u7528\u662f\u5426\u540c\u6b65\u5f02\u5e38\uff0c\u518d\u5224\u65ad\u662f\u4e0d\u662f\u8282\u70b9\u7ea7\u95ee\u9898\u3002`,
-          timestamp: new Date(now + 480).toISOString(),
+          content: `\u63a5\u4e0b\u6765\u5148\u62c9\u53d6 ${serviceName} \u7684\u5173\u952e\u6307\u6807\uff0c\u786e\u8ba4\u5ef6\u8fdf\u4e0e\u8d44\u6e90\u4f7f\u7528\u662f\u5426\u540c\u5411\u5f02\u5e38\uff0c\u518d\u5224\u65ad\u662f\u5426\u4e3a\u8282\u70b9\u7ea7\u95ee\u9898\u3002`,
+          timestamp: new Date(now + 980).toISOString(),
           label: "\u4e0b\u4e00\u6b65\u884c\u52a8",
         },
       },
       {
-        delayMs: 560,
+        delayMs: 1120,
         type: "append",
         item: {
           id: toolOneId,
@@ -900,13 +941,13 @@ export function buildDiagnosisModifiedDemoScenario(prompt: string): DiagnosisMod
             window: "-30m",
             focus: ["vllm_p95", "gpu_util", "throughput"],
           },
-          timestamp: new Date(now + 560).toISOString(),
+          timestamp: new Date(now + 1120).toISOString(),
           status: "loading",
           summaryLines: ["\u62c9\u53d6\u6700\u8fd1 30 \u5206\u949f\u5173\u952e\u6307\u6807..."],
         },
       },
       {
-        delayMs: 920,
+        delayMs: 1480,
         type: "update_tool",
         targetId: toolOneId,
         summaryLines: ["vllm_p95: 1.6s -> 3.4s", "gpu_util: 82% -> 99%", "throughput: -18%"],
@@ -917,37 +958,36 @@ export function buildDiagnosisModifiedDemoScenario(prompt: string): DiagnosisMod
         },
       },
       {
-        delayMs: 1120,
-        type: "update_thinking",
-        targetId: thinkingOneId,
-        status: "completed",
+        delayMs: 1520,
+        type: "update_candidates",
+        candidates: initialCandidates,
       },
       {
-        delayMs: 1260,
+        delayMs: 1660,
         type: "append",
         item: {
           id: thinkingTwoId,
           kind: "thinking",
           title: "\u7f29\u5c0f\u5019\u9009\u8def\u5f84",
           content: "GPU \u4e89\u7528\u4e0e\u5ef6\u8fdf\u540c\u6b65\u62ac\u5347\uff0c\u9700\u9a8c\u8bc1\u662f\u5426\u5b58\u5728\u8282\u70b9\u7ea7\u5f02\u5e38\uff0c\u540c\u65f6\u6392\u9664\u7f51\u7edc\u5c42\u548c\u6d41\u91cf\u7a81\u589e\u3002",
-          timestamp: new Date(now + 1260).toISOString(),
+          timestamp: new Date(now + 1660).toISOString(),
           status: "thinking",
         },
       },
       {
-        delayMs: 1400,
+        delayMs: 1800,
         type: "append",
         item: {
           id: `demo-assistant-next-step-2-${now}`,
           kind: "message",
           role: "assistant",
           content: "\u4e0b\u4e00\u6b65\u4f1a\u6293\u53d6\u9519\u8bef\u65e5\u5fd7\uff0c\u9a8c\u8bc1\u662f\u5426\u5b58\u5728 worker-03 \u7684\u8d85\u65f6\u5f02\u5e38\u4e0e\u989d\u5916\u5360\u7528\uff0c\u518d\u51b3\u5b9a\u662f\u5426\u6267\u884c\u6d41\u91cf\u8fc1\u79fb\u3002",
-          timestamp: new Date(now + 1400).toISOString(),
+          timestamp: new Date(now + 1800).toISOString(),
           label: "\u4e0b\u4e00\u6b65\u884c\u52a8",
         },
       },
       {
-        delayMs: 1500,
+        delayMs: 1900,
         type: "append",
         item: {
           id: toolTwoId,
@@ -958,13 +998,13 @@ export function buildDiagnosisModifiedDemoScenario(prompt: string): DiagnosisMod
             level: "error",
             limit: 120,
           },
-          timestamp: new Date(now + 1500).toISOString(),
+          timestamp: new Date(now + 1900).toISOString(),
           status: "loading",
           summaryLines: ["\u62c9\u53d6\u9519\u8bef\u65e5\u5fd7\u5e76\u5339\u914d\u5f02\u5e38\u8282\u70b9..."],
         },
       },
       {
-        delayMs: 1860,
+        delayMs: 2260,
         type: "update_tool",
         targetId: toolTwoId,
         summaryLines: [
@@ -979,13 +1019,18 @@ export function buildDiagnosisModifiedDemoScenario(prompt: string): DiagnosisMod
         },
       },
       {
-        delayMs: 2060,
+        delayMs: 2320,
+        type: "update_candidates",
+        candidates,
+      },
+      {
+        delayMs: 2460,
         type: "update_thinking",
         targetId: thinkingTwoId,
         status: "completed",
       },
       {
-        delayMs: 2460,
+        delayMs: 2860,
         type: "append",
         item: {
           id: toolThreeId,
@@ -995,13 +1040,13 @@ export function buildDiagnosisModifiedDemoScenario(prompt: string): DiagnosisMod
             service: serviceName,
             limit: 2,
           },
-          timestamp: new Date(now + 2460).toISOString(),
+          timestamp: new Date(now + 2860).toISOString(),
           status: "loading",
           summaryLines: ["\u62c9\u53d6\u6700\u8fd1\u90e8\u7f72\u8bb0\u5f55..."],
         },
       },
       {
-        delayMs: 2820,
+        delayMs: 3220,
         type: "update_tool",
         targetId: toolThreeId,
         summaryLines: ["deploy_version: v2.8.4", "deployed_at: 12 \u5206\u949f\u524d", "change_note: \u8c03\u6574\u63a8\u7406\u5e76\u53d1\u914d\u7f6e"],
@@ -1012,37 +1057,37 @@ export function buildDiagnosisModifiedDemoScenario(prompt: string): DiagnosisMod
         },
       },
       {
-        delayMs: 3220,
+        delayMs: 3620,
         type: "append",
         item: {
           id: thinkingThreeId,
           kind: "thinking",
           title: "\u5f62\u6210\u6700\u7ec8\u7ed3\u8bba",
           content: "\u8bc1\u636e\u6700\u7ec8\u6536\u655b\u5230 worker-03 GPU \u4e89\u7528\u4e0e\u5f02\u5e38\u5360\u7528\uff0c\u6392\u961f\u7b49\u5f85\u4e0e\u5ef6\u8fdf\u540c\u6b65\u62ac\u5347\uff0c\u540c\u65f6\u5df2\u53cd\u8bc1\u6392\u9664 RDMA \u6296\u52a8\u3002",
-          timestamp: new Date(now + 3220).toISOString(),
+          timestamp: new Date(now + 3620).toISOString(),
           status: "thinking",
         },
       },
       {
-        delayMs: 3460,
+        delayMs: 3860,
         type: "update_thinking",
         targetId: thinkingThreeId,
         status: "completed",
       },
       {
-        delayMs: 3560,
+        delayMs: 3960,
         type: "append",
         item: {
           id: `demo-assistant-final-${now}`,
           kind: "message",
           role: "assistant",
           content: "\u5f53\u524d\u7ed3\u8bba\u4e3a worker-03 \u8282\u70b9 GPU \u4e89\u7528\u3002\u4e0b\u65b9\u5361\u7247\u5df2\u540c\u6b65\u5019\u9009\u6839\u56e0\u3001\u5173\u952e\u8bc1\u636e\u3001\u533a\u5206\u9a8c\u8bc1\u548c\u4fee\u590d\u5efa\u8bae\u3002",
-          timestamp: new Date(now + 3560).toISOString(),
+          timestamp: new Date(now + 3960).toISOString(),
           label: "\u6700\u7ec8\u7ed3\u8bba",
         },
       },
       {
-        delayMs: 3860,
+        delayMs: 4260,
         type: "complete",
       },
     ],
@@ -1051,5 +1096,12 @@ export function buildDiagnosisModifiedDemoScenario(prompt: string): DiagnosisMod
     propagationChain,
     summary,
     plan,
+    session: demoSession,
   };
 }
+
+
+
+
+
+

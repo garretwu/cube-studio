@@ -568,6 +568,10 @@ export const apiClient = {
         const sessions = normalizeSessionSummaryList(unwrapPayload(response.data));
         return sessions.map(mapSummaryToDiagnosisSummary);
       } catch {
+        if (import.meta.env.DEV) {
+          const { getDiagnosisHistorySessionsFallback } = await import("./devFallback");
+          return getDiagnosisHistorySessionsFallback();
+        }
         throw primaryError;
       }
     }
