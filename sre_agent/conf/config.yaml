@@ -3,8 +3,6 @@ global:
   prometheus_url: "http://10.11.4.3:31260"
   alertmanager_url: "http://10.11.4.3:31013/"
   loki_url: "http://10.11.4.2:30628"
-  auto_diagnose_alert_names:
-    - GPUCardMissing
   auto_diagnose_entity_correlation_count: 2
 
 llm:
