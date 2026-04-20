@@ -317,6 +317,28 @@ function wait(ms: number) {
   return new Promise<void>((resolve) => window.setTimeout(resolve, ms));
 }
 
+function toReadableErrorMessage(error: unknown, fallback: string): string {
+  if (error instanceof Error) {
+    const message = error.message.trim();
+    if (message) {
+      return message;
+    }
+  }
+  return fallback;
+}
+
+function formatBootstrapPartialWarning(parts: string[]): string | undefined {
+  if (parts.length === 0) {
+    return undefined;
+  }
+  return `部分补充信息加载较慢，诊断结果仍可查看：${parts.join("；")}`;
+}
+
+function formatApprovalErrorMessage(error: unknown, approved: boolean): string {
+  const suffix = toReadableErrorMessage(error, approved ? "审批操作失败" : "拒绝审批失败");
+  return approved ? `修复执行审批失败：${suffix}` : `审批请求失败：${suffix}`;
+}
+
 function toThinkingStep(event: WSEvent, fallbackStep: number): ThinkingStep | null {
   if (event.type !== "thinking_step" && event.type !== "tool_call") {
     return null;
@@ -596,7 +618,15 @@ function getEventIdentity(event: EventLike): string {
   if (eventId) {
     return `id:${eventId}`;
   }
-  return `${event.type}:${event.timestamp}:${JSON.stringify(event.data ?? {})}`;
+  const data = isRecord(event.data) ? event.data : {};
+  if (event.type === "remediation_progress") {
+    const stage = String(data.stage ?? "").trim();
+    const seconds = new Date(event.timestamp).getTime() / 1000;
+    const rounded = Math.round(seconds / 2) * 2;
+    return `remediation:${stage}:${rounded}`;
+  }
+  const { _stream_source: _, _stream_seq: __, ...cleanData } = data;
+  return `${event.type}:${event.timestamp}:${JSON.stringify(cleanData)}`;
 }
 
 function mergeSessionEvents(current: SessionEvent[], incoming: SessionEvent[]): SessionEvent[] {
@@ -1165,8 +1195,29 @@ export const useDiagnosisStore = create<DiagnosisState>((set, get) => ({
         return;
       }
 
-      const messages = await apiClient.getChatHistory(resolvedSessionId);
-      const events = await apiClient.getSessionEvents(resolvedSessionId).catch(() => []);
+      const warningParts: string[] = [];
+      const [messagesResult, eventsResult] = await Promise.allSettled([
+        apiClient.getChatHistory(resolvedSessionId),
+        apiClient.getSessionEvents(resolvedSessionId),
+      ]);
+      const messages =
+        messagesResult.status === "fulfilled"
+          ? messagesResult.value
+          : [];
+      if (messagesResult.status === "rejected") {
+        warningParts.push(
+          `对话历史未完全加载（${toReadableErrorMessage(messagesResult.reason, "history unavailable")})`,
+        );
+      }
+      const events =
+        eventsResult.status === "fulfilled"
+          ? eventsResult.value
+          : [];
+      if (eventsResult.status === "rejected") {
+        warningParts.push(
+          `会话事件未完全加载（${toReadableErrorMessage(eventsResult.reason, "events unavailable")})`,
+        );
+      }
       const traceStatus: TraceStatus = (session.trace?.steps ?? []).length > 0 ? "ready" : "empty";
       const approvalState = deriveApprovalState(session, events);
       const localAuditRecords = loadLocalAuditRecords(resolvedSessionId);
@@ -1200,11 +1251,11 @@ export const useDiagnosisStore = create<DiagnosisState>((set, get) => ({
         streamingPhase: "idle",
         streamSequenceCounter: 0,
         roundSequenceCounter: 0,
-        error: undefined,
+        error: formatBootstrapPartialWarning(warningParts),
       });
     } catch (error) {
       set({
-        error: error instanceof Error ? error.message : "加载会话失败",
+        error: toReadableErrorMessage(error, "加载会话失败"),
         isLoadingSession: false,
         bootstrapStatus: "error",
         traceStatus: "unknown",
@@ -1396,7 +1447,7 @@ export const useDiagnosisStore = create<DiagnosisState>((set, get) => ({
       void pollingPromise.catch(() => undefined);
       set({
         isApprovingPlan: false,
-        error: error instanceof Error ? error.message : "审批操作失败",
+        error: formatApprovalErrorMessage(error, input.approved),
         approvalOverlayOpen: true,
       });
       throw error;

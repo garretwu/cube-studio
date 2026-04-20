@@ -20,6 +20,43 @@ if (!window.matchMedia) {
   });
 }
 
+const localStorageCandidate = window.localStorage as Storage | Record<string, unknown> | undefined;
+if (
+  !localStorageCandidate ||
+  typeof localStorageCandidate.getItem !== "function" ||
+  typeof localStorageCandidate.setItem !== "function" ||
+  typeof localStorageCandidate.removeItem !== "function" ||
+  typeof localStorageCandidate.clear !== "function"
+) {
+  const storage = new Map<string, string>();
+  const localStorageMock: Storage = {
+    get length() {
+      return storage.size;
+    },
+    clear() {
+      storage.clear();
+    },
+    getItem(key: string) {
+      return storage.has(key) ? storage.get(key) ?? null : null;
+    },
+    key(index: number) {
+      return Array.from(storage.keys())[index] ?? null;
+    },
+    removeItem(key: string) {
+      storage.delete(key);
+    },
+    setItem(key: string, value: string) {
+      storage.set(key, String(value));
+    },
+  };
+
+  Object.defineProperty(window, "localStorage", {
+    configurable: true,
+    writable: true,
+    value: localStorageMock,
+  });
+}
+
 class ResizeObserverMock {
   observe() {}
 
@@ -115,4 +152,3 @@ if (!Element.prototype.scrollIntoView) {
 beforeAll(() => server.listen({ onUnhandledRequest: "error" }));
 afterEach(() => server.resetHandlers());
 afterAll(() => server.close());
-

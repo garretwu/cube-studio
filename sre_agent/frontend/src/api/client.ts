@@ -42,6 +42,9 @@ const api = axios.create({
 });
 const DIAGNOSE_REQUEST_TIMEOUT_MS = 120000;
 const CHAT_REQUEST_TIMEOUT_MS = 120000;
+const DIAGNOSIS_SESSION_REQUEST_TIMEOUT_MS = 30000;
+const DIAGNOSIS_EVENTS_REQUEST_TIMEOUT_MS = 30000;
+const DIAGNOSIS_CHAT_HISTORY_REQUEST_TIMEOUT_MS = 20000;
 const DIAGNOSE_SESSION_POLL_MS = 2000;
 const DIAGNOSE_SESSION_POLL_ATTEMPTS = 30;
 const BLOCKED_ALERT_NAMES = new Set([
@@ -59,6 +62,30 @@ const BLOCKED_ALERT_NAMES = new Set([
 
 let hasWarnedAboutDevFallback = false;
 
+function normalizeRequestErrorMessage(error: unknown): string {
+  let message = error instanceof Error ? error.message : "Unknown request error";
+  if (axios.isAxiosError(error)) {
+    const code = error.code ?? "";
+    const axiosMessage = String(error.message ?? "");
+    const isTimeout =
+      code === "ECONNABORTED" ||
+      axiosMessage.toLowerCase().includes("timeout");
+    if (isTimeout) {
+      return "Request timed out while waiting for the backend. Please retry.";
+    }
+    if (code === "ERR_NETWORK") {
+      return "Network/CORS error: backend unreachable or blocked by browser policy. Check backend status, VITE_API_BASE_URL, and CORS.";
+    }
+    if (error.response?.status === 401) {
+      return "Unauthorized: invalid or expired bearer token.";
+    }
+    if (error.response?.status) {
+      return `Request failed with status ${error.response.status}.`;
+    }
+  }
+  return message;
+}
+
 api.interceptors.request.use((config) => {
   const traceId = `sre-ui-${Date.now()}`;
   config.headers = config.headers ?? {};
@@ -72,21 +99,7 @@ api.interceptors.request.use((config) => {
 
 api.interceptors.response.use(
   (response) => response,
-  (error) => {
-    let message = error instanceof Error ? error.message : "Unknown request error";
-    if (axios.isAxiosError(error)) {
-      const code = error.code ?? "";
-      if (code === "ERR_NETWORK") {
-        message =
-          "Network/CORS error: backend unreachable or blocked by browser policy. Check backend status, VITE_API_BASE_URL, and CORS.";
-      } else if (error.response?.status === 401) {
-        message = "Unauthorized: invalid or expired bearer token.";
-      } else if (error.response?.status) {
-        message = `Request failed with status ${error.response.status}.`;
-      }
-    }
-    return Promise.reject(new Error(message));
-  },
+  (error) => Promise.reject(new Error(normalizeRequestErrorMessage(error))),
 );
 
 function isHtmlShellPayload(payload: unknown) {
@@ -198,7 +211,9 @@ function isHttpStatusError(error: unknown, status: number): boolean {
 
 async function getDiagnosisSessionById(sessionId: string): Promise<DiagnosisSession> {
   try {
-    const response = await api.get<SREApiEnvelope<DiagnosisSession> | DiagnosisSession>(`/api/sessions/${sessionId}`);
+    const response = await api.get<SREApiEnvelope<DiagnosisSession> | DiagnosisSession>(`/api/sessions/${sessionId}`, {
+      timeout: DIAGNOSIS_SESSION_REQUEST_TIMEOUT_MS,
+    });
     return unwrapPayload(response.data);
   } catch (error) {
     if (!isHttpStatusError(error, 404)) {
@@ -207,6 +222,7 @@ async function getDiagnosisSessionById(sessionId: string): Promise<DiagnosisSess
     // Compatibility fallback for backends that only expose the legacy session endpoint.
     const legacyResponse = await api.get<SREApiEnvelope<DiagnosisSession> | DiagnosisSession>("/api/diagnosis/session/current", {
       params: { session_id: sessionId },
+      timeout: DIAGNOSIS_SESSION_REQUEST_TIMEOUT_MS,
     });
     return unwrapPayload(legacyResponse.data);
   }
@@ -897,6 +913,7 @@ export const apiClient = {
   getSessionEvents: async (sessionId: string, limit = 200, after?: string) => {
     const response = await api.get<SREApiEnvelope<SessionEvent[]> | SessionEvent[]>(`/api/sessions/${sessionId}/events`, {
       params: { limit, after },
+      timeout: DIAGNOSIS_EVENTS_REQUEST_TIMEOUT_MS,
     });
     return unwrapPayload(response.data);
   },
@@ -1079,6 +1096,7 @@ export const apiClient = {
   getChatHistory: async (sessionId?: string) => {
     const response = await api.get<SREApiEnvelope<ChatMessage[]> | ChatMessage[]>("/api/chat/history", {
       params: sessionId ? { session_id: sessionId } : undefined,
+      timeout: DIAGNOSIS_CHAT_HISTORY_REQUEST_TIMEOUT_MS,
     });
     return unwrapPayload(response.data);
   },

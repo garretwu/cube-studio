@@ -184,12 +184,14 @@ class RemediationConfig(BaseModel):
     model_config = ConfigDict(extra="allow")
 
     wal_dir: str = "./data/wal"
+    session_store_dir: str = "./data/sessions"
     approval_timeout: int = 300
     default_policy: str = "human_confirm"
     dry_run: bool = False
     max_concurrent_remediations: int = 2
     execution_mode: str = "real"
-    observation_seconds: int = 240
+    observation_seconds: int = 600
+    observation_poll_seconds: int = 10
     execution_timeout_seconds: int = 900
 
 

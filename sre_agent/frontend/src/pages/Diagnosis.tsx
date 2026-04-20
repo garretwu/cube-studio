@@ -686,11 +686,24 @@ function resolveInlineError(
   if (!error) {
     return null;
   }
+  if (/^部分补充信息加载较慢/.test(error)) {
+    return {
+      tone: "warning",
+      message: error,
+    };
+  }
   if (/status\s+404/i.test(error)) {
     return {
       tone: "warning",
       message:
         "The session could not be found (404). It may have expired or the backend detail endpoint is unavailable. You can still type below to start a new diagnosis.",
+    };
+  }
+  if (/timed out while waiting for the backend/i.test(error)) {
+    return {
+      tone: "error",
+      message:
+        "The diagnosis session is taking too long to load. Please retry in a moment.",
     };
   }
   return { tone: "error", message: error };

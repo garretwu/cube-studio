@@ -6,7 +6,7 @@ inventory:
         host: 10.11.4.10
         port: 22
         user: yuyonghao
-        password: REPLACE_ME
+        password: "Yuyonghao@123"
         timeout: 30
         use_sudo: true
       redfish:
@@ -21,7 +21,7 @@ inventory:
         host: 10.11.4.11
         port: 22
         user: yuyonghao
-        password: REPLACE_ME
+        password: "Yuyonghao@123"
         timeout: 30
         use_sudo: true
       redfish:
