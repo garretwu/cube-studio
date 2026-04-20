@@ -1241,6 +1241,7 @@ def build_api_router() -> APIRouter:
         return specs
 
     def _build_metric_specs(plan: RemediationPlan | None, session: DiagnosisSession) -> list[dict[str, Any]]:
+        _ = session
         specs: list[dict[str, Any]] = []
         if plan is not None:
             for index, step in enumerate(plan.steps, start=1):
@@ -1258,9 +1259,9 @@ def build_api_router() -> APIRouter:
                         "condition": verification.condition.model_dump(mode="json") if verification.condition is not None else None,
                     }
                 )
-        if specs:
-            return specs
-        return _default_llm_metric_specs(session)
+        # Do NOT fallback to default LLM (TTFT/latency) metrics.
+        # If plan doesn't provide promql verification, treat metrics validation as skipped.
+        return specs
 
     async def _capture_alert_snapshot(session: DiagnosisSession, services: Any) -> RemediationAlertSnapshot:
         snapshot = services.alert_store.snapshot()
