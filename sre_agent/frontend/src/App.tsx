@@ -9,6 +9,7 @@ import {
 
 import { apiClient } from "./api/client";
 import type { DiagnosisSessionSummary } from "./api/types";
+import { startAuthSessionMonitor } from "./auth/tokenManager";
 import { AppShell } from "./components/ui";
 import { useAlertsRealtimeSync } from "./hooks/useAlertsRealtimeSync";
 import HistoryPage from "./pages/History";
@@ -26,6 +27,7 @@ const rootPageChrome: Record<
     subtitle: string;
     contentSpacing: "compact";
     contentMode?: "default" | "workspace";
+    contentWidthMode?: "default" | "full";
   }
 > = {
   "/topology": {
@@ -44,6 +46,7 @@ const rootPageChrome: Record<
     subtitle: "查看诊断流程与修复执行时间线。",
     contentSpacing: "compact",
     contentMode: "workspace",
+    contentWidthMode: "full",
   },
   "/remediation": {
     title: "修复",
@@ -91,6 +94,7 @@ function resolvePageChrome(pathname: string): {
   subtitle?: string;
   contentSpacing?: "default" | "compact";
   contentMode?: "default" | "workspace";
+  contentWidthMode?: "default" | "full";
 } {
   const rootChrome = rootPageChrome[pathname];
   if (rootChrome) {
@@ -102,6 +106,7 @@ function resolvePageChrome(pathname: string): {
       title: "诊断",
       contentSpacing: "compact",
       contentMode: "workspace",
+      contentWidthMode: "full",
     };
   }
 
@@ -124,6 +129,7 @@ function resolvePageChrome(pathname: string): {
       title: "诊断",
       contentSpacing: "compact",
       contentMode: "workspace",
+      contentWidthMode: "full",
     };
   }
 
@@ -190,6 +196,8 @@ function App() {
   >([]);
   const [historyLoading, setHistoryLoading] = useState(true);
   const [historyLoadError, setHistoryLoadError] = useState<string>("");
+
+  useEffect(() => startAuthSessionMonitor(), []);
 
   useEffect(() => {
     let cancelled = false;
@@ -269,6 +277,7 @@ function App() {
       adminLabel="SRE 控制台"
       brandSubtitle="AIDC 智能运维工作台"
       contentMode={pageChrome.contentMode}
+      contentWidthMode={pageChrome.contentWidthMode}
       contentSpacing={pageChrome.contentSpacing}
       helpLabel="帮助文档"
       sections={sections}

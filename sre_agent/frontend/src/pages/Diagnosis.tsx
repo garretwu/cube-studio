@@ -13,6 +13,7 @@ import { useNavigate, useParams } from "react-router-dom";
 
 import { buildBackendWsUrl } from "../api/ws";
 import type { Alert } from "../api/types";
+import { getAccessTokenSync, refreshAccessToken } from "../auth/tokenManager";
 import { AppIcon } from "../components/ui";
 import { useWebSocket } from "../hooks/useWebSocket";
 import { useDiagnosisStore } from "../store/diagnosisStore";
@@ -3247,13 +3248,16 @@ function DiagnosisPage() {
   const websocketUrl = useMemo(
     () =>
       buildBackendWsUrl(`/ws/thinking-trace/${activeSessionId ?? "pending"}`, {
-        token: import.meta.env.VITE_API_TOKEN ?? "",
       }),
     [activeSessionId],
   );
 
   const ws = useWebSocket(websocketUrl, handleRealtimeEvent, {
     enabled: websocketEnabled,
+    getToken: () => getAccessTokenSync(),
+    onAuthFailure: async () => {
+      await refreshAccessToken();
+    },
   });
 
   useEffect(() => {

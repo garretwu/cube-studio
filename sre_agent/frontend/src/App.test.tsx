@@ -28,6 +28,7 @@ describe("App shell", () => {
 
     expect(container.querySelectorAll(".nav-section")).toHaveLength(2);
     expect(container.querySelector("main.shell-content--workspace-page")).toBeTruthy();
+    expect(container.querySelector("main.shell-content--full-width")).toBeFalsy();
     expect(container.querySelector(".topology-modified-stage--canvas-only")).toBeTruthy();
     expect(screen.getByRole("button", { name: topologyLabel! })).toBeInTheDocument();
   });
@@ -48,6 +49,7 @@ describe("App shell", () => {
     expect(screen.getByText("QinClaw")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: diagnosisLabel! }).className).toContain("nav-item--active");
     expect(document.querySelector(".diagnosis-workspace-page")).toBeTruthy();
+    expect(document.querySelector("main.shell-content--full-width")).toBeTruthy();
   });
 
   it("collapses the sidebar into icon-only main navigation and expands again after selecting a feature", async () => {
@@ -112,8 +114,16 @@ describe("App shell", () => {
   it("shows subtitles on first-level module pages only", async () => {
     const topologyChrome = resolvePageChrome("/topology");
     const topologyDetailChrome = resolvePageChrome("/topology/object/gpu-03");
+    const diagnosisChrome = resolvePageChrome("/diagnosis");
+    const diagnosisDetailChrome = resolvePageChrome("/diagnosis/sess-latency-001");
+    const historyDetailChrome = resolvePageChrome("/history/sess-latency-001");
     const knowledgeChrome = resolvePageChrome("/knowledge");
     const knowledgeDetailChrome = resolvePageChrome("/knowledge/builtin-kb");
+
+    expect(diagnosisChrome.contentWidthMode).toBe("full");
+    expect(diagnosisDetailChrome.contentWidthMode).toBe("full");
+    expect(historyDetailChrome.contentWidthMode).toBe("full");
+    expect(topologyChrome.contentWidthMode).toBeUndefined();
 
     const topologyRoot = render(
       <MemoryRouter initialEntries={["/topology"]}>
@@ -223,4 +233,3 @@ describe("App shell", () => {
     expect(modifiedAlertsButton.className).toContain("nav-item--active");
   });
 });
-
