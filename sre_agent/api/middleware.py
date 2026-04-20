@@ -17,7 +17,7 @@ def install_middlewares(app: FastAPI) -> None:
     allowed_origins = list(getattr(config, "cors_allowed_origins", []) or [])
     allow_methods = list(getattr(config, "cors_allow_methods", []) or ["GET", "POST", "OPTIONS"])
     allow_headers = list(getattr(config, "cors_allow_headers", []) or ["Authorization", "Content-Type", "x-trace-id"])
-    expose_headers = list(getattr(config, "cors_expose_headers", []) or ["x-trace-id"])
+    expose_headers = list(getattr(config, "cors_expose_headers", []) or ["x-trace-id", "x-server-boot-id"])
     if allowed_origins:
         app.add_middleware(
             CORSMiddleware,
@@ -33,6 +33,9 @@ def install_middlewares(app: FastAPI) -> None:
         request.state.trace_id = request.headers.get("x-trace-id", uuid4().hex)
         response = await call_next(request)
         response.headers["x-trace-id"] = request.state.trace_id
+        server_boot_id = str(getattr(request.app.state, "server_boot_id", "") or "").strip()
+        if server_boot_id:
+            response.headers["x-server-boot-id"] = server_boot_id
         return response
 
     @app.exception_handler(Exception)

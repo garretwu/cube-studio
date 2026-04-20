@@ -1,4 +1,13 @@
 import axios from "axios";
+import type { InternalAxiosRequestConfig } from "axios";
+
+import {
+  getAccessTokenSync,
+  refreshAccessToken,
+  setAuthErrorKind,
+  type AuthErrorKind,
+  updateServerBootId,
+} from "../auth/tokenManager";
 
 import type {
   Alert,
@@ -62,8 +71,37 @@ const BLOCKED_ALERT_NAMES = new Set([
 
 let hasWarnedAboutDevFallback = false;
 
+type RetriableAxiosRequestConfig = InternalAxiosRequestConfig & {
+  _authRetryAttempted?: boolean;
+};
+
+export class ApiRequestError extends Error {
+  auth_error_kind: AuthErrorKind;
+
+  constructor(message: string, authErrorKind: AuthErrorKind = "unknown") {
+    super(message);
+    this.name = "ApiRequestError";
+    this.auth_error_kind = authErrorKind;
+  }
+}
+
+function classifyAuthErrorKindFromMessage(value: string): AuthErrorKind {
+  const normalized = value.toLowerCase();
+  if (normalized.includes("expired")) {
+    return "expired";
+  }
+  if (normalized.includes("signature")) {
+    return "invalid_signature";
+  }
+  if (normalized.includes("missing")) {
+    return "missing";
+  }
+  return "unknown";
+}
+
 function normalizeRequestErrorMessage(error: unknown): string {
   let message = error instanceof Error ? error.message : "Unknown request error";
+  let authErrorKind: AuthErrorKind = "unknown";
   if (axios.isAxiosError(error)) {
     const code = error.code ?? "";
     const axiosMessage = String(error.message ?? "");
@@ -77,7 +115,21 @@ function normalizeRequestErrorMessage(error: unknown): string {
       return "Network/CORS error: backend unreachable or blocked by browser policy. Check backend status, VITE_API_BASE_URL, and CORS.";
     }
     if (error.response?.status === 401) {
-      return "Unauthorized: invalid or expired bearer token.";
+      const detail = String(
+        (error.response.data as { detail?: unknown } | undefined)?.detail ?? "",
+      ).trim();
+      authErrorKind = classifyAuthErrorKindFromMessage(detail || axiosMessage);
+      setAuthErrorKind(authErrorKind);
+      if (authErrorKind === "expired") {
+        return "Unauthorized: bearer token expired. Attempting refresh.";
+      }
+      if (authErrorKind === "invalid_signature") {
+        return "Unauthorized: bearer token signature invalid (backend may have restarted). Please refresh auth session.";
+      }
+      if (authErrorKind === "missing") {
+        return "Unauthorized: bearer token is missing.";
+      }
+      return "Unauthorized: invalid bearer token.";
     }
     if (error.response?.status) {
       return `Request failed with status ${error.response.status}.`;
@@ -90,7 +142,7 @@ api.interceptors.request.use((config) => {
   const traceId = `sre-ui-${Date.now()}`;
   config.headers = config.headers ?? {};
   config.headers["x-trace-id"] = traceId;
-  const token = import.meta.env.VITE_API_TOKEN;
+  const token = getAccessTokenSync();
   if (token) {
     config.headers.Authorization = `Bearer ${token}`;
   }
@@ -98,8 +150,35 @@ api.interceptors.request.use((config) => {
 });
 
 api.interceptors.response.use(
-  (response) => response,
-  (error) => Promise.reject(new Error(normalizeRequestErrorMessage(error))),
+  (response) => {
+    const bootId = String(response.headers["x-server-boot-id"] ?? "").trim();
+    if (bootId) {
+      void updateServerBootId(bootId);
+    }
+    return response;
+  },
+  async (error) => {
+    if (axios.isAxiosError(error) && error.response?.status === 401) {
+      const originalConfig = error.config as RetriableAxiosRequestConfig | undefined;
+      const requestUrl = String(originalConfig?.url ?? "");
+      const isAuthEndpoint =
+        requestUrl.includes("/api/auth/refresh") || requestUrl.includes("/api/auth/token");
+      if (originalConfig && !originalConfig._authRetryAttempted && !isAuthEndpoint) {
+        originalConfig._authRetryAttempted = true;
+        try {
+          const refreshed = await refreshAccessToken();
+          originalConfig.headers = originalConfig.headers ?? {};
+          originalConfig.headers.Authorization = `Bearer ${refreshed}`;
+          return await api.request(originalConfig);
+        } catch {
+          // fall through to normalized error
+        }
+      }
+    }
+    const message = normalizeRequestErrorMessage(error);
+    const authKind = classifyAuthErrorKindFromMessage(message);
+    return Promise.reject(new ApiRequestError(message, authKind));
+  },
 );
 
 function isHtmlShellPayload(payload: unknown) {
@@ -609,7 +688,7 @@ export async function streamDiagnosis(
     "Content-Type": "application/json",
     "x-trace-id": `sre-ui-${Date.now()}`,
   };
-  const token = import.meta.env.VITE_API_TOKEN;
+  const token = getAccessTokenSync();
   if (token) {
     headers.Authorization = `Bearer ${token}`;
   }
@@ -657,8 +736,23 @@ export async function streamDiagnosis(
     return;
   }
 
+  if (response.status === 401) {
+    try {
+      const refreshed = await refreshAccessToken();
+      headers.Authorization = `Bearer ${refreshed}`;
+      response = await fetch(url, {
+        method: "POST",
+        headers,
+        body: JSON.stringify(alert),
+        signal,
+      });
+    } catch {
+      throw new ApiRequestError("Unauthorized: bearer token expired or invalid.", "expired");
+    }
+  }
+
   if (!response.ok) {
-    throw new Error(`Request failed with status ${response.status}.`);
+    throw new ApiRequestError(`Request failed with status ${response.status}.`);
   }
 
   await consumeSseResponse(response, onEvent, signal);

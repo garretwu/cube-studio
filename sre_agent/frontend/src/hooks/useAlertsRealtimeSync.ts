@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef } from "react";
 
 import type { WSEvent } from "../api/types";
+import { getAccessTokenSync, hasAccessToken, refreshAccessToken } from "../auth/tokenManager";
 import { buildBackendWsUrl } from "../api/ws";
 import { useAlertStore } from "../store/alertStore";
 import { useWebSocket } from "./useWebSocket";
@@ -15,15 +16,13 @@ export function useAlertsRealtimeSync() {
   const setRealtimeEnabled = useAlertStore((state) => state.setRealtimeEnabled);
   const setRealtimeWsState = useAlertStore((state) => state.setRealtimeWsState);
 
-  const token = String(import.meta.env.VITE_API_TOKEN ?? "").trim();
-  const realtimeEnabled = token.length > 0;
+  const realtimeEnabled = hasAccessToken();
 
   const websocketUrl = useMemo(
     () =>
       buildBackendWsUrl("/ws/alerts", {
-        token,
       }),
-    [token],
+    [],
   );
 
   const onEvent = useCallback(
@@ -36,6 +35,10 @@ export function useAlertsRealtimeSync() {
   const ws = useWebSocket(websocketUrl, onEvent, {
     enabled: realtimeEnabled,
     maxBufferedMessages: 400,
+    getToken: () => getAccessTokenSync(),
+    onAuthFailure: async () => {
+      await refreshAccessToken();
+    },
   });
 
   useEffect(() => {
@@ -66,4 +69,3 @@ export function useAlertsRealtimeSync() {
     };
   }, [realtimeEnabled, startReconcile, stopReconcile]);
 }
-

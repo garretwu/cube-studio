@@ -40,6 +40,8 @@ DEFAULT_LOCAL_LLM_BASE_URL = "http://10.11.4.13:18080/v1"
 DEFAULT_LOCAL_LLM_MODEL = "MiniMax-M2.5-IQ4_XS-00001-of-00004.gguf"
 LOCAL_LLM_PLACEHOLDER_KEY = "local-llama-placeholder"
 DEFAULT_LLM_MODE = "openai_compatible_api"
+DEFAULT_BOOTSTRAP_TOKEN_EXPIRE_SECONDS = 24 * 3600
+DEFAULT_BOOTSTRAP_REFRESH_TOKEN_EXPIRE_SECONDS = 7 * 24 * 3600
 BACKEND_READINESS_PATH = "/openapi.json"
 BACKEND_READINESS_TIMEOUT_SECONDS = 180.0
 BACKEND_READINESS_INTERVAL_SECONDS = 1.0
@@ -67,7 +69,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--role", choices=["viewer", "operator", "admin"], default="operator", help="JWT role for frontend requests.")
     parser.add_argument("--username", default="local-ui", help="JWT username.")
-    parser.add_argument("--token-expire-seconds", type=int, default=8 * 3600, help="Frontend token expire seconds.")
+    parser.add_argument(
+        "--token-expire-seconds",
+        type=int,
+        default=DEFAULT_BOOTSTRAP_TOKEN_EXPIRE_SECONDS,
+        help="Frontend bootstrap access token expire seconds.",
+    )
     parser.add_argument(
         "--llm-mode",
         choices=sorted(_LLM_MODE_ALIASES.keys()),
@@ -202,14 +209,37 @@ def build_runtime_env(
     resolved_config_path = _resolve_config_path(config_path)
     config = load_config(resolved_config_path)
     auth = _load_auth_settings(config)
-    jwt_secret = secrets.token_urlsafe(48)
-    token = _encode_token(
+    resolved_secret_env = auth["jwt_secret_env"]
+    existing_jwt_secret = str(os.environ.get(resolved_secret_env, "")).strip()
+    if existing_jwt_secret:
+        jwt_secret = existing_jwt_secret
+        jwt_secret_source = "fixed"
+    else:
+        jwt_secret = secrets.token_urlsafe(48)
+        jwt_secret_source = "ephemeral"
+    access_token = _encode_token(
         secret=jwt_secret,
         algorithm=auth["jwt_algorithm"],
         audience=auth["audience"],
         role=role,
         username=username,
         expire_seconds=token_expire_seconds,
+    )
+    refresh_token = _encode_refresh_token(
+        secret=jwt_secret,
+        algorithm=auth["jwt_algorithm"],
+        audience=auth["audience"],
+        role=role,
+        username=username,
+        expire_seconds=int(
+            str(
+                os.environ.get(
+                    "SRE_DEMO_REFRESH_TOKEN_EXPIRE_SECONDS",
+                    str(DEFAULT_BOOTSTRAP_REFRESH_TOKEN_EXPIRE_SECONDS),
+                )
+            ).strip()
+            or str(DEFAULT_BOOTSTRAP_REFRESH_TOKEN_EXPIRE_SECONDS)
+        ),
     )
 
     backend_url = f"http://{backend_host}:{backend_port}"
@@ -238,7 +268,8 @@ def build_runtime_env(
     if resolved_llm_mode == "openai_compatible_api" and not llm_api_key:
         raise SystemExit("missing required LLM API key: set SRE_OPENAI_API_KEY (or OPENAI_API_KEY) before starting backend")
     env[auth["jwt_secret_env"]] = jwt_secret
-    env["VITE_API_TOKEN"] = token
+    env["VITE_API_TOKEN"] = access_token
+    env["VITE_API_REFRESH_TOKEN"] = refresh_token
     env["VITE_API_PROXY_TARGET"] = backend_url
     env["VITE_USE_MSW"] = "false"
     env["VITE_WS_ENABLED"] = "true"
@@ -252,11 +283,13 @@ def build_runtime_env(
     info = {
         "jwt_secret_env": auth["jwt_secret_env"],
         "jwt_secret": jwt_secret,
+        "jwt_secret_source": jwt_secret_source,
         "token_audience": auth["audience"],
         "token_role": role,
         "token_username": username,
         "token_expire_seconds": str(token_expire_seconds),
-        "frontend_bearer_token": token,
+        "frontend_bearer_token": access_token,
+        "frontend_refresh_token": refresh_token,
         "backend_url": backend_url,
         "frontend_url": frontend_url,
         "api_mode": api_mode,
@@ -312,7 +345,28 @@ def _encode_token(
         "username": username,
         "role": role,
         "aud": audience,
+        "token_type": "access",
         "exp": datetime.now(timezone.utc) + timedelta(seconds=expire_seconds),
+    }
+    return jwt.encode(payload, secret, algorithm=algorithm)
+
+
+def _encode_refresh_token(
+    *,
+    secret: str,
+    algorithm: str,
+    audience: str,
+    role: str,
+    username: str,
+    expire_seconds: int,
+) -> str:
+    payload = {
+        "sub": "local-ui",
+        "username": username,
+        "role": role,
+        "aud": audience,
+        "token_type": "refresh",
+        "exp": datetime.now(timezone.utc) + timedelta(seconds=max(300, int(expire_seconds))),
     }
     return jwt.encode(payload, secret, algorithm=algorithm)
 
@@ -475,6 +529,11 @@ def main() -> int:
         f"[ok] api mode={info['api_mode']} "
         f"VITE_API_PROXY_TARGET={info['proxy_target']} "
         f"VITE_API_BASE_URL={info['api_base_url'] or '<unset>'}",
+        flush=True,
+    )
+    print(
+        f"[ok] auth bootstrap ttl={info['token_expire_seconds']}s "
+        f"jwt_secret_source={info.get('jwt_secret_source', 'unknown')}",
         flush=True,
     )
     print(

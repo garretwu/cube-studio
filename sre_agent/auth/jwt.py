@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Literal
+from typing import Any, Literal
 
 import jwt
 from fastapi import Depends, HTTPException, Request, status
@@ -24,6 +24,12 @@ class CurrentUser(BaseModel):
     user_id: str
     username: str
     role: Literal["viewer", "operator", "admin"] = "viewer"
+
+
+class TokenDecodeError(Exception):
+    def __init__(self, message: str, *, kind: Literal["expired", "invalid_signature", "missing", "unknown"] = "unknown") -> None:
+        super().__init__(message)
+        self.kind = kind
 
 
 @dataclass(frozen=True)
@@ -48,28 +54,88 @@ def resolve_jwt_settings(config: AuthConfig | None = None) -> JWTSettings:
 
 
 def encode_token(user: CurrentUser, settings: JWTSettings) -> str:
+    return encode_access_token(user, settings)
+
+
+def encode_access_token(
+    user: CurrentUser,
+    settings: JWTSettings,
+    *,
+    expire_seconds: int | None = None,
+) -> str:
+    ttl = max(1, int(expire_seconds if expire_seconds is not None else settings.expire_seconds))
     payload = {
         "sub": user.user_id,
         "username": user.username,
         "role": user.role,
         "aud": settings.audience,
-        "exp": datetime.now(UTC) + timedelta(seconds=settings.expire_seconds),
+        "token_type": "access",
+        "exp": datetime.now(UTC) + timedelta(seconds=ttl),
     }
     return jwt.encode(payload, settings.secret, algorithm=settings.algorithm)
 
 
+def encode_refresh_token(
+    user: CurrentUser,
+    settings: JWTSettings,
+    *,
+    expire_seconds: int,
+) -> str:
+    ttl = max(1, int(expire_seconds))
+    payload = {
+        "sub": user.user_id,
+        "username": user.username,
+        "role": user.role,
+        "aud": settings.audience,
+        "token_type": "refresh",
+        "exp": datetime.now(UTC) + timedelta(seconds=ttl),
+    }
+    return jwt.encode(payload, settings.secret, algorithm=settings.algorithm)
+
+
+def _decode_token_payload(token: str, settings: JWTSettings) -> dict[str, Any]:
+    try:
+        return jwt.decode(
+            token,
+            key=settings.secret,
+            algorithms=[settings.algorithm],
+            audience=settings.audience,
+        )
+    except jwt.ExpiredSignatureError as exc:
+        raise TokenDecodeError("token expired", kind="expired") from exc
+    except jwt.InvalidSignatureError as exc:
+        raise TokenDecodeError("token signature verification failed", kind="invalid_signature") from exc
+    except jwt.PyJWTError as exc:
+        raise TokenDecodeError(str(exc), kind="unknown") from exc
+
+
 def decode_token(token: str, settings: JWTSettings) -> CurrentUser:
-    payload = jwt.decode(
-        token,
-        key=settings.secret,
-        algorithms=[settings.algorithm],
-        audience=settings.audience,
-    )
+    payload = _decode_token_payload(token, settings)
     return CurrentUser(
         user_id=payload["sub"],
         username=payload["username"],
         role=payload.get("role", "viewer"),
     )
+
+
+def decode_refresh_token(token: str, settings: JWTSettings) -> CurrentUser:
+    payload = _decode_token_payload(token, settings)
+    token_type = str(payload.get("token_type", "access")).strip().lower()
+    if token_type != "refresh":
+        raise TokenDecodeError("refresh token is required", kind="unknown")
+    return CurrentUser(
+        user_id=payload["sub"],
+        username=payload["username"],
+        role=payload.get("role", "viewer"),
+    )
+
+
+def extract_expiry_datetime(token: str, settings: JWTSettings) -> datetime:
+    payload = _decode_token_payload(token, settings)
+    exp = payload.get("exp")
+    if not isinstance(exp, (int, float)):
+        raise TokenDecodeError("token exp claim is missing", kind="unknown")
+    return datetime.fromtimestamp(float(exp), tz=UTC)
 
 
 async def get_current_user(
@@ -89,7 +155,7 @@ async def get_current_user(
         )
     try:
         return decode_token(credentials.credentials, settings)
-    except jwt.PyJWTError as exc:
+    except TokenDecodeError as exc:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail=str(exc),
@@ -107,7 +173,7 @@ async def ws_authenticate(websocket: WebSocket) -> CurrentUser:
         raise WebSocketDisconnect(code=1011)
     try:
         return decode_token(token, settings)
-    except jwt.PyJWTError as exc:
+    except TokenDecodeError as exc:
         await websocket.close(code=4001, reason=str(exc))
         raise WebSocketDisconnect(code=4001) from exc
 

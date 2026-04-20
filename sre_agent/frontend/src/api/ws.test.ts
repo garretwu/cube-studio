@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { buildBackendWsUrl, ManagedWebSocket } from "./ws";
 
 type MessageHandler = ((event: { data: string }) => void) | null;
-type VoidHandler = (() => void) | null;
+type VoidHandler = ((event?: { code: number; reason: string }) => void) | null;
 
 class FakeWebSocket {
   static instances: FakeWebSocket[] = [];
@@ -20,7 +20,7 @@ class FakeWebSocket {
   }
 
   close() {
-    this.onclose?.();
+    this.onclose?.({ code: 1000, reason: "" });
   }
 
   emitOpen() {
@@ -31,8 +31,8 @@ class FakeWebSocket {
     this.onmessage?.({ data: JSON.stringify(payload) });
   }
 
-  emitClose() {
-    this.onclose?.();
+  emitClose(code = 1000, reason = "") {
+    this.onclose?.({ code, reason });
   }
 }
 
@@ -116,6 +116,28 @@ describe("ManagedWebSocket", () => {
 
     vi.advanceTimersByTime(100);
     expect(receivedIds).toEqual(["2", "3"]);
+    ws.close();
+  });
+
+  it("refreshes auth and reconnects when websocket closes with auth failure code", async () => {
+    const onAuthFailure = vi.fn(async () => undefined);
+    const getToken = vi.fn(() => "new-token");
+    const ws = new ManagedWebSocket("ws://localhost/ws/alerts", {
+      reconnectBaseMs: 1,
+      getToken,
+      onAuthFailure,
+    });
+
+    ws.connect();
+    expect(FakeWebSocket.instances).toHaveLength(1);
+    const first = FakeWebSocket.instances[0]!;
+    expect(first.url).toContain("token=new-token");
+    first.emitOpen();
+    first.emitClose(4001, "token expired");
+
+    await vi.runAllTimersAsync();
+    expect(onAuthFailure).toHaveBeenCalledTimes(1);
+    expect(FakeWebSocket.instances.length).toBeGreaterThanOrEqual(2);
     ws.close();
   });
 });
