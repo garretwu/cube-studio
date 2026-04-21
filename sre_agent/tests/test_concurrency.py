@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 
 import pytest
 
+from sre_agent.alerts_identity import build_incident_identity
 from sre_agent.concurrency import AlertCorrelator, AlertDeduplicator, ResourceLock, ResourceLockedError
 from sre_agent.models.alert import Alert
 from sre_agent.models.diagnosis import DiagnosisResult, DiagnosisSession, RankedRootCause
@@ -63,10 +64,23 @@ class _Store:
 
 
 class TestConcurrencyUnit:
-    def test_unit_generates_stable_fingerprint_when_same_alert_repeated(self) -> None:
+    def test_unit_generates_stable_incident_key_when_same_alert_repeated(self) -> None:
         dedup = AlertDeduplicator()
 
-        assert dedup.fingerprint(_alert("a", "pod-1")) == dedup.fingerprint(_alert("a", "pod-1"))
+        assert dedup.incident_key(_alert("a", "pod-1")) == dedup.incident_key(_alert("a", "pod-1"))
+
+    def test_unit_generates_different_incident_key_when_same_fingerprint_but_starts_at_changes(self) -> None:
+        first = _alert("a", "pod-1")
+        second = first.model_copy(update={"starts_at": datetime(2026, 3, 18, 12, 5, tzinfo=UTC)})
+
+        assert build_incident_identity(first).incident_key != build_incident_identity(second).incident_key
+
+    def test_unit_falls_back_to_hash_when_starts_at_missing(self) -> None:
+        alert = _alert("a", "pod-1").model_copy(update={"starts_at": None})
+        identity = build_incident_identity(alert)
+
+        assert identity.identity_source == "fallback_hash"
+        assert identity.incident_key.startswith("fb:")
 
     @pytest.mark.asyncio
     async def test_unit_blocks_second_lock_when_same_resource_already_held(self) -> None:
@@ -103,6 +117,9 @@ class TestConcurrencyIntegration:
         assert duplicate.success is True
         assert duplicate.error is not None
         assert duplicate.error.code.value == "ALERT_DUPLICATE"
+        assert duplicate.error.details is not None
+        assert duplicate.error.details.get("incident_key")
+        assert duplicate.error.details.get("identity_source") == "fingerprint_starts_at"
 
 
 class TestConcurrencyE2E:

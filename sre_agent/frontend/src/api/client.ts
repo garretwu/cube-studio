@@ -414,6 +414,7 @@ function mapSummaryToDiagnosisSummary(item: SessionSummary): DiagnosisSessionSum
     severity: normalizeSeverity(item.severity),
     alert_name: item.alert_name,
     fingerprint: item.fingerprint,
+    incident_key: item.incident_key ?? null,
     duration_seconds: item.duration_seconds,
     outcome: item.outcome ?? null,
     triage_priority: null,

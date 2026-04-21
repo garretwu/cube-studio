@@ -19,6 +19,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, ConfigDict, Field
 
 from sre_agent.alerts_filter import build_blocked_alert_name_set, is_blocked_alert
+from sre_agent.alerts_identity import build_incident_identity
 from sre_agent.auth.jwt import (
     CurrentUser,
     TokenDecodeError,
@@ -287,6 +288,7 @@ class SessionSummary(BaseModel):
     alert_name: str
     severity: str
     fingerprint: str
+    incident_key: str | None = None
     outcome: str | None = None
     duration_seconds: int = 0
     updated_at: datetime
@@ -2453,6 +2455,7 @@ def build_api_router() -> APIRouter:
                 alert_name=session.alert.alert_name,
                 severity=session.alert.severity.value,
                 fingerprint=session.alert.fingerprint,
+                incident_key=build_incident_identity(session.alert).incident_key,
                 outcome=session.outcome,
                 duration_seconds=session.duration_seconds,
                 updated_at=updated_at,

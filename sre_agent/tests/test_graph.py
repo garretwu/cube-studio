@@ -1723,7 +1723,7 @@ tags:
         self.assertEqual(step_two["params"]["node"], "10.11.4.13")
         self.assertEqual(plan["canary"]["target_percentage"], 0.5)
         self.assertEqual(plan["canary"]["max_batches"], 2)
-        self.assertFalse(plan["canary"]["progressive"])
+        self.assertTrue(plan["canary"]["progressive"])
 
     def test_ttft_auto_kill_process_plan_uses_process_node_when_differs_from_serving_node(self) -> None:
         diagnosis = DiagnosisResult(

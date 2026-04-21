@@ -5,6 +5,7 @@ import { useSearchParams } from "react-router-dom";
 import AlertTable from "../components/AlertTable";
 import { AppIcon, AppInput, SectionHeader, StatusChip, SurfaceCard } from "../components/ui";
 import { useAlertStore } from "../store/alertStore";
+import { buildAlertIncidentKey } from "../utils/alerts";
 import { formatSeverity } from "../utils/display";
 import { formatTimestamp } from "../utils/format";
 
@@ -69,6 +70,8 @@ function AlertsPage() {
           alert.labels.node,
           alert.labels.service,
           alert.fingerprint,
+          alert.starts_at,
+          buildAlertIncidentKey(alert),
         ]
           .filter(Boolean)
           .join(" ")
@@ -142,4 +145,3 @@ function AlertsPage() {
 }
 
 export default AlertsPage;
-

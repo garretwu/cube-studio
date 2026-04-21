@@ -854,7 +854,7 @@ async def reason_node(
                 plan_missing_reason = f"诊断已完成，但自动补全修复方案失败：{plan_completion_error}"
             else:
                 plan_missing_reason = "诊断已完成，但模型未返回可执行修复方案。"
-    if remediation_plan is None and _is_ttft_alert_state(state):
+    if _is_ttft_alert_state(state):
         auto_ttft_plan = _build_ttft_kill_process_plan_candidate(
             diagnosis=diagnosis,
             evidence_signals=evidence_signals,
@@ -863,7 +863,7 @@ async def reason_node(
             variables=dict(state.get("variables", {}) or {}),
         )
         if auto_ttft_plan is not None:
-            remediation_plan = _normalize_remediation_plan_payload(
+            auto_normalized = _normalize_remediation_plan_payload(
                 raw_plan=auto_ttft_plan,
                 diagnosis=diagnosis,
                 session_id=str(state.get("session_id", "")),
@@ -871,12 +871,12 @@ async def reason_node(
                 tool_runs=list(state.get("tool_runs", []) or []),
                 variables=dict(state.get("variables", {}) or {}),
             )
-            if remediation_plan is not None:
-                diagnosis = diagnosis.model_copy(update={"recommended_fix": remediation_plan})
+            if auto_normalized is not None:
+                remediation_plan = auto_normalized
                 plan_missing_reason = None
+                diagnosis = diagnosis.model_copy(update={"recommended_fix": remediation_plan})
                 final_thought = (
-                    f"{final_thought}\n已根据 GPU 进程证据进入处置阶段："
-                    "已生成 kill_process proposal（需审批后执行）。"
+                    f"{final_thought}\n已根据 GPU 进程证据生成进程级灰度修复方案（需审批后执行）。"
                 )
 
     # ── TTFT forced external node probe (fail-safe) ──
@@ -4981,18 +4981,17 @@ def _build_ttft_kill_process_plan_candidate(
     if not steps:
         return None
 
-    canary: dict[str, Any] | None = None
-    if len(steps) >= 2:
-        canary = {
-            "enabled": True,
-            "target_percentage": 0.5,
-            "monitor_duration": 60,
-            "success_criteria": [],
-            "criteria_mode": "all",
-            "max_batches": len(steps),
-            "auto_rollback_on_regression": True,
-            "progressive": False,
-        }
+    step_count = len(steps)
+    canary: dict[str, Any] = {
+        "enabled": True,
+        "target_percentage": round(1.0 / step_count, 4),
+        "monitor_duration": 60,
+        "success_criteria": [],
+        "criteria_mode": "all",
+        "max_batches": min(step_count, 3),
+        "auto_rollback_on_regression": step_count >= 2,
+        "progressive": True,
+    }
 
     payload: dict[str, Any] = {
         "plan_id": f"proposal-{(session_id or 'session')[:8]}-ttft-kill",
@@ -5004,8 +5003,7 @@ def _build_ttft_kill_process_plan_candidate(
         "priority": _normalize_plan_priority(diagnosis.triage_priority),
         "safety_level": "high",
     }
-    if canary is not None:
-        payload["canary"] = canary
+    payload["canary"] = canary
     return payload
 
 

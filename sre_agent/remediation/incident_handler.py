@@ -9,6 +9,7 @@ from typing import Any, Awaitable, Callable, Protocol
 from sre_agent.concurrency.alert_correlator import AlertCorrelator
 from sre_agent.concurrency.alert_dedup import AlertDeduplicator
 from sre_agent.concurrency.resource_lock import ResourceLock
+from sre_agent.alerts_identity import build_incident_identity
 from sre_agent.models.alert import Alert
 from sre_agent.models.common import ErrorCode, SREError, SREResponse
 from sre_agent.models.events import EventType
@@ -78,7 +79,8 @@ class IncidentHandler:
                     "data": {"alert": alert.model_dump(mode="json")},
                 }
             )
-        is_dup, existing_sid = self.dedup.check_and_register(alert, provisional_session_id)
+        identity = build_incident_identity(alert)
+        is_dup, existing_sid, incident_key = self.dedup.check_and_register(alert, provisional_session_id)
         if is_dup:
             return SREResponse(
                 success=True,
@@ -86,7 +88,12 @@ class IncidentHandler:
                 error=SREError(
                     code=ErrorCode.ALERT_DUPLICATE,
                     message=f"duplicate alert, see session {existing_sid}",
-                    details={"session_id": existing_sid},
+                    details={
+                        "session_id": existing_sid,
+                        "incident_key": incident_key,
+                        "dedup_reason": "same_incident",
+                        "identity_source": identity.identity_source,
+                    },
                 ),
             )
 
@@ -104,6 +111,7 @@ class IncidentHandler:
             for entity_id in entity_ids:
                 await stack.enter_async_context(self.lock.acquire(entity_id, holder=provisional_session_id))
             session = await self._run_diagnose(alert, trace_callback=live_trace_callback)
+            self.dedup.bind_session(incident_key, session.session_id)
             self.session_store.put(session)
             await self._publish_diagnosis_events(
                 session,

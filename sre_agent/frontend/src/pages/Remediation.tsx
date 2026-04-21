@@ -10,6 +10,7 @@ import { AppIcon, AppInput, MetricTile, StatusChip, SurfaceCard } from "../compo
 import { useWebSocket } from "../hooks/useWebSocket";
 import { useRemediationStore } from "../store/remediationStore";
 import { formatPercent, formatTimestamp } from "../utils/format";
+import { getRemediationOverallProgressDisplay, getRemediationStepProgress } from "../utils/remediationProgress";
 
 type RemediationRecord = {
   summary: DiagnosisSessionSummary;
@@ -113,14 +114,6 @@ function getExecutionStartedAt(events: SessionEvent[] | undefined): string | nul
   return null;
 }
 
-function getOverallProgress(overview?: RemediationOverview): number {
-  if (!overview) return 0;
-  const total = Number(overview.progress.total_steps ?? 0);
-  const completed = Number(overview.progress.completed_steps ?? 0);
-  if (total <= 0) return 0;
-  return Math.max(0, Math.min(100, Math.round((completed / total) * 100)));
-}
-
 function getCanaryProgress(overview?: RemediationOverview): number | null {
   if (!overview?.plan.canary?.enabled) return null;
   const batches = overview.progress.batch_status ?? [];
@@ -129,7 +122,7 @@ function getCanaryProgress(overview?: RemediationOverview): number | null {
     return Math.max(0, Math.min(100, Math.round(Number(canaryBatch.progress ?? 0))));
   }
   if (String(overview.progress.status ?? "").trim().toLowerCase() === "resolved") return 100;
-  return getOverallProgress(overview);
+  return getRemediationStepProgress(overview);
 }
 
 function getCanarySummary(overview?: RemediationOverview): string {
@@ -441,7 +434,7 @@ function RemediationPage() {
                       const currentStatus = String(recordOverview?.progress.status ?? record.summary.status ?? "pending").trim();
                       const approver = getApprover(recordOverview?.timeline) ?? (recordOverview?.approval_required ? "待审批" : "未记录");
                       const startedAt = getExecutionStartedAt(recordOverview?.timeline);
-                      const totalProgress = getOverallProgress(recordOverview);
+                      const totalProgress = getRemediationOverallProgressDisplay(recordOverview);
                       const canaryProgress = getCanaryProgress(recordOverview);
                       const isExpanded = selectedRecord?.summary.session_id === record.summary.session_id;
 
