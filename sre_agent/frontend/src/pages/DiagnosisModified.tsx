@@ -678,7 +678,6 @@ function ActionGeneratedStep({
   return (
     <TraceStepFrame
       className="diagnosis-modified-trace-step--remediation"
-      meta={getRemediationEntryLabel(status)}
       summary={getActionGeneratedSummary(status)}
       testId="diagnosis-modified-action-generated-step"
       title="已生成修复建议"
