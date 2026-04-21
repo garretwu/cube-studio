@@ -1,16 +1,23 @@
 import type { ReactNode } from "react";
+import type { TopologyLayer, TopologyObject, TopologyObjectType, TopologyRelation } from "../api/types";
+import TopologyCanvas from "../features/topologyExplorer/components/TopologyCanvas";
+import "../features/topologyExplorer/topologyExplorer.css";
 
 import type {
   DiagnosisModifiedCandidateChangeView,
+  DiagnosisModifiedConfidenceView,
   DiagnosisModifiedContextNodeView,
   DiagnosisModifiedContextView,
   DiagnosisModifiedExecutionView,
   DiagnosisModifiedFeedbackItem,
-  DiagnosisModifiedNextActionView,
+  DiagnosisModifiedHypothesesView,
+  DiagnosisModifiedProgressView,
   DiagnosisModifiedRemediationKeyView,
   DiagnosisModifiedReportFact,
   DiagnosisModifiedReportView,
   DiagnosisModifiedRootCauseView,
+  DiagnosisModifiedStageView,
+  DiagnosisModifiedVerificationView,
   ReportTone,
 } from "./diagnosisModifiedReportModel";
 
@@ -178,10 +185,7 @@ export function ReportOverview({
                 key={item.key}
               >
                 <span className="diagnosis-modified-report-rail__inline-meta-label">{item.label}</span>
-                <span
-                  className="diagnosis-modified-report-rail__inline-meta-value"
-                  title={item.title}
-                >
+                <span className="diagnosis-modified-report-rail__inline-meta-value" title={item.title}>
                   {item.value}
                 </span>
               </span>
@@ -193,29 +197,247 @@ export function ReportOverview({
   );
 }
 
-export function DiagnosisSummarySection({
+export function ReportProgressSection({ progress }: { progress: DiagnosisModifiedProgressView }) {
+  return (
+    <div className="diagnosis-modified-report-rail__progress" data-testid="diagnosis-modified-report-progress">
+      {progress.steps.map((step, index) => (
+        <article
+          className={cn(
+            "diagnosis-modified-report-rail__progress-step",
+            `diagnosis-modified-report-rail__progress-step--${step.status}`,
+          )}
+          data-status={step.status}
+          data-testid={`diagnosis-modified-progress-step-${step.id}`}
+          key={step.id}
+        >
+          <div className="diagnosis-modified-report-rail__progress-step-index" aria-hidden="true">
+            {step.status === "completed" ? "OK" : step.status === "active" ? "IN" : String(index + 1).padStart(2, "0")} 
+          </div>
+          <div className="diagnosis-modified-report-rail__progress-step-copy">
+            <strong>{step.title}</strong>
+            <p>{step.summary}</p>
+          </div>
+        </article>
+      ))}
+    </div>
+  );
+}
+
+function LevelBlock({
+  title,
+  kicker,
+  children,
+}: {
+  title: string;
+  kicker?: string;
+  children: ReactNode;
+}) {
+  return (
+    <article className="diagnosis-modified-report-rail__level-block">
+      <header className="diagnosis-modified-report-rail__level-block-header">
+        {kicker ? <p className="diagnosis-modified-report-rail__level-block-kicker">{kicker}</p> : null}
+        <h4 className="diagnosis-modified-report-rail__level-block-title">{title}</h4>
+      </header>
+      <div className="diagnosis-modified-report-rail__level-block-body">{children}</div>
+    </article>
+  );
+}
+
+export function SessionLevelSection({
+  context,
+}: {
+  context: DiagnosisModifiedContextView;
+}) {
+  return <DiagnosisContextSection context={context} />;
+}
+
+export function HypothesisLevelSection({
+  confidence,
+  hypotheses,
+  verification,
+}: {
+  confidence: DiagnosisModifiedConfidenceView;
+  hypotheses: DiagnosisModifiedHypothesesView;
+  verification: DiagnosisModifiedVerificationView;
+}) {
+  return (
+    <div className="diagnosis-modified-report-rail__level-stack">
+      <LevelBlock kicker="Hypothesis thread" title="候选假设">
+        <HypothesisSection hypotheses={hypotheses} revealConfidence={confidence.state === "ready"} />
+      </LevelBlock>
+
+      <LevelBlock kicker="Evidence updates" title="验证证据">
+        <VerificationSection verification={verification} />
+      </LevelBlock>
+
+      <LevelBlock kicker="Evidence updates" title="置信度变化">
+        <ConfidenceSection confidence={confidence} />
+      </LevelBlock>
+    </div>
+  );
+}
+
+export function RootCauseLevelSection({
   candidateChanges,
   conclusion,
+  execution,
+  feedback,
+  remediation,
   rootCause,
 }: {
   candidateChanges: DiagnosisModifiedCandidateChangeView[];
   conclusion: DiagnosisModifiedReportView["conclusion"];
+  execution: DiagnosisModifiedExecutionView;
+  feedback: DiagnosisModifiedFeedbackItem[];
+  remediation: DiagnosisModifiedRemediationKeyView;
   rootCause: DiagnosisModifiedRootCauseView;
 }) {
-  if (rootCause.state !== "ready") {
-    return <SectionLoading copy="正在等待根因结论与结论摘要。" variant="list" />;
-  }
+  const rootCauseReady = rootCause.state === "ready";
+
+  return (
+    <div className="diagnosis-modified-report-rail__level-stack">
+      <LevelBlock kicker="Confirmed outcome" title="根因结论">
+        {rootCauseReady ? (
+          <>
+            <div className="diagnosis-modified-report-rail__callout">
+              <p className="diagnosis-modified-report-rail__callout-label">Confirmed root cause</p>
+              <strong>{conclusion.title}</strong>
+              <p>{conclusion.summary}</p>
+            </div>
+            <div className="diagnosis-modified-report-rail__fact-list">
+              {conclusion.facts.map((fact) => (
+                <FactRow fact={fact} key={fact.label} />
+              ))}
+            </div>
+            {candidateChanges.length > 0 ? (
+              <div className="diagnosis-modified-report-rail__level-inset">
+                <p className="diagnosis-modified-report-rail__callout-label">Root-cause candidates</p>
+                <CandidateChangesSection candidateChanges={candidateChanges} />
+              </div>
+            ) : null}
+          </>
+        ) : (
+          <SectionLoading copy="正在等待根因结论收敛。" variant="list" />
+        )}
+      </LevelBlock>
+
+      <LevelBlock kicker="Attached remediation" title="对应修复方案">
+        <RemediationKeySection execution={execution} feedback={feedback} remediation={remediation} />
+      </LevelBlock>
+    </div>
+  );
+}
+
+export function DiagnosisSummarySection({
+  confidence,
+  candidateChanges,
+  conclusion,
+  hypotheses,
+  progress,
+  remediation,
+  rootCause,
+  stage,
+  verification,
+}: {
+  confidence: DiagnosisModifiedConfidenceView;
+  candidateChanges: DiagnosisModifiedCandidateChangeView[];
+  conclusion: DiagnosisModifiedReportView["conclusion"];
+  hypotheses: DiagnosisModifiedHypothesesView;
+  progress: DiagnosisModifiedProgressView;
+  remediation: DiagnosisModifiedRemediationKeyView;
+  rootCause: DiagnosisModifiedRootCauseView;
+  stage: DiagnosisModifiedStageView;
+  verification: DiagnosisModifiedVerificationView;
+}) {
+  const processStatus = resolveSummaryProcessStatus({ progress, remediation, stage });
 
   return (
     <div className="diagnosis-modified-report-rail__section-stack">
-      <div className="diagnosis-modified-report-rail__fact-list">
-        {conclusion.facts.map((fact) => (
-          <FactRow fact={fact} key={fact.label} />
-        ))}
-      </div>
-
-      <CandidateChangesSection candidateChanges={candidateChanges} />
+      <SummaryProcessStatus status={processStatus} />
+      <HypothesisSection hypotheses={hypotheses} revealConfidence={confidence.state === "ready"} />
+      <VerificationSection verification={verification} />
+      <ConfidenceSection confidence={confidence} />
+      {rootCause.state === "ready" ? (
+        <>
+          <div className="diagnosis-modified-report-rail__fact-list">
+            {conclusion.facts.map((fact) => (
+              <FactRow fact={fact} key={fact.label} />
+            ))}
+          </div>
+          {hypotheses.state !== "ready" ? (
+            <CandidateChangesSection candidateChanges={candidateChanges} />
+          ) : null}
+        </>
+      ) : null}
     </div>
+  );
+}
+
+function resolveSummaryProcessStatus({
+  progress,
+  remediation,
+  stage,
+}: {
+  progress: DiagnosisModifiedProgressView;
+  remediation: DiagnosisModifiedRemediationKeyView;
+  stage: DiagnosisModifiedStageView;
+}) {
+  if (!stage.isActive && remediation.state === "ready") {
+    return {
+      text: "已生成根因和修复方案",
+      blinking: false,
+    } as const;
+  }
+
+  switch (progress.activeStepId) {
+    case "context":
+      return {
+        text: "正在构建影响拓扑上下文。",
+        blinking: true,
+      } as const;
+    case "hypotheses":
+      return {
+        text: "已完成影响拓扑，正在生成候选假设。",
+        blinking: true,
+      } as const;
+    case "verification":
+      return {
+        text: "已生成假设，正在验证置信度。",
+        blinking: true,
+      } as const;
+    case "confidence":
+      return {
+        text: "已完成验证证据，正在更新置信度。",
+        blinking: true,
+      } as const;
+    case "remediation":
+      return {
+        text: "已生成置信度，正在生成修复方案。",
+        blinking: true,
+      } as const;
+    default:
+      return {
+        text: "诊断流程进行中。",
+        blinking: true,
+      } as const;
+  }
+}
+
+function SummaryProcessStatus({
+  status,
+}: {
+  status: { text: string; blinking: boolean };
+}) {
+  return (
+    <p
+      className={cn(
+        "diagnosis-modified-report-rail__process-status",
+        status.blinking && "diagnosis-modified-report-rail__process-status--blinking",
+      )}
+      data-testid="diagnosis-modified-summary-process-status"
+    >
+      {status.text}
+    </p>
   );
 }
 
@@ -231,60 +453,111 @@ export function DiagnosisContextSection({ context }: { context: DiagnosisModifie
   );
 }
 
-function ContextTopologyGraph({ context }: { context: DiagnosisModifiedContextView }) {
-  const problemNodes = context.graph.nodes.filter((node) => node.role === "problem");
-  const affectedNodes = context.graph.nodes.filter((node) => node.role === "affected");
-  const allProblemNodes = problemNodes.length > 0 ? problemNodes : context.graph.nodes;
-  const positioned = new Map<string, { node: DiagnosisModifiedContextNodeView; x: number; y: number }>();
-  const height = 190;
-  const distribute = (items: DiagnosisModifiedContextNodeView[], x: number) => {
-    const gap = height / (items.length + 1);
-    items.forEach((node, index) => {
-      positioned.set(node.id, { node, x, y: gap * (index + 1) });
-    });
-  };
+function inferTopologyType(node: DiagnosisModifiedContextNodeView): TopologyObjectType {
+  const text = `${node.detail ?? ""} ${node.label}`.toLowerCase();
+  if (text.includes("gpu")) {
+    return "gpu";
+  }
+  if (text.includes("switch")) {
+    return "switch";
+  }
+  if (text.includes("port")) {
+    return "port";
+  }
+  if (text.includes("bmc")) {
+    return "bmc";
+  }
+  if (text.includes("rack")) {
+    return "rack";
+  }
+  if (text.includes("cluster")) {
+    return "cluster";
+  }
+  if (text.includes("pod")) {
+    return "pod";
+  }
+  if (text.includes("service") || text.includes("svc") || text.includes("api")) {
+    return "service";
+  }
+  return "node";
+}
 
-  distribute(allProblemNodes, 96);
-  distribute(affectedNodes, 370);
+function inferTopologyLayer(type: TopologyObjectType): TopologyLayer {
+  if (type === "switch" || type === "port") {
+    return "network";
+  }
+  if (type === "service") {
+    return "service";
+  }
+  if (type === "rack") {
+    return "physical";
+  }
+  return "compute";
+}
+
+function mapContextNodeToTopologyNode(node: DiagnosisModifiedContextNodeView): TopologyObject {
+  const type = inferTopologyType(node);
+  const detail = node.detail?.trim() || node.label;
+
+  return {
+    id: node.id,
+    name: node.label,
+    type,
+    status: node.role === "problem" ? "abnormal" : "impacted",
+    layer: inferTopologyLayer(type),
+    domain: "diagnosis",
+    region: "global",
+    zone: "global",
+    summary: detail,
+    tags: [node.role],
+    updatedAt: new Date(0).toISOString(),
+    attributes: {
+      source: "diagnosis_context",
+      role: node.role,
+      rawDetail: detail,
+    },
+  };
+}
+
+function mapContextEdgeToTopologyRelation(
+  edge: DiagnosisModifiedContextView["graph"]["edges"][number],
+  nodeRoleMap: Map<string, DiagnosisModifiedContextNodeView["role"]>,
+): TopologyRelation {
+  const sourceRole = nodeRoleMap.get(edge.sourceId);
+
+  return {
+    id: edge.id,
+    source: edge.sourceId,
+    target: edge.targetId,
+    relationType: "depends_on",
+    status: "normal",
+    isCritical: false,
+    impactLevel: sourceRole === "problem" ? "medium" : "low",
+    label: edge.label,
+  };
+}
+
+function ContextTopologyGraph({ context }: { context: DiagnosisModifiedContextView }) {
+  const topologyNodes = context.graph.nodes.map(mapContextNodeToTopologyNode);
+  const nodeRoleMap = new Map(context.graph.nodes.map((node) => [node.id, node.role] as const));
+  const topologyEdges = context.graph.edges.map((edge) => mapContextEdgeToTopologyRelation(edge, nodeRoleMap));
 
   return (
-    <div className="diagnosis-modified-report-rail__context-graph" aria-label="诊断上下文拓扑图">
-      <svg viewBox="0 0 468 190" role="img">
-        <defs>
-          <marker id="diagnosis-report-arrow" markerHeight="8" markerWidth="8" orient="auto" refX="7" refY="4">
-            <path d="M0,0 L8,4 L0,8 z" />
-          </marker>
-        </defs>
-        {context.graph.edges.map((edge) => {
-          const source = positioned.get(edge.sourceId);
-          const target = positioned.get(edge.targetId);
-          if (!source || !target) {
-            return null;
-          }
-          return (
-            <g key={edge.id}>
-              <path
-                className="diagnosis-modified-report-rail__context-edge"
-                d={`M ${source.x + 34} ${source.y} C ${source.x + 110} ${source.y}, ${target.x - 110} ${target.y}, ${target.x - 34} ${target.y}`}
-              />
-              <text x={(source.x + target.x) / 2} y={(source.y + target.y) / 2 - 6}>
-                {edge.label}
-              </text>
-            </g>
-          );
-        })}
-        {Array.from(positioned.values()).map(({ node, x, y }) => (
-          <g
-            className={`diagnosis-modified-report-rail__context-node diagnosis-modified-report-rail__context-node--${node.role}`}
-            key={node.id}
-          >
-            <circle cx={x} cy={y} r="28" />
-            <text x={x} y={y + 48}>
-              {node.label}
-            </text>
-          </g>
-        ))}
-      </svg>
+    <div
+      className="diagnosis-modified-report-rail__context-graph topology-route topology-route--modified"
+      aria-label="诊断上下文拓扑图"
+    >
+      <TopologyCanvas
+        edges={topologyEdges}
+        forceEdgeLabels={false}
+        layoutPreset="layered"
+        matchedNodeIds={[]}
+        neighborDepths={new Map()}
+        nodes={topologyNodes}
+        onHoverNode={() => undefined}
+        onSelectNode={() => undefined}
+        variant="modified"
+      />
     </div>
   );
 }
@@ -312,13 +585,102 @@ function FactRow({ fact }: { fact: DiagnosisModifiedReportFact }) {
   );
 }
 
+function HypothesisSection({
+  hypotheses,
+  revealConfidence,
+}: {
+  hypotheses: DiagnosisModifiedHypothesesView;
+  revealConfidence: boolean;
+}) {
+  if (hypotheses.state !== "ready") {
+    return <SectionLoading copy="正在等待进入候选假设阶段。" variant="list" />;
+  }
+
+  return (
+    <div className="diagnosis-modified-report-rail__subsection">
+      <div className="diagnosis-modified-report-rail__stack">
+        {hypotheses.items.map((item) => (
+          <article className="diagnosis-modified-report-rail__candidate" key={item.id}>
+            <div className="diagnosis-modified-report-rail__candidate-header">
+              <div className="diagnosis-modified-report-rail__candidate-copy">
+                <strong>{item.title}</strong>
+                <p>{item.summary}</p>
+              </div>
+              <div className="diagnosis-modified-report-rail__candidate-meta">
+                <ReportBadge label={item.statusLabel} tone={item.tone} />
+                <span>{revealConfidence ? item.confidenceLabel : "待评估"}</span>
+              </div>
+            </div>
+          </article>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function VerificationSection({ verification }: { verification: DiagnosisModifiedVerificationView }) {
+  if (verification.state !== "ready") {
+    return <SectionLoading copy="正在等待验证证据和继续验证动作。" variant="list" />;
+  }
+
+  return (
+    <div className="diagnosis-modified-report-rail__subsection">
+      <div className="diagnosis-modified-report-rail__subsection-header">
+        <p className="diagnosis-modified-report-rail__callout-label">Verification trail</p>
+        <span>{verification.summary}</span>
+      </div>
+      <div className="diagnosis-modified-report-rail__stack">
+        {verification.items.map((item) => (
+          <article className="diagnosis-modified-report-rail__feedback" key={item.id}>
+            <div className="diagnosis-modified-report-rail__feedback-header">
+              <ReportBadge label={item.title} tone={item.tone} />
+            </div>
+            <strong>{item.summary}</strong>
+            {item.detail ? <p>{item.detail}</p> : null}
+          </article>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function ConfidenceSection({ confidence }: { confidence: DiagnosisModifiedConfidenceView }) {
+  if (confidence.state !== "ready") {
+    return <SectionLoading copy="正在等待置信度变化与收敛。" variant="list" />;
+  }
+
+  const visibleUpdates = confidence.updates.filter(
+    (item) => item.label !== "Confidence update" && item.label !== "Current confidence",
+  );
+
+  return (
+    <div className="diagnosis-modified-report-rail__subsection">
+      <div className="diagnosis-modified-report-rail__subsection-header">
+        <p className="diagnosis-modified-report-rail__callout-label">Confidence updates</p>
+        <span>{confidence.summary}</span>
+      </div>
+      <div className="diagnosis-modified-report-rail__stack">
+        {visibleUpdates.map((item) => (
+          <article className="diagnosis-modified-report-rail__feedback" key={item.id}>
+            <div className="diagnosis-modified-report-rail__feedback-header">
+              <ReportBadge label={item.label} tone={item.tone} />
+              <time>{item.timestamp}</time>
+            </div>
+            <strong>{item.summary}</strong>
+          </article>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function CandidateChangesSection({
   candidateChanges,
 }: {
   candidateChanges: DiagnosisModifiedCandidateChangeView[];
 }) {
   if (candidateChanges.length === 0) {
-    return <p className="diagnosis-modified-report-rail__empty">候选根因会在结论收敛后显示。</p>;
+    return <p className="diagnosis-modified-report-rail__empty">候选根因会在结论稳定后显示。</p>;
   }
 
   return (
@@ -342,20 +704,16 @@ function CandidateChangesSection({
 }
 
 export function RemediationKeySection({
-  actionContent,
   execution,
   feedback,
-  nextAction,
   remediation,
 }: {
-  actionContent?: ReactNode;
   execution: DiagnosisModifiedExecutionView;
   feedback: DiagnosisModifiedFeedbackItem[];
-  nextAction: DiagnosisModifiedNextActionView;
   remediation: DiagnosisModifiedRemediationKeyView;
 }) {
   if (remediation.state === "loading") {
-    return <SectionLoading copy="正在等待修复方案、审批或执行反馈。" variant="list" />;
+    return <SectionLoading copy="正在等待高执行度修复方案、审批或执行反馈。" variant="list" />;
   }
 
   if (remediation.state === "empty") {
@@ -384,7 +742,6 @@ export function RemediationKeySection({
         </ol>
       ) : null}
       <FeedbackSection feedback={feedback} />
-      <NextActionSection actionContent={actionContent} nextAction={nextAction} />
     </div>
   );
 }
@@ -392,7 +749,7 @@ export function RemediationKeySection({
 function ExecutionSection({ execution }: { execution: DiagnosisModifiedExecutionView }) {
   return (
     <div className="diagnosis-modified-report-rail__status-block">
-      <p className="diagnosis-modified-report-rail__callout-label">修复建议</p>
+      <p className="diagnosis-modified-report-rail__callout-label">娣囶喖顦插楦款唴</p>
       <strong>{execution.title}</strong>
       <p>{execution.detail}</p>
       {execution.highlights.length > 0 ? (
@@ -429,22 +786,3 @@ function FeedbackSection({ feedback }: { feedback: DiagnosisModifiedFeedbackItem
   );
 }
 
-function NextActionSection({
-  actionContent,
-  nextAction,
-}: {
-  actionContent?: ReactNode;
-  nextAction: DiagnosisModifiedNextActionView;
-}) {
-  return (
-    <div className="diagnosis-modified-report-rail__next-action">
-      <div className="diagnosis-modified-report-rail__status-block diagnosis-modified-report-rail__status-block--compact">
-        <p className="diagnosis-modified-report-rail__callout-label">Next Action</p>
-        <strong>{nextAction.title}</strong>
-        <p>{nextAction.description}</p>
-        {nextAction.helper ? <p className="diagnosis-modified-report-rail__helper">{nextAction.helper}</p> : null}
-        {actionContent ? <div className="diagnosis-modified-report-rail__action-slot">{actionContent}</div> : null}
-      </div>
-    </div>
-  );
-}

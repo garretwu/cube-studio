@@ -233,6 +233,23 @@ const TRACE_STEP_META: Record<TraceStepKind, { label: string; glyph: string }> =
   action_generated: { label: "Action Generated / 生成修复动作", glyph: "A" },
 };
 
+function getTraceSyncStageLabel(stageId: string) {
+  switch (stageId) {
+    case "context":
+      return "影响拓扑";
+    case "hypotheses":
+      return "候选假设";
+    case "verification":
+      return "继续验证";
+    case "confidence":
+      return "置信度更新";
+    case "remediation":
+      return "修复方案";
+    default:
+      return "诊断中";
+  }
+}
+
 function TraceStepFrame({
   type,
   title,
@@ -791,6 +808,9 @@ function DiagnosisModifiedPage() {
   const shouldBootstrapLiveSession = routeSessionId.length > 0;
   const [demoTimeline, setDemoTimeline] = useState<DiagnosisModifiedTimelineItem[]>([]);
   const [demoCandidates, setDemoCandidates] = useState<DiagnosisModifiedCandidateView[]>([]);
+  const [demoCandidateSnapshots, setDemoCandidateSnapshots] = useState<
+    Array<{ id: string; timestamp: string; candidates: DiagnosisModifiedCandidateView[] }>
+  >([]);
   const [demoSummary, setDemoSummary] = useState<DiagnosisModifiedSummaryView | undefined>();
   const [demoPlan, setDemoPlan] = useState<DiagnosisModifiedPlanView | undefined>();
   const [demoSession, setDemoSession] = useState<DiagnosisSession | undefined>();
@@ -1220,6 +1240,7 @@ function DiagnosisModifiedPage() {
       const scenario = buildDiagnosisModifiedDemoScenario(normalizedPrompt);
       setDemoTimeline(scenario.initialTimeline);
       setDemoCandidates([]);
+      setDemoCandidateSnapshots([]);
       setDemoHypotheses([]);
       setDemoPropagationChain([]);
       setDemoSummary(undefined);
@@ -1373,6 +1394,16 @@ function DiagnosisModifiedPage() {
 
           if (event.type === "update_candidates") {
             setDemoCandidates(event.candidates);
+            setDemoCandidateSnapshots((current) => [
+              ...current,
+              {
+                id: `demo-candidate-snapshot-${event.delayMs}-${current.length + 1}`,
+                timestamp:
+                  [...demoTimeline.map((item) => item.timestamp)].sort((left, right) => Date.parse(right) - Date.parse(left))[0] ??
+                  new Date().toISOString(),
+                candidates: event.candidates,
+              },
+            ]);
             return true;
           }
 
@@ -1451,6 +1482,19 @@ function DiagnosisModifiedPage() {
           }
 
           setDemoCandidates(scenario.candidates);
+          setDemoCandidateSnapshots((current) =>
+            current.length > 0
+              ? current
+              : [
+                  {
+                    id: `demo-candidate-snapshot-final-${scenario.session?.session_id ?? "complete"}`,
+                    timestamp:
+                      scenario.session?.alert.starts_at ??
+                      new Date().toISOString(),
+                    candidates: scenario.candidates,
+                  },
+                ],
+          );
           setDemoHypotheses(scenario.hypotheses ?? []);
           setDemoPropagationChain(scenario.propagationChain ?? []);
           setDemoSummary(scenario.summary);
@@ -1555,6 +1599,32 @@ function DiagnosisModifiedPage() {
     [activeTimeline],
   );
   const activeCandidates = hasLiveSession ? liveView.candidates : demoCandidates;
+  const activeCandidateSnapshots = useMemo(() => {
+    if (hasLiveSession) {
+      if (liveView.candidates.length === 0) {
+        return [];
+      }
+
+      return [
+        {
+          id: `live-candidate-snapshot-${activeSessionId ?? session?.session_id ?? "current"}`,
+          timestamp:
+            [...liveView.timeline.map((item) => item.timestamp)].sort((left, right) => Date.parse(right) - Date.parse(left))[0] ??
+            new Date().toISOString(),
+          candidates: liveView.candidates,
+        },
+      ];
+    }
+
+    return demoCandidateSnapshots;
+  }, [
+    activeSessionId,
+    demoCandidateSnapshots,
+    hasLiveSession,
+    liveView.candidates,
+    liveView.timeline,
+    session?.session_id,
+  ]);
   const activeSummary = hasLiveSession ? liveView.summary : demoSummary;
   const activePlan = hasLiveSession ? liveView.plan : demoPlan;
   const activeSession = hasLiveSession ? session : demoSession;
@@ -1567,6 +1637,7 @@ function DiagnosisModifiedPage() {
         session: activeSession,
         timeline: activeTimeline,
         candidates: activeCandidates,
+        candidateSnapshots: activeCandidateSnapshots,
         summary: activeSummary,
         plan: activePlan,
         events: activeEvents,
@@ -1574,6 +1645,7 @@ function DiagnosisModifiedPage() {
       }),
     [
       activeCandidates,
+      activeCandidateSnapshots,
       activeEvents,
       activeLocalAuditRecords,
       activePlan,
@@ -1582,19 +1654,6 @@ function DiagnosisModifiedPage() {
       activeTimeline,
     ],
   );
-
-  const remediationActionContent = useMemo(() => {
-    if (!activeSession?.session_id) {
-      return undefined;
-    }
-
-    return (
-      <RemediationJumpButton
-        sessionId={activeSession.session_id}
-        status={activeSession.status}
-      />
-    );
-  }, [activeSession]);
 
   const flowRemediationEntry = useMemo(() => {
     if (!activeSession?.session_id || activeTimeline.length === 0) {
@@ -1698,6 +1757,13 @@ function DiagnosisModifiedPage() {
             <header className="diagnosis-modified-pane-header diagnosis-modified-pane-header--trace">
               <div>
                 <p>Thinking Trace</p>
+                <span
+                  className="diagnosis-modified-pane-header__sync-stage"
+                  data-stage-id={reportView.progress.activeStepId}
+                  data-testid="diagnosis-modified-trace-sync-stage"
+                >
+                  {getTraceSyncStageLabel(reportView.progress.activeStepId)}
+                </span>
                 <h2>诊断轨迹</h2>
               </div>
               <span>实时推理链路</span>
@@ -1790,7 +1856,7 @@ function DiagnosisModifiedPage() {
             </div>
           </div>
 
-          <DiagnosisModifiedReportRail actionContent={remediationActionContent} view={reportView} />
+          <DiagnosisModifiedReportRail view={reportView} />
         </div>
       </section>
     </div>

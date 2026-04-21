@@ -1,4 +1,4 @@
-import type { DiagnosisLocalAuditRecord, DiagnosisSession, SessionEvent } from "../api/types";
+import type { DiagnosisLocalAuditRecord, DiagnosisSession, RemediationPlan, SessionEvent } from "../api/types";
 import type {
   DiagnosisModifiedCandidateView,
   DiagnosisModifiedPlanView,
@@ -72,6 +72,49 @@ export type DiagnosisModifiedFeedbackItem = {
   timestamp: string;
 };
 
+export type DiagnosisModifiedHypothesisItemView = {
+  id: string;
+  title: string;
+  summary: string;
+  confidenceLabel: string;
+  statusLabel: string;
+  tone: ReportTone;
+};
+
+export type DiagnosisModifiedHypothesesView = {
+  state: ReportSectionState;
+  summary: string;
+  items: DiagnosisModifiedHypothesisItemView[];
+};
+
+export type DiagnosisModifiedVerificationItemView = {
+  id: string;
+  title: string;
+  summary: string;
+  detail?: string;
+  tone: ReportTone;
+};
+
+export type DiagnosisModifiedVerificationView = {
+  state: ReportSectionState;
+  summary: string;
+  items: DiagnosisModifiedVerificationItemView[];
+};
+
+export type DiagnosisModifiedConfidenceUpdateView = {
+  id: string;
+  label: string;
+  summary: string;
+  timestamp: string;
+  tone: ReportTone;
+};
+
+export type DiagnosisModifiedConfidenceView = {
+  state: ReportSectionState;
+  summary: string;
+  updates: DiagnosisModifiedConfidenceUpdateView[];
+};
+
 export type DiagnosisModifiedRemediationStepView = {
   id: string;
   title: string;
@@ -88,6 +131,25 @@ export type DiagnosisModifiedNextActionView = {
 
 export type DiagnosisModifiedRootCauseView = {
   state: ReportSectionState;
+};
+
+export type DiagnosisModifiedProgressStageId =
+  | "context"
+  | "hypotheses"
+  | "verification"
+  | "confidence"
+  | "remediation";
+
+export type DiagnosisModifiedProgressStepView = {
+  id: DiagnosisModifiedProgressStageId;
+  title: string;
+  summary: string;
+  status: "completed" | "active" | "pending";
+};
+
+export type DiagnosisModifiedProgressView = {
+  activeStepId: DiagnosisModifiedProgressStageId;
+  steps: DiagnosisModifiedProgressStepView[];
 };
 
 export type DiagnosisModifiedRemediationKeyView = {
@@ -112,6 +174,10 @@ export type DiagnosisModifiedReportView = {
     badges: Array<{ label: string; tone: ReportTone }>;
   };
   context: DiagnosisModifiedContextView;
+  progress: DiagnosisModifiedProgressView;
+  hypotheses: DiagnosisModifiedHypothesesView;
+  verification: DiagnosisModifiedVerificationView;
+  confidence: DiagnosisModifiedConfidenceView;
   conclusion: {
     title: string;
     summary: string;
@@ -131,6 +197,11 @@ export type BuildDiagnosisModifiedReportViewInput = {
   session?: DiagnosisSession;
   timeline: DiagnosisModifiedTimelineItem[];
   candidates?: DiagnosisModifiedCandidateView[];
+  candidateSnapshots?: Array<{
+    id: string;
+    timestamp: string;
+    candidates: DiagnosisModifiedCandidateView[];
+  }>;
   summary?: DiagnosisModifiedSummaryView;
   plan?: DiagnosisModifiedPlanView;
   events?: SessionEvent[];
@@ -171,6 +242,13 @@ const TERMINAL_STATUSES = new Set(["resolved", "closed", "failed", "timeout", "e
 function normalizeText(value?: string | null) {
   return String(value ?? "").replace(/^\[系统\]\s*/u, "").trim();
 }
+
+type ParsedTopologyContext = {
+  roots: string[];
+  affected_count?: number;
+  affected_entities?: Array<{ id?: string; name?: string } & Record<string, unknown>>;
+  summary?: string;
+};
 
 function formatConfidence(value: number | undefined) {
   const safeValue = Math.max(0, Math.min(1, value ?? 0));
@@ -298,6 +376,578 @@ function buildCandidateChanges(input: BuildDiagnosisModifiedReportViewInput) {
   return rows.slice(0, 3);
 }
 
+function getCandidateSnapshots(input: BuildDiagnosisModifiedReportViewInput) {
+  if (input.candidateSnapshots && input.candidateSnapshots.length > 0) {
+    return input.candidateSnapshots
+      .filter((snapshot) => snapshot.candidates.length > 0)
+      .map((snapshot) => ({
+        id: snapshot.id,
+        timestamp: snapshot.timestamp,
+        candidates: snapshot.candidates.slice(0, 3),
+      }));
+  }
+
+  if ((input.candidates ?? []).length > 0) {
+    const latestTimestamp =
+      [...input.timeline.map((item) => item.timestamp)].sort((left, right) => timestampValue(right) - timestampValue(left))[0] ??
+      new Date(0).toISOString();
+    return [
+      {
+        id: "candidate-snapshot-current",
+        timestamp: latestTimestamp,
+        candidates: (input.candidates ?? []).slice(0, 3),
+      },
+    ];
+  }
+
+  return [];
+}
+
+function getHypothesisStatusLabel(candidate: DiagnosisModifiedCandidateView, index: number) {
+  if (candidate.isPrimary) {
+    return "当前根因";
+  }
+  if (candidate.statusLabel?.trim()) {
+    return candidate.statusLabel;
+  }
+  return `候选 ${candidate.rank ?? index + 1}`;
+}
+
+function getHypothesisTone(candidate: DiagnosisModifiedCandidateView): ReportTone {
+  if (candidate.isPrimary) {
+    return "accent";
+  }
+  if (candidate.statusTone === "success") {
+    return "success";
+  }
+  if (candidate.statusTone === "warning" || candidate.statusTone === "danger") {
+    return "warning";
+  }
+  return "neutral";
+}
+
+function buildHypotheses(input: BuildDiagnosisModifiedReportViewInput): DiagnosisModifiedHypothesesView {
+  const snapshots = getCandidateSnapshots(input);
+  const latestSnapshot = snapshots.at(-1);
+
+  if (!latestSnapshot) {
+    return {
+      state: "loading",
+      summary: "Waiting for candidate root-cause selection.",
+      items: [],
+    };
+  }
+
+  return {
+    state: "ready",
+    summary: `Showing ${latestSnapshot.candidates.length} selected hypotheses from the current evidence set.`,
+    items: latestSnapshot.candidates.map((candidate, index) => ({
+      id: candidate.id,
+      title: candidate.title,
+      summary: candidate.evidenceSummary ?? candidate.summary,
+      confidenceLabel: candidate.confidenceLabel,
+      statusLabel: getHypothesisStatusLabel(candidate, index),
+      tone: getHypothesisTone(candidate),
+    })),
+  };
+}
+
+function buildVerification(input: BuildDiagnosisModifiedReportViewInput): DiagnosisModifiedVerificationView {
+  const toolItems = input.timeline
+    .filter(
+      (item): item is Extract<DiagnosisModifiedTimelineItem, { kind: "tool" }> =>
+        item.kind === "tool" && item.status === "success",
+    )
+    .slice(-3)
+    .map((item) => ({
+      id: item.id,
+      title: item.toolName,
+      summary: item.summaryLines[0] ?? "Validation completed.",
+      detail: item.summaryLines.slice(1).join(" | ") || undefined,
+      tone: "info" as const,
+    }));
+
+  const nextActionItems = input.timeline
+    .filter(
+      (item): item is Extract<DiagnosisModifiedTimelineItem, { kind: "message" }> =>
+        item.kind === "message" &&
+        item.role === "assistant" &&
+        ((item.label?.trim() ?? "") === "Next action" || item.content.startsWith("Next action:")),
+    )
+    .slice(-2)
+    .map((item) => ({
+      id: item.id,
+      title: "Next validation",
+      summary: item.content.replace(/^Next action:\s*/i, ""),
+      tone: "neutral" as const,
+    }));
+
+  const items = [...toolItems, ...nextActionItems];
+
+  if (items.length === 0) {
+    return {
+      state: "loading",
+      summary: "Waiting for discriminative validation evidence.",
+      items: [],
+    };
+  }
+
+  return {
+    state: "ready",
+    summary: `Captured ${items.length} verification checkpoints from the active trace.`,
+    items,
+  };
+}
+
+function buildConfidence(input: BuildDiagnosisModifiedReportViewInput): DiagnosisModifiedConfidenceView {
+  const snapshots = getCandidateSnapshots(input);
+  const resultConfidence = input.summary?.confidenceRawLabel ?? input.session?.diagnosis_result?.confidence;
+
+  if (snapshots.length === 0) {
+    if (resultConfidence == null) {
+      return {
+        state: "loading",
+        summary: "Waiting for confidence movement.",
+        updates: [],
+      };
+    }
+
+    return {
+      state: "ready",
+      summary: "The report has a settled confidence score.",
+      updates: [
+        {
+          id: "confidence-final",
+          label: "Current confidence",
+          summary: `Current root-cause confidence is ${typeof resultConfidence === "number" ? formatConfidence(resultConfidence) : resultConfidence}.`,
+          timestamp:
+            [...input.timeline.map((item) => item.timestamp)].sort((left, right) => timestampValue(right) - timestampValue(left))[0] ??
+            new Date(0).toISOString(),
+          tone: "accent",
+        },
+      ],
+    };
+  }
+
+  if (snapshots.length < 2 && resultConfidence == null) {
+    return {
+      state: "loading",
+      summary: "Baseline hypothesis is ready; confidence will appear after additional verification.",
+      updates: [],
+    };
+  }
+
+  const updates = snapshots.map((snapshot, index) => {
+    const topCandidate = snapshot.candidates[0];
+    const previousTopCandidate = index > 0 ? snapshots[index - 1]?.candidates[0] : undefined;
+    const previousConfidence = previousTopCandidate?.title === topCandidate?.title ? previousTopCandidate.confidenceLabel : undefined;
+    const summary = topCandidate
+      ? previousConfidence
+        ? `${topCandidate.title} moved from ${previousConfidence} to ${topCandidate.confidenceLabel}.`
+        : `${topCandidate.title} entered the shortlist at ${topCandidate.confidenceLabel}.`
+      : "Confidence snapshot recorded.";
+
+    return {
+      id: snapshot.id,
+      label: index === 0 ? "Initial ranking" : "Confidence update",
+      summary,
+      timestamp: snapshot.timestamp,
+      tone: index === snapshots.length - 1 ? "accent" : "info",
+    } satisfies DiagnosisModifiedConfidenceUpdateView;
+  });
+
+  if (resultConfidence != null) {
+    updates.push({
+      id: "confidence-final",
+      label: "Current confidence",
+      summary: `Current root-cause confidence is ${
+        typeof resultConfidence === "number" ? formatConfidence(resultConfidence) : resultConfidence
+      }.`,
+      timestamp:
+        [...input.timeline.map((item) => item.timestamp)].sort((left, right) => timestampValue(right) - timestampValue(left))[0] ??
+        new Date(0).toISOString(),
+      tone: "accent",
+    });
+  }
+
+  return {
+    state: "ready",
+    summary: `Tracked ${updates.length} confidence updates across the diagnosis trace.`,
+    updates,
+  };
+}
+
+function buildProgress(args: {
+  context: DiagnosisModifiedContextView;
+  hypotheses: DiagnosisModifiedHypothesesView;
+  verification: DiagnosisModifiedVerificationView;
+  confidence: DiagnosisModifiedConfidenceView;
+  remediation: DiagnosisModifiedRemediationKeyView;
+  rootCauseReady: boolean;
+}): DiagnosisModifiedProgressView {
+  const started = {
+    context:
+      args.context.state === "ready" ||
+      args.hypotheses.state === "ready" ||
+      args.verification.state === "ready" ||
+      args.confidence.state === "ready" ||
+      args.remediation.state === "ready",
+    hypotheses:
+      args.hypotheses.state === "ready" ||
+      args.verification.state === "ready" ||
+      args.confidence.state === "ready" ||
+      args.remediation.state === "ready" ||
+      args.rootCauseReady,
+    verification:
+      args.verification.state === "ready" ||
+      args.confidence.state === "ready" ||
+      args.remediation.state === "ready" ||
+      args.rootCauseReady,
+    confidence: args.confidence.state === "ready" || args.remediation.state === "ready" || args.rootCauseReady,
+    remediation: args.remediation.state === "ready",
+  } as const;
+
+  const order: DiagnosisModifiedProgressStageId[] = [
+    "context",
+    "hypotheses",
+    "verification",
+    "confidence",
+    "remediation",
+  ];
+  const activeStepId =
+    [...order].reverse().find((id) => started[id]) ?? "context";
+  const activeIndex = order.indexOf(activeStepId);
+
+  const summaries: Record<DiagnosisModifiedProgressStageId, string> = {
+    context:
+      args.context.state === "ready"
+        ? args.context.summary
+        : "Waiting for topology and blast-radius context.",
+    hypotheses:
+      args.hypotheses.state === "ready"
+        ? args.hypotheses.summary
+        : "Waiting for the first selected hypotheses.",
+    verification:
+      args.verification.state === "ready"
+        ? args.verification.summary
+        : "Waiting for validation evidence from tools and follow-up checks.",
+    confidence:
+      args.confidence.state === "ready"
+        ? args.confidence.summary
+        : "Waiting for confidence movement before locking the report.",
+    remediation:
+      args.remediation.state === "ready"
+        ? "High-confidence remediation planning is now available."
+        : "Remediation will open after the root cause is stable enough to act on.",
+  };
+  const titles: Record<DiagnosisModifiedProgressStageId, string> = {
+    context: "Impact topology",
+    hypotheses: "Selected hypotheses",
+    verification: "Verification trail",
+    confidence: "Confidence updates",
+    remediation: "Remediation generation",
+  };
+
+  return {
+    activeStepId,
+    steps: order.map((id, index) => ({
+      id,
+      title: titles[id],
+      summary: summaries[id],
+      status:
+        index < activeIndex
+          ? "completed"
+          : index === activeIndex
+            ? "active"
+            : "pending",
+    })),
+  };
+}
+
+function isParsedTopologyContext(value: unknown): value is ParsedTopologyContext {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+  const record = value as Record<string, unknown>;
+  if (!Array.isArray(record.roots)) {
+    return false;
+  }
+  const rootsOk = record.roots.every((item) => typeof item === "string");
+  if (!rootsOk) {
+    return false;
+  }
+  if (record.affected_entities != null && !Array.isArray(record.affected_entities)) {
+    return false;
+  }
+  return true;
+}
+
+function extractJsonObjectAfterMarker(text: string, marker: string) {
+  const index = text.indexOf(marker);
+  if (index < 0) {
+    return null;
+  }
+  const start = text.indexOf("{", index + marker.length);
+  if (start < 0) {
+    return null;
+  }
+  let depth = 0;
+  let inString = false;
+  let escape = false;
+  for (let i = start; i < text.length; i += 1) {
+    const ch = text[i];
+    if (escape) {
+      escape = false;
+      continue;
+    }
+    if (ch === "\\") {
+      escape = true;
+      continue;
+    }
+    if (ch === '"') {
+      inString = !inString;
+      continue;
+    }
+    if (inString) {
+      continue;
+    }
+    if (ch === "{") {
+      depth += 1;
+      continue;
+    }
+    if (ch === "}") {
+      depth -= 1;
+      if (depth === 0) {
+        return text.slice(start, i + 1);
+      }
+    }
+  }
+  return null;
+}
+
+function extractJsonObjects(text: string) {
+  const results: string[] = [];
+  let depth = 0;
+  let inString = false;
+  let escape = false;
+  let start = -1;
+
+  for (let i = 0; i < text.length; i += 1) {
+    const ch = text[i];
+    if (escape) {
+      escape = false;
+      continue;
+    }
+    if (ch === "\\") {
+      escape = true;
+      continue;
+    }
+    if (ch === '"') {
+      inString = !inString;
+      continue;
+    }
+    if (inString) {
+      continue;
+    }
+    if (ch === "{") {
+      if (depth === 0) {
+        start = i;
+      }
+      depth += 1;
+      continue;
+    }
+    if (ch === "}") {
+      if (depth === 0) {
+        continue;
+      }
+      depth -= 1;
+      if (depth === 0 && start >= 0) {
+        results.push(text.slice(start, i + 1));
+        start = -1;
+      }
+    }
+  }
+
+  return results;
+}
+
+function parseTopologyContextCandidate(value: unknown, depth = 0): ParsedTopologyContext | null {
+  if (depth > 2 || value == null) {
+    return null;
+  }
+
+  if (typeof value === "string") {
+    try {
+      return parseTopologyContextCandidate(JSON.parse(value) as unknown, depth + 1);
+    } catch {
+      return null;
+    }
+  }
+
+  if (isParsedTopologyContext(value)) {
+    return value;
+  }
+
+  if (typeof value !== "object") {
+    return null;
+  }
+
+  const record = value as Record<string, unknown>;
+  const nestedCandidates = [
+    record.topology_context,
+    record.topologyContext,
+    record.context,
+    record.data,
+    record.result,
+    record.payload,
+  ];
+
+  for (const candidate of nestedCandidates) {
+    const parsed = parseTopologyContextCandidate(candidate, depth + 1);
+    if (parsed) {
+      return parsed;
+    }
+  }
+
+  return null;
+}
+
+function parseTopologyContextFromContent(content: string): ParsedTopologyContext | null {
+  const markers = [
+    "Topology context:",
+    "topology context:",
+    "拓扑上下文:",
+    "拓扑上下文：",
+    "topology_context",
+  ];
+
+  for (const marker of markers) {
+    if (!content.includes(marker)) {
+      continue;
+    }
+    const jsonText = extractJsonObjectAfterMarker(content, marker);
+    if (!jsonText) {
+      continue;
+    }
+    const parsed = parseTopologyContextCandidate(jsonText);
+    if (parsed) {
+      return parsed;
+    }
+  }
+
+  const allJsonObjects = extractJsonObjects(content);
+  for (const jsonText of allJsonObjects) {
+    const parsed = parseTopologyContextCandidate(jsonText);
+    if (parsed) {
+      return parsed;
+    }
+  }
+
+  return null;
+}
+
+function parseTopologyContextFromTimeline(timeline: DiagnosisModifiedTimelineItem[]): ParsedTopologyContext | null {
+  for (let i = timeline.length - 1; i >= 0; i -= 1) {
+    const item = timeline[i];
+    if (!item) {
+      continue;
+    }
+
+    if (item.kind === "message") {
+      const parsedFromMessage = parseTopologyContextFromContent(item.content);
+      if (parsedFromMessage) {
+        return parsedFromMessage;
+      }
+      continue;
+    }
+
+    if (item.kind === "tool") {
+      const parsedFromTool = parseTopologyContextCandidate(item.rawResult);
+      if (parsedFromTool) {
+        return parsedFromTool;
+      }
+    }
+  }
+  return null;
+}
+
+function normalizeContextEntity(value: string) {
+  const text = String(value ?? "").trim();
+  if (!text) {
+    return "";
+  }
+  if (text.includes(":")) {
+    return text;
+  }
+  return `entity:${text}`;
+}
+
+function buildContextFromTopologyContext(parsed: ParsedTopologyContext): DiagnosisModifiedContextView {
+  const roots = uniqueStrings((parsed.roots ?? []).map((root) => normalizeContextEntity(root)));
+  const affectedEntities =
+    parsed.affected_entities?.map((entity) => {
+      const id = typeof entity?.id === "string" && entity.id.trim() ? entity.id.trim() : "";
+      const name = typeof entity?.name === "string" && entity.name.trim() ? entity.name.trim() : "";
+      const labelCandidate = name || id;
+      return normalizeContextEntity(labelCandidate);
+    }) ?? [];
+  const affected = uniqueStrings(affectedEntities);
+
+  if (roots.length === 0 && affected.length === 0) {
+    return {
+      state: "loading",
+      summary: "等待诊断上下文生成。",
+      problemNodes: [],
+      affectedNodes: [],
+      graph: { nodes: [], edges: [] },
+    };
+  }
+
+  const problemNodes = roots.map((root) => ({
+    id: getContextNodeId(root),
+    label: getEntityLabel(root),
+    role: "problem" as const,
+    tone: "danger" as const,
+    detail: root,
+  }));
+  const problemNodeIds = new Set(problemNodes.map((node) => node.id));
+  const affectedNodes = affected
+    .filter((entity) => entity && !problemNodeIds.has(getContextNodeId(entity)))
+    .map((entity) => ({
+      id: getContextNodeId(entity),
+      label: getEntityLabel(entity),
+      role: "affected" as const,
+      tone: "warning" as const,
+      detail: entity,
+    }));
+  const edges =
+    problemNodes.length > 0 && affectedNodes.length > 0
+      ? problemNodes.flatMap((problem) =>
+          affectedNodes.map((affectedNode) => ({
+            id: `context-edge-${sanitizeId(problem.id)}-${sanitizeId(affectedNode.id)}`,
+            sourceId: problem.id,
+            targetId: affectedNode.id,
+            label: "影响",
+          })),
+        )
+      : [];
+  const nodes = [...problemNodes, ...affectedNodes];
+  const summary =
+    typeof parsed.summary === "string" && parsed.summary.trim()
+      ? parsed.summary.trim()
+      : nodes.length > 0
+        ? "基于拓扑上下文整理问题节点与受影响节点。"
+        : "当前会话尚未返回问题节点或受影响节点。";
+
+  return {
+    state: nodes.length > 0 ? "ready" : "empty",
+    summary,
+    problemNodes,
+    affectedNodes,
+    graph: { nodes, edges },
+  };
+}
+
 function getProgressLabel(progress?: UnifiedRecord["progress"]) {
   if (!progress) {
     return null;
@@ -377,6 +1027,13 @@ function buildContext(input: BuildDiagnosisModifiedReportViewInput): DiagnosisMo
   const result = getResult(input);
   const problemEntities = uniqueStrings(input.summary?.rootCauseEntities ?? result?.root_cause_entities ?? []);
   const affectedServices = uniqueStrings(input.summary?.affectedServices ?? result?.affected_services ?? []);
+  const parsedTopology = parseTopologyContextFromTimeline(input.timeline);
+  const hasParsedTopologyEntities =
+    (parsedTopology?.roots?.length ?? 0) > 0 || (parsedTopology?.affected_entities?.length ?? 0) > 0;
+
+  if (parsedTopology && hasParsedTopologyEntities) {
+    return buildContextFromTopologyContext(parsedTopology);
+  }
 
   if (!result && problemEntities.length === 0 && affectedServices.length === 0) {
     return {
@@ -574,16 +1231,34 @@ function buildUnifiedRecords(input: BuildDiagnosisModifiedReportViewInput) {
   );
 }
 
-function derivePlan(input: BuildDiagnosisModifiedReportViewInput) {
-  if (input.plan) {
-    return input.plan;
+function getPreferredRemediationPlan(input: BuildDiagnosisModifiedReportViewInput): RemediationPlan | undefined {
+  const result = getResult(input);
+  const rankedCandidates = [...(result?.ranked_candidates ?? [])].sort((left, right) => left.rank - right.rank);
+  const normalizedRootCause = String(input.summary?.rootCause ?? result?.root_cause ?? "")
+    .trim()
+    .toLowerCase();
+
+  const matchedCandidatePlan = rankedCandidates.find((candidate) => {
+    if (!candidate.recommended_fix || !normalizedRootCause) {
+      return false;
+    }
+
+    return candidate.root_cause.trim().toLowerCase() === normalizedRootCause;
+  })?.recommended_fix;
+
+  if (matchedCandidatePlan) {
+    return matchedCandidatePlan;
   }
 
-  const plan = getResult(input)?.recommended_fix;
-  if (!plan) {
-    return undefined;
+  const rankedPlan = rankedCandidates.find((candidate) => candidate.recommended_fix)?.recommended_fix;
+  if (rankedPlan) {
+    return rankedPlan;
   }
 
+  return result?.recommended_fix ?? undefined;
+}
+
+function mapRemediationPlanToView(plan: RemediationPlan): DiagnosisModifiedPlanView {
   const canaryLabel = plan.canary?.enabled
     ? `灰度 ${plan.canary.target_percentage}% / 观察 ${plan.canary.monitor_duration} 分钟`
     : undefined;
@@ -595,13 +1270,34 @@ function derivePlan(input: BuildDiagnosisModifiedReportViewInput) {
     confidenceLabel: formatConfidence(plan.confidence),
     safetyLabel: plan.safety_level,
     canaryLabel,
+    impactSummary: plan.estimated_impact,
     steps: plan.steps.map((step) => ({
       id: String(step.step_id),
       title: step.description,
       detail: step.tool,
+      toolName: step.tool,
+      paramsSummary: Object.keys(step.params ?? {}).length > 0 ? JSON.stringify(step.params) : undefined,
       status: "pending" as const,
     })),
   } satisfies DiagnosisModifiedPlanView;
+}
+
+function derivePlan(input: BuildDiagnosisModifiedReportViewInput) {
+  const preferredPlan = getPreferredRemediationPlan(input);
+  if (preferredPlan) {
+    return mapRemediationPlanToView(preferredPlan);
+  }
+
+  if (input.plan) {
+    return input.plan;
+  }
+
+  const plan = getResult(input)?.recommended_fix;
+  if (!plan) {
+    return undefined;
+  }
+
+  return mapRemediationPlanToView(plan);
 }
 
 function buildExecution(
@@ -773,11 +1469,28 @@ export function buildDiagnosisModifiedReportView(
   const unifiedRecords = buildUnifiedRecords(input);
   const execution = buildExecution(input, stage, unifiedRecords);
   const overview = buildOverview(input, stage);
+  const context = buildContext(input);
+  const hypotheses = buildHypotheses(input);
+  const verification = buildVerification(input);
+  const confidence = buildConfidence(input);
   const rootCauseReady = hasRootCauseConclusion(input);
+  const remediation = buildRemediation(input, execution);
+  const progress = buildProgress({
+    context,
+    hypotheses,
+    verification,
+    confidence,
+    remediation,
+    rootCauseReady,
+  });
 
   return {
     overview,
-    context: buildContext(input),
+    context,
+    progress,
+    hypotheses,
+    verification,
+    confidence,
     rootCause: {
       state: rootCauseReady ? "ready" : "loading",
     },
@@ -787,7 +1500,7 @@ export function buildDiagnosisModifiedReportView(
     stage,
     execution,
     feedback: buildFeedback(unifiedRecords),
-    remediation: buildRemediation(input, execution),
+    remediation,
     nextAction: buildNextAction(input, stage, execution),
   };
 }

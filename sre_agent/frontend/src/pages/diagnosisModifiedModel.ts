@@ -849,6 +849,15 @@ export function buildDiagnosisModifiedDemoScenario(prompt: string): DiagnosisMod
   const candidates = buildCandidates(demoSession);
   const hypotheses = buildHypotheses(demoSession);
   const propagationChain = buildPropagationChain(demoSession);
+  const topologyContext = {
+    roots: ["node:worker-03"],
+    affected_count: 2,
+    affected_entities: [
+      { id: "gpu:0", name: "GPU 0" },
+      { id: `service:${serviceName}`, name: serviceName },
+    ],
+    summary: `topology blast radius: worker-03 impacts ${serviceName}`,
+  };
 
   const initialCandidates: DiagnosisModifiedCandidateView[] = candidates.map((candidate) => {
     const normalizedConfidence = Number.isFinite(candidate.confidence)
@@ -912,7 +921,7 @@ export function buildDiagnosisModifiedDemoScenario(prompt: string): DiagnosisMod
           id: `demo-assistant-context-summary-${now}`,
           kind: "message",
           role: "assistant",
-          content: `\u4e0a\u4e0b\u6587\u6784\u5efa\u5b8c\u6210\uff1a\u672c\u6b21\u5f02\u5e38\u96c6\u4e2d\u5728 ${serviceName} \u63a8\u7406\u94fe\u8def\uff0c\u544a\u8b66\u7a97\u53e3\u5185\u5ef6\u8fdf\u62ac\u5347\u4e0e\u8282\u70b9\u8d44\u6e90\u5360\u7528\u540c\u6b65\u51fa\u73b0\uff0c\u4f18\u5148\u6392\u67e5\u8282\u70b9\u7ea7\u8d44\u6e90\u4e89\u7528\u3002`,
+          content: `\u4e0a\u4e0b\u6587\u6784\u5efa\u5b8c\u6210\uff1a\u672c\u6b21\u5f02\u5e38\u96c6\u4e2d\u5728 ${serviceName} \u63a8\u7406\u94fe\u8def\uff0c\u544a\u8b66\u7a97\u53e3\u5185\u5ef6\u8fdf\u62ac\u5347\u4e0e\u8282\u70b9\u8d44\u6e90\u5360\u7528\u540c\u6b65\u51fa\u73b0\uff0c\u4f18\u5148\u6392\u67e5\u8282\u70b9\u7ea7\u8d44\u6e90\u4e89\u7528\u3002\nTopology context:\n${JSON.stringify(topologyContext)}`,
           timestamp: new Date(now + 700).toISOString(),
           label: "\u4e0a\u4e0b\u6587\u7ed3\u8bba",
         },
@@ -1099,7 +1108,6 @@ export function buildDiagnosisModifiedDemoScenario(prompt: string): DiagnosisMod
     session: demoSession,
   };
 }
-
 
 
 

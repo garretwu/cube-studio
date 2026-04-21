@@ -1,4 +1,4 @@
-﻿import { act, fireEvent, render, screen, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -776,9 +776,7 @@ describe("DiagnosisModifiedPage sequential playback", () => {
     expect(container.querySelectorAll(".diagnosis-modified-message-row")).toHaveLength(3);
   });
 
-  it("opens the remediation overview in a new page from the demo report rail", async () => {
-    const windowOpenSpy = createWindowOpenSpy();
-
+  it("does not render remediation action buttons in the demo report rail", async () => {
     mockedBuildDemoScenario.mockReturnValue({
       initialTimeline: [
         {
@@ -822,15 +820,7 @@ describe("DiagnosisModifiedPage sequential playback", () => {
     const reportHeader = within(reportRail).getByTestId("diagnosis-modified-report-header");
 
     expect(within(reportHeader).queryByRole("button", { name: "\u5ba1\u6279\u4fee\u590d" })).not.toBeInTheDocument();
-    expect(within(reportRail).getAllByRole("button", { name: "\u5ba1\u6279\u4fee\u590d" })).toHaveLength(1);
-
-    fireEvent.click(within(reportRail).getByRole("button", { name: "\u5ba1\u6279\u4fee\u590d" }));
-
-    expect(windowOpenSpy).toHaveBeenCalledWith(
-      "/remediation?sessionId=demo-session-approval-flow",
-      "_blank",
-      "noopener,noreferrer",
-    );
+    expect(within(reportRail).queryByRole("button", { name: "\u5ba1\u6279\u4fee\u590d" })).not.toBeInTheDocument();
   });
 
 
@@ -918,9 +908,7 @@ describe("DiagnosisModifiedPage sequential playback", () => {
       "noopener,noreferrer",
     );
   });
-  it("opens the remediation overview in a new page from the live report rail", () => {
-    const windowOpenSpy = createWindowOpenSpy();
-
+  it("does not render remediation action buttons in the live report rail", () => {
     mockedBuildLiveView.mockReturnValue({
       timeline: [
         {
@@ -951,15 +939,7 @@ describe("DiagnosisModifiedPage sequential playback", () => {
     const reportHeader = within(reportRail).getByTestId("diagnosis-modified-report-header");
 
     expect(within(reportHeader).queryByRole("button", { name: "\u5ba1\u6279\u4fee\u590d" })).not.toBeInTheDocument();
-    expect(within(reportRail).getAllByRole("button", { name: "\u5ba1\u6279\u4fee\u590d" })).toHaveLength(1);
-
-    fireEvent.click(within(reportRail).getByRole("button", { name: "\u5ba1\u6279\u4fee\u590d" }));
-
-    expect(windowOpenSpy).toHaveBeenCalledWith(
-      "/remediation?sessionId=sess-live-modified-remediation",
-      "_blank",
-      "noopener,noreferrer",
-    );
+    expect(within(reportRail).queryByRole("button", { name: "\u5ba1\u6279\u4fee\u590d" })).not.toBeInTheDocument();
   });
   it("renders an inline approval surface for a live session that is awaiting approval", () => {
     mockedBuildLiveView.mockReturnValue({
@@ -1236,12 +1216,20 @@ describe("DiagnosisModifiedPage split workspace", () => {
     expect(within(actionStep).getByTestId("diagnosis-modified-approval-surface")).toBeInTheDocument();
     expect(actionStep.querySelector(".diagnosis-modified-trace-step__rail")).toBeTruthy();
     expect(container.querySelector(".diagnosis-modified-message-row--user")).toBeNull();
-    expect(screen.getByText("影响拓扑")).toBeInTheDocument();
-    expect(screen.getByText("归因分析")).toBeInTheDocument();
+    expect(within(reportRail).getByText("诊断拓扑信息")).toBeInTheDocument();
+    expect(within(reportRail).getByText("假设级信息")).toBeInTheDocument();
+    expect(within(reportRail).getByText("根因级信息")).toBeInTheDocument();
+    expect(within(reportRail).queryByText("推理进展")).not.toBeInTheDocument();
+    expect(within(reportRail).queryByText("影响拓扑")).not.toBeInTheDocument();
+    expect(within(reportRail).queryByText("诊断进度")).not.toBeInTheDocument();
+    expect(within(reportRail).queryByTestId("diagnosis-modified-report-progress")).not.toBeInTheDocument();
+    expect(screen.queryByText("归因分析")).not.toBeInTheDocument();
+    expect(within(reportRail).queryByTestId("diagnosis-modified-summary-process-status")).not.toBeInTheDocument();
     expect(screen.queryByText("Current Conclusion")).not.toBeInTheDocument();
     expect(screen.queryByText("Root Cause Assessment")).not.toBeInTheDocument();
+    expect(screen.queryByText("归因分析")).not.toBeInTheDocument();
     expect(screen.queryByText("关键证据")).toBeNull();
-    expect(screen.getAllByText("修复建议").length).toBeGreaterThan(0);
+    expect(screen.queryByText("修复建议")).not.toBeInTheDocument();
     expect(within(reportRail).queryByText(/^01$/)).not.toBeInTheDocument();
     expect(within(reportRail).queryByText(/^02$/)).not.toBeInTheDocument();
     expect(within(reportRail).queryByText(/^03$/)).not.toBeInTheDocument();
@@ -1251,6 +1239,159 @@ describe("DiagnosisModifiedPage split workspace", () => {
     expect(screen.getAllByText("Redis connection saturation").length).toBeGreaterThanOrEqual(1);
     expect(screen.getByText("Execute 10% canary first, then observe Redis timeout recovery.")).toBeInTheDocument();
     expect(screen.queryByTestId("diagnosis-modified-report-rail-loading")).not.toBeInTheDocument();
+  });
+
+  it("renders impact topology from topology_context before diagnosis_result is ready", () => {
+    mockedBuildLiveView.mockReturnValue({
+      timeline: [
+        {
+          id: "live-msg-topology-context",
+          kind: "message",
+          role: "assistant",
+          content:
+            '[HumanMessage - topology_context]\nTopology context:\n{"roots":["wj-lab-cpt-01"],"affected_count":2,"affected_entities":[{"id":"gpu:0","name":"GPU 0"},{"id":"service:auth-svc","name":"auth-svc"}],"summary":"topology blast radius: roots=[\'wj-lab-cpt-01\'], affected_count=2"}',
+          timestamp: "2026-04-08T12:00:01.000Z",
+        },
+      ],
+      candidates: [],
+      summary: undefined,
+      plan: undefined,
+    });
+
+    resetDiagnosisStore({
+      session: createLiveSession("sess-live-topology-context"),
+      activeSessionId: "sess-live-topology-context",
+      bootstrapStatus: "ready",
+      traceStatus: "ready",
+      messages: [],
+      bootstrapSession: vi.fn().mockResolvedValue(undefined),
+    });
+
+    const { container } = renderLivePage("/diagnosis-modified/sess-live-topology-context");
+
+    expect(container.querySelector(".diagnosis-modified-report-rail__context-graph")).toBeTruthy();
+    expect(within(screen.getByTestId("diagnosis-modified-report-rail")).queryByText("影响拓扑")).not.toBeInTheDocument();
+    expect(within(screen.getByTestId("diagnosis-modified-report-rail")).queryByTestId("diagnosis-modified-report-progress")).not.toBeInTheDocument();
+    expect(screen.getByText("GPU 0")).toBeInTheDocument();
+    expect(screen.getByText("auth-svc")).toBeInTheDocument();
+  });
+
+  it("keeps the trace header stage synchronized without rendering a right-side progress summary card", async () => {
+    let liveViewSource: ReturnType<typeof diagnosisModifiedModel.buildDiagnosisModifiedLiveView> = {
+      timeline: [
+        {
+          id: "live-msg-topology-only",
+          kind: "message",
+          role: "assistant",
+          content:
+            '[HumanMessage - topology_context]\nTopology context:\n{"roots":["redis-primary"],"affected_count":1,"affected_entities":[{"id":"service:auth-svc","name":"auth-svc"}],"summary":"topology blast radius: redis-primary impacts auth-svc"}',
+          timestamp: "2026-04-08T12:00:01.000Z",
+        },
+      ],
+      candidates: [],
+      summary: undefined,
+      plan: undefined,
+    };
+
+    mockedBuildLiveView.mockImplementation(() => liveViewSource);
+
+    resetDiagnosisStore({
+      session: createLiveSession("sess-live-progress-sync"),
+      activeSessionId: "sess-live-progress-sync",
+      bootstrapStatus: "ready",
+      traceStatus: "ready",
+      messages: [],
+      bootstrapSession: vi.fn().mockResolvedValue(undefined),
+    });
+
+    renderLivePage("/diagnosis-modified/sess-live-progress-sync");
+
+    expect(screen.getByTestId("diagnosis-modified-trace-sync-stage")).toHaveAttribute("data-stage-id", "context");
+    expect(screen.queryByTestId("diagnosis-modified-report-progress")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("diagnosis-modified-summary-process-status")).not.toBeInTheDocument();
+
+    await act(async () => {
+      liveViewSource = {
+        timeline: [
+          ...liveViewSource.timeline,
+          {
+            id: "live-tool-progress-sync",
+            kind: "tool",
+            toolName: "query_service_metrics",
+            params: { service: "auth-svc" },
+            timestamp: "2026-04-08T12:02:00.000Z",
+            status: "success",
+            summaryLines: ["redis_timeout: +240%", "retry_rate: +180%"],
+            rawResult: { redis_timeout: "240%", retry_rate: "180%" },
+          },
+          {
+            id: "live-msg-progress-next",
+            kind: "message",
+            role: "assistant",
+            content: "Next action: validate Redis saturation against retry amplification before rollout.",
+            timestamp: "2026-04-08T12:02:30.000Z",
+            label: "Next action",
+          },
+        ],
+        candidates: [
+          {
+            id: "candidate-progress-redis",
+            title: "Redis connection saturation",
+            summary: "Redis timeout and retry amplification align with the alert window.",
+            confidence: 0.84,
+            confidenceLabel: "84%",
+            statusLabel: "Current candidate",
+            statusTone: "accent",
+            evidenceFor: ["Redis timeout observed"],
+            evidenceAgainst: [],
+            entities: ["redis-primary", "auth-svc"],
+            rank: 1,
+            evidenceSummary: "Redis timeout and retry amplification align with the alert window.",
+            isPrimary: true,
+          },
+        ],
+        summary: undefined,
+        plan: undefined,
+      };
+
+      useDiagnosisStore.setState((state) => ({
+        ...state,
+        session: { ...(state.session as DiagnosisSession) },
+      }));
+      await Promise.resolve();
+    });
+
+    expect(screen.getByTestId("diagnosis-modified-trace-sync-stage")).toHaveAttribute("data-stage-id", "verification");
+    expect(screen.queryByTestId("diagnosis-modified-report-progress")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("diagnosis-modified-summary-process-status")).not.toBeInTheDocument();
+
+    await act(async () => {
+      liveViewSource = {
+        ...liveViewSource,
+        summary: baseSummary,
+        plan: basePlan,
+      };
+
+      useDiagnosisStore.setState((state) => ({
+        ...state,
+        session: createDetailedLiveSession("sess-live-progress-sync"),
+      }));
+      await Promise.resolve();
+    });
+
+    expect(screen.getByTestId("diagnosis-modified-trace-sync-stage")).toHaveAttribute("data-stage-id", "remediation");
+    expect(screen.queryByTestId("diagnosis-modified-report-progress")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("diagnosis-modified-summary-process-status")).not.toBeInTheDocument();
+
+    await act(async () => {
+      useDiagnosisStore.setState((state) => ({
+        ...state,
+        session: createSessionWithStatus("sess-live-progress-sync", "resolved"),
+      }));
+      await Promise.resolve();
+    });
+
+    expect(screen.queryByTestId("diagnosis-modified-summary-process-status")).not.toBeInTheDocument();
   });
 
 
@@ -1300,32 +1441,18 @@ describe("DiagnosisModifiedPage split workspace", () => {
     expect(within(reportRail).getByTestId("diagnosis-modified-report-overview")).toBeInTheDocument();
     expect(within(reportRail).getByTestId("diagnosis-modified-report-header")).toBeInTheDocument();
     expect(screen.queryByText("Auto summary")).not.toBeInTheDocument();
-    expect(screen.getByText("影响拓扑")).toBeInTheDocument();
-    expect(screen.getByText("归因分析")).toBeInTheDocument();
+    expect(within(reportRail).getByText("诊断拓扑信息")).toBeInTheDocument();
+    expect(within(reportRail).getByText("假设级信息")).toBeInTheDocument();
+    expect(within(reportRail).getByText("根因级信息")).toBeInTheDocument();
+    expect(within(reportRail).queryByText("推理进展")).not.toBeInTheDocument();
+    expect(within(reportRail).queryByText("影响拓扑")).not.toBeInTheDocument();
+    expect(within(reportRail).queryByText("诊断进度")).not.toBeInTheDocument();
+    expect(within(reportRail).queryByTestId("diagnosis-modified-report-progress")).not.toBeInTheDocument();
     expect(screen.queryByText("Current Conclusion")).not.toBeInTheDocument();
     expect(screen.queryByText("Root Cause Assessment")).not.toBeInTheDocument();
     expect(screen.queryByText("关键证据")).toBeNull();
-    expect(screen.getByText("修复建议")).toBeInTheDocument();
+    expect(screen.queryByText("修复建议")).not.toBeInTheDocument();
     expect(screen.queryByTestId("diagnosis-modified-report-rail-loading")).not.toBeInTheDocument();
     expect(screen.getAllByTestId("diagnosis-modified-report-section-loading").length).toBeGreaterThanOrEqual(1);
   });
 });
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-

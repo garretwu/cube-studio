@@ -228,4 +228,34 @@ describe("buildDiagnosisModifiedDemoScenario ReAct cadence", () => {
       }
     }
   });
+
+  it("includes parseable topology JSON in the context summary message", () => {
+    const scenario = buildDiagnosisModifiedDemoScenario("Analyze auth-svc latency and error-rate spike");
+    const contextSummaryEvent = scenario.events.find(
+      (event): event is Extract<(typeof scenario.events)[number], { type: "append" }> =>
+        event.type === "append" && event.item.id.startsWith("demo-assistant-context-summary-"),
+    );
+
+    expect(contextSummaryEvent).toBeDefined();
+    if (!contextSummaryEvent || contextSummaryEvent.item.kind !== "message") {
+      return;
+    }
+
+    expect(contextSummaryEvent.item.content).toContain("Topology context:");
+    const marker = "Topology context:";
+    const markerIndex = contextSummaryEvent.item.content.indexOf(marker);
+    expect(markerIndex).toBeGreaterThanOrEqual(0);
+
+    const topologyJson = contextSummaryEvent.item.content.slice(markerIndex + marker.length).trim();
+    const parsed = JSON.parse(topologyJson) as {
+      roots?: string[];
+      affected_count?: number;
+      affected_entities?: Array<{ id?: string; name?: string }>;
+    };
+
+    expect(parsed.roots).toEqual(["node:worker-03"]);
+    expect(parsed.affected_count).toBe(2);
+    expect(parsed.affected_entities?.some((entity) => entity.id === "gpu:0")).toBe(true);
+    expect(parsed.affected_entities?.some((entity) => entity.id === "service:auth-svc")).toBe(true);
+  });
 });

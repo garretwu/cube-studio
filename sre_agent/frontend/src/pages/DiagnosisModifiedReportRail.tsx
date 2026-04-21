@@ -1,19 +1,15 @@
-import type { ReactNode } from "react";
-
 import type { DiagnosisModifiedReportView } from "./diagnosisModifiedReportModel";
 import {
-  DiagnosisSummarySection,
-  DiagnosisContextSection,
-  RemediationKeySection,
+  HypothesisLevelSection,
   ReportOverview,
   ReportSection,
+  RootCauseLevelSection,
+  SessionLevelSection,
 } from "./DiagnosisModifiedReportSections";
 
 function DiagnosisModifiedReportRail({
-  actionContent,
   view,
 }: {
-  actionContent?: ReactNode;
   view: DiagnosisModifiedReportView;
 }) {
   return (
@@ -22,28 +18,29 @@ function DiagnosisModifiedReportRail({
         <ReportOverview view={view.overview} />
 
         <div className="diagnosis-modified-report-rail__body">
-          <ReportSection
-            title="影响拓扑"
-            titleHelp={"问题节点与受影响服务的关键证据范围。基于当前根因实体和受影响服务整理诊断上下文。"}
-          >
-            <DiagnosisContextSection context={view.context} />
+          <ReportSection title="诊断拓扑信息">
+            <SessionLevelSection context={view.context} />
           </ReportSection>
 
-          <ReportSection title="归因分析">
-            <DiagnosisSummarySection
-              candidateChanges={view.candidateChanges}
-              conclusion={view.conclusion}
-              rootCause={view.rootCause}
+          <ReportSection
+            title="假设级信息"
+            description="围绕候选假设持续更新证据、验证与置信度。"
+          >
+            <HypothesisLevelSection
+              confidence={view.confidence}
+              hypotheses={view.hypotheses}
+              verification={view.verification}
             />
           </ReportSection>
 
-          <ReportSection title="修复建议">
-            <RemediationKeySection
-              actionContent={actionContent}
+          <ReportSection title="根因级信息" description="展示最终结论，并将修复方案挂在对应根因之下。">
+            <RootCauseLevelSection
+              candidateChanges={view.candidateChanges}
+              conclusion={view.conclusion}
               execution={view.execution}
               feedback={view.feedback}
-              nextAction={view.nextAction}
               remediation={view.remediation}
+              rootCause={view.rootCause}
             />
           </ReportSection>
         </div>

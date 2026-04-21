@@ -239,6 +239,112 @@ function mapSummaryToDiagnosisSummary(item: SessionSummary): DiagnosisSessionSum
   };
 }
 
+function clampProgress(value: unknown): number | null {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) {
+    return null;
+  }
+  return Math.max(0, Math.min(100, Math.round(numeric)));
+}
+
+function getRemediationStage(event: SessionEvent): string {
+  if (event.type !== "remediation_progress") {
+    return event.type;
+  }
+  return String(event.data?.stage ?? "").trim().toLowerCase() || "remediation_progress";
+}
+
+function getRemediationStageProgress(stage: string, data: Record<string, unknown>): number | null {
+  const explicit = clampProgress(data.progress ?? data.progress_percent ?? data.percentage);
+  if (explicit !== null) {
+    return explicit;
+  }
+
+  switch (stage) {
+    case "execution_started":
+      return 5;
+    case "canary_started":
+      return 10;
+    case "canary_progress":
+    case "canary_batch_progress":
+      return 50;
+    case "canary_succeeded":
+    case "canary_completed":
+      return 100;
+    case "full_rollout_started":
+      return 20;
+    case "full_rollout_progress":
+      return 65;
+    case "full_rollout_succeeded":
+    case "execution_succeeded":
+    case "alert_recovered":
+    case "session_closed":
+      return 100;
+    default:
+      return null;
+  }
+}
+
+function deriveBatchStatusFromTimeline(
+  remediationEvents: SessionEvent[],
+  options: { canaryEnabled: boolean; progressStatus: string },
+): RemediationOverview["progress"]["batch_status"] {
+  const { canaryEnabled, progressStatus } = options;
+  let canaryBatch: RemediationOverview["progress"]["batch_status"][number] | null = null;
+  let fullRolloutBatch: RemediationOverview["progress"]["batch_status"][number] | null = null;
+
+  for (const event of remediationEvents) {
+    const stage = getRemediationStage(event);
+    const progress = getRemediationStageProgress(stage, event.data);
+
+    if (stage.includes("canary")) {
+      const previousProgress: number = canaryBatch ? canaryBatch.progress : 0;
+      canaryBatch = {
+        batch: "金丝雀",
+        progress: progress ?? previousProgress,
+        status: stage,
+      };
+      continue;
+    }
+
+    if (stage.includes("full_rollout")) {
+      const previousProgress: number = fullRolloutBatch ? fullRolloutBatch.progress : 0;
+      fullRolloutBatch = {
+        batch: "全量",
+        progress: progress ?? previousProgress,
+        status: stage,
+      };
+    }
+  }
+
+  if (canaryEnabled && fullRolloutBatch && !canaryBatch) {
+    canaryBatch = {
+      batch: "金丝雀",
+      progress: 100,
+      status: "canary_succeeded",
+    };
+  }
+
+  if (progressStatus.trim().toLowerCase() === "resolved") {
+    if (canaryEnabled) {
+      canaryBatch = {
+        batch: "金丝雀",
+        progress: 100,
+        status: canaryBatch?.status ?? "canary_succeeded",
+      };
+    }
+    fullRolloutBatch = {
+      batch: "全量",
+      progress: 100,
+      status: fullRolloutBatch?.status ?? "full_rollout_succeeded",
+    };
+  }
+
+  return [canaryEnabled ? canaryBatch : null, fullRolloutBatch].filter(
+    (batch): batch is RemediationOverview["progress"]["batch_status"][number] => batch !== null,
+  );
+}
+
 function mapEntityTypeToExplorerType(entityType: string): TopologyObjectType {
   const value = entityType.toLowerCase();
   if (value.includes("bmc")) {
@@ -649,6 +755,10 @@ export const apiClient = {
           (String(session.status ?? "").trim().toLowerCase() === "resolved" ? currentPlan.steps.length : 0),
       );
       const progressStatus = String(session.status || "").trim() || latestStage || "pending";
+      const batchStatus = deriveBatchStatusFromTimeline(remediationEvents, {
+        canaryEnabled: Boolean(currentPlan.canary?.enabled),
+        progressStatus,
+      });
 
       return {
         session_id: resolved,
@@ -664,7 +774,7 @@ export const apiClient = {
           status: progressStatus,
           completed_steps: completedSteps,
           total_steps: currentPlan.steps.length,
-          batch_status: [],
+          batch_status: batchStatus,
         },
         timeline: events,
         approval_required: session.status === "approval_required",
@@ -891,5 +1001,3 @@ export const apiClient = {
 };
 
 export type ApiClient = typeof apiClient;
-
-
