@@ -116,23 +116,6 @@ function getOverallProgress(overview?: RemediationOverview): number {
   return Math.max(0, Math.min(100, Math.round((completed / total) * 100)));
 }
 
-function getCanaryProgress(overview?: RemediationOverview): number | null {
-  if (!overview?.plan.canary?.enabled) return null;
-  const batches = overview.progress.batch_status ?? [];
-  if (batches.length > 0) {
-    const canaryBatch = batches.find((item) => /canary|金丝雀/i.test(item.batch)) ?? batches[0];
-    return Math.max(0, Math.min(100, Math.round(Number(canaryBatch.progress ?? 0))));
-  }
-  if (String(overview.progress.status ?? "").trim().toLowerCase() === "resolved") return 100;
-  return getOverallProgress(overview);
-}
-
-function getCanarySummary(overview?: RemediationOverview): string {
-  if (!overview?.plan.canary?.enabled) return "未启用";
-  if ((overview.progress.batch_status?.length ?? 0) > 0) return `${getCanaryProgress(overview) ?? 0}%`;
-  return `目标 ${formatPercent(overview.plan.canary.target_percentage)} · 观察 ${overview.plan.canary.monitor_duration}s`;
-}
-
 function matchesFilter(record: RemediationRecord, filter: StatusFilter): boolean {
   if (filter === "all") return true;
   const status = String(record.overview?.progress.status ?? record.summary.status ?? "").trim().toLowerCase();
@@ -165,7 +148,6 @@ function RemediationPage() {
   const [recordsLoading, setRecordsLoading] = useState(false);
   const [recordsError, setRecordsError] = useState<string | null>(null);
   const [selectedSessionId, setSelectedSessionId] = useState("");
-  const [activeStepSelection, setActiveStepSelection] = useState<{ sessionId: string; stepId: number } | null>(null);
   const [query, setQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
   const [actionLoading, setActionLoading] = useState(false);
@@ -220,7 +202,6 @@ function RemediationPage() {
   }, [overview]);
 
   useEffect(() => {
-    setActiveStepSelection(null);
   }, [selectedSessionId]);
 
   const filteredRecords = useMemo(() => {
@@ -253,160 +234,147 @@ function RemediationPage() {
     [loadRecords, selectedSessionId, submitApproval],
   );
 
-  const handleSelectStep = useCallback((sessionId: string, stepId: number) => {
-    setActiveStepSelection((current) =>
-      current?.sessionId === sessionId && current.stepId === stepId ? null : { sessionId, stepId },
-    );
-  }, []);
-
   return (
     <div className="page-grid remediation-page">
-      <section className="page-stage remediation-page__stage">
-        <div className="page-stage__summary">
-          <div className="card-grid--metrics remediation-page__metrics">
-                  <MetricTile hint="已识别到修复流程的诊断会话" label="修复记录" value={records.length} />
-                  <MetricTile hint="等待人工批准后进入执行" label="待审批" value={pendingApprovalCount} />
-                  <MetricTile hint="正在执行或观察验证中" label="执行中" value={runningCount} />
-                  <MetricTile hint="已配置灰度或金丝雀策略" label="金丝雀方案" value={canaryEnabledCount} />
-                </div>
-        </div>
-
-        <div className="remediation-layout">
-        <aside className="remediation-sidebar">
-          <SurfaceCard className="page-stage__panel" title="修复记录" description="按状态和关键词快速定位会话，点击行后在右侧查看详情。" variant="panel">
-            <div className="page-stack remediation-sidebar__body">
-              <div className="page-stage__toolbar remediation-toolbar">
-                <AppInput
-                  value={query}
-                  onChange={setQuery}
-                  placeholder="搜索诊断 ID、名称、根因或审批人"
-                  prefix={<AppIcon name="search" size={16} />}
-                />
-                <div className="remediation-filter-row">
-                  {([
-                    ["all", "全部"],
-                    ["approval", "待审批"],
-                    ["running", "执行中"],
-                    ["done", "已恢复"],
-                    ["attention", "需关注"],
-                  ] as const).map(([value, label]) => (
-                    <button
-                      key={value}
-                      type="button"
-                      className={`remediation-filter-chip${statusFilter === value ? " remediation-filter-chip--active" : ""}`}
-                      onClick={() => setStatusFilter(value)}
-                    >
-                      {label}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              {recordsLoading ? <p className="data-list__copy">正在同步修复记录...</p> : null}
-              {recordsError ? <p className="data-list__copy remediation-sidebar__error">{recordsError}</p> : null}
-              {!recordsLoading && filteredRecords.length === 0 ? (
-                <div className="mini-card remediation-empty-state">
-                  <p className="mini-card__title">暂无匹配的修复记录</p>
-                  <p className="mini-card__copy">可以尝试放宽筛选条件，或等待新的诊断会话生成修复计划。</p>
-                </div>
-              ) : null}
-
-              <div className="page-stage__table-shell remediation-record-table-shell">
-                <table className="remediation-record-table">
-                  <thead>
-                    <tr>
-                      <th>修复记录</th>
-                      <th>状态</th>
-                      <th>修复内容</th>
-                      <th>审批人</th>
-                      <th>开始修复</th>
-                      <th>金丝雀</th>
-                      <th>全量</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {filteredRecords.map((record) => {
-                      const recordOverview = record.overview;
-                      const currentStatus = String(recordOverview?.progress.status ?? record.summary.status ?? "pending").trim();
-                      const approver = getApprover(recordOverview?.timeline) ?? (recordOverview?.approval_required ? "待审批" : "未记录");
-                      const startedAt = getExecutionStartedAt(recordOverview?.timeline);
-                      const totalProgress = getOverallProgress(recordOverview);
-                      const canaryProgress = getCanaryProgress(recordOverview);
-                      const isExpanded = selectedRecord?.summary.session_id === record.summary.session_id;
-
-                      return (
-                        <Fragment key={record.summary.session_id}>
-                          <tr
-                            className={`remediation-record-table__row${isExpanded ? " remediation-record-table__row--active" : ""}`}
-                            onClick={() =>
-                              setSelectedSessionId((current) =>
-                                current === record.summary.session_id ? "" : record.summary.session_id,
-                              )
-                            }
-                          >
-                            <td className="remediation-record-table__cell remediation-record-table__cell--record">
-                              <span className="remediation-record-table__chevron">
-                                <AppIcon name={isExpanded ? "down" : "right"} size={14} />
-                              </span>
-                              <div className="remediation-record-table__record">
-                                <strong>{record.summary.title}</strong>
-                                <span>{record.summary.session_id}</span>
-                              </div>
-                            </td>
-                            <td className="remediation-record-table__cell remediation-record-table__cell--status">
-                              <div className="remediation-record-table__status-stack">
-                                <StatusChip tone={getStatusTone(currentStatus)}>{getStatusLabel(currentStatus)}</StatusChip>
-                                {recordOverview?.plan.confidence ? <span className="remediation-record-table__status-meta">{`置信度 ${formatPercent(recordOverview.plan.confidence)}`}</span> : null}
-                              </div>
-                            </td>
-                            <td className="remediation-record-table__cell remediation-record-table__cell--description">
-                              <div className="remediation-record-table__description" title={recordOverview?.plan.description ?? record.summary.root_cause ?? record.summary.summary}>
-                                {recordOverview?.plan.description ?? record.summary.root_cause ?? record.summary.summary}
-                              </div>
-                            </td>
-                            <td className="remediation-record-table__cell">{approver}</td>
-                            <td className="remediation-record-table__cell">{startedAt ? formatTimestamp(startedAt) : "未开始"}</td>
-                            <td className="remediation-record-table__cell remediation-record-table__cell--progress">
-                              <div className="remediation-record-table__progress-cell">
-                                <span>{recordOverview?.plan.canary?.enabled ? getCanarySummary(recordOverview) : "未启用"}</span>
-                                <div className="progress-track remediation-progress-track remediation-progress-track--canary">
-                                  <div className="progress-track__fill remediation-progress-track__fill remediation-progress-track__fill--canary" style={{ width: `${canaryProgress ?? 0}%` }} />
-                                </div>
-                              </div>
-                            </td>
-                            <td className="remediation-record-table__cell remediation-record-table__cell--progress">
-                              <div className="remediation-record-table__progress-cell">
-                                <span>{totalProgress}%</span>
-                                <div className="progress-track remediation-progress-track">
-                                  <div className="progress-track__fill remediation-progress-track__fill" style={{ width: `${totalProgress}%` }} />
-                                </div>
-                              </div>
-                            </td>
-                          </tr>
-                        </Fragment>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
+      <div className="remediation-page__workspace">
+        <section className="page-stage remediation-page__stage">
+          <div className="page-stage__summary">
+            <div className="card-grid--metrics remediation-page__metrics">
+              <MetricTile hint="已识别到修复流程的诊断会话" label="修复记录" value={records.length} />
+              <MetricTile hint="等待人工批准后进入执行" label="待审批" value={pendingApprovalCount} />
+              <MetricTile hint="正在执行或观察验证中" label="执行中" value={runningCount} />
+              <MetricTile hint="已配置灰度或金丝雀策略" label="金丝雀方案" value={canaryEnabledCount} />
             </div>
-          </SurfaceCard>
-        </aside>
-      </div>
-      </section>
+          </div>
 
-      <RemediationDetailDrawer
-        actionLoading={actionLoading}
-        activeStepSelection={activeStepSelection}
-        events={events}
-        isLoading={isLoading}
-        onClose={() => setSelectedSessionId("")}
-        onOpenApproval={() => setApprovalDialogOpen(true)}
-        onSelectStep={handleSelectStep}
-        open={Boolean(selectedRecord)}
-        overview={overview}
-        record={selectedRecord}
-      />
+          <div className="remediation-layout">
+            <aside className="remediation-sidebar">
+              <SurfaceCard className="page-stage__panel" title="修复记录" description="按状态和关键词快速定位会话，点击行后在右侧查看详情。" variant="panel">
+                <div className="page-stack remediation-sidebar__body">
+                  <div className="page-stage__toolbar remediation-toolbar">
+                    <AppInput
+                      value={query}
+                      onChange={setQuery}
+                      placeholder="搜索诊断 ID、名称、根因或审批人"
+                      prefix={<AppIcon name="search" size={16} />}
+                    />
+                    <div className="remediation-filter-row">
+                      {([
+                        ["all", "全部"],
+                        ["approval", "待审批"],
+                        ["running", "执行中"],
+                        ["done", "已恢复"],
+                        ["attention", "需关注"],
+                      ] as const).map(([value, label]) => (
+                        <button
+                          key={value}
+                          type="button"
+                          className={`remediation-filter-chip${statusFilter === value ? " remediation-filter-chip--active" : ""}`}
+                          onClick={() => setStatusFilter(value)}
+                        >
+                          {label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {recordsLoading ? <p className="data-list__copy">正在同步修复记录...</p> : null}
+                  {recordsError ? <p className="data-list__copy remediation-sidebar__error">{recordsError}</p> : null}
+                  {!recordsLoading && filteredRecords.length === 0 ? (
+                    <div className="mini-card remediation-empty-state">
+                      <p className="mini-card__title">暂无匹配的修复记录</p>
+                      <p className="mini-card__copy">可以尝试放宽筛选条件，或等待新的诊断会话生成修复计划。</p>
+                    </div>
+                  ) : null}
+
+                  <div className="page-stage__table-shell remediation-record-table-shell">
+                    <table className="remediation-record-table">
+                      <thead>
+                        <tr>
+                          <th>修复记录</th>
+                          <th>状态</th>
+                          <th>修复内容</th>
+                          <th>审批人</th>
+                          <th>开始修复</th>
+                          <th>进度</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {filteredRecords.map((record) => {
+                          const recordOverview = record.overview;
+                          const currentStatus = String(recordOverview?.progress.status ?? record.summary.status ?? "pending").trim();
+                          const approver = getApprover(recordOverview?.timeline) ?? (recordOverview?.approval_required ? "待审批" : "未记录");
+                          const startedAt = getExecutionStartedAt(recordOverview?.timeline);
+                          const overallProgress = getOverallProgress(recordOverview);
+                          const isExpanded = selectedRecord?.summary.session_id === record.summary.session_id;
+
+                          return (
+                            <Fragment key={record.summary.session_id}>
+                              <tr
+                                className={`remediation-record-table__row${isExpanded ? " remediation-record-table__row--active" : ""}`}
+                                onClick={() =>
+                                  setSelectedSessionId((current) =>
+                                    current === record.summary.session_id ? "" : record.summary.session_id,
+                                  )
+                                }
+                              >
+                                <td className="remediation-record-table__cell remediation-record-table__cell--record">
+                                  <div className="remediation-record-table__record-layout">
+                                    <span className="remediation-record-table__chevron">
+                                      <AppIcon name={isExpanded ? "down" : "right"} size={14} />
+                                    </span>
+                                    <div className="remediation-record-table__record">
+                                      <strong>{record.summary.title}</strong>
+                                      <span>{record.summary.session_id}</span>
+                                    </div>
+                                  </div>
+                                </td>
+                                <td className="remediation-record-table__cell remediation-record-table__cell--status">
+                                  <div className="remediation-record-table__status-stack">
+                                    <StatusChip tone={getStatusTone(currentStatus)}>{getStatusLabel(currentStatus)}</StatusChip>
+                                    {recordOverview?.plan.confidence ? <span className="remediation-record-table__status-meta">{`置信度 ${formatPercent(recordOverview.plan.confidence)}`}</span> : null}
+                                  </div>
+                                </td>
+                                <td className="remediation-record-table__cell remediation-record-table__cell--description">
+                                  <div className="remediation-record-table__description" title={recordOverview?.plan.description ?? record.summary.root_cause ?? record.summary.summary}>
+                                    {recordOverview?.plan.description ?? record.summary.root_cause ?? record.summary.summary}
+                                  </div>
+                                </td>
+                                <td className="remediation-record-table__cell">{approver}</td>
+                                <td className="remediation-record-table__cell">{startedAt ? formatTimestamp(startedAt) : "未开始"}</td>
+                                <td className="remediation-record-table__cell remediation-record-table__cell--progress">
+                                  <div className="remediation-record-table__progress-cell">
+                                    <span>{overallProgress}%</span>
+                                    <div className="progress-track remediation-progress-track">
+                                      <div className="progress-track__fill remediation-progress-track__fill" style={{ width: `${overallProgress}%` }} />
+                                    </div>
+                                  </div>
+                                </td>
+                              </tr>
+                            </Fragment>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              </SurfaceCard>
+            </aside>
+          </div>
+        </section>
+
+        <RemediationDetailDrawer
+          actionLoading={actionLoading}
+          events={events}
+          isLoading={isLoading}
+          onClose={() => setSelectedSessionId("")}
+          onOpenApproval={() => setApprovalDialogOpen(true)}
+          open={Boolean(selectedRecord)}
+          overview={overview}
+          record={selectedRecord}
+        />
+      </div>
+
       <ApprovalDialog
         onApprove={() => void handleSubmitApproval(true)}
         onCancel={() => setApprovalDialogOpen(false)}
