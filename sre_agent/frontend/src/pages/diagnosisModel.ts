@@ -828,20 +828,18 @@ function getReportTimelineTimestamp(
   return latestNarrativeTimestamp ?? session?.alert.starts_at;
 }
 
-function buildTraceNextAction(entry: ThinkingStep) {
-  if (entry.action_type === "tool_call" && entry.tool_name) {
-    const serviceHint =
-      typeof entry.tool_params?.service === "string" && entry.tool_params.service.trim().length > 0
-        ? ` for ${entry.tool_params.service}`
-        : "";
-    return `Next action: call ${entry.tool_name}${serviceHint} to validate this hypothesis.`;
+function extractDiagnosisNextAction(result: DiagnosisSession["diagnosis_result"] | null | undefined) {
+  if (!result || typeof result !== "object") {
+    return undefined;
   }
 
-  if (entry.action_type === "conclude") {
-    return "Next action: synthesize the current evidence and provide the root-cause conclusion.";
+  const raw = (result as Record<string, unknown>).next_action;
+  if (typeof raw !== "string") {
+    return undefined;
   }
 
-  return "Next action: continue gathering discriminative evidence to narrow the root cause.";
+  const normalized = raw.trim();
+  return normalized.length > 0 ? normalized : undefined;
 }
 
 function isSyntheticRemediationMessage(message: ChatMessage) {
@@ -1666,19 +1664,6 @@ export function buildDiagnosisLiveView(
         },
       });
 
-      timelineItems.push({
-        order: timelineItems.length,
-        timestamp: entry.timestamp,
-        item: {
-          id: `trace-next-action-${index + 1}-${entry.timestamp}`,
-          kind: "message",
-          role: "assistant",
-          content: buildTraceNextAction(entry),
-          timestamp: entry.timestamp,
-          label: "Next action",
-        },
-      });
-
       if (entry.action_type === "tool_call" && entry.tool_name) {
         const toolItem: Extract<DiagnosisTimelineItem, { kind: "tool" }> = {
           id: `trace-tool-${index + 1}-${entry.timestamp}`,
@@ -1783,6 +1768,27 @@ export function buildDiagnosisLiveView(
       },
     });
   });
+
+  const diagnosisNextAction = extractDiagnosisNextAction(session?.diagnosis_result);
+  if (diagnosisNextAction) {
+    const fallbackTimestamp =
+      traceEntries[traceEntries.length - 1]?.timestamp ??
+      session?.alert.starts_at ??
+      new Date().toISOString();
+
+    timelineItems.push({
+      order: timelineItems.length,
+      timestamp: fallbackTimestamp,
+      item: {
+        id: `diagnosis-result-next-action-${fallbackTimestamp}`,
+        kind: "message",
+        role: "assistant",
+        content: diagnosisNextAction,
+        timestamp: fallbackTimestamp,
+        label: "Next action",
+      },
+    });
+  }
 
   buildSystemRecords(session, events, localAuditRecords).forEach((record, index) => {
     timelineItems.push({

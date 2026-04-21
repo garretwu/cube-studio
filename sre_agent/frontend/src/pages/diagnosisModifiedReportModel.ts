@@ -79,11 +79,21 @@ export type DiagnosisModifiedHypothesisItemView = {
   confidenceLabel: string;
   statusLabel: string;
   tone: ReportTone;
+  evidenceItems: DiagnosisModifiedHypothesisEvidenceItemView[];
+  confidenceUpdates: DiagnosisModifiedConfidenceUpdateView[];
+};
+
+export type DiagnosisModifiedHypothesisEvidenceItemView = {
+  id: string;
+  kind: "support" | "against" | "validation";
+  summary: string;
+  tone: ReportTone;
 };
 
 export type DiagnosisModifiedHypothesesView = {
   state: ReportSectionState;
   summary: string;
+  detailMode: "expanded" | "collapsed";
   items: DiagnosisModifiedHypothesisItemView[];
 };
 
@@ -429,18 +439,21 @@ function getHypothesisTone(candidate: DiagnosisModifiedCandidateView): ReportTon
 function buildHypotheses(input: BuildDiagnosisModifiedReportViewInput): DiagnosisModifiedHypothesesView {
   const snapshots = getCandidateSnapshots(input);
   const latestSnapshot = snapshots.at(-1);
+  const detailMode = hasRootCauseConclusion(input) ? "collapsed" : "expanded";
 
   if (!latestSnapshot) {
     return {
       state: "loading",
       summary: "Waiting for candidate root-cause selection.",
+      detailMode,
       items: [],
     };
   }
 
   return {
     state: "ready",
-    summary: `Showing ${latestSnapshot.candidates.length} selected hypotheses from the current evidence set.`,
+    summary: `Showing ${latestSnapshot.candidates.length} selected hypotheses with candidate-specific validation context.`,
+    detailMode,
     items: latestSnapshot.candidates.map((candidate, index) => ({
       id: candidate.id,
       title: candidate.title,
@@ -448,8 +461,85 @@ function buildHypotheses(input: BuildDiagnosisModifiedReportViewInput): Diagnosi
       confidenceLabel: candidate.confidenceLabel,
       statusLabel: getHypothesisStatusLabel(candidate, index),
       tone: getHypothesisTone(candidate),
+      evidenceItems: buildHypothesisEvidenceItems(candidate),
+      confidenceUpdates: buildHypothesisConfidenceUpdates(candidate, snapshots),
     })),
   };
+}
+
+function buildHypothesisEvidenceItems(
+  candidate: DiagnosisModifiedCandidateView,
+): DiagnosisModifiedHypothesisEvidenceItemView[] {
+  const supportItems = candidate.evidenceFor.map((summary, index) => ({
+    id: `${candidate.id}-support-${index + 1}`,
+    kind: "support" as const,
+    summary,
+    tone: (candidate.isPrimary ? "accent" : "success") as ReportTone,
+  }));
+
+  const againstItems = candidate.evidenceAgainst.map((summary, index) => ({
+    id: `${candidate.id}-against-${index + 1}`,
+    kind: "against" as const,
+    summary,
+    tone: "warning" as const,
+  }));
+
+  const validationItems =
+    candidate.distinguishingVerification && candidate.distinguishingVerification.trim().length > 0
+      ? [
+          {
+            id: `${candidate.id}-validation-next`,
+            kind: "validation" as const,
+            summary: candidate.distinguishingVerification,
+            tone: "info" as const,
+          },
+        ]
+      : [];
+
+  return [...supportItems, ...againstItems, ...validationItems];
+}
+
+function buildHypothesisConfidenceUpdates(
+  candidate: DiagnosisModifiedCandidateView,
+  snapshots: ReturnType<typeof getCandidateSnapshots>,
+): DiagnosisModifiedConfidenceUpdateView[] {
+  const history = snapshots
+    .map((snapshot) => ({
+      timestamp: snapshot.timestamp,
+      candidate: snapshot.candidates.find((item) => item.title === candidate.title),
+    }))
+    .filter(
+      (entry): entry is { timestamp: string; candidate: DiagnosisModifiedCandidateView } => Boolean(entry.candidate),
+    );
+
+  return history.map(({ candidate: currentCandidate, timestamp }, index) => {
+    const previousCandidate = index > 0 ? history[index - 1]?.candidate : undefined;
+    const previousConfidence = previousCandidate?.confidenceLabel;
+    const currentConfidence = currentCandidate.confidenceLabel;
+
+    let tone: ReportTone = "info";
+    if (previousCandidate) {
+      if ((currentCandidate.confidence ?? 0) > (previousCandidate.confidence ?? 0)) {
+        tone = "accent";
+      } else if ((currentCandidate.confidence ?? 0) < (previousCandidate.confidence ?? 0)) {
+        tone = "warning";
+      } else {
+        tone = "neutral";
+      }
+    } else if (currentCandidate.isPrimary) {
+      tone = "accent";
+    }
+
+    return {
+      id: `${candidate.id}-confidence-${index + 1}`,
+      label: index === 0 ? "Initial ranking" : "Confidence update",
+      summary: previousConfidence
+        ? `${candidate.title} moved from ${previousConfidence} to ${currentConfidence}.`
+        : `${candidate.title} entered the shortlist at ${currentConfidence}.`,
+      timestamp,
+      tone,
+    } satisfies DiagnosisModifiedConfidenceUpdateView;
+  });
 }
 
 function buildVerification(input: BuildDiagnosisModifiedReportViewInput): DiagnosisModifiedVerificationView {
@@ -974,6 +1064,21 @@ function getResult(input: BuildDiagnosisModifiedReportViewInput) {
   return input.session?.diagnosis_result;
 }
 
+function getResultNextAction(input: BuildDiagnosisModifiedReportViewInput) {
+  const result = getResult(input);
+  if (!result || typeof result !== "object") {
+    return undefined;
+  }
+
+  const raw = (result as Record<string, unknown>).next_action;
+  if (typeof raw !== "string") {
+    return undefined;
+  }
+
+  const normalized = raw.trim();
+  return normalized.length > 0 ? normalized : undefined;
+}
+
 function hasRootCauseConclusion(input: BuildDiagnosisModifiedReportViewInput) {
   const rootCause = input.summary?.rootCause ?? getResult(input)?.root_cause;
   return String(rootCause ?? "").trim().length > 0;
@@ -1352,7 +1457,7 @@ function buildFeedback(unifiedRecords: UnifiedRecord[]) {
     .filter((record) =>
       ["approval_result", "metric_feedback", "alert_recovery", "session_closed"].includes(record.eventKind),
     )
-    .slice(0, 3)
+    .slice(0, 4)
     .map((record) => ({
       id: record.id,
       label: record.label,
@@ -1370,12 +1475,13 @@ function buildNextAction(
 ) {
   const plan = derivePlan(input);
   const status = String(input.session?.status ?? "").trim().toLowerCase();
+  const backendNextAction = getResultNextAction(input);
 
   if (!plan) {
     return {
       mode: input.session ? "diagnosing" : "idle",
       title: "等待修复方案",
-      description: "继续收集根因与影响后，系统会生成下一步修复建议。",
+      description: backendNextAction ?? "继续收集根因与影响后，系统会生成下一步修复建议。",
     } satisfies DiagnosisModifiedNextActionView;
   }
 
@@ -1383,7 +1489,7 @@ function buildNextAction(
     return {
       mode: "approval",
       title: "等待人工确认",
-      description: "当前方案已经生成，确认后会进入灰度或执行链路。",
+      description: backendNextAction ?? "当前方案已经生成，确认后会进入灰度或执行链路。",
       helper: plan.canaryLabel,
     } satisfies DiagnosisModifiedNextActionView;
   }
@@ -1392,7 +1498,7 @@ function buildNextAction(
     return {
       mode: "executing",
       title: "跟进执行与验证",
-      description: execution.detail,
+      description: backendNextAction ?? execution.detail,
       helper: plan.canaryLabel,
     } satisfies DiagnosisModifiedNextActionView;
   }
@@ -1416,14 +1522,13 @@ function buildNextAction(
   return {
     mode: "diagnosing",
     title: stage.label,
-    description: stage.detail,
+    description: backendNextAction ?? stage.detail,
     helper: plan.canaryLabel,
   } satisfies DiagnosisModifiedNextActionView;
 }
 
 function buildRemediation(
   input: BuildDiagnosisModifiedReportViewInput,
-  execution: DiagnosisModifiedExecutionView,
 ): DiagnosisModifiedRemediationKeyView {
   const plan = derivePlan(input);
   const status = String(input.session?.status ?? "").trim().toLowerCase();
@@ -1447,8 +1552,8 @@ function buildRemediation(
 
   return {
     state: "ready",
-    title: execution.title,
-    detail: execution.detail || plan.description,
+    title: plan.title || plan.description || "修复方案",
+    detail: plan.description || plan.impactSummary || "已生成修复方案。",
     facts,
     steps: plan.steps.map((step, index) => ({
       id: step.id,
@@ -1474,7 +1579,7 @@ export function buildDiagnosisModifiedReportView(
   const verification = buildVerification(input);
   const confidence = buildConfidence(input);
   const rootCauseReady = hasRootCauseConclusion(input);
-  const remediation = buildRemediation(input, execution);
+  const remediation = buildRemediation(input);
   const progress = buildProgress({
     context,
     hypotheses,

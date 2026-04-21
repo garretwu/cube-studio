@@ -150,7 +150,7 @@ describe("buildDiagnosisModifiedLiveView tool matching", () => {
 });
 
 describe("buildDiagnosisModifiedLiveView next-action narration", () => {
-  it("injects a next-action assistant message right after tool-call thinking", () => {
+  it("does not synthesize next-action assistant messages from thinking steps", () => {
     const session = createSession([
       {
         step: 1,
@@ -171,26 +171,33 @@ describe("buildDiagnosisModifiedLiveView next-action narration", () => {
     const view = buildDiagnosisModifiedLiveView(session, []);
 
     expect(view.timeline[0]?.kind).toBe("thinking");
-    expect(view.timeline[1]?.kind).toBe("message");
-    expect(view.timeline[2]?.kind).toBe("tool");
-
-    const nextAction = view.timeline[1];
-    if (nextAction?.kind === "message") {
-      expect(nextAction.role).toBe("assistant");
-      expect(nextAction.label).toBe("Next action");
-      expect(nextAction.content).toContain("query_metrics");
-    }
+    expect(view.timeline[1]?.kind).toBe("tool");
+    expect(view.timeline.filter((item) => item.kind === "message" && item.label === "Next action")).toHaveLength(0);
   });
 
-  it("injects a next-action assistant message after conclude thinking", () => {
-    const session = createSession([
-      {
-        step: 1,
-        timestamp: "2026-04-08T10:50:01.000Z",
-        thought: "Evidence is sufficient to conclude",
-        action_type: "conclude",
+  it("renders next-action from backend diagnosis_result without front-end templating", () => {
+    const session: DiagnosisSession = {
+      ...createSession([
+        {
+          step: 1,
+          timestamp: "2026-04-08T10:50:01.000Z",
+          thought: "Evidence is sufficient to conclude",
+          action_type: "conclude",
+        },
+      ]),
+      diagnosis_result: {
+        root_cause: "GPU contention",
+        root_cause_layer: "platform",
+        root_cause_entities: ["node:worker-03"],
+        confidence: 0.9,
+        next_action: "Use canary drain on worker-03 and validate p95 before full rollout.",
+        hypotheses: [],
+        impact_summary: "impact",
+        affected_services: ["auth-svc"],
+        triage_priority: "P1",
+        diagnosis_certainty: "confirmed",
       },
-    ]);
+    };
 
     const view = buildDiagnosisModifiedLiveView(session, []);
 
@@ -202,7 +209,7 @@ describe("buildDiagnosisModifiedLiveView next-action narration", () => {
     if (nextAction?.kind === "message") {
       expect(nextAction.role).toBe("assistant");
       expect(nextAction.label).toBe("Next action");
-      expect(nextAction.content).toContain("root-cause conclusion");
+      expect(nextAction.content).toBe("Use canary drain on worker-03 and validate p95 before full rollout.");
     }  });
 });
 describe("buildDiagnosisModifiedDemoScenario ReAct cadence", () => {
