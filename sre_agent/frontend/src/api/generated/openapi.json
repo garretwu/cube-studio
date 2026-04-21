@@ -62,6 +62,108 @@
         }
       }
     },
+    "/api/auth/token": {
+      "post": {
+        "summary": "Issue Auth Token",
+        "operationId": "issue_auth_token_api_auth_token_post",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SREResponse_AuthTokenResponse_"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
+    "/api/auth/bootstrap": {
+      "post": {
+        "summary": "Bootstrap Auth Token",
+        "operationId": "bootstrap_auth_token_api_auth_bootstrap_post",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SREResponse_AuthTokenResponse_"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/auth/refresh": {
+      "post": {
+        "summary": "Refresh Auth Token",
+        "operationId": "refresh_auth_token_api_auth_refresh_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AuthRefreshRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SREResponse_AuthTokenResponse_"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/auth/status": {
+      "get": {
+        "summary": "Auth Status",
+        "operationId": "auth_status_api_auth_status_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SREResponse_AuthStatusResponse_"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
     "/api/diagnose/start": {
       "post": {
         "summary": "Diagnose Start",
@@ -103,6 +205,62 @@
                 "schema": {
                   "$ref": "#/components/schemas/SREResponse_DiagnosisSession_"
                 }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/diagnose/stream": {
+      "post": {
+        "summary": "Diagnose Stream",
+        "description": "Stream diagnosis events via SSE (Server-Sent Events).\n\nRequires ``sse-starlette`` package.",
+        "operationId": "diagnose_stream_api_diagnose_stream_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "extra_alert_fingerprints",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "title": "Extra Alert Fingerprints"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Alert"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
               }
             }
           },
@@ -595,6 +753,29 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/SREResponse_TopologyStatusResponse_"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
+    "/api/topology-explorer": {
+      "get": {
+        "summary": "Get Topology Explorer",
+        "operationId": "get_topology_explorer_api_topology_explorer_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SREResponse_TopologyExplorerResponse_"
                 }
               }
             }
@@ -1838,6 +2019,50 @@
         ]
       }
     },
+    "/api/skills/{skill_id}": {
+      "get": {
+        "summary": "Get Skill Detail",
+        "operationId": "get_skill_detail_api_skills__skill_id__get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "skill_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Skill Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SREResponse_dict_str__Any__"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/tools/channels/status": {
       "get": {
         "summary": "Get Tool Channels Status",
@@ -2021,6 +2246,116 @@
         ],
         "title": "ApprovalInput"
       },
+      "AuthRefreshRequest": {
+        "properties": {
+          "refresh_token": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Refresh Token"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "refresh_token"
+        ],
+        "title": "AuthRefreshRequest"
+      },
+      "AuthStatusResponse": {
+        "properties": {
+          "server_boot_id": {
+            "type": "string",
+            "title": "Server Boot Id"
+          },
+          "access_token_expires_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Access Token Expires At"
+          },
+          "skew_hint_seconds": {
+            "type": "integer",
+            "title": "Skew Hint Seconds",
+            "default": 30
+          },
+          "auth_error_kind": {
+            "type": "string",
+            "enum": [
+              "expired",
+              "invalid_signature",
+              "missing",
+              "unknown"
+            ],
+            "title": "Auth Error Kind",
+            "default": "unknown"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "server_boot_id"
+        ],
+        "title": "AuthStatusResponse"
+      },
+      "AuthTokenResponse": {
+        "properties": {
+          "access_token": {
+            "type": "string",
+            "title": "Access Token"
+          },
+          "refresh_token": {
+            "type": "string",
+            "title": "Refresh Token"
+          },
+          "token_type": {
+            "type": "string",
+            "const": "Bearer",
+            "title": "Token Type",
+            "default": "Bearer"
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Expires At"
+          },
+          "refresh_expires_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Refresh Expires At"
+          },
+          "server_boot_id": {
+            "type": "string",
+            "title": "Server Boot Id"
+          },
+          "auth_error_kind": {
+            "type": "string",
+            "enum": [
+              "expired",
+              "invalid_signature",
+              "missing",
+              "unknown"
+            ],
+            "title": "Auth Error Kind",
+            "default": "unknown"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "access_token",
+          "refresh_token",
+          "expires_at",
+          "refresh_expires_at",
+          "server_boot_id"
+        ],
+        "title": "AuthTokenResponse"
+      },
       "CanaryCondition": {
         "properties": {
           "metric": {
@@ -2115,6 +2450,11 @@
           "auto_rollback_on_regression": {
             "type": "boolean",
             "title": "Auto Rollback On Regression",
+            "default": true
+          },
+          "progressive": {
+            "type": "boolean",
+            "title": "Progressive",
             "default": true
           }
         },
@@ -2471,6 +2811,16 @@
               }
             ],
             "title": "Outcome"
+          },
+          "remediation_evidence": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RemediationEvidence"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "additionalProperties": false,
@@ -2714,7 +3064,7 @@
           "model": {
             "type": "string",
             "title": "Model",
-            "default": "gpt-4o-mini"
+            "default": "MiniMax-M2.7"
           },
           "base_url": {
             "anyOf": [
@@ -2726,6 +3076,72 @@
               }
             ],
             "title": "Base Url"
+          },
+          "provider": {
+            "type": "string",
+            "title": "Provider",
+            "default": "openai_compatible"
+          },
+          "fallback_models": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Fallback Models"
+          },
+          "active_model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Active Model"
+          },
+          "retry_count": {
+            "type": "integer",
+            "title": "Retry Count",
+            "default": 0
+          },
+          "fallback_used": {
+            "type": "boolean",
+            "title": "Fallback Used",
+            "default": false
+          },
+          "last_error_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Error Code"
+          },
+          "last_error_message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Error Message"
+          },
+          "last_attempt_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Attempt At"
           },
           "reason": {
             "anyOf": [
@@ -3150,6 +3566,17 @@
             "type": "object",
             "title": "Params"
           },
+          "command": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Command"
+          },
           "rollback_tool": {
             "anyOf": [
               {
@@ -3193,6 +3620,381 @@
         ],
         "title": "RemediationAction",
         "description": "Single executable remediation action step."
+      },
+      "RemediationAlertReview": {
+        "properties": {
+          "fingerprint": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Fingerprint"
+          },
+          "alert_name": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Alert Name"
+          },
+          "before_status": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Before Status"
+          },
+          "after_status": {
+            "type": "string",
+            "minLength": 1,
+            "title": "After Status"
+          },
+          "cleared": {
+            "type": "boolean",
+            "title": "Cleared"
+          },
+          "reviewed_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Reviewed At"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "fingerprint",
+          "alert_name",
+          "before_status",
+          "after_status",
+          "cleared"
+        ],
+        "title": "RemediationAlertReview",
+        "description": "Comparison of alert status before and after remediation."
+      },
+      "RemediationAlertSnapshot": {
+        "properties": {
+          "fingerprint": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Fingerprint"
+          },
+          "alert_name": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Alert Name"
+          },
+          "status": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Status"
+          },
+          "is_firing": {
+            "type": "boolean",
+            "title": "Is Firing"
+          },
+          "collected_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Collected At"
+          },
+          "available": {
+            "type": "boolean",
+            "title": "Available",
+            "default": true
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "fingerprint",
+          "alert_name",
+          "status",
+          "is_firing"
+        ],
+        "title": "RemediationAlertSnapshot",
+        "description": "Alert snapshot captured before or after remediation."
+      },
+      "RemediationCheckSnapshot": {
+        "properties": {
+          "alert": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RemediationAlertSnapshot"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "metrics": {
+            "items": {
+              "$ref": "#/components/schemas/RemediationMetricSnapshot"
+            },
+            "type": "array",
+            "title": "Metrics"
+          },
+          "collected_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Collected At"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "RemediationCheckSnapshot",
+        "description": "Grouped alert + metric evidence at a specific remediation phase."
+      },
+      "RemediationEvidence": {
+        "properties": {
+          "pre_check": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RemediationCheckSnapshot"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "post_check": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RemediationCheckSnapshot"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "alert_review": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RemediationAlertReview"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "metric_reviews": {
+            "items": {
+              "$ref": "#/components/schemas/RemediationMetricReview"
+            },
+            "type": "array",
+            "title": "Metric Reviews"
+          },
+          "alert_cleared": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Alert Cleared"
+          },
+          "metrics_improved": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Metrics Improved"
+          },
+          "collected_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Collected At"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "RemediationEvidence",
+        "description": "Persistent before/after evidence for remediation audit and review."
+      },
+      "RemediationMetricReview": {
+        "properties": {
+          "metric_key": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Metric Key"
+          },
+          "query": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Query"
+          },
+          "before_value": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "integer"
+              },
+              {
+                "type": "string"
+              },
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Before Value"
+          },
+          "after_value": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "integer"
+              },
+              {
+                "type": "string"
+              },
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "After Value"
+          },
+          "condition": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Condition"
+          },
+          "improved": {
+            "type": "boolean",
+            "title": "Improved"
+          },
+          "available": {
+            "type": "boolean",
+            "title": "Available"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "reviewed_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Reviewed At"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "metric_key",
+          "query",
+          "improved",
+          "available"
+        ],
+        "title": "RemediationMetricReview",
+        "description": "Comparison of metric values before and after remediation."
+      },
+      "RemediationMetricSnapshot": {
+        "properties": {
+          "metric_key": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Metric Key"
+          },
+          "query": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Query"
+          },
+          "value": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "integer"
+              },
+              {
+                "type": "string"
+              },
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Value"
+          },
+          "condition": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Condition"
+          },
+          "collected_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Collected At"
+          },
+          "available": {
+            "type": "boolean",
+            "title": "Available",
+            "default": true
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "metric_key",
+          "query"
+        ],
+        "title": "RemediationMetricSnapshot",
+        "description": "Metric sample captured for remediation verification."
       },
       "RemediationPlan": {
         "properties": {
@@ -3526,6 +4328,92 @@
           "success"
         ],
         "title": "SREResponse[AlertSnapshotResponse]"
+      },
+      "SREResponse_AuthStatusResponse_": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success"
+          },
+          "data": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AuthStatusResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "error": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SREError"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "trace_id": {
+            "type": "string",
+            "title": "Trace Id"
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Timestamp"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "success"
+        ],
+        "title": "SREResponse[AuthStatusResponse]"
+      },
+      "SREResponse_AuthTokenResponse_": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success"
+          },
+          "data": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AuthTokenResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "error": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SREError"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "trace_id": {
+            "type": "string",
+            "title": "Trace Id"
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Timestamp"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "success"
+        ],
+        "title": "SREResponse[AuthTokenResponse]"
       },
       "SREResponse_ChatResponse_": {
         "properties": {
@@ -3870,6 +4758,49 @@
           "success"
         ],
         "title": "SREResponse[ToolChannelsStatusResponse]"
+      },
+      "SREResponse_TopologyExplorerResponse_": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success"
+          },
+          "data": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TopologyExplorerResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "error": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SREError"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "trace_id": {
+            "type": "string",
+            "title": "Trace Id"
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Timestamp"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "success"
+        ],
+        "title": "SREResponse[TopologyExplorerResponse]"
       },
       "SREResponse_TopologySnapshotResponse_": {
         "properties": {
@@ -4319,6 +5250,17 @@
             "type": "string",
             "title": "Fingerprint"
           },
+          "incident_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Incident Key"
+          },
           "outcome": {
             "anyOf": [
               {
@@ -4379,6 +5321,17 @@
             ],
             "title": "Action Type"
           },
+          "thought_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Thought Key"
+          },
           "tool_name": {
             "anyOf": [
               {
@@ -4414,6 +5367,29 @@
               }
             ],
             "title": "Confidence"
+          },
+          "next_action": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Action"
+          },
+          "thought_duration_sec": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 1.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Thought Duration Sec"
           }
         },
         "additionalProperties": false,
@@ -4535,6 +5511,413 @@
         "additionalProperties": false,
         "type": "object",
         "title": "ToolChannelsStatusResponse"
+      },
+      "TopologyExplorerObject": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "rack",
+              "node",
+              "gpu",
+              "switch",
+              "port",
+              "service",
+              "pod",
+              "cluster",
+              "bmc"
+            ],
+            "title": "Type"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "healthy",
+              "abnormal",
+              "impacted",
+              "maintenance"
+            ],
+            "title": "Status"
+          },
+          "layer": {
+            "type": "string",
+            "enum": [
+              "physical",
+              "network",
+              "compute",
+              "service"
+            ],
+            "title": "Layer"
+          },
+          "domain": {
+            "type": "string",
+            "title": "Domain"
+          },
+          "region": {
+            "type": "string",
+            "title": "Region"
+          },
+          "zone": {
+            "type": "string",
+            "title": "Zone"
+          },
+          "cluster": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cluster"
+          },
+          "rack": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rack"
+          },
+          "slot": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Slot"
+          },
+          "summary": {
+            "type": "string",
+            "title": "Summary"
+          },
+          "tags": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Tags"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Updatedat"
+          },
+          "metrics": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "integer"
+                    },
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "boolean"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Metrics"
+          },
+          "attributes": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Attributes"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "type",
+          "status",
+          "layer",
+          "domain",
+          "region",
+          "zone",
+          "summary",
+          "updatedAt"
+        ],
+        "title": "TopologyExplorerObject"
+      },
+      "TopologyExplorerPath": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "entryNodeId": {
+            "type": "string",
+            "title": "Entrynodeid"
+          },
+          "rootCauseNodeId": {
+            "type": "string",
+            "title": "Rootcausenodeid"
+          },
+          "affectedNodeIds": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Affectednodeids"
+          },
+          "edgeIds": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Edgeids"
+          },
+          "impactLevel": {
+            "type": "string",
+            "enum": [
+              "low",
+              "medium",
+              "high"
+            ],
+            "title": "Impactlevel",
+            "default": "low"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "active",
+              "inactive"
+            ],
+            "title": "Status",
+            "default": "inactive"
+          },
+          "summary": {
+            "type": "string",
+            "title": "Summary"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "id",
+          "entryNodeId",
+          "rootCauseNodeId",
+          "summary"
+        ],
+        "title": "TopologyExplorerPath"
+      },
+      "TopologyExplorerRelation": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "source": {
+            "type": "string",
+            "title": "Source"
+          },
+          "target": {
+            "type": "string",
+            "title": "Target"
+          },
+          "relationType": {
+            "type": "string",
+            "enum": [
+              "contains",
+              "runs_on",
+              "connects_to",
+              "depends_on",
+              "uplink_to",
+              "aggregated"
+            ],
+            "title": "Relationtype"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "healthy",
+              "abnormal",
+              "impacted",
+              "maintenance"
+            ],
+            "title": "Status"
+          },
+          "isCritical": {
+            "type": "boolean",
+            "title": "Iscritical",
+            "default": false
+          },
+          "impactLevel": {
+            "type": "string",
+            "enum": [
+              "low",
+              "medium",
+              "high"
+            ],
+            "title": "Impactlevel",
+            "default": "low"
+          },
+          "label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Label"
+          },
+          "isAggregated": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Isaggregated"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "id",
+          "source",
+          "target",
+          "relationType",
+          "status"
+        ],
+        "title": "TopologyExplorerRelation"
+      },
+      "TopologyExplorerResponse": {
+        "properties": {
+          "site": {
+            "$ref": "#/components/schemas/TopologyExplorerSite"
+          },
+          "nodes": {
+            "items": {
+              "$ref": "#/components/schemas/TopologyExplorerObject"
+            },
+            "type": "array",
+            "title": "Nodes"
+          },
+          "edges": {
+            "items": {
+              "$ref": "#/components/schemas/TopologyExplorerRelation"
+            },
+            "type": "array",
+            "title": "Edges"
+          },
+          "paths": {
+            "items": {
+              "$ref": "#/components/schemas/TopologyExplorerPath"
+            },
+            "type": "array",
+            "title": "Paths"
+          },
+          "lastUpdated": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Lastupdated"
+          },
+          "sync_state": {
+            "type": "string",
+            "enum": [
+              "idle",
+              "syncing",
+              "ready",
+              "degraded",
+              "error"
+            ],
+            "title": "Sync State",
+            "default": "idle"
+          },
+          "last_error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Error"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "site",
+          "lastUpdated"
+        ],
+        "title": "TopologyExplorerResponse"
+      },
+      "TopologyExplorerSite": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "region": {
+            "type": "string",
+            "title": "Region"
+          },
+          "zone": {
+            "type": "string",
+            "title": "Zone"
+          },
+          "domain": {
+            "type": "string",
+            "title": "Domain"
+          },
+          "summary": {
+            "type": "string",
+            "title": "Summary"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "region",
+          "zone",
+          "domain",
+          "summary"
+        ],
+        "title": "TopologyExplorerSite"
       },
       "TopologySnapshotResponse": {
         "properties": {
@@ -4713,6 +6096,13 @@
           "type": {
             "type": "string",
             "title": "Error Type"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "ctx": {
+            "type": "object",
+            "title": "Context"
           }
         },
         "type": "object",

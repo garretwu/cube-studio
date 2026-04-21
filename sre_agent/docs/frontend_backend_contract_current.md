@@ -16,10 +16,15 @@
 | Method | Path | 鉴权 | 响应主体 |
 | --- | --- | --- | --- |
 | `GET` | `/api/alerts` | Bearer JWT | `SREResponse_AlertSnapshotResponse_` |
+| `POST` | `/api/auth/bootstrap` | 公开 | `SREResponse_AuthTokenResponse_` |
+| `POST` | `/api/auth/refresh` | 公开 | `SREResponse_AuthTokenResponse_` |
+| `GET` | `/api/auth/status` | Bearer JWT | `SREResponse_AuthStatusResponse_` |
+| `POST` | `/api/auth/token` | Bearer JWT | `SREResponse_AuthTokenResponse_` |
 | `POST` | `/api/chat` | Bearer JWT | `SREResponse_ChatResponse_` |
 | `GET` | `/api/chat/history` | Bearer JWT | `SREResponse_list_ChatHistoryMessage__` |
 | `POST` | `/api/diagnose` | Bearer JWT | `SREResponse_DiagnosisSession_` |
 | `POST` | `/api/diagnose/start` | Bearer JWT | `SREResponse_DiagnosisSession_` |
+| `POST` | `/api/diagnose/stream` | Bearer JWT | `-` |
 | `POST` | `/api/handle` | Bearer JWT | `SREResponse_LoopResult_` |
 | `GET` | `/api/knowledge/bases` | Bearer JWT | `SREResponse_list_dict_str__Any___` |
 | `GET` | `/api/knowledge/bases/{knowledge_base_id}` | Bearer JWT | `SREResponse_dict_str__Any__` |
@@ -50,8 +55,10 @@
 | `GET` | `/api/sessions/{session_id}/loop` | Bearer JWT | `SREResponse_LoopResult_` |
 | `GET` | `/api/sessions/{session_id}/trace` | Bearer JWT | `SREResponse_list_dict_str__Any___` |
 | `GET` | `/api/skills` | Bearer JWT | `SREResponse_list_dict_str__Any___` |
+| `GET` | `/api/skills/{skill_id}` | Bearer JWT | `SREResponse_dict_str__Any__` |
 | `GET` | `/api/tools/channels/status` | Bearer JWT | `SREResponse_ToolChannelsStatusResponse_` |
 | `GET` | `/api/topology` | Bearer JWT | `SREResponse_TopologySnapshotResponse_` |
+| `GET` | `/api/topology-explorer` | Bearer JWT | `SREResponse_TopologyExplorerResponse_` |
 | `POST` | `/api/topology/discover` | Bearer JWT | `SREResponse_TopologyStatusResponse_` |
 | `GET` | `/api/topology/status` | Bearer JWT | `SREResponse_TopologyStatusResponse_` |
 
@@ -82,10 +89,17 @@
 | `observation_result` | 通用事件 |
 | `escalation_required` | 通用事件 |
 | `diagnosis_started` | 通用事件 |
+| `diagnosis_triggered` | 通用事件 |
 | `alert` | 告警变更事件 |
 | `topology` | 拓扑同步与节点/边增量事件 |
 | `error` | 错误事件 |
 | `done` | 会话结束事件 |
+| `token_delta` | 通用事件 |
+| `node_started` | 通用事件 |
+| `node_completed` | 通用事件 |
+| `tool_started` | 通用事件 |
+| `tool_completed` | 通用事件 |
+| `state_snapshot` | 通用事件 |
 <!-- CONTRACT:END -->
 ## 3. 关键 Payload 示例
 

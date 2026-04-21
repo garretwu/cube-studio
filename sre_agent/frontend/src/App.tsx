@@ -22,6 +22,7 @@ import { AppShell } from "./components/ui";
 import { useAlertsRealtimeSync } from "./hooks/useAlertsRealtimeSync";
 import HistoryPage from "./pages/History";
 import DiagnosisPage from "./pages/Diagnosis";
+import DiagnosisModifiedPage from "./pages/DiagnosisModified";
 import KnowledgeDetailPage from "./pages/KnowledgeDetail";
 import RemediationPage from "./pages/Remediation";
 import SkillDetailPage from "./pages/SkillDetail";
@@ -39,36 +40,42 @@ const rootPageChrome: Record<
   }
 > = {
   "/topology": {
-    title: "拓扑",
-    subtitle: "实时查看服务拓扑与依赖状态。",
+    title: "AIDC档案",
+    subtitle: "按 AIDC 资源、服务与上下游关系查看当前运行档案。",
     contentSpacing: "compact",
     contentMode: "workspace",
   },
   "/alerts": {
-    title: "告警",
-    subtitle: "跟踪进行中事件的告警信号、级别与责任归属。",
+    title: "报警事件",
+    subtitle: "聚合当前报警、影响对象与处置入口，便于快速分诊。",
     contentSpacing: "compact",
   },
   "/diagnosis": {
-    title: "诊断",
-    subtitle: "查看诊断流程与修复执行时间线。",
+    title: "问题诊断",
+    subtitle: "在统一工作台中追踪诊断推理、根因结论与修复流程。",
+    contentSpacing: "compact",
+    contentMode: "workspace",
+  },
+  "/diagnosis-modified": {
+    title: "问题诊断（修改）",
+    subtitle: "以左侧时间线、右侧报告的方式持续呈现诊断与修复状态。",
     contentSpacing: "compact",
     contentMode: "workspace",
     contentWidthMode: "full",
   },
   "/remediation": {
-    title: "修复",
-    subtitle: "查看修复方案、执行状态与回滚选项。",
+    title: "修复记录",
+    subtitle: "查看修复执行过程、审批结论与结果反馈。",
     contentSpacing: "compact",
   },
   "/knowledge": {
-    title: "知识",
-    subtitle: "浏览排障知识与可复用故障手册。",
+    title: "知识库",
+    subtitle: "管理诊断与修复过程中使用的知识资产。",
     contentSpacing: "compact",
   },
   "/skills": {
-    title: "技能",
-    subtitle: "管理诊断技能并跟踪技能执行洞察。",
+    title: "技能管理",
+    subtitle: "查看已接入平台的技能定义与说明。",
     contentSpacing: "compact",
   },
 };
@@ -111,7 +118,7 @@ function resolvePageChrome(pathname: string): {
 
   if (pathname.startsWith("/history/")) {
     return {
-      title: "诊断",
+      title: "诊断历史",
       contentSpacing: "compact",
       contentMode: "workspace",
       contentWidthMode: "full",
@@ -120,21 +127,29 @@ function resolvePageChrome(pathname: string): {
 
   if (pathname.startsWith("/topology/")) {
     return {
-      title: "拓扑",
+      title: "AIDC档案",
       contentSpacing: "compact",
     };
   }
 
   if (pathname.startsWith("/alerts/")) {
     return {
-      title: "告警",
+      title: "报警事件",
       contentSpacing: "compact",
     };
   }
 
   if (pathname.startsWith("/diagnosis/")) {
     return {
-      title: "诊断",
+      title: "问题诊断",
+      contentSpacing: "compact",
+      contentMode: "workspace",
+    };
+  }
+
+  if (pathname.startsWith("/diagnosis-modified/")) {
+    return {
+      title: "问题诊断（修改）",
       contentSpacing: "compact",
       contentMode: "workspace",
       contentWidthMode: "full",
@@ -143,21 +158,21 @@ function resolvePageChrome(pathname: string): {
 
   if (pathname.startsWith("/remediation/")) {
     return {
-      title: "修复",
+      title: "修复记录",
       contentSpacing: "compact",
     };
   }
 
   if (pathname.startsWith("/knowledge/")) {
     return {
-      title: "知识",
+      title: "知识库",
       contentSpacing: "compact",
     };
   }
 
   if (pathname.startsWith("/skills/")) {
     return {
-      title: "技能",
+      title: "技能管理",
       contentSpacing: "compact",
     };
   }
@@ -174,6 +189,8 @@ function AppRoutes() {
       <Route path="/diagnosis" element={<DiagnosisPage />} />
       <Route path="/diagnosis/:sessionId" element={<DiagnosisPage />} />
       <Route path="/remediation/:sessionId" element={<RemediationPage />} />
+      <Route path="/diagnosis-modified" element={<DiagnosisModifiedPage />} />
+      <Route path="/diagnosis-modified/:sessionId" element={<DiagnosisModifiedPage />} />
       <Route path="/skills/:skillId" element={<SkillDetailPage />} />
       <Route
         path="/knowledge/:knowledgeBaseId"
@@ -187,7 +204,7 @@ function AppRoutes() {
         element={<Navigate to="/alerts" replace />}
       />
       {appRoutes
-        .filter((route) => route.key !== "diagnosis")
+        .filter((route) => !["diagnosis", "diagnosisModified"].includes(route.key))
         .map((route) => (
           <Route key={route.key} path={route.path} element={route.element} />
         ))}

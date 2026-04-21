@@ -1,4 +1,4 @@
-﻿import {
+import {
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -818,6 +818,51 @@ function ToneBadge({
   );
 }
 
+function buildRemediationPath(sessionId: string) {
+  return `/remediation?sessionId=${encodeURIComponent(sessionId)}`;
+}
+
+function getRemediationEntryLabel(status?: string) {
+  switch (status) {
+    case "awaiting_approval":
+    case "approval_required":
+      return "\u5ba1\u6279\u4fee\u590d";
+    case "remediating":
+      return "\u67e5\u770b\u6267\u884c";
+    case "completed":
+    case "rejected":
+      return "\u67e5\u770b\u4fee\u590d\u8bb0\u5f55";
+    default:
+      return "\u67e5\u770b\u4fee\u590d\u6982\u89c8";
+  }
+}
+
+function RemediationJumpButton({
+  sessionId,
+  label = "\u6253\u5f00\u4fee\u590d\u6982\u89c8",
+  className,
+}: {
+  sessionId?: string;
+  label?: string;
+  className?: string;
+}) {
+  const navigate = useNavigate();
+
+  if (!sessionId) {
+    return null;
+  }
+
+  return (
+    <button
+      className={cn("diagnosis-workspace-remediation-link", className)}
+      onClick={() => navigate(buildRemediationPath(sessionId))}
+      type="button"
+    >
+      {label}
+    </button>
+  );
+}
+
 function getApprovalConfidenceMeta(label?: string) {
   if (!label) {
     return null;
@@ -1160,8 +1205,10 @@ function ToolCard({
 
 function ExecutionRunBlock({
   item,
+  remediationSessionId,
 }: {
   item: Extract<DiagnosisTimelineItem, { kind: "run" }>;
+  remediationSessionId?: string;
 }) {
   const activeStep =
     [...item.steps].reverse().find((step) => step.status === "running") ??
@@ -1382,15 +1429,19 @@ function ExecutionRunBlock({
           );
         })}
       </div>
+      <div className="diagnosis-workspace-card-link-row diagnosis-workspace-card-link-row--run">
+        <RemediationJumpButton sessionId={remediationSessionId} />
+      </div>
     </section>
   );
 }
 
-
 function DemoExecutionCard({
   item,
+  remediationSessionId,
 }: {
   item: DemoExecutionCardTimelineItem;
+  remediationSessionId?: string;
 }) {
   return (
     <section
@@ -1440,6 +1491,9 @@ function DemoExecutionCard({
           </li>
         ))}
       </ol>
+      <div className="diagnosis-workspace-card-link-row diagnosis-workspace-card-link-row--demo">
+        <RemediationJumpButton sessionId={remediationSessionId} />
+      </div>
     </section>
   );
 }
@@ -1740,23 +1794,25 @@ function getSystemEventCategoryLabel(
 ) {
   switch (eventKind) {
     case "approval_result":
-      return "瀹℃壒鍙嶉";
+      return "\u5ba1\u6279\u53cd\u9988";
     case "canary_progress":
-      return "鐏板害鎵ц";
+      return "\u7070\u5ea6\u6267\u884c";
     case "metric_feedback":
-      return "瑙傚療缁撹";
+      return "\u89c2\u5bdf\u7ed3\u8bba";
     case "alert_recovery":
-      return "鍛婅鎭㈠";
+      return "\u544a\u8b66\u6062\u590d";
     case "session_closed":
-      return "璇婃柇缁撴潫";
+      return "\u8bca\u65ad\u7ed3\u675f";
     default:
-      return "绯荤粺浜嬩欢";
+      return "\u7cfb\u7edf\u4e8b\u4ef6";
   }
 }
 function SystemEventBlock({
   item,
+  remediationSessionId,
 }: {
   item: Extract<DiagnosisTimelineItem, { kind: "system" }>;
+  remediationSessionId?: string;
 }) {
   const [isExpanded, setIsExpanded] = useState(false);
   const hoverTime = formatTimestamp(item.timestamp);
@@ -1820,6 +1876,9 @@ function SystemEventBlock({
             </div>
           </div>
         ) : null}
+        <div className="diagnosis-workspace-card-link-row">
+          <RemediationJumpButton sessionId={remediationSessionId} />
+        </div>
       </div>
     </article>
   );
@@ -1827,8 +1886,10 @@ function SystemEventBlock({
 
 function ApprovalResultThoughtBlock({
   item,
+  remediationSessionId,
 }: {
   item: Extract<DiagnosisTimelineItem, { kind: "system" }>;
+  remediationSessionId?: string;
 }) {
   const [isExpanded, setIsExpanded] = useState(false);
   const hoverTime = formatTimestamp(item.timestamp);
@@ -1881,6 +1942,9 @@ function ApprovalResultThoughtBlock({
             </div>
           </div>
         ) : null}
+        <div className="diagnosis-workspace-card-link-row">
+          <RemediationJumpButton sessionId={remediationSessionId} />
+        </div>
       </div>
     </article>
   );
@@ -3340,7 +3404,11 @@ function DiagnosisPage() {
   const activePlan = shouldRenderLiveTimeline ? liveView.plan : demoPlan;
   const activeReportReady = activeTimeline.some((item) => item.kind === "report");
   const activeApprovalStatusLabel =
-    shouldRenderLiveTimeline && session ? formatWorkflowStatus(session.status) : "\u5f85\u5ba1\u6279";
+    hasLiveSession && session ? formatWorkflowStatus(session.status) : "\u5f85\u5ba1\u6279";
+  const liveRemediationSessionId = (activeSessionId ?? session?.session_id ?? "").trim();
+  const flowRemediationSessionId = (
+    hasLiveSession ? liveRemediationSessionId : activeSummary?.sessionLabel ?? ""
+  ).trim();
   const approvalSurfaceOpen =
     Boolean(activePlan) &&
     activeReportReady &&
@@ -3574,6 +3642,15 @@ function DiagnosisPage() {
                 </>
               )}
             </div>
+            {hasLiveSession && liveRemediationSessionId ? (
+              <div className="diagnosis-workspace-shell__status-actions">
+                <RemediationJumpButton
+                  className="diagnosis-workspace-remediation-link--status"
+                  label={getRemediationEntryLabel(session?.status)}
+                  sessionId={liveRemediationSessionId}
+                />
+              </div>
+            ) : null}
           </div>
 
           <div className="diagnosis-workspace-shell__body">
@@ -3652,20 +3729,42 @@ function DiagnosisPage() {
                   }
 
                   if (item.kind === "demo_execution_card") {
-                    return <DemoExecutionCard item={item} key={item.id} />;
+                    return (
+                      <DemoExecutionCard
+                        item={item}
+                        key={item.id}
+                        remediationSessionId={flowRemediationSessionId}
+                      />
+                    );
                   }
 
                   if (item.kind === "run") {
-                    return <ExecutionRunBlock item={item} key={item.id} />;
+                    return (
+                      <ExecutionRunBlock
+                        item={item}
+                        key={item.id}
+                        remediationSessionId={flowRemediationSessionId}
+                      />
+                    );
                   }
 
                   if (item.kind === "system") {
                     if (item.eventKind === "approval_result") {
                       return (
-                        <ApprovalResultThoughtBlock item={item} key={item.id} />
+                        <ApprovalResultThoughtBlock
+                          item={item}
+                          key={item.id}
+                          remediationSessionId={flowRemediationSessionId}
+                        />
                       );
                     }
-                    return <SystemEventBlock item={item} key={item.id} />;
+                    return (
+                      <SystemEventBlock
+                        item={item}
+                        key={item.id}
+                        remediationSessionId={flowRemediationSessionId}
+                      />
+                    );
                   }
 
                   if (item.kind === "report") {

@@ -1016,8 +1016,22 @@ export const apiClient = {
   },
 
   getDiagnosisHistorySessions: async () => {
-    const sessions = await apiClient.getSessions(50);
-    return sessions.map(mapSummaryToDiagnosisSummary);
+    try {
+      const sessions = await apiClient.getSessions(50);
+      return sessions.map(mapSummaryToDiagnosisSummary);
+    } catch (primaryError) {
+      try {
+        const response = await api.get<SREApiEnvelope<SessionSummary[]> | SessionSummary[]>('/api/diagnosis/sessions');
+        const sessions = normalizeSessionSummaryList(unwrapPayload(response.data));
+        return sessions.map(mapSummaryToDiagnosisSummary);
+      } catch {
+        if (import.meta.env.DEV) {
+          const { getDiagnosisHistorySessionsFallback } = await import("./devFallback");
+          return getDiagnosisHistorySessionsFallback();
+        }
+        throw primaryError;
+      }
+    }
   },
 
   getSessionLoop: async (sessionId?: string) => {
@@ -1093,7 +1107,6 @@ export const apiClient = {
           (String(session.status ?? "").trim().toLowerCase() === "resolved" ? currentPlan.steps.length : 0),
       );
       const progressStatus = String(session.status || "").trim() || latestStage || "pending";
-
       // Extract canary batch status from remediation_progress events
       const batchStatusMap = new Map<string, { batch: string; progress: number; status: string }>();
       for (const event of remediationEvents) {

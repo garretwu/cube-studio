@@ -1,9 +1,10 @@
-﻿import React from "react";
+import React from "react";
 
 import type { AppIconName } from "./components/ui";
 import AlertsModifiedPage from "./pages/AlertsModified";
 import DesignTokensPage from "./pages/DesignTokens";
 import DiagnosisPage from "./pages/Diagnosis";
+import DiagnosisModifiedPage from "./pages/DiagnosisModified";
 import KnowledgePage from "./pages/Knowledge";
 import RemediationPage from "./pages/Remediation";
 import SkillsPage from "./pages/Skills";
@@ -22,7 +23,7 @@ export const appRoutes: AppRoute[] = [
   {
     key: "topology",
     path: "/topology",
-    label: "拓扑",
+    label: "AIDC档案",
     section: "operations",
     icon: "topology",
     element: <TopologyPage variant="modified" />,
@@ -30,7 +31,7 @@ export const appRoutes: AppRoute[] = [
   {
     key: "alertsModified",
     path: "/alerts",
-    label: "告警",
+    label: "报警事件",
     section: "operations",
     icon: "alerts",
     element: <AlertsModifiedPage />,
@@ -38,15 +39,23 @@ export const appRoutes: AppRoute[] = [
   {
     key: "diagnosis",
     path: "/diagnosis",
-    label: "诊断",
+    label: "问题诊断",
     section: "operations",
     icon: "diagnosis",
     element: <DiagnosisPage />,
   },
   {
+    key: "diagnosisModified",
+    path: "/diagnosis-modified",
+    label: "问题诊断（修改）",
+    section: "operations",
+    icon: "diagnosis",
+    element: <DiagnosisModifiedPage />,
+  },
+  {
     key: "remediation",
     path: "/remediation",
-    label: "修复",
+    label: "修复记录",
     section: "operations",
     icon: "remediation",
     element: <RemediationPage />,
@@ -54,7 +63,7 @@ export const appRoutes: AppRoute[] = [
   {
     key: "knowledge",
     path: "/knowledge",
-    label: "知识",
+    label: "知识库",
     section: "operations",
     icon: "knowledge",
     element: <KnowledgePage />,
@@ -62,7 +71,7 @@ export const appRoutes: AppRoute[] = [
   {
     key: "skills",
     path: "/skills",
-    label: "技能",
+    label: "技能管理",
     section: "operations",
     icon: "skills",
     element: <SkillsPage />,

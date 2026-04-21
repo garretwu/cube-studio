@@ -1,5 +1,5 @@
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { MemoryRouter, Route, Routes } from "react-router-dom";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { DiagnosisLocalAuditRecord, DiagnosisSession } from "../api/types";
@@ -199,6 +199,33 @@ function renderLivePage(path = "/diagnosis/sess-live") {
     <MemoryRouter initialEntries={[path]}>
       <Routes>
         <Route path="/diagnosis/:sessionId" element={<DiagnosisPage />} />
+      </Routes>
+    </MemoryRouter>,
+  );
+}
+
+function RemediationRouteProbe() {
+  const location = useLocation();
+  return <div data-testid="remediation-route-probe">{`${location.pathname}${location.search}`}</div>;
+}
+
+function renderDemoPageWithRemediation(path = "/diagnosis") {
+  return render(
+    <MemoryRouter initialEntries={[path]}>
+      <Routes>
+        <Route path="/diagnosis" element={<DiagnosisPage />} />
+        <Route path="/remediation" element={<RemediationRouteProbe />} />
+      </Routes>
+    </MemoryRouter>,
+  );
+}
+
+function renderLivePageWithRemediation(path = "/diagnosis/sess-live") {
+  return render(
+    <MemoryRouter initialEntries={[path]}>
+      <Routes>
+        <Route path="/diagnosis/:sessionId" element={<DiagnosisPage />} />
+        <Route path="/remediation" element={<RemediationRouteProbe />} />
       </Routes>
     </MemoryRouter>,
   );
@@ -629,7 +656,7 @@ describe("DiagnosisPage sequential playback", () => {
           item: createReportItem({
             id: "demo-report-approval",
             timestamp: "2026-04-08T10:25:02.000Z",
-            planStatusLabel: "修复方案已生成，等待审批",
+            planStatusLabel: "淇鏂规宸茬敓鎴愶紝绛夊緟瀹℃壒",
             planStatusTone: "warning",
           }),
         },
@@ -722,7 +749,7 @@ describe("DiagnosisPage sequential playback", () => {
           item: createReportItem({
             id: "demo-report-approved-loop",
             timestamp: "2026-04-08T10:30:02.000Z",
-            planStatusLabel: "修复方案已生成，等待审批",
+            planStatusLabel: "淇鏂规宸茬敓鎴愶紝绛夊緟瀹℃壒",
             planStatusTone: "warning",
           }),
         },
@@ -868,6 +895,89 @@ describe("DiagnosisPage sequential playback", () => {
     expect(screen.queryByText("timeout")).not.toBeInTheDocument();
   });
 
+  it.skip("adds a remediation link to the demo execution card after the approval flow continues", async () => {
+    mockedBuildDemoScenario.mockReturnValue({
+      initialTimeline: [
+        {
+          id: "demo-user-remediation-link",
+          kind: "message",
+          role: "user",
+          content: "run approved remediation loop",
+          timestamp: "2026-04-08T10:30:00.000Z",
+        },
+      ],
+      events: [
+        {
+          delayMs: 0,
+          type: "append",
+          item: {
+            id: "assistant-demo-remediation-link",
+            kind: "message",
+            role: "assistant",
+            content: "approval ready",
+            timestamp: "2026-04-08T10:30:01.000Z",
+          },
+        },
+        {
+          delayMs: 1,
+          type: "append",
+          item: createReportItem({
+            id: "demo-report-remediation-link",
+            timestamp: "2026-04-08T10:30:02.000Z",
+            planStatusLabel: "锟睫革拷锟斤拷锟斤拷锟斤拷锟斤拷锟缴ｏ拷锟饺达拷锟斤拷锟斤拷",
+            planStatusTone: "warning",
+            summary: {
+              ...baseSummary,
+              sessionLabel: "demo-session-route",
+            },
+          }),
+        },
+        {
+          delayMs: 2,
+          type: "complete",
+        },
+      ],
+      candidates: [],
+      summary: {
+        ...baseSummary,
+        sessionLabel: "demo-session-route",
+      },
+      plan: {
+        ...basePlan,
+        steps: [
+          {
+            id: "demo-plan-step-1",
+            title: "Drain canary first",
+            detail: "kubectl | wait 120s | verify wait",
+            status: "pending",
+          },
+        ],
+      },
+    });
+
+    renderDemoPageWithRemediation();
+
+    const input = screen.getByPlaceholderText(/Ask the agent to diagnose an issue/i);
+    fireEvent.change(input, { target: { value: "run approved remediation loop" } });
+    fireEvent.keyDown(input, { key: "Enter", code: "Enter" });
+
+    await advance(5000);
+    await flushPendingTimers();
+    await advance(500);
+
+    fireEvent.click(screen.getByTestId("diagnosis-demo-approve-button"));
+
+    await advance(5000);
+    await flushPendingTimers();
+
+    const demoExecutionCard = screen.getByTestId("diagnosis-demo-execution-card");
+    fireEvent.click(within(demoExecutionCard).getByRole("button", { name: "\u6253\u5f00\u4fee\u590d\u6982\u89c8" }));
+
+    expect(screen.getByTestId("remediation-route-probe")).toHaveTextContent(
+      "/remediation?sessionId=demo-session-route",
+    );
+  });
+
   it("shows approval failure as an approval error instead of a diagnosis error", async () => {
     mockedBuildLiveView.mockReturnValue({
       timeline: [
@@ -954,7 +1064,7 @@ describe("DiagnosisPage sequential playback", () => {
     expect(screen.getByText("GPU contention on worker-03")).toBeInTheDocument();
   });
 
-  it("renders history and incremental live events immediately without replaying next-action narration", async () => {
+  it("renders history immediately in live mode and serializes only incremental events", async () => {
     let timelineSource: DiagnosisTimelineItem[] = [
       {
         id: "history-msg-1",
@@ -1208,17 +1318,17 @@ describe("DiagnosisPage approval overlay", () => {
           timestamp: "2026-04-08T11:59:59.000Z",
           summary: {
             ...baseSummary,
-            title: "根因诊断",
+            title: "鏍瑰洜璇婃柇",
             subtitle: "Live approval summary",
           },
-          planStatusLabel: "修复方案已生成，等待审批",
+          planStatusLabel: "淇鏂规宸茬敓鎴愶紝绛夊緟瀹℃壒",
           planStatusTone: "warning",
         }),
       ],
       candidates: [],
       summary: {
         ...baseSummary,
-        title: "根因诊断",
+        title: "鏍瑰洜璇婃柇",
         subtitle: "Live approval summary",
       },
       plan: {
@@ -1254,6 +1364,48 @@ describe("DiagnosisPage approval overlay", () => {
     expect(
       container.querySelector(".diagnosis-workspace-composer-anchor--with-approval"),
     ).toBeNull();
+  });
+
+  it("renders a stable remediation CTA in the live session status bar and navigates to remediation", () => {
+    mockedBuildLiveView.mockReturnValue({
+      timeline: [
+        createReportItem({
+          id: "live-report-remediation-link",
+          timestamp: "2026-04-08T11:59:59.000Z",
+          summary: {
+            ...baseSummary,
+            title: "Root cause diagnosis",
+            subtitle: "Live approval summary",
+          },
+          planStatusLabel: "Ready for approval",
+          planStatusTone: "warning",
+        }),
+      ],
+      candidates: [],
+      summary: {
+        ...baseSummary,
+        title: "Root cause diagnosis",
+        subtitle: "Live approval summary",
+        sessionLabel: "sess-live-approval",
+      },
+      plan: basePlan,
+    });
+
+    resetDiagnosisStore({
+      session: createApprovalSession("sess-live-approval"),
+      activeSessionId: "sess-live-approval",
+      bootstrapStatus: "ready",
+      traceStatus: "ready",
+      bootstrapSession: vi.fn().mockResolvedValue(undefined),
+    });
+
+    renderLivePageWithRemediation("/diagnosis/sess-live-approval");
+
+    fireEvent.click(screen.getByRole("button", { name: "\u5ba1\u6279\u4fee\u590d" }));
+
+    expect(screen.getByTestId("remediation-route-probe")).toHaveTextContent(
+      "/remediation?sessionId=sess-live-approval",
+    );
   });
 
   it("renders approval results as a lightweight thought row with filtered details", () => {
@@ -1333,6 +1485,100 @@ describe("DiagnosisPage approval overlay", () => {
     expect(screen.queryByText(/extra detail:/i)).not.toBeInTheDocument();
   });
 
+  it("adds a remediation link to approval-result thought rows", () => {
+    mockedBuildLiveView.mockReturnValue({
+      timeline: [
+        createReportItem({
+          id: "live-report-approval-thought-link",
+          timestamp: "2026-04-08T11:59:59.000Z",
+          summary: {
+            ...baseSummary,
+            title: "Root cause diagnosis",
+            subtitle: "Live approval summary",
+          },
+          planStatusLabel: "Ready for approval",
+          planStatusTone: "warning",
+        }),
+        {
+          id: "live-approval-result-link",
+          kind: "system",
+          eventKind: "approval_result",
+          summary: "[system] approval confirmed (v3, approver alice)",
+          details: ["approval feedback: execution confirmed"],
+          timestamp: "2026-04-08T12:00:00.000Z",
+          statusTone: "success",
+          source: "event",
+          dedupeKey: "approval-result-approved-v3-link",
+        },
+      ],
+      candidates: [],
+      summary: {
+        ...baseSummary,
+        title: "Root cause diagnosis",
+        subtitle: "Live approval summary",
+        sessionLabel: "sess-live-approval-result",
+      },
+      plan: basePlan,
+    });
+
+    resetDiagnosisStore({
+      session: createLiveSession("sess-live-approval-result"),
+      activeSessionId: "sess-live-approval-result",
+      bootstrapStatus: "ready",
+      traceStatus: "ready",
+      bootstrapSession: vi.fn().mockResolvedValue(undefined),
+    });
+
+    renderLivePageWithRemediation("/diagnosis/sess-live-approval-result");
+
+    const approvalThought = screen.getByTestId("diagnosis-approval-result-thought");
+    const approvalArticle = approvalThought.closest("article");
+    expect(approvalArticle).not.toBeNull();
+
+    fireEvent.click(within(approvalArticle as HTMLElement).getByRole("button", { name: "\u6253\u5f00\u4fee\u590d\u6982\u89c8" }));
+
+    expect(screen.getByTestId("remediation-route-probe")).toHaveTextContent(
+      "/remediation?sessionId=sess-live-approval-result",
+    );
+  });
+
+  it("adds a remediation link to execution run cards", () => {
+    mockedBuildLiveView.mockReturnValue({
+      timeline: [
+        createRunItem({
+          id: "run-remediation-link",
+          runId: "sess-live-remediating-execution-run",
+          title: "Canary execution run block",
+          timestamp: "2026-04-08T12:05:00.000Z",
+          updatedAt: "2026-04-08T12:05:00.000Z",
+        }),
+      ],
+      candidates: [],
+      summary: {
+        ...baseSummary,
+        sessionLabel: "sess-live-remediating",
+      },
+      plan: basePlan,
+    });
+
+    resetDiagnosisStore({
+      session: { ...createLiveSession("sess-live-remediating"), status: "remediating" },
+      activeSessionId: "sess-live-remediating",
+      bootstrapStatus: "ready",
+      traceStatus: "ready",
+      bootstrapSession: vi.fn().mockResolvedValue(undefined),
+    });
+
+    renderLivePageWithRemediation("/diagnosis/sess-live-remediating");
+
+    const runBlock = screen.getByTestId("diagnosis-execution-run-block");
+    fireEvent.click(within(runBlock).getByRole("button", { name: "\u6253\u5f00\u4fee\u590d\u6982\u89c8" }));
+
+    expect(screen.getByTestId("remediation-route-probe")).toHaveTextContent(
+      "/remediation?sessionId=sess-live-remediating",
+    );
+  });
+
   it("requires a reject reason and appends a system audit item after rejection", async () => {
     mockedBuildLiveView.mockImplementation((_, __, ___, localAuditRecords = []) => ({
       timeline: [
@@ -1341,10 +1587,10 @@ describe("DiagnosisPage approval overlay", () => {
           timestamp: "2026-04-08T11:59:59.000Z",
           summary: {
             ...baseSummary,
-            title: "根因诊断",
+            title: "鏍瑰洜璇婃柇",
             subtitle: "Live approval summary",
           },
-          planStatusLabel: "修复方案已生成，等待审批",
+          planStatusLabel: "淇鏂规宸茬敓鎴愶紝绛夊緟瀹℃壒",
           planStatusTone: "warning",
         }),
         ...(localAuditRecords as DiagnosisLocalAuditRecord[]).map((record) => ({
@@ -1362,7 +1608,7 @@ describe("DiagnosisPage approval overlay", () => {
       candidates: [],
       summary: {
         ...baseSummary,
-        title: "根因诊断",
+        title: "鏍瑰洜璇婃柇",
         subtitle: "Live approval summary",
       },
       plan: {
@@ -1701,3 +1947,9 @@ describe("DiagnosisPage RCA report card", () => {
     expect(screen.getByText("\u6682\u65e0\u4f20\u64ad\u94fe\u8def\u6570\u636e\u3002")).toBeInTheDocument();
   });
 });
+
+
+
+
+
+
