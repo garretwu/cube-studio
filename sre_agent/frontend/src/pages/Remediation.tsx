@@ -10,7 +10,7 @@ import { AppIcon, AppInput, MetricTile, StatusChip, SurfaceCard } from "../compo
 import { useWebSocket } from "../hooks/useWebSocket";
 import { useRemediationStore } from "../store/remediationStore";
 import { formatPercent, formatTimestamp } from "../utils/format";
-import { getRemediationOverallProgressDisplay, getRemediationStepProgress } from "../utils/remediationProgress";
+import { getRemediationOverallProgressDisplay } from "../utils/remediationProgress";
 
 type RemediationRecord = {
   summary: DiagnosisSessionSummary;
@@ -112,23 +112,6 @@ function getExecutionStartedAt(events: SessionEvent[] | undefined): string | nul
     if (getEventStage(event) === "execution_started") return event.timestamp;
   }
   return null;
-}
-
-function getCanaryProgress(overview?: RemediationOverview): number | null {
-  if (!overview?.plan.canary?.enabled) return null;
-  const batches = overview.progress.batch_status ?? [];
-  if (batches.length > 0) {
-    const canaryBatch = batches.find((item) => /canary|金丝雀/i.test(item.batch)) ?? batches[0];
-    return Math.max(0, Math.min(100, Math.round(Number(canaryBatch.progress ?? 0))));
-  }
-  if (String(overview.progress.status ?? "").trim().toLowerCase() === "resolved") return 100;
-  return getRemediationStepProgress(overview);
-}
-
-function getCanarySummary(overview?: RemediationOverview): string {
-  if (!overview?.plan.canary?.enabled) return "未启用";
-  if ((overview.progress.batch_status?.length ?? 0) > 0) return `${getCanaryProgress(overview) ?? 0}%`;
-  return `目标 ${formatPercent(overview.plan.canary.target_percentage)} · 观察 ${overview.plan.canary.monitor_duration}s`;
 }
 
 function matchesFilter(record: RemediationRecord, filter: StatusFilter): boolean {
@@ -424,8 +407,7 @@ function RemediationPage() {
                       <th>修复内容</th>
                       <th>审批人</th>
                       <th>开始修复</th>
-                      <th>金丝雀</th>
-                      <th>全量</th>
+                      <th>进度</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -435,7 +417,6 @@ function RemediationPage() {
                       const approver = getApprover(recordOverview?.timeline) ?? (recordOverview?.approval_required ? "待审批" : "未记录");
                       const startedAt = getExecutionStartedAt(recordOverview?.timeline);
                       const totalProgress = getRemediationOverallProgressDisplay(recordOverview);
-                      const canaryProgress = getCanaryProgress(recordOverview);
                       const isExpanded = selectedRecord?.summary.session_id === record.summary.session_id;
 
                       return (
@@ -470,14 +451,6 @@ function RemediationPage() {
                             </td>
                             <td className="remediation-record-table__cell">{approver}</td>
                             <td className="remediation-record-table__cell">{startedAt ? formatTimestamp(startedAt) : "未开始"}</td>
-                            <td className="remediation-record-table__cell remediation-record-table__cell--progress">
-                              <div className="remediation-record-table__progress-cell">
-                                <span>{recordOverview?.plan.canary?.enabled ? getCanarySummary(recordOverview) : "未启用"}</span>
-                                <div className="progress-track remediation-progress-track remediation-progress-track--canary">
-                                  <div className="progress-track__fill remediation-progress-track__fill remediation-progress-track__fill--canary" style={{ width: `${canaryProgress ?? 0}%` }} />
-                                </div>
-                              </div>
-                            </td>
                             <td className="remediation-record-table__cell remediation-record-table__cell--progress">
                               <div className="remediation-record-table__progress-cell">
                                 <span>{totalProgress}%</span>
