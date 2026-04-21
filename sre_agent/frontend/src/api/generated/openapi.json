@@ -2667,6 +2667,17 @@
             "minimum": 0.0,
             "title": "Confidence"
           },
+          "next_action": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Action"
+          },
           "hypotheses": {
             "items": {
               "$ref": "#/components/schemas/Hypothesis"
@@ -2844,6 +2855,7 @@
           "REM_APPROVAL_DENIED",
           "REM_APPROVAL_TIMEOUT",
           "REM_EXEC_FAILED",
+          "stale_or_mismatched_pid",
           "REM_ROLLBACK_FAILED",
           "REM_BLOCKED",
           "RES_LOCKED",
@@ -4128,6 +4140,29 @@
               }
             ],
             "title": "Error"
+          },
+          "error_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Code"
+          },
+          "error_details": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Details"
           }
         },
         "additionalProperties": false,
