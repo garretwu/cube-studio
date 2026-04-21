@@ -335,6 +335,7 @@ export type SessionSummary = {
   severity: Severity;
   fingerprint: string;
   incident_key?: string | null;
+  affected_services?: string[];
   outcome?: string | null;
   duration_seconds: number;
   updated_at: string;
@@ -494,6 +495,7 @@ export type RemediationEvidence = {
 export type RemediationOverview = {
   session_id: string;
   plan: RemediationPlan;
+  affected_services?: string[];
   plan_version?: number;
   plan_history?: Array<{ version: number; plan_id: string; revised_at?: string; instruction?: string }>;
   progress: {

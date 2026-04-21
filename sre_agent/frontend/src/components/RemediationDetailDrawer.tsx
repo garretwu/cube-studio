@@ -58,6 +58,10 @@ const VERIFICATION_LABELS: Record<string, string> = {
 const TERMINAL_STATUSES = new Set(["resolved", "failed", "escalated", "timeout", "rejected"]);
 const ATTENTION_STATUSES = new Set(["failed", "escalated", "timeout", "rejected", "execution_failed", "rollback_failed"]);
 const ACTIVE_EXECUTION_STATUSES = new Set(["remediating", "execution_started", "validating"]);
+const OBSERVATION_POLICY_LABELS: Record<string, string> = {
+  default_alert_and_metrics: "告警恢复 + 指标改善",
+  alert_status_only_when_post_metrics_unavailable: "仅告警恢复（观测指标缺失降级）",
+};
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -149,6 +153,41 @@ function getCanaryProgress(overview?: RemediationOverview): number | null {
   return getRemediationStepProgress(overview);
 }
 
+function normalizeBoolean(value: unknown): boolean | null {
+  if (typeof value === "boolean") return value;
+  return null;
+}
+
+function normalizePolicy(value: unknown): string {
+  const normalized = typeof value === "string" ? value.trim() : "";
+  return normalized || "default_alert_and_metrics";
+}
+
+function filterRemediationTimeline(events: SessionEvent[]): SessionEvent[] {
+  if (!events.length) return [];
+  const sorted = sortEvents(events);
+  const approvalStartIndex = sorted.findIndex((event) => event.type === "approval_required");
+  const remediationStartIndex = sorted.findIndex((event) => event.type === "remediation_progress");
+  const startIndex = approvalStartIndex >= 0 ? approvalStartIndex : remediationStartIndex;
+  if (startIndex < 0) return [];
+  return sorted.slice(startIndex).filter((event) => {
+    if (event.type === "approval_required" || event.type === "remediation_progress") return true;
+    if (event.type === "plan_revised") return approvalStartIndex >= 0;
+    return false;
+  });
+}
+
+function getLatestObservationResult(events: SessionEvent[]): Record<string, unknown> | null {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index];
+    if (event.type !== "remediation_progress") continue;
+    const stage = String(event.data?.stage ?? "").trim().toLowerCase();
+    if (stage !== "observation_result") continue;
+    return isRecord(event.data) ? event.data : null;
+  }
+  return null;
+}
+
 type TimelinePlaybackState = {
   activeIndex: number | null;
   completedCount: number;
@@ -189,7 +228,7 @@ export default function RemediationDetailDrawer({
       recordSessionId && overview?.session_id === recordSessionId
         ? events.filter((event) => event.session_id === recordSessionId)
         : [];
-    return sortEvents(realtimeEvents.length > 0 ? realtimeEvents : drawerOverview?.timeline ?? events);
+    return filterRemediationTimeline(realtimeEvents.length > 0 ? realtimeEvents : drawerOverview?.timeline ?? events);
   }, [drawerOverview?.timeline, events, overview?.session_id, record?.summary.session_id]);
   const summary = record?.summary;
   const drawerStatus = String(drawerOverview?.progress.status ?? record?.summary.status ?? "pending").trim();
@@ -204,8 +243,19 @@ export default function RemediationDetailDrawer({
   const severityLabel = String(summary?.severity ?? "").trim().toUpperCase() || "UNKNOWN";
   const incidentLabel = String(summary?.session_id ?? "").trim();
   const executionSourceLabel = drawerOverview?.approval_required ? "待人工审批后执行" : "自动触发修复流程";
-  const affectedServicesSummary = summary?.affected_services?.length ? summary.affected_services.join("、") : "未记录";
+  const affectedServices = drawerOverview?.affected_services?.length
+    ? drawerOverview.affected_services
+    : (summary?.affected_services ?? []);
+  const affectedServicesSummary = affectedServices.length ? affectedServices.join("、") : "未记录";
   const detailSteps = drawerOverview?.plan.steps ?? [];
+  const observationResult = getLatestObservationResult(drawerEvents);
+  const observationPolicy = normalizePolicy(observationResult?.policy_applied);
+  const policyLabel = OBSERVATION_POLICY_LABELS[observationPolicy] ?? observationPolicy;
+  const alertCleared = normalizeBoolean(observationResult?.alert_cleared);
+  const metricsImproved = normalizeBoolean(observationResult?.metrics_improved);
+  const alertOnlyPolicy = observationPolicy === "alert_status_only_when_post_metrics_unavailable";
+  const observationPassed =
+    alertCleared !== null && (alertOnlyPolicy ? alertCleared : alertCleared && metricsImproved === true);
   const completedSteps = Number(drawerOverview?.progress.completed_steps ?? 0);
   const totalSteps = Number(drawerOverview?.progress.total_steps ?? detailSteps.length);
   const overallProgress = getRemediationOverallProgressDisplay(drawerOverview ?? undefined);
@@ -379,7 +429,25 @@ export default function RemediationDetailDrawer({
                       </p>
                     </>
                   ) : (
-                    <p className="remediation-panel-strategy__meta">当前方案未配置灰度校验条件，执行完成后将按整体结果统一确认。</p>
+                    observationResult ? (
+                      <>
+                        <ul className="remediation-panel-strategy__list">
+                          <li className="remediation-panel-strategy__item">{`策略口径：${policyLabel}`}</li>
+                          <li className="remediation-panel-strategy__item">{`alert_cleared：${alertCleared === null ? "未知" : (alertCleared ? "是" : "否")}`}</li>
+                          <li className="remediation-panel-strategy__item">
+                            {`metrics_improved：${
+                              metricsImproved === null
+                                ? (alertOnlyPolicy ? "未纳入（策略降级）" : "未知")
+                                : (metricsImproved ? "是" : "否")
+                            }`}
+                          </li>
+                          <li className="remediation-panel-strategy__item">{`观察结论：${observationPassed ? "通过" : "未通过"}`}</li>
+                        </ul>
+                        <p className="remediation-panel-strategy__meta">当前方案未启用灰度，按观察结果判定是否成功。</p>
+                      </>
+                    ) : (
+                      <p className="remediation-panel-strategy__meta">当前方案未启用灰度，等待观察结果。</p>
+                    )
                   )}
                 </div>
               ) : null}
@@ -457,7 +525,6 @@ export default function RemediationDetailDrawer({
     </div>
   );
 }
-
 
 
 

@@ -1030,6 +1030,7 @@ class DefaultDiagnosisRunner:
             tool_registry=self._tool_registry,
             step_timeout_sec=self._config.agent.step_timeout_sec,
             total_timeout_sec=self._config.agent.total_timeout_sec,
+            max_steps=int(self._config.agent.max_steps or 0) or 50,
             checkpoint_dir=None,
             trace_callback=trace_callback,
             alert_snapshot=enriched_alert.model_dump(mode="json"),
@@ -1170,6 +1171,7 @@ class StreamingDiagnosisRunner:
                 tool_registry=self._tool_registry,
                 step_timeout_sec=self._config.agent.step_timeout_sec,
                 total_timeout_sec=self._config.agent.total_timeout_sec,
+                max_steps=int(self._config.agent.max_steps or 0) or 50,
                 checkpoint_dir=None,
                 alert_snapshot=enriched_alert.model_dump(mode="json"),
                 topology_context=topology_context,
@@ -1536,6 +1538,7 @@ class DefaultReDiagnoseRunner:
             session_id=session.session_id,
             step_timeout_sec=self._config.agent.step_timeout_sec,
             total_timeout_sec=self._config.agent.total_timeout_sec,
+            max_steps=int(self._config.agent.max_steps or 0) or 50,
             checkpoint_dir=None,
             trace_callback=trace_callback,
             alert_snapshot=alert.model_dump(mode="json"),
@@ -1613,6 +1616,9 @@ def _build_diagnosis_query(
             "This is AIServiceTTFT diagnosis; prioritize deterministic service->pod->node->gpu evidence chain "
             "before broad exploration. Use prometheus.query_instant only for verification and keep it within "
             "two calls unless absolutely required for contradiction resolution. "
+            "Before concluding, you MUST complete minimum TTFT coverage: "
+            "at least one gpu.get_processes call and one process.find call for external load verification. "
+            "If process.find was not executed yet, schedule it now instead of calling unrelated tools. "
             "Follow the evidence: if gpu.get_processes reveals non-service processes consuming significant GPU "
             "resources, that is a strong GPU-contention signal — prioritize it over external traffic hypotheses. "
             "If the serving node shows no GPU anomalies, then consider external traffic, KV cache pressure, "
@@ -1625,6 +1631,7 @@ def _build_diagnosis_query(
             "定位受影响 service 对应的 pod（k8s.resolve_service_pods / k8s.list_pods）。",
             "定位 pod 所在 node 与 node_ip（k8s.resolve_pod_node_ip + inventory mapping）。",
             "在目标 node 采集 GPU metrics/processes（gpu.get_metrics + gpu.get_processes），识别异常负载进程。",
+            "对外部压测源执行 process.find（优先 ttft_external_process_default_node），检查 stress/benchmark/load_simulator 进程。",
             "综合 GPU metrics、进程信息和 Prometheus 指标判断根因类别；若 GPU 侧无异常，再考虑外部流量或 KV cache 压力。",
             "用 prometheus.query_instant 复核 TTFT 与请求时延变化，并给出处置结论。",
         ],

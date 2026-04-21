@@ -20,6 +20,11 @@ from sre_agent.models.diagnosis import DiagnosisResult, Observation, ThinkingSte
 from sre_agent.models.remediation import RemediationPlan
 from sre_agent.runtime.node_mapping import load_inventory_node_mapping, normalize_node_identifier
 from sre_agent.runtime.token_estimation import estimate_token_count
+from sre_agent.ttft_process_policy import (
+    TTFT_STRICT_PROCESS_FIND_PATTERN,
+    extract_ttft_verification_pattern,
+    is_ttft_suspect_process,
+)
 from sre_agent.tools import SafetyLevel, ToolExecutionContext, ToolRegistry, ToolResult
 
 # LLM 交互日志记录器
@@ -621,6 +626,66 @@ async def reason_node(
         )
         pending_tool_calls = []
 
+    if pending_tool_calls and _is_ttft_alert_state(state):
+        tool_runs = list(state.get("tool_runs", []) or [])
+        coverage_met, coverage_missing = _evaluate_ttft_min_coverage(
+            state=state,
+            tool_runs=tool_runs,
+        )
+        if not coverage_met:
+            forced_calls: list[dict[str, Any]] = []
+            pending_names = {
+                str(item.get("name", "")).strip()
+                for item in pending_tool_calls
+                if isinstance(item, dict)
+            }
+            variables = dict(state.get("variables", {}) or {})
+            alert_snapshot = state.get("alert_snapshot")
+            snapshot = alert_snapshot if isinstance(alert_snapshot, dict) else {}
+            if "gpu_processes" in coverage_missing and "gpu.get_processes" not in pending_names:
+                probe_node = (
+                    str(variables.get("node") or "").strip()
+                    or str(variables.get("node_ip") or "").strip()
+                    or str(snapshot.get("labels", {}).get("node", "") if isinstance(snapshot.get("labels"), dict) else "").strip()
+                )
+                if probe_node:
+                    forced_calls.append(
+                        {
+                            "name": "gpu.get_processes",
+                            "args": {"node": probe_node},
+                            "id": f"ttft-forced-gpu-processes-{step_index}",
+                        }
+                    )
+            if "external_process_find" in coverage_missing and "process.find" not in pending_names:
+                ext_node = _get_ttft_external_node(state)
+                find_args: dict[str, Any] = {"pattern": TTFT_STRICT_PROCESS_FIND_PATTERN}
+                if ext_node:
+                    find_args["node"] = ext_node
+                forced_calls.append(
+                    {
+                        "name": "process.find",
+                        "args": find_args,
+                        "id": f"ttft-forced-process-find-{step_index}",
+                    }
+                )
+            if forced_calls:
+                pending_tool_calls = forced_calls
+                updated_trace.append(
+                    {
+                        "type": "thought",
+                        "step": step_index,
+                        "content": "TTFT 覆盖未完成，优先执行 GPU 进程与外部负载取证。",
+                        "action": "tool_call",
+                        "tool_name": pending_tool_calls[0]["name"],
+                        "tool_params": pending_tool_calls[0].get("args", {}),
+                        "confidence": None,
+                        "meta": {
+                            "ttft_coverage_met": False,
+                            "coverage_missing": coverage_missing,
+                        },
+                    }
+                )
+
     if pending_tool_calls:
         updated_trace.append(
             {
@@ -883,33 +948,41 @@ async def reason_node(
                 )
 
     # ── TTFT forced external node probe (fail-safe) ──
-    # 当 TTFT 诊断在服务节点未发现可疑进程，且尚未探测外部压测源节点时，
-    # 注入合成的 process.find 调用，路由回 act_node 继续诊断。
-    if (
-        remediation_plan is None
-        and _is_ttft_alert_state(state)
-        and not evidence_signals.get("ttft_suspect_process_present")
-        and not state.get("_ttft_external_probe_injected")
-    ):
+    # 只要 TTFT 最小取证覆盖未满足（尤其 external process.find 缺失），
+    # 即注入 process.find 并继续诊断，不依赖 remediation_plan 是否已生成。
+    if _is_ttft_alert_state(state) and not state.get("_ttft_external_probe_injected"):
+        _tool_runs = list(state.get("tool_runs", []) or [])
+        coverage_met, coverage_missing = _evaluate_ttft_min_coverage(
+            state=state,
+            tool_runs=_tool_runs,
+        )
         _ext_node = _get_ttft_external_node(state)
-        if _ext_node and not _has_probed_ttft_external_node(
-            list(state.get("tool_runs", []) or []), _ext_node
+        if (
+            not coverage_met
+            and "external_process_find" in coverage_missing
+            and _ext_node
+            and not _has_probed_ttft_external_node(_tool_runs, _ext_node)
         ):
             updated_trace.append(
                 {
                     "type": "thought",
                     "step": step_index,
                     "content": (
-                        f"TTFT 证据链缺口：服务节点未发现可疑负载进程，"
+                        f"TTFT 证据覆盖未完成（缺少 external process.find），"
                         f"强制探测外部压测源节点 {_ext_node}。"
                     ),
                     "action": "tool_call",
                     "confidence": None,
+                    "tool_params": {
+                        "ttft_coverage_met": False,
+                        "coverage_missing": coverage_missing,
+                        "force_canary_reason": "ttft_match",
+                    },
                 }
             )
             forced_call = {
                 "name": "process.find",
-                "args": {"pattern": "stress|benchmark|load_simulator|simulator"},
+                "args": {"pattern": TTFT_STRICT_PROCESS_FIND_PATTERN},
                 "id": f"ttft-forced-external-probe-{step_index}",
             }
             updated = {
@@ -1967,6 +2040,8 @@ def _summarize_process_find(data: Any) -> tuple[str, dict[str, Any] | None]:
     sample_pids: list[int] = []
     suspicious_processes: list[dict[str, Any]] = []
     seen_pid: set[int] = set()
+    filtered_count = 0
+    filtered_preview: list[str] = []
 
     for item in normalized_matches[:12]:
         if not isinstance(item, dict):
@@ -1985,7 +2060,11 @@ def _summarize_process_find(data: Any) -> tuple[str, dict[str, Any] | None]:
         if parsed_pid is not None and parsed_pid not in sample_pids:
             sample_pids.append(parsed_pid)
 
-        if not _is_ttft_suspect_load_process(f"{process} {command}".strip()):
+        merged_for_filter = f"{process} {command}".strip()
+        if not is_ttft_suspect_process(merged_for_filter):
+            filtered_count += 1
+            if len(filtered_preview) < 3:
+                filtered_preview.append(_truncate_prompt_note(merged_for_filter or process, max_chars=48))
             continue
         if parsed_pid is None:
             continue
@@ -2019,6 +2098,10 @@ def _summarize_process_find(data: Any) -> tuple[str, dict[str, Any] | None]:
         "sample_pids": sample_pids[:6],
         "suspicious_load_present": suspicious_present,
         "suspicious_load_processes": suspicious_processes[:6],
+        "suspicious_filtered_count": filtered_count,
+        "suspicious_filter_reason": "not_whitelisted_or_denied",
+        "suspicious_filter_preview": filtered_preview,
+        "suspect_source_tool": "process.find",
     }
 
 
@@ -2052,32 +2135,6 @@ def _parse_gpu_process_rows(text: str, *, max_rows: int = 32) -> list[dict[str, 
     return rows
 
 
-def _is_ttft_suspect_load_process(process_name: str) -> bool:
-    normalized = str(process_name or "").strip().lower()
-    if not normalized:
-        return False
-    suspicious_tokens = (
-        "stress",
-        "stress-ng",
-        "benchmark",
-        "bench",
-        "wrk",
-        "hey",
-        "ab ",
-        "apachebench",
-        "locust",
-        "load",
-        "simulator",
-        "simulate",
-        "mock",
-        "perf",
-        "iperf",
-        "fio",
-        "jmeter",
-    )
-    return any(token in normalized for token in suspicious_tokens)
-
-
 def _summarize_gpu_processes(data: Any) -> tuple[str, dict[str, Any] | None]:
     text = _extract_output_blob(data)
     rows = _parse_gpu_process_rows(text)
@@ -2097,7 +2154,7 @@ def _summarize_gpu_processes(data: Any) -> tuple[str, dict[str, Any] | None]:
     suspicious_rows = [
         item
         for item in sorted_rows
-        if _is_ttft_suspect_load_process(str(item.get("process_name", "")))
+        if is_ttft_suspect_process(str(item.get("process_name", "")))
     ]
     sample_names = [
         _truncate_prompt_note(str(item.get("process_name", "")), max_chars=48)
@@ -2993,7 +3050,7 @@ def _is_ttft_alert_state(state: SREAgentState) -> bool:
 
 def _is_force_canary_alert_name(alert_name: str) -> bool:
     normalized = str(alert_name or "").strip().lower()
-    return normalized == "aiservicettftp99high"
+    return "ttft" in normalized
 
 
 def _get_alert_name_from_state(state: SREAgentState) -> str:
@@ -3039,6 +3096,30 @@ def _has_probed_ttft_external_node(
             if data_node == external_node:
                 return True
     return False
+
+
+def _evaluate_ttft_min_coverage(
+    *,
+    state: SREAgentState,
+    tool_runs: list[dict[str, Any]],
+) -> tuple[bool, list[str]]:
+    """TTFT 最小取证覆盖：gpu.get_processes + 外部 process.find。"""
+    gpu_probe_done = _find_latest_successful_tool_run(
+        tool_runs,
+        tool_name="gpu.get_processes",
+    ) is not None
+    external_node = _get_ttft_external_node(state)
+    if external_node:
+        external_probe_done = _has_probed_ttft_external_node(tool_runs, external_node)
+    else:
+        external_probe_done = _count_tool_runs(tool_runs, "process.find") > 0
+
+    missing: list[str] = []
+    if not gpu_probe_done:
+        missing.append("gpu_processes")
+    if not external_probe_done:
+        missing.append("external_process_find")
+    return len(missing) == 0, missing
 
 
 def _find_ttft_external_probe_auth_error(
@@ -3229,7 +3310,7 @@ def _extract_evidence_signals(tool_runs: list[dict[str, Any]]) -> dict[str, Any]
                 pids = sample_pids if isinstance(sample_pids, list) else []
                 for idx, raw_name in enumerate(names[:6]):
                     name = str(raw_name or "").strip()
-                    if not name or not _is_ttft_suspect_load_process(name):
+                    if not name or not is_ttft_suspect_process(name):
                         continue
                     suspect_items.append(
                         {
@@ -3266,6 +3347,16 @@ def _extract_evidence_signals(tool_runs: list[dict[str, Any]]) -> dict[str, Any]
                 run_node = str(run_params.get("node", "") or "").strip()
             if not run_node and isinstance(fields.get("node"), str):
                 run_node = str(fields.get("node") or "").strip()
+            filtered_count = int(fields.get("suspicious_filtered_count") or 0)
+            if filtered_count > 0:
+                _llm_logger.info(
+                    "ttft suspect process filter applied: suspect_filter_reason=%s suspect_source_tool=%s filtered_count=%s node=%s preview=%s",
+                    str(fields.get("suspicious_filter_reason") or "not_whitelisted_or_denied"),
+                    "process.find",
+                    filtered_count,
+                    run_node or "unknown",
+                    _safe_jsonable(fields.get("suspicious_filter_preview")),
+                )
             key_suspects = fields.get("suspicious_load_processes")
             if isinstance(key_suspects, list):
                 for item in key_suspects[:8]:
@@ -3292,7 +3383,7 @@ def _extract_evidence_signals(tool_runs: list[dict[str, Any]]) -> dict[str, Any]
                         process = str(item.get("process", "") or "").strip()
                         command = str(item.get("command", "") or "").strip()
                         merged = f"{process} {command}".strip()
-                        if not _is_ttft_suspect_load_process(merged):
+                        if not is_ttft_suspect_process(merged):
                             continue
                         suspect_items.append(
                             {
@@ -3820,6 +3911,13 @@ async def act_node(
     )
     allowed_tool_names_for_turn = set(_select_bound_tool_names_for_turn(state) or [])
     is_ttft_alert = _is_ttft_alert_state(state)
+
+    def _ttft_coverage_state(
+        runs: list[dict[str, Any]],
+    ) -> tuple[bool, list[str]]:
+        if not is_ttft_alert:
+            return True, []
+        return _evaluate_ttft_min_coverage(state=state, tool_runs=runs)
     deduped_pending: list[dict[str, Any]] = []
     seen_pending_keys: set[str] = set()
     suppressed_in_round = 0
@@ -3907,7 +4005,9 @@ async def act_node(
                     error="",
                 )
                 serialized_source = "duplicate_suppressed"
-                force_final_turn = True
+                coverage_met, coverage_missing = _ttft_coverage_state(tool_runs)
+                if coverage_met:
+                    force_final_turn = True
                 suppressed_reasons.append(
                     {
                         "reason": "cross_round_duplicate",
@@ -3916,6 +4016,8 @@ async def act_node(
                         "fingerprint": _build_tool_call_fingerprint(latest_same_call),
                         "reused_from_step": reused_step,
                         "reused": True,
+                        "ttft_coverage_met": coverage_met,
+                        "coverage_missing": coverage_missing,
                     }
                 )
             elif is_ttft_alert and tool_name == "prometheus.query_instant":
@@ -3938,7 +4040,9 @@ async def act_node(
                 )
 
                 if family_prometheus_calls >= _TTFT_PROMETHEUS_FAMILY_BUDGET:
-                    force_final_turn = True
+                    coverage_met, coverage_missing = _ttft_coverage_state(tool_runs)
+                    if coverage_met:
+                        force_final_turn = True
                     if latest_family_success is not None:
                         result = ToolResult(
                             tool=tool_name,
@@ -3954,6 +4058,8 @@ async def act_node(
                                 "family_calls": family_prometheus_calls,
                                 "total_calls": total_prometheus_calls,
                                 "reused": True,
+                                "ttft_coverage_met": coverage_met,
+                                "coverage_missing": coverage_missing,
                             }
                         )
                     else:
@@ -3971,10 +4077,14 @@ async def act_node(
                                 "family_calls": family_prometheus_calls,
                                 "total_calls": total_prometheus_calls,
                                 "reused": False,
+                                "ttft_coverage_met": coverage_met,
+                                "coverage_missing": coverage_missing,
                             }
                         )
                 elif total_prometheus_calls >= _TTFT_PROMETHEUS_TOTAL_BUDGET:
-                    force_final_turn = True
+                    coverage_met, coverage_missing = _ttft_coverage_state(tool_runs)
+                    if coverage_met:
+                        force_final_turn = True
                     if latest_any_success is not None:
                         result = ToolResult(
                             tool=tool_name,
@@ -3990,6 +4100,8 @@ async def act_node(
                                 "family_calls": family_prometheus_calls,
                                 "total_calls": total_prometheus_calls,
                                 "reused": True,
+                                "ttft_coverage_met": coverage_met,
+                                "coverage_missing": coverage_missing,
                             }
                         )
                     else:
@@ -4007,6 +4119,8 @@ async def act_node(
                                 "family_calls": family_prometheus_calls,
                                 "total_calls": total_prometheus_calls,
                                 "reused": False,
+                                "ttft_coverage_met": coverage_met,
+                                "coverage_missing": coverage_missing,
                             }
                         )
                 else:
@@ -4077,13 +4191,17 @@ async def act_node(
                         loop_guard["triggered"] = True
                         loop_guard["trigger_step"] = serialized["step"]
                         loop_guard_triggered = True
-                    force_final_turn = True
+                    coverage_met, _ = _ttft_coverage_state(tool_runs)
+                    if coverage_met:
+                        force_final_turn = True
                 if int(loop_guard.get("family_repeat_count", 0) or 0) > int(loop_guard.get("family_threshold", 2) or 2):
                     if not bool(loop_guard.get("triggered", False)):
                         loop_guard["triggered"] = True
                         loop_guard["trigger_step"] = serialized["step"]
                         loop_guard_triggered = True
-                    force_final_turn = True
+                    coverage_met, _ = _ttft_coverage_state(tool_runs)
+                    if coverage_met:
+                        force_final_turn = True
         else:
             log_stream_lifecycle_event(
                 session_id=str(state.get("session_id", "unknown")),
@@ -4155,13 +4273,25 @@ async def act_node(
                         }
                     )
     updated_trace_items = [*state.get("trace_items", []), *observation_entries]
+    ttft_coverage_met, ttft_coverage_missing = _ttft_coverage_state(tool_runs)
+    if is_ttft_alert and not ttft_coverage_met:
+        force_final_turn = False
+
     if loop_guard_triggered:
         updated_trace_items.append(
             {
                 "type": "thought",
                 "step": state.get("step_count", 0) + 1,
-                "content": "已停止重复查询，进入总结阶段。",
-                "action": "conclude",
+                "content": (
+                    "已停止重复指标查询，切换下一工具继续取证。"
+                    if is_ttft_alert and not ttft_coverage_met
+                    else "已停止重复查询，进入总结阶段。"
+                ),
+                "action": (
+                    "tool_call"
+                    if is_ttft_alert and not ttft_coverage_met
+                    else "conclude"
+                ),
                 "confidence": None,
                 "tool_params": {
                     "kind": "loop_guard_triggered",
@@ -4171,6 +4301,8 @@ async def act_node(
                     "family_repeat_count": loop_guard.get("family_repeat_count"),
                     "family_threshold": loop_guard.get("family_threshold"),
                     "family_fingerprint": loop_guard.get("recent_family_fingerprint"),
+                    "ttft_coverage_met": ttft_coverage_met,
+                    "coverage_missing": ttft_coverage_missing if is_ttft_alert else [],
                 },
             }
         )
@@ -4179,12 +4311,22 @@ async def act_node(
             {
                 "type": "thought",
                 "step": state.get("step_count", 0) + 1,
-                "content": f"已停止 {suppressed_in_round} 次重复查询，进入总结阶段。",
-                "action": "conclude",
+                "content": (
+                    f"已停止 {suppressed_in_round} 次重复指标查询，切换下一工具继续取证。"
+                    if is_ttft_alert and not ttft_coverage_met
+                    else f"已停止 {suppressed_in_round} 次重复查询，进入总结阶段。"
+                ),
+                "action": (
+                    "tool_call"
+                    if is_ttft_alert and not ttft_coverage_met
+                    else "conclude"
+                ),
                 "confidence": None,
                 "tool_params": {
                     "kind": "duplicate_tool_suppressed",
                     "count": suppressed_in_round,
+                    "ttft_coverage_met": ttft_coverage_met,
+                    "coverage_missing": ttft_coverage_missing if is_ttft_alert else [],
                 },
             }
         )
@@ -4192,12 +4334,22 @@ async def act_node(
         reason = str(suppressed.get("reason", "budget_exceeded")).strip()
         reused = bool(suppressed.get("reused", False))
         if reason == "cross_round_duplicate":
+            suppressed_coverage_met = bool(suppressed.get("ttft_coverage_met", True))
+            suppressed_coverage_missing = suppressed.get("coverage_missing", [])
             updated_trace_items.append(
                 {
                     "type": "thought",
                     "step": state.get("step_count", 0) + 1,
-                    "content": "已停止重复查询，进入总结阶段。",
-                    "action": "conclude",
+                    "content": (
+                        "已停止重复指标查询，切换下一工具继续取证。"
+                        if is_ttft_alert and not suppressed_coverage_met
+                        else "已停止重复查询，进入总结阶段。"
+                    ),
+                    "action": (
+                        "tool_call"
+                        if is_ttft_alert and not suppressed_coverage_met
+                        else "conclude"
+                    ),
                     "confidence": None,
                     "tool_params": {
                         "kind": "duplicate_tool_suppressed",
@@ -4207,10 +4359,15 @@ async def act_node(
                         "dedupe_key": suppressed.get("dedupe_key"),
                         "reused_from_step": suppressed.get("reused_from_step"),
                         "reused": reused,
+                        "ttft_coverage_met": suppressed_coverage_met if is_ttft_alert else True,
+                        "coverage_missing": suppressed_coverage_missing if is_ttft_alert else [],
+                        "force_canary_reason": "ttft_match" if is_ttft_alert else None,
                     },
                 }
             )
             continue
+        suppressed_coverage_met = bool(suppressed.get("ttft_coverage_met", True))
+        suppressed_coverage_missing = suppressed.get("coverage_missing", [])
         updated_trace_items.append(
             {
                 "type": "thought",
@@ -4218,8 +4375,17 @@ async def act_node(
                 "content": (
                     "TTFT 路径下已抑制额外 Prometheus 查询，"
                     f"原因={reason}，复用缓存={reused}。"
+                    if not (is_ttft_alert and not suppressed_coverage_met)
+                    else (
+                        "TTFT 路径下已抑制重复 Prometheus 查询，"
+                        f"原因={reason}；覆盖未完成，切换下一工具继续取证。"
+                    )
                 ),
-                "action": "conclude",
+                "action": (
+                    "tool_call"
+                    if is_ttft_alert and not suppressed_coverage_met
+                    else "conclude"
+                ),
                 "confidence": None,
                 "tool_params": {
                     "kind": "prometheus_query_suppressed",
@@ -4228,6 +4394,9 @@ async def act_node(
                     "family_fingerprint": suppressed.get("family_fingerprint"),
                     "family_calls": suppressed.get("family_calls"),
                     "total_calls": suppressed.get("total_calls"),
+                    "ttft_coverage_met": suppressed_coverage_met if is_ttft_alert else True,
+                    "coverage_missing": suppressed_coverage_missing if is_ttft_alert else [],
+                    "force_canary_reason": "ttft_match" if is_ttft_alert else None,
                 },
             }
         )
@@ -4631,6 +4800,13 @@ def _clamp_confidence(value: Any, *, default: float) -> float:
     return max(0.0, min(1.0, numeric))
 
 
+_CANARY_ALLOWED_KEYS = frozenset({
+    "enabled", "target_percentage", "monitor_duration",
+    "success_criteria", "criteria_mode", "max_batches",
+    "auto_rollback_on_regression", "progressive",
+})
+
+
 def _normalize_canary_config(
     *,
     raw_canary: Any,
@@ -4671,7 +4847,7 @@ def _normalize_canary_config(
             targets.add(entity_str)
 
     if isinstance(raw_canary, dict):
-        canary = dict(raw_canary)
+        canary = {k: v for k, v in raw_canary.items() if k in _CANARY_ALLOWED_KEYS}
         canary.setdefault("enabled", True)
         canary.setdefault("progressive", True)
         if force_canary:
@@ -4849,7 +5025,7 @@ def _normalize_remediation_plan_payload(
             except Exception:  # noqa: BLE001
                 batch_total = 0
         _llm_logger.info(
-            "force canary normalization applied: session_id=%s force_canary=%s force_canary_reason=exact_alert_name canary_source=%s batch_total=%s",
+            "force canary normalization applied: session_id=%s force_canary=%s force_canary_reason=ttft_match canary_source=%s batch_total=%s",
             session_id,
             True,
             "provided" if raw_canary_provided else "forced_default",
@@ -4968,35 +5144,6 @@ def _collect_ttft_suspect_processes(raw_items: Any, *, max_items: int = 6) -> li
     return normalized
 
 
-def _extract_verification_pattern(process_name: str) -> str:
-    """从进程名/命令中提取适合 process.find 的验证模式。"""
-    _verification_tokens = (
-        "load_simulator",
-        "stress-ng",
-        "stress",
-        "benchmark",
-        "simulator",
-        "locust",
-        "jmeter",
-        "hey",
-        "apachebench",
-        "wrk",
-        "iperf",
-        "fio",
-    )
-    lowered = str(process_name or "").lower()
-    for token in _verification_tokens:
-        if token in lowered:
-            return token
-    # Fallback: first meaningful word of the command
-    parts = str(process_name or "").strip().split()
-    for part in parts:
-        clean = part.strip("-_")
-        if clean and len(clean) >= 3:
-            return clean
-    return "unknown_process"
-
-
 def _build_ttft_kill_process_plan_candidate(
     *,
     diagnosis: DiagnosisResult,
@@ -5013,6 +5160,7 @@ def _build_ttft_kill_process_plan_candidate(
     default_node = _resolve_ttft_target_node(tool_runs=tool_runs, variables=variables)
 
     steps: list[dict[str, Any]] = []
+    filtered_targets = 0
     for index, suspect in enumerate(suspect_processes, start=1):
         step_node = str(suspect.get("node", "") or "").strip() or default_node
         if not step_node:
@@ -5036,7 +5184,18 @@ def _build_ttft_kill_process_plan_candidate(
         else:
             continue
         step_params["entity_id"] = f"proc:{target_token}"
-        verification_pattern = _extract_verification_pattern(process_name or target_token)
+        verification_pattern = extract_ttft_verification_pattern(process_name or target_token)
+        if not verification_pattern:
+            filtered_targets += 1
+            _llm_logger.info(
+                "ttft suspect target filtered in plan build: suspect_filter_reason=%s suspect_source_tool=%s pid=%s process=%s node=%s",
+                "verification_pattern_not_whitelisted",
+                "ttft_suspect_processes",
+                pid,
+                process_name,
+                step_node,
+            )
+            continue
         steps.append(
             {
                 "step_id": index,
@@ -5054,6 +5213,12 @@ def _build_ttft_kill_process_plan_candidate(
             }
         )
     if not steps:
+        if filtered_targets > 0:
+            _llm_logger.info(
+                "ttft auto kill plan skipped: all suspect targets filtered; filtered_count=%s session_id=%s",
+                filtered_targets,
+                session_id,
+            )
         return None
 
     step_count = len(steps)

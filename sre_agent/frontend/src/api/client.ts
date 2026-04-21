@@ -419,7 +419,7 @@ function mapSummaryToDiagnosisSummary(item: SessionSummary): DiagnosisSessionSum
     outcome: item.outcome ?? null,
     triage_priority: null,
     root_cause: null,
-    affected_services: [],
+    affected_services: Array.isArray(item.affected_services) ? item.affected_services : [],
   };
 }
 
@@ -1151,6 +1151,9 @@ export const apiClient = {
       return {
         session_id: resolved,
         plan: currentPlan,
+        affected_services: Array.isArray(session.diagnosis_result?.affected_services)
+          ? session.diagnosis_result.affected_services
+          : [],
         plan_version: planVersion,
         plan_history: revisedEvents.map((event, index) => ({
           version: Number(event.data?.["plan_version"] ?? index + 2),
@@ -1188,6 +1191,7 @@ export const apiClient = {
           confidence: loop.winning_candidate?.confidence ?? 0,
           priority: "P2" as const,
         },
+        affected_services: [],
         progress: {
           status: loop.outcome,
           completed_steps: loop.attempts.length,

@@ -11,6 +11,7 @@ from langchain_core.messages import AIMessage
 
 import sre_agent.agent.graph as graph_module
 import sre_agent.agent.nodes as nodes_module
+from sre_agent.ttft_process_policy import is_ttft_suspect_process
 from sre_agent.agent import run_diagnosis, run_diagnosis_stream
 from sre_agent.agent.prompts import build_system_prompt
 from sre_agent.models.diagnosis import DiagnosisResult, ThinkingTrace
@@ -1663,6 +1664,7 @@ tags:
             reuse_runs = [item for item in prom_runs if "reuse" in str(item.get("source", ""))]
             self.assertLessEqual(len(real_exec_runs), 2)
             self.assertGreaterEqual(len(reuse_runs), 1)
+            self.assertFalse(result["force_final_turn"])
             trace_items = [item for item in result.get("trace_items", []) if isinstance(item, dict)]
             self.assertTrue(
                 any(
@@ -1852,6 +1854,43 @@ tags:
         self.assertEqual(len(suspects), 2)
         self.assertEqual(suspects[0]["node"], "10.11.4.13")
 
+    def test_extract_evidence_signals_filters_non_whitelisted_process_find_matches(self) -> None:
+        tool_runs: list[dict[str, Any]] = [
+            {
+                "tool": "process.find",
+                "success": True,
+                "params": {"pattern": "load", "node": "10.11.4.13"},
+                "key_fields": {
+                    "match_count": 2,
+                    "node": "10.11.4.13",
+                    "suspicious_load_processes": [],
+                },
+                "data": {
+                    "matches": [
+                        {
+                            "pid": 9783,
+                            "process": "prometheus-config-reloader",
+                            "command": "/bin/prometheus-config-reloader --reload-url=http://localhost:12345/-/reload",
+                        },
+                        {
+                            "pid": 13312,
+                            "process": "uvicorn",
+                            "command": "uvicorn app.gateway.app:app --reload",
+                        },
+                    ]
+                },
+            }
+        ]
+
+        signals = nodes_module._extract_evidence_signals(tool_runs)
+        self.assertFalse(signals["ttft_suspect_process_present"])
+        self.assertEqual(signals["ttft_suspect_processes"], [])
+
+    def test_ttft_strict_process_policy_rejects_reloader_and_backend(self) -> None:
+        self.assertFalse(is_ttft_suspect_process("/bin/prometheus-config-reloader --reload-url=..."))
+        self.assertFalse(is_ttft_suspect_process("uvicorn app.gateway.app:app --reload"))
+        self.assertTrue(is_ttft_suspect_process("python -m load_simulator run --only inference"))
+
     def test_has_probed_ttft_external_node_detects_existing_probe(self) -> None:
         tool_runs: list[dict[str, Any]] = [
             {
@@ -1875,6 +1914,41 @@ tags:
             },
         ]
         self.assertTrue(nodes_module._has_probed_ttft_external_node(tool_runs, "10.11.4.13"))
+
+    def test_evaluate_ttft_min_coverage_detects_missing_external_probe(self) -> None:
+        state: dict[str, Any] = {
+            "alert_snapshot": {
+                "alert_name": "AIServiceTTFTP99High",
+                "ttft_external_process_default_node": "10.11.4.13",
+            }
+        }
+        tool_runs: list[dict[str, Any]] = [
+            {"tool": "gpu.get_processes", "success": True, "params": {"node": "worker-03"}},
+        ]
+        met, missing = nodes_module._evaluate_ttft_min_coverage(state=state, tool_runs=tool_runs)
+        self.assertFalse(met)
+        self.assertIn("external_process_find", missing)
+        self.assertNotIn("gpu_processes", missing)
+
+    def test_evaluate_ttft_min_coverage_met_with_gpu_and_external_probe(self) -> None:
+        state: dict[str, Any] = {
+            "alert_snapshot": {
+                "alert_name": "AIServiceTTFTP99High",
+                "ttft_external_process_default_node": "10.11.4.13",
+            }
+        }
+        tool_runs: list[dict[str, Any]] = [
+            {"tool": "gpu.get_processes", "success": True, "params": {"node": "worker-03"}},
+            {
+                "tool": "process.find",
+                "success": False,
+                "params": {"node": "10.11.4.13", "pattern": "load_simulator"},
+                "error": "permission denied",
+            },
+        ]
+        met, missing = nodes_module._evaluate_ttft_min_coverage(state=state, tool_runs=tool_runs)
+        self.assertTrue(met)
+        self.assertEqual(missing, [])
 
     def test_find_ttft_external_probe_auth_error_detects_permission_denied(self) -> None:
         tool_runs: list[dict[str, Any]] = [
@@ -1994,12 +2068,13 @@ tags:
         }
         self.assertEqual(nodes_module._get_ttft_external_node(state), "")
 
-    def test_is_force_canary_alert_name_matches_exact_only(self) -> None:
+    def test_is_force_canary_alert_name_matches_ttft_case_insensitive(self) -> None:
         self.assertTrue(nodes_module._is_force_canary_alert_name("AIServiceTTFTP99High"))
-        self.assertFalse(nodes_module._is_force_canary_alert_name("AIServiceTTFT"))
-        self.assertFalse(nodes_module._is_force_canary_alert_name("OtherTTFTAlert"))
+        self.assertTrue(nodes_module._is_force_canary_alert_name("AIServiceTTFT"))
+        self.assertTrue(nodes_module._is_force_canary_alert_name("foo-ttft-bar"))
+        self.assertFalse(nodes_module._is_force_canary_alert_name("NetworkLatencyHigh"))
 
-    def test_normalize_remediation_plan_payload_force_canary_for_exact_alert(self) -> None:
+    def test_normalize_remediation_plan_payload_force_canary_for_ttft_alert(self) -> None:
         diagnosis = DiagnosisResult(
             root_cause="异常负载导致 TTFT 抬高",
             root_cause_layer="service",
@@ -2053,7 +2128,7 @@ tags:
         self.assertFalse(plan.canary.progressive)
         self.assertEqual(plan.canary.target_percentage, 1.0)
 
-    def test_normalize_remediation_plan_payload_does_not_force_canary_for_other_ttft_alert(self) -> None:
+    def test_normalize_remediation_plan_payload_force_canary_for_other_ttft_alert(self) -> None:
         diagnosis = DiagnosisResult(
             root_cause="异常负载导致 TTFT 抬高",
             root_cause_layer="service",
@@ -2096,6 +2171,60 @@ tags:
             tool_runs=[],
             variables={},
             alert_name="AIServiceTTFTP95High",
+        )
+
+        self.assertIsNotNone(plan)
+        assert plan is not None
+        self.assertIsNotNone(plan.canary)
+        assert plan.canary is not None
+        self.assertTrue(plan.canary.enabled)
+        self.assertFalse(plan.canary.progressive)
+        self.assertEqual(plan.canary.max_batches, 1)
+        self.assertEqual(plan.canary.target_percentage, 1.0)
+
+    def test_normalize_remediation_plan_payload_does_not_force_canary_for_non_ttft_alert(self) -> None:
+        diagnosis = DiagnosisResult(
+            root_cause="异常负载导致延迟抬高",
+            root_cause_layer="service",
+            root_cause_entities=["node:10.11.4.13"],
+            confidence=0.71,
+            hypotheses=[],
+            propagation_chain=[],
+            impact_summary="同节点多进程压测争用导致延迟上升",
+            affected_services=["qwen3-32b-fp8-202602261"],
+            recommended_fix=None,
+            triage_priority="P1",
+            ranked_candidates=[],
+            diagnosis_certainty="probable",
+        )
+        raw_plan = {
+            "plan_id": "plan-no-force-canary-non-ttft",
+            "root_cause": diagnosis.root_cause,
+            "description": "terminate suspicious process",
+            "steps": [
+                {
+                    "step_id": 1,
+                    "description": "kill process",
+                    "tool": "kill_process",
+                    "params": {"node": "10.11.4.13", "entity_id": "proc:473156", "signal": "TERM"},
+                    "verification": {"method": "wait", "wait_seconds": 10},
+                    "timeout": 60,
+                }
+            ],
+            "estimated_impact": diagnosis.impact_summary,
+            "confidence": diagnosis.confidence,
+            "priority": diagnosis.triage_priority,
+            "safety_level": "high",
+        }
+
+        plan = nodes_module._normalize_remediation_plan_payload(
+            raw_plan=raw_plan,
+            diagnosis=diagnosis,
+            session_id="sess-no-force-canary-non-ttft",
+            registry=build_default_registry(),
+            tool_runs=[],
+            variables={},
+            alert_name="GPUUtilizationHigh",
         )
 
         self.assertIsNotNone(plan)
