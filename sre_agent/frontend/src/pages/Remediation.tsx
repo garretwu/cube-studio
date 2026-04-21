@@ -169,16 +169,17 @@ function RemediationPage() {
     setRecordsLoading(true);
     setRecordsError(null);
     try {
-      const summaries = (await apiClient.getDiagnosisHistorySessions())
+      const historySessions: DiagnosisSessionSummary[] = await apiClient.getDiagnosisHistorySessions();
+      const summaries = historySessions
         .filter(isRemediationRelevant)
         .sort((left, right) => right.updated_at.localeCompare(left.updated_at));
       const detailResults = await Promise.allSettled(
-        summaries.map(async (summary) => ({
+        summaries.map(async (summary): Promise<RemediationRecord> => ({
           summary,
           overview: await apiClient.getRemediationOverview(summary.session_id),
         })),
       );
-      const nextRecords = summaries.map((summary, index) => {
+      const nextRecords: RemediationRecord[] = summaries.map((summary, index) => {
         const settled = detailResults[index];
         return settled?.status === "fulfilled" ? settled.value : { summary };
       });

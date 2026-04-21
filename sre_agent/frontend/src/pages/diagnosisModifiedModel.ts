@@ -21,6 +21,14 @@ export type DiagnosisModifiedTimelineItem =
     }
   | {
       id: string;
+      kind: "status_sync";
+      title: string;
+      content: string;
+      timestamp: string;
+      label?: string;
+    }
+  | {
+      id: string;
       kind: "thinking";
       title: string;
       content: string;
@@ -490,6 +498,20 @@ function buildPlan(session: DiagnosisSession | undefined): DiagnosisModifiedPlan
   };
 }
 
+function extractDiagnosisNextAction(result: DiagnosisSession["diagnosis_result"] | null | undefined) {
+  if (!result || typeof result !== "object") {
+    return undefined;
+  }
+
+  const raw = (result as Record<string, unknown>).next_action;
+  if (typeof raw !== "string") {
+    return undefined;
+  }
+
+  const normalized = raw.trim();
+  return normalized.length > 0 ? normalized : undefined;
+}
+
 export function buildDiagnosisModifiedLiveView(
   session: DiagnosisSession | undefined,
   messages: ChatMessage[],
@@ -497,22 +519,6 @@ export function buildDiagnosisModifiedLiveView(
   const timelineItems: TimelineSortItem[] = [];
   const traceEntries = session?.trace?.steps ?? [];
   const pendingTools: Array<Extract<DiagnosisModifiedTimelineItem, { kind: "tool" }>> = [];
-
-  const buildTraceNextAction = (entry: ThinkingStep) => {
-    if (entry.action_type === "tool_call" && entry.tool_name) {
-      const serviceHint =
-        typeof entry.tool_params?.service === "string" && entry.tool_params.service.trim().length > 0
-          ? ` for ${entry.tool_params.service}`
-          : "";
-      return `Next action: call ${entry.tool_name}${serviceHint} to validate this hypothesis.`;
-    }
-
-    if (entry.action_type === "conclude") {
-      return "Next action: synthesize the current evidence and provide the root-cause conclusion.";
-    }
-
-    return "Next action: continue gathering discriminative evidence to narrow the root cause.";
-  };
 
   for (let index = 0; index < traceEntries.length; index += 1) {
     const entry = traceEntries[index];
@@ -537,19 +543,6 @@ export function buildDiagnosisModifiedLiveView(
           timestamp: entry.timestamp,
           toolName: entry.tool_name,
           status: "completed",
-        },
-      });
-
-      timelineItems.push({
-        order: timelineItems.length,
-        timestamp: entry.timestamp,
-        item: {
-          id: `trace-next-action-${index + 1}-${entry.timestamp}`,
-          kind: "message",
-          role: "assistant",
-          content: buildTraceNextAction(entry),
-          timestamp: entry.timestamp,
-          label: "Next action",
         },
       });
 
@@ -653,6 +646,27 @@ export function buildDiagnosisModifiedLiveView(
       },
     });
   });
+
+  const diagnosisNextAction = extractDiagnosisNextAction(session?.diagnosis_result);
+  if (diagnosisNextAction) {
+    const fallbackTimestamp =
+      traceEntries[traceEntries.length - 1]?.timestamp ??
+      session?.alert.starts_at ??
+      new Date().toISOString();
+
+    timelineItems.push({
+      order: timelineItems.length,
+      timestamp: fallbackTimestamp,
+      item: {
+        id: `diagnosis-result-next-action-${fallbackTimestamp}`,
+        kind: "message",
+        role: "assistant",
+        content: diagnosisNextAction,
+        timestamp: fallbackTimestamp,
+        label: "Next action",
+      },
+    });
+  }
 
   const sortedTimeline = [...timelineItems]
     .sort((left, right) => {
@@ -874,6 +888,46 @@ export function buildDiagnosisModifiedDemoScenario(prompt: string): DiagnosisMod
     };
   });
 
+  const seededCandidates: DiagnosisModifiedCandidateView[] = initialCandidates.map((candidate) => ({
+    ...candidate,
+    evidenceFor: candidate.evidenceFor.slice(0, 1),
+    evidenceAgainst: [],
+    evidenceSummary: candidate.evidenceFor[0] ?? candidate.evidenceSummary ?? candidate.summary,
+  }));
+
+  const midCandidates: DiagnosisModifiedCandidateView[] = candidates.map((candidate, index) => {
+    const seededCandidate = seededCandidates[index];
+    const seededConfidence = seededCandidate?.confidence ?? candidate.confidence;
+    const normalizedSeededConfidence = Number.isFinite(seededConfidence)
+      ? Math.max(0, Math.min(1, seededConfidence))
+      : 0;
+    const normalizedConfidence = Number.isFinite(candidate.confidence)
+      ? Math.max(0, Math.min(1, candidate.confidence))
+      : 0;
+    const midConfidence = Math.min(
+      0.88,
+      normalizedSeededConfidence + Math.max(0.08, (normalizedConfidence - normalizedSeededConfidence) * 0.58),
+    );
+    const evidenceForCount = candidate.isPrimary ? Math.min(2, candidate.evidenceFor.length) : Math.min(1, candidate.evidenceFor.length);
+    const evidenceAgainstCount = candidate.isPrimary ? 0 : Math.min(1, candidate.evidenceAgainst.length);
+
+    return {
+      ...candidate,
+      confidence: midConfidence,
+      confidenceLabel: `${Math.round(midConfidence * 100)}%`,
+      isPrimary: index === 0,
+      statusLabel: index === 0 ? "当前候选" : `候选 ${candidate.rank ?? index + 1}`,
+      statusTone: index === 0 ? "accent" : "neutral",
+      evidenceFor: candidate.evidenceFor.slice(0, evidenceForCount),
+      evidenceAgainst: candidate.evidenceAgainst.slice(0, evidenceAgainstCount),
+      evidenceSummary:
+        candidate.evidenceFor.slice(0, evidenceForCount).at(-1) ??
+        candidate.evidenceAgainst.slice(0, evidenceAgainstCount).at(-1) ??
+        candidate.evidenceSummary ??
+        candidate.summary,
+    };
+  });
+
   const plan =
     buildPlan(demoSession) ??
     ({
@@ -969,7 +1023,7 @@ export function buildDiagnosisModifiedDemoScenario(prompt: string): DiagnosisMod
       {
         delayMs: 1520,
         type: "update_candidates",
-        candidates: initialCandidates,
+        candidates: seededCandidates,
       },
       {
         delayMs: 1660,
@@ -1030,7 +1084,7 @@ export function buildDiagnosisModifiedDemoScenario(prompt: string): DiagnosisMod
       {
         delayMs: 2320,
         type: "update_candidates",
-        candidates,
+        candidates: midCandidates,
       },
       {
         delayMs: 2460,
@@ -1064,6 +1118,11 @@ export function buildDiagnosisModifiedDemoScenario(prompt: string): DiagnosisMod
           deployed_at: "12m ago",
           change_note: "adjust inference concurrency",
         },
+      },
+      {
+        delayMs: 3320,
+        type: "update_candidates",
+        candidates,
       },
       {
         delayMs: 3620,
@@ -1108,8 +1167,3 @@ export function buildDiagnosisModifiedDemoScenario(prompt: string): DiagnosisMod
     session: demoSession,
   };
 }
-
-
-
-
-

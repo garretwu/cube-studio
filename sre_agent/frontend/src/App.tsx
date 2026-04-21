@@ -21,7 +21,6 @@ import {
 import { AppShell } from "./components/ui";
 import { useAlertsRealtimeSync } from "./hooks/useAlertsRealtimeSync";
 import HistoryPage from "./pages/History";
-import DiagnosisPage from "./pages/Diagnosis";
 import DiagnosisModifiedPage from "./pages/DiagnosisModified";
 import KnowledgeDetailPage from "./pages/KnowledgeDetail";
 import RemediationPage from "./pages/Remediation";
@@ -55,10 +54,11 @@ const rootPageChrome: Record<
     subtitle: "在统一工作台中追踪诊断推理、根因结论与修复流程。",
     contentSpacing: "compact",
     contentMode: "workspace",
+    contentWidthMode: "full",
   },
   "/diagnosis-modified": {
-    title: "问题诊断（修改）",
-    subtitle: "以左侧时间线、右侧报告的方式持续呈现诊断与修复状态。",
+    title: "问题诊断",
+    subtitle: "在统一工作台中追踪诊断推理、根因结论与修复流程。",
     contentSpacing: "compact",
     contentMode: "workspace",
     contentWidthMode: "full",
@@ -144,12 +144,13 @@ function resolvePageChrome(pathname: string): {
       title: "问题诊断",
       contentSpacing: "compact",
       contentMode: "workspace",
+      contentWidthMode: "full",
     };
   }
 
   if (pathname.startsWith("/diagnosis-modified/")) {
     return {
-      title: "问题诊断（修改）",
+      title: "问题诊断",
       contentSpacing: "compact",
       contentMode: "workspace",
       contentWidthMode: "full",
@@ -185,12 +186,12 @@ function AppRoutes() {
     <Routes>
       <Route path="/" element={<Navigate to="/topology" replace />} />
       <Route path="/history" element={<HistoryPage />} />
-      <Route path="/history/:sessionId" element={<DiagnosisPage />} />
-      <Route path="/diagnosis" element={<DiagnosisPage />} />
-      <Route path="/diagnosis/:sessionId" element={<DiagnosisPage />} />
-      <Route path="/remediation/:sessionId" element={<RemediationPage />} />
+      <Route path="/history/:sessionId" element={<DiagnosisModifiedPage />} />
+      <Route path="/diagnosis" element={<DiagnosisModifiedPage />} />
+      <Route path="/diagnosis/:sessionId" element={<DiagnosisModifiedPage />} />
       <Route path="/diagnosis-modified" element={<DiagnosisModifiedPage />} />
       <Route path="/diagnosis-modified/:sessionId" element={<DiagnosisModifiedPage />} />
+      <Route path="/remediation/:sessionId" element={<RemediationPage />} />
       <Route path="/skills/:skillId" element={<SkillDetailPage />} />
       <Route
         path="/knowledge/:knowledgeBaseId"
@@ -204,7 +205,7 @@ function AppRoutes() {
         element={<Navigate to="/alerts" replace />}
       />
       {appRoutes
-        .filter((route) => !["diagnosis", "diagnosisModified"].includes(route.key))
+        .filter((route) => route.key !== "diagnosis")
         .map((route) => (
           <Route key={route.key} path={route.path} element={route.element} />
         ))}

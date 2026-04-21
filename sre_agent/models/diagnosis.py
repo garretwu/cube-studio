@@ -243,6 +243,7 @@ class DiagnosisResult(StrictFrozenModel):
     root_cause_layer: RootCauseLayer
     root_cause_entities: list[str] = Field(default_factory=list)
     confidence: float = Field(ge=0.0, le=1.0)
+    next_action: str | None = None
     hypotheses: list[Hypothesis] = Field(default_factory=list)
     propagation_chain: list[PropagationStep] = Field(default_factory=list)
     impact_summary: str = Field(min_length=1)

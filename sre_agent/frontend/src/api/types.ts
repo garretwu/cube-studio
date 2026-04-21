@@ -246,6 +246,7 @@ export type DiagnosisResult = {
   root_cause_layer: string;
   root_cause_entities: string[];
   confidence: number;
+  next_action?: string | null;
   hypotheses: Hypothesis[];
   propagation_chain?: PropagationStep[];
   impact_summary: string;

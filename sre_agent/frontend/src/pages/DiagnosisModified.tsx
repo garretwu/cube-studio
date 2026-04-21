@@ -31,12 +31,19 @@ type ApprovalPlanResolution = {
 };
 
 const DEMO_TEXT_SPEED_MS = 40;
-const DEMO_THINKING_COLLAPSE_DELAY_MS = 800;
 const DEMO_EVENT_SLOWDOWN = 4.5;
 const DEMO_MIN_TOOL_LOADING_DWELL_MS = 3500;
 const TOOL_RESULT_TIMEOUT_MS = 15_000;
 const STREAM_COMPLETION_BUFFER_MS = 640;
 const DEMO_DEFAULT_PROMPT = "Analyze auth-svc latency and error-rate spike in the past hour";
+const THINKING_PREVIEW_CHAR_LIMIT = 200;
+const DEMO_POST_APPROVAL_AUTO_FLOW = [
+  { delayMs: 280, stage: "approval_recorded" as const },
+  { delayMs: 1200, stage: "canary_progress" as const },
+  { delayMs: 2200, stage: "metric_feedback" as const },
+  { delayMs: 3200, stage: "alert_recovery" as const },
+  { delayMs: 4000, stage: "session_closed" as const },
+] as const;
 const FLOW_REMEDIATION_ENTRY_STATUSES = new Set([
   "approval_required",
   "awaiting_approval",
@@ -81,6 +88,73 @@ function getRemediationEntryLabel(status?: string) {
 
 function openRemediationPage(sessionId: string) {
   window.open(buildRemediationPath(sessionId), "_blank", "noopener,noreferrer");
+}
+
+function createDemoAuditRecord({
+  details,
+  eventKind,
+  sessionId,
+  statusTone,
+  summary,
+  timestamp,
+}: {
+  details: string[];
+  eventKind: DiagnosisLocalAuditRecord["eventKind"];
+  sessionId: string;
+  statusTone: DiagnosisLocalAuditRecord["statusTone"];
+  summary: string;
+  timestamp: string;
+}) {
+  return {
+    id: `demo-${eventKind}-${timestamp}`,
+    sessionId,
+    eventKind,
+    source: "local_audit" as const,
+    dedupeKey: `demo-${eventKind}-${sessionId}`,
+    timestamp,
+    summary,
+    details,
+    statusTone,
+  } satisfies DiagnosisLocalAuditRecord;
+}
+
+function createDemoSessionEvent({
+  data,
+  sessionId,
+  timestamp,
+  type,
+}: {
+  data: Record<string, unknown>;
+  sessionId: string;
+  timestamp: string;
+  type: SessionEvent["type"];
+}) {
+  return {
+    schema_version: "1",
+    type,
+    session_id: sessionId,
+    timestamp,
+    data,
+  } satisfies SessionEvent;
+}
+
+function createDemoTimelineSyncMessage({
+  content,
+  stage,
+  timestamp,
+}: {
+  content: string;
+  stage: string;
+  timestamp: string;
+}) {
+  return {
+    id: `demo-remediation-sync-${stage}-${timestamp}`,
+    kind: "status_sync" as const,
+    title: "修复状态同步",
+    label: "修复状态同步",
+    content,
+    timestamp,
+  };
 }
 
 function RemediationJumpButton({
@@ -136,8 +210,8 @@ function estimateThoughtDurationSecFromContent(content: string) {
 }
 
 function formatThoughtDurationLabel(durationSec?: number) {
-  const safeDuration = Math.max(1, Math.round(durationSec ?? 1));
-  return `Thought for ${safeDuration} second${safeDuration === 1 ? "" : "s"}`;
+  void durationSec;
+  return "Thought completed";
 }
 
 function splitThinkingAndConclusion(content: string): { thinking: string | null; conclusion: string } {
@@ -152,6 +226,18 @@ function splitThinkingAndConclusion(content: string): { thinking: string | null;
     thinking: thinking.length > 0 ? thinking : null,
     conclusion,
   };
+}
+
+function isDemoNarrativeCard(item: DiagnosisModifiedTimelineItem) {
+  if (item.kind !== "message" || item.role !== "assistant") {
+    return false;
+  }
+
+  return (
+    item.id.startsWith("demo-assistant-context-summary-") ||
+    item.id.startsWith("demo-assistant-next-step-") ||
+    item.id.startsWith("demo-assistant-final-")
+  );
 }
 
 
@@ -223,13 +309,14 @@ function ToneBadge({ children, tone = "neutral" }: { children: ReactNode; tone?:
   return <span className={cn("diagnosis-modified-badge", `diagnosis-modified-badge--${tone}`)}>{children}</span>;
 }
 
-type TraceStepKind = "thought" | "tool_call" | "observation" | "decision" | "action_generated";
+type TraceStepKind = "thought" | "tool_call" | "observation" | "decision" | "status_sync" | "action_generated";
 
 const TRACE_STEP_META: Record<TraceStepKind, { label: string; glyph: string }> = {
   thought: { label: "Thought / 推理", glyph: "T" },
   tool_call: { label: "Tool Call / 工具调用", glyph: "C" },
   observation: { label: "Observation / 观察结果", glyph: "O" },
   decision: { label: "Decision / 形成判断", glyph: "D" },
+  status_sync: { label: "Status Sync / 状态同步", glyph: "S" },
   action_generated: { label: "Action Generated / 生成修复动作", glyph: "A" },
 };
 
@@ -280,7 +367,6 @@ function TraceStepFrame({
       <article className="diagnosis-modified-trace-step__body">
         <header className="diagnosis-modified-trace-step__header">
           <div>
-            <span className="diagnosis-modified-trace-step__type">{typeMeta.label}</span>
             <h3 className="diagnosis-modified-trace-step__title">{title}</h3>
           </div>
           {meta ? <span className="diagnosis-modified-trace-step__meta">{meta}</span> : null}
@@ -349,6 +435,32 @@ function MessageRow({
     </TraceStepFrame>
   );
 }
+
+function StatusSyncRow({
+  item,
+}: {
+  item: Extract<DiagnosisModifiedTimelineItem, { kind: "status_sync" }>;
+}) {
+  const hoverTime = formatTimestamp(item.timestamp);
+
+  return (
+    <TraceStepFrame
+      meta={hoverTime}
+      title={item.title}
+      type="status_sync"
+    >
+      <div className="diagnosis-modified-message-row diagnosis-modified-message-row--status-sync">
+        <div className="diagnosis-modified-message-row__body">
+          <span className="diagnosis-modified-message-row__hover-time" aria-hidden="true">
+            {hoverTime}
+          </span>
+          <p className="diagnosis-modified-message-row__text">{item.content}</p>
+        </div>
+      </div>
+    </TraceStepFrame>
+  );
+}
+
 function ThinkingBlock({
   item,
   animate,
@@ -360,18 +472,42 @@ function ThinkingBlock({
 }) {
   const isThinking = item.status === "thinking";
   const [isExpanded, setIsExpanded] = useState(true);
+  const canToggleCompletedContent = !isThinking && item.content.length > THINKING_PREVIEW_CHAR_LIMIT;
 
   useEffect(() => {
     if (isThinking) {
       setIsExpanded(true);
       return;
     }
+    setIsExpanded(item.content.length <= THINKING_PREVIEW_CHAR_LIMIT);
+  }, [isThinking, item.content, item.id]);
 
-    const timer = window.setTimeout(() => setIsExpanded(false), DEMO_THINKING_COLLAPSE_DELAY_MS);
-    return () => window.clearTimeout(timer);
-  }, [isThinking, item.id]);
+  const durationLabel = formatThoughtDurationLabel(item.thoughtDurationSec);
+  const displayContent =
+    !isThinking && canToggleCompletedContent && !isExpanded
+      ? `${item.content.slice(0, THINKING_PREVIEW_CHAR_LIMIT)}...`
+      : item.content;
 
-  const durationLabel = formatThoughtDurationLabel(item.thoughtDurationSec ?? estimateThoughtDurationSecFromContent(item.content));
+  if (!isThinking && !canToggleCompletedContent) {
+    return (
+      <TraceStepFrame
+        meta={durationLabel}
+        title="推理完成"
+        type="thought"
+      >
+        <div className="diagnosis-modified-process-row">
+          <div className="diagnosis-modified-process-row__body">
+            <div className="diagnosis-modified-thinking__content">
+              {item.toolName ? <p className="diagnosis-modified-thinking__tool">{item.toolName}</p> : null}
+              <p>
+                <StreamingText text={displayContent} />
+              </p>
+            </div>
+          </div>
+        </div>
+      </TraceStepFrame>
+    );
+  }
 
   return (
     <TraceStepFrame
@@ -382,9 +518,9 @@ function ThinkingBlock({
       <div className="diagnosis-modified-process-row">
         <div className="diagnosis-modified-process-row__body">
         <button
-          className={cn("diagnosis-modified-thinking__toggle", !isThinking && "diagnosis-modified-thinking__toggle--interactive")}
+          className={cn("diagnosis-modified-thinking__toggle", canToggleCompletedContent && "diagnosis-modified-thinking__toggle--interactive")}
           onClick={() => {
-            if (!isThinking) {
+            if (canToggleCompletedContent) {
               setIsExpanded((current) => !current);
             }
           }}
@@ -400,7 +536,13 @@ function ThinkingBlock({
               </span>
             ) : null}
           <span className={cn("diagnosis-modified-thinking__label", isThinking && "diagnosis-modified-thinking__label--thinking")}>
-              {isThinking ? item.title || "Thinking..." : "查看推理详情"}
+              {isThinking
+                ? item.title || "Thinking..."
+                : canToggleCompletedContent
+                  ? isExpanded
+                    ? "收起推理"
+                    : "展开全部推理"
+                  : "推理详情"}
             </span>
           </span>
           {item.toolName ? <span className="diagnosis-modified-thinking__tool">{item.toolName}</span> : null}
@@ -410,7 +552,7 @@ function ThinkingBlock({
           <div className="diagnosis-modified-thinking__panel">
             <div className="diagnosis-modified-thinking__content">
               <p>
-                <StreamingText animate={animate && isThinking} onComplete={animate && isThinking ? onStreamComplete : undefined} text={item.content} />
+                <StreamingText animate={animate && isThinking} onComplete={animate && isThinking ? onStreamComplete : undefined} text={displayContent} />
               </p>
             </div>
           </div>
@@ -536,7 +678,6 @@ function ActionGeneratedStep({
   return (
     <TraceStepFrame
       className="diagnosis-modified-trace-step--remediation"
-      meta={getRemediationEntryLabel(status)}
       summary={getActionGeneratedSummary(status)}
       testId="diagnosis-modified-action-generated-step"
       title="已生成修复建议"
@@ -884,9 +1025,191 @@ function DiagnosisModifiedPage() {
   }, [currentPlanVersion, session?.session_id]);
 
   const handleApproveDemoPlan = useCallback(() => {
+    if (!demoSession?.session_id) {
+      return;
+    }
+
+    const sessionId = demoSession.session_id;
+    const approvedAt = Date.now();
+
     setDemoApprovalState("approved");
-    setDemoActionFeedback("\u5df2\u5728\u8bca\u65ad\u9875\u5185\u786e\u8ba4\u8be5\u4fee\u590d\u65b9\u6848\uff0c\u53ef\u7ee7\u7eed\u4ece\u6d41\u7a0b\u6216\u53f3\u4fa7\u67e5\u770b\u4fee\u590d\u8fdb\u5c55\u3002");
-  }, []);
+    setDemoActionFeedback("\u5df2\u5728\u8bca\u65ad\u9875\u5185\u786e\u8ba4\u8be5\u4fee\u590d\u65b9\u6848\uff0c\u7cfb\u7edf\u5c06\u81ea\u52a8\u8fdb\u5165\u540e\u7eed\u6267\u884c\u4e0e\u9a8c\u8bc1\u94fe\u8def\u3002");
+    setDemoSession((current) =>
+      current
+        ? {
+            ...current,
+            status: "approved",
+          }
+        : current,
+    );
+
+    DEMO_POST_APPROVAL_AUTO_FLOW.forEach(({ delayMs, stage }) => {
+      const timerId = window.setTimeout(() => {
+        const timestamp = new Date(approvedAt + delayMs).toISOString();
+
+        if (stage === "approval_recorded") {
+          setDemoTimeline((current) => [
+            ...current,
+            createDemoTimelineSyncMessage({
+              stage,
+              timestamp,
+              content: "审批已通过，系统已记录修复执行指令。",
+            }),
+          ]);
+          setDemoLocalAuditRecords((current) => [
+            ...current,
+            createDemoAuditRecord({
+              eventKind: "approval_result",
+              sessionId,
+              statusTone: "success",
+              summary: "[system] approval recorded",
+              details: ["Execute 10% canary first, then observe Redis timeout recovery."],
+              timestamp,
+            }),
+          ]);
+          return;
+        }
+
+        if (stage === "canary_progress") {
+          setDemoTimeline((current) => [
+            ...current,
+            createDemoTimelineSyncMessage({
+              stage,
+              timestamp,
+              content: "修复执行已启动：10% 灰度验证进行中。",
+            }),
+          ]);
+          setDemoSession((current) =>
+            current
+              ? {
+                  ...current,
+                  status: "validating",
+                }
+              : current,
+          );
+          setDemoActionFeedback("\u5df2\u5b8c\u6210\u5ba1\u6279\uff0c\u6b63\u5728\u6309 10% \u7070\u5ea6\u7b56\u7565\u6267\u884c\u9996\u8f6e\u9a8c\u8bc1\u3002");
+          setDemoEvents((current) => [
+            ...current,
+            createDemoSessionEvent({
+              sessionId,
+              timestamp,
+              type: "remediation_progress",
+              data: {
+                stage: "canary_progress",
+                progress: 10,
+                progress_label: "Canary 10% in progress",
+                message: "Guarded canary execution has started for the approved plan.",
+              },
+            }),
+          ]);
+          return;
+        }
+
+        if (stage === "metric_feedback") {
+          setDemoTimeline((current) => [
+            ...current,
+            createDemoTimelineSyncMessage({
+              stage,
+              timestamp,
+              content: "指标反馈：延迟与错误率回落到受控范围。",
+            }),
+          ]);
+          setDemoSession((current) =>
+            current
+              ? {
+                  ...current,
+                  status: "validating",
+                }
+              : current,
+          );
+          setDemoActionFeedback("\u7070\u5ea6\u5df2\u8fdb\u5165\u6307\u6807\u89c2\u5bdf\u9636\u6bb5\uff0c\u6b63\u5728\u7b49\u5f85\u7a33\u5b9a\u6027\u786e\u8ba4\u3002");
+          setDemoEvents((current) => [
+            ...current,
+            createDemoSessionEvent({
+              sessionId,
+              timestamp,
+              type: "observation_result",
+              data: {
+                stage: "observation_result",
+                metrics_improved: true,
+                alert_cleared: false,
+                progress_label: "p95 latency and error rate returned to guarded thresholds.",
+                message: "Key latency and error metrics are trending back to baseline.",
+              },
+            }),
+          ]);
+          return;
+        }
+
+        if (stage === "alert_recovery") {
+          setDemoTimeline((current) => [
+            ...current,
+            createDemoTimelineSyncMessage({
+              stage,
+              timestamp,
+              content: "告警恢复：主告警已恢复，准备关闭诊断会话。",
+            }),
+          ]);
+          setDemoSession((current) =>
+            current
+              ? {
+                  ...current,
+                  status: "resolved",
+                  outcome: "resolved",
+                }
+              : current,
+          );
+          setDemoActionFeedback("\u5173\u952e\u544a\u8b66\u5df2\u6062\u590d\uff0c\u7cfb\u7edf\u6b63\u5728\u5b8c\u6210\u6700\u540e\u7684 session \u6536\u53e3\u3002");
+          setDemoEvents((current) => [
+            ...current,
+            createDemoSessionEvent({
+              sessionId,
+              timestamp,
+              type: "remediation_progress",
+              data: {
+                stage: "alert_recovered",
+                message: "Primary alert recovered after the guarded canary.",
+              },
+            }),
+          ]);
+          return;
+        }
+
+        setDemoTimeline((current) => [
+          ...current,
+          createDemoTimelineSyncMessage({
+            stage,
+            timestamp,
+            content: "会话关闭：诊断与修复验证已完成收口。",
+          }),
+        ]);
+        setDemoSession((current) =>
+          current
+            ? {
+                ...current,
+                status: "closed",
+                outcome: "resolved",
+              }
+            : current,
+        );
+        setDemoActionFeedback("\u4fee\u590d\u9a8c\u8bc1\u5df2\u5b8c\u6210\uff0csession \u5df2\u5173\u95ed\uff0c\u53ef\u5728\u53f3\u4fa7\u67e5\u770b\u5df2\u538b\u7f29\u7684\u4fee\u590d\u4e8b\u4ef6\u6458\u8981\u3002");
+        setDemoEvents((current) => [
+          ...current,
+          createDemoSessionEvent({
+            sessionId,
+            timestamp,
+            type: "remediation_progress",
+            data: {
+              stage: "session_closed",
+              message: "Session closed after verification.",
+            },
+          }),
+        ]);
+      }, delayMs);
+
+      demoTimerRef.current.push(timerId);
+    });
+  }, [demoSession]);
 
   const handleApproveLivePlan = useCallback(async () => {
     await approvePlan({ approved: true });
@@ -1598,6 +1921,24 @@ function DiagnosisModifiedPage() {
       ),
     [activeTimeline],
   );
+  const visibleTraceItems = useMemo(
+    () =>
+      hasLiveSession
+        ? activeTraceItems
+        : activeTraceItems.filter((item) => !isDemoNarrativeCard(item)),
+    [activeTraceItems, hasLiveSession],
+  );
+  const activeTraceItemsBeforeStatusSync = useMemo(
+    () => visibleTraceItems.filter((item) => item.kind !== "status_sync"),
+    [visibleTraceItems],
+  );
+  const activeStatusSyncItems = useMemo(
+    () =>
+      visibleTraceItems.filter(
+        (item): item is Extract<DiagnosisModifiedTimelineItem, { kind: "status_sync" }> => item.kind === "status_sync",
+      ),
+    [visibleTraceItems],
+  );
   const activeCandidates = hasLiveSession ? liveView.candidates : demoCandidates;
   const activeCandidateSnapshots = useMemo(() => {
     if (hasLiveSession) {
@@ -1681,7 +2022,7 @@ function DiagnosisModifiedPage() {
 
     const resolution: ApprovalPlanResolution | null = hasLiveSession
       ? liveApprovalResolution
-      : demoApprovalState === "approved"
+      : demoApprovalState === "approved" && normalizedStatus === "approved"
         ? {
             label: "\u5df2\u6279\u51c6",
             tone: "success" as const,
@@ -1757,13 +2098,6 @@ function DiagnosisModifiedPage() {
             <header className="diagnosis-modified-pane-header diagnosis-modified-pane-header--trace">
               <div>
                 <p>Thinking Trace</p>
-                <span
-                  className="diagnosis-modified-pane-header__sync-stage"
-                  data-stage-id={reportView.progress.activeStepId}
-                  data-testid="diagnosis-modified-trace-sync-stage"
-                >
-                  {getTraceSyncStageLabel(reportView.progress.activeStepId)}
-                </span>
                 <h2>诊断轨迹</h2>
               </div>
               <span>实时推理链路</span>
@@ -1788,7 +2122,7 @@ function DiagnosisModifiedPage() {
                 </div>
               ) : (
                 <ol className="diagnosis-modified-trace-list" data-testid="diagnosis-modified-trace-list">
-                  {activeTraceItems.map((item) => {
+                  {activeTraceItemsBeforeStatusSync.map((item) => {
                     if (item.kind === "message") {
                       const shouldAnimateAssistantMessage =
                         item.role === "assistant" && activeStreamingMessageId === item.id;
@@ -1831,6 +2165,10 @@ function DiagnosisModifiedPage() {
                   })}
 
                   {actionGeneratedStep}
+
+                  {activeStatusSyncItems.map((item) => (
+                    <StatusSyncRow item={item} key={item.id} />
+                  ))}
                 </ol>
               )}
 

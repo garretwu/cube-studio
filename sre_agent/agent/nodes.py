@@ -4712,6 +4712,11 @@ def _normalize_diagnosis_payload(payload: dict[str, Any]) -> dict[str, Any]:
     certainty = str(normalized.get("diagnosis_certainty", "")).strip().lower()
     if isinstance(confidence, (int, float)) and certainty == "confirmed" and float(confidence) < 0.85:
         normalized["diagnosis_certainty"] = "probable"
+    next_action = str(normalized.get("next_action") or "").strip()
+    if next_action:
+        normalized["next_action"] = next_action
+    else:
+        normalized.pop("next_action", None)
     normalized["hypotheses"] = _normalize_hypotheses_payload(normalized)
     return normalized
 

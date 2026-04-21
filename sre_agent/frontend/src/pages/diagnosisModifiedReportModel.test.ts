@@ -393,6 +393,73 @@ describe("buildDiagnosisModifiedReportView", () => {
     expect(view.remediation.steps).toHaveLength(2);
   });
 
+  it("keeps the full post-approval session feedback chain visible through closure", () => {
+    const session = createSession("closed");
+    const localAuditRecords: DiagnosisLocalAuditRecord[] = [
+      {
+        id: "audit-approval-chain",
+        sessionId: "sess-report-model",
+        eventKind: "approval_result",
+        source: "local_audit",
+        dedupeKey: "approval-chain-v1",
+        timestamp: "2026-04-08T10:03:00.000Z",
+        summary: "[system] approval recorded",
+        details: ["Execute 10% canary first, then observe Redis timeout recovery."],
+        statusTone: "success",
+      },
+    ];
+    const events: SessionEvent[] = [
+      {
+        schema_version: "1",
+        type: "observation_result",
+        session_id: "sess-report-model",
+        timestamp: "2026-04-08T10:04:00.000Z",
+        data: {
+          stage: "observation_result",
+          message: "Key latency and error metrics are trending back to baseline.",
+          progress_label: "p95 latency and error rate returned to guarded thresholds.",
+        },
+      },
+      {
+        schema_version: "1",
+        type: "remediation_progress",
+        session_id: "sess-report-model",
+        timestamp: "2026-04-08T10:05:00.000Z",
+        data: {
+          stage: "alert_recovered",
+          message: "Primary alert recovered after the guarded canary.",
+        },
+      },
+      {
+        schema_version: "1",
+        type: "remediation_progress",
+        session_id: "sess-report-model",
+        timestamp: "2026-04-08T10:06:00.000Z",
+        data: {
+          stage: "session_closed",
+          message: "Session closed after verification.",
+        },
+      },
+    ];
+
+    const view = buildDiagnosisModifiedReportView({
+      session,
+      timeline: [],
+      candidates: [],
+      events,
+      localAuditRecords,
+    });
+
+    expect(view.feedback).toHaveLength(4);
+    expect(view.feedback.map((item) => item.label)).toEqual([
+      "会话关闭",
+      "告警恢复",
+      "指标反馈",
+      "审批结论",
+    ]);
+    expect(view.feedback[3]?.summary).toContain("approval recorded");
+  });
+
   it("prefers the remediation plan attached to the confirmed ranked candidate", () => {
     const session = createSession("approval_required");
     if (!session.diagnosis_result?.ranked_candidates?.[0]) {
@@ -510,6 +577,63 @@ describe("buildDiagnosisModifiedReportView", () => {
     expect(view.confidence.updates).toHaveLength(2);
     expect(view.confidence.updates[0]?.summary).toContain("Redis connection saturation");
     expect(view.remediation.state).toBe("loading");
+  });
+
+  it("nests candidate-specific evidence and confidence history under each hypothesis", () => {
+    const candidateSnapshots = createCandidateSnapshots();
+    const session = createSession("diagnosing");
+    session.diagnosis_result = null;
+
+    const view = buildDiagnosisModifiedReportView({
+      session,
+      timeline: [
+        {
+          id: "tool-redis-metrics",
+          kind: "tool",
+          toolName: "query_service_metrics",
+          params: { service: "auth-svc", window: "5m" },
+          timestamp: "2026-04-08T10:04:00.000Z",
+          status: "success",
+          summaryLines: ["redis_timeout: +240%", "retry_rate: +180%"],
+        },
+      ],
+      candidates: candidateSnapshots[1]?.candidates ?? [],
+      candidateSnapshots,
+      events: [],
+      localAuditRecords: [],
+    });
+
+    expect(view.hypotheses.detailMode).toBe("expanded");
+    expect(view.hypotheses.items[0]?.evidenceItems.map((item) => item.summary)).toEqual([
+      "Redis timeout observed",
+      "Retry amplification confirmed",
+      "Check Redis saturation before scaling rollout.",
+    ]);
+    expect(view.hypotheses.items[1]?.evidenceItems.map((item) => item.summary)).toEqual([
+      "Database queue rose",
+      "Queue increase trails the Redis timeout",
+      "Check whether queue depth stays high after Redis recovers.",
+    ]);
+    expect(view.hypotheses.items[0]?.confidenceUpdates).toHaveLength(2);
+    expect(view.hypotheses.items[0]?.confidenceUpdates[1]?.summary).toContain("46%");
+    expect(view.hypotheses.items[0]?.confidenceUpdates[1]?.summary).toContain("86%");
+  });
+
+  it("collapses hypothesis-level validation details once the root cause is settled", () => {
+    const candidateSnapshots = createCandidateSnapshots();
+
+    const view = buildDiagnosisModifiedReportView({
+      session: createSession("approval_required"),
+      timeline: [],
+      candidates: candidateSnapshots[1]?.candidates ?? [],
+      candidateSnapshots,
+      events: [],
+      localAuditRecords: [],
+    });
+
+    expect(view.hypotheses.detailMode).toBe("collapsed");
+    expect(view.hypotheses.items[0]?.evidenceItems.length).toBeGreaterThan(0);
+    expect(view.hypotheses.items[0]?.confidenceUpdates.length).toBeGreaterThan(0);
   });
 
   it("keeps confidence loading when only an initial candidate snapshot exists", () => {
