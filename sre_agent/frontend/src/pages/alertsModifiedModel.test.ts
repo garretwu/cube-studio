@@ -46,6 +46,7 @@ const summaries: DiagnosisSessionSummary[] = [
     severity: "critical",
     alert_name: "VLLM 延迟过高",
     fingerprint: "fp-001",
+    incident_key: "fpst:fp-001|2026-03-18T12:00:00Z",
     duration_seconds: 120,
     outcome: null,
     affected_services: [],
@@ -60,6 +61,7 @@ const summaries: DiagnosisSessionSummary[] = [
     severity: "warning",
     alert_name: "GPU 温度偏高",
     fingerprint: "fp-002",
+    incident_key: "fpst:fp-002|2026-03-18T11:57:00Z",
     duration_seconds: 98,
     outcome: "proposed_fix_ready",
     affected_services: [],
@@ -96,16 +98,16 @@ const details: Record<string, DiagnosisSession> = {
 };
 
 describe("buildAlertDashboardView", () => {
-  it("prefers remediation-linked summaries when a cluster matches multiple fingerprints", () => {
+  it("builds one work item per incident_key even when alerts belong to the same cluster", () => {
     const view = buildAlertDashboardView(alerts, clusters, summaries, details, new Date("2026-03-18T12:30:00Z"));
 
-    expect(view.items).toHaveLength(1);
-    expect(view.items[0]?.statusKey).toBe("pending_remediation");
-    expect(view.items[0]?.action.kind).toBe("remediation");
-    expect(view.items[0]?.sessionId).toBe("sess-remediation-002");
-    expect(view.items[0]?.analysisSummary).toBe("机柜散热效率下降");
-    expect(view.items[0]?.planSummary).toContain("提升风扇档位");
-    expect(view.metrics.totalItems).toBe(1);
+    expect(view.items).toHaveLength(2);
+    const byIncident = new Map(view.items.map((item) => [item.incidentKey, item]));
+    expect(byIncident.get("fpst:fp-001|2026-03-18T12:00:00Z")?.action.kind).toBe("diagnosis");
+    expect(byIncident.get("fpst:fp-002|2026-03-18T11:57:00Z")?.statusKey).toBe("pending_remediation");
+    expect(byIncident.get("fpst:fp-002|2026-03-18T11:57:00Z")?.analysisSummary).toBe("机柜散热效率下降");
+    expect(byIncident.get("fpst:fp-002|2026-03-18T11:57:00Z")?.planSummary).toContain("提升风扇档位");
+    expect(view.metrics.totalItems).toBe(2);
     expect(view.metrics.pendingActionCount).toBe(1);
   });
 });

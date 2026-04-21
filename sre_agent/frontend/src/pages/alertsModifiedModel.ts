@@ -1,4 +1,5 @@
 ﻿import type { Alert, AlertCluster, DiagnosisSession, DiagnosisSessionSummary } from "../api/types";
+import { buildAlertIncidentKey } from "../utils/alerts";
 import { formatWorkflowStatus } from "../utils/display";
 
 export type ChipTone = "neutral" | "accent" | "success" | "warning" | "danger" | "info";
@@ -30,6 +31,7 @@ export type AlertDashboardItem = {
   latestStartsAt: string;
   primaryFingerprint: string;
   fingerprints: string[];
+  incidentKey: string;
   rootEntity: string;
   impactScope: string;
   alertNames: string[];
@@ -312,6 +314,9 @@ function buildSearchText(item: AlertDashboardItem) {
     item.sessionId,
     item.analysisSummary,
     item.planSummary,
+    item.primaryFingerprint,
+    item.latestStartsAt,
+    item.incidentKey,
     ...item.alertNames,
   ]
     .filter(Boolean)
@@ -336,6 +341,10 @@ function chooseBestSummary(candidates: DiagnosisSessionSummary[], details: Recor
   })[0];
 }
 
+function normalizeIncidentKey(value?: string | null) {
+  return String(value ?? "").trim();
+}
+
 export function buildAlertDashboardView(
   alerts: Alert[],
   clusters: AlertCluster[],
@@ -343,49 +352,38 @@ export function buildAlertDashboardView(
   sessionDetails: Record<string, DiagnosisSession | undefined>,
   now = new Date(),
 ): AlertDashboardView {
-  const alertsByFingerprint = new Map<string, Alert[]>();
-  alerts.forEach((alert) => {
-    const bucket = alertsByFingerprint.get(alert.fingerprint) ?? [];
-    bucket.push(alert);
-    alertsByFingerprint.set(alert.fingerprint, bucket);
-  });
-
-  const groups: Array<{ id: string; cluster?: AlertCluster; alerts: Alert[]; fingerprints: string[] }> = [];
-  const consumedFingerprints = new Set<string>();
-
+  const clusterByFingerprint = new Map<string, AlertCluster>();
   clusters.forEach((cluster) => {
-    const groupAlerts = cluster.alerts.flatMap((fingerprint) => alertsByFingerprint.get(fingerprint) ?? []);
-    if (groupAlerts.length === 0) {
-      return;
-    }
-
-    groups.push({
-      id: cluster.cluster_id,
-      cluster,
-      alerts: groupAlerts,
-      fingerprints: unique(groupAlerts.map((alert) => alert.fingerprint)),
-    });
-
-    cluster.alerts.forEach((fingerprint) => consumedFingerprints.add(fingerprint));
-  });
-
-  alertsByFingerprint.forEach((groupAlerts, fingerprint) => {
-    if (consumedFingerprints.has(fingerprint)) {
-      return;
-    }
-
-    groups.push({
-      id: fingerprint,
-      alerts: groupAlerts,
-      fingerprints: [fingerprint],
+    cluster.alerts.forEach((fingerprint) => {
+      if (!clusterByFingerprint.has(fingerprint)) {
+        clusterByFingerprint.set(fingerprint, cluster);
+      }
     });
   });
 
-  const items = groups.map((group) => {
+  const groups = new Map<string, { id: string; cluster?: AlertCluster; alerts: Alert[]; fingerprints: string[] }>();
+  alerts.forEach((alert) => {
+    const incidentKey = buildAlertIncidentKey(alert);
+    const existing = groups.get(incidentKey);
+    if (existing) {
+      existing.alerts.push(alert);
+      existing.fingerprints = unique([...existing.fingerprints, alert.fingerprint]);
+      return;
+    }
+    groups.set(incidentKey, {
+      id: incidentKey,
+      cluster: clusterByFingerprint.get(alert.fingerprint),
+      alerts: [alert],
+      fingerprints: [alert.fingerprint],
+    });
+  });
+
+  const items = [...groups.values()].map((group) => {
     const primaryAlert = pickPrimaryAlert(group.alerts) ?? group.alerts[0];
     const fingerprints = unique(group.fingerprints);
+    const incidentKey = primaryAlert ? buildAlertIncidentKey(primaryAlert) : group.id;
     const matchingSummaries = sessionSummaries.filter(
-      (summary) => summary.fingerprint && fingerprints.includes(summary.fingerprint),
+      (summary) => normalizeIncidentKey(summary.incident_key) === incidentKey,
     );
     const matchedSummary = chooseBestSummary(matchingSummaries, sessionDetails);
     const matchedSession = matchedSummary ? sessionDetails[matchedSummary.session_id] : undefined;
@@ -409,6 +407,7 @@ export function buildAlertDashboardView(
       latestStartsAt,
       primaryFingerprint: primaryAlert?.fingerprint ?? fingerprints[0] ?? "unknown",
       fingerprints,
+      incidentKey,
       rootEntity: buildRootEntity(group.alerts, matchedSession),
       impactScope: buildImpactScope(group.alerts, matchedSession),
       alertNames,
@@ -445,6 +444,3 @@ export function buildAlertDashboardView(
     },
   };
 }
-
-
-

@@ -4,6 +4,7 @@ import { StatusChip } from "./ui";
 import type { Alert } from "../api/types";
 import { formatAlertStatus, formatSeverity } from "../utils/display";
 import { formatTimestamp } from "../utils/format";
+import { buildAlertIncidentKey } from "../utils/alerts";
 
 type AlertTableProps = {
   alerts: Alert[];
@@ -38,7 +39,7 @@ function AlertTable({ alerts, onSelect }: AlertTableProps) {
       className="app-table"
       dataSource={alerts}
       pagination={false}
-      rowKey="fingerprint"
+      rowKey={(record) => `${record.fingerprint}-${record.starts_at}`}
       columns={[
         {
           title: "级别",
@@ -55,6 +56,7 @@ function AlertTable({ alerts, onSelect }: AlertTableProps) {
             <div className="page-stack" style={{ gap: "6px" }}>
               <p className="data-list__title">{alert.alert_name}</p>
               <p className="data-list__copy">{alert.annotations.summary ?? "暂无摘要。"}</p>
+              <p className="data-list__copy">{`事件主键: ${buildAlertIncidentKey(alert)}`}</p>
             </div>
           ),
         },

@@ -334,6 +334,7 @@ export type SessionSummary = {
   alert_name: string;
   severity: Severity;
   fingerprint: string;
+  incident_key?: string | null;
   outcome?: string | null;
   duration_seconds: number;
   updated_at: string;
@@ -349,6 +350,7 @@ export type DiagnosisSessionSummary = {
   severity: Severity;
   alert_name: string;
   fingerprint?: string | null;
+  incident_key?: string | null;
   duration_seconds: number;
   outcome?: string | null;
   triage_priority?: DiagnosisResult["triage_priority"] | null;
