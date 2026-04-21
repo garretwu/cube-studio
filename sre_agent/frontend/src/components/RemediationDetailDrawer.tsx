@@ -2,6 +2,7 @@
 
 import type { DiagnosisSessionSummary, RemediationOverview, SessionEvent } from "../api/types";
 import { formatDateTime, formatDurationSeconds, formatPercent } from "../utils/format";
+import { getRemediationOverallProgressDisplay, getRemediationStepProgress } from "../utils/remediationProgress";
 import { AppIcon, StatusChip } from "./ui";
 import RemediationTimeline from "./RemediationTimeline";
 
@@ -114,14 +115,6 @@ function formatStepVerificationSummary(step: RemediationOverview["plan"]["steps"
   return parts.join(" / ");
 }
 
-function getOverallProgress(overview?: RemediationOverview): number {
-  if (!overview) return 0;
-  const total = Number(overview.progress.total_steps ?? 0);
-  const completed = Number(overview.progress.completed_steps ?? 0);
-  if (total <= 0) return 0;
-  return Math.max(0, Math.min(100, Math.round((completed / total) * 100)));
-}
-
 function getExecutionStartedAt(events: SessionEvent[] | undefined): string | null {
   if (!events?.length) return null;
   for (const event of sortEvents(events)) {
@@ -174,7 +167,7 @@ function getCanaryProgress(overview?: RemediationOverview): number | null {
     return Math.round((completedBatches / totalBatches) * 100);
   }
   if (String(overview.progress.status ?? "").trim().toLowerCase() === "resolved") return 100;
-  return getOverallProgress(overview);
+  return getRemediationStepProgress(overview);
 }
 function getCurrentStepSummary(
   steps: RemediationOverview["plan"]["steps"],
@@ -252,7 +245,7 @@ export default function RemediationDetailDrawer({
   const detailSteps = drawerOverview?.plan.steps ?? [];
   const completedSteps = Number(drawerOverview?.progress.completed_steps ?? 0);
   const totalSteps = Number(drawerOverview?.progress.total_steps ?? detailSteps.length);
-  const overallProgress = getOverallProgress(drawerOverview ?? undefined);
+  const overallProgress = getRemediationOverallProgressDisplay(drawerOverview ?? undefined);
   const canaryProgress = getCanaryProgress(drawerOverview ?? undefined);
   const batchStatusArr = drawerOverview?.progress.batch_status ?? [];
   const totalBatches = batchStatusArr.length || Number(drawerOverview?.plan.canary?.max_batches ?? 0);
@@ -741,7 +734,6 @@ export default function RemediationDetailDrawer({
     </div>
   );
 }
-
 
 
 

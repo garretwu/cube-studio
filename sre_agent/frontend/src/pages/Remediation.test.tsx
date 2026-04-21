@@ -111,6 +111,29 @@ describe("RemediationPage", () => {
     expect(within(drawer!).getByText("realtime observation updated")).toBeInTheDocument();
   });
 
+  it("renders the same weighted overall progress in list and detail drawer", async () => {
+    const user = userEvent.setup();
+    const { container } = render(<RemediationPage />);
+
+    await waitFor(() => {
+      expect(container.querySelector(".remediation-record-table__row")).toBeTruthy();
+    });
+
+    const firstRow = container.querySelector<HTMLElement>(".remediation-record-table__row");
+    expect(firstRow).toBeTruthy();
+    expect(within(firstRow!).getByText("57%")).toBeInTheDocument();
+
+    await user.click(firstRow!);
+
+    const drawer = await waitFor(() => {
+      const panel = container.querySelector<HTMLElement>(".remediation-drawer__panel");
+      expect(panel).toBeTruthy();
+      return panel;
+    });
+
+    expect(within(drawer!).getByText("57% · 2 / 3")).toBeInTheDocument();
+  });
+
   it("falls back to 10s polling when realtime channel is unavailable", async () => {
     const setIntervalSpy = vi.spyOn(window, "setInterval");
     let releasePollingEvent = false;
