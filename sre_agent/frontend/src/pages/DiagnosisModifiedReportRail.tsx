@@ -18,27 +18,28 @@ function DiagnosisModifiedReportRail({
         <ReportOverview view={view.overview} />
 
         <div className="diagnosis-modified-report-rail__body">
-          <ReportSection title="诊断拓扑信息">
+          <ReportSection
+            title="诊断拓扑信息"
+            description="拓扑图优先基于会话返回的 topology_context 生成；若该上下文缺失，则回退使用诊断结果中的根因实体与受影响服务自动构建。"
+          >
             <SessionLevelSection context={view.context} />
           </ReportSection>
 
           <ReportSection
-            title="假设级信息"
-            description="围绕候选假设持续更新证据、验证与置信度。"
+            title="候选假设验证"
+            description="每个候选假设单独承载验证依据与置信度变化，结论稳定后自动收起过程细节。"
           >
-            <HypothesisLevelSection
-              confidence={view.confidence}
-              hypotheses={view.hypotheses}
-              verification={view.verification}
-            />
+            <HypothesisLevelSection hypotheses={view.hypotheses} />
           </ReportSection>
 
-          <ReportSection title="根因级信息" description="展示最终结论，并将修复方案挂在对应根因之下。">
+          <ReportSection
+            title="根因级信息"
+            description="展示最终结论，并将修复方案挂在对应根因之下。"
+          >
             <RootCauseLevelSection
               candidateChanges={view.candidateChanges}
               conclusion={view.conclusion}
-              execution={view.execution}
-              feedback={view.feedback}
+              hypothesesState={view.hypotheses.state}
               remediation={view.remediation}
               rootCause={view.rootCause}
             />

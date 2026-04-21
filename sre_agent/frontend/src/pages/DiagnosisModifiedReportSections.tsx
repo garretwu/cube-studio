@@ -8,8 +8,6 @@ import type {
   DiagnosisModifiedConfidenceView,
   DiagnosisModifiedContextNodeView,
   DiagnosisModifiedContextView,
-  DiagnosisModifiedExecutionView,
-  DiagnosisModifiedFeedbackItem,
   DiagnosisModifiedHypothesesView,
   DiagnosisModifiedProgressView,
   DiagnosisModifiedRemediationKeyView,
@@ -252,27 +250,13 @@ export function SessionLevelSection({
 }
 
 export function HypothesisLevelSection({
-  confidence,
   hypotheses,
-  verification,
 }: {
-  confidence: DiagnosisModifiedConfidenceView;
   hypotheses: DiagnosisModifiedHypothesesView;
-  verification: DiagnosisModifiedVerificationView;
 }) {
   return (
     <div className="diagnosis-modified-report-rail__level-stack">
-      <LevelBlock kicker="Hypothesis thread" title="候选假设">
-        <HypothesisSection hypotheses={hypotheses} revealConfidence={confidence.state === "ready"} />
-      </LevelBlock>
-
-      <LevelBlock kicker="Evidence updates" title="验证证据">
-        <VerificationSection verification={verification} />
-      </LevelBlock>
-
-      <LevelBlock kicker="Evidence updates" title="置信度变化">
-        <ConfidenceSection confidence={confidence} />
-      </LevelBlock>
+      <HypothesisSection hypotheses={hypotheses} />
     </div>
   );
 }
@@ -280,23 +264,22 @@ export function HypothesisLevelSection({
 export function RootCauseLevelSection({
   candidateChanges,
   conclusion,
-  execution,
-  feedback,
+  hypothesesState,
   remediation,
   rootCause,
 }: {
   candidateChanges: DiagnosisModifiedCandidateChangeView[];
   conclusion: DiagnosisModifiedReportView["conclusion"];
-  execution: DiagnosisModifiedExecutionView;
-  feedback: DiagnosisModifiedFeedbackItem[];
+  hypothesesState: DiagnosisModifiedHypothesesView["state"];
   remediation: DiagnosisModifiedRemediationKeyView;
   rootCause: DiagnosisModifiedRootCauseView;
 }) {
   const rootCauseReady = rootCause.state === "ready";
+  const showCandidateFallback = candidateChanges.length > 0 && hypothesesState !== "ready";
 
   return (
     <div className="diagnosis-modified-report-rail__level-stack">
-      <LevelBlock kicker="Confirmed outcome" title="根因结论">
+      <LevelBlock kicker="Confirmed outcome" title="鏍瑰洜缁撹">
         {rootCauseReady ? (
           <>
             <div className="diagnosis-modified-report-rail__callout">
@@ -309,7 +292,7 @@ export function RootCauseLevelSection({
                 <FactRow fact={fact} key={fact.label} />
               ))}
             </div>
-            {candidateChanges.length > 0 ? (
+            {showCandidateFallback ? (
               <div className="diagnosis-modified-report-rail__level-inset">
                 <p className="diagnosis-modified-report-rail__callout-label">Root-cause candidates</p>
                 <CandidateChangesSection candidateChanges={candidateChanges} />
@@ -321,8 +304,8 @@ export function RootCauseLevelSection({
         )}
       </LevelBlock>
 
-      <LevelBlock kicker="Attached remediation" title="对应修复方案">
-        <RemediationKeySection execution={execution} feedback={feedback} remediation={remediation} />
+      <LevelBlock kicker="Attached remediation" title="瀵瑰簲淇鏂规">
+        <RemediationKeySection remediation={remediation} />
       </LevelBlock>
     </div>
   );
@@ -354,7 +337,7 @@ export function DiagnosisSummarySection({
   return (
     <div className="diagnosis-modified-report-rail__section-stack">
       <SummaryProcessStatus status={processStatus} />
-      <HypothesisSection hypotheses={hypotheses} revealConfidence={confidence.state === "ready"} />
+      <HypothesisSection hypotheses={hypotheses} />
       <VerificationSection verification={verification} />
       <ConfidenceSection confidence={confidence} />
       {rootCause.state === "ready" ? (
@@ -384,7 +367,7 @@ function resolveSummaryProcessStatus({
 }) {
   if (!stage.isActive && remediation.state === "ready") {
     return {
-      text: "已生成根因和修复方案",
+      text: "宸茬敓鎴愭牴鍥犲拰淇鏂规",
       blinking: false,
     } as const;
   }
@@ -530,7 +513,7 @@ function mapContextEdgeToTopologyRelation(
     source: edge.sourceId,
     target: edge.targetId,
     relationType: "depends_on",
-    status: "normal",
+    status: "healthy",
     isCritical: false,
     impactLevel: sourceRole === "problem" ? "medium" : "low",
     label: edge.label,
@@ -545,7 +528,7 @@ function ContextTopologyGraph({ context }: { context: DiagnosisModifiedContextVi
   return (
     <div
       className="diagnosis-modified-report-rail__context-graph topology-route topology-route--modified"
-      aria-label="诊断上下文拓扑图"
+      aria-label="璇婃柇涓婁笅鏂囨嫇鎵戝浘"
     >
       <TopologyCanvas
         edges={topologyEdges}
@@ -587,10 +570,8 @@ function FactRow({ fact }: { fact: DiagnosisModifiedReportFact }) {
 
 function HypothesisSection({
   hypotheses,
-  revealConfidence,
 }: {
   hypotheses: DiagnosisModifiedHypothesesView;
-  revealConfidence: boolean;
 }) {
   if (hypotheses.state !== "ready") {
     return <SectionLoading copy="正在等待进入候选假设阶段。" variant="list" />;
@@ -600,7 +581,11 @@ function HypothesisSection({
     <div className="diagnosis-modified-report-rail__subsection">
       <div className="diagnosis-modified-report-rail__stack">
         {hypotheses.items.map((item) => (
-          <article className="diagnosis-modified-report-rail__candidate" key={item.id}>
+          <article
+            className="diagnosis-modified-report-rail__candidate"
+            data-testid={`diagnosis-modified-hypothesis-card-${item.id}`}
+            key={item.id}
+          >
             <div className="diagnosis-modified-report-rail__candidate-header">
               <div className="diagnosis-modified-report-rail__candidate-copy">
                 <strong>{item.title}</strong>
@@ -608,9 +593,97 @@ function HypothesisSection({
               </div>
               <div className="diagnosis-modified-report-rail__candidate-meta">
                 <ReportBadge label={item.statusLabel} tone={item.tone} />
-                <span>{revealConfidence ? item.confidenceLabel : "待评估"}</span>
+                <span>{item.confidenceLabel}</span>
               </div>
             </div>
+            {hypotheses.detailMode === "expanded" ? (
+              <HypothesisDetailSections item={item} />
+            ) : null}
+          </article>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function HypothesisDetailSections({
+  item,
+}: {
+  item: DiagnosisModifiedHypothesesView["items"][number];
+}) {
+  const supportItems = item.evidenceItems.filter((entry) => entry.kind === "support");
+  const againstItems = item.evidenceItems.filter((entry) => entry.kind === "against");
+  const validationItems = item.evidenceItems.filter((entry) => entry.kind === "validation");
+
+  if (
+    supportItems.length === 0 &&
+    againstItems.length === 0 &&
+    validationItems.length === 0 &&
+    item.confidenceUpdates.length === 0
+  ) {
+    return null;
+  }
+
+  return (
+    <div
+      className="diagnosis-modified-report-rail__candidate-details"
+      data-testid={`diagnosis-modified-hypothesis-details-${item.id}`}
+    >
+      {supportItems.length > 0 ? (
+        <HypothesisDetailGroup
+          entries={supportItems}
+          title="支持证据"
+        />
+      ) : null}
+      {againstItems.length > 0 ? (
+        <HypothesisDetailGroup
+          entries={againstItems}
+          title="反证"
+        />
+      ) : null}
+      {validationItems.length > 0 ? (
+        <HypothesisDetailGroup
+          entries={validationItems}
+          title="继续验证"
+        />
+      ) : null}
+      {item.confidenceUpdates.length > 0 ? (
+        <div className="diagnosis-modified-report-rail__candidate-detail-group">
+          <p className="diagnosis-modified-report-rail__callout-label">置信度变化</p>
+          <div className="diagnosis-modified-report-rail__stack">
+            {item.confidenceUpdates.map((entry) => (
+              <article className="diagnosis-modified-report-rail__feedback" key={entry.id}>
+                <div className="diagnosis-modified-report-rail__feedback-header">
+                  <ReportBadge label={entry.label} tone={entry.tone} />
+                  <time>{entry.timestamp}</time>
+                </div>
+                <strong>{entry.summary}</strong>
+              </article>
+            ))}
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function HypothesisDetailGroup({
+  entries,
+  title,
+}: {
+  entries: Array<{ id: string; summary: string; tone: ReportTone }>;
+  title: string;
+}) {
+  return (
+    <div className="diagnosis-modified-report-rail__candidate-detail-group">
+      <p className="diagnosis-modified-report-rail__callout-label">{title}</p>
+      <div className="diagnosis-modified-report-rail__stack">
+        {entries.map((entry) => (
+          <article className="diagnosis-modified-report-rail__feedback" key={entry.id}>
+            <div className="diagnosis-modified-report-rail__feedback-header">
+              <ReportBadge label={title} tone={entry.tone} />
+            </div>
+            <strong>{entry.summary}</strong>
           </article>
         ))}
       </div>
@@ -620,7 +693,7 @@ function HypothesisSection({
 
 function VerificationSection({ verification }: { verification: DiagnosisModifiedVerificationView }) {
   if (verification.state !== "ready") {
-    return <SectionLoading copy="正在等待验证证据和继续验证动作。" variant="list" />;
+    return <SectionLoading copy="正在等待验证证据和后续验证动作。" variant="list" />;
   }
 
   return (
@@ -704,16 +777,12 @@ function CandidateChangesSection({
 }
 
 export function RemediationKeySection({
-  execution,
-  feedback,
   remediation,
 }: {
-  execution: DiagnosisModifiedExecutionView;
-  feedback: DiagnosisModifiedFeedbackItem[];
   remediation: DiagnosisModifiedRemediationKeyView;
 }) {
   if (remediation.state === "loading") {
-    return <SectionLoading copy="正在等待高执行度修复方案、审批或执行反馈。" variant="list" />;
+    return <SectionLoading copy="正在等待修复方案结论。" variant="list" />;
   }
 
   if (remediation.state === "empty") {
@@ -722,7 +791,11 @@ export function RemediationKeySection({
 
   return (
     <div className="diagnosis-modified-report-rail__remediation">
-      <ExecutionSection execution={execution} />
+      <div className="diagnosis-modified-report-rail__status-block">
+        <p className="diagnosis-modified-report-rail__callout-label">修复方案结论</p>
+        <strong>{remediation.title}</strong>
+        <p>{remediation.detail}</p>
+      </div>
       <div className="diagnosis-modified-report-rail__fact-list">
         {remediation.facts.map((fact) => (
           <FactRow fact={fact} key={fact.label} />
@@ -741,47 +814,6 @@ export function RemediationKeySection({
           ))}
         </ol>
       ) : null}
-      <FeedbackSection feedback={feedback} />
-    </div>
-  );
-}
-
-function ExecutionSection({ execution }: { execution: DiagnosisModifiedExecutionView }) {
-  return (
-    <div className="diagnosis-modified-report-rail__status-block">
-      <p className="diagnosis-modified-report-rail__callout-label">娣囶喖顦插楦款唴</p>
-      <strong>{execution.title}</strong>
-      <p>{execution.detail}</p>
-      {execution.highlights.length > 0 ? (
-        <div className="diagnosis-modified-report-rail__pill-row">
-          {execution.highlights.map((item) => (
-            <span className="diagnosis-modified-report-rail__pill" key={item}>
-              {item}
-            </span>
-          ))}
-        </div>
-      ) : null}
-    </div>
-  );
-}
-
-function FeedbackSection({ feedback }: { feedback: DiagnosisModifiedFeedbackItem[] }) {
-  if (feedback.length === 0) {
-    return null;
-  }
-
-  return (
-    <div className="diagnosis-modified-report-rail__stack">
-      {feedback.map((item) => (
-        <article className="diagnosis-modified-report-rail__feedback" key={item.id}>
-          <div className="diagnosis-modified-report-rail__feedback-header">
-            <ReportBadge label={item.label} tone={item.tone} />
-            <time>{item.timestamp}</time>
-          </div>
-          <strong>{item.summary}</strong>
-          {item.detail ? <p>{item.detail}</p> : null}
-        </article>
-      ))}
     </div>
   );
 }
