@@ -41,9 +41,11 @@ class CanaryExecutor:
         # Build batches: progressive doubles each round, flat uses fixed size.
         batches = self._build_batches(targets, canary)
         max_batches = min(canary.max_batches, len(batches))
+        suspect_process_count = len(targets)
 
         total_completed = 0
         for batch_index, batch in enumerate(batches[:max_batches]):
+            current_batch_target = batch[0] if len(batch) == 1 else ""
             # ── Emit canary_batch_started ──────────────────────────────
             if progress_callback is not None:
                 await progress_callback(
@@ -54,6 +56,9 @@ class CanaryExecutor:
                         "batch_total": max_batches,
                         "batch_completed": batch_index,
                         "targets_in_batch": list(batch),
+                        "suspect_process_count": suspect_process_count,
+                        "planned_batch_total": max_batches,
+                        "current_batch_target": current_batch_target,
                         "steps_completed": total_completed,
                         "steps_total": len(plan.steps),
                         "message": (
@@ -75,6 +80,9 @@ class CanaryExecutor:
                             "batch": f"canary-{batch_index + 1}",
                             "batch_index": batch_index + 1,
                             "targets_in_batch": list(batch),
+                            "suspect_process_count": suspect_process_count,
+                            "planned_batch_total": max_batches,
+                            "current_batch_target": current_batch_target,
                             "error": result.error or "execution failed",
                             "message": (
                                 f"灰度批次 {batch_index + 1} 执行失败: "
@@ -96,6 +104,9 @@ class CanaryExecutor:
                         details={
                             "batch": f"canary-{batch_index + 1}",
                             "batch_index": batch_index + 1,
+                            "suspect_process_count": suspect_process_count,
+                            "planned_batch_total": max_batches,
+                            "current_batch_target": current_batch_target,
                             "message": (
                                 f"验证灰度批次 {batch_index + 1} 的成功条件 "
                                 f"(观察窗口 {canary.monitor_duration}s)"
@@ -116,6 +127,9 @@ class CanaryExecutor:
                                 "batch": f"canary-{batch_index + 1}",
                                 "batch_index": batch_index + 1,
                                 "targets_in_batch": list(batch),
+                                "suspect_process_count": suspect_process_count,
+                                "planned_batch_total": max_batches,
+                                "current_batch_target": current_batch_target,
                                 "message": (
                                     f"灰度批次 {batch_index + 1} 验证失败，"
                                     f"成功条件未满足"
@@ -143,6 +157,9 @@ class CanaryExecutor:
                         "batch_total": max_batches,
                         "batch_completed": batch_index + 1,
                         "targets_in_batch": list(batch),
+                        "suspect_process_count": suspect_process_count,
+                        "planned_batch_total": max_batches,
+                        "current_batch_target": current_batch_target,
                         "steps_completed": total_completed,
                         "steps_total": len(plan.steps),
                         "message": (

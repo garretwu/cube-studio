@@ -769,6 +769,7 @@ async def reason_node(
         registry=registry,
         tool_runs=list(state.get("tool_runs", []) or []),
         variables=dict(state.get("variables", {}) or {}),
+        alert_name=_get_alert_name_from_state(state),
     )
     plan_missing_reason: str | None = None
     if remediation_plan is None:
@@ -841,6 +842,7 @@ async def reason_node(
                 registry=registry,
                 tool_runs=list(state.get("tool_runs", []) or []),
                 variables=dict(state.get("variables", {}) or {}),
+                alert_name=_get_alert_name_from_state(state),
             )
             if remediation_plan is not None:
                 diagnosis = diagnosis.model_copy(update={"recommended_fix": remediation_plan})
@@ -870,6 +872,7 @@ async def reason_node(
                 registry=registry,
                 tool_runs=list(state.get("tool_runs", []) or []),
                 variables=dict(state.get("variables", {}) or {}),
+                alert_name=_get_alert_name_from_state(state),
             )
             if auto_normalized is not None:
                 remediation_plan = auto_normalized
@@ -2988,6 +2991,18 @@ def _is_ttft_alert_state(state: SREAgentState) -> bool:
     return "ttft" in alert_name or alert_name.startswith("aiservicettft")
 
 
+def _is_force_canary_alert_name(alert_name: str) -> bool:
+    normalized = str(alert_name or "").strip().lower()
+    return normalized == "aiservicettftp99high"
+
+
+def _get_alert_name_from_state(state: SREAgentState) -> str:
+    snapshot = state.get("alert_snapshot")
+    if isinstance(snapshot, dict):
+        return str(snapshot.get("alert_name", "") or "").strip()
+    return ""
+
+
 def _get_ttft_external_node(state: SREAgentState) -> str:
     """从 alert_snapshot 或 variables 获取 TTFT 外部压测源节点地址。"""
     snapshot = state.get("alert_snapshot")
@@ -4621,6 +4636,7 @@ def _normalize_canary_config(
     raw_canary: Any,
     root_cause_entities: list[str],
     normalized_steps: list[dict[str, Any]],
+    force_canary: bool = False,
 ) -> dict[str, Any] | None:
     """Normalize and optionally auto-fill canary config for a remediation plan.
 
@@ -4628,17 +4644,10 @@ def _normalize_canary_config(
     - If >= 2 affected entities and no canary, auto-fill a default config.
     - Otherwise return None.
     """
-    if isinstance(raw_canary, dict):
-        canary = dict(raw_canary)
-        canary.setdefault("enabled", True)
-        canary.setdefault("progressive", True)
-        # Ensure success_criteria is present; if empty/missing the model
-        # validator will reject it, so the caller should drop it.
-        return canary
-
-    # Collect unique targets from step params
+    # Collect unique targets from step params.
     target_keys = ("node", "target", "service_id", "entity_id")
     targets: set[str] = set()
+    process_targets: set[str] = set()
     for step in normalized_steps:
         params = step.get("params")
         if not isinstance(params, dict):
@@ -4646,11 +4655,59 @@ def _normalize_canary_config(
         for key in target_keys:
             value = params.get(key)
             if isinstance(value, str) and value.strip():
-                targets.add(value.strip())
+                normalized_value = value.strip()
+                targets.add(normalized_value)
+                if key == "entity_id" and normalized_value.lower().startswith("proc:"):
+                    process_targets.add(normalized_value)
+        if str(step.get("tool", "") or "").strip() == "kill_process":
+            process_entity = _resolve_kill_process_entity_id(params)
+            if process_entity:
+                process_targets.add(process_entity)
+                targets.add(process_entity)
+
     for entity in root_cause_entities:
         entity_str = str(entity).strip()
         if entity_str:
             targets.add(entity_str)
+
+    if isinstance(raw_canary, dict):
+        canary = dict(raw_canary)
+        canary.setdefault("enabled", True)
+        canary.setdefault("progressive", True)
+        if force_canary:
+            process_count = len(process_targets) or len(targets) or 1
+            if process_count > 6:
+                _llm_logger.warning(
+                    "force canary process count exceeds demo cap for session config: count=%s (capped to 6)",
+                    process_count,
+                )
+                process_count = 6
+            canary["enabled"] = True
+            canary["target_percentage"] = round(1.0 / process_count, 4)
+            canary["max_batches"] = process_count
+            canary["progressive"] = False
+            canary.setdefault("monitor_duration", 60)
+        return canary
+
+    if force_canary:
+        process_count = len(process_targets) or len(targets)
+        if process_count > 6:
+            _llm_logger.warning(
+                "force canary process count exceeds demo cap for generated plan: count=%s (capped to 6)",
+                process_count,
+            )
+            process_count = 6
+        if process_count >= 1:
+            return {
+                "enabled": True,
+                "target_percentage": round(1.0 / process_count, 4),
+                "monitor_duration": 60,
+                "success_criteria": [],
+                "criteria_mode": "all",
+                "max_batches": process_count,
+                "auto_rollback_on_regression": process_count >= 2,
+                "progressive": False,
+            }
 
     if len(targets) >= 2:
         return {
@@ -4675,6 +4732,7 @@ def _normalize_remediation_plan_payload(
     registry: ToolRegistry | None = None,
     tool_runs: list[dict[str, Any]] | None = None,
     variables: dict[str, Any] | None = None,
+    alert_name: str | None = None,
 ) -> RemediationPlan | None:
     if raw_plan is None:
         return None
@@ -4765,12 +4823,15 @@ def _normalize_remediation_plan_payload(
     candidate.setdefault("confidence", _normalize_plan_confidence(diagnosis.confidence))
     candidate.setdefault("priority", _normalize_plan_priority(diagnosis.triage_priority))
     candidate.setdefault("safety_level", "high")
+    force_canary = _is_force_canary_alert_name(str(alert_name or ""))
+    raw_canary_provided = isinstance(candidate.get("canary"), dict)
 
     # ── Canary normalization ───────────────────────────────────────────
     candidate["canary"] = _normalize_canary_config(
         raw_canary=candidate.get("canary"),
         root_cause_entities=list(diagnosis.root_cause_entities),
         normalized_steps=normalized_steps,
+        force_canary=force_canary,
     )
     # If canary validation fails (e.g. missing criteria), drop it silently.
     if candidate["canary"] is not None:
@@ -4779,6 +4840,21 @@ def _normalize_remediation_plan_payload(
             CanaryConfig.model_validate(candidate["canary"])
         except Exception:  # noqa: BLE001
             candidate["canary"] = None
+    if force_canary:
+        normalized_canary = candidate.get("canary")
+        batch_total = 0
+        if isinstance(normalized_canary, dict):
+            try:
+                batch_total = int(normalized_canary.get("max_batches", 0) or 0)
+            except Exception:  # noqa: BLE001
+                batch_total = 0
+        _llm_logger.info(
+            "force canary normalization applied: session_id=%s force_canary=%s force_canary_reason=exact_alert_name canary_source=%s batch_total=%s",
+            session_id,
+            True,
+            "provided" if raw_canary_provided else "forced_default",
+            batch_total,
+        )
 
     try:
         return RemediationPlan.model_validate(candidate)
@@ -4987,9 +5063,9 @@ def _build_ttft_kill_process_plan_candidate(
         "monitor_duration": 60,
         "success_criteria": [],
         "criteria_mode": "all",
-        "max_batches": min(step_count, 3),
+        "max_batches": step_count,
         "auto_rollback_on_regression": step_count >= 2,
-        "progressive": True,
+        "progressive": False,
     }
 
     payload: dict[str, Any] = {

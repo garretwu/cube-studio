@@ -161,6 +161,29 @@ class RemediationEngine:
                 return result.model_copy(update={"duration_seconds": duration})
             if plan.canary and plan.canary.enabled:
                 targets = self._collect_targets(plan)
+                if self._has_process_target_mismatch(plan, targets):
+                    LOGGER.warning(
+                        "blocking canary auto execution due to process target mismatch: plan_id=%s batch_total=%s",
+                        plan.plan_id,
+                        len(targets),
+                    )
+                    if progress_callback is not None:
+                        await progress_callback(
+                            stage="canary_check_failed",
+                            details={
+                                "message": "进程级灰度批次目标异常，已阻断自动执行，请人工复核后重试。",
+                                "error": "process_target_mismatch",
+                                "suspect_process_count": len(targets),
+                                "planned_batch_total": len(targets),
+                            },
+                        )
+                    return RemediationResult(
+                        plan_id=plan.plan_id,
+                        success=False,
+                        steps_completed=0,
+                        steps_total=len(plan.steps),
+                        error="process canary target mismatch; manual approval required",
+                    )
                 return await self.canary.execute_with_canary(
                     plan,
                     targets,
@@ -365,6 +388,22 @@ class RemediationEngine:
         if process_targets:
             return process_targets
         return generic_targets
+
+    @staticmethod
+    def _has_process_target_mismatch(plan: RemediationPlan, targets: list[str]) -> bool:
+        process_step_targets: list[str] = []
+        for step in plan.steps:
+            entity_id = step.params.get("entity_id")
+            if isinstance(entity_id, str) and entity_id.strip().lower().startswith("proc:"):
+                process_step_targets.append(entity_id.strip())
+        if not process_step_targets:
+            return False
+
+        unique_steps = list(dict.fromkeys(process_step_targets))
+        unique_targets = list(dict.fromkeys(targets))
+        if len(unique_steps) != len(process_step_targets):
+            return True
+        return unique_steps != unique_targets
 
     @staticmethod
     def _filter_steps_by_targets(

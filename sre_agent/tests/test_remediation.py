@@ -426,6 +426,9 @@ class TestRemediationIntegration:
         assert len(batch_started) == 2
         assert batch_started[0]["targets_in_batch"] == ["proc:ls_demo_a"]
         assert batch_started[1]["targets_in_batch"] == ["proc:ls_demo_b"]
+        assert batch_started[0]["suspect_process_count"] == 2
+        assert batch_started[0]["planned_batch_total"] == 2
+        assert batch_started[0]["current_batch_target"] == "proc:ls_demo_a"
 
     @pytest.mark.asyncio
     async def test_integration_engine_canary_executes_kill_process_with_entity_id_only_steps(self, tmp_path: Path) -> None:
@@ -504,6 +507,77 @@ class TestRemediationIntegration:
         assert len(batch_started) == 2
         assert batch_started[0]["targets_in_batch"] == ["proc:473156"]
         assert batch_started[1]["targets_in_batch"] == ["proc:473573"]
+        assert batch_started[1]["current_batch_target"] == "proc:473573"
+
+    @pytest.mark.asyncio
+    async def test_integration_engine_blocks_canary_when_process_targets_mismatch(self, tmp_path: Path) -> None:
+        registry = _make_registry()
+        gate = ApprovalGate(default_policy="auto_approve")
+        wal = RollbackJournal(tmp_path / "wal.jsonl")
+        engine = RemediationEngine(
+            registry,
+            gate,
+            wal,
+            prometheus=_FakePrometheus(1.0),
+            execution_context=ToolExecutionContext(),
+        )
+        plan = RemediationPlan(
+            plan_id="plan-proc-mismatch",
+            root_cause="synthetic load process",
+            description="duplicate process target should block canary",
+            estimated_impact="ttft recovers",
+            confidence=0.86,
+            priority="P1",
+            canary=CanaryConfig(
+                enabled=True,
+                target_percentage=0.5,
+                monitor_duration=1,
+                success_criteria=[
+                    CanaryCondition(metric="vector(1)", operator=">=", value=1),
+                ],
+                criteria_mode="all",
+                max_batches=2,
+                progressive=False,
+            ),
+            steps=[
+                RemediationStep(
+                    step_id=1,
+                    description="kill process A",
+                    tool="k8s.delete_pod",
+                    params={
+                        "namespace": "infer",
+                        "pod_name": "vllm-0",
+                        "node": "10.11.4.13",
+                        "entity_id": "proc:ls_demo_a",
+                    },
+                    verification=VerificationConfig(method="wait", wait_seconds=1),
+                ),
+                RemediationStep(
+                    step_id=2,
+                    description="kill duplicate process target",
+                    tool="k8s.delete_pod",
+                    params={
+                        "namespace": "infer",
+                        "pod_name": "vllm-1",
+                        "node": "10.11.4.13",
+                        "entity_id": "proc:ls_demo_a",
+                    },
+                    verification=VerificationConfig(method="wait", wait_seconds=1),
+                ),
+            ],
+        )
+        progress_events: list[tuple[str, dict[str, Any]]] = []
+
+        async def _on_progress(*, stage: str, details: dict[str, Any] | None = None) -> None:
+            progress_events.append((stage, dict(details or {})))
+
+        result = await engine.execute(plan, session_id="session-proc-mismatch", progress_callback=_on_progress)
+
+        assert result.success is False
+        assert result.error == "process canary target mismatch; manual approval required"
+        failed_events = [details for stage, details in progress_events if stage == "canary_check_failed"]
+        assert failed_events
+        assert failed_events[0]["error"] == "process_target_mismatch"
 
 
 class TestRemediationE2E:
