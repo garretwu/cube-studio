@@ -1424,7 +1424,7 @@ describe("DiagnosisModifiedPage split workspace", () => {
 
     renderLivePage("/diagnosis-modified/sess-live-progress-sync");
 
-    expect(screen.getByTestId("diagnosis-modified-trace-sync-stage")).toHaveAttribute("data-stage-id", "context");
+    expect(screen.queryByTestId("diagnosis-modified-trace-sync-stage")).not.toBeInTheDocument();
     expect(screen.queryByTestId("diagnosis-modified-report-progress")).not.toBeInTheDocument();
     expect(screen.queryByTestId("diagnosis-modified-summary-process-status")).not.toBeInTheDocument();
 
@@ -1479,7 +1479,7 @@ describe("DiagnosisModifiedPage split workspace", () => {
       await Promise.resolve();
     });
 
-    expect(screen.getByTestId("diagnosis-modified-trace-sync-stage")).toHaveAttribute("data-stage-id", "verification");
+    expect(screen.queryByTestId("diagnosis-modified-trace-sync-stage")).not.toBeInTheDocument();
     expect(screen.queryByTestId("diagnosis-modified-report-progress")).not.toBeInTheDocument();
     expect(screen.queryByTestId("diagnosis-modified-summary-process-status")).not.toBeInTheDocument();
 
@@ -1497,7 +1497,7 @@ describe("DiagnosisModifiedPage split workspace", () => {
       await Promise.resolve();
     });
 
-    expect(screen.getByTestId("diagnosis-modified-trace-sync-stage")).toHaveAttribute("data-stage-id", "remediation");
+    expect(screen.queryByTestId("diagnosis-modified-trace-sync-stage")).not.toBeInTheDocument();
     expect(screen.queryByTestId("diagnosis-modified-report-progress")).not.toBeInTheDocument();
     expect(screen.queryByTestId("diagnosis-modified-summary-process-status")).not.toBeInTheDocument();
 

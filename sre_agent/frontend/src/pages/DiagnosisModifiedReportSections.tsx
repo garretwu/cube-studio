@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from "react";
+﻿import { useEffect, useState, type ReactNode } from "react";
 import type { TopologyLayer, TopologyObject, TopologyObjectType, TopologyRelation } from "../api/types";
 import TopologyCanvas from "../features/topologyExplorer/components/TopologyCanvas";
 import "../features/topologyExplorer/topologyExplorer.css";
@@ -270,9 +270,9 @@ export function RootCauseLevelSection({
   hypothesesState: DiagnosisModifiedHypothesesView["state"];
   rootCause: DiagnosisModifiedRootCauseView;
 }) {
-  const rootCauseReady = rootCause.state === "ready";
+  const rootCauseItems = rootCause.items ?? [];
+  const rootCauseReady = rootCause.state === "ready" && rootCauseItems.length > 0;
   const showCandidateFallback = candidateChanges.length > 0 && hypothesesState !== "ready";
-  const rootCauseItems = rootCause.items;
   const isMultiRootCause = rootCauseItems.length > 1;
   const rootCauseIdsKey = rootCauseItems.map((item) => item.id).join("|");
   const [expandedRemediationIds, setExpandedRemediationIds] = useState<string[]>([]);
@@ -301,86 +301,76 @@ export function RootCauseLevelSection({
 
   return (
     <div className="diagnosis-modified-report-rail__level-stack">
-      <LevelBlock kicker="Confirmed outcome" title="Root Causes & Remediation">
-        {rootCauseReady ? (
-          <>
-            <div className="diagnosis-modified-report-rail__callout">
-              <p className="diagnosis-modified-report-rail__callout-label">
-                {isMultiRootCause ? "Multi-root-cause view" : "Confirmed root cause"}
-              </p>
-              <strong>{isMultiRootCause ? "Multi-root-cause convergence" : "Single root-cause convergence"}</strong>
-              <p>{rootCause.summary}</p>
+      {rootCauseReady ? (
+        <>
+          {isMultiRootCause ? (
+            <div className="diagnosis-modified-report-rail__rootcause-actions">
+              <button
+                className="diagnosis-modified-report-rail__candidate-detail-toggle"
+                onClick={expandAll}
+                type="button"
+              >
+                Expand all remediation plans
+              </button>
+              <button
+                className="diagnosis-modified-report-rail__candidate-detail-toggle"
+                onClick={collapseAll}
+                type="button"
+              >
+                Collapse all remediation plans
+              </button>
             </div>
-            {isMultiRootCause ? (
-              <div className="diagnosis-modified-report-rail__rootcause-actions">
-                <button
-                  className="diagnosis-modified-report-rail__candidate-detail-toggle"
-                  onClick={expandAll}
-                  type="button"
-                >
-                  Expand all remediation plans
-                </button>
-                <button
-                  className="diagnosis-modified-report-rail__candidate-detail-toggle"
-                  onClick={collapseAll}
-                  type="button"
-                >
-                  Collapse all remediation plans
-                </button>
-              </div>
-            ) : null}
-            <div className="diagnosis-modified-report-rail__stack">
-              {rootCauseItems.map((item) => {
-                const isExpanded = expandedRemediationIds.includes(item.id);
-                return (
-                  <article className="diagnosis-modified-report-rail__candidate" key={item.id}>
-                    <div className="diagnosis-modified-report-rail__candidate-header">
-                      <div className="diagnosis-modified-report-rail__candidate-copy">
-                        <strong>{item.title}</strong>
-                        <p>{item.summary}</p>
-                      </div>
-                      <div className="diagnosis-modified-report-rail__candidate-meta">
-                        <ReportBadge
-                          label={item.isPrimary ? "Primary root cause" : "Candidate root cause"}
-                          tone={item.isPrimary ? "accent" : "neutral"}
-                        />
-                        {item.rankLabel ? <span>{item.rankLabel}</span> : null}
-                      </div>
+          ) : null}
+          <div className="diagnosis-modified-report-rail__stack">
+            {rootCauseItems.map((item) => {
+              const isExpanded = expandedRemediationIds.includes(item.id);
+              return (
+                <article className="diagnosis-modified-report-rail__candidate" key={item.id}>
+                  <div className="diagnosis-modified-report-rail__candidate-header">
+                    <div className="diagnosis-modified-report-rail__candidate-copy">
+                      <strong>{item.title}</strong>
+                      <p>{item.summary}</p>
                     </div>
-                    <div className="diagnosis-modified-report-rail__fact-list">
-                      {item.facts.map((fact) => (
-                        <FactRow fact={fact} key={`${item.id}-${fact.label}`} />
-                      ))}
+                    <div className="diagnosis-modified-report-rail__candidate-meta">
+                      <ReportBadge
+                        label={item.isPrimary ? "Primary root cause" : "Candidate root cause"}
+                        tone={item.isPrimary ? "accent" : "neutral"}
+                      />
+                      {item.rankLabel ? <span>{item.rankLabel}</span> : null}
                     </div>
-                    <button
-                      aria-expanded={isExpanded}
-                      className="diagnosis-modified-report-rail__candidate-detail-toggle"
-                      onClick={() => toggleItem(item.id)}
-                      type="button"
-                    >
-                      {isExpanded ? "Collapse remediation plan" : "Expand remediation plan"}
-                    </button>
-                    {isExpanded ? (
-                      <div className="diagnosis-modified-report-rail__candidate-details">
-                        <RemediationKeySection remediation={item.remediation} />
-                      </div>
-                    ) : null}
-                  </article>
-                );
-              })}
+                  </div>
+                  <div className="diagnosis-modified-report-rail__fact-list">
+                    {item.facts.map((fact) => (
+                      <FactRow fact={fact} key={`${item.id}-${fact.label}`} />
+                    ))}
+                  </div>
+                  <button
+                    aria-expanded={isExpanded}
+                    className="diagnosis-modified-report-rail__candidate-detail-toggle"
+                    onClick={() => toggleItem(item.id)}
+                    type="button"
+                  >
+                    {isExpanded ? "Collapse remediation plan" : "Expand remediation plan"}
+                  </button>
+                  {isExpanded ? (
+                    <div className="diagnosis-modified-report-rail__candidate-details">
+                      <RemediationKeySection remediation={item.remediation} />
+                    </div>
+                  ) : null}
+                </article>
+              );
+            })}
+          </div>
+          {showCandidateFallback ? (
+            <div className="diagnosis-modified-report-rail__level-inset">
+              <p className="diagnosis-modified-report-rail__callout-label">Root-cause candidates</p>
+              <CandidateChangesSection candidateChanges={candidateChanges} />
             </div>
-            {showCandidateFallback ? (
-              <div className="diagnosis-modified-report-rail__level-inset">
-                <p className="diagnosis-modified-report-rail__callout-label">Root-cause candidates</p>
-                <CandidateChangesSection candidateChanges={candidateChanges} />
-              </div>
-            ) : null}
-          </>
-        ) : (
-          <SectionLoading copy="Waiting for report data." variant="list" />
-        )}
-      </LevelBlock>
-
+          ) : null}
+        </>
+      ) : (
+        <SectionLoading copy="Waiting for report data." variant="list" />
+      )}
     </div>
   );
 }
@@ -602,7 +592,7 @@ function ContextTopologyGraph({ context }: { context: DiagnosisModifiedContextVi
   return (
     <div
       className="diagnosis-modified-report-rail__context-graph topology-route topology-route--modified"
-      aria-label="鐠囧﹥鏌囨稉濠佺瑓閺傚洦瀚囬幍鎴濇禈"
+      aria-label="诊断上下文拓扑图"
     >
       <TopologyCanvas
         edges={topologyEdges}
@@ -890,7 +880,7 @@ export function RemediationKeySection({
   return (
     <div className="diagnosis-modified-report-rail__remediation">
       <div className="diagnosis-modified-report-rail__status-block">
-        <p className="diagnosis-modified-report-rail__callout-label">淇鏂规缁撹</p>
+        <p className="diagnosis-modified-report-rail__callout-label">修复方案结论</p>
         <strong>{remediation.title}</strong>
         <p>{remediation.detail}</p>
       </div>
@@ -915,6 +905,7 @@ export function RemediationKeySection({
     </div>
   );
 }
+
 
 
 

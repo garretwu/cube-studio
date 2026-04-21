@@ -1615,7 +1615,9 @@ function buildRootCauseView(
   remediation: DiagnosisModifiedRemediationKeyView,
 ): DiagnosisModifiedRootCauseView {
   const result = getResult(input);
-  const rankedCandidates = [...(result?.ranked_candidates ?? [])].sort((left, right) => left.rank - right.rank);
+  const rankedCandidates = [...(result?.ranked_candidates ?? [])]
+    .sort((left, right) => left.rank - right.rank)
+    .slice(0, 2);
 
   if (!hasRootCauseConclusion(input)) {
     return {
@@ -1650,7 +1652,7 @@ function buildRootCauseView(
 
   return {
     state: "ready",
-    summary: `${rankedCandidates.length} root causes are listed by confidence.`,
+    summary: `${rankedCandidates.length} root causes are listed by confidence (top 2).`,
     items: rankedCandidates.map((candidate, index) => {
       const candidateRootCause = String(candidate.root_cause ?? "").trim();
       const isPrimary =
@@ -1661,8 +1663,10 @@ function buildRootCauseView(
       const candidateRemediation =
         candidatePlan
           ? buildRemediationFromPlanView(candidatePlan)
-          : isPrimary && fallbackPlan
+          : fallbackPlan
             ? buildRemediationFromPlanView(fallbackPlan)
+            : remediation.state === "ready"
+              ? remediation
             : buildUnavailableCandidateRemediation();
 
       return {

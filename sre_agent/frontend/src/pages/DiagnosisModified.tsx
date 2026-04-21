@@ -2098,13 +2098,6 @@ function DiagnosisModifiedPage() {
             <header className="diagnosis-modified-pane-header diagnosis-modified-pane-header--trace">
               <div>
                 <p>Thinking Trace</p>
-                <span
-                  className="diagnosis-modified-pane-header__sync-stage"
-                  data-stage-id={reportView.progress.activeStepId}
-                  data-testid="diagnosis-modified-trace-sync-stage"
-                >
-                  {getTraceSyncStageLabel(reportView.progress.activeStepId)}
-                </span>
                 <h2>诊断轨迹</h2>
               </div>
               <span>实时推理链路</span>
