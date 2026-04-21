@@ -1665,16 +1665,84 @@ describe("DiagnosisModifiedPage split workspace", () => {
 
     const reportRail = screen.getByTestId("diagnosis-modified-report-rail");
     const hypothesisCard = within(reportRail).getByTestId("diagnosis-modified-hypothesis-card-candidate-redis-demo-initial");
-    expect(within(hypothesisCard).getAllByText("支持证据").length).toBeGreaterThan(0);
-    expect(within(hypothesisCard).getByText("置信度变化")).toBeInTheDocument();
+    expect(within(hypothesisCard).getAllByText("Support evidence").length).toBeGreaterThan(0);
+    expect(within(hypothesisCard).getByText("Confidence updates")).toBeInTheDocument();
     expect(within(hypothesisCard).getByText("Redis timeout observed")).toBeInTheDocument();
 
     await flushPendingTimers();
 
     const settledCard = within(reportRail).getByTestId("diagnosis-modified-hypothesis-card-candidate-redis-demo-final");
-    expect(within(settledCard).getAllByText("支持证据").length).toBeGreaterThan(0);
-    expect(within(settledCard).getByText("置信度变化")).toBeInTheDocument();
+    expect(within(settledCard).getAllByText("Support evidence").length).toBeGreaterThan(0);
+    expect(within(settledCard).getByText("Confidence updates")).toBeInTheDocument();
     expect(within(settledCard).getByText("86%")).toBeInTheDocument();
   });
 });
 
+describe("DiagnosisModifiedPage hypothesis detail toggles after settlement", () => {
+  const mockedBuildLiveView = vi.mocked(diagnosisModifiedModel.buildDiagnosisModifiedLiveView);
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.clearAllMocks();
+    resetDiagnosisStore();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  it("keeps hypothesis details collapsed after root cause settles but allows per-card expansion", () => {
+    mockedBuildLiveView.mockReturnValue({
+      timeline: [
+        {
+          id: "live-msg-hypothesis-settled",
+          kind: "message",
+          role: "assistant",
+          content: "Settled report ready.",
+          timestamp: "2026-04-08T12:00:01.000Z",
+        },
+      ],
+      candidates: [
+        {
+          id: "candidate-settled-1",
+          title: "Redis connection saturation",
+          summary: "Redis timeout correlates with auth retry amplification.",
+          confidence: 0.86,
+          confidenceLabel: "86%",
+          statusLabel: "当前根因",
+          statusTone: "accent",
+          evidenceFor: ["Redis timeout observed"],
+          evidenceAgainst: [],
+          entities: ["redis-primary", "auth-svc"],
+          rank: 1,
+          evidenceSummary: "Redis timeout and retry loop align with alert timing.",
+          distinguishingVerification: "Check Redis saturation before scaling rollout.",
+          isPrimary: true,
+        },
+      ],
+      summary: baseSummary,
+      plan: basePlan,
+    });
+
+    resetDiagnosisStore({
+      session: createDetailedLiveSession("sess-live-hypothesis-settled"),
+      activeSessionId: "sess-live-hypothesis-settled",
+      bootstrapStatus: "ready",
+      traceStatus: "ready",
+      messages: [],
+      bootstrapSession: vi.fn().mockResolvedValue(undefined),
+    });
+
+    renderLivePage("/diagnosis-modified/sess-live-hypothesis-settled");
+
+    expect(screen.queryByText("Support evidence")).not.toBeInTheDocument();
+    const toggle = screen.getByRole("button", { name: "Expand details" });
+    fireEvent.click(toggle);
+    const detailPanel = screen.getByTestId("diagnosis-modified-hypothesis-details-candidate-settled-1");
+    expect(detailPanel).toBeInTheDocument();
+    expect(within(detailPanel).getAllByText("Support evidence").length).toBeGreaterThan(0);
+    expect(within(detailPanel).getByText("Redis timeout observed")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Collapse details" })).toBeInTheDocument();
+  });
+});

@@ -141,6 +141,18 @@ export type DiagnosisModifiedNextActionView = {
 
 export type DiagnosisModifiedRootCauseView = {
   state: ReportSectionState;
+  summary: string;
+  items: DiagnosisModifiedRootCauseItemView[];
+};
+
+export type DiagnosisModifiedRootCauseItemView = {
+  id: string;
+  title: string;
+  summary: string;
+  facts: DiagnosisModifiedReportFact[];
+  remediation: DiagnosisModifiedRemediationKeyView;
+  isPrimary: boolean;
+  rankLabel?: string;
 };
 
 export type DiagnosisModifiedProgressStageId =
@@ -1567,6 +1579,110 @@ function buildRemediation(
   };
 }
 
+function buildRemediationFromPlanView(plan: DiagnosisModifiedPlanView): DiagnosisModifiedRemediationKeyView {
+  return {
+    state: "ready",
+    title: plan.title || plan.description || "Repair plan",
+    detail: plan.description || plan.impactSummary || "Plan is ready.",
+    facts: [
+      { label: "Priority", value: plan.priorityLabel || "--" },
+      { label: "Confidence", value: plan.confidenceLabel || "--" },
+      { label: "Safety", value: plan.safetyLabel || "--" },
+      { label: "Canary", value: plan.canaryLabel || "--" },
+    ],
+    steps: plan.steps.map((step, index) => ({
+      id: step.id,
+      title: step.title,
+      detail: "paramsSummary" in step && step.paramsSummary ? `${step.detail} | ${step.paramsSummary}` : step.detail,
+      statusLabel: step.status === "done" ? "Done" : `Step ${index + 1}`,
+    })),
+  };
+}
+
+function buildUnavailableCandidateRemediation(): DiagnosisModifiedRemediationKeyView {
+  return {
+    state: "empty",
+    title: "Plan pending",
+    detail: "No dedicated remediation plan is available for this root cause yet.",
+    facts: [],
+    steps: [],
+  };
+}
+
+function buildRootCauseView(
+  input: BuildDiagnosisModifiedReportViewInput,
+  conclusion: DiagnosisModifiedReportView["conclusion"],
+  remediation: DiagnosisModifiedRemediationKeyView,
+): DiagnosisModifiedRootCauseView {
+  const result = getResult(input);
+  const rankedCandidates = [...(result?.ranked_candidates ?? [])].sort((left, right) => left.rank - right.rank);
+
+  if (!hasRootCauseConclusion(input)) {
+    return {
+      state: "loading",
+      summary: "Root cause convergence is in progress.",
+      items: [],
+    };
+  }
+
+  if (rankedCandidates.length === 0) {
+    return {
+      state: "ready",
+      summary: "1 root cause is currently confirmed.",
+      items: [
+        {
+          id: "root-cause-primary",
+          title: conclusion.title,
+          summary: conclusion.summary,
+          facts: conclusion.facts,
+          remediation,
+          isPrimary: true,
+          rankLabel: "Rank 1",
+        },
+      ],
+    };
+  }
+
+  const normalizedPrimaryRootCause = String(input.summary?.rootCause ?? result?.root_cause ?? "")
+    .trim()
+    .toLowerCase();
+  const fallbackPlan = derivePlan(input);
+
+  return {
+    state: "ready",
+    summary: `${rankedCandidates.length} root causes are listed by confidence.`,
+    items: rankedCandidates.map((candidate, index) => {
+      const candidateRootCause = String(candidate.root_cause ?? "").trim();
+      const isPrimary =
+        (normalizedPrimaryRootCause.length > 0 && candidateRootCause.toLowerCase() === normalizedPrimaryRootCause) ||
+        (normalizedPrimaryRootCause.length === 0 && index === 0);
+
+      const candidatePlan = candidate.recommended_fix ? mapRemediationPlanToView(candidate.recommended_fix) : undefined;
+      const candidateRemediation =
+        candidatePlan
+          ? buildRemediationFromPlanView(candidatePlan)
+          : isPrimary && fallbackPlan
+            ? buildRemediationFromPlanView(fallbackPlan)
+            : buildUnavailableCandidateRemediation();
+
+      return {
+        id: `root-cause-${candidate.rank}-${sanitizeId(candidateRootCause || `candidate-${index + 1}`)}`,
+        title: candidateRootCause || `Candidate root cause ${index + 1}`,
+        summary: candidate.evidence_summary || conclusion.summary,
+        facts: [
+          { label: "Rank", value: `#${candidate.rank}` },
+          { label: "Layer", value: formatLayer(candidate.root_cause_layer) },
+          { label: "Entities", value: candidate.root_cause_entities?.join(", ") || "--" },
+          { label: "Confidence", value: formatConfidence(candidate.confidence) },
+        ],
+        remediation: candidateRemediation,
+        isPrimary,
+        rankLabel: `Rank ${candidate.rank}`,
+      } satisfies DiagnosisModifiedRootCauseItemView;
+    }),
+  };
+}
+
 export function buildDiagnosisModifiedReportView(
   input: BuildDiagnosisModifiedReportViewInput,
 ): DiagnosisModifiedReportView {
@@ -1578,8 +1694,10 @@ export function buildDiagnosisModifiedReportView(
   const hypotheses = buildHypotheses(input);
   const verification = buildVerification(input);
   const confidence = buildConfidence(input);
-  const rootCauseReady = hasRootCauseConclusion(input);
   const remediation = buildRemediation(input);
+  const conclusion = buildConclusion(input);
+  const rootCause = buildRootCauseView(input, conclusion, remediation);
+  const rootCauseReady = rootCause.state === "ready";
   const progress = buildProgress({
     context,
     hypotheses,
@@ -1596,11 +1714,9 @@ export function buildDiagnosisModifiedReportView(
     hypotheses,
     verification,
     confidence,
-    rootCause: {
-      state: rootCauseReady ? "ready" : "loading",
-    },
+    rootCause,
     rootCauseReady,
-    conclusion: buildConclusion(input),
+    conclusion,
     candidateChanges: buildCandidateChanges(input),
     stage,
     execution,

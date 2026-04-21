@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import type { TopologyLayer, TopologyObject, TopologyObjectType, TopologyRelation } from "../api/types";
 import TopologyCanvas from "../features/topologyExplorer/components/TopologyCanvas";
 import "../features/topologyExplorer/topologyExplorer.css";
@@ -82,7 +82,7 @@ export function ReportSection({
 }
 
 export function SectionLoading({
-  copy = "当前信息生成中，完成后会自动同步到报告。",
+  copy = "Current information is being generated and will sync automatically when ready.",
   variant = "card",
 }: {
   copy?: string;
@@ -263,34 +263,111 @@ export function HypothesisLevelSection({
 
 export function RootCauseLevelSection({
   candidateChanges,
-  conclusion,
   hypothesesState,
-  remediation,
   rootCause,
 }: {
   candidateChanges: DiagnosisModifiedCandidateChangeView[];
-  conclusion: DiagnosisModifiedReportView["conclusion"];
   hypothesesState: DiagnosisModifiedHypothesesView["state"];
-  remediation: DiagnosisModifiedRemediationKeyView;
   rootCause: DiagnosisModifiedRootCauseView;
 }) {
   const rootCauseReady = rootCause.state === "ready";
   const showCandidateFallback = candidateChanges.length > 0 && hypothesesState !== "ready";
+  const rootCauseItems = rootCause.items;
+  const isMultiRootCause = rootCauseItems.length > 1;
+  const rootCauseIdsKey = rootCauseItems.map((item) => item.id).join("|");
+  const [expandedRemediationIds, setExpandedRemediationIds] = useState<string[]>([]);
+
+  useEffect(() => {
+    if (rootCauseItems.length <= 1) {
+      setExpandedRemediationIds(rootCauseItems.map((item) => item.id));
+      return;
+    }
+    setExpandedRemediationIds([]);
+  }, [rootCauseIdsKey, rootCauseItems.length]);
+
+  function toggleItem(itemId: string) {
+    setExpandedRemediationIds((previous) =>
+      previous.includes(itemId) ? previous.filter((id) => id !== itemId) : [...previous, itemId],
+    );
+  }
+
+  function expandAll() {
+    setExpandedRemediationIds(rootCauseItems.map((item) => item.id));
+  }
+
+  function collapseAll() {
+    setExpandedRemediationIds([]);
+  }
 
   return (
     <div className="diagnosis-modified-report-rail__level-stack">
-      <LevelBlock kicker="Confirmed outcome" title="鏍瑰洜缁撹">
+      <LevelBlock kicker="Confirmed outcome" title="Root Causes & Remediation">
         {rootCauseReady ? (
           <>
             <div className="diagnosis-modified-report-rail__callout">
-              <p className="diagnosis-modified-report-rail__callout-label">Confirmed root cause</p>
-              <strong>{conclusion.title}</strong>
-              <p>{conclusion.summary}</p>
+              <p className="diagnosis-modified-report-rail__callout-label">
+                {isMultiRootCause ? "Multi-root-cause view" : "Confirmed root cause"}
+              </p>
+              <strong>{isMultiRootCause ? "Multi-root-cause convergence" : "Single root-cause convergence"}</strong>
+              <p>{rootCause.summary}</p>
             </div>
-            <div className="diagnosis-modified-report-rail__fact-list">
-              {conclusion.facts.map((fact) => (
-                <FactRow fact={fact} key={fact.label} />
-              ))}
+            {isMultiRootCause ? (
+              <div className="diagnosis-modified-report-rail__rootcause-actions">
+                <button
+                  className="diagnosis-modified-report-rail__candidate-detail-toggle"
+                  onClick={expandAll}
+                  type="button"
+                >
+                  Expand all remediation plans
+                </button>
+                <button
+                  className="diagnosis-modified-report-rail__candidate-detail-toggle"
+                  onClick={collapseAll}
+                  type="button"
+                >
+                  Collapse all remediation plans
+                </button>
+              </div>
+            ) : null}
+            <div className="diagnosis-modified-report-rail__stack">
+              {rootCauseItems.map((item) => {
+                const isExpanded = expandedRemediationIds.includes(item.id);
+                return (
+                  <article className="diagnosis-modified-report-rail__candidate" key={item.id}>
+                    <div className="diagnosis-modified-report-rail__candidate-header">
+                      <div className="diagnosis-modified-report-rail__candidate-copy">
+                        <strong>{item.title}</strong>
+                        <p>{item.summary}</p>
+                      </div>
+                      <div className="diagnosis-modified-report-rail__candidate-meta">
+                        <ReportBadge
+                          label={item.isPrimary ? "Primary root cause" : "Candidate root cause"}
+                          tone={item.isPrimary ? "accent" : "neutral"}
+                        />
+                        {item.rankLabel ? <span>{item.rankLabel}</span> : null}
+                      </div>
+                    </div>
+                    <div className="diagnosis-modified-report-rail__fact-list">
+                      {item.facts.map((fact) => (
+                        <FactRow fact={fact} key={`${item.id}-${fact.label}`} />
+                      ))}
+                    </div>
+                    <button
+                      aria-expanded={isExpanded}
+                      className="diagnosis-modified-report-rail__candidate-detail-toggle"
+                      onClick={() => toggleItem(item.id)}
+                      type="button"
+                    >
+                      {isExpanded ? "Collapse remediation plan" : "Expand remediation plan"}
+                    </button>
+                    {isExpanded ? (
+                      <div className="diagnosis-modified-report-rail__candidate-details">
+                        <RemediationKeySection remediation={item.remediation} />
+                      </div>
+                    ) : null}
+                  </article>
+                );
+              })}
             </div>
             {showCandidateFallback ? (
               <div className="diagnosis-modified-report-rail__level-inset">
@@ -300,13 +377,10 @@ export function RootCauseLevelSection({
             ) : null}
           </>
         ) : (
-          <SectionLoading copy="正在等待根因结论收敛。" variant="list" />
+          <SectionLoading copy="Waiting for report data." variant="list" />
         )}
       </LevelBlock>
 
-      <LevelBlock kicker="Attached remediation" title="瀵瑰簲淇鏂规">
-        <RemediationKeySection remediation={remediation} />
-      </LevelBlock>
     </div>
   );
 }
@@ -367,7 +441,7 @@ function resolveSummaryProcessStatus({
 }) {
   if (!stage.isActive && remediation.state === "ready") {
     return {
-      text: "宸茬敓鎴愭牴鍥犲拰淇鏂规",
+      text: "Root cause and remediation are ready.",
       blinking: false,
     } as const;
   }
@@ -375,32 +449,32 @@ function resolveSummaryProcessStatus({
   switch (progress.activeStepId) {
     case "context":
       return {
-        text: "正在构建影响拓扑上下文。",
+        text: "Building impact topology context.",
         blinking: true,
       } as const;
     case "hypotheses":
       return {
-        text: "已完成影响拓扑，正在生成候选假设。",
+        text: "Generating candidate hypotheses.",
         blinking: true,
       } as const;
     case "verification":
       return {
-        text: "已生成假设，正在验证置信度。",
+        text: "Validating evidence against hypotheses.",
         blinking: true,
       } as const;
     case "confidence":
       return {
-        text: "已完成验证证据，正在更新置信度。",
+        text: "Updating confidence across candidates.",
         blinking: true,
       } as const;
     case "remediation":
       return {
-        text: "已生成置信度，正在生成修复方案。",
+        text: "Generating remediation guidance.",
         blinking: true,
       } as const;
     default:
       return {
-        text: "诊断流程进行中。",
+        text: "Diagnosis is in progress.",
         blinking: true,
       } as const;
   }
@@ -426,7 +500,7 @@ function SummaryProcessStatus({
 
 export function DiagnosisContextSection({ context }: { context: DiagnosisModifiedContextView }) {
   if (context.state !== "ready") {
-    return <SectionLoading copy="正在等待问题节点与受影响节点的上下文。" variant="graph" />;
+    return <SectionLoading copy="Waiting for context data." variant="graph" />;
   }
 
   return (
@@ -528,7 +602,7 @@ function ContextTopologyGraph({ context }: { context: DiagnosisModifiedContextVi
   return (
     <div
       className="diagnosis-modified-report-rail__context-graph topology-route topology-route--modified"
-      aria-label="璇婃柇涓婁笅鏂囨嫇鎵戝浘"
+      aria-label="鐠囧﹥鏌囨稉濠佺瑓閺傚洦瀚囬幍鎴濇禈"
     >
       <TopologyCanvas
         edges={topologyEdges}
@@ -553,7 +627,7 @@ export function RootCauseAssessmentSection({
   rootCause: DiagnosisModifiedRootCauseView;
 }) {
   if (rootCause.state !== "ready") {
-    return <SectionLoading copy="正在等待候选根因与证据对比。" variant="list" />;
+    return <SectionLoading copy="Waiting for report data." variant="list" />;
   }
 
   return <CandidateChangesSection candidateChanges={candidateChanges} />;
@@ -573,34 +647,54 @@ function HypothesisSection({
 }: {
   hypotheses: DiagnosisModifiedHypothesesView;
 }) {
+  const [expandedCollapsedDetails, setExpandedCollapsedDetails] = useState<string[]>([]);
+
   if (hypotheses.state !== "ready") {
-    return <SectionLoading copy="正在等待进入候选假设阶段。" variant="list" />;
+    return <SectionLoading copy="Waiting for report data." variant="list" />;
+  }
+
+  function toggleCollapsedDetails(itemId: string) {
+    setExpandedCollapsedDetails((previous) =>
+      previous.includes(itemId) ? previous.filter((id) => id !== itemId) : [...previous, itemId],
+    );
   }
 
   return (
     <div className="diagnosis-modified-report-rail__subsection">
       <div className="diagnosis-modified-report-rail__stack">
-        {hypotheses.items.map((item) => (
-          <article
-            className="diagnosis-modified-report-rail__candidate"
-            data-testid={`diagnosis-modified-hypothesis-card-${item.id}`}
-            key={item.id}
-          >
-            <div className="diagnosis-modified-report-rail__candidate-header">
-              <div className="diagnosis-modified-report-rail__candidate-copy">
-                <strong>{item.title}</strong>
-                <p>{item.summary}</p>
+        {hypotheses.items.map((item) => {
+          const showDetails =
+            hypotheses.detailMode === "expanded" || expandedCollapsedDetails.includes(item.id);
+
+          return (
+            <article
+              className="diagnosis-modified-report-rail__candidate"
+              data-testid={`diagnosis-modified-hypothesis-card-${item.id}`}
+              key={item.id}
+            >
+              <div className="diagnosis-modified-report-rail__candidate-header">
+                <div className="diagnosis-modified-report-rail__candidate-copy">
+                  <strong>{item.title}</strong>
+                  <p>{item.summary}</p>
+                </div>
+                <div className="diagnosis-modified-report-rail__candidate-meta">
+                  <ReportBadge label={item.statusLabel} tone={item.tone} />
+                  <span>{item.confidenceLabel}</span>
+                </div>
               </div>
-              <div className="diagnosis-modified-report-rail__candidate-meta">
-                <ReportBadge label={item.statusLabel} tone={item.tone} />
-                <span>{item.confidenceLabel}</span>
-              </div>
-            </div>
-            {hypotheses.detailMode === "expanded" ? (
-              <HypothesisDetailSections item={item} />
-            ) : null}
-          </article>
-        ))}
+              {hypotheses.detailMode === "collapsed" ? (
+                <button
+                  className="diagnosis-modified-report-rail__candidate-detail-toggle"
+                  onClick={() => toggleCollapsedDetails(item.id)}
+                  type="button"
+                >
+                  {showDetails ? "Collapse details" : "Expand details"}
+                </button>
+              ) : null}
+              {showDetails ? <HypothesisDetailSections item={item} /> : null}
+            </article>
+          );
+        })}
       </div>
     </div>
   );
@@ -632,24 +726,24 @@ function HypothesisDetailSections({
       {supportItems.length > 0 ? (
         <HypothesisDetailGroup
           entries={supportItems}
-          title="支持证据"
+          title="Support evidence"
         />
       ) : null}
       {againstItems.length > 0 ? (
         <HypothesisDetailGroup
           entries={againstItems}
-          title="反证"
+          title="Counter-evidence"
         />
       ) : null}
       {validationItems.length > 0 ? (
         <HypothesisDetailGroup
           entries={validationItems}
-          title="继续验证"
+          title="Further validation"
         />
       ) : null}
       {item.confidenceUpdates.length > 0 ? (
         <div className="diagnosis-modified-report-rail__candidate-detail-group">
-          <p className="diagnosis-modified-report-rail__callout-label">置信度变化</p>
+          <p className="diagnosis-modified-report-rail__callout-label">Confidence updates</p>
           <div className="diagnosis-modified-report-rail__stack">
             {item.confidenceUpdates.map((entry) => (
               <article className="diagnosis-modified-report-rail__feedback" key={entry.id}>
@@ -693,7 +787,7 @@ function HypothesisDetailGroup({
 
 function VerificationSection({ verification }: { verification: DiagnosisModifiedVerificationView }) {
   if (verification.state !== "ready") {
-    return <SectionLoading copy="正在等待验证证据和后续验证动作。" variant="list" />;
+    return <SectionLoading copy="Waiting for report data." variant="list" />;
   }
 
   return (
@@ -719,7 +813,7 @@ function VerificationSection({ verification }: { verification: DiagnosisModified
 
 function ConfidenceSection({ confidence }: { confidence: DiagnosisModifiedConfidenceView }) {
   if (confidence.state !== "ready") {
-    return <SectionLoading copy="正在等待置信度变化与收敛。" variant="list" />;
+    return <SectionLoading copy="Waiting for report data." variant="list" />;
   }
 
   const visibleUpdates = confidence.updates.filter(
@@ -753,7 +847,7 @@ function CandidateChangesSection({
   candidateChanges: DiagnosisModifiedCandidateChangeView[];
 }) {
   if (candidateChanges.length === 0) {
-    return <p className="diagnosis-modified-report-rail__empty">候选根因会在结论稳定后显示。</p>;
+    return <p className="diagnosis-modified-report-rail__empty">Candidate root causes will appear after convergence.</p>;
   }
 
   return (
@@ -779,20 +873,24 @@ function CandidateChangesSection({
 export function RemediationKeySection({
   remediation,
 }: {
-  remediation: DiagnosisModifiedRemediationKeyView;
+  remediation?: DiagnosisModifiedRemediationKeyView;
 }) {
+  if (!remediation) {
+    return <SectionLoading copy="Waiting for report data." variant="list" />;
+  }
+
   if (remediation.state === "loading") {
-    return <SectionLoading copy="正在等待修复方案结论。" variant="list" />;
+    return <SectionLoading copy="Waiting for report data." variant="list" />;
   }
 
   if (remediation.state === "empty") {
-    return <p className="diagnosis-modified-report-rail__empty">当前还没有可收口的修复关键信息。</p>;
+    return <p className="diagnosis-modified-report-rail__empty">No remediation key points are available yet.</p>;
   }
 
   return (
     <div className="diagnosis-modified-report-rail__remediation">
       <div className="diagnosis-modified-report-rail__status-block">
-        <p className="diagnosis-modified-report-rail__callout-label">修复方案结论</p>
+        <p className="diagnosis-modified-report-rail__callout-label">淇鏂规缁撹</p>
         <strong>{remediation.title}</strong>
         <p>{remediation.detail}</p>
       </div>
@@ -817,4 +915,6 @@ export function RemediationKeySection({
     </div>
   );
 }
+
+
 

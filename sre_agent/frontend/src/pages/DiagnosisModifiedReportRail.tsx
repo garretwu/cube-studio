@@ -38,9 +38,7 @@ function DiagnosisModifiedReportRail({
           >
             <RootCauseLevelSection
               candidateChanges={view.candidateChanges}
-              conclusion={view.conclusion}
               hypothesesState={view.hypotheses.state}
-              remediation={view.remediation}
               rootCause={view.rootCause}
             />
           </ReportSection>
