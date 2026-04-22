@@ -191,7 +191,11 @@ function RemediationJumpButton({
 }
 
 function shouldShowFlowRemediationEntry(status?: string) {
-  return FLOW_REMEDIATION_ENTRY_STATUSES.has(String(status ?? "").trim().toLowerCase());
+  const normalizedStatus = String(status ?? "").trim().toLowerCase();
+  if (normalizedStatus === "approval_required" || normalizedStatus === "awaiting_approval") {
+    return false;
+  }
+  return FLOW_REMEDIATION_ENTRY_STATUSES.has(normalizedStatus);
 }
 
 function FlowRemediationEntry({
@@ -449,6 +453,8 @@ function getTraceSyncStageLabel(stageId: string) {
 function TraceStepFrame({
   type,
   title,
+  hideTitle = false,
+  titleClassName,
   meta,
   summary,
   children,
@@ -457,6 +463,8 @@ function TraceStepFrame({
 }: {
   type: TraceStepKind;
   title: string;
+  hideTitle?: boolean;
+  titleClassName?: string;
   meta?: string;
   summary?: string;
   children?: ReactNode;
@@ -464,6 +472,8 @@ function TraceStepFrame({
   testId?: string;
 }) {
   const typeMeta = TRACE_STEP_META[type];
+  const shouldRenderHeader = !hideTitle || Boolean(meta);
+  const isMetaOnlyHeader = hideTitle && Boolean(meta);
 
   return (
     <li
@@ -474,12 +484,21 @@ function TraceStepFrame({
         <span>{typeMeta.glyph}</span>
       </div>
       <article className="diagnosis-modified-trace-step__body">
-        <header className="diagnosis-modified-trace-step__header">
-          <div>
-            <h3 className="diagnosis-modified-trace-step__title">{title}</h3>
-          </div>
-          {meta ? <span className="diagnosis-modified-trace-step__meta">{meta}</span> : null}
-        </header>
+        {shouldRenderHeader ? (
+          <header
+            className={cn(
+              "diagnosis-modified-trace-step__header",
+              isMetaOnlyHeader && "diagnosis-modified-trace-step__header--meta-only",
+            )}
+          >
+            {!hideTitle ? (
+              <div>
+                <h3 className={cn("diagnosis-modified-trace-step__title", titleClassName)}>{title}</h3>
+              </div>
+            ) : null}
+            {meta ? <span className="diagnosis-modified-trace-step__meta">{meta}</span> : null}
+          </header>
+        ) : null}
         {summary ? <p className="diagnosis-modified-trace-step__summary">{summary}</p> : null}
         {children ? <div className="diagnosis-modified-trace-step__details">{children}</div> : null}
       </article>
@@ -673,6 +692,7 @@ function ThinkingBlock({
     >
       <div className="diagnosis-modified-process-row">
         <div className="diagnosis-modified-process-row__body">
+          <>
         <button
           className={cn("diagnosis-modified-thinking__toggle", "diagnosis-modified-thinking__toggle--interactive")}
           onClick={() => {
@@ -703,6 +723,7 @@ function ThinkingBlock({
             </div>
           </div>
         ) : null}
+          </>
       </div>
       </div>
     </TraceStepFrame>

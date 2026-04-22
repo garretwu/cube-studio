@@ -380,6 +380,326 @@ describe("DiagnosisModifiedPage sequential playback", () => {
     expect(screen.getByText("demo-started")).toBeInTheDocument();
   });
 
+  it("renders a structured empty report preview before diagnosis starts", () => {
+    renderDemoPage();
+
+    const reportRail = screen.getByTestId("diagnosis-modified-report-rail");
+    const reportHeader = within(reportRail).getByTestId("diagnosis-modified-report-header");
+    const reportBody = within(reportRail).getByTestId("diagnosis-modified-report-body");
+
+    expect(screen.getByText("Analysis Report")).toBeInTheDocument();
+    expect(within(reportHeader).getByText("诊断报告")).toBeInTheDocument();
+    expect(
+      within(reportHeader).getByText("诊断开始后，将在此持续生成结构化分析结论与修复建议"),
+    ).toBeInTheDocument();
+    expect(within(reportHeader).getByText("未开始")).toBeInTheDocument();
+    expect(within(reportHeader).queryByText("处理中")).not.toBeInTheDocument();
+    expect(within(reportHeader).queryByText("Updated")).not.toBeInTheDocument();
+
+    expect(reportBody).toHaveClass("diagnosis-modified-report-rail__body--empty");
+    expect(within(reportBody).getByText("诊断拓扑信息")).toBeInTheDocument();
+    expect(within(reportBody).getByText("候选假设验证")).toBeInTheDocument();
+    expect(within(reportBody).getByText("根因结论和修复方案")).toBeInTheDocument();
+    expect(within(reportBody).queryByText("诊断摘要")).not.toBeInTheDocument();
+    expect(within(reportBody).queryByText("影响范围")).not.toBeInTheDocument();
+    expect(within(reportBody).queryByText("候选假设")).not.toBeInTheDocument();
+    expect(within(reportBody).queryByText("根因结论")).not.toBeInTheDocument();
+    expect(within(reportBody).queryByText("修复建议")).not.toBeInTheDocument();
+    expect(within(reportBody).queryByText("执行反馈")).not.toBeInTheDocument();
+    expect(within(reportBody).queryByText(/Waiting for/i)).not.toBeInTheDocument();
+    expect(within(reportBody).queryByText("生成中")).not.toBeInTheDocument();
+    expect(within(reportBody).queryByTestId("diagnosis-modified-report-section-loading")).not.toBeInTheDocument();
+  });
+
+  it("keeps all report modules in placeholder state immediately after demo starts", async () => {
+    mockedBuildDemoScenario.mockReturnValue({
+      initialTimeline: [
+        {
+          id: "demo-user-preview-transition",
+          kind: "message",
+          role: "user",
+          content: "diagnose auth latency",
+          timestamp: "2026-04-08T09:59:00.000Z",
+        },
+      ],
+      events: [
+        {
+          delayMs: 1200,
+          type: "append",
+          item: {
+            id: "assistant-preview-transition",
+            kind: "message",
+            role: "assistant",
+            content: "demo transition",
+            timestamp: "2026-04-08T09:59:01.000Z",
+          },
+        },
+      ],
+      candidates: [],
+      summary: baseSummary,
+      plan: basePlan,
+    });
+
+    renderDemoPage();
+    fireEvent.click(screen.getByRole("button", { name: /Start Demo/i }));
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    const reportRail = screen.getByTestId("diagnosis-modified-report-rail");
+    expect(within(reportRail).getByTestId("diagnosis-modified-report-placeholder-context")).toBeInTheDocument();
+    expect(within(reportRail).getByTestId("diagnosis-modified-report-placeholder-hypotheses")).toBeInTheDocument();
+    expect(within(reportRail).getByTestId("diagnosis-modified-report-placeholder-rootcause")).toBeInTheDocument();
+    expect(within(reportRail).getByTestId("diagnosis-modified-report-progressive-context")).toHaveAttribute(
+      "data-state",
+      "placeholder",
+    );
+    expect(within(reportRail).getByTestId("diagnosis-modified-report-progressive-hypotheses")).toHaveAttribute(
+      "data-state",
+      "placeholder",
+    );
+    expect(within(reportRail).getByTestId("diagnosis-modified-report-progressive-rootcause")).toHaveAttribute(
+      "data-state",
+      "placeholder",
+    );
+  });
+
+  it("reveals report modules progressively in demo mode as each section data becomes ready", async () => {
+    mockedBuildDemoScenario.mockReturnValue({
+      initialTimeline: [
+        {
+          id: "demo-user-progressive-report",
+          kind: "message",
+          role: "user",
+          content: "diagnose auth latency",
+          timestamp: "2026-04-08T09:59:00.000Z",
+        },
+      ],
+      events: [
+        {
+          delayMs: 0,
+          type: "append",
+          item: {
+            id: "demo-tool-topology-progressive",
+            kind: "tool",
+            toolName: "fetch_topology_context",
+            params: {},
+            status: "success",
+            summaryLines: ["topology parsed"],
+            rawResult: {
+              roots: ["redis-primary"],
+              affected_entities: [{ id: "service:auth-svc", name: "auth-svc" }],
+              summary: "topology blast radius: redis-primary impacts auth-svc",
+            },
+            timestamp: "2026-04-08T09:59:01.000Z",
+          },
+        },
+        {
+          delayMs: 1,
+          type: "update_candidates",
+          candidates: [
+            {
+              id: "candidate-progressive-demo",
+              title: "Redis connection saturation",
+              summary: "Redis timeout correlates with auth retries.",
+              confidence: 0.78,
+              confidenceLabel: "78%",
+              statusLabel: "候选 1",
+              statusTone: "neutral",
+              evidenceFor: ["Redis timeout observed"],
+              evidenceAgainst: [],
+              entities: ["redis-primary", "auth-svc"],
+              rank: 1,
+              evidenceSummary: "Redis timeout correlates with auth retries.",
+              distinguishingVerification: "Check Redis saturation before scaling rollout.",
+              isPrimary: false,
+            },
+          ],
+        },
+        {
+          delayMs: 2,
+          type: "complete",
+        },
+      ],
+      candidates: [],
+      summary: baseSummary,
+      plan: basePlan,
+      session: createDetailedLiveSession("demo-progressive-report"),
+    });
+
+    renderDemoPage();
+    fireEvent.click(screen.getByRole("button", { name: /Start Demo/i }));
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    const reportRail = screen.getByTestId("diagnosis-modified-report-rail");
+    expect(within(reportRail).getByTestId("diagnosis-modified-report-progressive-context")).toHaveAttribute(
+      "data-state",
+      "placeholder",
+    );
+    expect(within(reportRail).getByTestId("diagnosis-modified-report-progressive-hypotheses")).toHaveAttribute(
+      "data-state",
+      "placeholder",
+    );
+    expect(within(reportRail).getByTestId("diagnosis-modified-report-progressive-rootcause")).toHaveAttribute(
+      "data-state",
+      "placeholder",
+    );
+
+    await advance(5);
+
+    expect(within(reportRail).getByTestId("diagnosis-modified-report-progressive-context")).toHaveAttribute(
+      "data-state",
+      "placeholder",
+    );
+    expect(within(reportRail).getByTestId("diagnosis-modified-report-progressive-hypotheses")).toHaveAttribute(
+      "data-state",
+      "ready",
+    );
+    expect(within(reportRail).getByTestId("diagnosis-modified-report-progressive-rootcause")).toHaveAttribute(
+      "data-state",
+      "placeholder",
+    );
+
+    await advance(5);
+
+    expect(within(reportRail).getByTestId("diagnosis-modified-report-progressive-rootcause")).toHaveAttribute(
+      "data-state",
+      "ready",
+    );
+    expect(within(reportRail).queryByTestId("diagnosis-modified-report-placeholder-rootcause")).not.toBeInTheDocument();
+  });
+
+  it("applies the same progressive reveal strategy for live sessions", async () => {
+    let liveViewSource: ReturnType<typeof diagnosisModifiedModel.buildDiagnosisModifiedLiveView> = {
+      timeline: [],
+      candidates: [],
+      summary: undefined,
+      plan: undefined,
+    };
+
+    mockedBuildLiveView.mockImplementation(() => liveViewSource);
+
+    resetDiagnosisStore({
+      session: createLiveSession("sess-live-progressive-report"),
+      activeSessionId: "sess-live-progressive-report",
+      bootstrapStatus: "ready",
+      traceStatus: "ready",
+      messages: [],
+      bootstrapSession: vi.fn().mockResolvedValue(undefined),
+    });
+
+    renderLivePage("/diagnosis-modified/sess-live-progressive-report");
+
+    const reportRail = screen.getByTestId("diagnosis-modified-report-rail");
+    expect(within(reportRail).getByTestId("diagnosis-modified-report-progressive-context")).toHaveAttribute(
+      "data-state",
+      "ready",
+    );
+    expect(within(reportRail).getByTestId("diagnosis-modified-report-progressive-hypotheses")).toHaveAttribute(
+      "data-state",
+      "placeholder",
+    );
+    expect(within(reportRail).getByTestId("diagnosis-modified-report-progressive-rootcause")).toHaveAttribute(
+      "data-state",
+      "placeholder",
+    );
+
+    await act(async () => {
+      liveViewSource = {
+        timeline: [
+          {
+            id: "live-tool-topology-progressive",
+            kind: "tool",
+            toolName: "fetch_topology_context",
+            params: {},
+            status: "success",
+            summaryLines: ["topology parsed"],
+            rawResult: {
+              roots: ["redis-primary"],
+              affected_entities: [{ id: "service:auth-svc", name: "auth-svc" }],
+              summary: "topology blast radius: redis-primary impacts auth-svc",
+            },
+            timestamp: "2026-04-08T12:00:01.000Z",
+          },
+        ],
+        candidates: [],
+        summary: undefined,
+        plan: undefined,
+      };
+
+      useDiagnosisStore.setState((state) => ({
+        ...state,
+        session: { ...(state.session as DiagnosisSession) },
+      }));
+      await Promise.resolve();
+    });
+
+    expect(within(reportRail).getByTestId("diagnosis-modified-report-progressive-context")).toHaveAttribute(
+      "data-state",
+      "ready",
+    );
+    expect(within(reportRail).getByTestId("diagnosis-modified-report-progressive-hypotheses")).toHaveAttribute(
+      "data-state",
+      "placeholder",
+    );
+
+    await act(async () => {
+      liveViewSource = {
+        ...liveViewSource,
+        candidates: [
+          {
+            id: "candidate-progressive-live",
+            title: "Redis connection saturation",
+            summary: "Redis timeout correlates with auth retries.",
+            confidence: 0.83,
+            confidenceLabel: "83%",
+            statusLabel: "Current candidate",
+            statusTone: "accent",
+            evidenceFor: ["Redis timeout observed"],
+            evidenceAgainst: [],
+            entities: ["redis-primary", "auth-svc"],
+            rank: 1,
+            evidenceSummary: "Redis timeout correlates with auth retries.",
+            distinguishingVerification: "Check Redis saturation before scaling rollout.",
+            isPrimary: true,
+          },
+        ],
+      };
+
+      useDiagnosisStore.setState((state) => ({
+        ...state,
+        session: { ...(state.session as DiagnosisSession) },
+      }));
+      await Promise.resolve();
+    });
+
+    expect(within(reportRail).getByTestId("diagnosis-modified-report-progressive-hypotheses")).toHaveAttribute(
+      "data-state",
+      "ready",
+    );
+    expect(within(reportRail).getByTestId("diagnosis-modified-report-progressive-rootcause")).toHaveAttribute(
+      "data-state",
+      "placeholder",
+    );
+
+    await act(async () => {
+      useDiagnosisStore.setState((state) => ({
+        ...state,
+        session: createDetailedLiveSession("sess-live-progressive-report"),
+      }));
+      await Promise.resolve();
+    });
+
+    expect(within(reportRail).getByTestId("diagnosis-modified-report-progressive-rootcause")).toHaveAttribute(
+      "data-state",
+      "ready",
+    );
+  });
+
   it("shows the second assistant message only after the first stream completes", async () => {
     mockedBuildDemoScenario.mockReturnValue({
       initialTimeline: [
@@ -478,6 +798,45 @@ describe("DiagnosisModifiedPage sequential playback", () => {
 
     expect(screen.getByText("Thought completed")).toBeInTheDocument();
     expect(screen.queryByText("Agent is understanding the request")).not.toBeInTheDocument();
+  });
+
+  it("keeps active thinking title in the header position without duplicate body copy", async () => {
+    mockedBuildDemoScenario.mockReturnValue({
+      initialTimeline: [
+        {
+          id: "demo-user-thinking-duplication",
+          kind: "message",
+          role: "user",
+          content: "demo thinking duplication",
+          timestamp: "2026-04-08T10:20:00.000Z",
+        },
+      ],
+      events: [
+        {
+          delayMs: 0,
+          type: "append",
+          item: {
+            id: "thinking-duplication-1",
+            kind: "thinking",
+            title: "Agent reasoning in progress",
+            content: "Collecting metrics and correlating the alert timeline.",
+            timestamp: "2026-04-08T10:20:01.000Z",
+            status: "thinking",
+          },
+        },
+      ],
+      candidates: [],
+      summary: baseSummary,
+      plan: basePlan,
+    });
+
+    renderDemoPage();
+    fireEvent.click(screen.getByRole("button", { name: /Start Demo/i }));
+
+    await advance(120);
+
+    expect(screen.getByRole("heading", { name: "推理中" })).toBeInTheDocument();
+    expect(screen.queryByText("Agent reasoning in progress")).not.toBeInTheDocument();
   });
 
   it("shows only the first 200 chars for completed long thinking content and supports expand", async () => {
@@ -960,7 +1319,6 @@ describe("DiagnosisModifiedPage sequential playback", () => {
     });
 
     const cases = [
-      ["approval_required", "\u5ba1\u6279\u4fee\u590d"],
       ["validating", "\u67e5\u770b\u6267\u884c"],
       ["failed", "\u67e5\u770b\u4fee\u590d\u8bb0\u5f55"],
     ] as const;
@@ -1005,7 +1363,7 @@ describe("DiagnosisModifiedPage sequential playback", () => {
     });
 
     resetDiagnosisStore({
-      session: createSessionWithStatus("sess-flow-open", "awaiting_approval"),
+      session: createSessionWithStatus("sess-flow-open", "validating"),
       activeSessionId: "sess-flow-open",
       bootstrapStatus: "ready",
       traceStatus: "ready",
@@ -1017,7 +1375,7 @@ describe("DiagnosisModifiedPage sequential playback", () => {
 
     fireEvent.click(
       within(screen.getByTestId("diagnosis-modified-flow-remediation-entry")).getByRole("button", {
-        name: "\u5ba1\u6279\u4fee\u590d",
+        name: "\u67e5\u770b\u6267\u884c",
       }),
     );
 
@@ -1308,7 +1666,7 @@ describe("DiagnosisModifiedPage split workspace", () => {
     expect(reportRail).toBeInTheDocument();
     const overview = within(reportRail).getByTestId("diagnosis-modified-report-overview");
     const reportHeader = within(reportRail).getByTestId("diagnosis-modified-report-header");
-    expect(overview).toHaveTextContent("Redis connection saturation");
+    expect(overview).toHaveTextContent("04-08Latency spike诊断报告");
     expect(reportHeader).toHaveTextContent("Auth login latency spikes and partial 5xx responses.");
     expect(reportHeader).toHaveTextContent("Latency spike");
     expect(reportHeader).toHaveTextContent("2026-04-08T12:00:08.000Z");
@@ -1331,14 +1689,13 @@ describe("DiagnosisModifiedPage split workspace", () => {
     expect(within(traceList).getByText("形成阶段判断")).toBeInTheDocument();
     expect(within(traceList).getByText("已生成修复建议")).toBeInTheDocument();
     const actionStep = screen.getByTestId("diagnosis-modified-action-generated-step");
-    expect(within(actionStep).getByTestId("diagnosis-modified-flow-remediation-entry")).toBeInTheDocument();
+    expect(within(actionStep).queryByTestId("diagnosis-modified-flow-remediation-entry")).not.toBeInTheDocument();
     expect(within(actionStep).getByTestId("diagnosis-modified-approval-surface")).toBeInTheDocument();
     expect(actionStep.querySelector(".diagnosis-modified-trace-step__rail")).toBeTruthy();
     expect(container.querySelector(".diagnosis-modified-message-row--user")).toBeNull();
     expect(within(reportRail).getByText("诊断拓扑信息")).toBeInTheDocument();
     expect(within(reportRail).getByText("候选假设验证")).toBeInTheDocument();
-    expect(within(reportRail).getByText("结论已趋于稳定，默认折叠细节；可按候选展开查看证据与置信度变化。")).toBeInTheDocument();
-    expect(within(reportRail).getByText("根因级信息")).toBeInTheDocument();
+    expect(within(reportRail).getByText("根因结论和修复方案")).toBeInTheDocument();
     expect(within(reportRail).queryByText("推理进展")).not.toBeInTheDocument();
     expect(within(reportRail).queryByText("影响拓扑")).not.toBeInTheDocument();
     expect(within(reportRail).queryByText("诊断进度")).not.toBeInTheDocument();
@@ -1357,7 +1714,15 @@ describe("DiagnosisModifiedPage split workspace", () => {
     expect(container.querySelector(".diagnosis-modified-report-rail__context-graph")).toBeTruthy();
     expect(container.querySelector(".diagnosis-modified-report-rail__context-lists")).toBeNull();
     expect(container.querySelectorAll(".diagnosis-modified-report-rail__section").length).toBe(3);
-    expect(screen.getAllByText("Redis connection saturation").length).toBeGreaterThanOrEqual(1);
+    expect(within(reportRail).getAllByText("RANK #1：Redis connection saturation").length).toBeGreaterThan(0);
+    expect(
+      within(reportRail).getAllByText("Throttle rollout and validate Redis recovery before expanding.").length,
+    ).toBeGreaterThan(0);
+    expect(within(reportRail).queryByText(/^Rank$/)).not.toBeInTheDocument();
+    expect(within(reportRail).queryByText("Layer")).not.toBeInTheDocument();
+    expect(within(reportRail).queryByText("Entities")).not.toBeInTheDocument();
+    expect(within(reportRail).queryByText("Confidence")).not.toBeInTheDocument();
+    expect(within(reportRail).getAllByText(/置信度/).length).toBeGreaterThan(0);
     expect(within(reportRail).queryByText("Execute 10% canary first, then observe Redis timeout recovery.")).not.toBeInTheDocument();
     expect(screen.queryByTestId("diagnosis-modified-report-rail-loading")).not.toBeInTheDocument();
   });
@@ -2170,7 +2535,7 @@ describe("DiagnosisModifiedPage split workspace", () => {
     expect(screen.queryByText("Auto summary")).not.toBeInTheDocument();
     expect(within(reportRail).getByText("诊断拓扑信息")).toBeInTheDocument();
     expect(within(reportRail).getByText("候选假设验证")).toBeInTheDocument();
-    expect(within(reportRail).getByText("根因级信息")).toBeInTheDocument();
+    expect(within(reportRail).getByText("根因结论和修复方案")).toBeInTheDocument();
     expect(within(reportRail).queryByText("推理进展")).not.toBeInTheDocument();
     expect(within(reportRail).queryByText("影响拓扑")).not.toBeInTheDocument();
     expect(within(reportRail).queryByText("诊断进度")).not.toBeInTheDocument();
@@ -2180,7 +2545,8 @@ describe("DiagnosisModifiedPage split workspace", () => {
     expect(screen.queryByText("关键证据")).toBeNull();
     expect(screen.queryByText("修复建议")).not.toBeInTheDocument();
     expect(screen.queryByTestId("diagnosis-modified-report-rail-loading")).not.toBeInTheDocument();
-    expect(screen.getAllByTestId("diagnosis-modified-report-section-loading").length).toBeGreaterThanOrEqual(1);
+    expect(within(reportRail).queryByTestId("diagnosis-modified-report-section-loading")).not.toBeInTheDocument();
+    expect(within(reportRail).getByTestId("diagnosis-modified-report-placeholder-rootcause")).toBeInTheDocument();
   });
 
   it("shows per-hypothesis evidence and confidence details during demo convergence and keeps the settled view available", async () => {
@@ -2274,16 +2640,30 @@ describe("DiagnosisModifiedPage split workspace", () => {
 
     const reportRail = screen.getByTestId("diagnosis-modified-report-rail");
     const hypothesisCard = within(reportRail).getByTestId("diagnosis-modified-hypothesis-card-candidate-redis-demo-initial");
-    expect(within(hypothesisCard).getAllByText("Support evidence").length).toBeGreaterThan(0);
-    expect(within(hypothesisCard).getByText("Confidence updates")).toBeInTheDocument();
+    expect(within(hypothesisCard).getAllByText("支持证据").length).toBeGreaterThan(0);
+    expect(within(hypothesisCard).queryByText("Confidence updates")).not.toBeInTheDocument();
     expect(within(hypothesisCard).getByText("Redis timeout observed")).toBeInTheDocument();
+    expect(within(hypothesisCard).getByText("46%")).toBeInTheDocument();
+    expect(within(hypothesisCard).getByText("有可能")).toHaveClass("diagnosis-modified-badge--warning");
+    expect(within(hypothesisCard).getByRole("button", { name: "收起证据链" })).toBeInTheDocument();
+    expect(within(hypothesisCard).queryByText("Primary root cause")).not.toBeInTheDocument();
+    expect(within(hypothesisCard).queryByText("Candidate root cause")).not.toBeInTheDocument();
+    expect(within(hypothesisCard).queryByRole("button", { name: "Expand details" })).not.toBeInTheDocument();
 
     await flushPendingTimers();
 
     const settledCard = within(reportRail).getByTestId("diagnosis-modified-hypothesis-card-candidate-redis-demo-final");
-    expect(within(settledCard).getAllByText("Support evidence").length).toBeGreaterThan(0);
-    expect(within(settledCard).getByText("Confidence updates")).toBeInTheDocument();
+    const settledToggle = within(settledCard).queryByRole("button", { name: "展开证据链" });
+    if (settledToggle) {
+      fireEvent.click(settledToggle);
+    }
+    const settledDetails = within(settledCard).getByTestId("diagnosis-modified-hypothesis-details-candidate-redis-demo-final");
+    expect(within(settledDetails).getAllByText("支持证据").length).toBeGreaterThan(0);
+    expect(within(settledDetails).queryByText("Confidence updates")).not.toBeInTheDocument();
     expect(within(settledCard).getByText("86%")).toBeInTheDocument();
+    expect(within(settledCard).getByText("已确认")).toHaveClass("diagnosis-modified-badge--success");
+    expect(within(settledCard).queryByText("Primary root cause")).not.toBeInTheDocument();
+    expect(within(settledCard).queryByText("Candidate root cause")).not.toBeInTheDocument();
   });
 });
 
@@ -2345,13 +2725,18 @@ describe("DiagnosisModifiedPage hypothesis detail toggles after settlement", () 
 
     renderLivePage("/diagnosis-modified/sess-live-hypothesis-settled");
 
-    expect(screen.queryByText("Support evidence")).not.toBeInTheDocument();
-    const toggle = screen.getByRole("button", { name: "Expand details" });
+    expect(screen.queryByText("支持证据")).not.toBeInTheDocument();
+    const settledCard = screen.getByTestId("diagnosis-modified-hypothesis-card-candidate-settled-1");
+    expect(within(settledCard).getByText("86%")).toBeInTheDocument();
+    expect(within(settledCard).getByText("已确认")).toHaveClass("diagnosis-modified-badge--success");
+    const toggle = screen.getByRole("button", { name: "展开证据链" });
     fireEvent.click(toggle);
     const detailPanel = screen.getByTestId("diagnosis-modified-hypothesis-details-candidate-settled-1");
     expect(detailPanel).toBeInTheDocument();
-    expect(within(detailPanel).getAllByText("Support evidence").length).toBeGreaterThan(0);
+    expect(within(detailPanel).getAllByText("支持证据").length).toBeGreaterThan(0);
     expect(within(detailPanel).getByText("Redis timeout observed")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Collapse details" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "收起证据链" })).toBeInTheDocument();
+    expect(screen.queryByText("Primary root cause")).not.toBeInTheDocument();
+    expect(screen.queryByText("Candidate root cause")).not.toBeInTheDocument();
   });
 });
