@@ -180,7 +180,11 @@ function RemediationJumpButton({
 }
 
 function shouldShowFlowRemediationEntry(status?: string) {
-  return FLOW_REMEDIATION_ENTRY_STATUSES.has(String(status ?? "").trim().toLowerCase());
+  const normalizedStatus = String(status ?? "").trim().toLowerCase();
+  if (normalizedStatus === "approval_required" || normalizedStatus === "awaiting_approval") {
+    return false;
+  }
+  return FLOW_REMEDIATION_ENTRY_STATUSES.has(normalizedStatus);
 }
 
 function FlowRemediationEntry({
@@ -340,6 +344,8 @@ function getTraceSyncStageLabel(stageId: string) {
 function TraceStepFrame({
   type,
   title,
+  hideTitle = false,
+  titleClassName,
   meta,
   summary,
   children,
@@ -348,6 +354,8 @@ function TraceStepFrame({
 }: {
   type: TraceStepKind;
   title: string;
+  hideTitle?: boolean;
+  titleClassName?: string;
   meta?: string;
   summary?: string;
   children?: ReactNode;
@@ -355,6 +363,8 @@ function TraceStepFrame({
   testId?: string;
 }) {
   const typeMeta = TRACE_STEP_META[type];
+  const shouldRenderHeader = !hideTitle || Boolean(meta);
+  const isMetaOnlyHeader = hideTitle && Boolean(meta);
 
   return (
     <li
@@ -365,12 +375,21 @@ function TraceStepFrame({
         <span>{typeMeta.glyph}</span>
       </div>
       <article className="diagnosis-modified-trace-step__body">
-        <header className="diagnosis-modified-trace-step__header">
-          <div>
-            <h3 className="diagnosis-modified-trace-step__title">{title}</h3>
-          </div>
-          {meta ? <span className="diagnosis-modified-trace-step__meta">{meta}</span> : null}
-        </header>
+        {shouldRenderHeader ? (
+          <header
+            className={cn(
+              "diagnosis-modified-trace-step__header",
+              isMetaOnlyHeader && "diagnosis-modified-trace-step__header--meta-only",
+            )}
+          >
+            {!hideTitle ? (
+              <div>
+                <h3 className={cn("diagnosis-modified-trace-step__title", titleClassName)}>{title}</h3>
+              </div>
+            ) : null}
+            {meta ? <span className="diagnosis-modified-trace-step__meta">{meta}</span> : null}
+          </header>
+        ) : null}
         {summary ? <p className="diagnosis-modified-trace-step__summary">{summary}</p> : null}
         {children ? <div className="diagnosis-modified-trace-step__details">{children}</div> : null}
       </article>
@@ -471,22 +490,34 @@ function ThinkingBlock({
   onStreamComplete?: () => void;
 }) {
   const isThinking = item.status === "thinking";
+  const previousStatusRef = useRef(item.status);
   const [isExpanded, setIsExpanded] = useState(true);
-  const canToggleCompletedContent = !isThinking && item.content.length > THINKING_PREVIEW_CHAR_LIMIT;
+  const hasLongContent = item.content.length > THINKING_PREVIEW_CHAR_LIMIT;
+  const canToggleCompletedContent = !isThinking && hasLongContent;
 
   useEffect(() => {
+    const wasThinking = previousStatusRef.current === "thinking";
+    previousStatusRef.current = item.status;
+
     if (isThinking) {
       setIsExpanded(true);
       return;
     }
-    setIsExpanded(item.content.length <= THINKING_PREVIEW_CHAR_LIMIT);
-  }, [isThinking, item.content, item.id]);
+
+    if (!hasLongContent) {
+      setIsExpanded(true);
+      return;
+    }
+
+    // Keep content expanded when thinking transitions to completed
+    // to avoid visible vertical jumps in the trace item.
+    setIsExpanded(wasThinking);
+  }, [hasLongContent, isThinking, item.content, item.id, item.status]);
 
   const durationLabel = formatThoughtDurationLabel(item.thoughtDurationSec);
-  const displayContent =
-    !isThinking && canToggleCompletedContent && !isExpanded
-      ? `${item.content.slice(0, THINKING_PREVIEW_CHAR_LIMIT)}...`
-      : item.content;
+  const displayContent = canToggleCompletedContent && !isExpanded
+    ? `${item.content.slice(0, THINKING_PREVIEW_CHAR_LIMIT)}...`
+    : item.content;
 
   if (!isThinking && !canToggleCompletedContent) {
     return (
@@ -512,11 +543,34 @@ function ThinkingBlock({
   return (
     <TraceStepFrame
       meta={isThinking ? "Thinking..." : durationLabel}
+      titleClassName={isThinking ? "diagnosis-modified-trace-step__title--thinking" : undefined}
       title={isThinking ? item.title || "正在推理" : "推理完成"}
       type="thought"
     >
       <div className="diagnosis-modified-process-row">
         <div className="diagnosis-modified-process-row__body">
+          {isThinking ? (
+            <>
+              {hasLongContent ? (
+                <div
+                  aria-hidden="true"
+                  className="diagnosis-modified-thinking__toggle diagnosis-modified-thinking__toggle--placeholder"
+                />
+              ) : null}
+              <div className="diagnosis-modified-thinking__panel">
+                <div className="diagnosis-modified-thinking__content">
+                  <p>
+                    <StreamingText
+                      animate={animate}
+                      onComplete={animate ? onStreamComplete : undefined}
+                      text={displayContent}
+                    />
+                  </p>
+                </div>
+              </div>
+            </>
+          ) : (
+            <>
         <button
           className={cn("diagnosis-modified-thinking__toggle", canToggleCompletedContent && "diagnosis-modified-thinking__toggle--interactive")}
           onClick={() => {
@@ -557,6 +611,8 @@ function ThinkingBlock({
             </div>
           </div>
         ) : null}
+            </>
+          )}
       </div>
       </div>
     </TraceStepFrame>

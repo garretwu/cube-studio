@@ -187,9 +187,11 @@ export type DiagnosisModifiedReportView = {
     eyebrow: string;
     title: string;
     subtitle: string;
+    isDefaultPreview: boolean;
     sessionId?: string;
     alertName: string;
     service?: string;
+    severityLabel?: string;
     updatedAt?: string;
     status: DiagnosisModifiedStageView;
     meta: string[];
@@ -336,6 +338,11 @@ function sanitizeId(value: string) {
 export function mapDiagnosisModifiedStage(status?: string | null): DiagnosisModifiedStageView {
   const normalized = String(status ?? "").trim().toLowerCase();
   switch (normalized) {
+    case "":
+    case "idle":
+    case "not_started":
+    case "pending":
+      return { label: "未开始", tone: "neutral", detail: "诊断尚未开始，报告框架已就绪。", isActive: false };
     case "diagnosing":
       return { label: "诊断中", tone: "info", detail: "正在收集证据并归纳根因结论。", isActive: true };
     case "diagnosed":
@@ -486,7 +493,7 @@ function buildHypothesisEvidenceItems(
     id: `${candidate.id}-support-${index + 1}`,
     kind: "support" as const,
     summary,
-    tone: (candidate.isPrimary ? "accent" : "success") as ReportTone,
+    tone: "success" as const,
   }));
 
   const againstItems = candidate.evidenceAgainst.map((summary, index) => ({
@@ -1072,6 +1079,14 @@ function extractLatestUpdateTimestamp(input: BuildDiagnosisModifiedReportViewInp
   return timestamps.sort((left, right) => timestampValue(right) - timestampValue(left))[0];
 }
 
+function formatDateMd(timestamp?: string | null) {
+  const value = Date.parse(String(timestamp ?? ""));
+  if (!Number.isFinite(value)) {
+    return undefined;
+  }
+  return new Date(value).toISOString().slice(5, 10);
+}
+
 function getResult(input: BuildDiagnosisModifiedReportViewInput) {
   return input.session?.diagnosis_result;
 }
@@ -1096,32 +1111,60 @@ function hasRootCauseConclusion(input: BuildDiagnosisModifiedReportViewInput) {
   return String(rootCause ?? "").trim().length > 0;
 }
 
+function isDefaultReportPreview(input: BuildDiagnosisModifiedReportViewInput) {
+  const normalizedStatus = String(input.session?.status ?? "").trim().toLowerCase();
+  const result = getResult(input);
+  const hasTimeline = input.timeline.length > 0;
+  const hasCandidates = (input.candidates?.length ?? 0) > 0 || (input.candidateSnapshots?.length ?? 0) > 0;
+  const hasSummary = Boolean(input.summary);
+  const hasPlan = Boolean(input.plan);
+  const hasEvents = (input.events?.length ?? 0) > 0 || (input.localAuditRecords?.length ?? 0) > 0;
+  const hasDiagnosisResult = Boolean(result);
+  const isIdleLikeStatus =
+    normalizedStatus.length === 0 ||
+    normalizedStatus === "idle" ||
+    normalizedStatus === "not_started" ||
+    normalizedStatus === "pending";
+
+  return isIdleLikeStatus && !hasTimeline && !hasCandidates && !hasSummary && !hasPlan && !hasEvents && !hasDiagnosisResult;
+}
+
 function buildOverview(input: BuildDiagnosisModifiedReportViewInput, stage: DiagnosisModifiedStageView) {
   const session = input.session;
   const result = getResult(input);
+  const defaultPreview = isDefaultReportPreview(input);
   const alertName = session?.alert.alert_name ?? "当前告警";
-  const summaryTitle = input.summary?.rootCause ?? result?.root_cause ?? "诊断修复报告";
+  const summaryTitle = defaultPreview ? "诊断修复报告" : input.summary?.rootCause ?? result?.root_cause ?? "诊断修复报告";
   const affectedServices = input.summary?.affectedServices ?? result?.affected_services ?? [];
   const primaryService =
     session?.alert?.labels?.service ??
     session?.alert?.labels?.app ??
     affectedServices[0] ??
     undefined;
-  const latestTimestamp = extractLatestUpdateTimestamp(input);
+  const latestTimestamp = defaultPreview ? undefined : extractLatestUpdateTimestamp(input);
+  const reportDate = formatDateMd(latestTimestamp) ?? formatDateMd(session?.alert?.starts_at);
+  const overviewTitle = defaultPreview
+    ? "诊断报告"
+    : [reportDate, alertName, "诊断报告"].filter((part) => Boolean(part && part.trim())).join("") || summaryTitle;
   const duration = session?.duration_seconds ? `持续 ${formatDuration(session.duration_seconds)}` : "";
   const round = session?.re_diagnosis_round ? `第 ${session.re_diagnosis_round} 轮` : "";
+  const severityLabel = session?.alert?.severity ? formatSeverity(session.alert.severity) : undefined;
 
   return {
     eyebrow: "诊断总览",
-    title: summaryTitle,
+    isDefaultPreview: defaultPreview,
+    title: overviewTitle,
     subtitle:
-      result?.impact_summary ??
-      input.summary?.impactSummary ??
-      input.summary?.subtitle ??
-      "当前报告用于持续呈现最新结论、执行状态与修复反馈。",
+      defaultPreview
+        ? "诊断开始后，将在此持续生成结构化分析结论与修复建议"
+        : result?.impact_summary ??
+          input.summary?.impactSummary ??
+          input.summary?.subtitle ??
+          "当前报告用于持续呈现最新结论、执行状态与修复反馈。",
     sessionId: session?.session_id,
     alertName,
     service: primaryService,
+    severityLabel,
     updatedAt: latestTimestamp,
     status: stage,
     meta: [

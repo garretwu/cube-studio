@@ -194,6 +194,7 @@ function createCandidateSnapshots(): Array<{
 
 describe("mapDiagnosisModifiedStage", () => {
   it("maps session statuses into lifecycle labels", () => {
+    expect(mapDiagnosisModifiedStage(undefined).label).toBe("未开始");
     expect(mapDiagnosisModifiedStage("diagnosing").label).toBe("诊断中");
     expect(mapDiagnosisModifiedStage("diagnosed").label).toBe("已诊断");
     expect(mapDiagnosisModifiedStage("approval_required").label).toBe("待审批");
@@ -258,6 +259,7 @@ describe("buildDiagnosisModifiedReportView", () => {
     });
 
     expect(view.overview.sessionId).toBe("sess-report-model");
+    expect(view.overview.title).toBe("04-08Latency spike诊断报告");
     expect(view.overview.alertName).toBe("Latency spike");
     expect(view.overview.service).toBe("auth-svc");
     expect(view.overview.status.label).toBe("验证中");
@@ -619,6 +621,28 @@ describe("buildDiagnosisModifiedReportView", () => {
     expect(view.hypotheses.items[0]?.confidenceUpdates[1]?.summary).toContain("86%");
   });
 
+  it("keeps support-evidence tone consistent across primary and non-primary hypotheses", () => {
+    const candidateSnapshots = createCandidateSnapshots();
+    const session = createSession("diagnosing");
+    session.diagnosis_result = null;
+
+    const view = buildDiagnosisModifiedReportView({
+      session,
+      timeline: [],
+      candidates: candidateSnapshots[1]?.candidates ?? [],
+      candidateSnapshots,
+      events: [],
+      localAuditRecords: [],
+    });
+
+    const supportTones = view.hypotheses.items.flatMap((item) =>
+      item.evidenceItems.filter((entry) => entry.kind === "support").map((entry) => entry.tone),
+    );
+
+    expect(supportTones.length).toBeGreaterThan(0);
+    expect(new Set(supportTones)).toEqual(new Set(["success"]));
+  });
+
   it("collapses hypothesis-level validation details once the root cause is settled", () => {
     const candidateSnapshots = createCandidateSnapshots();
 
@@ -683,5 +707,21 @@ describe("buildDiagnosisModifiedReportView", () => {
     expect(view.remediation.state).toBe("loading");
     expect(view.conclusion.title).toBe("等待形成明确结论");
     expect(view.candidateChanges).toHaveLength(0);
+  });
+
+  it("builds a report-preview default state before diagnosis starts", () => {
+    const view = buildDiagnosisModifiedReportView({
+      session: undefined,
+      timeline: [],
+      candidates: [],
+      events: [],
+      localAuditRecords: [],
+    });
+
+    expect(view.overview.title).toBe("诊断报告");
+    expect(view.overview.subtitle).toBe("诊断开始后，将在此持续生成结构化分析结论与修复建议");
+    expect(view.overview.status.label).toBe("未开始");
+    expect(view.overview.updatedAt).toBeUndefined();
+    expect(view.rootCauseReady).toBe(false);
   });
 });
