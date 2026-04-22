@@ -76,6 +76,6 @@ scenarios:
       - "worker-03"
     params:
       duration: 6000
-      memory: "90%"
-      gpu_ids: [0]
-      intensity: 90
+      memory: "100%"
+      gpu_ids: [1]
+      intensity: 100
