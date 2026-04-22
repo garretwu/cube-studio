@@ -242,6 +242,27 @@ describe("buildDiagnosisModifiedLiveView next-action narration", () => {
     }
   });
 
+  it("annotates trace thinking items with thought-key metadata for live round merge", () => {
+    const session = createSession([
+      {
+        step: 1,
+        timestamp: "2026-04-08T11:05:00.000Z",
+        thought: "Round thought",
+        action_type: "conclude",
+        thought_key: "run-1:reason",
+      },
+    ]);
+
+    const view = buildDiagnosisModifiedLiveView(session, []);
+    const thinkingItem = view.timeline.find(
+      (item): item is Extract<DiagnosisModifiedTimelineItem, { kind: "thinking" }> => item.kind === "thinking",
+    );
+
+    expect(thinkingItem).toBeDefined();
+    expect(thinkingItem?.thoughtKey).toBe("run-1:reason");
+    expect(thinkingItem?.phase).toBe("completed");
+  });
+
   it("appends next-action after trace and chat timeline entries", () => {
     const session: DiagnosisSession = {
       ...createSession([

@@ -14080,6 +14080,14 @@
   word-break: break-word;
 }
 
+.diagnosis-modified-thinking__stream-text--single-line {
+  display: inline-block;
+  max-width: 100%;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .diagnosis-modified-thinking__panel {
   overflow: hidden;
 }
@@ -14096,6 +14104,16 @@
   font-size: 14px;
   line-height: 24px;
   white-space: pre-wrap;
+}
+
+.diagnosis-modified-thinking__summary-line {
+  margin: 2px 0 0 26px;
+  color: rgba(100, 116, 139, 0.92);
+  font-size: 13px;
+  line-height: 20px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .diagnosis-modified-tool-card {

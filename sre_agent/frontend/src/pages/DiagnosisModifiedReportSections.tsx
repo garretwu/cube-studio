@@ -654,6 +654,10 @@ function HypothesisSection({
 
   return (
     <div className="diagnosis-modified-report-rail__subsection">
+      <div className="diagnosis-modified-report-rail__subsection-header">
+        <p className="diagnosis-modified-report-rail__callout-label">Hypothesis summary</p>
+        <span>{hypotheses.summary}</span>
+      </div>
       <div className="diagnosis-modified-report-rail__stack">
         {hypotheses.items.map((item) => {
           const showDetails =
@@ -669,6 +673,7 @@ function HypothesisSection({
                 <div className="diagnosis-modified-report-rail__candidate-copy">
                   <strong>{item.title}</strong>
                   <p>{item.summary}</p>
+                  <p>{item.description}</p>
                 </div>
                 <div className="diagnosis-modified-report-rail__candidate-meta">
                   <ReportBadge label={item.statusLabel} tone={item.tone} />

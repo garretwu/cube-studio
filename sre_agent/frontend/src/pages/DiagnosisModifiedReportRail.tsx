@@ -27,7 +27,7 @@ function DiagnosisModifiedReportRail({
 
           <ReportSection
             title="候选假设验证"
-            description="每个候选假设单独承载验证依据与置信度变化，结论稳定后自动收起过程细节。"
+            description={view.hypotheses.description}
           >
             <HypothesisLevelSection hypotheses={view.hypotheses} />
           </ReportSection>

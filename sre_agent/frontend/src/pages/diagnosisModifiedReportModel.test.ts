@@ -694,6 +694,13 @@ describe("buildDiagnosisModifiedReportView", () => {
     ]);
     expect(view.hypotheses.state).toBe("ready");
     expect(view.hypotheses.items).toHaveLength(2);
+    expect(view.hypotheses.summary).toBe("已选中 2 个候选假设。");
+    expect(view.hypotheses.description).toContain("每个候选假设展示证据与置信度变化");
+    expect(view.hypotheses.items[0]?.summary).toContain("Redis timeout and retry amplification");
+    expect(view.hypotheses.items[0]?.description).toContain("状态:");
+    expect(view.hypotheses.items[0]?.description).toContain("置信度:");
+    expect(view.hypotheses.items[0]?.description).toContain("关联实体:");
+    expect(view.hypotheses.items[0]?.description).toContain("区分验证:");
     expect(view.verification.state).toBe("ready");
     expect(view.verification.items[0]?.title).toBe("query_service_metrics");
     expect(view.confidence.state).toBe("ready");
@@ -755,6 +762,7 @@ describe("buildDiagnosisModifiedReportView", () => {
     });
 
     expect(view.hypotheses.detailMode).toBe("collapsed");
+    expect(view.hypotheses.description).toContain("默认折叠细节");
     expect(view.hypotheses.items[0]?.evidenceItems.length).toBeGreaterThan(0);
     expect(view.hypotheses.items[0]?.confidenceUpdates.length).toBeGreaterThan(0);
   });
@@ -803,6 +811,9 @@ describe("buildDiagnosisModifiedReportView", () => {
     expect(view.rootCauseReady).toBe(false);
     expect(view.context.state).toBe("ready");
     expect(view.context.topologyEmptyReason).toBe("no_direct_relations");
+    expect(view.hypotheses.state).toBe("loading");
+    expect(view.hypotheses.summary).toBe("Waiting for candidate root-cause selection.");
+    expect(view.hypotheses.description).toContain("confidence movement");
     expect(view.rootCause.state).toBe("loading");
     expect(view.remediation.state).toBe("loading");
     expect(view.conclusion.title).toBe("等待形成明确结论");

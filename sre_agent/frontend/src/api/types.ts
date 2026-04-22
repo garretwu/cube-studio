@@ -323,6 +323,14 @@ export type DiagnosisStartedData = {
     affected_count: number;
     affected_entities: { id: string; type: string; name?: string }[];
     summary: string;
+    direct_relations?: Array<{
+      source: string;
+      target: string;
+      target_type: string;
+      target_name: string;
+      relation: string;
+      direction: "in" | "out";
+    }>;
   } | null;
   variables: Record<string, unknown>;
   bootstrap_state?: "thinking";

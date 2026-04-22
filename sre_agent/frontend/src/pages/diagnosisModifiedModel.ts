@@ -39,6 +39,10 @@ export type DiagnosisModifiedTimelineItem =
       toolName?: string | null;
       status: "thinking" | "completed";
       thoughtDurationSec?: number;
+      thoughtKey?: string | null;
+      roundId?: string | null;
+      phase?: "streaming" | "completed";
+      summaryLine?: string;
     }
   | {
       id: string;
@@ -552,8 +556,11 @@ export function buildDiagnosisModifiedLiveView(
     }
 
     if (isThinkingStep(entry)) {
+      const normalizedThoughtKey = normalizeDiagnosisModifiedDisplayText(entry.thought_key).trim();
       timelineItems.push({
-        id: `trace-thinking-${index + 1}-${entry.timestamp}`,
+        id: normalizedThoughtKey
+          ? `trace-thinking-${normalizedThoughtKey}`
+          : `trace-thinking-${index + 1}-${entry.timestamp}`,
         kind: "thinking",
         title:
           entry.action_type === "tool_call"
@@ -565,6 +572,9 @@ export function buildDiagnosisModifiedLiveView(
         timestamp: entry.timestamp,
         toolName: entry.tool_name,
         status: "completed",
+        thoughtKey: entry.thought_key ?? null,
+        roundId: null,
+        phase: "completed",
       });
 
       if (entry.action_type === "tool_call" && entry.tool_name) {
@@ -622,6 +632,7 @@ export function buildDiagnosisModifiedLiveView(
         content: normalizeDiagnosisModifiedDisplayText(message.display.thinking_raw),
         timestamp: message.created_at,
         status: "completed",
+        phase: "completed",
       });
     }
 

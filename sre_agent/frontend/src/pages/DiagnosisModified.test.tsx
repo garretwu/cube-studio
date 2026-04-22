@@ -482,6 +482,7 @@ describe("DiagnosisModifiedPage sequential playback", () => {
 
   it("shows only the first 200 chars for completed long thinking content and supports expand", async () => {
     const longContent = `${"A".repeat(200)}TAIL_SEGMENT`;
+    const collapsedPreview = `${"A".repeat(200)}...`;
     mockedBuildDemoScenario.mockReturnValue({
       initialTimeline: [
         {
@@ -520,6 +521,7 @@ describe("DiagnosisModifiedPage sequential playback", () => {
     await flushPendingTimers();
 
     expect(screen.getByText("展开全部推理")).toBeInTheDocument();
+    expect(screen.getByText(collapsedPreview)).toBeInTheDocument();
     expect(screen.queryByText(longContent)).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "展开全部推理" }));
@@ -527,7 +529,7 @@ describe("DiagnosisModifiedPage sequential playback", () => {
     expect(screen.getByText(longContent)).toBeInTheDocument();
   });
 
-  it("renders completed short thinking content inline without a details toggle", async () => {
+  it("renders completed short thinking content collapsed with a details toggle", async () => {
     mockedBuildDemoScenario.mockReturnValue({
       initialTimeline: [
         {
@@ -566,8 +568,7 @@ describe("DiagnosisModifiedPage sequential playback", () => {
     await flushPendingTimers();
 
     expect(screen.getByText("short reasoning content")).toBeInTheDocument();
-    expect(screen.queryByText("推理详情")).not.toBeInTheDocument();
-    expect(screen.queryByText("展开全部推理")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "展开全部推理" })).toBeInTheDocument();
     expect(screen.queryByText("收起推理")).not.toBeInTheDocument();
   });
 
@@ -1336,6 +1337,7 @@ describe("DiagnosisModifiedPage split workspace", () => {
     expect(container.querySelector(".diagnosis-modified-message-row--user")).toBeNull();
     expect(within(reportRail).getByText("诊断拓扑信息")).toBeInTheDocument();
     expect(within(reportRail).getByText("候选假设验证")).toBeInTheDocument();
+    expect(within(reportRail).getByText("结论已趋于稳定，默认折叠细节；可按候选展开查看证据与置信度变化。")).toBeInTheDocument();
     expect(within(reportRail).getByText("根因级信息")).toBeInTheDocument();
     expect(within(reportRail).queryByText("推理进展")).not.toBeInTheDocument();
     expect(within(reportRail).queryByText("影响拓扑")).not.toBeInTheDocument();
@@ -1351,6 +1353,7 @@ describe("DiagnosisModifiedPage split workspace", () => {
     expect(within(reportRail).queryByText(/^01$/)).not.toBeInTheDocument();
     expect(within(reportRail).queryByText(/^02$/)).not.toBeInTheDocument();
     expect(within(reportRail).queryByText(/^03$/)).not.toBeInTheDocument();
+    expect(within(reportRail).getByText(/状态: 当前根因 \| 置信度: 86% \| 关联实体:/)).toBeInTheDocument();
     expect(container.querySelector(".diagnosis-modified-report-rail__context-graph")).toBeTruthy();
     expect(container.querySelector(".diagnosis-modified-report-rail__context-lists")).toBeNull();
     expect(container.querySelectorAll(".diagnosis-modified-report-rail__section").length).toBe(3);
@@ -1398,6 +1401,281 @@ describe("DiagnosisModifiedPage split workspace", () => {
     const firstNode = within(traceList).getByText("First by source order");
     const secondNode = within(traceList).getByText("Second by source order");
     expect(firstNode.compareDocumentPosition(secondNode) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it("merges streaming and completed thinking for the same thought_key into a single visible card", () => {
+    mockedBuildLiveView.mockReturnValue({
+      timeline: [
+        {
+          id: "trace-thinking-same-round",
+          kind: "thinking",
+          title: "Agent is converging on the diagnosis",
+          content: "已完成推理内容",
+          timestamp: "2026-04-08T12:21:00.000Z",
+          status: "completed",
+          thoughtKey: "run-reason-1:reason",
+          phase: "completed",
+        },
+      ],
+      candidates: [],
+      summary: undefined,
+      plan: undefined,
+    });
+
+    resetDiagnosisStore({
+      session: createLiveSession("sess-live-thinking-merge"),
+      activeSessionId: "sess-live-thinking-merge",
+      bootstrapStatus: "ready",
+      traceStatus: "ready",
+      messages: [],
+      liveThinking: {
+        round_id: "run-reason-1@2026-04-08T12:21:05.000Z",
+        round_seq: 1,
+        thought_key: "run-reason-1:reason",
+        run_id: "run-reason-1",
+        node: "reason",
+        timestamp: "2026-04-08T12:21:05.000Z",
+        content: "推理中最新输出",
+        status: "thinking",
+        stream_seq: 2,
+        thought_duration_sec: null,
+        next_action: null,
+        tool_name: null,
+        active_tools: [],
+      },
+      bootstrapSession: vi.fn().mockResolvedValue(undefined),
+    });
+
+    renderLivePage("/diagnosis-modified/sess-live-thinking-merge");
+
+    expect(screen.getByText("推理中")).toBeInTheDocument();
+    expect(screen.queryByText("推理完成")).not.toBeInTheDocument();
+    expect(screen.getByText("推理中最新输出")).toBeInTheDocument();
+  });
+
+  it("keeps streaming thinking visible for at least 500ms before replacing with completed card", async () => {
+    let liveViewSource: ReturnType<typeof diagnosisModifiedModel.buildDiagnosisModifiedLiveView> = {
+      timeline: [
+        {
+          id: "live-msg-before-replace",
+          kind: "message",
+          role: "assistant",
+          content: "Before replace marker",
+          timestamp: "2026-04-08T12:22:00.000Z",
+        },
+      ],
+      candidates: [],
+      summary: undefined,
+      plan: undefined,
+    };
+    mockedBuildLiveView.mockImplementation(() => liveViewSource);
+
+    resetDiagnosisStore({
+      session: createLiveSession("sess-live-thinking-replace"),
+      activeSessionId: "sess-live-thinking-replace",
+      bootstrapStatus: "ready",
+      traceStatus: "ready",
+      messages: [],
+      liveThinking: {
+        round_id: "run-reason-2@2026-04-08T12:22:05.000Z",
+        round_seq: 2,
+        thought_key: "run-reason-2:reason",
+        run_id: "run-reason-2",
+        node: "reason",
+        timestamp: "2026-04-08T12:22:05.000Z",
+        content: "推理中间态内容",
+        status: "thinking",
+        stream_seq: 3,
+        thought_duration_sec: null,
+        next_action: null,
+        tool_name: null,
+        active_tools: [],
+      },
+      bootstrapSession: vi.fn().mockResolvedValue(undefined),
+    });
+
+    renderLivePage("/diagnosis-modified/sess-live-thinking-replace");
+    expect(screen.getByText("推理中")).toBeInTheDocument();
+
+    liveViewSource = {
+      timeline: [
+        {
+          id: "live-msg-before-replace",
+          kind: "message",
+          role: "assistant",
+          content: "Before replace marker",
+          timestamp: "2026-04-08T12:22:00.000Z",
+        },
+        {
+          id: "trace-thinking-run-reason-2:reason",
+          kind: "thinking",
+          title: "Agent is converging on the diagnosis",
+          content: "推理完成最终内容",
+          timestamp: "2026-04-08T12:22:06.000Z",
+          status: "completed",
+          thoughtKey: "run-reason-2:reason",
+          phase: "completed",
+        },
+        {
+          id: "live-msg-after-replace",
+          kind: "message",
+          role: "assistant",
+          content: "After replace marker",
+          timestamp: "2026-04-08T12:22:07.000Z",
+        },
+      ],
+      candidates: [],
+      summary: undefined,
+      plan: undefined,
+    };
+
+    await act(async () => {
+      useDiagnosisStore.setState({
+        liveThinking: null,
+        messages: [{ id: "msg-trigger-rerender", role: "assistant", content: "trigger" }],
+      });
+      await Promise.resolve();
+    });
+
+    expect(screen.getByText("推理中")).toBeInTheDocument();
+    expect(screen.queryByText("推理完成最终内容")).not.toBeInTheDocument();
+
+    await act(async () => {
+      vi.advanceTimersByTime(500);
+      await Promise.resolve();
+    });
+
+    expect(screen.queryByText("推理中")).not.toBeInTheDocument();
+    expect(screen.getAllByText("推理完成")).toHaveLength(1);
+    expect(screen.getByText("推理完成最终内容")).toBeInTheDocument();
+
+    const beforeNode = screen.getByText("Before replace marker");
+    const completedNode = screen.getByText("推理完成最终内容");
+    expect(beforeNode.compareDocumentPosition(completedNode) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it("clears pending thinking dwell timers when switching sessions", async () => {
+    let liveViewSource: ReturnType<typeof diagnosisModifiedModel.buildDiagnosisModifiedLiveView> = {
+      timeline: [],
+      candidates: [],
+      summary: undefined,
+      plan: undefined,
+    };
+    mockedBuildLiveView.mockImplementation(() => liveViewSource);
+
+    resetDiagnosisStore({
+      session: createLiveSession("sess-live-dwell-a"),
+      activeSessionId: "sess-live-dwell-a",
+      bootstrapStatus: "ready",
+      traceStatus: "ready",
+      messages: [],
+      liveThinking: {
+        round_id: "run-dwell-a@2026-04-08T12:24:01.000Z",
+        round_seq: 1,
+        thought_key: "run-dwell-a:reason",
+        run_id: "run-dwell-a",
+        node: "reason",
+        timestamp: "2026-04-08T12:24:01.000Z",
+        content: "A 会话推理中",
+        status: "thinking",
+        stream_seq: 1,
+        thought_duration_sec: null,
+        next_action: null,
+        tool_name: null,
+        active_tools: [],
+      },
+      bootstrapSession: vi.fn().mockResolvedValue(undefined),
+    });
+
+    renderLivePage("/diagnosis-modified/sess-live-dwell-a");
+    expect(screen.getByText("推理中")).toBeInTheDocument();
+
+    liveViewSource = {
+      timeline: [
+        {
+          id: "trace-thinking-run-dwell-a:reason",
+          kind: "thinking",
+          title: "Agent is converging on the diagnosis",
+          content: "A 会话推理完成",
+          timestamp: "2026-04-08T12:24:02.000Z",
+          status: "completed",
+          thoughtKey: "run-dwell-a:reason",
+          phase: "completed",
+        },
+      ],
+      candidates: [],
+      summary: undefined,
+      plan: undefined,
+    };
+
+    await act(async () => {
+      useDiagnosisStore.setState({
+        liveThinking: null,
+      });
+      await Promise.resolve();
+    });
+
+    await act(async () => {
+      liveViewSource = {
+        timeline: [],
+        candidates: [],
+        summary: undefined,
+        plan: undefined,
+      };
+      useDiagnosisStore.setState({
+        session: createLiveSession("sess-live-dwell-b"),
+        activeSessionId: "sess-live-dwell-b",
+        liveThinking: null,
+        messages: [],
+      });
+      await Promise.resolve();
+    });
+
+    await act(async () => {
+      vi.advanceTimersByTime(700);
+      await Promise.resolve();
+    });
+
+    expect(screen.queryByText("A 会话推理完成")).not.toBeInTheDocument();
+    expect(screen.queryByText("推理中")).not.toBeInTheDocument();
+  });
+
+  it("renders completed thinking collapsed by default and expands on demand", () => {
+    const longThinking = "第一段推理。".repeat(80);
+    mockedBuildLiveView.mockReturnValue({
+      timeline: [
+        {
+          id: "trace-thinking-collapsed",
+          kind: "thinking",
+          title: "Agent is converging on the diagnosis",
+          content: longThinking,
+          timestamp: "2026-04-08T12:25:00.000Z",
+          status: "completed",
+          thoughtKey: "run-reason-2:reason",
+          phase: "completed",
+        },
+      ],
+      candidates: [],
+      summary: undefined,
+      plan: undefined,
+    });
+
+    resetDiagnosisStore({
+      session: createLiveSession("sess-live-thinking-collapsed"),
+      activeSessionId: "sess-live-thinking-collapsed",
+      bootstrapStatus: "ready",
+      traceStatus: "ready",
+      messages: [],
+      bootstrapSession: vi.fn().mockResolvedValue(undefined),
+    });
+
+    renderLivePage("/diagnosis-modified/sess-live-thinking-collapsed");
+
+    const expandButton = screen.getByRole("button", { name: "展开全部推理" });
+    expect(expandButton).toBeInTheDocument();
+
+    fireEvent.click(expandButton);
+    expect(screen.getByRole("button", { name: "收起推理" })).toBeInTheDocument();
   });
 
   it("uses smart auto-follow and does not force-scroll when user has scrolled away from bottom", async () => {

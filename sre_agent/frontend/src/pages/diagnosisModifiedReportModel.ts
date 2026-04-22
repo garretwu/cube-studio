@@ -86,6 +86,7 @@ export type DiagnosisModifiedHypothesisItemView = {
   id: string;
   title: string;
   summary: string;
+  description: string;
   confidenceLabel: string;
   statusLabel: string;
   tone: ReportTone;
@@ -103,6 +104,7 @@ export type DiagnosisModifiedHypothesisEvidenceItemView = {
 export type DiagnosisModifiedHypothesesView = {
   state: ReportSectionState;
   summary: string;
+  description: string;
   detailMode: "expanded" | "collapsed";
   items: DiagnosisModifiedHypothesisItemView[];
 };
@@ -282,6 +284,14 @@ type ParsedTopologyContext = {
   affected_count?: number;
   affected_entities?: Array<{ id?: string; name?: string } & Record<string, unknown>>;
   summary?: string;
+  direct_relations?: Array<{
+    source: string;
+    target: string;
+    target_type: string;
+    target_name: string;
+    relation: string;
+    direction: "in" | "out";
+  }>;
 };
 
 function formatConfidence(value: number | undefined) {
@@ -469,19 +479,28 @@ function buildHypotheses(input: BuildDiagnosisModifiedReportViewInput): Diagnosi
     return {
       state: "loading",
       summary: "Waiting for candidate root-cause selection.",
+      description: "Each shortlisted hypothesis will include concise evidence and confidence movement once candidates appear.",
       detailMode,
       items: [],
     };
   }
 
+  const sectionSummary = `已选中 ${latestSnapshot.candidates.length} 个候选假设。`;
+  const sectionDescription =
+    detailMode === "collapsed"
+      ? "结论已趋于稳定，默认折叠细节；可按候选展开查看证据与置信度变化。"
+      : "每个候选假设展示证据与置信度变化，帮助快速定位当前最可信路径。";
+
   return {
     state: "ready",
-    summary: `Showing ${latestSnapshot.candidates.length} selected hypotheses with candidate-specific validation context.`,
+    summary: sectionSummary,
+    description: sectionDescription,
     detailMode,
     items: latestSnapshot.candidates.map((candidate, index) => ({
       id: candidate.id,
       title: candidate.title,
       summary: candidate.evidenceSummary ?? candidate.summary,
+      description: buildHypothesisDescription(candidate, index),
       confidenceLabel: candidate.confidenceLabel,
       statusLabel: getHypothesisStatusLabel(candidate, index),
       tone: getHypothesisTone(candidate),
@@ -489,6 +508,23 @@ function buildHypotheses(input: BuildDiagnosisModifiedReportViewInput): Diagnosi
       confidenceUpdates: buildHypothesisConfidenceUpdates(candidate, snapshots),
     })),
   };
+}
+
+function buildHypothesisDescription(candidate: DiagnosisModifiedCandidateView, index: number) {
+  const statusLabel = getHypothesisStatusLabel(candidate, index);
+  const entities = uniqueStrings(candidate.entities).map((entity) => getEntityLabel(entity));
+  const segments: string[] = [`状态: ${statusLabel}`, `置信度: ${candidate.confidenceLabel}`];
+
+  if (entities.length > 0) {
+    segments.push(`关联实体: ${entities.join(", ")}`);
+  }
+
+  const verification = normalizeText(candidate.distinguishingVerification);
+  if (verification) {
+    segments.push(`区分验证: ${verification}`);
+  }
+
+  return segments.join(" | ");
 }
 
 function buildHypothesisEvidenceItems(
@@ -1207,6 +1243,27 @@ function getDirectRelationLabel(alertName: string, subjectKind: string, neighbor
   return "关联";
 }
 
+function translateRelationLabel(relation: string): string {
+  const normalized = relation.trim().toLowerCase();
+  switch (normalized) {
+    case "runs_on":
+    case "hosted_on":
+      return "运行于";
+    case "part_of":
+    case "serves":
+      return "隶属";
+    case "connected_to":
+      return "连接";
+    case "depends_on":
+      return "依赖";
+    case "manages":
+    case "monitored_by":
+      return "管理";
+    default:
+      return "关联";
+  }
+}
+
 function buildDirectOnlyContext(input: BuildDiagnosisModifiedReportViewInput): DiagnosisModifiedContextView {
   const parsedTopology = parseTopologyContextCandidate(input.topologyContext);
   const normalizedAlertName = normalizeText(input.session?.alert.alert_name).toLowerCase();
@@ -1229,6 +1286,51 @@ function buildDirectOnlyContext(input: BuildDiagnosisModifiedReportViewInput): D
     tone: "danger",
     detail: subjectEntity,
   };
+
+  const directRelations = parsedTopology?.direct_relations;
+  if (directRelations && directRelations.length > 0) {
+    const neighbors: DiagnosisModifiedContextNodeView[] = [];
+    const edges: DiagnosisModifiedContextEdgeView[] = [];
+    const seenIds = new Set<string>();
+
+    for (const rel of directRelations) {
+      const targetId = getContextNodeId(rel.target);
+      if (!targetId || targetId === subjectNode.id || seenIds.has(targetId)) continue;
+      seenIds.add(targetId);
+
+      neighbors.push({
+        id: targetId,
+        label: rel.target_name || getEntityLabel(rel.target),
+        role: "affected",
+        tone: "warning",
+        detail: rel.target,
+      });
+      edges.push({
+        id: `context-edge-${sanitizeId(subjectNode.id)}-${sanitizeId(targetId)}-${sanitizeId(rel.relation)}`,
+        sourceId: subjectNode.id,
+        targetId,
+        label: translateRelationLabel(rel.relation),
+      });
+    }
+
+    const hasRelations = edges.length > 0;
+    const summary =
+      typeof parsedTopology?.summary === "string" && normalizeText(parsedTopology.summary) && hasRelations
+        ? normalizeText(parsedTopology.summary)
+        : hasRelations
+          ? "展示告警主体的直连关联实体。"
+          : "暂无告警主体的直连关联实体。";
+
+    return {
+      state: "ready",
+      summary,
+      topologyEmptyReason: hasRelations ? undefined : "no_direct_relations",
+      problemNodes: [subjectNode],
+      affectedNodes: neighbors,
+      graph: { nodes: [subjectNode, ...neighbors], edges },
+    };
+  }
+
   const subjectKind = inferEntityKind(subjectEntity);
   const allEntities = uniqueStrings([subjectEntity, ...collectTopologyEntities(parsedTopology)]);
 
