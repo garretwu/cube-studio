@@ -1359,6 +1359,207 @@ describe("DiagnosisModifiedPage split workspace", () => {
     expect(screen.queryByTestId("diagnosis-modified-report-rail-loading")).not.toBeInTheDocument();
   });
 
+  it("keeps live timeline source order when ids are reverse-lexicographic under the same timestamp", () => {
+    mockedBuildLiveView.mockReturnValue({
+      timeline: [
+        {
+          id: "z-live-thinking-same-ts",
+          kind: "thinking",
+          title: "First in source order",
+          content: "First by source order",
+          timestamp: "2026-04-08T12:20:00.000Z",
+          status: "completed",
+        },
+        {
+          id: "a-live-message-same-ts",
+          kind: "message",
+          role: "assistant",
+          content: "Second by source order",
+          timestamp: "2026-04-08T12:20:00.000Z",
+        },
+      ],
+      candidates: [],
+      summary: undefined,
+      plan: undefined,
+    });
+
+    resetDiagnosisStore({
+      session: createLiveSession("sess-live-source-order"),
+      activeSessionId: "sess-live-source-order",
+      bootstrapStatus: "ready",
+      traceStatus: "ready",
+      messages: [],
+      bootstrapSession: vi.fn().mockResolvedValue(undefined),
+    });
+
+    renderLivePage("/diagnosis-modified/sess-live-source-order");
+
+    const traceList = screen.getByTestId("diagnosis-modified-trace-list");
+    const firstNode = within(traceList).getByText("First by source order");
+    const secondNode = within(traceList).getByText("Second by source order");
+    expect(firstNode.compareDocumentPosition(secondNode) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it("uses smart auto-follow and does not force-scroll when user has scrolled away from bottom", async () => {
+    let liveViewSource: ReturnType<typeof diagnosisModifiedModel.buildDiagnosisModifiedLiveView> = {
+      timeline: [
+        {
+          id: "live-msg-scroll-1",
+          kind: "message",
+          role: "assistant",
+          content: "First timeline item",
+          timestamp: "2026-04-08T12:30:01.000Z",
+        },
+      ],
+      candidates: [],
+      summary: undefined,
+      plan: undefined,
+    };
+
+    mockedBuildLiveView.mockImplementation(() => liveViewSource);
+    resetDiagnosisStore({
+      session: createLiveSession("sess-live-smart-follow"),
+      activeSessionId: "sess-live-smart-follow",
+      bootstrapStatus: "ready",
+      traceStatus: "ready",
+      messages: [],
+      bootstrapSession: vi.fn().mockResolvedValue(undefined),
+    });
+
+    const scrollIntoViewSpy = vi.spyOn(Element.prototype, "scrollIntoView");
+    renderLivePage("/diagnosis-modified/sess-live-smart-follow");
+    const timelineFeed = screen.getByTestId("diagnosis-modified-timeline");
+
+    let scrollTopValue = 700;
+    Object.defineProperty(timelineFeed, "scrollTop", {
+      configurable: true,
+      get: () => scrollTopValue,
+      set: (value: number) => {
+        scrollTopValue = value;
+      },
+    });
+    Object.defineProperty(timelineFeed, "clientHeight", {
+      configurable: true,
+      get: () => 300,
+    });
+    Object.defineProperty(timelineFeed, "scrollHeight", {
+      configurable: true,
+      get: () => 1000,
+    });
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+    scrollIntoViewSpy.mockClear();
+
+    scrollTopValue = 200;
+    fireEvent.scroll(timelineFeed);
+
+    await act(async () => {
+      liveViewSource = {
+        ...liveViewSource,
+        timeline: [
+          ...liveViewSource.timeline,
+          {
+            id: "live-msg-scroll-2",
+            kind: "message",
+            role: "assistant",
+            content: "Second timeline item",
+            timestamp: "2026-04-08T12:30:02.000Z",
+          },
+        ],
+      };
+      useDiagnosisStore.setState((state) => ({
+        ...state,
+        session: { ...(state.session as DiagnosisSession) },
+      }));
+      await Promise.resolve();
+    });
+
+    expect(scrollIntoViewSpy).not.toHaveBeenCalled();
+
+    scrollTopValue = 705;
+    fireEvent.scroll(timelineFeed);
+
+    await act(async () => {
+      liveViewSource = {
+        ...liveViewSource,
+        timeline: [
+          ...liveViewSource.timeline,
+          {
+            id: "live-msg-scroll-3",
+            kind: "message",
+            role: "assistant",
+            content: "Third timeline item",
+            timestamp: "2026-04-08T12:30:03.000Z",
+          },
+        ],
+      };
+      useDiagnosisStore.setState((state) => ({
+        ...state,
+        session: { ...(state.session as DiagnosisSession) },
+      }));
+      await Promise.resolve();
+    });
+
+    expect(scrollIntoViewSpy).toHaveBeenCalled();
+  });
+
+  it("keeps only one next-action entry when source id rotates across refreshes", async () => {
+    let liveViewSource: ReturnType<typeof diagnosisModifiedModel.buildDiagnosisModifiedLiveView> = {
+      timeline: [
+        {
+          id: "diagnosis-result-next-action-2026-04-22T14:29:00.000Z",
+          kind: "message",
+          role: "assistant",
+          label: "Next action",
+          content: "批准kill_process提案，终止fi_gpu_burn_gpu_cont进程以释放GPU资源",
+          timestamp: "2026-04-22T14:29:00.000Z",
+        },
+      ],
+      candidates: [],
+      summary: undefined,
+      plan: undefined,
+    };
+
+    mockedBuildLiveView.mockImplementation(() => liveViewSource);
+    resetDiagnosisStore({
+      session: createLiveSession("sess-live-next-action-dedupe"),
+      activeSessionId: "sess-live-next-action-dedupe",
+      bootstrapStatus: "ready",
+      traceStatus: "ready",
+      messages: [],
+      bootstrapSession: vi.fn().mockResolvedValue(undefined),
+    });
+
+    renderLivePage("/diagnosis-modified/sess-live-next-action-dedupe");
+    const traceList = screen.getByTestId("diagnosis-modified-trace-list");
+    expect(within(traceList).getAllByText("Next action")).toHaveLength(1);
+
+    await act(async () => {
+      liveViewSource = {
+        ...liveViewSource,
+        timeline: [
+          {
+            id: "diagnosis-result-next-action-2026-04-22T14:29:09.000Z",
+            kind: "message",
+            role: "assistant",
+            label: "Next action",
+            content: "批准kill_process提案，终止fi_gpu_burn_gpu_cont进程以释放GPU资源",
+            timestamp: "2026-04-22T14:29:09.000Z",
+          },
+        ],
+      };
+      useDiagnosisStore.setState((state) => ({
+        ...state,
+        session: { ...(state.session as DiagnosisSession) },
+      }));
+      await Promise.resolve();
+    });
+
+    expect(within(traceList).getAllByText("Next action")).toHaveLength(1);
+  });
+
   it("renders impact topology from topology_context before diagnosis_result is ready", () => {
     mockedBuildLiveView.mockReturnValue({
       timeline: [
@@ -1500,7 +1701,7 @@ describe("DiagnosisModifiedPage split workspace", () => {
 
     expect(screen.getByText("诊断开始上下文")).toBeInTheDocument();
     expect(screen.getByText(/已接收告警 GPUTemperatureHigh/)).toBeInTheDocument();
-    expect(screen.getAllByText("Agent is analyzing the request").length).toBeGreaterThan(0);
+    expect(screen.getByText("正在检查 GPU 温度告警的上下文与拓扑链路。")).toBeInTheDocument();
     expect(screen.getAllByText("ssh.run_command").length).toBeGreaterThan(0);
     expect(screen.getByText("建议先检查风扇策略与机柜散热。")).toBeInTheDocument();
   });

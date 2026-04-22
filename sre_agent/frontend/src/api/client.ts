@@ -55,6 +55,7 @@ const CHAT_REQUEST_TIMEOUT_MS = 120000;
 const DIAGNOSIS_SESSION_REQUEST_TIMEOUT_MS = 30000;
 const DIAGNOSIS_EVENTS_REQUEST_TIMEOUT_MS = 30000;
 const DIAGNOSIS_CHAT_HISTORY_REQUEST_TIMEOUT_MS = 20000;
+const APPROVE_REMEDIATION_TIMEOUT_MS = 10 * 60 * 1000;
 const DIAGNOSE_SESSION_POLL_MS = 2000;
 const DIAGNOSE_SESSION_POLL_ATTEMPTS = 30;
 const BLOCKED_ALERT_NAMES = new Set([
@@ -1046,11 +1047,17 @@ export const apiClient = {
   },
 
   approveRemediation: async (sessionId: string, approved: boolean, user = "ui-operator", planVersion?: number) => {
-    const response = await api.post<SREApiEnvelope<RemediationResult> | RemediationResult>(`/api/remediate/${sessionId}/approve`, {
-      approved,
-      user,
-      plan_version: planVersion,
-    });
+    const response = await api.post<SREApiEnvelope<RemediationResult> | RemediationResult>(
+      `/api/remediate/${sessionId}/approve`,
+      {
+        approved,
+        user,
+        plan_version: planVersion,
+      },
+      {
+        timeout: APPROVE_REMEDIATION_TIMEOUT_MS,
+      },
+    );
     return unwrapPayload(response.data);
   },
 

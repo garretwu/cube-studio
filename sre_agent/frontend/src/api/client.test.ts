@@ -1,4 +1,4 @@
-﻿import { http, HttpResponse } from "msw";
+﻿import { delay, http, HttpResponse } from "msw";
 import { describe, expect, it } from "vitest";
 
 import { apiClient, streamDiagnosis } from "./client";
@@ -416,6 +416,50 @@ describe("apiClient.getTopology", () => {
     expect(result.success).toBe(true);
     expect(result.steps_completed).toBe(2);
   });
+
+  it("uses extended timeout for remediation approval requests", async () => {
+    server.use(
+      http.post("/api/remediate/:sessionId/approve", async () => {
+        await delay(11000);
+        return HttpResponse.json({
+          success: true,
+          data: {
+            plan_id: "plan-approve-timeout",
+            success: true,
+            steps_completed: 1,
+            steps_total: 1,
+            duration_seconds: 11,
+            error: null,
+          },
+          error: null,
+          trace_id: "trace-approve-timeout",
+          timestamp: "2026-03-26T00:00:11Z",
+        });
+      }),
+    );
+
+    const result = await apiClient.approveRemediation("sess-approve-timeout", true, "tester");
+    expect(result.success).toBe(true);
+    expect(result.duration_seconds).toBe(11);
+  }, 15000);
+
+  it("keeps non-approval API timeout policy unchanged", async () => {
+    server.use(
+      http.get("/api/sessions/:sessionId/events", async () => {
+        await delay(11000);
+        return HttpResponse.json({
+          success: true,
+          data: [],
+          error: null,
+          trace_id: "trace-events-timeout-policy",
+          timestamp: "2026-03-26T00:00:11Z",
+        });
+      }),
+    );
+
+    const events = await apiClient.getSessionEvents("sess-timeout-policy");
+    expect(events).toEqual([]);
+  }, 15000);
 
   it("returns session_id for duplicate handle response from error.details", async () => {
     server.use(
@@ -902,4 +946,3 @@ describe("apiClient.getTopology", () => {
     expect(segmentsDatasetId).toBe("dataset-network");
   });
 });
-

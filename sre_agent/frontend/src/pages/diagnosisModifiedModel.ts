@@ -5,12 +5,6 @@ type ChipTone = "neutral" | "accent" | "success" | "warning" | "danger" | "info"
 
 type TimelineToolStatus = "loading" | "success" | "error" | "timeout";
 
-type TimelineSortItem = {
-  order: number;
-  timestamp: string;
-  item: DiagnosisModifiedTimelineItem;
-};
-
 export type DiagnosisModifiedTimelineItem =
   | {
       id: string;
@@ -533,6 +527,7 @@ function extractDiagnosisNextAction(result: DiagnosisSession["diagnosis_result"]
     return undefined;
   }
 
+  // `next_action` comes from backend DiagnosisResult (LangGraph reason/final output).
   const raw = (result as Record<string, unknown>).next_action;
   if (typeof raw !== "string") {
     return undefined;
@@ -546,7 +541,7 @@ export function buildDiagnosisModifiedLiveView(
   session: DiagnosisSession | undefined,
   messages: ChatMessage[],
 ): DiagnosisModifiedLiveView {
-  const timelineItems: TimelineSortItem[] = [];
+  const timelineItems: DiagnosisModifiedTimelineItem[] = [];
   const traceEntries = session?.trace?.steps ?? [];
   const pendingTools: Array<Extract<DiagnosisModifiedTimelineItem, { kind: "tool" }>> = [];
 
@@ -558,22 +553,18 @@ export function buildDiagnosisModifiedLiveView(
 
     if (isThinkingStep(entry)) {
       timelineItems.push({
-        order: timelineItems.length,
+        id: `trace-thinking-${index + 1}-${entry.timestamp}`,
+        kind: "thinking",
+        title:
+          entry.action_type === "tool_call"
+            ? "Agent is planning a tool call"
+            : entry.action_type === "conclude"
+              ? "Agent is converging on the diagnosis"
+              : "Agent is expanding diagnostic context",
+        content: normalizeDiagnosisModifiedDisplayText(entry.thought),
         timestamp: entry.timestamp,
-        item: {
-          id: `trace-thinking-${index + 1}-${entry.timestamp}`,
-          kind: "thinking",
-          title:
-            entry.action_type === "tool_call"
-              ? "Agent is planning a tool call"
-              : entry.action_type === "conclude"
-                ? "Agent is converging on the diagnosis"
-                : "Agent is expanding diagnostic context",
-          content: normalizeDiagnosisModifiedDisplayText(entry.thought),
-          timestamp: entry.timestamp,
-          toolName: entry.tool_name,
-          status: "completed",
-        },
+        toolName: entry.tool_name,
+        status: "completed",
       });
 
       if (entry.action_type === "tool_call" && entry.tool_name) {
@@ -589,11 +580,7 @@ export function buildDiagnosisModifiedLiveView(
         };
 
         pendingTools.push(toolItem);
-        timelineItems.push({
-          order: timelineItems.length,
-          timestamp: toolItem.timestamp,
-          item: toolItem,
-        });
+        timelineItems.push(toolItem);
       }
 
       continue;
@@ -615,65 +602,49 @@ export function buildDiagnosisModifiedLiveView(
     }
 
     timelineItems.push({
-      order: timelineItems.length,
+      id: `trace-orphan-tool-${index + 1}-${entry.timestamp}`,
+      kind: "tool",
+      toolName: entry.tool,
+      params: entry.params,
       timestamp: entry.timestamp,
-      item: {
-        id: `trace-orphan-tool-${index + 1}-${entry.timestamp}`,
-        kind: "tool",
-        toolName: entry.tool,
-        params: entry.params,
-        timestamp: entry.timestamp,
-        status: "success",
-        summaryLines: summarizeResult(entry.result),
-        rawResult: entry.result,
-      },
+      status: "success",
+      summaryLines: summarizeResult(entry.result),
+      rawResult: entry.result,
     });
   }
 
   messages.forEach((message, index) => {
     if (message.role === "assistant" && message.display?.thinking_raw) {
       timelineItems.push({
-        order: timelineItems.length,
+        id: `chat-thinking-${message.id}`,
+        kind: "thinking",
+        title: "Pre-answer reasoning",
+        content: normalizeDiagnosisModifiedDisplayText(message.display.thinking_raw),
         timestamp: message.created_at,
-        item: {
-          id: `chat-thinking-${message.id}`,
-          kind: "thinking",
-          title: "Pre-answer reasoning",
-          content: normalizeDiagnosisModifiedDisplayText(message.display.thinking_raw),
-          timestamp: message.created_at,
-          status: "completed",
-        },
+        status: "completed",
       });
     }
 
     if (message.role === "tool") {
       timelineItems.push({
-        order: timelineItems.length,
+        id: `chat-tool-${message.id}`,
+        kind: "tool",
+        toolName: message.tool_name ?? "tool_call",
+        params: {},
         timestamp: message.created_at,
-        item: {
-          id: `chat-tool-${message.id}`,
-          kind: "tool",
-          toolName: message.tool_name ?? "tool_call",
-          params: {},
-          timestamp: message.created_at,
-          status: "success",
-          summaryLines: [normalizeDiagnosisModifiedDisplayText(message.content)],
-        },
+        status: "success",
+        summaryLines: [normalizeDiagnosisModifiedDisplayText(message.content)],
       });
       return;
     }
 
     timelineItems.push({
-      order: timelineItems.length,
+      id: `chat-message-${message.id}-${index}`,
+      kind: "message",
+      role: message.role === "user" ? "user" : "assistant",
+      content: normalizeDiagnosisModifiedDisplayText(message.display?.answer ?? message.content),
       timestamp: message.created_at,
-        item: {
-          id: `chat-message-${message.id}-${index}`,
-          kind: "message",
-          role: message.role === "user" ? "user" : "assistant",
-          content: normalizeDiagnosisModifiedDisplayText(message.display?.answer ?? message.content),
-          timestamp: message.created_at,
-          label: message.role === "user" ? "User input" : "Agent response",
-        },
+      label: message.role === "user" ? "User input" : "Agent response",
     });
   });
 
@@ -683,33 +654,21 @@ export function buildDiagnosisModifiedLiveView(
       traceEntries[traceEntries.length - 1]?.timestamp ??
       session?.alert.starts_at ??
       new Date().toISOString();
+    const nextActionSourceId = session?.session_id?.trim() || "current";
 
     timelineItems.push({
-      order: timelineItems.length,
+      id: `diagnosis-result-next-action-${nextActionSourceId}`,
+      kind: "message",
+      role: "assistant",
+      content: diagnosisNextAction,
       timestamp: fallbackTimestamp,
-      item: {
-        id: `diagnosis-result-next-action-${fallbackTimestamp}`,
-        kind: "message",
-        role: "assistant",
-        content: diagnosisNextAction,
-        timestamp: fallbackTimestamp,
-        label: "Next action",
-      },
+      label: "Next action",
     });
   }
 
-  const sortedTimeline = [...timelineItems]
-    .sort((left, right) => {
-      const timeGap = new Date(left.timestamp).getTime() - new Date(right.timestamp).getTime();
-      if (timeGap !== 0) {
-        return timeGap;
-      }
-      return left.order - right.order;
-    })
-    .map((entry) => entry.item);
-
   return {
-    timeline: sortedTimeline,
+    // Keep backend trace insertion order as source-of-truth sequence.
+    timeline: timelineItems,
     candidates: buildCandidates(session),
     hypotheses: buildHypotheses(session),
     propagationChain: buildPropagationChain(session),

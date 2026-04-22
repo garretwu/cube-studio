@@ -210,7 +210,135 @@ describe("buildDiagnosisModifiedLiveView next-action narration", () => {
       expect(nextAction.role).toBe("assistant");
       expect(nextAction.label).toBe("Next action");
       expect(nextAction.content).toBe("Use canary drain on worker-03 and validate p95 before full rollout.");
-    }  });
+    }
+  });
+
+  it("keeps backend trace order when trace items share the same timestamp", () => {
+    const sameTs = "2026-04-08T11:00:00.000Z";
+    const session = createSession([
+      {
+        step: 1,
+        timestamp: sameTs,
+        thought: "First thought in backend trace order",
+        action_type: "conclude",
+      },
+      {
+        step: 2,
+        timestamp: sameTs,
+        thought: "Second thought in backend trace order",
+        action_type: "conclude",
+      },
+    ]);
+
+    const view = buildDiagnosisModifiedLiveView(session, []);
+    const thinkingItems = view.timeline.filter((item) => item.kind === "thinking");
+
+    expect(thinkingItems).toHaveLength(2);
+    expect(thinkingItems[0]?.kind).toBe("thinking");
+    expect(thinkingItems[1]?.kind).toBe("thinking");
+    if (thinkingItems[0]?.kind === "thinking" && thinkingItems[1]?.kind === "thinking") {
+      expect(thinkingItems[0].content).toContain("First thought");
+      expect(thinkingItems[1].content).toContain("Second thought");
+    }
+  });
+
+  it("appends next-action after trace and chat timeline entries", () => {
+    const session: DiagnosisSession = {
+      ...createSession([
+        {
+          step: 1,
+          timestamp: "2026-04-08T11:10:01.000Z",
+          thought: "Trace step",
+          action_type: "conclude",
+        },
+      ]),
+      diagnosis_result: {
+        root_cause: "GPU contention",
+        root_cause_layer: "platform",
+        root_cause_entities: ["node:worker-03"],
+        confidence: 0.9,
+        next_action: "Approve canary rollback.",
+        hypotheses: [],
+        impact_summary: "impact",
+        affected_services: ["auth-svc"],
+        triage_priority: "P1",
+        diagnosis_certainty: "confirmed",
+      },
+    };
+
+    const view = buildDiagnosisModifiedLiveView(session, [
+      {
+        id: "chat-assistant-after-trace",
+        role: "assistant",
+        content: "chat follow-up",
+        created_at: "2026-04-08T11:10:30.000Z",
+      },
+    ]);
+
+    const lastItem = view.timeline[view.timeline.length - 1];
+    expect(lastItem?.kind).toBe("message");
+    if (lastItem?.kind === "message") {
+      expect(lastItem.label).toBe("Next action");
+      expect(lastItem.content).toBe("Approve canary rollback.");
+    }
+  });
+
+  it("keeps next-action id stable when fallback timestamp changes", () => {
+    const diagnosisResult: NonNullable<DiagnosisSession["diagnosis_result"]> = {
+      root_cause: "GPU contention",
+      root_cause_layer: "platform",
+      root_cause_entities: ["node:worker-03"],
+      confidence: 0.9,
+      next_action: "Approve canary rollback.",
+      hypotheses: [],
+      impact_summary: "impact",
+      affected_services: ["auth-svc"],
+      triage_priority: "P1",
+      diagnosis_certainty: "confirmed",
+    };
+
+    const first = buildDiagnosisModifiedLiveView(
+      {
+        ...createSession([
+          {
+            step: 1,
+            timestamp: "2026-04-08T11:20:01.000Z",
+            thought: "Trace step 1",
+            action_type: "conclude",
+          },
+        ]),
+        diagnosis_result: diagnosisResult,
+      },
+      [],
+    );
+
+    const second = buildDiagnosisModifiedLiveView(
+      {
+        ...createSession([
+          {
+            step: 1,
+            timestamp: "2026-04-08T11:22:01.000Z",
+            thought: "Trace step 2",
+            action_type: "conclude",
+          },
+        ]),
+        diagnosis_result: diagnosisResult,
+      },
+      [],
+    );
+
+    const firstNextAction = first.timeline.find(
+      (item): item is Extract<DiagnosisModifiedTimelineItem, { kind: "message" }> =>
+        item.kind === "message" && item.label === "Next action",
+    );
+    const secondNextAction = second.timeline.find(
+      (item): item is Extract<DiagnosisModifiedTimelineItem, { kind: "message" }> =>
+        item.kind === "message" && item.label === "Next action",
+    );
+
+    expect(firstNextAction?.id).toBe("diagnosis-result-next-action-sess-live-1");
+    expect(secondNextAction?.id).toBe("diagnosis-result-next-action-sess-live-1");
+  });
 });
 describe("buildDiagnosisModifiedDemoScenario ReAct cadence", () => {
   it("ensures every thinking append is followed by an assistant conclusion append", () => {

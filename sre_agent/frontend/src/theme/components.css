@@ -14058,6 +14058,28 @@
   font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
 }
 
+.diagnosis-modified-thinking__stream-rail-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.diagnosis-modified-thinking__stream-body {
+  display: flex;
+  align-items: baseline;
+  min-height: 20px;
+  padding: 4px 0;
+  line-height: 20px;
+}
+
+.diagnosis-modified-thinking__stream-text {
+  color: rgba(100, 116, 139, 0.92);
+  font-size: 14px;
+  line-height: 20px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 .diagnosis-modified-thinking__panel {
   overflow: hidden;
 }

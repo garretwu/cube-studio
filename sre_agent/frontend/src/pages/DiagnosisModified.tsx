@@ -45,6 +45,7 @@ const DEMO_POST_APPROVAL_AUTO_FLOW = [
   { delayMs: 3200, stage: "alert_recovery" as const },
   { delayMs: 4000, stage: "session_closed" as const },
 ] as const;
+const TIMELINE_AUTO_FOLLOW_BOTTOM_THRESHOLD_PX = 48;
 const FLOW_REMEDIATION_ENTRY_STATUSES = new Set([
   "approval_required",
   "awaiting_approval",
@@ -56,6 +57,15 @@ const FLOW_REMEDIATION_ENTRY_STATUSES = new Set([
   "failed",
   "timeout",
   "escalated",
+]);
+
+const TERMINAL_SESSION_STATUSES = new Set([
+  "resolved",
+  "closed",
+  "failed",
+  "timeout",
+  "escalated",
+  "rejected",
 ]);
 
 function cn(...parts: Array<string | false | null | undefined>) {
@@ -239,6 +249,43 @@ function isDemoNarrativeCard(item: DiagnosisModifiedTimelineItem) {
     item.id.startsWith("demo-assistant-next-step-") ||
     item.id.startsWith("demo-assistant-final-")
   );
+}
+
+function isTransientLiveTimelineItem(item: DiagnosisModifiedTimelineItem) {
+  if (item.kind === "thinking") {
+    return item.status === "thinking";
+  }
+  if (item.kind === "tool") {
+    return item.status === "loading";
+  }
+  return false;
+}
+
+function upsertTimelineItems(
+  current: DiagnosisModifiedTimelineItem[],
+  incoming: DiagnosisModifiedTimelineItem[],
+) {
+  if (incoming.length === 0) {
+    return current;
+  }
+
+  const next = [...current];
+  const indexById = new Map(next.map((item, index) => [item.id, index]));
+  for (const item of incoming) {
+    const existingIndex = indexById.get(item.id);
+    if (typeof existingIndex === "number") {
+      next[existingIndex] = item;
+      continue;
+    }
+    indexById.set(item.id, next.length);
+    next.push(item);
+  }
+  return next;
+}
+
+function isTimelineNearBottom(container: HTMLElement, thresholdPx = TIMELINE_AUTO_FOLLOW_BOTTOM_THRESHOLD_PX) {
+  const distanceToBottom = container.scrollHeight - container.clientHeight - container.scrollTop;
+  return distanceToBottom <= thresholdPx;
 }
 
 
@@ -517,7 +564,27 @@ function ThinkingBlock({
       ? `${item.content.slice(0, THINKING_PREVIEW_CHAR_LIMIT)}...`
       : item.content;
 
-  if (!isThinking && !canToggleCompletedContent) {
+  if (isThinking) {
+    return (
+      <li className="diagnosis-modified-trace-step diagnosis-modified-trace-step--thought">
+        <div className="diagnosis-modified-trace-step__rail" aria-hidden="true">
+          <span className="diagnosis-modified-thinking__stream-rail-icon">
+            <span className="diagnosis-modified-thinking__pulse" />
+          </span>
+        </div>
+        <div className="diagnosis-modified-thinking__stream-body">
+          <StreamingText
+            animate={animate}
+            onComplete={onStreamComplete}
+            text={item.content}
+            className="diagnosis-modified-thinking__stream-text"
+          />
+        </div>
+      </li>
+    );
+  }
+
+  if (!canToggleCompletedContent) {
     return (
       <TraceStepFrame
         meta={durationLabel}
@@ -540,38 +607,25 @@ function ThinkingBlock({
 
   return (
     <TraceStepFrame
-      meta={isThinking ? "Thinking..." : durationLabel}
-      title={isThinking ? item.title || "正在推理" : "推理完成"}
+      meta={durationLabel}
+      title="推理完成"
       type="thought"
     >
       <div className="diagnosis-modified-process-row">
         <div className="diagnosis-modified-process-row__body">
         <button
-          className={cn("diagnosis-modified-thinking__toggle", canToggleCompletedContent && "diagnosis-modified-thinking__toggle--interactive")}
+          className={cn("diagnosis-modified-thinking__toggle", "diagnosis-modified-thinking__toggle--interactive")}
           onClick={() => {
-            if (canToggleCompletedContent) {
-              setIsExpanded((current) => !current);
-            }
+            setIsExpanded((current) => !current);
           }}
           type="button"
         >
           <span className="diagnosis-modified-thinking__icon" aria-hidden="true">
-            {isThinking ? <span className="diagnosis-modified-thinking__pulse" /> : <span className={cn("diagnosis-modified-thinking__chevron", isExpanded && "diagnosis-modified-thinking__chevron--expanded")} />}
+            <span className={cn("diagnosis-modified-thinking__chevron", isExpanded && "diagnosis-modified-thinking__chevron--expanded")} />
           </span>
           <span className="diagnosis-modified-thinking__label-wrap">
-            {isThinking ? (
-              <span className="diagnosis-modified-thinking__label-tag" aria-hidden="true">
-                <AppIcon name="spark" size={11} />
-              </span>
-            ) : null}
-          <span className={cn("diagnosis-modified-thinking__label", isThinking && "diagnosis-modified-thinking__label--thinking")}>
-              {isThinking
-                ? item.title || "Thinking..."
-                : canToggleCompletedContent
-                  ? isExpanded
-                    ? "收起推理"
-                    : "展开全部推理"
-                  : "推理详情"}
+            <span className="diagnosis-modified-thinking__label">
+              {isExpanded ? "收起推理" : "展开全部推理"}
             </span>
           </span>
           {item.toolName ? <span className="diagnosis-modified-thinking__tool">{item.toolName}</span> : null}
@@ -581,7 +635,7 @@ function ThinkingBlock({
           <div className="diagnosis-modified-thinking__panel">
             <div className="diagnosis-modified-thinking__content">
               <p>
-                <StreamingText animate={animate && isThinking} onComplete={animate && isThinking ? onStreamComplete : undefined} text={displayContent} />
+                <StreamingText text={displayContent} />
               </p>
             </div>
           </div>
@@ -995,7 +1049,11 @@ function DiagnosisModifiedPage() {
   const [demoActionFeedback, setDemoActionFeedback] = useState<string | null>(null);
   const [liveApprovalResolution, setLiveApprovalResolution] = useState<ApprovalPlanResolution | null>(null);
 
+  const timelineScrollRef = useRef<HTMLDivElement | null>(null);
   const bottomRef = useRef<HTMLDivElement | null>(null);
+  const timelineAutoFollowRef = useRef(true);
+  const forceTimelineAutoFollowRef = useRef(true);
+  const timelineSessionKeyRef = useRef<string | null>(null);
   const demoTimerRef = useRef<number[]>([]);
   const demoRunTokenRef = useRef(0);
 
@@ -1031,7 +1089,6 @@ function DiagnosisModifiedPage() {
     liveFinalAnswer,
     activeStreamingTools,
     bootstrapStatus,
-    traceStatus,
     error,
     isApprovingPlan,
     canApprove,
@@ -1065,7 +1122,7 @@ function DiagnosisModifiedPage() {
       contextDetails.push(`拓扑摘要: ${topologySummary}`);
     }
     if ((normalizedAlertName || contextDetails.length > 0) && !timeline.some((item) => item.kind === "context_start")) {
-      timeline.push({
+      timeline.unshift({
         id: `live-context-start-${activeSessionId ?? session?.session_id ?? "current"}`,
         kind: "context_start",
         title: "诊断开始上下文",
@@ -1123,19 +1180,7 @@ function DiagnosisModifiedPage() {
       });
     }
 
-    return [...timeline].sort((left, right) => {
-      const timeGap = new Date(left.timestamp).getTime() - new Date(right.timestamp).getTime();
-      if (timeGap !== 0) {
-        return timeGap;
-      }
-      if (left.kind === "context_start" && right.kind !== "context_start") {
-        return -1;
-      }
-      if (right.kind === "context_start" && left.kind !== "context_start") {
-        return 1;
-      }
-      return left.id.localeCompare(right.id);
-    });
+    return timeline;
   }, [
     activeSessionId,
     activeStreamingTools,
@@ -1154,6 +1199,24 @@ function DiagnosisModifiedPage() {
   ]);
   const hasLiveSession =
     shouldBootstrapLiveSession && bootstrapStatus === "ready" && Boolean(session) && Boolean(activeSessionId);
+
+  const handleTimelineScroll = useCallback(() => {
+    const container = timelineScrollRef.current;
+    if (!container) {
+      return;
+    }
+    timelineAutoFollowRef.current = isTimelineNearBottom(container);
+  }, []);
+
+  useEffect(() => {
+    const timelineSessionKey = activeSessionId ?? session?.session_id ?? routeSessionId ?? "__demo__";
+    if (timelineSessionKeyRef.current === timelineSessionKey) {
+      return;
+    }
+    timelineSessionKeyRef.current = timelineSessionKey;
+    timelineAutoFollowRef.current = true;
+    forceTimelineAutoFollowRef.current = true;
+  }, [activeSessionId, routeSessionId, session?.session_id]);
 
   useEffect(() => {
     if (!shouldBootstrapLiveSession) {
@@ -1574,10 +1637,32 @@ function DiagnosisModifiedPage() {
       return;
     }
 
+    const isHistorical = TERMINAL_SESSION_STATUSES.has(
+      String(session?.status ?? "").trim().toLowerCase(),
+    );
+
     const queueToken = liveQueueTokenRef.current;
     liveQueueProcessingRef.current = true;
 
     try {
+      if (isHistorical) {
+        const batch: DiagnosisModifiedTimelineItem[] = [];
+        while (liveQueuedItemsRef.current.length > 0) {
+          const queuedItem = liveQueuedItemsRef.current.shift();
+          if (!queuedItem) {
+            continue;
+          }
+          liveQueuedIdsRef.current.delete(queuedItem.id);
+          const nextItem = latestLiveSourceByIdRef.current.get(queuedItem.id) ?? queuedItem;
+          liveDisplayedIdsRef.current.add(nextItem.id);
+          batch.push(nextItem);
+        }
+        if (batch.length > 0) {
+          setLiveTimeline((current) => upsertTimelineItems(current, batch));
+        }
+        return;
+      }
+
       while (liveQueuedItemsRef.current.length > 0 && queueToken === liveQueueTokenRef.current) {
         const queuedItem = liveQueuedItemsRef.current.shift();
         if (!queuedItem) {
@@ -1588,7 +1673,7 @@ function DiagnosisModifiedPage() {
         const nextItem = latestLiveSourceByIdRef.current.get(queuedItem.id) ?? queuedItem;
 
         liveDisplayedIdsRef.current.add(nextItem.id);
-        setLiveTimeline((current) => [...current, nextItem]);
+        setLiveTimeline((current) => upsertTimelineItems(current, [nextItem]));
 
         if (nextItem.kind === "message" && nextItem.role === "assistant") {
           await waitForMessageStream(nextItem.id, nextItem.content);
@@ -1602,7 +1687,7 @@ function DiagnosisModifiedPage() {
     } finally {
       liveQueueProcessingRef.current = false;
     }
-  }, [waitForLiveToolTerminal, waitForMessageStream]);
+  }, [session?.status, waitForLiveToolTerminal, waitForMessageStream]);
 
   useEffect(() => {
     if (!hasLiveSession) {
@@ -1634,10 +1719,14 @@ function DiagnosisModifiedPage() {
     }
 
     setLiveTimeline((current) =>
-      current.map((item) => {
+      current.flatMap((item) => {
         const latest = sourceById.get(item.id);
         if (!latest) {
-          return item;
+          if (isTransientLiveTimelineItem(item)) {
+            return [item];
+          }
+          liveDisplayedIdsRef.current.delete(item.id);
+          return [];
         }
 
         if (
@@ -1646,10 +1735,10 @@ function DiagnosisModifiedPage() {
           item.status === "timeout" &&
           latest.status === "loading"
         ) {
-          return item;
+          return [item];
         }
 
-        return latest;
+        return [latest];
       }),
     );
 
@@ -2037,8 +2126,14 @@ function DiagnosisModifiedPage() {
     [applyEvent],
   );
 
+  const isTerminalSession = TERMINAL_SESSION_STATUSES.has(
+    String(session?.status ?? "").trim().toLowerCase(),
+  );
   const websocketEnabled =
-    shouldBootstrapLiveSession && import.meta.env.VITE_WS_ENABLED === "true" && Boolean(activeSessionId);
+    shouldBootstrapLiveSession &&
+    import.meta.env.VITE_WS_ENABLED === "true" &&
+    Boolean(activeSessionId) &&
+    !isTerminalSession;
   const websocketUrl = useMemo(
     () =>
       buildBackendWsUrl(`/ws/thinking-trace/${activeSessionId ?? "pending"}`, {
@@ -2226,7 +2321,19 @@ function DiagnosisModifiedPage() {
   ]);
 
   useEffect(() => {
+    const container = timelineScrollRef.current;
+    if (!container) {
+      return;
+    }
+
+    const shouldForceFollow = forceTimelineAutoFollowRef.current;
+    if (!shouldForceFollow && !timelineAutoFollowRef.current) {
+      return;
+    }
+
     bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+    forceTimelineAutoFollowRef.current = false;
+    timelineAutoFollowRef.current = true;
   }, [activeTimeline]);
 
   const inlineError = useMemo(
@@ -2254,14 +2361,18 @@ function DiagnosisModifiedPage() {
               </div>
               <span>实时推理链路</span>
             </header>
-            <div className="diagnosis-modified-feed" data-testid="diagnosis-modified-timeline">
+            <div
+              className="diagnosis-modified-feed"
+              data-testid="diagnosis-modified-timeline"
+              onScroll={handleTimelineScroll}
+              ref={timelineScrollRef}
+            >
               {activeTimeline.length === 0 ? (
                 <div className="diagnosis-modified-empty-state">
                   <div className="diagnosis-modified-empty-state__icon">
                     <AppIcon name="aiChat" size={18} />
                   </div>
                   <h2>Ready to Start Diagnosis and Remediation</h2>
-                  <p>Inspect reasoning and tool calls on the left; the report on the right stays synchronized.</p>
                   {!hasLiveSession ? (
                     <button
                       className="diagnosis-modified-action-btn diagnosis-modified-action-btn--primary"
@@ -2327,12 +2438,6 @@ function DiagnosisModifiedPage() {
                   ))}
                 </ol>
               )}
-
-              {hasLiveSession && traceStatus === "empty" ? (
-                <div className="diagnosis-modified-inline-note">
-                  Live session has not produced new trace entries yet.
-                </div>
-              ) : null}
 
               {inlineError ? (
                 <div
