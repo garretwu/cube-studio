@@ -36,7 +36,6 @@ const DEMO_EVENT_SLOWDOWN = 4.5;
 const DEMO_MIN_TOOL_LOADING_DWELL_MS = 3500;
 const TOOL_RESULT_TIMEOUT_MS = 15_000;
 const STREAM_COMPLETION_BUFFER_MS = 640;
-const THINKING_MIN_DWELL_MS = 500;
 const DEMO_DEFAULT_PROMPT = "Analyze auth-svc latency and error-rate spike in the past hour";
 const THINKING_PREVIEW_CHAR_LIMIT = 200;
 const DEMO_POST_APPROVAL_AUTO_FLOW = [
@@ -1109,7 +1108,6 @@ function DiagnosisModifiedPage() {
   const [lastDemoPrompt, setLastDemoPrompt] = useState("");
   const [activeStreamingMessageId, setActiveStreamingMessageId] = useState<string | null>(null);
   const [liveTimeline, setLiveTimeline] = useState<DiagnosisModifiedTimelineItem[]>([]);
-  const [thinkingReconcileTick, setThinkingReconcileTick] = useState(0);
   const [demoApprovalState, setDemoApprovalState] = useState<ApprovalState>("pending");
   const [demoActionFeedback, setDemoActionFeedback] = useState<string | null>(null);
   const [liveApprovalResolution, setLiveApprovalResolution] = useState<ApprovalPlanResolution | null>(null);
@@ -1141,8 +1139,6 @@ function DiagnosisModifiedPage() {
   const liveQueueTokenRef = useRef(0);
   const latestLiveSourceByIdRef = useRef<Map<string, DiagnosisModifiedTimelineItem>>(new Map());
   const initializedLiveSessionIdRef = useRef<string | null>(null);
-  const thinkingVisibleSinceRef = useRef<Map<string, number>>(new Map());
-  const thinkingDwellTimersRef = useRef<Map<string, number>>(new Map());
 
   const {
     session,
@@ -1174,6 +1170,24 @@ function DiagnosisModifiedPage() {
     liveThinking.content.trim().length > 0 &&
     (liveThinking.node ?? "").trim().toLowerCase() !== "bootstrap",
   );
+  const activeStreamingThinkingItem = useMemo<Extract<DiagnosisModifiedTimelineItem, { kind: "thinking" }> | null>(() => {
+    if (!hasActiveThinkingStream || !liveThinking) {
+      return null;
+    }
+    return {
+      id: liveThinking.round_id ?? `live-thinking-${liveThinking.thought_key}`,
+      kind: "thinking",
+      title: "Agent is analyzing the request",
+      content: normalizeDiagnosisModifiedDisplayText(liveThinking.content),
+      timestamp: liveThinking.timestamp,
+      toolName: liveThinking.tool_name ?? undefined,
+      status: "thinking",
+      thoughtKey: liveThinking.thought_key,
+      roundId: liveThinking.round_id ?? null,
+      phase: "streaming",
+      summaryLine: extractLatestThinkingSummary(liveThinking.content),
+    };
+  }, [hasActiveThinkingStream, liveThinking]);
   const liveTimelineSource = useMemo<DiagnosisModifiedTimelineItem[]>(() => {
     let timeline = [...liveView.timeline];
     const normalizedAlertName = normalizeDiagnosisModifiedDisplayText(alertSnapshot?.alert_name ?? session?.alert.alert_name ?? "");
@@ -1207,27 +1221,14 @@ function DiagnosisModifiedPage() {
       });
     }
 
-    if (hasActiveThinkingStream && liveThinking) {
-      const streamingThinkingItem: Extract<DiagnosisModifiedTimelineItem, { kind: "thinking" }> = {
-        id: liveThinking.round_id ?? `live-thinking-${liveThinking.thought_key}`,
-        kind: "thinking",
-        title: "Agent is analyzing the request",
-        content: normalizeDiagnosisModifiedDisplayText(liveThinking.content),
-        timestamp: liveThinking.timestamp,
-        toolName: liveThinking.tool_name ?? undefined,
-        status: "thinking",
-        thoughtKey: liveThinking.thought_key,
-        roundId: liveThinking.round_id ?? null,
-        phase: "streaming",
-        summaryLine: extractLatestThinkingSummary(liveThinking.content),
-      };
+    if (activeStreamingThinkingItem) {
       timeline = timeline.filter((item) => {
         if (item.kind !== "thinking" || item.status !== "completed") {
           return true;
         }
-        return !isSameThinkingRound(item, streamingThinkingItem);
+        return !isSameThinkingRound(item, activeStreamingThinkingItem);
       });
-      timeline.push(streamingThinkingItem);
+      timeline.push(activeStreamingThinkingItem);
     }
 
     activeStreamingTools.forEach((toolCall, index) => {
@@ -1268,6 +1269,7 @@ function DiagnosisModifiedPage() {
     liveFinalAnswer,
     liveThinking,
     liveView.timeline,
+    activeStreamingThinkingItem,
     hasActiveThinkingStream,
     session?.alert.alert_name,
     session?.alert.severity,
@@ -1551,24 +1553,6 @@ function DiagnosisModifiedPage() {
     liveToolWaiterResolversRef.current.clear();
   }, []);
 
-  const clearThinkingDwellTimers = useCallback((thinkingId?: string) => {
-    if (thinkingId) {
-      const timerId = thinkingDwellTimersRef.current.get(thinkingId);
-      if (timerId) {
-        window.clearTimeout(timerId);
-        thinkingDwellTimersRef.current.delete(thinkingId);
-      }
-      thinkingVisibleSinceRef.current.delete(thinkingId);
-      return;
-    }
-
-    for (const timerId of thinkingDwellTimersRef.current.values()) {
-      window.clearTimeout(timerId);
-    }
-    thinkingDwellTimersRef.current.clear();
-    thinkingVisibleSinceRef.current.clear();
-  }, []);
-
   useEffect(
     () => () => {
       clearDemoTimers();
@@ -1576,7 +1560,6 @@ function DiagnosisModifiedPage() {
       clearPendingThinkingStreams();
       clearDemoToolLoadingStates();
       clearLiveToolWaiters();
-      clearThinkingDwellTimers();
     },
     [
       clearDemoTimers,
@@ -1584,7 +1567,6 @@ function DiagnosisModifiedPage() {
       clearLiveToolWaiters,
       clearPendingMessageStreams,
       clearPendingThinkingStreams,
-      clearThinkingDwellTimers,
     ],
   );
 
@@ -1804,7 +1786,6 @@ function DiagnosisModifiedPage() {
       liveDisplayedIdsRef.current = new Set();
       latestLiveSourceByIdRef.current = new Map();
       clearLiveToolWaiters();
-      clearThinkingDwellTimers();
       setLiveTimeline([]);
       return;
     }
@@ -1821,101 +1802,35 @@ function DiagnosisModifiedPage() {
       liveQueuedIdsRef.current = new Set();
       liveDisplayedIdsRef.current = new Set(sourceTimeline.map((item) => item.id));
       clearLiveToolWaiters();
-      clearThinkingDwellTimers();
       setLiveTimeline(sourceTimeline);
       return;
     }
 
-    const scheduleThinkingDwellReconcile = (thinkingId: string, remainingMs: number) => {
-      if (thinkingDwellTimersRef.current.has(thinkingId)) {
-        return;
-      }
-      const safeDelay = Math.max(1, remainingMs);
-      const timerId = window.setTimeout(() => {
-        thinkingDwellTimersRef.current.delete(thinkingId);
-        setThinkingReconcileTick((current) => current + 1);
-      }, safeDelay);
-      thinkingDwellTimersRef.current.set(thinkingId, timerId);
-    };
-
-    const shouldDelayQueuedCompletedThinking = (
-      candidate: DiagnosisModifiedTimelineItem,
-      currentTimeline: DiagnosisModifiedTimelineItem[],
-    ) => {
-      if (candidate.kind !== "thinking" || candidate.status !== "completed") {
-        return false;
-      }
-
-      for (const currentItem of currentTimeline) {
-        if (currentItem.kind !== "thinking" || currentItem.status !== "thinking") {
-          continue;
-        }
-        if (!isSameThinkingRound(currentItem, candidate)) {
-          continue;
-        }
-
-        const visibleSince = thinkingVisibleSinceRef.current.get(currentItem.id) ?? Date.now();
-        if (!thinkingVisibleSinceRef.current.has(currentItem.id)) {
-          thinkingVisibleSinceRef.current.set(currentItem.id, visibleSince);
-        }
-        const elapsedMs = Date.now() - visibleSince;
-        if (elapsedMs < THINKING_MIN_DWELL_MS) {
-          liveDisplayedIdsRef.current.add(candidate.id);
-          liveQueuedIdsRef.current.delete(candidate.id);
-          scheduleThinkingDwellReconcile(currentItem.id, THINKING_MIN_DWELL_MS - elapsedMs);
-          return true;
-        }
-      }
-
-      return false;
-    };
-
     setLiveTimeline((current) =>
       current.flatMap((item) => {
-        if (item.kind === "thinking" && item.status === "thinking") {
-          if (!thinkingVisibleSinceRef.current.has(item.id)) {
-            thinkingVisibleSinceRef.current.set(item.id, Date.now());
-          }
-        }
-
         const latest = sourceById.get(item.id);
         if (!latest) {
           if (item.kind === "thinking" && item.status === "thinking") {
             const replacement = findCompletedThinkingReplacement(sourceTimeline, item);
             if (replacement) {
-              const visibleSince = thinkingVisibleSinceRef.current.get(item.id) ?? Date.now();
-              const elapsedMs = Date.now() - visibleSince;
-              if (elapsedMs < THINKING_MIN_DWELL_MS) {
-                // Reserve the completed item id during dwell window so queue sync
-                // does not append a second card before in-place replacement happens.
-                liveDisplayedIdsRef.current.add(replacement.id);
-                liveQueuedIdsRef.current.delete(replacement.id);
-                scheduleThinkingDwellReconcile(item.id, THINKING_MIN_DWELL_MS - elapsedMs);
-                return [item];
-              }
               liveDisplayedIdsRef.current.delete(item.id);
               liveDisplayedIdsRef.current.add(replacement.id);
               liveQueuedIdsRef.current.delete(replacement.id);
-              clearThinkingDwellTimers(item.id);
               return [replacement];
             }
-            if (hasActiveThinkingStream) {
+            if (
+              hasActiveThinkingStream &&
+              activeStreamingThinkingItem &&
+              (item.id === activeStreamingThinkingItem.id || isSameThinkingRound(item, activeStreamingThinkingItem))
+            ) {
               return [item];
             }
-            clearThinkingDwellTimers(item.id);
           }
           if (isTransientLiveTimelineItem(item)) {
             return [item];
           }
-          if (item.kind === "thinking") {
-            clearThinkingDwellTimers(item.id);
-          }
           liveDisplayedIdsRef.current.delete(item.id);
           return [];
-        }
-
-        if (item.kind === "thinking" && item.status === "thinking" && latest.kind === "thinking" && latest.status !== "thinking") {
-          clearThinkingDwellTimers(item.id);
         }
 
         if (
@@ -1934,8 +1849,7 @@ function DiagnosisModifiedPage() {
     const queuedItems = sourceTimeline.filter(
       (item) =>
         !liveDisplayedIdsRef.current.has(item.id) &&
-        !liveQueuedIdsRef.current.has(item.id) &&
-        !shouldDelayQueuedCompletedThinking(item, liveTimelineRef.current),
+        !liveQueuedIdsRef.current.has(item.id),
     );
 
     if (queuedItems.length > 0) {
@@ -1948,12 +1862,11 @@ function DiagnosisModifiedPage() {
   }, [
     activeSessionId,
     clearLiveToolWaiters,
-    clearThinkingDwellTimers,
     hasLiveSession,
     hasActiveThinkingStream,
+    activeStreamingThinkingItem,
     liveTimelineSource,
     processLiveQueue,
-    thinkingReconcileTick,
     routeSessionId,
     session?.session_id,
   ]);

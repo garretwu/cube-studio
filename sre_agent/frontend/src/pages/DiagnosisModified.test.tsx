@@ -1453,7 +1453,7 @@ describe("DiagnosisModifiedPage split workspace", () => {
     expect(screen.getByText("推理中最新输出")).toBeInTheDocument();
   });
 
-  it("keeps streaming thinking visible for at least 500ms before replacing with completed card", async () => {
+  it("replaces stale streaming thinking in-place when the same round completes", async () => {
     let liveViewSource: ReturnType<typeof diagnosisModifiedModel.buildDiagnosisModifiedLiveView> = {
       timeline: [
         {
@@ -1537,14 +1537,6 @@ describe("DiagnosisModifiedPage split workspace", () => {
       await Promise.resolve();
     });
 
-    expect(screen.getByText("推理中")).toBeInTheDocument();
-    expect(screen.queryByText("推理完成最终内容")).not.toBeInTheDocument();
-
-    await act(async () => {
-      vi.advanceTimersByTime(500);
-      await Promise.resolve();
-    });
-
     expect(screen.queryByText("推理中")).not.toBeInTheDocument();
     expect(screen.getAllByText("推理完成")).toHaveLength(1);
     expect(screen.getByText("推理完成最终内容")).toBeInTheDocument();
@@ -1554,7 +1546,7 @@ describe("DiagnosisModifiedPage split workspace", () => {
     expect(beforeNode.compareDocumentPosition(completedNode) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
-  it("clears pending thinking dwell timers when switching sessions", async () => {
+  it("does not keep stale thinking from a previous round when a new round starts streaming", async () => {
     let liveViewSource: ReturnType<typeof diagnosisModifiedModel.buildDiagnosisModifiedLiveView> = {
       timeline: [],
       candidates: [],
@@ -1564,19 +1556,19 @@ describe("DiagnosisModifiedPage split workspace", () => {
     mockedBuildLiveView.mockImplementation(() => liveViewSource);
 
     resetDiagnosisStore({
-      session: createLiveSession("sess-live-dwell-a"),
-      activeSessionId: "sess-live-dwell-a",
+      session: createLiveSession("sess-live-round-cleanup"),
+      activeSessionId: "sess-live-round-cleanup",
       bootstrapStatus: "ready",
       traceStatus: "ready",
       messages: [],
       liveThinking: {
-        round_id: "run-dwell-a@2026-04-08T12:24:01.000Z",
+        round_id: "run-round-a@2026-04-08T12:28:01.000Z",
         round_seq: 1,
-        thought_key: "run-dwell-a:reason",
-        run_id: "run-dwell-a",
+        thought_key: "run-round-a:reason",
+        run_id: "run-round-a",
         node: "reason",
-        timestamp: "2026-04-08T12:24:01.000Z",
-        content: "A 会话推理中",
+        timestamp: "2026-04-08T12:28:01.000Z",
+        content: "上一轮推理中内容",
         status: "thinking",
         stream_seq: 1,
         thought_duration_sec: null,
@@ -1587,19 +1579,18 @@ describe("DiagnosisModifiedPage split workspace", () => {
       bootstrapSession: vi.fn().mockResolvedValue(undefined),
     });
 
-    renderLivePage("/diagnosis-modified/sess-live-dwell-a");
-    expect(screen.getByText("推理中")).toBeInTheDocument();
+    renderLivePage("/diagnosis-modified/sess-live-round-cleanup");
+    expect(screen.getByText("上一轮推理中内容")).toBeInTheDocument();
 
     liveViewSource = {
       timeline: [
         {
-          id: "trace-thinking-run-dwell-a:reason",
+          id: "trace-thinking-old-round-without-key",
           kind: "thinking",
           title: "Agent is converging on the diagnosis",
-          content: "A 会话推理完成",
-          timestamp: "2026-04-08T12:24:02.000Z",
+          content: "上一轮推理完成内容",
+          timestamp: "2026-04-08T12:28:03.000Z",
           status: "completed",
-          thoughtKey: "run-dwell-a:reason",
           phase: "completed",
         },
       ],
@@ -1610,34 +1601,28 @@ describe("DiagnosisModifiedPage split workspace", () => {
 
     await act(async () => {
       useDiagnosisStore.setState({
-        liveThinking: null,
+        liveThinking: {
+          round_id: "run-round-b@2026-04-08T12:28:04.000Z",
+          round_seq: 2,
+          thought_key: "run-round-b:reason",
+          run_id: "run-round-b",
+          node: "reason",
+          timestamp: "2026-04-08T12:28:04.000Z",
+          content: "新一轮推理中内容",
+          status: "thinking",
+          stream_seq: 1,
+          thought_duration_sec: null,
+          next_action: null,
+          tool_name: null,
+          active_tools: [],
+        },
+        messages: [{ id: "msg-round-cleanup-trigger", role: "assistant", content: "trigger" }],
       });
       await Promise.resolve();
     });
 
-    await act(async () => {
-      liveViewSource = {
-        timeline: [],
-        candidates: [],
-        summary: undefined,
-        plan: undefined,
-      };
-      useDiagnosisStore.setState({
-        session: createLiveSession("sess-live-dwell-b"),
-        activeSessionId: "sess-live-dwell-b",
-        liveThinking: null,
-        messages: [],
-      });
-      await Promise.resolve();
-    });
-
-    await act(async () => {
-      vi.advanceTimersByTime(700);
-      await Promise.resolve();
-    });
-
-    expect(screen.queryByText("A 会话推理完成")).not.toBeInTheDocument();
-    expect(screen.queryByText("推理中")).not.toBeInTheDocument();
+    expect(screen.queryByText("上一轮推理中内容")).not.toBeInTheDocument();
+    expect(screen.getByText("新一轮推理中内容")).toBeInTheDocument();
   });
 
   it("renders completed thinking collapsed by default and expands on demand", () => {
