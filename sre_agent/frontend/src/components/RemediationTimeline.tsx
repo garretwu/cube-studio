@@ -17,12 +17,25 @@ type StepResult = {
 type RemediationTimelineProps = {
   events: SessionEvent[];
   sessionId: string;
+  autoPlay?: boolean;
+  autoPlayIntervalMs?: number;
+  onPlaybackChange?: (snapshot: TimelinePlaybackSnapshot) => void;
 };
 
 type TimelineField = {
   label: string;
   value: unknown;
   wide?: boolean;
+};
+
+type TimelineNodeState = "running" | "done" | "error" | "pending";
+
+type TimelinePlaybackSnapshot = {
+  activeIndex: number | null;
+  completedCount: number;
+  totalCount: number;
+  visibleCount: number;
+  overallPercent: number;
 };
 
 const STATUS_LABELS: Record<string, string> = {
@@ -56,8 +69,9 @@ const STATUS_LABELS: Record<string, string> = {
   validating: "验证中",
 };
 
-const TERMINAL_STATUSES = new Set(["resolved", "failed", "escalated", "timeout", "rejected"]);
 const ATTENTION_STATUSES = new Set(["failed", "escalated", "timeout", "rejected", "execution_failed", "rollback_failed"]);
+const RUNNING_STATUSES = new Set(["remediating", "execution_started", "validating", "rollback_started"]);
+const DEFAULT_AUTOPLAY_INTERVAL_MS = 2200;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -74,16 +88,6 @@ function getStatusLabel(value?: string | null, fallback = "未知"): string {
   return STATUS_LABELS[value] ?? value;
 }
 
-function getStatusTone(value?: string | null): "neutral" | "accent" | "success" | "warning" | "danger" | "info" {
-  const normalized = String(value ?? "").trim().toLowerCase();
-  if (ATTENTION_STATUSES.has(normalized)) return "danger";
-  if (TERMINAL_STATUSES.has(normalized) || normalized === "execution_succeeded" || normalized === "rollback_succeeded") return "success";
-  if (normalized === "remediating" || normalized === "execution_started" || normalized === "validating") return "warning";
-  if (normalized === "approval_required" || normalized === "awaiting_approval") return "info";
-  if (normalized === "approved" || normalized === "plan_revised") return "accent";
-  return "neutral";
-}
-
 function getStepResults(event: SessionEvent): StepResult[] {
   const data = isRecord(event.data) ? event.data : {};
   const raw = data.step_results;
@@ -91,8 +95,8 @@ function getStepResults(event: SessionEvent): StepResult[] {
   return raw.filter((item): item is StepResult => isRecord(item));
 }
 
-function getTimelineEventKey(event: SessionEvent): string {
-  return `${event.type}-${event.timestamp}`;
+function getTimelineEventKey(event: SessionEvent, index: number): string {
+  return `${event.type}-${event.timestamp}-${index}`;
 }
 
 function getTimelineEventTitle(event: SessionEvent): string {
@@ -123,16 +127,108 @@ function shouldSpanTimelineField(value: unknown): boolean {
   return typeof value === "object" || (typeof value === "string" && value.length > 48);
 }
 
-export default function RemediationTimeline({ events, sessionId }: RemediationTimelineProps) {
-  const [activeEventKey, setActiveEventKey] = useState<string | null>(null);
+const HIDDEN_DETAIL_KEYS = new Set(["message", "stage", "step_results"]);
 
-  useEffect(() => {
-    setActiveEventKey(null);
-  }, [sessionId]);
+function getTimelineNodeState(stage: string, isLatestEvent: boolean): TimelineNodeState {
+  const normalized = stage.trim().toLowerCase();
+  if (ATTENTION_STATUSES.has(normalized)) return "error";
+  if (isLatestEvent && RUNNING_STATUSES.has(normalized)) return "running";
+  return "done";
+}
+
+export default function RemediationTimeline({
+  autoPlay = false,
+  autoPlayIntervalMs = DEFAULT_AUTOPLAY_INTERVAL_MS,
+  events,
+  onPlaybackChange,
+  sessionId,
+}: RemediationTimelineProps) {
+  const [manualActiveEventKey, setManualActiveEventKey] = useState<string | null>(null);
+  const [activePlaybackIndex, setActivePlaybackIndex] = useState<number | null>(autoPlay ? 0 : null);
 
   const timelineEvents = useMemo(() => [...events].sort((left, right) => left.timestamp.localeCompare(right.timestamp)), [events]);
+  const visibleTimelineEvents = useMemo(() => {
+    if (!autoPlay || timelineEvents.length === 0) return timelineEvents;
+    if (activePlaybackIndex === null) return timelineEvents;
+    return timelineEvents.slice(0, Math.min(activePlaybackIndex + 1, timelineEvents.length));
+  }, [activePlaybackIndex, autoPlay, timelineEvents]);
 
-  if (timelineEvents.length === 0) {
+  useEffect(() => {
+    setManualActiveEventKey(null);
+    if (autoPlay && timelineEvents.length > 0) {
+      setActivePlaybackIndex(0);
+      return;
+    }
+    setActivePlaybackIndex(null);
+  }, [autoPlay, sessionId, timelineEvents.length]);
+
+  useEffect(() => {
+    if (!autoPlay || timelineEvents.length === 0 || activePlaybackIndex === null) return;
+    const lastIndex = timelineEvents.length - 1;
+    const timerId = window.setTimeout(() => {
+      setActivePlaybackIndex((current) => {
+        if (current === null) return null;
+        if (current >= lastIndex) return null;
+        return current + 1;
+      });
+    }, Math.max(1000, autoPlayIntervalMs));
+    return () => window.clearTimeout(timerId);
+  }, [activePlaybackIndex, autoPlay, autoPlayIntervalMs, timelineEvents.length]);
+
+  useEffect(() => {
+    if (!autoPlay || manualActiveEventKey === null || activePlaybackIndex === null) return;
+    const autoEventKey = getTimelineEventKey(timelineEvents[activePlaybackIndex], activePlaybackIndex);
+    if (manualActiveEventKey !== autoEventKey) {
+      setManualActiveEventKey(null);
+    }
+  }, [autoPlay, activePlaybackIndex, manualActiveEventKey, timelineEvents]);
+
+  useEffect(() => {
+    if (!onPlaybackChange) return;
+    const totalCount = timelineEvents.length;
+    if (totalCount === 0) {
+      onPlaybackChange({
+        activeIndex: null,
+        completedCount: 0,
+        overallPercent: 0,
+        totalCount: 0,
+        visibleCount: 0,
+      });
+      return;
+    }
+
+    if (!autoPlay) {
+      onPlaybackChange({
+        activeIndex: null,
+        completedCount: totalCount,
+        overallPercent: 100,
+        totalCount,
+        visibleCount: totalCount,
+      });
+      return;
+    }
+
+    if (activePlaybackIndex === null) {
+      onPlaybackChange({
+        activeIndex: null,
+        completedCount: totalCount,
+        overallPercent: 100,
+        totalCount,
+        visibleCount: totalCount,
+      });
+      return;
+    }
+
+    onPlaybackChange({
+      activeIndex: activePlaybackIndex,
+      completedCount: Math.max(0, Math.min(activePlaybackIndex, totalCount)),
+      overallPercent: Math.max(0, Math.min(100, Math.round((activePlaybackIndex / Math.max(totalCount, 1)) * 100))),
+      totalCount,
+      visibleCount: Math.max(0, Math.min(activePlaybackIndex + 1, totalCount)),
+    });
+  }, [activePlaybackIndex, autoPlay, onPlaybackChange, timelineEvents.length]);
+
+  if (visibleTimelineEvents.length === 0) {
     return (
       <div className="mini-card remediation-empty-state remediation-empty-state--compact remediation-record-table__embedded-card">
         <p className="mini-card__title">暂无执行事件</p>
@@ -141,35 +237,59 @@ export default function RemediationTimeline({ events, sessionId }: RemediationTi
     );
   }
 
+  const autoActiveEventKey =
+    autoPlay && activePlaybackIndex !== null ? getTimelineEventKey(timelineEvents[activePlaybackIndex], activePlaybackIndex) : null;
+  const effectiveActiveEventKey = autoPlay ? (manualActiveEventKey ?? autoActiveEventKey) : manualActiveEventKey;
+
   return (
     <div className="remediation-timeline" role="list" aria-label="修复时间线">
-      {timelineEvents.map((event, index) => {
+      {visibleTimelineEvents.map((event, index) => {
         const stage = getEventStage(event);
         const data = isRecord(event.data) ? event.data : {};
         const stepResults = getStepResults(event);
-        const eventKey = getTimelineEventKey(event);
+        const eventKey = getTimelineEventKey(event, index);
         const title = getTimelineEventTitle(event);
-        const isActive = activeEventKey === eventKey;
+        const isActive = effectiveActiveEventKey === eventKey;
+        const isLatestEvent = index === timelineEvents.length - 1;
+        const nodeState: TimelineNodeState = autoPlay
+          ? (() => {
+              const normalized = stage.trim().toLowerCase();
+              const isAttention = ATTENTION_STATUSES.has(normalized);
+              if (activePlaybackIndex === null) return isAttention ? "error" : "done";
+              if (index < activePlaybackIndex) return isAttention ? "error" : "done";
+              if (index === activePlaybackIndex) {
+                if (isAttention) return "error";
+                return RUNNING_STATUSES.has(normalized) ? "running" : "done";
+              }
+              return "pending";
+            })()
+          : getTimelineNodeState(stage, isLatestEvent);
+        const nodeIconName =
+          nodeState === "running" ? "refresh" : nodeState === "error" ? "cancelCircle" : nodeState === "pending" ? "infoCircle" : "checkmarkCircle";
+        const isRunningLog = nodeState === "running";
+        const logStateLabel = isRunningLog ? "执行中" : nodeState === "error" ? "执行异常" : null;
         const detailFields: TimelineField[] = [
-          { label: "schema_version", value: event.schema_version },
-          { label: "type", value: event.type },
-          { label: "session_id", value: event.session_id },
-          { label: "timestamp", value: event.timestamp },
           ...Object.entries(data)
-            .filter(([key]) => key !== "step_results")
+            .filter(([key]) => !HIDDEN_DETAIL_KEYS.has(key))
             .map(([key, value]) => ({ label: key, value, wide: shouldSpanTimelineField(value) })),
         ];
 
         return (
-          <article key={`${event.type}-${event.timestamp}-${index}`} className={`remediation-timeline__item${isActive ? " remediation-timeline__item--active" : ""}`} role="listitem">
+          <article key={eventKey} className={`remediation-timeline__item${isActive ? " remediation-timeline__item--active" : ""}`} role="listitem">
             <div className="remediation-timeline__rail" aria-hidden="true">
-              <span className={`remediation-timeline__node remediation-timeline__node--${getStatusTone(stage)}`} />
+              <span className={`remediation-timeline__node remediation-timeline__node--${nodeState}`}>
+                <AppIcon
+                  name={nodeIconName}
+                  size={12}
+                  className={`remediation-timeline__node-icon${nodeState === "running" ? " remediation-timeline__node-icon--spinning" : ""}`}
+                />
+              </span>
             </div>
             <div className="remediation-timeline__body">
               <button
                 type="button"
                 className={`remediation-timeline__summary${isActive ? " remediation-timeline__summary--active" : ""}`}
-                onClick={() => setActiveEventKey((current) => (current === eventKey ? null : eventKey))}
+                onClick={() => setManualActiveEventKey((current) => (current === eventKey ? null : eventKey))}
                 aria-expanded={isActive}
                 aria-label={`查看 ${title} 的详情`}
               >
@@ -178,19 +298,13 @@ export default function RemediationTimeline({ events, sessionId }: RemediationTi
                     <p className="remediation-timeline__summary-title">{title}</p>
                     <p className="remediation-timeline__summary-time">{formatTimestamp(event.timestamp)}</p>
                   </div>
-                  <div className="status-row remediation-timeline__summary-chips">
-                    <StatusChip tone={getStatusTone(stage)}>{getStatusLabel(stage)}</StatusChip>
-                    {typeof data.user === "string" && data.user.trim() ? <StatusChip tone="neutral">{data.user}</StatusChip> : null}
-                    {typeof data.timeout_seconds === "number" ? <StatusChip tone="info">{`超时 ${data.timeout_seconds}s`}</StatusChip> : null}
-                    {stepResults.length > 0 ? <StatusChip tone="neutral">{`步骤结果 ${stepResults.length}`}</StatusChip> : null}
-                  </div>
+                  {logStateLabel ? <p className={`remediation-timeline__state-chip remediation-timeline__state-chip--${nodeState}`}>{logStateLabel}</p> : null}
                   {typeof data.message === "string" && data.message.trim() && data.message.trim() !== title ? (
                     <p className="remediation-timeline__summary-copy">{data.message}</p>
                   ) : null}
                 </div>
                 <span className="remediation-timeline__summary-action">
-                  <AppIcon name={isActive ? "up" : "down"} size={14} />
-                  <span>{isActive ? "收起详情" : "查看详情"}</span>
+                  <AppIcon name={isActive ? "up" : "down"} size={13} />
                 </span>
               </button>
 
@@ -229,14 +343,6 @@ export default function RemediationTimeline({ events, sessionId }: RemediationTi
                             <div className="remediation-record-table__detail-field remediation-timeline__detail-field--wide">
                               <p className="remediation-record-table__detail-label">result</p>
                               <p className="remediation-record-table__detail-value remediation-code-block">{formatResult(item.result ?? item.message ?? "-")}</p>
-                            </div>
-                            <div className="remediation-record-table__detail-field">
-                              <p className="remediation-record-table__detail-label">success</p>
-                              <p className="remediation-record-table__detail-value">{typeof item.success === "boolean" ? String(item.success) : "-"}</p>
-                            </div>
-                            <div className="remediation-record-table__detail-field">
-                              <p className="remediation-record-table__detail-label">mocked</p>
-                              <p className="remediation-record-table__detail-value">{typeof item.mocked === "boolean" ? String(item.mocked) : "-"}</p>
                             </div>
                           </div>
                         </div>

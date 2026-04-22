@@ -102,6 +102,14 @@ const DEFAULT_APPROVER = "alice";
 const LOCAL_AUDIT_STORAGE_KEY = "sre_diagnosis_local_audit_v1";
 const SESSION_BACKFILL_THROTTLE_MS = 1200;
 const PENDING_SESSION_PREFIX = "pending-";
+const TERMINAL_SESSION_STATUSES = new Set([
+  "resolved",
+  "closed",
+  "failed",
+  "timeout",
+  "escalated",
+  "rejected",
+]);
 const sessionBackfillLastRunAt = new Map<string, number>();
 const sessionBackfillInFlight = new Set<string>();
 type EventLike = Pick<WSEvent, "type" | "session_id" | "timestamp" | "data">;
@@ -2186,7 +2194,9 @@ export const useDiagnosisStore = create<DiagnosisState>((set, get) => ({
 
     const backfillSessionId =
       targetSessionId && !isPendingSessionId(targetSessionId) ? targetSessionId : get().activeSessionId;
-    if (backfillSessionId && !isPendingSessionId(backfillSessionId) && shouldTriggerSessionBackfill(event)) {
+    const backfillSessionStatus = get().session?.status?.trim().toLowerCase() ?? "";
+    const isTerminalBackfill = TERMINAL_SESSION_STATUSES.has(backfillSessionStatus);
+    if (backfillSessionId && !isPendingSessionId(backfillSessionId) && shouldTriggerSessionBackfill(event) && !isTerminalBackfill) {
       scheduleSessionBackfill(backfillSessionId);
     }
   },

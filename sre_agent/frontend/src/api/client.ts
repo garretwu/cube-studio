@@ -55,6 +55,7 @@ const CHAT_REQUEST_TIMEOUT_MS = 120000;
 const DIAGNOSIS_SESSION_REQUEST_TIMEOUT_MS = 30000;
 const DIAGNOSIS_EVENTS_REQUEST_TIMEOUT_MS = 30000;
 const DIAGNOSIS_CHAT_HISTORY_REQUEST_TIMEOUT_MS = 20000;
+const APPROVE_REMEDIATION_TIMEOUT_MS = 10 * 60 * 1000;
 const DIAGNOSE_SESSION_POLL_MS = 2000;
 const DIAGNOSE_SESSION_POLL_ATTEMPTS = 30;
 const BLOCKED_ALERT_NAMES = new Set([
@@ -419,7 +420,7 @@ function mapSummaryToDiagnosisSummary(item: SessionSummary): DiagnosisSessionSum
     outcome: item.outcome ?? null,
     triage_priority: null,
     root_cause: null,
-    affected_services: [],
+    affected_services: Array.isArray(item.affected_services) ? item.affected_services : [],
   };
 }
 
@@ -1016,8 +1017,22 @@ export const apiClient = {
   },
 
   getDiagnosisHistorySessions: async () => {
-    const sessions = await apiClient.getSessions(50);
-    return sessions.map(mapSummaryToDiagnosisSummary);
+    try {
+      const sessions = await apiClient.getSessions(50);
+      return sessions.map(mapSummaryToDiagnosisSummary);
+    } catch (primaryError) {
+      try {
+        const response = await api.get<SREApiEnvelope<SessionSummary[]> | SessionSummary[]>('/api/diagnosis/sessions');
+        const sessions = normalizeSessionSummaryList(unwrapPayload(response.data));
+        return sessions.map(mapSummaryToDiagnosisSummary);
+      } catch {
+        if (import.meta.env.DEV) {
+          const { getDiagnosisHistorySessionsFallback } = await import("./devFallback");
+          return getDiagnosisHistorySessionsFallback();
+        }
+        throw primaryError;
+      }
+    }
   },
 
   getSessionLoop: async (sessionId?: string) => {
@@ -1032,11 +1047,17 @@ export const apiClient = {
   },
 
   approveRemediation: async (sessionId: string, approved: boolean, user = "ui-operator", planVersion?: number) => {
-    const response = await api.post<SREApiEnvelope<RemediationResult> | RemediationResult>(`/api/remediate/${sessionId}/approve`, {
-      approved,
-      user,
-      plan_version: planVersion,
-    });
+    const response = await api.post<SREApiEnvelope<RemediationResult> | RemediationResult>(
+      `/api/remediate/${sessionId}/approve`,
+      {
+        approved,
+        user,
+        plan_version: planVersion,
+      },
+      {
+        timeout: APPROVE_REMEDIATION_TIMEOUT_MS,
+      },
+    );
     return unwrapPayload(response.data);
   },
 
@@ -1093,7 +1114,6 @@ export const apiClient = {
           (String(session.status ?? "").trim().toLowerCase() === "resolved" ? currentPlan.steps.length : 0),
       );
       const progressStatus = String(session.status || "").trim() || latestStage || "pending";
-
       // Extract canary batch status from remediation_progress events
       const batchStatusMap = new Map<string, { batch: string; progress: number; status: string }>();
       for (const event of remediationEvents) {
@@ -1138,6 +1158,9 @@ export const apiClient = {
       return {
         session_id: resolved,
         plan: currentPlan,
+        affected_services: Array.isArray(session.diagnosis_result?.affected_services)
+          ? session.diagnosis_result.affected_services
+          : [],
         plan_version: planVersion,
         plan_history: revisedEvents.map((event, index) => ({
           version: Number(event.data?.["plan_version"] ?? index + 2),
@@ -1175,6 +1198,7 @@ export const apiClient = {
           confidence: loop.winning_candidate?.confidence ?? 0,
           priority: "P2" as const,
         },
+        affected_services: [],
         progress: {
           status: loop.outcome,
           completed_steps: loop.attempts.length,

@@ -17,6 +17,7 @@ from sre_agent.models.remediation import RemediationPlan, RemediationResult, Ver
 from sre_agent.remediation.approval import ApprovalGate, ApprovalInput
 from sre_agent.remediation.canary import CanaryExecutor, _compare
 from sre_agent.remediation.validator import PlanValidationError, PlanValidator
+from sre_agent.ttft_process_policy import is_ttft_suspect_process
 from sre_agent.remediation.wal import RollbackJournal
 from sre_agent.tools import ToolExecutionContext, ToolRegistry
 
@@ -161,6 +162,29 @@ class RemediationEngine:
                 return result.model_copy(update={"duration_seconds": duration})
             if plan.canary and plan.canary.enabled:
                 targets = self._collect_targets(plan)
+                if self._has_process_target_mismatch(plan, targets):
+                    LOGGER.warning(
+                        "blocking canary auto execution due to process target mismatch: plan_id=%s batch_total=%s",
+                        plan.plan_id,
+                        len(targets),
+                    )
+                    if progress_callback is not None:
+                        await progress_callback(
+                            stage="canary_check_failed",
+                            details={
+                                "message": "进程级灰度批次目标异常，已阻断自动执行，请人工复核后重试。",
+                                "error": "process_target_mismatch",
+                                "suspect_process_count": len(targets),
+                                "planned_batch_total": len(targets),
+                            },
+                        )
+                    return RemediationResult(
+                        plan_id=plan.plan_id,
+                        success=False,
+                        steps_completed=0,
+                        steps_total=len(plan.steps),
+                        error="process canary target mismatch; manual approval required",
+                    )
                 return await self.canary.execute_with_canary(
                     plan,
                     targets,
@@ -249,6 +273,21 @@ class RemediationEngine:
                         "message": f"正在执行步骤 {step.step_id}/{total_steps}: {step.description}",
                     },
                 )
+            precheck_error = await self._precheck_kill_process_target(plan=plan, step=step)
+            if precheck_error is not None:
+                failed_step = step
+                await self.wal.recover_all()
+                return RemediationResult(
+                    plan_id=plan.plan_id,
+                    success=False,
+                    steps_completed=completed,
+                    steps_total=total_steps,
+                    failed_step=failed_step,
+                    rolled_back=True,
+                    error=str(precheck_error.get("reason") or "stale or mismatched pid"),
+                    error_code="stale_or_mismatched_pid",
+                    error_details=precheck_error,
+                )
             result = await self.tools.execute(
                 step.tool,
                 step.params,
@@ -300,6 +339,119 @@ class RemediationEngine:
             steps_total=total_steps,
             verification_results=verification_results,
         )
+
+    async def _precheck_kill_process_target(
+        self,
+        *,
+        plan: RemediationPlan,
+        step: Any,
+    ) -> dict[str, Any] | None:
+        if str(step.tool or "").strip() != "kill_process":
+            return None
+        if "-ttft-kill" not in str(plan.plan_id or ""):
+            return None
+        node = str(step.params.get("node", "") or "").strip()
+        if not node:
+            return {
+                "action": "re_diagnose_required",
+                "plan_id": plan.plan_id,
+                "step_id": step.step_id,
+                "node": "",
+                "pid": None,
+                "reason": "missing node for kill_process precheck",
+            }
+        target_pid = self._extract_target_pid(step.params)
+        if target_pid is None:
+            return {
+                "action": "re_diagnose_required",
+                "plan_id": plan.plan_id,
+                "step_id": step.step_id,
+                "node": node,
+                "pid": None,
+                "reason": "missing numeric pid for kill_process precheck",
+            }
+
+        precheck = await self.tools.execute(
+            "process.find",
+            {"node": node, "pattern": str(target_pid)},
+            self.execution_context,
+        )
+        if not precheck.success:
+            return {
+                "action": "re_diagnose_required",
+                "plan_id": plan.plan_id,
+                "step_id": step.step_id,
+                "node": node,
+                "pid": target_pid,
+                "reason": f"precheck failed: {precheck.error or 'unknown error'}",
+            }
+        payload = precheck.data if isinstance(precheck.data, dict) else {}
+        raw_matches = payload.get("matches")
+        matches = raw_matches if isinstance(raw_matches, list) else []
+        pid_match: dict[str, Any] | None = None
+        for item in matches:
+            if not isinstance(item, dict):
+                continue
+            try:
+                pid = int(item.get("pid"))
+            except Exception:  # noqa: BLE001
+                continue
+            if pid == target_pid:
+                pid_match = item
+                break
+        commandline_sample = ""
+        if isinstance(pid_match, dict):
+            commandline_sample = str(pid_match.get("command") or pid_match.get("process") or "").strip()
+        LOGGER.info(
+            "ttft kill_process precheck: stale_pid_precheck=true plan_id=%s step_id=%s node=%s pid=%s pid_commandline_sample=%s",
+            plan.plan_id,
+            step.step_id,
+            node,
+            target_pid,
+            commandline_sample or "<empty>",
+        )
+        if pid_match is None:
+            return {
+                "action": "re_diagnose_required",
+                "plan_id": plan.plan_id,
+                "step_id": step.step_id,
+                "node": node,
+                "pid": target_pid,
+                "reason": "target pid not found before execution",
+                "pid_commandline_sample": "",
+            }
+        if not is_ttft_suspect_process(commandline_sample):
+            return {
+                "action": "re_diagnose_required",
+                "plan_id": plan.plan_id,
+                "step_id": step.step_id,
+                "node": node,
+                "pid": target_pid,
+                "reason": "target pid commandline is not TTFT-suspect process",
+                "pid_commandline_sample": commandline_sample,
+            }
+        return None
+
+    @staticmethod
+    def _extract_target_pid(params: dict[str, Any]) -> int | None:
+        pid_raw = params.get("pid")
+        if pid_raw is not None:
+            try:
+                pid = int(pid_raw)
+            except Exception:  # noqa: BLE001
+                pid = -1
+            if pid > 0:
+                return pid
+        entity_id = str(params.get("entity_id", "") or "").strip()
+        if entity_id.lower().startswith("proc:"):
+            raw = entity_id.split(":", 1)[1].strip()
+            try:
+                pid = int(raw)
+            except Exception:  # noqa: BLE001
+                return None
+            if pid > 0:
+                return pid
+        return None
 
     async def _verify(self, config: VerificationConfig) -> bool:
         if config.method == "wait":
@@ -365,6 +517,22 @@ class RemediationEngine:
         if process_targets:
             return process_targets
         return generic_targets
+
+    @staticmethod
+    def _has_process_target_mismatch(plan: RemediationPlan, targets: list[str]) -> bool:
+        process_step_targets: list[str] = []
+        for step in plan.steps:
+            entity_id = step.params.get("entity_id")
+            if isinstance(entity_id, str) and entity_id.strip().lower().startswith("proc:"):
+                process_step_targets.append(entity_id.strip())
+        if not process_step_targets:
+            return False
+
+        unique_steps = list(dict.fromkeys(process_step_targets))
+        unique_targets = list(dict.fromkeys(targets))
+        if len(unique_steps) != len(process_step_targets):
+            return True
+        return unique_steps != unique_targets
 
     @staticmethod
     def _filter_steps_by_targets(

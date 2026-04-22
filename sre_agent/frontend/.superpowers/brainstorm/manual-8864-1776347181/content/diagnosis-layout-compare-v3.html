@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>&#x72B6;&#x6001;&#x5C42;&#x5E03;&#x5C40;&#x5BF9;&#x6BD4;</title>
+  <style>
+    :root {
+      --bg: #f3f6fb;
+      --panel: #ffffff;
+      --border: #d7dfeb;
+      --border-strong: #8ea6c1;
+      --text: #17202b;
+      --muted: #5b6b7d;
+      --accent: #2f5b88;
+      --accent-soft: #e8f0f8;
+      --good: #e2f1e8;
+      --warn: #f7ecd9;
+      --shadow: 0 18px 50px rgba(21, 35, 52, 0.08);
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; background: linear-gradient(180deg, #eef3f9 0%, #f7f9fc 100%); color: var(--text); }
+    .page { max-width: 1440px; margin: 0 auto; padding: 28px; }
+    h1 { margin: 0 0 10px; font-size: 31px; }
+    .subtitle { margin: 0 0 24px; color: var(--muted); line-height: 1.65; font-size: 16px; }
+    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 22px; }
+    .card { background: var(--panel); border: 1px solid var(--border); border-radius: 24px; box-shadow: var(--shadow); overflow: hidden; cursor: pointer; transition: .18s ease; }
+    .card:hover { transform: translateY(-2px); border-color: var(--border-strong); }
+    .card.selected { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(47, 91, 136, 0.12), var(--shadow); }
+    .head { padding: 20px 22px 10px; }
+    .tag { display: inline-flex; padding: 6px 10px; border-radius: 999px; background: var(--accent-soft); color: var(--accent); font-size: 12px; font-weight: 700; text-transform: uppercase; }
+    h2 { margin: 14px 0 8px; font-size: 24px; }
+    .head p { margin: 0; color: var(--muted); line-height: 1.7; }
+    .mock { margin: 0 22px 18px; border: 1px solid var(--border); border-radius: 18px; overflow: hidden; background: #fbfcfe; }
+    .mock-title { padding: 12px 16px; border-bottom: 1px solid var(--border); background: #f4f8fc; font-size: 13px; font-weight: 700; color: #42556b; }
+    .mock-body { padding: 14px; }
+    .stack-layout { display: flex; flex-direction: column; gap: 12px; }
+    .summary-row { display: grid; grid-template-columns: 1.3fr 1fr 1fr; gap: 10px; }
+    .panel { background: #fff; border: 1px solid var(--border); border-radius: 14px; padding: 13px; min-height: 92px; }
+    .panel-strong { border: 2px solid #56779a; }
+    .timeline { display: flex; flex-direction: column; gap: 10px; }
+    .timeline-item { background: #fff; border: 1px solid var(--border); border-radius: 14px; padding: 12px 13px; }
+    .split-layout { display: grid; grid-template-columns: minmax(0, 1.45fr) 340px; gap: 12px; }
+    .right-rail { display: flex; flex-direction: column; gap: 10px; }
+    .sticky-note { background: #fff; border: 2px solid #56779a; border-radius: 14px; padding: 13px; }
+    .rail-card { background: #fff; border: 1px solid var(--border); border-radius: 14px; padding: 13px; }
+    .list { margin: 8px 0 0 18px; padding: 0; color: #32485f; line-height: 1.8; }
+    .analysis { padding: 0 22px 22px; display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    .box { border-radius: 16px; padding: 14px 16px; }
+    .box.good { background: var(--good); }
+    .box.warn { background: var(--warn); }
+    h3 { margin: 0 0 10px; font-size: 16px; }
+    ul { margin: 0; padding-left: 18px; line-height: 1.75; }
+    .recommend { margin-top: 24px; padding: 18px 20px; border-radius: 18px; background: rgba(255,255,255,.92); border: 1px solid var(--border); box-shadow: var(--shadow); line-height: 1.8; }
+    .recommend strong { color: var(--accent); }
+    @media (max-width: 1100px) { .grid { grid-template-columns: 1fr; } }
+    @media (max-width: 780px) { .page { padding: 18px; } .summary-row, .split-layout, .analysis { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <h1>&#x5982;&#x679C;&#x9009; B&#xFF0C;&#x72B6;&#x6001;&#x4FE1;&#x606F;&#x5E94;&#x8BE5;&#x600E;&#x4E48;&#x6446;&#xFF1F;</h1>
+    <p class="subtitle">&#x4F60;&#x63D0;&#x7684;&#x95EE;&#x9898;&#x5F88;&#x5BF9;&#xFF1A;&#x5BF9;&#x4E8E;&#x8BCA;&#x65AD;&#x4FEE;&#x590D;&#x5DE5;&#x4F5C;&#x53F0;&#xFF0C;&#x5DE6;&#x65F6;&#x95F4;&#x7EBF; + &#x53F3;&#x72B6;&#x6001;&#x680F;&#x5F80;&#x5F80;&#x4F1A;&#x6BD4;&#x201C;&#x5168;&#x90E8;&#x5728;&#x4E0A;&#x65B9;&#x201D;&#x66F4;&#x6E05;&#x695A;&#x3002;&#x8FD9;&#x91CC;&#x5BF9;&#x6BD4;&#x4E24;&#x79CD; B &#x5185;&#x90E8;&#x5E03;&#x5C40;&#x3002;</p>
+
+    <div class="grid">
+      <section class="card" data-choice="b1-top-summary" onclick="document.querySelectorAll('.card').forEach(el=>el.classList.remove('selected'));this.classList.add('selected');">
+        <div class="head">
+          <span class="tag">B1</span>
+          <h2>&#x4E0A;&#x7F6E;&#x72B6;&#x6001;&#x5C42; + &#x4E0B;&#x65B9;&#x5168;&#x5BBD;&#x65F6;&#x95F4;&#x7EBF;</h2>
+          <p>&#x9875;&#x9762;&#x4E0A;&#x65B9;&#x6709;&#x4E00;&#x5757;&#x6C47;&#x603B;&#x533A;&#xFF0C;&#x4E0B;&#x9762;&#x662F;&#x8BC1;&#x636E;&#x4E0E;&#x8FC7;&#x7A0B;&#x65F6;&#x95F4;&#x7EBF;&#x3002;</p>
+        </div>
+        <div class="mock">
+          <div class="mock-title">&#x7ED3;&#x6784;&#x611F;&#x53D7;</div>
+          <div class="mock-body stack-layout">
+            <div class="summary-row">
+              <div class="panel panel-strong"><strong>&#x5F53;&#x524D;&#x7ED3;&#x8BBA;</strong><br/>GPU contention &#x6B63;&#x5728;&#x9A8C;&#x8BC1;&#x4E2D;</div>
+              <div class="panel"><strong>&#x5F53;&#x524D;&#x9636;&#x6BB5;</strong><br/>&#x4FEE;&#x590D;&#x9A8C;&#x8BC1;</div>
+              <div class="panel"><strong>&#x5F53;&#x524D;&#x6267;&#x884C;&#x6001;</strong><br/>canary 10%</div>
+            </div>
+            <div class="timeline">
+              <div class="timeline-item">&#x601D;&#x8003;&#x5757;&#xFF1A;&#x5F62;&#x6210;&#x65B0;&#x7684;&#x5019;&#x9009;&#x6839;&#x56E0;&#x6392;&#x5E8F;</div>
+              <div class="timeline-item">&#x5DE5;&#x5177;&#x8C03;&#x7528;&#xFF1A;query_metrics</div>
+              <div class="timeline-item">&#x7CFB;&#x7EDF;&#x4E8B;&#x4EF6;&#xFF1A;canary started</div>
+              <div class="timeline-item">&#x7CFB;&#x7EDF;&#x4E8B;&#x4EF6;&#xFF1A;observation passed</div>
+            </div>
+          </div>
+        </div>
+        <div class="analysis">
+          <div class="box good">
+            <h3>&#x4F18;&#x70B9;</h3>
+            <ul>
+              <li>&#x5BF9;&#x7EB5;&#x5411;&#x6D41;&#x5F0F;&#x9605;&#x8BFB;&#x975E;&#x5E38;&#x81EA;&#x7136;</li>
+              <li>&#x79FB;&#x52A8;&#x7AEF;&#x9002;&#x914D;&#x6700;&#x5BB9;&#x6613;</li>
+              <li>&#x5B9E;&#x73B0;&#x6210;&#x672C;&#x76F8;&#x5BF9;&#x4F4E;</li>
+            </ul>
+          </div>
+          <div class="box warn">
+            <h3>&#x95EE;&#x9898;</h3>
+            <ul>
+              <li>&#x5F53;&#x65F6;&#x95F4;&#x7EBF;&#x5F88;&#x957F;&#x65F6;&#xFF0C;&#x4E0A;&#x65B9;&#x72B6;&#x6001;&#x4ECD;&#x7136;&#x4F1A;&#x88AB;&#x6EDA;&#x51FA;&#x89C6;&#x91CE;</li>
+              <li>&#x201C;&#x5F53;&#x524D;&#x72B6;&#x6001;&#x201D;&#x548C;&#x201C;&#x5386;&#x53F2;&#x8FC7;&#x7A0B;&#x201D;&#x8FD8;&#x6CA1;&#x6709;&#x5F7B;&#x5E95;&#x62C9;&#x5F00;</li>
+            </ul>
+          </div>
+        </div>
+      </section>
+
+      <section class="card" data-choice="b2-left-timeline-right-rail" onclick="document.querySelectorAll('.card').forEach(el=>el.classList.remove('selected'));this.classList.add('selected');">
+        <div class="head">
+          <span class="tag">B2</span>
+          <h2>&#x5DE6;&#x65F6;&#x95F4;&#x7EBF; + &#x53F3;&#x7C98;&#x6027;&#x72B6;&#x6001;&#x680F;</h2>
+          <p>&#x5DE6;&#x8FB9;&#x662F;&#x4E3B;&#x7EBF;&#x9605;&#x8BFB;&#x533A;&#xFF0C;&#x53F3;&#x8FB9;&#x662F;&#x201C;&#x5F53;&#x4E0B;&#x6001;&#x201D;&#x7684;&#x957F;&#x671F;&#x53EF;&#x89C1;&#x533A;&#x57DF;&#x3002;</p>
+        </div>
+        <div class="mock">
+          <div class="mock-title">&#x7ED3;&#x6784;&#x611F;&#x53D7;</div>
+          <div class="mock-body split-layout">
+            <div class="timeline">
+              <div class="timeline-item">&#x601D;&#x8003;&#x5757;&#xFF1A;&#x7EE7;&#x7EED;&#x6392;&#x9664; RDMA jitter</div>
+              <div class="timeline-item">&#x5DE5;&#x5177;&#x8C03;&#x7528;&#xFF1A;query_logs</div>
+              <div class="timeline-item">&#x6839;&#x56E0;&#x7248;&#x672C; v3 &#x66F4;&#x65B0;</div>
+              <div class="timeline-item">&#x7CFB;&#x7EDF;&#x4E8B;&#x4EF6;&#xFF1A;canary 10% started</div>
+              <div class="timeline-item">&#x7CFB;&#x7EDF;&#x4E8B;&#x4EF6;&#xFF1A;metrics improving</div>
+              <div class="timeline-item">&#x7CFB;&#x7EDF;&#x4E8B;&#x4EF6;&#xFF1A;observation window 4m left</div>
+            </div>
+            <div class="right-rail">
+              <div class="sticky-note"><strong>&#x5F53;&#x524D;&#x7ED3;&#x8BBA;</strong><br/>GPU contention<br/><span style="color:#5b6b7d;">&#x786E;&#x8BA4;&#x5EA6; 0.91 &#x00B7; &#x6700;&#x540E;&#x66F4;&#x65B0; 13:42</span></div>
+              <div class="rail-card"><strong>&#x5F53;&#x524D;&#x9636;&#x6BB5;</strong><ol class="list"><li>&#x8BCA;&#x65AD;&#x6536;&#x655B;</li><li><strong>&#x4FEE;&#x590D;&#x9A8C;&#x8BC1;</strong></li><li>&#x4F1A;&#x8BDD;&#x5173;&#x95ED;</li></ol></div>
+              <div class="rail-card"><strong>&#x5019;&#x9009;&#x6839;&#x56E0;</strong><br/>A. GPU contention &#x2191;<br/>B. traffic burst &#x89C2;&#x5BDF;&#x4E2D;</div>
+              <div class="rail-card"><strong>&#x6267;&#x884C;&#x6001;</strong><br/>canary 10%<br/>p95 &#x4E0B;&#x964D; 21%</div>
+            </div>
+          </div>
+        </div>
+        <div class="analysis">
+          <div class="box good">
+            <h3>&#x4F18;&#x70B9;</h3>
+            <ul>
+              <li>&#x5F53;&#x7528;&#x6237;&#x5728;&#x8BFB;&#x65F6;&#x95F4;&#x7EBF;&#x65F6;&#xFF0C;&#x53F3;&#x4FA7;&#x201C;&#x5F53;&#x4E0B;&#x6001;&#x201D;&#x59CB;&#x7EC8;&#x53EF;&#x89C1;</li>
+              <li>&#x975E;&#x5E38;&#x9002;&#x5408;&#x56DE;&#x7B54;&#x201C;&#x73B0;&#x5728;&#x5230;&#x54EA;&#x4E00;&#x6B65;&#x4E86;&#x201D;</li>
+              <li>&#x6839;&#x56E0;&#x3001;&#x9636;&#x6BB5;&#x3001;&#x6267;&#x884C;&#x6001;&#x53EF;&#x4EE5;&#x6301;&#x7EED;&#x66F4;&#x65B0;&#x800C;&#x4E0D;&#x88AB;&#x5386;&#x53F2;&#x57CB;&#x6CA1;</li>
+            </ul>
+          </div>
+          <div class="box warn">
+            <h3>&#x98CE;&#x9669;</h3>
+            <ul>
+              <li>&#x53F3;&#x680F;&#x5982;&#x679C;&#x4FE1;&#x606F;&#x592A;&#x591A;&#xFF0C;&#x4F1A;&#x53D8;&#x6210;&#x7B2C;&#x4E8C;&#x6761;&#x65F6;&#x95F4;&#x7EBF;</li>
+              <li>&#x5982;&#x679C;&#x5BBD;&#x5EA6;&#x62FF;&#x5F97;&#x8FC7;&#x5927;&#xFF0C;&#x4F1A;&#x6324;&#x538B;&#x5DE6;&#x4FA7;&#x4E3B;&#x9605;&#x8BFB;&#x533A;</li>
+              <li>&#x79FB;&#x52A8;&#x7AEF;&#x9700;&#x8981;&#x81EA;&#x7136;&#x586C;&#x53E0;&#x4E3A;&#x4E0A;&#x4E0B;&#x7ED3;&#x6784;</li>
+            </ul>
+          </div>
+        </div>
+      </section>
+    </div>
+
+    <div class="recommend">
+      <strong>&#x6211;&#x7684;&#x5224;&#x65AD;&#xFF1A;</strong>
+      &#x5BF9;&#x4F60;&#x8FD9;&#x79CD;&#x201C;&#x8BCA;&#x65AD; + &#x4FEE;&#x590D;&#x63A8;&#x8FDB;&#x201D;&#x7684;&#x5DE5;&#x4F5C;&#x53F0;&#xFF0C;<strong>B2 &#x901A;&#x5E38;&#x4F1A;&#x6BD4; B1 &#x66F4;&#x597D;</strong>&#x3002;
+      &#x4F46;&#x8981;&#x6CE8;&#x610F;&#x4E00;&#x4E2A;&#x6807;&#x51C6;&#xFF1A;&#x53F3;&#x680F;&#x5FC5;&#x987B;&#x662F;&#x201C;&#x5F53;&#x524D;&#x6001;&#x6458;&#x8981;&#x201D;&#xFF0C;&#x800C;&#x4E0D;&#x662F;&#x53E6;&#x4E00;&#x6761;&#x5168;&#x91CF;&#x65F6;&#x95F4;&#x7EBF;&#x3002;
+    </div>
+  </div>
+</body>
+</html>

@@ -151,8 +151,8 @@ describe("buildDiagnosisLiveView tool matching", () => {
   });
 });
 
-describe("buildDiagnosisLiveView live trace narration", () => {
-  it("does not inject synthetic next-action assistant messages for tool-call thinking", () => {
+describe("buildDiagnosisLiveView next-action narration", () => {
+  it("does not synthesize next-action assistant messages from thinking steps", () => {
     const session = createSession([
       {
         step: 1,
@@ -194,6 +194,44 @@ describe("buildDiagnosisLiveView live trace narration", () => {
     expect(view.timeline).toHaveLength(1);
     expect(view.timeline[0]?.kind).toBe("thinking");
     expect(view.timeline.some((item) => item.kind === "message" && item.label === "Next action")).toBe(false);
+  });
+
+  it("renders next-action from backend diagnosis_result without front-end templating", () => {
+    const session: DiagnosisSession = {
+      ...createSession([
+        {
+          step: 1,
+          timestamp: "2026-04-08T10:50:01.000Z",
+          thought: "Evidence is sufficient to conclude",
+          action_type: "conclude",
+        },
+      ]),
+      diagnosis_result: {
+        root_cause: "GPU contention",
+        root_cause_layer: "platform",
+        root_cause_entities: ["node:worker-03"],
+        confidence: 0.9,
+        next_action: "Use canary drain on worker-03 and validate p95 before full rollout.",
+        hypotheses: [],
+        impact_summary: "impact",
+        affected_services: ["auth-svc"],
+        triage_priority: "P1",
+        diagnosis_certainty: "confirmed",
+      },
+    };
+
+    const view = buildDiagnosisLiveView(session, []);
+
+    expect(view.timeline[0]?.kind).toBe("thinking");
+
+    const nextAction = view.timeline.find(
+      (item): item is Extract<DiagnosisTimelineItem, { kind: "message" }> =>
+        item.kind === "message" && item.label === "Next action",
+    );
+
+    expect(nextAction).toBeDefined();
+    expect(nextAction?.role).toBe("assistant");
+    expect(nextAction?.content).toBe("Use canary drain on worker-03 and validate p95 before full rollout.");
   });
 });
 describe("diagnosis report timeline item", () => {

@@ -5,6 +5,10 @@ export const CONTRACT_SCHEMA_VERSION = "0.1.0" as const;
 
 export const HTTP_PATHS = [
   "/api/alerts",
+  "/api/auth/bootstrap",
+  "/api/auth/refresh",
+  "/api/auth/status",
+  "/api/auth/token",
   "/api/chat",
   "/api/chat/history",
   "/api/diagnose",
@@ -39,8 +43,10 @@ export const HTTP_PATHS = [
   "/api/sessions/{session_id}/loop",
   "/api/sessions/{session_id}/trace",
   "/api/skills",
+  "/api/skills/{skill_id}",
   "/api/tools/channels/status",
   "/api/topology",
+  "/api/topology-explorer",
   "/api/topology/discover",
   "/api/topology/status",
 ] as const;
@@ -70,15 +76,15 @@ export const WS_EVENT_TYPES = [
   "escalation_required",
   "diagnosis_started",
   "diagnosis_triggered",
+  "alert",
+  "topology",
+  "error",
+  "done",
   "token_delta",
   "node_started",
   "node_completed",
   "tool_started",
   "tool_completed",
   "state_snapshot",
-  "alert",
-  "topology",
-  "error",
-  "done",
 ] as const;
 export type WSEventType = (typeof WS_EVENT_TYPES)[number];

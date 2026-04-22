@@ -9,7 +9,10 @@
       "Bash(sshpass -p 'Yuyonghao@123' ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 yuyonghao@10.11.4.12 hostname)",
       "Bash(sshpass -p 'Yuyonghao@123' ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 yuyonghao@10.11.4.13 hostname)",
       "Bash(sshpass -p 'Yuyonghao@123' ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 yuyonghao@10.11.4.14 hostname)",
-      "Bash(docker restart *)"
+      "Bash(docker restart *)",
+      "Bash(git add *)",
+      "Bash(git commit -m ' *)",
+      "Bash(git push *)"
     ]
   }
 }

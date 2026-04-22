@@ -136,6 +136,8 @@ class RemediationResult(StrictFrozenModel):
     verification_results: list[dict[str, Any]] = Field(default_factory=list)
     duration_seconds: int = Field(default=0, ge=0)
     error: str | None = None
+    error_code: str | None = None
+    error_details: dict[str, Any] | None = None
 
     @model_validator(mode="after")
     def _validate_step_progress(self) -> RemediationResult:
@@ -143,6 +145,8 @@ class RemediationResult(StrictFrozenModel):
             raise ValueError("steps_completed cannot exceed steps_total")
         if self.success and self.error is not None:
             raise ValueError("successful remediation result cannot contain error")
+        if self.success and self.error_code is not None:
+            raise ValueError("successful remediation result cannot contain error_code")
         if self.success and self.steps_total > 0 and self.steps_completed != self.steps_total:
             raise ValueError("successful remediation result must complete all steps")
         return self

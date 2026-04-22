@@ -2945,15 +2945,24 @@ def build_api_router() -> APIRouter:
             details={
                 "plan_id": result.plan_id,
                 "error": result.error or "execution failed",
+                "error_code": result.error_code,
+                "error_details": result.error_details,
                 "rolled_back": result.rolled_back,
                 "plan_version": requested_plan_version,
                 "step_results": step_results,
                 "message": "修复执行失败",
             },
         )
+        error_code = ErrorCode.REMEDIATION_EXECUTION_FAILED
+        if str(result.error_code or "").strip().lower() == "stale_or_mismatched_pid":
+            error_code = ErrorCode.REMEDIATION_STALE_OR_MISMATCHED_PID
         return SREResponse(
             success=False,
-            error=SREError(code=ErrorCode.REMEDIATION_EXECUTION_FAILED, message=result.error or "execution failed"),
+            error=SREError(
+                code=error_code,
+                message=result.error or "execution failed",
+                details=result.error_details,
+            ),
             trace_id=trace_id,
         )
 

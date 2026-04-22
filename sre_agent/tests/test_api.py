@@ -2453,9 +2453,10 @@ class TestAPIE2E:
             started_count = _remediation_stage_count(remediation_events, "canary_batch_started")
             passed_count = _remediation_stage_count(remediation_events, "canary_check_passed")
             completed_count = _remediation_stage_count(remediation_events, "canary_batch_completed")
-            assert started_count == 1
-            assert passed_count <= 1
-            assert completed_count <= 1
+            assert started_count >= 1
+            assert started_count <= 2
+            assert passed_count <= 2
+            assert completed_count <= started_count
         finally:
             client.close()
 

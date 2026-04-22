@@ -1,0 +1,38 @@
+session_id: ""
+agents:
+  - inference
+mode: "single"
+
+global_config:
+  cube_studio_url: "http://10.11.4.3:32655"
+  prometheus_url: "http://10.11.4.3:31260"
+  project_id: 1
+  auth_method: "username"
+  auth_username: "admin"
+  jwt_password: ""
+
+channels:
+  inference:
+    timeout: 60
+    retry_count: 1
+    retry_backoff: 0.5
+
+inference:
+  enabled: true
+  targets:
+    - name: "qwen3-32b"
+      endpoint: "http://10.11.4.2:20100"
+      #api_key: "sk-Qkh1q5wqcnb8u4EG4W4qkQ"
+      model: "Qwen3-32B-FP8"
+
+  max_tokens: 256
+  # concurrency: 256
+  concurrency: 16
+  duration_seconds: 36000
+  prompt_pool_size: 256
+  stream: false
+
+pipeline:
+  enabled: false
+notebook:
+  enabled: false

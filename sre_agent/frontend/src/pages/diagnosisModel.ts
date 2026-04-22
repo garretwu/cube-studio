@@ -828,6 +828,20 @@ function getReportTimelineTimestamp(
   return latestNarrativeTimestamp ?? session?.alert.starts_at;
 }
 
+function extractDiagnosisNextAction(result: DiagnosisSession["diagnosis_result"] | null | undefined) {
+  if (!result || typeof result !== "object") {
+    return undefined;
+  }
+
+  const raw = (result as Record<string, unknown>).next_action;
+  if (typeof raw !== "string") {
+    return undefined;
+  }
+
+  const normalized = raw.trim();
+  return normalized.length > 0 ? normalized : undefined;
+}
+
 function isSyntheticRemediationMessage(message: ChatMessage) {
   const eventType = String(message.metadata?.["event_type"] ?? "").trim().toLowerCase();
   return [
@@ -1793,6 +1807,27 @@ export function buildDiagnosisLiveView(
       },
     });
   });
+
+  const diagnosisNextAction = extractDiagnosisNextAction(session?.diagnosis_result);
+  if (diagnosisNextAction) {
+    const fallbackTimestamp =
+      traceEntries[traceEntries.length - 1]?.timestamp ??
+      session?.alert.starts_at ??
+      new Date().toISOString();
+
+    timelineItems.push({
+      order: timelineItems.length,
+      timestamp: fallbackTimestamp,
+      item: {
+        id: `diagnosis-result-next-action-${fallbackTimestamp}`,
+        kind: "message",
+        role: "assistant",
+        content: diagnosisNextAction,
+        timestamp: fallbackTimestamp,
+        label: "Next action",
+      },
+    });
+  }
 
   buildSystemRecords(session, events, localAuditRecords).forEach((record, index) => {
     timelineItems.push({
