@@ -1382,6 +1382,15 @@ describe("DiagnosisModifiedPage split workspace", () => {
       bootstrapStatus: "ready",
       traceStatus: "ready",
       messages: [],
+      topologyContext: {
+        roots: ["gpu:0"],
+        affected_count: 2,
+        affected_entities: [
+          { id: "node:wj-lab-cpt-01", type: "node", name: "wj-lab-cpt-01" },
+          { id: "bmc:wj-lab-cpt-01-bmc", type: "bmc", name: "wj-lab-cpt-01-bmc" },
+        ],
+        summary: "GPU context from diagnosis_started",
+      },
       bootstrapSession: vi.fn().mockResolvedValue(undefined),
     });
 
@@ -1390,8 +1399,144 @@ describe("DiagnosisModifiedPage split workspace", () => {
     expect(container.querySelector(".diagnosis-modified-report-rail__context-graph")).toBeTruthy();
     expect(within(screen.getByTestId("diagnosis-modified-report-rail")).queryByText("影响拓扑")).not.toBeInTheDocument();
     expect(within(screen.getByTestId("diagnosis-modified-report-rail")).queryByTestId("diagnosis-modified-report-progress")).not.toBeInTheDocument();
-    expect(screen.getByText("GPU 0")).toBeInTheDocument();
+    expect(screen.getByText("0")).toBeInTheDocument();
+    expect(screen.getByText("wj-lab-cpt-01")).toBeInTheDocument();
+  });
+
+  it("shows alert subject only with hint when no direct topology relation is available", () => {
+    mockedBuildLiveView.mockReturnValue({
+      timeline: [],
+      candidates: [],
+      summary: undefined,
+      plan: undefined,
+    });
+
+    resetDiagnosisStore({
+      session: createLiveSession("sess-live-topology-empty-direct"),
+      activeSessionId: "sess-live-topology-empty-direct",
+      bootstrapStatus: "ready",
+      traceStatus: "ready",
+      messages: [],
+      topologyContext: {
+        roots: [],
+        affected_count: 0,
+        affected_entities: [],
+        summary: "no linked entities",
+      },
+      bootstrapSession: vi.fn().mockResolvedValue(undefined),
+    });
+
+    renderLivePage("/diagnosis-modified/sess-live-topology-empty-direct");
+
     expect(screen.getByText("auth-svc")).toBeInTheDocument();
+    expect(screen.getByText("暂无直连关联实体，当前仅展示告警主体。")).toBeInTheDocument();
+  });
+
+  it("renders diagnosis-start context and live streaming entries from store state", () => {
+    mockedBuildLiveView.mockReturnValue({
+      timeline: [],
+      candidates: [],
+      summary: undefined,
+      plan: undefined,
+    });
+
+    resetDiagnosisStore({
+      session: createLiveSession("sess-live-streaming-context"),
+      activeSessionId: "sess-live-streaming-context",
+      bootstrapStatus: "ready",
+      traceStatus: "ready",
+      messages: [],
+      alertSnapshot: {
+        alert_name: "GPUTemperatureHigh",
+        severity: "critical",
+        labels: { node: "worker-03" },
+        starts_at: "2026-04-08T12:00:00.000Z",
+      } as never,
+      topologyContext: {
+        roots: ["gpu:0"],
+        affected_count: 2,
+        affected_entities: [
+          { id: "node:worker-03", type: "node", name: "worker-03" },
+          { id: "bmc:worker-03-bmc", type: "bmc", name: "worker-03-bmc" },
+        ],
+        summary: "gpu -> node -> bmc",
+      },
+      liveThinking: {
+        round_id: "round-live-1",
+        round_seq: 1,
+        thought_key: "run:reason",
+        run_id: "run-1",
+        node: "reason",
+        timestamp: "2026-04-08T12:00:02.000Z",
+        content: "正在检查 GPU 温度告警的上下文与拓扑链路。",
+        status: "thinking",
+        stream_seq: 2,
+        thought_duration_sec: null,
+        next_action: null,
+        tool_name: "ssh.run_command",
+        active_tools: [],
+      } as never,
+      activeStreamingTools: [
+        {
+          tool: "ssh.run_command",
+          params: { node: "10.11.4.12" },
+          round_id: "round-live-1",
+          round_seq: 1,
+          thought_key: "run:reason",
+          run_id: "run-1",
+          node: "reason",
+        },
+      ],
+      liveFinalAnswer: {
+        id: "live-final-1",
+        timestamp: "2026-04-08T12:00:03.000Z",
+        content: "建议先检查风扇策略与机柜散热。",
+        status: "streaming",
+      },
+      bootstrapSession: vi.fn().mockResolvedValue(undefined),
+    });
+
+    renderLivePage("/diagnosis-modified/sess-live-streaming-context");
+
+    expect(screen.getByText("诊断开始上下文")).toBeInTheDocument();
+    expect(screen.getByText(/已接收告警 GPUTemperatureHigh/)).toBeInTheDocument();
+    expect(screen.getAllByText("Agent is analyzing the request").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("ssh.run_command").length).toBeGreaterThan(0);
+    expect(screen.getByText("建议先检查风扇策略与机柜散热。")).toBeInTheDocument();
+  });
+
+  it("does not show action-generated step before remediation stage is ready", () => {
+    mockedBuildLiveView.mockReturnValue({
+      timeline: [
+        {
+          id: "live-message-before-remediation",
+          kind: "message",
+          role: "assistant",
+          content: "仍在收敛候选根因。",
+          timestamp: "2026-04-08T12:01:00.000Z",
+        },
+      ],
+      candidates: [],
+      summary: undefined,
+      plan: undefined,
+    });
+
+    const session = createLiveSession("sess-live-before-remediation");
+    session.status = "approved";
+    session.diagnosis_result = null;
+
+    resetDiagnosisStore({
+      session,
+      activeSessionId: "sess-live-before-remediation",
+      bootstrapStatus: "ready",
+      traceStatus: "ready",
+      messages: [],
+      bootstrapSession: vi.fn().mockResolvedValue(undefined),
+    });
+
+    renderLivePage("/diagnosis-modified/sess-live-before-remediation");
+
+    expect(screen.queryByTestId("diagnosis-modified-action-generated-step")).not.toBeInTheDocument();
   });
 
   it("keeps the trace header stage synchronized without rendering a right-side progress summary card", async () => {

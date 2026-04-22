@@ -16313,6 +16313,13 @@
   background: var(--color-surface-workplane);
 }
 
+.diagnosis-modified-report-rail__context-note {
+  margin: 0 0 8px;
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  line-height: 18px;
+}
+
 .diagnosis-modified-report-rail__context-graph .topology-modified-canvas {
   width: 100%;
   height: 100%;

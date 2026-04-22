@@ -265,7 +265,7 @@ describe("buildDiagnosisModifiedReportView", () => {
     expect(view.overview.subtitle).toBe("Auth login latency spikes and partial failures.");
   });
 
-  it("derives diagnosis context from root-cause entities and affected services", () => {
+  it("renders alert subject only when no direct topology context exists", () => {
     const view = buildDiagnosisModifiedReportView({
       session: createSession(),
       timeline: [],
@@ -275,26 +275,14 @@ describe("buildDiagnosisModifiedReportView", () => {
     });
 
     expect(view.context.state).toBe("ready");
-    expect(view.context.problemNodes.map((node) => node.label)).toEqual(["redis-primary", "auth-svc"]);
-    expect(view.context.affectedNodes.map((node) => node.label)).toEqual(["login-api"]);
-    expect(view.context.graph.nodes).toHaveLength(3);
-    expect(view.context.graph.edges).toEqual([
-      {
-        id: "context-edge-redis-primary-login-api",
-        sourceId: "redis-primary",
-        targetId: "login-api",
-        label: "影响",
-      },
-      {
-        id: "context-edge-auth-svc-login-api",
-        sourceId: "auth-svc",
-        targetId: "login-api",
-        label: "影响",
-      },
-    ]);
+    expect(view.context.problemNodes.map((node) => node.label)).toEqual(["auth-svc"]);
+    expect(view.context.affectedNodes).toEqual([]);
+    expect(view.context.graph.nodes).toHaveLength(1);
+    expect(view.context.graph.edges).toEqual([]);
+    expect(view.context.topologyEmptyReason).toBe("no_direct_relations");
   });
 
-  it("parses topology context from context-building LLM output without requiring a strict marker", () => {
+  it("does not use timeline topology fallback in direct-only context mode", () => {
     const session = createSession("diagnosing");
     session.diagnosis_result = null;
 
@@ -316,9 +304,144 @@ describe("buildDiagnosisModifiedReportView", () => {
     });
 
     expect(view.context.state).toBe("ready");
-    expect(view.context.problemNodes.map((node) => node.label)).toContain("worker-03");
-    expect(view.context.affectedNodes.map((node) => node.label)).toContain("auth-svc");
-    expect(view.context.graph.edges.length).toBeGreaterThan(0);
+    expect(view.context.problemNodes.map((node) => node.label)).toContain("auth-svc");
+    expect(view.context.affectedNodes).toEqual([]);
+    expect(view.context.graph.edges).toEqual([]);
+    expect(view.context.topologyEmptyReason).toBe("no_direct_relations");
+  });
+
+  it("prefers diagnosis_started topologyContext over timeline-parsed fallback", () => {
+    const view = buildDiagnosisModifiedReportView({
+      session: createSession("diagnosing"),
+      topologyContext: {
+        roots: ["gpu:0"],
+        affected_count: 2,
+        affected_entities: [
+          { id: "node:worker-03", type: "node", name: "worker-03" },
+          { id: "bmc:worker-03-bmc", type: "bmc", name: "worker-03-bmc" },
+        ],
+        summary: "GPU context from diagnosis_started",
+      },
+      timeline: [
+        {
+          id: "message-context-fallback",
+          kind: "message",
+          role: "assistant",
+          content:
+            'Topology context:\n{"roots":["service:auth-svc"],"affected_count":1,"affected_entities":[{"id":"pod:auth-1","name":"auth-1"}],"summary":"fallback timeline context"}',
+          timestamp: "2026-04-08T10:01:00.000Z",
+        },
+      ],
+      candidates: [],
+      events: [],
+      localAuditRecords: [],
+    });
+
+    expect(view.context.summary).toContain("GPU context from diagnosis_started");
+    expect(view.context.problemNodes.map((node) => node.label)).toContain("0");
+    expect(view.context.graph.nodes.map((node) => node.label)).not.toContain("auth-1");
+  });
+
+  it("adds alert-semantic topology links for GPU temperature alerts", () => {
+    const session = createSession("diagnosing");
+    session.alert.alert_name = "GPUTemperatureHigh";
+    session.diagnosis_result = null;
+
+    const view = buildDiagnosisModifiedReportView({
+      session,
+      topologyContext: {
+        roots: ["gpu:0"],
+        affected_count: 2,
+        affected_entities: [
+          { id: "node:worker-03", type: "node", name: "worker-03" },
+          { id: "bmc:worker-03-bmc", type: "bmc", name: "worker-03-bmc" },
+        ],
+        summary: "gpu -> node -> bmc",
+      },
+      timeline: [],
+      candidates: [],
+      events: [],
+      localAuditRecords: [],
+    });
+
+    const labels = view.context.graph.edges.map((edge) => edge.label);
+    expect(labels).toContain("所在节点");
+    expect(labels).toContain("硬件管理");
+  });
+
+  it("maps TTFT alerts to one-hop pod/node relations only", () => {
+    const session = createSession("diagnosing");
+    session.alert.alert_name = "TTFTLatencyHigh";
+    session.alert.labels = { pod: "service/qwen3-32b-fp8-202602261-6778dcf4d8-6hmld" };
+    session.diagnosis_result = null;
+
+    const view = buildDiagnosisModifiedReportView({
+      session,
+      topologyContext: {
+        roots: ["pod:service/qwen3-32b-fp8-202602261-6778dcf4d8-6hmld"],
+        affected_count: 3,
+        affected_entities: [
+          { id: "node:wj-lab-cpt-03", type: "node", name: "wj-lab-cpt-03" },
+          { id: "service:qwen3-32b-fp8-202602261", type: "service", name: "qwen3-32b-fp8-202602261" },
+          { id: "gpu:1", type: "gpu", name: "GPU 1" },
+        ],
+        summary: "ttft pod/node/service topology",
+      },
+      timeline: [],
+      candidates: [],
+      events: [],
+      localAuditRecords: [],
+    });
+
+    expect(view.context.problemNodes.map((node) => node.label)).toEqual(["service/qwen3-32b-fp8-202602261-6778dcf4d8-6hmld"]);
+    expect(view.context.affectedNodes.map((node) => node.label)).toEqual(["wj-lab-cpt-03", "qwen3-32b-fp8-202602261"]);
+    expect(view.context.graph.edges.map((edge) => edge.label)).toEqual(["运行于", "隶属服务"]);
+    expect(view.context.graph.nodes.map((node) => node.label)).not.toContain("1");
+  });
+
+  it("keeps alert subject node when topology context has no direct neighbors", () => {
+    const session = createSession("diagnosing");
+    session.diagnosis_result = null;
+
+    const view = buildDiagnosisModifiedReportView({
+      session,
+      topologyContext: {
+        roots: [],
+        affected_count: 0,
+        affected_entities: [],
+        summary: "no linked entities",
+      },
+      timeline: [],
+      candidates: [],
+      events: [],
+      localAuditRecords: [],
+    });
+
+    expect(view.context.state).toBe("ready");
+    expect(view.context.problemNodes.map((node) => node.label)).toEqual(["auth-svc"]);
+    expect(view.context.graph.nodes).toHaveLength(1);
+    expect(view.context.graph.edges).toEqual([]);
+    expect(view.context.topologyEmptyReason).toBe("no_direct_relations");
+  });
+
+  it("sanitizes tool-call markup from analysis overview title", () => {
+    const session = createSession("approval_required");
+    if (!session.diagnosis_result) {
+      throw new Error("expected diagnosis result");
+    }
+    session.diagnosis_result.root_cause =
+      '[TOOL_CALL] {tool => "ssh.run_command"} [/TOOL_CALL] GPU 温度异常来自风扇策略偏移';
+
+    const view = buildDiagnosisModifiedReportView({
+      session,
+      timeline: [],
+      candidates: [],
+      events: [],
+      localAuditRecords: [],
+    });
+
+    expect(view.overview.title).toContain("GPU 温度异常");
+    expect(view.overview.title).not.toContain("[TOOL_CALL]");
   });
 
   it("prefers ranked candidates from the contract and caps them at three", () => {
@@ -678,7 +801,8 @@ describe("buildDiagnosisModifiedReportView", () => {
     expect(view.overview.sessionId).toBe("sess-report-model");
     expect(view.overview.status.label).toBe("诊断中");
     expect(view.rootCauseReady).toBe(false);
-    expect(view.context.state).toBe("loading");
+    expect(view.context.state).toBe("ready");
+    expect(view.context.topologyEmptyReason).toBe("no_direct_relations");
     expect(view.rootCause.state).toBe("loading");
     expect(view.remediation.state).toBe("loading");
     expect(view.conclusion.title).toBe("等待形成明确结论");

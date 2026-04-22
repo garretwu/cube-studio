@@ -12,6 +12,7 @@ import { buildDiagnosisModifiedReportView } from "./diagnosisModifiedReportModel
 import {
   buildDiagnosisModifiedDemoScenario,
   buildDiagnosisModifiedLiveView,
+  normalizeDiagnosisModifiedDisplayText,
   type DiagnosisModifiedCandidateView,
   type DiagnosisModifiedDemoEvent,
   type DiagnosisModifiedPlanView,
@@ -309,7 +310,7 @@ function ToneBadge({ children, tone = "neutral" }: { children: ReactNode; tone?:
   return <span className={cn("diagnosis-modified-badge", `diagnosis-modified-badge--${tone}`)}>{children}</span>;
 }
 
-type TraceStepKind = "thought" | "tool_call" | "observation" | "decision" | "status_sync" | "action_generated";
+type TraceStepKind = "thought" | "tool_call" | "observation" | "decision" | "status_sync" | "action_generated" | "context";
 
 const TRACE_STEP_META: Record<TraceStepKind, { label: string; glyph: string }> = {
   thought: { label: "Thought / 推理", glyph: "T" },
@@ -318,6 +319,7 @@ const TRACE_STEP_META: Record<TraceStepKind, { label: string; glyph: string }> =
   decision: { label: "Decision / 形成判断", glyph: "D" },
   status_sync: { label: "Status Sync / 状态同步", glyph: "S" },
   action_generated: { label: "Action Generated / 生成修复动作", glyph: "A" },
+  context: { label: "Context / 上下文", glyph: "I" },
 };
 
 function getTraceSyncStageLabel(stageId: string) {
@@ -455,6 +457,33 @@ function StatusSyncRow({
             {hoverTime}
           </span>
           <p className="diagnosis-modified-message-row__text">{item.content}</p>
+        </div>
+      </div>
+    </TraceStepFrame>
+  );
+}
+
+function ContextStartRow({
+  item,
+}: {
+  item: Extract<DiagnosisModifiedTimelineItem, { kind: "context_start" }>;
+}) {
+  const hoverTime = formatTimestamp(item.timestamp);
+  return (
+    <TraceStepFrame meta={hoverTime} title={item.title} type="context">
+      <div className="diagnosis-modified-context-row">
+        <div className="diagnosis-modified-context-row__body">
+          <span className="diagnosis-modified-message-row__hover-time" aria-hidden="true">
+            {hoverTime}
+          </span>
+          <p className="diagnosis-modified-message-row__text">{item.summary}</p>
+          {item.details.length > 0 ? (
+            <ul className="diagnosis-modified-tool-card__results">
+              {item.details.map((detail) => (
+                <li key={detail}>{detail}</li>
+              ))}
+            </ul>
+          ) : null}
         </div>
       </div>
     </TraceStepFrame>
@@ -996,6 +1025,11 @@ function DiagnosisModifiedPage() {
     messages,
     events,
     localAuditRecords,
+    alertSnapshot,
+    topologyContext,
+    liveThinking,
+    liveFinalAnswer,
+    activeStreamingTools,
     bootstrapStatus,
     traceStatus,
     error,
@@ -1010,6 +1044,114 @@ function DiagnosisModifiedPage() {
   } = useDiagnosisStore();
 
   const liveView = useMemo(() => buildDiagnosisModifiedLiveView(session, messages), [messages, session]);
+  const liveTimelineSource = useMemo<DiagnosisModifiedTimelineItem[]>(() => {
+    const timeline = [...liveView.timeline];
+    const normalizedAlertName = normalizeDiagnosisModifiedDisplayText(alertSnapshot?.alert_name ?? session?.alert.alert_name ?? "");
+    const severity = normalizeDiagnosisModifiedDisplayText(alertSnapshot?.severity ?? session?.alert.severity ?? "");
+    const topologySummary = normalizeDiagnosisModifiedDisplayText(topologyContext?.summary ?? "");
+    const rootCount = Array.isArray(topologyContext?.roots) ? topologyContext.roots.length : 0;
+    const affectedCount = Number(topologyContext?.affected_count ?? 0);
+    const contextDetails: string[] = [];
+    if (severity) {
+      contextDetails.push(`严重级别: ${severity}`);
+    }
+    if (rootCount > 0) {
+      contextDetails.push(`关联根节点: ${rootCount}`);
+    }
+    if (affectedCount > 0) {
+      contextDetails.push(`影响实体: ${affectedCount}`);
+    }
+    if (topologySummary) {
+      contextDetails.push(`拓扑摘要: ${topologySummary}`);
+    }
+    if ((normalizedAlertName || contextDetails.length > 0) && !timeline.some((item) => item.kind === "context_start")) {
+      timeline.push({
+        id: `live-context-start-${activeSessionId ?? session?.session_id ?? "current"}`,
+        kind: "context_start",
+        title: "诊断开始上下文",
+        summary: normalizedAlertName
+          ? `已接收告警 ${normalizedAlertName}，开始构建诊断上下文。`
+          : "已接收告警并开始构建诊断上下文。",
+        details: contextDetails,
+        timestamp: session?.alert.starts_at ?? new Date().toISOString(),
+      });
+    }
+
+    if (
+      liveThinking &&
+      liveThinking.status === "thinking" &&
+      liveThinking.content.trim().length > 0 &&
+      (liveThinking.node ?? "").trim().toLowerCase() !== "bootstrap"
+    ) {
+      timeline.push({
+        id: liveThinking.round_id ?? `live-thinking-${liveThinking.thought_key}`,
+        kind: "thinking",
+        title: "Agent is analyzing the request",
+        content: normalizeDiagnosisModifiedDisplayText(liveThinking.content),
+        timestamp: liveThinking.timestamp,
+        toolName: liveThinking.tool_name ?? undefined,
+        status: "thinking",
+      });
+    }
+
+    activeStreamingTools.forEach((toolCall, index) => {
+      const toolId = `live-tool-${toolCall.round_id ?? toolCall.thought_key ?? "round"}-${toolCall.tool}-${index}`;
+      const alreadyExists = timeline.some((item) => item.kind === "tool" && item.id === toolId);
+      if (alreadyExists) {
+        return;
+      }
+      timeline.push({
+        id: toolId,
+        kind: "tool",
+        toolName: toolCall.tool,
+        params: toolCall.params,
+        timestamp: liveThinking?.timestamp ?? new Date().toISOString(),
+        status: "loading",
+        summaryLines: ["Waiting for tool result..."],
+        rawResult: undefined,
+      });
+    });
+
+    if (liveFinalAnswer?.content.trim()) {
+      timeline.push({
+        id: liveFinalAnswer.id,
+        kind: "message",
+        role: "assistant",
+        content: normalizeDiagnosisModifiedDisplayText(liveFinalAnswer.content),
+        timestamp: liveFinalAnswer.timestamp,
+        label: "Agent response",
+      });
+    }
+
+    return [...timeline].sort((left, right) => {
+      const timeGap = new Date(left.timestamp).getTime() - new Date(right.timestamp).getTime();
+      if (timeGap !== 0) {
+        return timeGap;
+      }
+      if (left.kind === "context_start" && right.kind !== "context_start") {
+        return -1;
+      }
+      if (right.kind === "context_start" && left.kind !== "context_start") {
+        return 1;
+      }
+      return left.id.localeCompare(right.id);
+    });
+  }, [
+    activeSessionId,
+    activeStreamingTools,
+    alertSnapshot?.alert_name,
+    alertSnapshot?.severity,
+    liveFinalAnswer,
+    liveThinking,
+    liveView.timeline,
+    session?.alert.alert_name,
+    session?.alert.severity,
+    session?.alert.starts_at,
+    session?.session_id,
+    topologyContext?.affected_count,
+    topologyContext?.roots,
+    topologyContext?.summary,
+  ]);
   const hasLiveSession =
     shouldBootstrapLiveSession && bootstrapStatus === "ready" && Boolean(session) && Boolean(activeSessionId);
 
@@ -1476,7 +1618,7 @@ function DiagnosisModifiedPage() {
     }
 
     const currentSessionId = activeSessionId ?? session?.session_id ?? routeSessionId;
-    const sourceTimeline = liveView.timeline;
+    const sourceTimeline = liveTimelineSource;
     const sourceById = new Map(sourceTimeline.map((item) => [item.id, item]));
     latestLiveSourceByIdRef.current = sourceById;
 
@@ -1526,7 +1668,7 @@ function DiagnosisModifiedPage() {
     activeSessionId,
     clearLiveToolWaiters,
     hasLiveSession,
-    liveView.timeline,
+    liveTimelineSource,
     processLiveQueue,
     routeSessionId,
     session?.session_id,
@@ -1915,10 +2057,7 @@ function DiagnosisModifiedPage() {
 
   const activeTimeline = hasLiveSession ? liveTimeline : demoTimeline;
   const activeTraceItems = useMemo(
-    () =>
-      activeTimeline.filter(
-        (item, index) => !(index === 0 && item.kind === "message" && item.role === "user"),
-      ),
+    () => activeTimeline.filter((item) => !(item.kind === "message" && item.role === "user")),
     [activeTimeline],
   );
   const visibleTraceItems = useMemo(
@@ -1950,7 +2089,7 @@ function DiagnosisModifiedPage() {
         {
           id: `live-candidate-snapshot-${activeSessionId ?? session?.session_id ?? "current"}`,
           timestamp:
-            [...liveView.timeline.map((item) => item.timestamp)].sort((left, right) => Date.parse(right) - Date.parse(left))[0] ??
+            [...liveTimelineSource.map((item) => item.timestamp)].sort((left, right) => Date.parse(right) - Date.parse(left))[0] ??
             new Date().toISOString(),
           candidates: liveView.candidates,
         },
@@ -1963,7 +2102,7 @@ function DiagnosisModifiedPage() {
     demoCandidateSnapshots,
     hasLiveSession,
     liveView.candidates,
-    liveView.timeline,
+    liveTimelineSource,
     session?.session_id,
   ]);
   const activeSummary = hasLiveSession ? liveView.summary : demoSummary;
@@ -1971,6 +2110,7 @@ function DiagnosisModifiedPage() {
   const activeSession = hasLiveSession ? session : demoSession;
   const activeEvents = hasLiveSession ? events : demoEvents;
   const activeLocalAuditRecords = hasLiveSession ? localAuditRecords : demoLocalAuditRecords;
+  const activeTopologyContext = hasLiveSession ? topologyContext : null;
 
   const reportView = useMemo(
     () =>
@@ -1983,6 +2123,8 @@ function DiagnosisModifiedPage() {
         plan: activePlan,
         events: activeEvents,
         localAuditRecords: activeLocalAuditRecords,
+        topologyContext: activeTopologyContext,
+        relationScope: "direct_only",
       }),
     [
       activeCandidates,
@@ -1993,6 +2135,7 @@ function DiagnosisModifiedPage() {
       activeSession,
       activeSummary,
       activeTimeline,
+      activeTopologyContext,
     ],
   );
 
@@ -2061,7 +2204,9 @@ function DiagnosisModifiedPage() {
   ]);
 
   const actionGeneratedStep = useMemo(() => {
-    if (!flowRemediationEntry && !inlineApprovalSurface) {
+    const remediationReady =
+      reportView.remediation.state === "ready" || reportView.progress.activeStepId === "remediation";
+    if (!remediationReady || (!flowRemediationEntry && !inlineApprovalSurface)) {
       return null;
     }
 
@@ -2071,7 +2216,14 @@ function DiagnosisModifiedPage() {
         {inlineApprovalSurface}
       </ActionGeneratedStep>
     );
-  }, [activePlan, activeSession?.status, flowRemediationEntry, inlineApprovalSurface]);
+  }, [
+    activePlan,
+    activeSession?.status,
+    flowRemediationEntry,
+    inlineApprovalSurface,
+    reportView.progress.activeStepId,
+    reportView.remediation.state,
+  ]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
@@ -2123,6 +2275,10 @@ function DiagnosisModifiedPage() {
               ) : (
                 <ol className="diagnosis-modified-trace-list" data-testid="diagnosis-modified-trace-list">
                   {activeTraceItemsBeforeStatusSync.map((item) => {
+                    if (item.kind === "context_start") {
+                      return <ContextStartRow item={item} key={item.id} />;
+                    }
+
                     if (item.kind === "message") {
                       const shouldAnimateAssistantMessage =
                         item.role === "assistant" && activeStreamingMessageId === item.id;

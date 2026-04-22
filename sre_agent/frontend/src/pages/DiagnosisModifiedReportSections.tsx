@@ -495,6 +495,9 @@ export function DiagnosisContextSection({ context }: { context: DiagnosisModifie
 
   return (
     <div className="diagnosis-modified-report-rail__context">
+      {context.topologyEmptyReason === "no_direct_relations" ? (
+        <p className="diagnosis-modified-report-rail__context-note">暂无直连关联实体，当前仅展示告警主体。</p>
+      ) : null}
       <ContextTopologyGraph context={context} />
     </div>
   );

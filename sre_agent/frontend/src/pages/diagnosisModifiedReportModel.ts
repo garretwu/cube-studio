@@ -1,4 +1,13 @@
-import type { DiagnosisLocalAuditRecord, DiagnosisSession, RemediationPlan, SessionEvent } from "../api/types";
+import type {
+  DiagnosisLocalAuditRecord,
+  DiagnosisSession,
+  DiagnosisStartedData,
+  RemediationPlan,
+  SessionEvent,
+} from "../api/types";
+import {
+  normalizeDiagnosisModifiedDisplayText,
+} from "./diagnosisModifiedModel";
 import type {
   DiagnosisModifiedCandidateView,
   DiagnosisModifiedPlanView,
@@ -39,6 +48,7 @@ export type DiagnosisModifiedContextEdgeView = {
 export type DiagnosisModifiedContextView = {
   state: ReportSectionState;
   summary: string;
+  topologyEmptyReason?: "no_direct_relations";
   problemNodes: DiagnosisModifiedContextNodeView[];
   affectedNodes: DiagnosisModifiedContextNodeView[];
   graph: {
@@ -218,6 +228,8 @@ export type DiagnosisModifiedReportView = {
 export type BuildDiagnosisModifiedReportViewInput = {
   session?: DiagnosisSession;
   timeline: DiagnosisModifiedTimelineItem[];
+  topologyContext?: DiagnosisStartedData["topology"] | null;
+  relationScope?: "direct_only";
   candidates?: DiagnosisModifiedCandidateView[];
   candidateSnapshots?: Array<{
     id: string;
@@ -262,7 +274,7 @@ const LAYER_LABELS: Record<string, string> = {
 const TERMINAL_STATUSES = new Set(["resolved", "closed", "failed", "timeout", "escalated", "rejected"]);
 
 function normalizeText(value?: string | null) {
-  return String(value ?? "").replace(/^\[系统\]\s*/u, "").trim();
+  return normalizeDiagnosisModifiedDisplayText(String(value ?? "").replace(/^\[系统\]\s*/u, ""));
 }
 
 type ParsedTopologyContext = {
@@ -369,8 +381,8 @@ export function mapDiagnosisModifiedStage(status?: string | null): DiagnosisModi
 function buildFallbackCandidates(session?: DiagnosisSession) {
   return (session?.diagnosis_result?.ranked_candidates ?? []).map((candidate) => ({
     id: `ranked-${candidate.rank}-${candidate.root_cause}`,
-    title: candidate.root_cause,
-    summary: candidate.evidence_summary,
+    title: normalizeText(candidate.root_cause),
+    summary: normalizeText(candidate.evidence_summary),
     confidenceLabel: formatConfidence(candidate.confidence),
     statusLabel: candidate.rank === 1 ? "当前根因" : `候选 ${candidate.rank}`,
     tone: candidate.rank === 1 ? "accent" : "neutral",
@@ -378,18 +390,18 @@ function buildFallbackCandidates(session?: DiagnosisSession) {
 }
 
 function buildCandidateChanges(input: BuildDiagnosisModifiedReportViewInput) {
-  const primaryRootCause = input.summary?.rootCause ?? input.session?.diagnosis_result?.root_cause ?? "";
+  const primaryRootCause = normalizeText(input.summary?.rootCause ?? input.session?.diagnosis_result?.root_cause ?? "");
   const explicitCandidates = (input.candidates ?? []).map((candidate, index) => ({
     id: candidate.id,
-    title: candidate.title,
-    summary: candidate.evidenceSummary ?? candidate.summary,
+    title: normalizeText(candidate.title),
+    summary: normalizeText(candidate.evidenceSummary ?? candidate.summary),
     confidenceLabel: candidate.confidenceLabel,
     statusLabel:
-      candidate.isPrimary || candidate.title === primaryRootCause
+      candidate.isPrimary || normalizeText(candidate.title) === primaryRootCause
         ? "当前根因"
         : `候选 ${candidate.rank ?? index + 1}`,
     tone:
-      candidate.isPrimary || candidate.title === primaryRootCause
+      candidate.isPrimary || normalizeText(candidate.title) === primaryRootCause
         ? "accent"
         : candidate.statusTone,
   } satisfies DiagnosisModifiedCandidateChangeView));
@@ -974,7 +986,7 @@ function parseTopologyContextFromTimeline(timeline: DiagnosisModifiedTimelineIte
 }
 
 function normalizeContextEntity(value: string) {
-  const text = String(value ?? "").trim();
+  const text = normalizeText(value);
   if (!text) {
     return "";
   }
@@ -984,69 +996,295 @@ function normalizeContextEntity(value: string) {
   return `entity:${text}`;
 }
 
-function buildContextFromTopologyContext(parsed: ParsedTopologyContext): DiagnosisModifiedContextView {
-  const roots = uniqueStrings((parsed.roots ?? []).map((root) => normalizeContextEntity(root)));
-  const affectedEntities =
-    parsed.affected_entities?.map((entity) => {
+function inferEntityKind(entity: string) {
+  const normalized = normalizeContextEntity(entity).toLowerCase();
+  if (normalized.startsWith("pod:") || normalized.includes("pod")) {
+    return "pod";
+  }
+  if (normalized.startsWith("node:") || normalized.includes("node")) {
+    return "node";
+  }
+  if (normalized.startsWith("gpu:") || normalized.includes("gpu")) {
+    return "gpu";
+  }
+  if (normalized.startsWith("bmc:") || normalized.includes("bmc")) {
+    return "bmc";
+  }
+  if (normalized.startsWith("service:") || normalized.includes("service") || normalized.includes("svc")) {
+    return "service";
+  }
+  return "entity";
+}
+
+function normalizeContextEntityFromLabel(key: string, value: string) {
+  const normalizedValue = normalizeText(value);
+  if (!normalizedValue) {
+    return "";
+  }
+  const normalizedKey = key.trim().toLowerCase();
+  if (normalizedValue.includes(":")) {
+    return normalizeContextEntity(normalizedValue);
+  }
+  if (normalizedKey === "pod" || normalizedKey === "pod_name") {
+    return normalizeContextEntity(`pod:${normalizedValue}`);
+  }
+  if (normalizedKey === "service" || normalizedKey === "app" || normalizedKey === "deployment") {
+    return normalizeContextEntity(`service:${normalizedValue}`);
+  }
+  if (normalizedKey === "node" || normalizedKey === "instance" || normalizedKey === "host") {
+    return normalizeContextEntity(`node:${normalizedValue}`);
+  }
+  if (normalizedKey === "gpu" || normalizedKey === "gpu_id" || normalizedKey === "gpu_index") {
+    return normalizeContextEntity(`gpu:${normalizedValue}`);
+  }
+  if (normalizedKey === "bmc") {
+    return normalizeContextEntity(`bmc:${normalizedValue}`);
+  }
+  return normalizeContextEntity(normalizedValue);
+}
+
+function extractAlertSubjectEntity(
+  input: BuildDiagnosisModifiedReportViewInput,
+  parsedTopology: ParsedTopologyContext | null,
+  normalizedAlertName: string,
+) {
+  const labels = input.session?.alert?.labels ?? {};
+  if (labels.source_entity) {
+    const normalizedSource = normalizeContextEntityFromLabel("source_entity", labels.source_entity);
+    if (normalizedSource) {
+      return normalizedSource;
+    }
+  }
+  const topologyRoot = parsedTopology?.roots?.find((item) => normalizeContextEntity(item));
+  if (topologyRoot) {
+    return normalizeContextEntity(topologyRoot);
+  }
+  const preferredKeys = isGpuTemperatureAlert(normalizedAlertName)
+    ? [
+        "gpu",
+        "gpu_id",
+        "gpu_index",
+        "node",
+        "instance",
+        "host",
+        "bmc",
+        "pod",
+        "pod_name",
+        "service",
+        "app",
+        "deployment",
+      ]
+    : isTtftAlert(normalizedAlertName)
+      ? [
+          "pod",
+          "pod_name",
+          "service",
+          "app",
+          "deployment",
+          "node",
+          "instance",
+          "host",
+          "gpu",
+          "gpu_id",
+          "gpu_index",
+          "bmc",
+        ]
+      : [
+          "pod",
+          "pod_name",
+          "service",
+          "app",
+          "deployment",
+          "gpu",
+          "gpu_id",
+          "gpu_index",
+          "node",
+          "instance",
+          "host",
+          "bmc",
+        ];
+  for (const key of preferredKeys) {
+    const rawValue = labels[key];
+    if (!rawValue) {
+      continue;
+    }
+    const normalized = normalizeContextEntityFromLabel(key, rawValue);
+    if (normalized) {
+      return normalized;
+    }
+  }
+  const resultEntities = input.summary?.rootCauseEntities ?? getResult(input)?.root_cause_entities ?? [];
+  const firstResultEntity = resultEntities.find((item) => normalizeContextEntity(item));
+  if (firstResultEntity) {
+    return normalizeContextEntity(firstResultEntity);
+  }
+
+  return "";
+}
+
+function collectTopologyEntities(parsedTopology: ParsedTopologyContext | null) {
+  if (!parsedTopology) {
+    return [];
+  }
+  const roots = (parsedTopology.roots ?? []).map((root) => normalizeContextEntity(root));
+  const affected =
+    parsedTopology.affected_entities?.map((entity) => {
       const id = typeof entity?.id === "string" && entity.id.trim() ? entity.id.trim() : "";
       const name = typeof entity?.name === "string" && entity.name.trim() ? entity.name.trim() : "";
-      const labelCandidate = name || id;
-      return normalizeContextEntity(labelCandidate);
+      return normalizeContextEntity(id || name);
     }) ?? [];
-  const affected = uniqueStrings(affectedEntities);
+  return uniqueStrings([...roots, ...affected]);
+}
 
-  if (roots.length === 0 && affected.length === 0) {
+function isTtftAlert(alertName: string) {
+  return alertName.includes("ttft");
+}
+
+function isGpuTemperatureAlert(alertName: string) {
+  return alertName.includes("gpu") || alertName.includes("temperature") || alertName.includes("温度");
+}
+
+function shouldKeepDirectNeighbor(alertName: string, subjectKind: string, neighborKind: string) {
+  if (isTtftAlert(alertName)) {
+    if (subjectKind === "service") {
+      return neighborKind === "pod" || neighborKind === "node" || neighborKind === "service";
+    }
+    if (subjectKind === "pod") {
+      return neighborKind === "service" || neighborKind === "node";
+    }
+    if (subjectKind === "node") {
+      return neighborKind === "pod" || neighborKind === "service";
+    }
+    return neighborKind === "service" || neighborKind === "pod" || neighborKind === "node";
+  }
+  if (isGpuTemperatureAlert(alertName)) {
+    if (subjectKind === "gpu") {
+      return neighborKind === "node" || neighborKind === "bmc";
+    }
+    if (subjectKind === "node") {
+      return neighborKind === "gpu" || neighborKind === "bmc";
+    }
+    if (subjectKind === "bmc") {
+      return neighborKind === "node" || neighborKind === "gpu";
+    }
+    return neighborKind === "gpu" || neighborKind === "node" || neighborKind === "bmc";
+  }
+  return true;
+}
+
+function getDirectRelationLabel(alertName: string, subjectKind: string, neighborKind: string) {
+  if (isTtftAlert(alertName)) {
+    if (subjectKind === "service" && neighborKind === "pod") {
+      return "关联实例";
+    }
+    if (subjectKind === "pod" && neighborKind === "service") {
+      return "隶属服务";
+    }
+    if ((subjectKind === "service" || subjectKind === "pod") && neighborKind === "node") {
+      return "运行于";
+    }
+    if (subjectKind === "node" && (neighborKind === "pod" || neighborKind === "service")) {
+      return "承载";
+    }
+  }
+  if (isGpuTemperatureAlert(alertName)) {
+    if (subjectKind === "gpu" && neighborKind === "node") {
+      return "所在节点";
+    }
+    if ((subjectKind === "gpu" && neighborKind === "bmc") || (subjectKind === "node" && neighborKind === "bmc")) {
+      return "硬件管理";
+    }
+    if (subjectKind === "node" && neighborKind === "gpu") {
+      return "承载GPU";
+    }
+    if (subjectKind === "bmc" && neighborKind === "node") {
+      return "管理节点";
+    }
+    if (subjectKind === "bmc" && neighborKind === "gpu") {
+      return "管理硬件";
+    }
+  }
+  return "关联";
+}
+
+function buildDirectOnlyContext(input: BuildDiagnosisModifiedReportViewInput): DiagnosisModifiedContextView {
+  const parsedTopology = parseTopologyContextCandidate(input.topologyContext);
+  const normalizedAlertName = normalizeText(input.session?.alert.alert_name).toLowerCase();
+  const subjectEntity = extractAlertSubjectEntity(input, parsedTopology, normalizedAlertName);
+  if (!subjectEntity) {
     return {
       state: "loading",
       summary: "等待诊断上下文生成。",
+      topologyEmptyReason: "no_direct_relations",
       problemNodes: [],
       affectedNodes: [],
       graph: { nodes: [], edges: [] },
     };
   }
 
-  const problemNodes = roots.map((root) => ({
-    id: getContextNodeId(root),
-    label: getEntityLabel(root),
-    role: "problem" as const,
-    tone: "danger" as const,
-    detail: root,
-  }));
-  const problemNodeIds = new Set(problemNodes.map((node) => node.id));
-  const affectedNodes = affected
-    .filter((entity) => entity && !problemNodeIds.has(getContextNodeId(entity)))
-    .map((entity) => ({
-      id: getContextNodeId(entity),
+  const subjectNode: DiagnosisModifiedContextNodeView = {
+    id: getContextNodeId(subjectEntity),
+    label: getEntityLabel(subjectEntity),
+    role: "problem",
+    tone: "danger",
+    detail: subjectEntity,
+  };
+  const subjectKind = inferEntityKind(subjectEntity);
+  const allEntities = uniqueStrings([subjectEntity, ...collectTopologyEntities(parsedTopology)]);
+
+  const directNeighbors: DiagnosisModifiedContextNodeView[] = [];
+  const directEdges: DiagnosisModifiedContextEdgeView[] = [];
+  const seenNeighborIds = new Set<string>();
+
+  allEntities.forEach((entity) => {
+    if (!entity || entity === subjectEntity) {
+      return;
+    }
+    const entityId = getContextNodeId(entity);
+    if (!entityId || entityId === subjectNode.id || seenNeighborIds.has(entityId)) {
+      return;
+    }
+    const neighborKind = inferEntityKind(entity);
+    if (!shouldKeepDirectNeighbor(normalizedAlertName, subjectKind, neighborKind)) {
+      return;
+    }
+    seenNeighborIds.add(entityId);
+    directNeighbors.push({
+      id: entityId,
       label: getEntityLabel(entity),
-      role: "affected" as const,
-      tone: "warning" as const,
+      role: "affected",
+      tone: "warning",
       detail: entity,
-    }));
-  const edges =
-    problemNodes.length > 0 && affectedNodes.length > 0
-      ? problemNodes.flatMap((problem) =>
-          affectedNodes.map((affectedNode) => ({
-            id: `context-edge-${sanitizeId(problem.id)}-${sanitizeId(affectedNode.id)}`,
-            sourceId: problem.id,
-            targetId: affectedNode.id,
-            label: "影响",
-          })),
-        )
-      : [];
-  const nodes = [...problemNodes, ...affectedNodes];
+    });
+    const label = getDirectRelationLabel(normalizedAlertName, subjectKind, neighborKind);
+    directEdges.push({
+      id: `context-edge-${sanitizeId(subjectNode.id)}-${sanitizeId(entityId)}-${sanitizeId(label)}`,
+      sourceId: subjectNode.id,
+      targetId: entityId,
+      label,
+    });
+  });
+
+  const hasDirectRelations = directEdges.length > 0;
+  const nodes = [subjectNode, ...directNeighbors];
+  const fallbackSummary = hasDirectRelations
+    ? "仅展示告警主体的一跳直连关联实体。"
+    : "暂无告警主体的直连关联实体。";
   const summary =
-    typeof parsed.summary === "string" && parsed.summary.trim()
-      ? parsed.summary.trim()
-      : nodes.length > 0
-        ? "基于拓扑上下文整理问题节点与受影响节点。"
-        : "当前会话尚未返回问题节点或受影响节点。";
+    typeof parsedTopology?.summary === "string" && normalizeText(parsedTopology.summary) && hasDirectRelations
+      ? normalizeText(parsedTopology.summary)
+      : fallbackSummary;
 
   return {
-    state: nodes.length > 0 ? "ready" : "empty",
+    state: "ready",
     summary,
-    problemNodes,
-    affectedNodes,
-    graph: { nodes, edges },
+    topologyEmptyReason: hasDirectRelations ? undefined : "no_direct_relations",
+    problemNodes: [subjectNode],
+    affectedNodes: directNeighbors,
+    graph: {
+      nodes,
+      edges: directEdges,
+    },
   };
 }
 
@@ -1087,25 +1325,25 @@ function getResultNextAction(input: BuildDiagnosisModifiedReportViewInput) {
     return undefined;
   }
 
-  const normalized = raw.trim();
+  const normalized = normalizeText(raw);
   return normalized.length > 0 ? normalized : undefined;
 }
 
 function hasRootCauseConclusion(input: BuildDiagnosisModifiedReportViewInput) {
-  const rootCause = input.summary?.rootCause ?? getResult(input)?.root_cause;
+  const rootCause = normalizeText(input.summary?.rootCause ?? getResult(input)?.root_cause);
   return String(rootCause ?? "").trim().length > 0;
 }
 
 function buildOverview(input: BuildDiagnosisModifiedReportViewInput, stage: DiagnosisModifiedStageView) {
   const session = input.session;
   const result = getResult(input);
-  const alertName = session?.alert.alert_name ?? "当前告警";
-  const summaryTitle = input.summary?.rootCause ?? result?.root_cause ?? "诊断修复报告";
-  const affectedServices = input.summary?.affectedServices ?? result?.affected_services ?? [];
+  const alertName = normalizeText(session?.alert.alert_name ?? "当前告警");
+  const summaryTitle = normalizeText(input.summary?.rootCause ?? result?.root_cause ?? "诊断修复报告");
+  const affectedServices = (input.summary?.affectedServices ?? result?.affected_services ?? []).map((item) => normalizeText(item));
   const primaryService =
-    session?.alert?.labels?.service ??
-    session?.alert?.labels?.app ??
-    affectedServices[0] ??
+    normalizeText(session?.alert?.labels?.service) ||
+    normalizeText(session?.alert?.labels?.app) ||
+    affectedServices[0] ||
     undefined;
   const latestTimestamp = extractLatestUpdateTimestamp(input);
   const duration = session?.duration_seconds ? `持续 ${formatDuration(session.duration_seconds)}` : "";
@@ -1115,10 +1353,12 @@ function buildOverview(input: BuildDiagnosisModifiedReportViewInput, stage: Diag
     eyebrow: "诊断总览",
     title: summaryTitle,
     subtitle:
-      result?.impact_summary ??
-      input.summary?.impactSummary ??
-      input.summary?.subtitle ??
-      "当前报告用于持续呈现最新结论、执行状态与修复反馈。",
+      normalizeText(
+        result?.impact_summary ??
+          input.summary?.impactSummary ??
+          input.summary?.subtitle ??
+          "当前报告用于持续呈现最新结论、执行状态与修复反馈。",
+      ),
     sessionId: session?.session_id,
     alertName,
     service: primaryService,
@@ -1141,67 +1381,18 @@ function buildOverview(input: BuildDiagnosisModifiedReportViewInput, stage: Diag
 }
 
 function buildContext(input: BuildDiagnosisModifiedReportViewInput): DiagnosisModifiedContextView {
-  const result = getResult(input);
-  const problemEntities = uniqueStrings(input.summary?.rootCauseEntities ?? result?.root_cause_entities ?? []);
-  const affectedServices = uniqueStrings(input.summary?.affectedServices ?? result?.affected_services ?? []);
-  const parsedTopology = parseTopologyContextFromTimeline(input.timeline);
-  const hasParsedTopologyEntities =
-    (parsedTopology?.roots?.length ?? 0) > 0 || (parsedTopology?.affected_entities?.length ?? 0) > 0;
-
-  if (parsedTopology && hasParsedTopologyEntities) {
-    return buildContextFromTopologyContext(parsedTopology);
+  const relationScope = input.relationScope ?? "direct_only";
+  if (relationScope === "direct_only") {
+    return buildDirectOnlyContext(input);
   }
-
-  if (!result && problemEntities.length === 0 && affectedServices.length === 0) {
-    return {
-      state: "loading",
-      summary: "等待诊断上下文生成。",
-      problemNodes: [],
-      affectedNodes: [],
-      graph: { nodes: [], edges: [] },
-    };
-  }
-
-  const problemNodeIds = new Set(problemEntities.map(getContextNodeId));
-  const problemNodes = problemEntities.map((entity) => ({
-    id: getContextNodeId(entity),
-    label: getEntityLabel(entity),
-    role: "problem" as const,
-    tone: "danger" as const,
-    detail: entity,
-  }));
-  const affectedNodes = affectedServices
-    .filter((service) => !problemNodeIds.has(getContextNodeId(service)))
-    .map((service) => ({
-      id: getContextNodeId(service),
-      label: getEntityLabel(service),
-      role: "affected" as const,
-      tone: "warning" as const,
-      detail: service,
-    }));
-
-  const edges =
-    problemNodes.length > 0 && affectedNodes.length > 0
-      ? problemNodes.flatMap((problem) =>
-          affectedNodes.map((affected) => ({
-            id: `context-edge-${sanitizeId(problem.id)}-${sanitizeId(affected.id)}`,
-            sourceId: problem.id,
-            targetId: affected.id,
-            label: "影响",
-          })),
-        )
-      : [];
-  const nodes = [...problemNodes, ...affectedNodes];
 
   return {
-    state: nodes.length > 0 ? "ready" : "empty",
-    summary:
-      nodes.length > 0
-        ? "基于当前根因实体和受影响服务整理诊断上下文。"
-        : "当前会话尚未返回问题节点或受影响服务。",
-    problemNodes,
-    affectedNodes,
-    graph: { nodes, edges },
+    state: "loading",
+    summary: "等待诊断上下文生成。",
+    topologyEmptyReason: "no_direct_relations",
+    problemNodes: [],
+    affectedNodes: [],
+    graph: { nodes: [], edges: [] },
   };
 }
 
@@ -1211,7 +1402,7 @@ function buildConclusion(input: BuildDiagnosisModifiedReportViewInput) {
   const facts: DiagnosisModifiedReportFact[] = [
     {
       label: "根因",
-      value: summary?.rootCause ?? result?.root_cause ?? "待收敛",
+      value: normalizeText(summary?.rootCause ?? result?.root_cause ?? "待收敛"),
     },
     {
       label: "层级",
@@ -1219,21 +1410,22 @@ function buildConclusion(input: BuildDiagnosisModifiedReportViewInput) {
     },
     {
       label: "实体",
-      value: summary?.rootCauseEntities?.join("、") ?? result?.root_cause_entities?.join("、") ?? "--",
+      value: normalizeText(summary?.rootCauseEntities?.join("、") ?? result?.root_cause_entities?.join("、") ?? "--"),
     },
     {
       label: "影响",
-      value: summary?.impactSummary ?? result?.impact_summary ?? "--",
+      value: normalizeText(summary?.impactSummary ?? result?.impact_summary ?? "--"),
     },
   ];
 
   return {
-    title: summary?.rootCause ?? result?.root_cause ?? "等待形成明确结论",
-    summary:
+    title: normalizeText(summary?.rootCause ?? result?.root_cause ?? "等待形成明确结论"),
+    summary: normalizeText(
       result?.impact_summary ??
-      summary?.impactSummary ??
-      summary?.subtitle ??
-      "当前尚未形成稳定的根因与影响结论。",
+        summary?.impactSummary ??
+        summary?.subtitle ??
+        "当前尚未形成稳定的根因与影响结论。",
+    ),
     facts,
   };
 }
@@ -1351,16 +1543,14 @@ function buildUnifiedRecords(input: BuildDiagnosisModifiedReportViewInput) {
 function getPreferredRemediationPlan(input: BuildDiagnosisModifiedReportViewInput): RemediationPlan | undefined {
   const result = getResult(input);
   const rankedCandidates = [...(result?.ranked_candidates ?? [])].sort((left, right) => left.rank - right.rank);
-  const normalizedRootCause = String(input.summary?.rootCause ?? result?.root_cause ?? "")
-    .trim()
-    .toLowerCase();
+  const normalizedRootCause = normalizeText(input.summary?.rootCause ?? result?.root_cause ?? "").toLowerCase();
 
   const matchedCandidatePlan = rankedCandidates.find((candidate) => {
     if (!candidate.recommended_fix || !normalizedRootCause) {
       return false;
     }
 
-    return candidate.root_cause.trim().toLowerCase() === normalizedRootCause;
+    return normalizeText(candidate.root_cause).toLowerCase() === normalizedRootCause;
   })?.recommended_fix;
 
   if (matchedCandidatePlan) {
@@ -1381,16 +1571,16 @@ function mapRemediationPlanToView(plan: RemediationPlan): DiagnosisModifiedPlanV
     : undefined;
 
   return {
-    title: plan.root_cause,
-    description: plan.description,
+    title: normalizeText(plan.root_cause),
+    description: normalizeText(plan.description),
     priorityLabel: plan.priority,
     confidenceLabel: formatConfidence(plan.confidence),
     safetyLabel: plan.safety_level,
     canaryLabel,
-    impactSummary: plan.estimated_impact,
+    impactSummary: normalizeText(plan.estimated_impact),
     steps: plan.steps.map((step) => ({
       id: String(step.step_id),
-      title: step.description,
+      title: normalizeText(step.description),
       detail: step.tool,
       toolName: step.tool,
       paramsSummary: Object.keys(step.params ?? {}).length > 0 ? JSON.stringify(step.params) : undefined,
@@ -1645,16 +1835,14 @@ function buildRootCauseView(
     };
   }
 
-  const normalizedPrimaryRootCause = String(input.summary?.rootCause ?? result?.root_cause ?? "")
-    .trim()
-    .toLowerCase();
+  const normalizedPrimaryRootCause = normalizeText(input.summary?.rootCause ?? result?.root_cause ?? "").toLowerCase();
   const fallbackPlan = derivePlan(input);
 
   return {
     state: "ready",
     summary: `${rankedCandidates.length} root causes are listed by confidence (top 2).`,
     items: rankedCandidates.map((candidate, index) => {
-      const candidateRootCause = String(candidate.root_cause ?? "").trim();
+      const candidateRootCause = normalizeText(candidate.root_cause);
       const isPrimary =
         (normalizedPrimaryRootCause.length > 0 && candidateRootCause.toLowerCase() === normalizedPrimaryRootCause) ||
         (normalizedPrimaryRootCause.length === 0 && index === 0);
@@ -1672,11 +1860,11 @@ function buildRootCauseView(
       return {
         id: `root-cause-${candidate.rank}-${sanitizeId(candidateRootCause || `candidate-${index + 1}`)}`,
         title: candidateRootCause || `Candidate root cause ${index + 1}`,
-        summary: candidate.evidence_summary || conclusion.summary,
+        summary: normalizeText(candidate.evidence_summary || conclusion.summary),
         facts: [
           { label: "Rank", value: `#${candidate.rank}` },
           { label: "Layer", value: formatLayer(candidate.root_cause_layer) },
-          { label: "Entities", value: candidate.root_cause_entities?.join(", ") || "--" },
+          { label: "Entities", value: normalizeText(candidate.root_cause_entities?.join(", ") || "--") },
           { label: "Confidence", value: formatConfidence(candidate.confidence) },
         ],
         remediation: candidateRemediation,

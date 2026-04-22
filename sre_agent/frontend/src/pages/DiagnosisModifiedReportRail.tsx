@@ -20,7 +20,7 @@ function DiagnosisModifiedReportRail({
         <div className="diagnosis-modified-report-rail__body">
           <ReportSection
             title="诊断拓扑信息"
-            description="拓扑图优先基于会话返回的 topology_context 生成；若该上下文缺失，则回退使用诊断结果中的根因实体与受影响服务自动构建。"
+            description="仅展示告警主体与其直连关联实体；当缺少直连关系时，仅展示主体节点并给出提示。"
           >
             <SessionLevelSection context={view.context} />
           </ReportSection>

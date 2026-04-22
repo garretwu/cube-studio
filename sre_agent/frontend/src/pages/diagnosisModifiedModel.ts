@@ -1,4 +1,5 @@
 import type { ChatMessage, DiagnosisResult, DiagnosisSession, Observation, ThinkingStep } from "../api/types";
+import { normalizeDiagnosisDisplayText } from "./diagnosisModel";
 
 type ChipTone = "neutral" | "accent" | "success" | "warning" | "danger" | "info";
 
@@ -11,6 +12,14 @@ type TimelineSortItem = {
 };
 
 export type DiagnosisModifiedTimelineItem =
+  | {
+      id: string;
+      kind: "context_start";
+      title: string;
+      summary: string;
+      details: string[];
+      timestamp: string;
+    }
   | {
       id: string;
       kind: "message";
@@ -179,6 +188,8 @@ function isThinkingStep(entry: ThinkingStep | Observation): entry is ThinkingSte
 
 const ANSI_ESCAPE_PATTERN = /\u001b\[[0-?]*[ -/]*[@-~]/g;
 const UNICODE_FORMAT_CHARS_PATTERN = /[\u200B-\u200F\u202A-\u202E\u2060-\u206F\uFEFF]/g;
+const TOOL_CALL_BLOCK_PATTERN = /\[TOOL_CALL\][\s\S]*?\[\/TOOL_CALL\]/gi;
+const TOOL_CALL_TOKEN_PATTERN = /\[\/?TOOL_CALL\]/gi;
 
 function stripControlCharacters(text: string) {
   return text
@@ -187,13 +198,22 @@ function stripControlCharacters(text: string) {
     .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, "");
 }
 
+export function normalizeDiagnosisModifiedDisplayText(text?: string | null) {
+  return stripControlCharacters(normalizeDiagnosisDisplayText(text ?? ""))
+    .replace(TOOL_CALL_BLOCK_PATTERN, " ")
+    .replace(TOOL_CALL_TOKEN_PATTERN, " ")
+    .replace(/[ \t]{2,}/g, " ")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
 function formatValue(value: unknown): string {
   if (value == null) {
     return "-";
   }
 
   if (typeof value === "string") {
-    const normalized = stripControlCharacters(value);
+    const normalized = normalizeDiagnosisModifiedDisplayText(value);
     return normalized.length > 72 ? `${normalized.slice(0, 69)}...` : normalized;
   }
 
@@ -339,14 +359,14 @@ function buildSummary(session: DiagnosisSession | undefined): DiagnosisModifiedS
     certaintyTone: getCertaintyTone(result.diagnosis_certainty),
     confidenceLabel: getConfidenceLabel(result.confidence),
     confidenceRawLabel: getConfidenceRawLabel(result.confidence),
-    priorityLabel: result.triage_priority,
+    priorityLabel: normalizeDiagnosisModifiedDisplayText(result.triage_priority ?? ""),
     sessionLabel: session?.session_id,
-    affectedServices: result.affected_services ?? [],
-    impactSummary: result.impact_summary,
-    rootCause: result.root_cause,
+    affectedServices: (result.affected_services ?? []).map((item) => normalizeDiagnosisModifiedDisplayText(item)),
+    impactSummary: normalizeDiagnosisModifiedDisplayText(result.impact_summary),
+    rootCause: normalizeDiagnosisModifiedDisplayText(result.root_cause),
     rootCauseLayer: result.root_cause_layer,
     rootCauseLayerLabel: getLayerLabel(result.root_cause_layer),
-    rootCauseEntities: result.root_cause_entities ?? [],
+    rootCauseEntities: (result.root_cause_entities ?? []).map((item) => normalizeDiagnosisModifiedDisplayText(item)),
   };
 }
 
@@ -361,15 +381,17 @@ function buildCandidates(session: DiagnosisSession | undefined): DiagnosisModifi
 
   if (rankedCandidates.length > 0) {
     return rankedCandidates.map((candidate, index) => {
-      const matchedHypothesis = hypotheses.find(
-        (item) => item.description.trim().toLowerCase() === candidate.root_cause.trim().toLowerCase(),
-      );
+      const normalizedRootCause = normalizeDiagnosisModifiedDisplayText(candidate.root_cause);
+      const normalizedEvidenceSummary = normalizeDiagnosisModifiedDisplayText(candidate.evidence_summary);
+      const matchedHypothesis = hypotheses.find((item) => {
+        return normalizeDiagnosisModifiedDisplayText(item.description).toLowerCase() === normalizedRootCause.toLowerCase();
+      });
       const isPrimary = candidate.rank === 1 || index === 0;
 
       return {
         id: `ranked-${candidate.rank}-${candidate.root_cause}`,
-        title: candidate.root_cause,
-        summary: candidate.evidence_summary,
+        title: normalizedRootCause,
+        summary: normalizedEvidenceSummary,
         confidence: candidate.confidence,
         confidenceLabel: getConfidenceLabel(candidate.confidence),
         statusLabel: isPrimary
@@ -382,20 +404,25 @@ function buildCandidates(session: DiagnosisSession | undefined): DiagnosisModifi
           : matchedHypothesis
             ? getHypothesisTone(matchedHypothesis.status)
             : "neutral",
-        evidenceFor: matchedHypothesis?.evidence_for?.slice(0, 3) ?? [candidate.evidence_summary],
-        evidenceAgainst: matchedHypothesis?.evidence_against?.slice(0, 2) ?? [],
+        evidenceFor:
+          matchedHypothesis?.evidence_for?.slice(0, 3).map((item) => normalizeDiagnosisModifiedDisplayText(item)) ??
+          [normalizedEvidenceSummary],
+        evidenceAgainst:
+          matchedHypothesis?.evidence_against?.slice(0, 2).map((item) => normalizeDiagnosisModifiedDisplayText(item)) ?? [],
         layer: candidate.root_cause_layer,
-        entities: candidate.root_cause_entities ?? [],
+        entities: (candidate.root_cause_entities ?? []).map((item) => normalizeDiagnosisModifiedDisplayText(item)),
         rank: candidate.rank,
-        evidenceSummary: candidate.evidence_summary,
-        distinguishingVerification: candidate.distinguishing_verification,
+        evidenceSummary: normalizedEvidenceSummary,
+        distinguishingVerification: candidate.distinguishing_verification
+          ? normalizeDiagnosisModifiedDisplayText(candidate.distinguishing_verification)
+          : null,
         isPrimary,
       };
     });
   }
 
   const items: DiagnosisModifiedCandidateView[] = [];
-  const normalizedRootCause = result.root_cause.trim();
+  const normalizedRootCause = normalizeDiagnosisModifiedDisplayText(result.root_cause).trim();
 
   if (normalizedRootCause) {
     items.push({
@@ -406,36 +433,39 @@ function buildCandidates(session: DiagnosisSession | undefined): DiagnosisModifi
       confidenceLabel: getConfidenceLabel(result.confidence),
       statusLabel: getCertaintyLabel(result.diagnosis_certainty),
       statusTone: getCertaintyTone(result.diagnosis_certainty),
-      evidenceFor: hypotheses[0]?.evidence_for?.slice(0, 3) ?? [result.impact_summary],
-      evidenceAgainst: hypotheses[0]?.evidence_against?.slice(0, 2) ?? [],
+      evidenceFor:
+        hypotheses[0]?.evidence_for?.slice(0, 3).map((item) => normalizeDiagnosisModifiedDisplayText(item)) ??
+        [normalizeDiagnosisModifiedDisplayText(result.impact_summary)],
+      evidenceAgainst:
+        hypotheses[0]?.evidence_against?.slice(0, 2).map((item) => normalizeDiagnosisModifiedDisplayText(item)) ?? [],
       layer: result.root_cause_layer,
-      entities: result.root_cause_entities ?? [],
+      entities: (result.root_cause_entities ?? []).map((item) => normalizeDiagnosisModifiedDisplayText(item)),
       rank: 1,
-      evidenceSummary: hypotheses[0]?.evidence_for?.[0] ?? result.impact_summary,
+      evidenceSummary: normalizeDiagnosisModifiedDisplayText(hypotheses[0]?.evidence_for?.[0] ?? result.impact_summary),
       distinguishingVerification: null,
       isPrimary: true,
     });
   }
 
   hypotheses.forEach((hypothesis, index) => {
-    if (hypothesis.description.trim() === normalizedRootCause) {
+    if (normalizeDiagnosisModifiedDisplayText(hypothesis.description).trim() === normalizedRootCause) {
       return;
     }
 
     items.push({
       id: `hypothesis-${index + 1}`,
-      title: hypothesis.description,
+      title: normalizeDiagnosisModifiedDisplayText(hypothesis.description),
       summary: hypothesis.status === "eliminated" ? "\u5f53\u524d\u8bc1\u636e\u4e0d\u652f\u6301\u8be5\u8def\u5f84\u3002" : "\u8be5\u8def\u5f84\u4ecd\u5728\u5019\u9009\u8303\u56f4\u5185\u3002",
       confidence: hypothesis.confidence,
       confidenceLabel: getConfidenceLabel(hypothesis.confidence),
       statusLabel: getHypothesisLabel(hypothesis.status),
       statusTone: getHypothesisTone(hypothesis.status),
-      evidenceFor: hypothesis.evidence_for.slice(0, 3),
-      evidenceAgainst: hypothesis.evidence_against.slice(0, 2),
+      evidenceFor: hypothesis.evidence_for.slice(0, 3).map((item) => normalizeDiagnosisModifiedDisplayText(item)),
+      evidenceAgainst: hypothesis.evidence_against.slice(0, 2).map((item) => normalizeDiagnosisModifiedDisplayText(item)),
       layer: index === 0 ? result.root_cause_layer : undefined,
-      entities: index === 0 ? result.root_cause_entities ?? [] : [],
+      entities: index === 0 ? (result.root_cause_entities ?? []).map((item) => normalizeDiagnosisModifiedDisplayText(item)) : [],
       rank: index + 2,
-      evidenceSummary: hypothesis.evidence_for[0] ?? "\u8bc1\u636e\u6458\u8981",
+      evidenceSummary: normalizeDiagnosisModifiedDisplayText(hypothesis.evidence_for[0] ?? "\u8bc1\u636e\u6458\u8981"),
       distinguishingVerification: null,
       isPrimary: false,
     });
@@ -448,7 +478,7 @@ function buildHypotheses(session: DiagnosisSession | undefined): DiagnosisModifi
   const hypotheses = session?.diagnosis_result?.hypotheses ?? [];
   return hypotheses.map((item, index) => ({
     id: `hypothesis-view-${index + 1}-${item.description}`,
-    description: item.description,
+    description: normalizeDiagnosisModifiedDisplayText(item.description),
     statusLabel: getHypothesisLabel(item.status),
     statusTone: getHypothesisTone(item.status),
     evidenceForCount: item.evidence_for.length,
@@ -461,12 +491,12 @@ function buildPropagationChain(session: DiagnosisSession | undefined): Diagnosis
   const steps = session?.diagnosis_result?.propagation_chain ?? [];
   return steps.map((step, index) => ({
     id: `propagation-${index + 1}-${step.entity_id}`,
-    entityId: step.entity_id,
-    entityType: step.entity_type,
-    metric: step.metric,
+    entityId: normalizeDiagnosisModifiedDisplayText(step.entity_id),
+    entityType: normalizeDiagnosisModifiedDisplayText(step.entity_type),
+    metric: normalizeDiagnosisModifiedDisplayText(step.metric),
     valueBefore: step.value_before,
     valueAfter: step.value_after,
-    description: step.description,
+    description: normalizeDiagnosisModifiedDisplayText(step.description),
   }));
 }
 
@@ -479,17 +509,17 @@ function buildPlan(session: DiagnosisSession | undefined): DiagnosisModifiedPlan
   const isResolved = ["resolved", "closed"].includes(session?.status ?? "");
 
   return {
-    title: plan.root_cause,
-    description: plan.description,
-    priorityLabel: plan.priority,
+    title: normalizeDiagnosisModifiedDisplayText(plan.root_cause),
+    description: normalizeDiagnosisModifiedDisplayText(plan.description),
+    priorityLabel: normalizeDiagnosisModifiedDisplayText(plan.priority),
     confidenceLabel: getConfidenceLabel(plan.confidence),
-    safetyLabel: plan.safety_level,
+    safetyLabel: normalizeDiagnosisModifiedDisplayText(plan.safety_level),
     canaryLabel:
       plan.canary?.enabled ? `\u91d1\u4e1d\u96c0 ${plan.canary.target_percentage}% | \u89c2\u6d4b ${plan.canary.monitor_duration}m` : undefined,
-    impactSummary: plan.estimated_impact,
+    impactSummary: normalizeDiagnosisModifiedDisplayText(plan.estimated_impact),
     steps: plan.steps.map((step, index) => ({
       id: `${plan.plan_id}-${step.step_id}-${index}`,
-      title: step.description,
+      title: normalizeDiagnosisModifiedDisplayText(step.description),
       detail: `${step.tool} | \u8017\u65f6 ${step.timeout}s | \u6821\u9a8c ${step.verification.method}`,
       toolName: step.tool,
       paramsSummary: Object.keys(step.params).length > 0 ? formatParamsSummary(step.params) : undefined,
@@ -508,7 +538,7 @@ function extractDiagnosisNextAction(result: DiagnosisSession["diagnosis_result"]
     return undefined;
   }
 
-  const normalized = raw.trim();
+  const normalized = normalizeDiagnosisModifiedDisplayText(raw).trim();
   return normalized.length > 0 ? normalized : undefined;
 }
 
@@ -539,7 +569,7 @@ export function buildDiagnosisModifiedLiveView(
               : entry.action_type === "conclude"
                 ? "Agent is converging on the diagnosis"
                 : "Agent is expanding diagnostic context",
-          content: entry.thought,
+          content: normalizeDiagnosisModifiedDisplayText(entry.thought),
           timestamp: entry.timestamp,
           toolName: entry.tool_name,
           status: "completed",
@@ -609,7 +639,7 @@ export function buildDiagnosisModifiedLiveView(
           id: `chat-thinking-${message.id}`,
           kind: "thinking",
           title: "Pre-answer reasoning",
-          content: message.display.thinking_raw,
+          content: normalizeDiagnosisModifiedDisplayText(message.display.thinking_raw),
           timestamp: message.created_at,
           status: "completed",
         },
@@ -627,7 +657,7 @@ export function buildDiagnosisModifiedLiveView(
           params: {},
           timestamp: message.created_at,
           status: "success",
-          summaryLines: [message.content],
+          summaryLines: [normalizeDiagnosisModifiedDisplayText(message.content)],
         },
       });
       return;
@@ -636,14 +666,14 @@ export function buildDiagnosisModifiedLiveView(
     timelineItems.push({
       order: timelineItems.length,
       timestamp: message.created_at,
-      item: {
-        id: `chat-message-${message.id}-${index}`,
-        kind: "message",
-        role: message.role === "user" ? "user" : "assistant",
-        content: message.display?.answer ?? message.content,
-        timestamp: message.created_at,
-        label: message.role === "user" ? "User input" : "Agent response",
-      },
+        item: {
+          id: `chat-message-${message.id}-${index}`,
+          kind: "message",
+          role: message.role === "user" ? "user" : "assistant",
+          content: normalizeDiagnosisModifiedDisplayText(message.display?.answer ?? message.content),
+          timestamp: message.created_at,
+          label: message.role === "user" ? "User input" : "Agent response",
+        },
     });
   });
 
