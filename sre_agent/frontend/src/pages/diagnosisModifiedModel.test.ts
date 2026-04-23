@@ -4,6 +4,7 @@ import type { Alert, DiagnosisSession } from "../api/types";
 import {
   buildDiagnosisModifiedDemoScenario,
   buildDiagnosisModifiedLiveView,
+  sanitizeHypothesisSummaryForDisplay,
   type DiagnosisModifiedTimelineItem,
 } from "./diagnosisModifiedModel";
 
@@ -146,6 +147,33 @@ describe("buildDiagnosisModifiedLiveView tool matching", () => {
     expect(toolItems).toHaveLength(1);
     expect(toolItems[0]?.status).toBe("loading");
     expect(toolItems[0]?.summaryLines).toEqual(["Waiting for tool result..."]);
+  });
+});
+
+describe("sanitizeHypothesisSummaryForDisplay", () => {
+  it("removes prompt-like instruction payloads from summaries", () => {
+    const raw =
+      "query=Diagnose the operational issue described by the alert below using a read-only ReAct workflow. " +
+      "This is AIServiceTTFT diagnosis; prioritize deterministic service->pod->node->gpu evidence chain before broad exploration. " +
+      "Available read-only tools for this run: [\"gpu.get_metrics\"].";
+
+    expect(sanitizeHypothesisSummaryForDisplay(raw)).toBe("");
+  });
+
+  it("keeps normal business summary text untouched", () => {
+    const raw = "GPU util 持续 99%，请求排队时长与超时告警同步出现。";
+    expect(sanitizeHypothesisSummaryForDisplay(raw)).toBe(raw);
+  });
+
+  it("drops only prompt-noise paragraph and preserves useful conclusion paragraph", () => {
+    const raw =
+      "基于已收集证据，根因已明确：fi_gpu_burn_gpu_cont 占用 GPU 算力。\n\n" +
+      "query=Diagnose the operational issue described by the alert below using a read-only ReAct workflow. " +
+      "Available read-only tools for this run: [\"gpu.get_processes\"].";
+
+    expect(sanitizeHypothesisSummaryForDisplay(raw)).toBe(
+      "基于已收集证据，根因已明确：fi_gpu_burn_gpu_cont 占用 GPU 算力。",
+    );
   });
 });
 

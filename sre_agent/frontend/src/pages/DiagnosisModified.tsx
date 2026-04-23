@@ -2581,8 +2581,17 @@ function DiagnosisModifiedPage() {
     if (hasLiveSession && nextActionIndex >= 0) {
       return nextActionIndex + 1;
     }
+    if (hasLiveSession) {
+      return activeTraceItemsBeforeStatusSync.length;
+    }
     return -1;
-  }, [actionGeneratedStep, firstRemediationResponseIndex, hasLiveSession, nextActionIndex]);
+  }, [
+    actionGeneratedStep,
+    activeTraceItemsBeforeStatusSync.length,
+    firstRemediationResponseIndex,
+    hasLiveSession,
+    nextActionIndex,
+  ]);
   const shouldRenderActionGeneratedInline =
     Boolean(actionGeneratedStep) && actionGeneratedInsertIndex >= 0;
   const shouldRenderActionGeneratedAfterInlineTail =

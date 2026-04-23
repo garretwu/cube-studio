@@ -245,7 +245,7 @@ export function ReportOverview({
 export type ReportEmptyPreviewModuleView = {
   key: "context" | "hypotheses" | "rootCause";
   title: string;
-  description: string;
+  description?: string;
   lines: number;
 };
 
@@ -253,13 +253,11 @@ export const DEFAULT_REPORT_PREVIEW_MODULES: ReportEmptyPreviewModuleView[] = [
   {
     key: "context",
     title: "诊断拓扑信息",
-    description: "用于展示上下游依赖、受影响实体与拓扑关联关系。",
     lines: 2,
   },
   {
     key: "hypotheses",
     title: "候选假设验证",
-    description: "用于呈现候选根因、验证依据与置信度变化。",
     lines: 2,
   },
   {
@@ -278,7 +276,7 @@ export function ReportEmptyPreviewModule({
   dataTestId = "diagnosis-modified-report-empty-preview-module",
 }: {
   title: string;
-  description: string;
+  description?: string;
   lines?: number;
   index?: number;
   dataTestId?: string;
@@ -291,9 +289,11 @@ export function ReportEmptyPreviewModule({
     >
       <div className="diagnosis-modified-report-rail__empty-preview-copy">
         <h3 className="diagnosis-modified-report-rail__empty-preview-title">{title}</h3>
-        <p className="diagnosis-modified-report-rail__empty-preview-description">
-          {description} 等待该部分诊断结果输出后展示。
-        </p>
+        {description ? (
+          <p className="diagnosis-modified-report-rail__empty-preview-description">
+            {description} 等待该部分诊断结果输出后展示。
+          </p>
+        ) : null}
       </div>
       <div
         className="diagnosis-modified-report-rail__loading-progress"
@@ -424,21 +424,7 @@ export function RootCauseLevelSection({
                 rankFact?.value?.trim() ||
                 (item.rankLabel ? `#${item.rankLabel.match(/\d+/)?.[0] ?? ""}`.replace(/#$/, "") : "");
               const displayTitle = rankToken ? `RANK ${rankToken}：${item.title}` : item.title;
-              const layerFact = item.facts.find((fact) => fact.label.trim().toLowerCase() === "layer");
-              const entitiesFact = item.facts.find((fact) => fact.label.trim().toLowerCase() === "entities");
               const confidenceFact = item.facts.find((fact) => fact.label.trim().toLowerCase() === "confidence");
-              const layerValue = layerFact?.value?.trim();
-              const entitiesValue = entitiesFact?.value?.trim();
-              const hasLayer = Boolean(layerValue && layerValue !== "--");
-              const hasEntities = Boolean(entitiesValue && entitiesValue !== "--");
-              const rootCauseMetaParts = [
-                hasLayer ? `层级：${layerValue}` : null,
-                hasEntities ? `实体：${entitiesValue}` : null,
-              ].filter((part): part is string => Boolean(part));
-              const visibleFacts = item.facts.filter(
-                (fact) =>
-                  !["rank", "layer", "entities", "confidence"].includes(fact.label.trim().toLowerCase()),
-              );
               return (
                 <article className="diagnosis-modified-report-rail__candidate" key={item.id}>
                   <div className="diagnosis-modified-report-rail__candidate-header">
@@ -450,11 +436,6 @@ export function RootCauseLevelSection({
                         ) : null}
                       </strong>
                       <p>{item.summary}</p>
-                      {rootCauseMetaParts.length > 0 ? (
-                        <p className="diagnosis-modified-report-rail__rootcause-meta">
-                          {rootCauseMetaParts.join(" · ")}
-                        </p>
-                      ) : null}
                       {remediationSummary ? (
                         <div className="diagnosis-modified-report-rail__candidate-remediation">
                           <div className="diagnosis-modified-report-rail__candidate-remediation-header">
@@ -469,20 +450,6 @@ export function RootCauseLevelSection({
                             </span>
                             <span title={remediationSummary}>{remediationSummary}</span>
                           </p>
-                        </div>
-                      ) : null}
-                      {visibleFacts.length > 0 ? (
-                        <div className="diagnosis-modified-report-rail__candidate-facts" role="list">
-                          {visibleFacts.map((fact) => (
-                            <div
-                              className="diagnosis-modified-report-rail__candidate-fact"
-                              key={`${item.id}-${fact.label}`}
-                              role="listitem"
-                            >
-                              <span>{fact.label}</span>
-                              <strong>{fact.value}</strong>
-                            </div>
-                          ))}
                         </div>
                       ) : null}
                     </div>
@@ -628,9 +595,6 @@ export function DiagnosisContextSection({ context }: { context: DiagnosisModifie
 
   return (
     <div className="diagnosis-modified-report-rail__context">
-      {context.topologyEmptyReason === "no_direct_relations" ? (
-        <p className="diagnosis-modified-report-rail__context-note">暂无直连关联实体，当前仅展示告警主体。</p>
-      ) : null}
       <ContextTopologyGraph context={context} />
     </div>
   );
@@ -845,10 +809,6 @@ function HypothesisSection({
 
   return (
     <div className="diagnosis-modified-report-rail__subsection diagnosis-modified-report-rail__subsection--hypotheses">
-      <div className="diagnosis-modified-report-rail__subsection-header">
-        <p className="diagnosis-modified-report-rail__callout-label">Hypothesis summary</p>
-        <span>{hypotheses.summary}</span>
-      </div>
       <div className="diagnosis-modified-report-rail__stack">
         {hypotheses.items.map((item) => {
           const defaultExpanded = hypotheses.detailMode === "expanded";
@@ -876,8 +836,7 @@ function HypothesisSection({
               <div className="diagnosis-modified-report-rail__candidate-header">
                 <div className="diagnosis-modified-report-rail__candidate-copy">
                   <strong>{formatHypothesisTitle(item.title)}</strong>
-                  <p>{item.summary}</p>
-                  <p>{item.description}</p>
+                  {item.summary ? <p>{item.summary}</p> : null}
                 </div>
                 <div className="diagnosis-modified-report-rail__candidate-meta">
                   <div

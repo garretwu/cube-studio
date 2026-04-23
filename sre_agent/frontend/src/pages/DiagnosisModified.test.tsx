@@ -479,6 +479,8 @@ describe("DiagnosisModifiedPage sequential playback", () => {
       "data-state",
       "placeholder",
     );
+    expect(within(reportRail).queryByText("用于展示上下游依赖、受影响实体与拓扑关联关系。")).not.toBeInTheDocument();
+    expect(within(reportRail).queryByText("用于呈现候选根因、验证依据与置信度变化。")).not.toBeInTheDocument();
   });
 
   it("reveals report modules progressively in demo mode as each section data becomes ready", async () => {
@@ -1744,7 +1746,8 @@ describe("DiagnosisModifiedPage split workspace", () => {
     expect(within(reportRail).queryByText(/^01$/)).not.toBeInTheDocument();
     expect(within(reportRail).queryByText(/^02$/)).not.toBeInTheDocument();
     expect(within(reportRail).queryByText(/^03$/)).not.toBeInTheDocument();
-    expect(within(reportRail).getByText(/状态: 当前根因 \| 置信度: 86% \| 关联实体:/)).toBeInTheDocument();
+    expect(within(reportRail).queryByText(/状态:\s*当前根因/u)).not.toBeInTheDocument();
+    expect(within(reportRail).queryByText(/关联实体:/u)).not.toBeInTheDocument();
     expect(container.querySelector(".diagnosis-modified-report-rail__context-graph")).toBeTruthy();
     expect(container.querySelector(".diagnosis-modified-report-rail__context-lists")).toBeNull();
     expect(container.querySelectorAll(".diagnosis-modified-report-rail__section").length).toBe(3);
@@ -1756,8 +1759,16 @@ describe("DiagnosisModifiedPage split workspace", () => {
     expect(within(reportRail).queryByText("Layer")).not.toBeInTheDocument();
     expect(within(reportRail).queryByText("Entities")).not.toBeInTheDocument();
     expect(within(reportRail).queryByText("Confidence")).not.toBeInTheDocument();
+    expect(within(reportRail).queryByText(/^根因$/)).not.toBeInTheDocument();
+    expect(within(reportRail).queryByText(/^层级$/)).not.toBeInTheDocument();
+    expect(within(reportRail).queryByText(/^实体$/)).not.toBeInTheDocument();
     expect(within(reportRail).getAllByText(/置信度/).length).toBeGreaterThan(0);
     expect(within(reportRail).queryByText("Execute 10% canary first, then observe Redis timeout recovery.")).not.toBeInTheDocument();
+    expect(within(reportRail).queryByText("Hypothesis summary")).not.toBeInTheDocument();
+    expect(within(reportRail).queryByText("结论已趋于稳定，默认折叠细节；可按候选展开查看证据与置信度变化。")).not.toBeInTheDocument();
+    expect(within(reportRail).queryByText("已选中 3 个候选假设。")).not.toBeInTheDocument();
+    expect(within(reportRail).getByText("Redis timeout and retry loop align with alert timing.")).toBeInTheDocument();
+    expect(within(reportRail).queryByText("仅展示告警主体与其直连关联实体；当缺少直连关系时，仅展示主体节点并给出提示。")).not.toBeInTheDocument();
     expect(screen.queryByTestId("diagnosis-modified-report-rail-loading")).not.toBeInTheDocument();
   });
 
@@ -2266,7 +2277,7 @@ describe("DiagnosisModifiedPage split workspace", () => {
     expect(screen.getByText("wj-lab-cpt-01")).toBeInTheDocument();
   });
 
-  it("shows alert subject only with hint when no direct topology relation is available", () => {
+  it("shows alert subject only when no direct topology relation is available", () => {
     mockedBuildLiveView.mockReturnValue({
       timeline: [],
       candidates: [],
@@ -2292,7 +2303,7 @@ describe("DiagnosisModifiedPage split workspace", () => {
     renderLivePage("/diagnosis-modified/sess-live-topology-empty-direct");
 
     expect(screen.getByText("auth-svc")).toBeInTheDocument();
-    expect(screen.getByText("暂无直连关联实体，当前仅展示告警主体。")).toBeInTheDocument();
+    expect(screen.queryByText("暂无直连关联实体，当前仅展示告警主体。")).not.toBeInTheDocument();
   });
 
   it("renders diagnosis-start context as a single live thinking card", async () => {
@@ -2541,6 +2552,41 @@ describe("DiagnosisModifiedPage split workspace", () => {
     const actionStepHeading = within(traceList).getByText("已生成修复建议");
 
     expect(nextActionHeading.compareDocumentPosition(actionStepHeading) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it("renders action-generated step for proposal-only approval flows without next-action or remediation messages", () => {
+    mockedBuildLiveView.mockReturnValue({
+      timeline: [
+        {
+          id: "live-msg-proposal-only",
+          kind: "message",
+          role: "assistant",
+          content: "已基于主根因补全 proposal-only 修复方案，等待人工审批。",
+          timestamp: "2026-04-08T12:21:00.000Z",
+        },
+      ],
+      candidates: [],
+      summary: baseSummary,
+      plan: basePlan,
+    });
+
+    const proposalOnlySession = createDetailedLiveSession("sess-live-proposal-only");
+    proposalOnlySession.status = "approval_required";
+
+    resetDiagnosisStore({
+      session: proposalOnlySession,
+      activeSessionId: "sess-live-proposal-only",
+      bootstrapStatus: "ready",
+      traceStatus: "ready",
+      messages: [],
+      bootstrapSession: vi.fn().mockResolvedValue(undefined),
+    });
+
+    renderLivePage("/diagnosis-modified/sess-live-proposal-only");
+
+    const traceList = screen.getByTestId("diagnosis-modified-trace-list");
+    expect(within(traceList).getByText("已生成修复建议")).toBeInTheDocument();
+    expect(within(traceList).getByTestId("diagnosis-modified-approval-surface")).toBeInTheDocument();
   });
 
   it("keeps the trace header stage synchronized without rendering a right-side progress summary card", async () => {

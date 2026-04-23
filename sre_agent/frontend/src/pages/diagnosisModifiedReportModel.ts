@@ -7,6 +7,7 @@ import type {
 } from "../api/types";
 import {
   normalizeDiagnosisModifiedDisplayText,
+  sanitizeHypothesisSummaryForDisplay,
 } from "./diagnosisModifiedModel";
 import type {
   DiagnosisModifiedCandidateView,
@@ -506,7 +507,7 @@ function buildHypotheses(input: BuildDiagnosisModifiedReportViewInput): Diagnosi
     items: latestSnapshot.candidates.map((candidate, index) => ({
       id: candidate.id,
       title: candidate.title,
-      summary: candidate.evidenceSummary ?? candidate.summary,
+      summary: sanitizeHypothesisSummaryForDisplay(candidate.evidenceSummary ?? candidate.summary),
       description: buildHypothesisDescription(candidate, index),
       confidenceLabel: candidate.confidenceLabel,
       statusLabel: getHypothesisStatusLabel(candidate, index),
@@ -537,30 +538,40 @@ function buildHypothesisDescription(candidate: DiagnosisModifiedCandidateView, i
 function buildHypothesisEvidenceItems(
   candidate: DiagnosisModifiedCandidateView,
 ): DiagnosisModifiedHypothesisEvidenceItemView[] {
-  const supportItems = candidate.evidenceFor.map((summary, index) => ({
-    id: `${candidate.id}-support-${index + 1}`,
-    kind: "support" as const,
-    summary,
-    tone: "success" as const,
-  }));
+  const supportItems = candidate.evidenceFor
+    .map((summary, index) => ({
+      id: `${candidate.id}-support-${index + 1}`,
+      kind: "support" as const,
+      summary: sanitizeHypothesisSummaryForDisplay(summary),
+      tone: "success" as const,
+    }))
+    .filter((item) => item.summary.length > 0);
 
-  const againstItems = candidate.evidenceAgainst.map((summary, index) => ({
-    id: `${candidate.id}-against-${index + 1}`,
-    kind: "against" as const,
-    summary,
-    tone: "warning" as const,
-  }));
+  const againstItems = candidate.evidenceAgainst
+    .map((summary, index) => ({
+      id: `${candidate.id}-against-${index + 1}`,
+      kind: "against" as const,
+      summary: sanitizeHypothesisSummaryForDisplay(summary),
+      tone: "warning" as const,
+    }))
+    .filter((item) => item.summary.length > 0);
 
   const validationItems =
     candidate.distinguishingVerification && candidate.distinguishingVerification.trim().length > 0
-      ? [
-          {
-            id: `${candidate.id}-validation-next`,
-            kind: "validation" as const,
-            summary: candidate.distinguishingVerification,
-            tone: "info" as const,
-          },
-        ]
+      ? (() => {
+          const sanitized = sanitizeHypothesisSummaryForDisplay(candidate.distinguishingVerification);
+          if (!sanitized) {
+            return [];
+          }
+          return [
+            {
+              id: `${candidate.id}-validation-next`,
+              kind: "validation" as const,
+              summary: sanitized,
+              tone: "info" as const,
+            },
+          ];
+        })()
       : [];
 
   return [...supportItems, ...againstItems, ...validationItems];
