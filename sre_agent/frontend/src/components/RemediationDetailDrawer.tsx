@@ -1,8 +1,9 @@
-﻿import { useEffect, useMemo, type CSSProperties } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import type { DiagnosisSessionSummary, RemediationOverview, SessionEvent } from "../api/types";
 import { formatDateTime, formatDurationSeconds, formatPercent } from "../utils/format";
-import { AppIcon, StatusChip } from "./ui";
+import { getRemediationOverallProgressDisplay, getRemediationStepProgress } from "../utils/remediationProgress";
+import { AppIcon } from "./ui";
 import RemediationTimeline from "./RemediationTimeline";
 
 type RemediationRecord = {
@@ -12,11 +13,11 @@ type RemediationRecord = {
 
 type RemediationDetailDrawerProps = {
   actionLoading: boolean;
-  activeStepSelection: { sessionId: string; stepId: number } | null;
+  activeStepSelection?: { sessionId: string; stepId: number } | null;
   isLoading: boolean;
   onClose: () => void;
   onOpenApproval: () => void;
-  onSelectStep: (sessionId: string, stepId: number) => void;
+  onSelectStep?: (sessionId: string, stepId: number) => void;
   open: boolean;
   overview?: RemediationOverview;
   record: RemediationRecord | null;
@@ -24,20 +25,16 @@ type RemediationDetailDrawerProps = {
 };
 
 const STATUS_LABELS: Record<string, string> = {
-  approval_accepted: "审批已接受",
   approval_required: "等待审批",
   approval_rejected: "审批已拒绝",
   approved: "已批准",
   awaiting_approval: "等待审批",
   escalated: "已升级处理",
   execution_failed: "执行失败",
-  execution_mocked: "模拟执行完成",
   execution_started: "开始修复",
   execution_succeeded: "执行成功",
   execution_timeout: "执行超时",
   failed: "失败",
-  observation_result: "观察结果已采集",
-  observation_started: "开始观察",
   partially_resolved: "部分恢复",
   pending: "待开始",
   plan_revised: "方案已修订",
@@ -52,7 +49,6 @@ const STATUS_LABELS: Record<string, string> = {
   timeout: "超时",
   validating: "验证中",
 };
-
 const VERIFICATION_LABELS: Record<string, string> = {
   promql: "指标校验",
   tool_call: "工具校验",
@@ -61,6 +57,11 @@ const VERIFICATION_LABELS: Record<string, string> = {
 
 const TERMINAL_STATUSES = new Set(["resolved", "failed", "escalated", "timeout", "rejected"]);
 const ATTENTION_STATUSES = new Set(["failed", "escalated", "timeout", "rejected", "execution_failed", "rollback_failed"]);
+const ACTIVE_EXECUTION_STATUSES = new Set(["remediating", "execution_started", "validating"]);
+const OBSERVATION_POLICY_LABELS: Record<string, string> = {
+  default_alert_and_metrics: "告警恢复 + 指标改善",
+  alert_status_only_when_post_metrics_unavailable: "仅告警恢复（观测指标缺失降级）",
+};
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -81,28 +82,17 @@ function getStatusLabel(value?: string | null, fallback = "未知"): string {
   return STATUS_LABELS[value] ?? value;
 }
 
-function getVerificationLabel(value?: string | null): string {
-  if (!value) return "未知";
-  return VERIFICATION_LABELS[value] ?? value;
-}
-
 function getStatusTone(value?: string | null): "neutral" | "accent" | "success" | "warning" | "danger" | "info" {
   const normalized = String(value ?? "").trim().toLowerCase();
   if (ATTENTION_STATUSES.has(normalized)) return "danger";
   if (TERMINAL_STATUSES.has(normalized) || normalized === "execution_succeeded" || normalized === "rollback_succeeded") return "success";
   if (normalized === "remediating" || normalized === "execution_started" || normalized === "validating") return "warning";
-  if (normalized === "approval_required" || normalized === "awaiting_approval") return "info";
-  if (normalized === "approved" || normalized === "plan_revised") return "accent";
   return "neutral";
 }
 
-function formatResult(value: unknown): string {
-  if (typeof value === "string") return value;
-  try {
-    return JSON.stringify(value);
-  } catch {
-    return String(value);
-  }
+function getVerificationLabel(value?: string | null): string {
+  if (!value) return "未知";
+  return VERIFICATION_LABELS[value] ?? value;
 }
 
 function formatStepVerificationSummary(step: RemediationOverview["plan"]["steps"][number]): string {
@@ -112,14 +102,6 @@ function formatStepVerificationSummary(step: RemediationOverview["plan"]["steps"
   if (verification.tool) parts.push(verification.tool);
   if (verification.wait_seconds) parts.push(`${verification.wait_seconds}s`);
   return parts.join(" / ");
-}
-
-function getOverallProgress(overview?: RemediationOverview): number {
-  if (!overview) return 0;
-  const total = Number(overview.progress.total_steps ?? 0);
-  const completed = Number(overview.progress.completed_steps ?? 0);
-  if (total <= 0) return 0;
-  return Math.max(0, Math.min(100, Math.round((completed / total) * 100)));
 }
 
 function getExecutionStartedAt(events: SessionEvent[] | undefined): string | null {
@@ -132,86 +114,94 @@ function getExecutionStartedAt(events: SessionEvent[] | undefined): string | nul
 
 function getApprover(events: SessionEvent[] | undefined): string | null {
   if (!events?.length) return null;
-  for (const event of sortEvents(events)) {
+  const sortedEvents = sortEvents(events);
+  const isLikelyHuman = (value: string) => !/(system|bot|auto[-_]?sre)/i.test(value);
+
+  for (const event of sortedEvents) {
+    const data = isRecord(event.data) ? event.data : {};
+    if (event.type === "approval_required") {
+      const user = typeof data.user === "string" ? data.user.trim() : "";
+      if (user && isLikelyHuman(user)) return user;
+    }
+  }
+
+  for (const event of sortedEvents) {
+    const stage = getEventStage(event).toLowerCase();
+    const data = isRecord(event.data) ? event.data : {};
+    const user = typeof data.user === "string" ? data.user.trim() : "";
+    if (!user || !isLikelyHuman(user)) continue;
+    if (["approved", "rejected", "approval_rejected", "approval_required", "awaiting_approval"].includes(stage)) {
+      return user;
+    }
+  }
+
+  for (const event of sortedEvents) {
     const data = isRecord(event.data) ? event.data : {};
     if (typeof data.user === "string" && data.user.trim()) return data.user.trim();
   }
   return null;
 }
 
-function getStepState(
-  stepIndex: number,
-  completedSteps: number,
-  totalSteps: number,
-  status?: string | null,
-): "completed" | "current" | "pending" {
-  if (totalSteps <= 0) return "pending";
-
-  const normalizedStatus = String(status ?? "").trim().toLowerCase();
-  if (completedSteps >= totalSteps || normalizedStatus === "resolved") {
-    return "completed";
-  }
-
-  if (stepIndex < Math.max(0, completedSteps)) {
-    return "completed";
-  }
-
-  if (stepIndex === Math.min(Math.max(0, completedSteps), totalSteps - 1)) {
-    return normalizedStatus === "pending" || normalizedStatus === "approval_required" || normalizedStatus === "awaiting_approval"
-      ? "pending"
-      : "current";
-  }
-
-  return "pending";
-}
-
 function getCanaryProgress(overview?: RemediationOverview): number | null {
   if (!overview?.plan.canary?.enabled) return null;
   const batches = overview.progress.batch_status ?? [];
   if (batches.length > 0) {
-    const totalBatches = batches.length;
-    const completedBatches = batches.filter((b) => b.status === "resolved").length;
-    return Math.round((completedBatches / totalBatches) * 100);
+    const canaryBatch = batches.find((item) => /canary|金丝雀/i.test(item.batch)) ?? batches[0];
+    return Math.max(0, Math.min(100, Math.round(Number(canaryBatch.progress ?? 0))));
   }
   if (String(overview.progress.status ?? "").trim().toLowerCase() === "resolved") return 100;
-  return getOverallProgress(overview);
+  return getRemediationStepProgress(overview);
 }
-function getCurrentStepSummary(
-  steps: RemediationOverview["plan"]["steps"],
-  completedSteps: number,
-  status?: string | null,
-): string {
-  if (steps.length === 0) return "暂无执行步骤";
 
-  const normalizedStatus = String(status ?? "").trim().toLowerCase();
-  if (completedSteps >= steps.length || normalizedStatus === "resolved") {
-    return `已完成全部 ${steps.length} 个步骤`;
+function normalizeBoolean(value: unknown): boolean | null {
+  if (typeof value === "boolean") return value;
+  return null;
+}
+
+function normalizePolicy(value: unknown): string {
+  const normalized = typeof value === "string" ? value.trim() : "";
+  return normalized || "default_alert_and_metrics";
+}
+
+function filterRemediationTimeline(events: SessionEvent[]): SessionEvent[] {
+  if (!events.length) return [];
+  const sorted = sortEvents(events);
+  const approvalStartIndex = sorted.findIndex((event) => event.type === "approval_required");
+  const remediationStartIndex = sorted.findIndex((event) => event.type === "remediation_progress");
+  const startIndex = approvalStartIndex >= 0 ? approvalStartIndex : remediationStartIndex;
+  if (startIndex < 0) return [];
+  return sorted.slice(startIndex).filter((event) => {
+    if (event.type === "approval_required" || event.type === "remediation_progress") return true;
+    if (event.type === "plan_revised") return approvalStartIndex >= 0;
+    return false;
+  });
+}
+
+function getLatestObservationResult(events: SessionEvent[]): Record<string, unknown> | null {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index];
+    if (event.type !== "remediation_progress") continue;
+    const stage = String(event.data?.stage ?? "").trim().toLowerCase();
+    if (stage !== "observation_result") continue;
+    return isRecord(event.data) ? event.data : null;
   }
-
-  if (normalizedStatus === "pending" || normalizedStatus === "approval_required" || normalizedStatus === "awaiting_approval") {
-    const firstStep = steps[0];
-    return `待开始 · 步骤 ${firstStep.step_id} ${firstStep.description}`;
-  }
-
-  const currentStep = steps[Math.min(Math.max(completedSteps, 0), steps.length - 1)];
-  return `步骤 ${currentStep.step_id} · ${currentStep.description}`;
+  return null;
 }
 
-function formatEvidenceValue(value: unknown): string {
-  if (value === null || value === undefined) return "未采集";
-  if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") return String(value);
-  return formatResult(value);
-}
-
+type TimelinePlaybackState = {
+  activeIndex: number | null;
+  completedCount: number;
+  totalCount: number;
+  visibleCount: number;
+  overallPercent: number;
+};
 
 export default function RemediationDetailDrawer({
   actionLoading,
-  activeStepSelection,
   events,
   isLoading,
   onClose,
   onOpenApproval,
-  onSelectStep,
   open,
   overview,
   record,
@@ -227,525 +217,314 @@ export default function RemediationDetailDrawer({
   }, [open, onClose]);
 
   const drawerOverview = record && (record.summary.session_id === overview?.session_id ? overview : record.overview);
+  const hasLiveEventStream = Boolean(
+    record?.summary.session_id &&
+      overview?.session_id === record.summary.session_id &&
+      events.length > 0,
+  );
   const drawerEvents = useMemo(() => {
     const recordSessionId = record?.summary.session_id;
     const realtimeEvents =
       recordSessionId && overview?.session_id === recordSessionId
         ? events.filter((event) => event.session_id === recordSessionId)
         : [];
-    const sourceEvents =
-      realtimeEvents.length > 0
-        ? realtimeEvents
-        : drawerOverview?.timeline ?? events;
-    const allEvents = sortEvents(sourceEvents);
-    const approvalIndex = allEvents.findIndex((event) => event.type === "approval_required");
-    if (approvalIndex === -1) return allEvents;
-    return allEvents.slice(approvalIndex);
+    return filterRemediationTimeline(realtimeEvents.length > 0 ? realtimeEvents : drawerOverview?.timeline ?? events);
   }, [drawerOverview?.timeline, events, overview?.session_id, record?.summary.session_id]);
+  const summary = record?.summary;
   const drawerStatus = String(drawerOverview?.progress.status ?? record?.summary.status ?? "pending").trim();
   const drawerStartedAt = getExecutionStartedAt(drawerEvents);
   const drawerApprover = getApprover(drawerEvents);
   const drawerRootCause = drawerOverview?.plan.root_cause ?? record?.summary.root_cause ?? "待补充";
-  const drawerImpact = drawerOverview?.plan.estimated_impact ?? record?.summary.root_cause ?? "待补充";
+  const drawerImpact = drawerOverview?.plan.estimated_impact ?? "待补充";
   const drawerSummary = drawerOverview?.plan.description ?? record?.summary.summary ?? "";
-  const affectedServicesSummary = record?.summary.affected_services?.length ? record.summary.affected_services.join("、") : "未记录";
+  const drawerTitle = summary
+    ? summary.title.replace(/\s*[·•]\s*(CRITICAL|WARNING|INFO)$/i, "").trim() || summary.title
+    : "";
+  const severityLabel = String(summary?.severity ?? "").trim().toUpperCase() || "UNKNOWN";
+  const incidentLabel = String(summary?.session_id ?? "").trim();
+  const executionSourceLabel = drawerOverview?.approval_required ? "待人工审批后执行" : "自动触发修复流程";
+  const affectedServices = drawerOverview?.affected_services?.length
+    ? drawerOverview.affected_services
+    : (summary?.affected_services ?? []);
+  const affectedServicesSummary = affectedServices.length ? affectedServices.join("、") : "未记录";
   const detailSteps = drawerOverview?.plan.steps ?? [];
+  const observationResult = getLatestObservationResult(drawerEvents);
+  const observationPolicy = normalizePolicy(observationResult?.policy_applied);
+  const policyLabel = OBSERVATION_POLICY_LABELS[observationPolicy] ?? observationPolicy;
+  const alertCleared = normalizeBoolean(observationResult?.alert_cleared);
+  const metricsImproved = normalizeBoolean(observationResult?.metrics_improved);
+  const alertOnlyPolicy = observationPolicy === "alert_status_only_when_post_metrics_unavailable";
+  const observationPassed =
+    alertCleared !== null && (alertOnlyPolicy ? alertCleared : alertCleared && metricsImproved === true);
   const completedSteps = Number(drawerOverview?.progress.completed_steps ?? 0);
   const totalSteps = Number(drawerOverview?.progress.total_steps ?? detailSteps.length);
-  const overallProgress = getOverallProgress(drawerOverview ?? undefined);
+  const overallProgress = getRemediationOverallProgressDisplay(drawerOverview ?? undefined);
   const canaryProgress = getCanaryProgress(drawerOverview ?? undefined);
-  const batchStatusArr = drawerOverview?.progress.batch_status ?? [];
-  const totalBatches = batchStatusArr.length || Number(drawerOverview?.plan.canary?.max_batches ?? 0);
-  const completedBatches = batchStatusArr.filter((b) => b.status === "resolved").length;
-  const currentBatchIndex = Math.min(completedBatches + 1, totalBatches);
-  const canaryStrategy = drawerOverview?.plan.canary?.enabled
-    ? `批次 ${currentBatchIndex}/${totalBatches}`
-    : "未启用灰度";
-  const canaryProgressSummary = drawerOverview?.plan.canary?.enabled
-    ? `${canaryProgress ?? 0}% · ${canaryStrategy}`
-    : "未启用灰度";
-  const baselineReview = drawerOverview?.baseline_review ?? null;
-  const preAlert = baselineReview?.pre_check?.alert ?? null;
-  const postAlert = baselineReview?.post_check?.alert ?? null;
-  const alertReview = baselineReview?.alert_review ?? null;
-  const metricReviews = baselineReview?.metric_reviews ?? [];
-  const currentStepSummary = getCurrentStepSummary(detailSteps, completedSteps, drawerStatus);
-  const activeStep =
-    drawerOverview && detailSteps.length > 0 && activeStepSelection?.sessionId === drawerOverview.session_id
-      ? detailSteps.find((step) => step.step_id === activeStepSelection.stepId) ?? null
-      : null;
-  const stepFlowProgress =
-    drawerOverview && detailSteps.length > 0
-      ? Math.max(
-          0,
-          Math.min(100, Math.round((Number(drawerOverview.progress.completed_steps ?? 0) / Math.max(Number(drawerOverview.progress.total_steps ?? detailSteps.length), 1)) * 100)),
-        )
-      : 0;
+  const normalizedDrawerStatus = drawerStatus.trim().toLowerCase();
+  const shouldAutoPlayExecution = detailSteps.length > 0 && ACTIVE_EXECUTION_STATUSES.has(normalizedDrawerStatus);
+  const flowTotalSteps = detailSteps.length > 0 ? detailSteps.length : totalSteps;
+  const [planStepsExpanded, setPlanStepsExpanded] = useState(false);
+  const [strategyExpanded, setStrategyExpanded] = useState(true);
+  const [timelinePlayback, setTimelinePlayback] = useState<TimelinePlaybackState>({
+    activeIndex: null,
+    completedCount: 0,
+    totalCount: 0,
+    visibleCount: 0,
+    overallPercent: 0,
+  });
 
-  if (!open || !record || !drawerOverview) {
-    return null;
-  }
+  useEffect(() => {
+    setTimelinePlayback({
+      activeIndex: null,
+      completedCount: 0,
+      totalCount: 0,
+      visibleCount: 0,
+      overallPercent: 0,
+    });
+  }, [drawerOverview?.session_id, shouldAutoPlayExecution]);
+
+  useEffect(() => {
+    if (!open) return;
+    setPlanStepsExpanded(false);
+    setStrategyExpanded(true);
+  }, [open, drawerOverview?.session_id]);
+
+  const displayTotalSteps = flowTotalSteps > 0 ? flowTotalSteps : totalSteps;
+  const playbackBasedCompletedSteps = shouldAutoPlayExecution && timelinePlayback.totalCount > 0
+    ? Math.floor((timelinePlayback.completedCount / Math.max(timelinePlayback.totalCount, 1)) * displayTotalSteps)
+    : completedSteps;
+  const displayCompletedSteps = Math.max(0, Math.min(displayTotalSteps, playbackBasedCompletedSteps));
+  const displayOverallProgress = overallProgress;
+  const displayCanaryProgress = drawerOverview?.plan.canary?.enabled
+    ? shouldAutoPlayExecution && timelinePlayback.totalCount > 0
+      ? canaryProgress ?? getRemediationStepProgress(drawerOverview)
+      : (canaryProgress ?? overallProgress)
+    : null;
+
+  if (!open || !record || !summary || !drawerOverview) return null;
 
   return (
-    <div className="remediation-drawer" role="dialog" aria-modal="true" aria-label="修复详情">
+    <div className="remediation-drawer remediation-drawer--mask" role="dialog" aria-modal="true" aria-label="修复详情">
       <button type="button" className="remediation-drawer__backdrop" aria-label="关闭修复详情" onClick={onClose} />
-      <aside className="remediation-drawer__panel" onClick={(event) => event.stopPropagation()}>
-        <div className="remediation-drawer__header">
-          <div className="remediation-drawer__heading">
-            <button type="button" className="remediation-drawer__back-button" onClick={onClose} aria-label="返回修复列表">
-              <AppIcon name="arrowLeft" size={16} />
-              <span>返回</span>
-            </button>
-            <span className="remediation-drawer__kicker">记录明细</span>
-            <h4 className="remediation-drawer__title">{record.summary.title}</h4>
-            <p className="remediation-drawer__note">查看方案、执行步骤与修复时间线。</p>
-            <div className="status-row remediation-drawer__chips">
-              <StatusChip tone={getStatusTone(drawerStatus)}>{getStatusLabel(drawerStatus)}</StatusChip>
-              {drawerOverview.plan.priority ? <StatusChip tone="accent">{drawerOverview.plan.priority}</StatusChip> : null}
-              {drawerOverview.plan.confidence ? <StatusChip tone="info">{`置信度 ${formatPercent(drawerOverview.plan.confidence)}`}</StatusChip> : null}
-              {drawerOverview.plan_version ? <StatusChip tone="neutral">{`当前方案 v${drawerOverview.plan_version}`}</StatusChip> : null}
-            </div>
+      <aside className="remediation-sidepanel remediation-sidepanel--overlay" role="complementary" aria-label="修复详情侧栏" onClick={(event) => event.stopPropagation()}>
+        <div className="remediation-sidepanel__surface">
+        <header className="remediation-sidepanel__header">
+          <button type="button" className="remediation-sidepanel__back" onClick={onClose} aria-label="返回修复列表">
+            <AppIcon name="arrowLeft" size={14} />
+            <span>返回列表</span>
+          </button>
+          <div className="remediation-sidepanel__title-row">
+            <h3 className="remediation-sidepanel__title">{drawerTitle}</h3>
+            <span className="remediation-sidepanel-tag remediation-sidepanel-tag--severity">
+              <span className="remediation-sidepanel-tag__dot" aria-hidden="true" />
+              <span>{severityLabel}</span>
+            </span>
+            <span className={`remediation-sidepanel-tag remediation-sidepanel-tag--status remediation-sidepanel-tag--status-${getStatusTone(drawerStatus)}`}>
+              <AppIcon name="spark" size={12} />
+              <span>{getStatusLabel(drawerStatus)}</span>
+            </span>
           </div>
-        </div>
+          <p className="remediation-sidepanel__meta">
+            <span>{incidentLabel.startsWith("INC-") ? incidentLabel : `INC-${incidentLabel}`}</span>
+            <span aria-hidden="true">·</span>
+            <span>{executionSourceLabel}</span>
+          </p>
+        </header>
 
-        <div className="remediation-drawer__body">
-          <div className="remediation-record-table__subsection">
-            <div className="remediation-record-table__subsection-header">
-              <div>
-                <p className="remediation-record-table__subsection-title">方案信息</p>
-                <p className="remediation-record-table__subsection-copy">先看关键概览，再看根因、影响和方案修订记录。</p>
+        <div className="remediation-sidepanel__scroll">
+          <section className="remediation-panel-section">
+            <h4 className="remediation-panel-section__title">方案信息</h4>
+            <div className="remediation-panel-kv-grid remediation-panel-kv-grid--plan">
+              <div className="remediation-panel-kv">
+                <span className="remediation-panel-kv__label">受影响服务</span>
+                <p className="remediation-panel-kv__value">{affectedServicesSummary}</p>
+              </div>
+              <div className="remediation-panel-kv">
+                <span className="remediation-panel-kv__label">方案优先级</span>
+                <p className="remediation-panel-kv__value">{drawerOverview.plan.priority ?? "未记录"}</p>
+              </div>
+              <div className="remediation-panel-kv">
+                <span className="remediation-panel-kv__label">方案置信度</span>
+                <p className="remediation-panel-kv__value">
+                  {Number.isFinite(Number(drawerOverview.plan.confidence)) ? formatPercent(drawerOverview.plan.confidence) : "未记录"}
+                </p>
               </div>
             </div>
-
-            <div className="remediation-plan-overview">
-              <div className="remediation-plan-overview__facts">
-                <div className="remediation-plan-overview__fact">
-                  <span className="remediation-plan-overview__fact-icon">
-                    <AppIcon name="calendar" size={18} />
-                  </span>
-                  <div className="remediation-plan-overview__fact-body">
-                    <span className="remediation-plan-overview__fact-label">开始时间</span>
-                    <p className="remediation-plan-overview__fact-value">{drawerStartedAt ? formatDateTime(drawerStartedAt) : "尚未开始"}</p>
-                  </div>
-                </div>
-                <div className="remediation-plan-overview__fact">
-                  <span className="remediation-plan-overview__fact-icon">
-                    <AppIcon name="timeCircle" size={18} />
-                  </span>
-                  <div className="remediation-plan-overview__fact-body">
-                    <span className="remediation-plan-overview__fact-label">持续时长</span>
-                    <p className="remediation-plan-overview__fact-value">{formatDurationSeconds(record.summary.duration_seconds)}</p>
-                  </div>
-                </div>
-                <div className="remediation-plan-overview__fact">
-                  <span className="remediation-plan-overview__fact-icon">
-                    <AppIcon name="users3" size={18} />
-                  </span>
-                  <div className="remediation-plan-overview__fact-body">
-                    <span className="remediation-plan-overview__fact-label">审批人</span>
-                    <p className="remediation-plan-overview__fact-value">{drawerApprover ?? "未记录"}</p>
-                  </div>
-                </div>
-                <div className="remediation-plan-overview__fact">
-                  <span className="remediation-plan-overview__fact-icon">
-                    <AppIcon name="serverRack" size={18} />
-                  </span>
-                  <div className="remediation-plan-overview__fact-body">
-                    <span className="remediation-plan-overview__fact-label">受影响服务</span>
-                    <p className="remediation-plan-overview__fact-value">{affectedServicesSummary}</p>
-                  </div>
-                </div>
-              </div>
-
-              <div className="remediation-plan-overview__facts remediation-plan-overview__facts--detail">
-                <div className="remediation-plan-overview__fact remediation-plan-overview__fact--wide">
-                  <span className="remediation-plan-overview__fact-icon">
-                    <AppIcon name="document" size={18} />
-                  </span>
-                  <div className="remediation-plan-overview__fact-body">
-                    <span className="remediation-plan-overview__fact-label">方案摘要</span>
-                    <p className="remediation-plan-overview__fact-value">{drawerSummary || "未记录方案摘要"}</p>
-                  </div>
-                </div>
-                <div className="remediation-plan-overview__fact">
-                  <span className="remediation-plan-overview__fact-icon">
-                    <AppIcon name="helpSquare" size={18} />
-                  </span>
-                  <div className="remediation-plan-overview__fact-body">
-                    <span className="remediation-plan-overview__fact-label">根因定位</span>
-                    <p className="remediation-plan-overview__fact-value">{drawerRootCause}</p>
-                  </div>
-                </div>
-                <div className="remediation-plan-overview__fact">
-                  <span className="remediation-plan-overview__fact-icon">
-                    <AppIcon name="chart" size={18} />
-                  </span>
-                  <div className="remediation-plan-overview__fact-body">
-                    <span className="remediation-plan-overview__fact-label">风险影响</span>
-                    <p className="remediation-plan-overview__fact-value">{drawerImpact}</p>
-                  </div>
-                </div>
-                <div className="remediation-plan-overview__fact">
-                  <span className="remediation-plan-overview__fact-icon">
-                    <AppIcon name="timeCircle" size={18} />
-                  </span>
-                  <div className="remediation-plan-overview__fact-body">
-                    <span className="remediation-plan-overview__fact-label">最近更新</span>
-                    <p className="remediation-plan-overview__fact-value">{formatDateTime(record.summary.updated_at)}</p>
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            <div className="remediation-plan-overview__history">
-              {(drawerOverview.plan_history?.length ?? 0) === 0 ? (
-                <p className="data-list__copy">当前只有基础方案版本，尚未出现修订记录。</p>
-              ) : (
-                drawerOverview.plan_history?.map((item) => (
-                  <div className="remediation-plan-overview__fact remediation-plan-overview__fact--wide" key={`${item.plan_id}-${item.version}`}>
-                    <span className="remediation-plan-overview__fact-icon">
-                      <AppIcon name="edit" size={18} />
-                    </span>
-                    <div className="remediation-plan-overview__fact-body">
-                      <span className="remediation-plan-overview__fact-label">{`方案修订 v${item.version}`}</span>
-                      <p className="remediation-plan-overview__fact-value">{item.instruction || "未记录修订指令"}</p>
-                      <p className="remediation-plan-overview__fact-meta">{`修订时间：${item.revised_at ? formatDateTime(item.revised_at) : "未知"}`}</p>
-                    </div>
-                  </div>
-                ))
-              )}
-            </div>
-          </div>
-
-          <div className="remediation-record-table__subsection">
-            <div className="remediation-record-table__subsection-header">
-              <div>
-                <p className="remediation-record-table__subsection-title">执行信息</p>
-                <p className="remediation-record-table__subsection-copy">先看当前状态和步骤，再看推进进度与成功判定。</p>
-              </div>
-            </div>
-            <div className="remediation-plan-overview remediation-plan-overview--compact">
-              <div className="remediation-plan-overview__facts remediation-plan-overview__facts--execution">
-                <div className="remediation-plan-overview__fact">
-                  <span className="remediation-plan-overview__fact-icon">
-                    <AppIcon name="infoCircle" size={18} />
-                  </span>
-                  <div className="remediation-plan-overview__fact-body">
-                    <span className="remediation-plan-overview__fact-label">最新状态</span>
-                    <p className="remediation-plan-overview__fact-value">{getStatusLabel(drawerStatus)}</p>
-                  </div>
-                </div>
-                <div className="remediation-plan-overview__fact">
-                  <span className="remediation-plan-overview__fact-icon">
-                    <AppIcon name="layers" size={18} />
-                  </span>
-                  <div className="remediation-plan-overview__fact-body">
-                    <span className="remediation-plan-overview__fact-label">当前步骤</span>
-                    <p className="remediation-plan-overview__fact-value">{currentStepSummary}</p>
-                  </div>
-                </div>
-                <div className="remediation-plan-overview__fact">
-                  <span className="remediation-plan-overview__fact-icon">
-                    <AppIcon name="rocket" size={18} />
-                  </span>
-                  <div className="remediation-plan-overview__fact-body">
-                    <span className="remediation-plan-overview__fact-label">灰度进度</span>
-                    <p className="remediation-plan-overview__fact-value">{canaryProgressSummary}</p>
-                  </div>
-                </div>
-                <div className="remediation-plan-overview__fact">
-                  <span className="remediation-plan-overview__fact-icon">
-                    <AppIcon name="chart" size={18} />
-                  </span>
-                  <div className="remediation-plan-overview__fact-body">
-                    <span className="remediation-plan-overview__fact-label">全量进度</span>
-                    <p className="remediation-plan-overview__fact-value">{`${overallProgress}% · ${completedSteps} / ${totalSteps}`}</p>
-                  </div>
-                </div>
-              </div>
-              <div className="remediation-plan-overview__history remediation-plan-overview__history--execution">
-                <div className="remediation-plan-overview__fact remediation-plan-overview__fact--wide remediation-plan-overview__fact--stacked">
-                  <span className="remediation-plan-overview__fact-icon">
-                    <AppIcon name="chart" size={18} />
-                  </span>
-                  <div className="remediation-plan-overview__fact-body remediation-plan-overview__fact-body--wide">
-                    <span className="remediation-plan-overview__fact-label">当前推进</span>
-                    <p className="remediation-plan-overview__fact-value">
-                      {drawerOverview.plan.canary?.enabled
-                        ? `灰度进度 ${canaryProgress ?? 0}% ，已完成 ${completedBatches}/${totalBatches} 批次`
-                        : `当前未启用灰度，正在按全量步骤推进，整体进度 ${overallProgress}%`}
-                    </p>
-                    <p className="remediation-plan-overview__fact-meta">
-                      {drawerOverview.plan.canary?.enabled
-                        ? `观察窗口 ${drawerOverview.plan.canary.monitor_duration}s；已完成 ${completedSteps} / ${totalSteps} 个执行步骤。`
-                        : `当前已完成 ${completedSteps} / ${totalSteps} 个执行步骤，系统将按既定步骤继续执行。`}
-                    </p>
-                    <div className="progress-track remediation-progress-track remediation-progress-track--canary">
-                      <div className="progress-track__fill remediation-progress-track__fill remediation-progress-track__fill--canary" style={{ width: `${canaryProgress ?? overallProgress}%` }} />
-                    </div>
-                  </div>
-                </div>
-                {drawerOverview.plan.canary?.enabled ? (
-                  <div className="remediation-plan-overview__fact remediation-plan-overview__fact--wide remediation-plan-overview__fact--stacked">
-                    <span className="remediation-plan-overview__fact-icon">
-                      <AppIcon name="documentCheck" size={18} />
-                    </span>
-                    <div className="remediation-plan-overview__fact-body remediation-plan-overview__fact-body--wide">
-                      <span className="remediation-plan-overview__fact-label">成功判定</span>
-                      <div className="remediation-execution-criteria">
-                        {drawerOverview.plan.canary.success_criteria.map((item, index) => (
-                          <p className="remediation-execution-criteria__item" key={`${item.metric}-${index}`}>
-                            {`${item.metric} ${item.operator} ${String(item.value)}`}
-                          </p>
-                        ))}
-                      </div>
-                      <p className="remediation-plan-overview__fact-meta">满足以上条件后，灰度阶段即可视为通过。</p>
-                    </div>
-                  </div>
-                ) : (
-                  <div className="remediation-plan-overview__fact remediation-plan-overview__fact--wide remediation-plan-overview__fact--stacked">
-                    <span className="remediation-plan-overview__fact-icon">
-                      <AppIcon name="documentCheck" size={18} />
-                    </span>
-                    <div className="remediation-plan-overview__fact-body remediation-plan-overview__fact-body--wide">
-                      <span className="remediation-plan-overview__fact-label">成功判定</span>
-                      <p className="remediation-plan-overview__fact-value">当前方案未配置灰度校验条件，执行完成后将按整体结果统一确认。</p>
-                    </div>
-                  </div>
-                )}
-              </div>
-            </div>
-          </div>
-
-          <div className="remediation-record-table__subsection">
-            <div className="remediation-record-table__subsection-header">
-              <div>
-                <p className="remediation-record-table__subsection-title">执行步骤</p>
-                <p className="remediation-record-table__subsection-copy">逐步查看动作、验证方式和回滚能力。</p>
-              </div>
-            </div>
-            <div className="remediation-step-flow">
+            <div className="remediation-panel-summary">
+              <p className="remediation-panel-summary__text">
+                <strong>方案摘要:</strong>
+                {" "}
+                {drawerSummary || "未记录方案摘要"}
+              </p>
               {detailSteps.length > 0 ? (
-                <>
-                  <div className="remediation-step-flow__track" style={{ "--remediation-step-flow-done-width": `${stepFlowProgress}%` } as CSSProperties}>
-                    <span className="remediation-step-flow__rail remediation-step-flow__rail--base" />
-                    <span className="remediation-step-flow__rail remediation-step-flow__rail--done" />
-                    {detailSteps.map((step, index) => {
-                      const completedSteps = Number(drawerOverview.progress.completed_steps ?? 0);
-                      const totalSteps = Number(drawerOverview.progress.total_steps ?? detailSteps.length);
-                      const stepState = getStepState(index, completedSteps, totalSteps, drawerStatus);
-                      const isActive = activeStep?.step_id === step.step_id;
-                      const iconName = stepState === "completed" ? "checkmarkCircle" : stepState === "current" ? "timeCircle" : "infoCircle";
-
-                      return (
-                        <div key={step.step_id} className="remediation-step-flow__segment">
-                          <button
-                            type="button"
-                            className={`remediation-step-flow__step remediation-step-flow__step--${stepState}${isActive ? " remediation-step-flow__step--active" : ""}`}
-                            onClick={() => onSelectStep(drawerOverview.session_id, step.step_id)}
-                            aria-expanded={isActive}
-                            aria-label={`查看步骤 ${step.step_id} 详情`}
-                          >
-                            <span className={`remediation-step-flow__node remediation-step-flow__node--${stepState}`}>
-                              <AppIcon name={iconName} size={24} />
-                            </span>
-                            <span className={`remediation-step-flow__badge remediation-step-flow__badge--${stepState}`}>{`步骤 ${step.step_id}`}</span>
-                            <span className="remediation-step-flow__title">{step.description}</span>
-                            <span className="remediation-step-flow__meta">{`工具 / ${step.tool}`}</span>
-                            <span className="remediation-step-flow__meta remediation-step-flow__meta--secondary">{formatStepVerificationSummary(step)}</span>
-                            <span className="remediation-step-flow__action">
-                              <AppIcon name={isActive ? "up" : "down"} size={14} />
-                              <span>{isActive ? "收起详情" : "查看详情"}</span>
-                            </span>
-                          </button>
+                <div className="remediation-panel-summary__steps">
+                  <button
+                    type="button"
+                    className="remediation-panel-toggle"
+                    onClick={() => setPlanStepsExpanded((current) => !current)}
+                    aria-expanded={planStepsExpanded}
+                    aria-label={planStepsExpanded ? "收起步骤详情" : "展开步骤详情"}
+                  >
+                    <AppIcon name={planStepsExpanded ? "up" : "down"} size={14} />
+                    <span>{planStepsExpanded ? "收起步骤详情" : "展开步骤详情"}</span>
+                  </button>
+                  {planStepsExpanded ? (
+                    <div className="remediation-panel-steps">
+                      {detailSteps.map((step) => (
+                        <div key={step.step_id} className="remediation-panel-step">
+                          <p className="remediation-panel-step__title">{`步骤 ${step.step_id}`}</p>
+                          <p className="remediation-panel-step__desc">{step.description}</p>
+                          <p className="remediation-panel-step__meta">
+                            {`工具：${step.tool} · 验证：${formatStepVerificationSummary(step)} · 超时：${step.timeout}s`}
+                          </p>
                         </div>
-                      );
-                    })}
-                  </div>
-                  {activeStep ? (
-                    <div className="remediation-step-flow__detail">
-                      <div className="remediation-step-flow__detail-header">
-                        <div className="remediation-step-flow__detail-heading">
-                          <p className="remediation-step-flow__detail-title">{`步骤 ${activeStep.step_id} 详情`}</p>
-                          <p className="remediation-step-flow__detail-copy">{activeStep.description}</p>
-                        </div>
-                        <div className="status-row remediation-step-flow__detail-chips">
-                          <StatusChip tone={getStatusTone(drawerStatus)}>{getStatusLabel(drawerStatus)}</StatusChip>
-                          <StatusChip tone="neutral">{activeStep.tool}</StatusChip>
-                          <StatusChip tone="info">{getVerificationLabel(activeStep.verification.method)}</StatusChip>
-                          <StatusChip tone="neutral">{`超时 ${activeStep.timeout}s`}</StatusChip>
-                        </div>
-                      </div>
-                      <div className="remediation-record-table__detail-form remediation-step-flow__detail-form">
-                        <div className="remediation-record-table__detail-field">
-                          <p className="remediation-record-table__detail-label">步骤编号</p>
-                          <p className="remediation-record-table__detail-value">{activeStep.step_id}</p>
-                        </div>
-                        <div className="remediation-record-table__detail-field">
-                          <p className="remediation-record-table__detail-label">执行描述</p>
-                          <p className="remediation-record-table__detail-value">{activeStep.description}</p>
-                        </div>
-                        <div className="remediation-record-table__detail-field">
-                          <p className="remediation-record-table__detail-label">执行工具</p>
-                          <p className="remediation-record-table__detail-value">{activeStep.tool}</p>
-                        </div>
-                        <div className="remediation-record-table__detail-field remediation-record-table__detail-field--wide">
-                          <p className="remediation-record-table__detail-label">执行参数</p>
-                          <p className="remediation-record-table__detail-value remediation-code-block">{formatResult(activeStep.params)}</p>
-                        </div>
-                        {activeStep.command ? (
-                          <div className="remediation-record-table__detail-field remediation-record-table__detail-field--wide">
-                            <p className="remediation-record-table__detail-label">执行命令</p>
-                            <p className="remediation-record-table__detail-value remediation-code-block">
-                              <code>{activeStep.command}</code>
-                            </p>
-                          </div>
-                        ) : null}
-                        <div className="remediation-record-table__detail-field remediation-record-table__detail-field--wide">
-                          <p className="remediation-record-table__detail-label">验证方式</p>
-                          <p className="remediation-record-table__detail-value">{formatStepVerificationSummary(activeStep)}</p>
-                        </div>
-                        <div className="remediation-record-table__detail-field">
-                          <p className="remediation-record-table__detail-label">回滚策略</p>
-                          <p className="remediation-record-table__detail-value">{activeStep.rollback_tool || "未定义回滚动作"}</p>
-                        </div>
-                        <div className="remediation-record-table__detail-field">
-                          <p className="remediation-record-table__detail-label">超时时间</p>
-                          <p className="remediation-record-table__detail-value">{`${activeStep.timeout}s`}</p>
-                        </div>
-                        <div className="remediation-record-table__detail-field">
-                          <p className="remediation-record-table__detail-label">验证方法</p>
-                          <p className="remediation-record-table__detail-value">{getVerificationLabel(activeStep.verification.method)}</p>
-                        </div>
-                        <div className="remediation-record-table__detail-field">
-                          <p className="remediation-record-table__detail-label">验证查询</p>
-                          <p className="remediation-record-table__detail-value">{activeStep.verification.query ?? "无"}</p>
-                        </div>
-                        <div className="remediation-record-table__detail-field">
-                          <p className="remediation-record-table__detail-label">验证工具</p>
-                          <p className="remediation-record-table__detail-value">{activeStep.verification.tool ?? "无"}</p>
-                        </div>
-                        <div className="remediation-record-table__detail-field">
-                          <p className="remediation-record-table__detail-label">验证等待</p>
-                          <p className="remediation-record-table__detail-value">{typeof activeStep.verification.wait_seconds === "number" ? `${activeStep.verification.wait_seconds}s` : "无"}</p>
-                        </div>
-                      </div>
+                      ))}
                     </div>
                   ) : null}
-                </>
-              ) : (
-                <div className="mini-card remediation-empty-state remediation-empty-state--compact remediation-record-table__embedded-card">
-                  <p className="mini-card__title">暂无执行步骤</p>
-                  <p className="mini-card__copy">当前方案尚未包含可展开显示的步骤明细。</p>
                 </div>
-              )}
+              ) : null}
             </div>
-          </div>
+          </section>
 
-          <div className="remediation-record-table__subsection">
-            <div className="remediation-record-table__subsection-header">
-              <div>
-                <p className="remediation-record-table__subsection-title">基线与复查</p>
-                <p className="remediation-record-table__subsection-copy">对比修复前后的告警状态与 LLM 服务指标，确认是否真正恢复。</p>
+          <section className="remediation-panel-section">
+            <div className="remediation-panel-kv-grid remediation-panel-kv-grid--split">
+              <div className="remediation-panel-kv">
+                <span className="remediation-panel-kv__label">根因定位</span>
+                <p className="remediation-panel-kv__value">{drawerRootCause}</p>
+              </div>
+              <div className="remediation-panel-kv">
+                <span className="remediation-panel-kv__label">风险影响</span>
+                <p className="remediation-panel-kv__value">{drawerImpact}</p>
               </div>
             </div>
-            {baselineReview ? (
-              <div className="remediation-plan-overview remediation-plan-overview--compact">
-                <div className="remediation-plan-overview__facts remediation-plan-overview__facts--detail">
-                  <div className="remediation-plan-overview__fact">
-                    <span className="remediation-plan-overview__fact-icon">
-                      <AppIcon name="notification" size={18} />
-                    </span>
-                    <div className="remediation-plan-overview__fact-body">
-                      <span className="remediation-plan-overview__fact-label">修复前告警</span>
-                      <p className="remediation-plan-overview__fact-value">{preAlert ? `${preAlert.alert_name} · ${preAlert.status}` : "未采集"}</p>
-                      <p className="remediation-plan-overview__fact-meta">{preAlert ? `firing=${String(preAlert.is_firing)}` : "未记录修复前告警状态"}</p>
-                    </div>
-                  </div>
-                  <div className="remediation-plan-overview__fact">
-                    <span className="remediation-plan-overview__fact-icon">
-                      <AppIcon name="notification" size={18} />
-                    </span>
-                    <div className="remediation-plan-overview__fact-body">
-                      <span className="remediation-plan-overview__fact-label">修复后告警</span>
-                      <p className="remediation-plan-overview__fact-value">{postAlert ? `${postAlert.alert_name} · ${postAlert.status}` : "未采集"}</p>
-                      <p className="remediation-plan-overview__fact-meta">
-                        {alertReview ? (alertReview.cleared ? "告警已清除" : "告警未清除，需人工介入") : "未记录复查结论"}
+          </section>
+
+          <section className="remediation-panel-section remediation-panel-section--strategy">
+            <div className={`remediation-panel-strategy${strategyExpanded ? " is-expanded" : ""}`}>
+              <button
+                type="button"
+                className="remediation-panel-section__toggle remediation-panel-strategy__toggle"
+                onClick={() => setStrategyExpanded((current) => !current)}
+                aria-expanded={strategyExpanded}
+                aria-label={strategyExpanded ? "收起成功判定策略" : "展开成功判定策略"}
+              >
+                <span className="remediation-panel-section__title remediation-panel-section__title--with-icon">
+                  <AppIcon name={strategyExpanded ? "down" : "right"} size={14} />
+                  <span>成功判定策略</span>
+                </span>
+              </button>
+              {strategyExpanded ? (
+                <div className="remediation-panel-strategy__body">
+                  {drawerOverview.plan.canary?.enabled ? (
+                    <>
+                      <ul className="remediation-panel-strategy__list">
+                        {drawerOverview.plan.canary.success_criteria.map((item, index) => (
+                          <li key={`${item.metric}-${index}`} className="remediation-panel-strategy__item">
+                            {`${item.metric} ${item.operator} ${String(item.value)}`}
+                          </li>
+                        ))}
+                      </ul>
+                      <p className="remediation-panel-strategy__meta">
+                        {`灰度目标流量 ${formatPercent(drawerOverview.plan.canary.target_percentage)}，观察窗口 ${drawerOverview.plan.canary.monitor_duration}s。`}
                       </p>
-                    </div>
-                  </div>
-                  <div className="remediation-plan-overview__fact">
-                    <span className="remediation-plan-overview__fact-icon">
-                      <AppIcon name="chart" size={18} />
-                    </span>
-                    <div className="remediation-plan-overview__fact-body">
-                      <span className="remediation-plan-overview__fact-label">指标复查</span>
-                      <p className="remediation-plan-overview__fact-value">
-                        {baselineReview.metrics_improved === true ? "指标已改善" : baselineReview.metrics_improved === false ? "指标未达预期" : "未完成判断"}
-                      </p>
-                      <p className="remediation-plan-overview__fact-meta">{`共复查 ${metricReviews.length} 项指标`}</p>
-                    </div>
-                  </div>
-                  <div className="remediation-plan-overview__fact">
-                    <span className="remediation-plan-overview__fact-icon">
-                      <AppIcon name="documentCheck" size={18} />
-                    </span>
-                    <div className="remediation-plan-overview__fact-body">
-                      <span className="remediation-plan-overview__fact-label">最终结论</span>
-                      <p className="remediation-plan-overview__fact-value">
-                        {baselineReview.alert_cleared === true && baselineReview.metrics_improved === true ? "告警清除且指标恢复" : "仍需继续观察或人工介入"}
-                      </p>
-                    </div>
-                  </div>
-                </div>
-                <div className="remediation-plan-overview__history">
-                  {metricReviews.length > 0 ? (
-                    metricReviews.map((item) => (
-                      <div className="remediation-plan-overview__fact remediation-plan-overview__fact--wide" key={`${item.metric_key}-${item.query}`}>
-                        <span className="remediation-plan-overview__fact-icon">
-                          <AppIcon name="chart" size={18} />
-                        </span>
-                        <div className="remediation-plan-overview__fact-body">
-                          <span className="remediation-plan-overview__fact-label">{item.metric_key}</span>
-                          <p className="remediation-plan-overview__fact-value">{`${formatEvidenceValue(item.before_value)} -> ${formatEvidenceValue(item.after_value)}`}</p>
-                          <p className="remediation-plan-overview__fact-meta">
-                            {item.available ? (item.improved ? "已改善" : "未改善") : item.error || "指标暂不可用"}
-                          </p>
-                        </div>
-                      </div>
-                    ))
+                    </>
                   ) : (
-                    <p className="data-list__copy">当前没有可展示的前后指标对比。</p>
+                    observationResult ? (
+                      <>
+                        <ul className="remediation-panel-strategy__list">
+                          <li className="remediation-panel-strategy__item">{`策略口径：${policyLabel}`}</li>
+                          <li className="remediation-panel-strategy__item">{`alert_cleared：${alertCleared === null ? "未知" : (alertCleared ? "是" : "否")}`}</li>
+                          <li className="remediation-panel-strategy__item">
+                            {`metrics_improved：${
+                              metricsImproved === null
+                                ? (alertOnlyPolicy ? "未纳入（策略降级）" : "未知")
+                                : (metricsImproved ? "是" : "否")
+                            }`}
+                          </li>
+                          <li className="remediation-panel-strategy__item">{`观察结论：${observationPassed ? "通过" : "未通过"}`}</li>
+                        </ul>
+                        <p className="remediation-panel-strategy__meta">当前方案未启用灰度，按观察结果判定是否成功。</p>
+                      </>
+                    ) : (
+                      <p className="remediation-panel-strategy__meta">当前方案未启用灰度，等待观察结果。</p>
+                    )
                   )}
                 </div>
-              </div>
-            ) : (
-              <div className="mini-card remediation-empty-state remediation-empty-state--compact remediation-record-table__embedded-card">
-                <p className="mini-card__title">尚未采集基线与复查数据</p>
-                <p className="mini-card__copy">当前会话还没有完整的修复前后证据，执行修复后会在这里展示对比结果。</p>
-              </div>
-            )}
-          </div>
+              ) : null}
+            </div>
+          </section>
 
-          <div className="remediation-record-table__subsection">
-            <div className="remediation-record-table__subsection-header">
-              <div>
-                <p className="remediation-record-table__subsection-title">修复时间线</p>
-                <p className="remediation-record-table__subsection-copy">按时间查看审批、执行、观察和结论。</p>
+          {(drawerOverview.plan_history?.length ?? 0) > 0 ? (
+            <section className="remediation-panel-section remediation-panel-section--revisions">
+              <div className="remediation-revision-list">
+                {drawerOverview.plan_history?.map((item) => (
+                  <div className="remediation-revision-item" key={`${item.plan_id}-${item.version}`}>
+                    <span className="remediation-revision-item__dot" aria-hidden="true" />
+                    <div className="remediation-revision-item__body">
+                      <p className="remediation-revision-item__title">{`方案修订 v${item.version}`}</p>
+                      <p className="remediation-revision-item__copy">{item.instruction || "未记录修订指令"}</p>
+                    </div>
+                    <time className="remediation-revision-item__time">{item.revised_at ? formatDateTime(item.revised_at) : "未知"}</time>
+                  </div>
+                ))}
+              </div>
+            </section>
+          ) : null}
+
+          <section className="remediation-panel-section">
+            <h4 className="remediation-panel-section__title">执行过程</h4>
+            <div className="remediation-panel-kv-grid remediation-panel-kv-grid--execution">
+              <div className="remediation-panel-kv">
+                <span className="remediation-panel-kv__label">开始时间</span>
+                <p className="remediation-panel-kv__value">{drawerStartedAt ? formatDateTime(drawerStartedAt) : "尚未开始"}</p>
+              </div>
+              <div className="remediation-panel-kv">
+                <span className="remediation-panel-kv__label">持续时长</span>
+                <p className="remediation-panel-kv__value">{formatDurationSeconds(summary.duration_seconds)}</p>
+              </div>
+              <div className="remediation-panel-kv">
+                <span className="remediation-panel-kv__label">审批人</span>
+                <p className="remediation-panel-kv__value">{drawerApprover ?? "未记录"}</p>
+              </div>
+              <div className="remediation-panel-kv">
+                <span className="remediation-panel-kv__label">最近更新</span>
+                <p className="remediation-panel-kv__value">{formatDateTime(summary.updated_at)}</p>
               </div>
             </div>
-            <RemediationTimeline events={drawerEvents} sessionId={drawerOverview.session_id} />
-          </div>
+            <div className="remediation-panel-progress">
+              <div className="remediation-panel-progress__head">
+                <span className="remediation-panel-progress__title">{`当前推进  已完成 ${displayCompletedSteps} / ${displayTotalSteps} 步`}</span>
+                <span className="remediation-panel-progress__percent">{`总体 ${displayOverallProgress}%`}</span>
+              </div>
+              <div className="progress-track remediation-progress-track remediation-progress-track--thin">
+                <div
+                  className="progress-track__fill remediation-progress-track__fill remediation-progress-track__fill--neutral"
+                  style={{ width: `${displayCanaryProgress ?? displayOverallProgress}%` }}
+                />
+              </div>
+              <p className="remediation-panel-progress__meta">
+                {drawerOverview.plan.canary?.enabled
+                  ? `灰度 ${displayCanaryProgress ?? 0}%（目标 ${formatPercent(drawerOverview.plan.canary.target_percentage)}，观察窗口 ${drawerOverview.plan.canary.monitor_duration}s）`
+                  : "未启用灰度，按全量策略执行。"}
+              </p>
+            </div>
+          </section>
+
+          <section className="remediation-panel-section remediation-panel-section--timeline">
+            <h4 className="remediation-panel-section__title">修复事件</h4>
+            <RemediationTimeline
+              events={drawerEvents}
+              sessionId={drawerOverview.session_id}
+              autoPlay={shouldAutoPlayExecution && !hasLiveEventStream}
+              onPlaybackChange={setTimelinePlayback}
+            />
+          </section>
+        </div>
         </div>
       </aside>
     </div>
   );
 }
-
-
-
-
-
 
 
 

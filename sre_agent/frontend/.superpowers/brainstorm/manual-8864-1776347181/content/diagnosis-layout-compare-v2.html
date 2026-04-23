@@ -1,0 +1,335 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>&#x8BCA;&#x65AD;&#x4EA4;&#x4E92;&#x5BF9;&#x6BD4;</title>
+  <style>
+    :root {
+      --bg: #f3f6fb;
+      --panel: #ffffff;
+      --border: #d7dfeb;
+      --border-strong: #8ea6c1;
+      --text: #17202b;
+      --muted: #5b6b7d;
+      --accent: #2f5b88;
+      --accent-soft: #e8f0f8;
+      --good: #dff2e5;
+      --bad: #f8e7e3;
+      --shadow: 0 18px 50px rgba(21, 35, 52, 0.08);
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+      background: linear-gradient(180deg, #eef3f9 0%, #f7f9fc 100%);
+      color: var(--text);
+    }
+    .page {
+      max-width: 1400px;
+      margin: 0 auto;
+      padding: 28px;
+    }
+    h1 {
+      margin: 0 0 10px;
+      font-size: 32px;
+      line-height: 1.15;
+    }
+    .subtitle {
+      margin: 0 0 24px;
+      color: var(--muted);
+      font-size: 16px;
+      line-height: 1.6;
+    }
+    .compare {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 22px;
+      align-items: start;
+    }
+    .option {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 24px;
+      overflow: hidden;
+      box-shadow: var(--shadow);
+      cursor: pointer;
+      transition: transform .18s ease, box-shadow .18s ease, border-color .18s ease;
+    }
+    .option:hover {
+      transform: translateY(-2px);
+      border-color: var(--border-strong);
+      box-shadow: 0 22px 60px rgba(21, 35, 52, 0.12);
+    }
+    .option.selected {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px rgba(47, 91, 136, 0.12), var(--shadow);
+    }
+    .head {
+      padding: 20px 22px 12px;
+    }
+    .eyebrow {
+      display: inline-flex;
+      padding: 6px 10px;
+      border-radius: 999px;
+      background: var(--accent-soft);
+      color: var(--accent);
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: .04em;
+      text-transform: uppercase;
+    }
+    h2 {
+      margin: 14px 0 8px;
+      font-size: 24px;
+    }
+    .head p {
+      margin: 0;
+      color: var(--muted);
+      line-height: 1.7;
+    }
+    .mockup {
+      margin: 0 22px 18px;
+      border: 1px solid var(--border);
+      border-radius: 18px;
+      background: #fbfcfe;
+      overflow: hidden;
+    }
+    .mockup-title {
+      padding: 12px 16px;
+      border-bottom: 1px solid var(--border);
+      background: #f5f8fc;
+      font-size: 13px;
+      font-weight: 700;
+      color: #42556b;
+    }
+    .mockup-body {
+      padding: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+    .pill-row {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      padding: 5px 10px;
+      border-radius: 999px;
+      background: #edf3fa;
+      border: 1px solid #d7e2ef;
+      font-size: 12px;
+      color: #3f556e;
+    }
+    .bubble, .event, .report {
+      border-radius: 14px;
+      background: #fff;
+      border: 1px solid var(--border);
+      padding: 13px 14px;
+      line-height: 1.55;
+    }
+    .report {
+      border: 2px solid var(--border-strong);
+      box-shadow: inset 0 0 0 1px rgba(142, 166, 193, 0.15);
+    }
+    .status-layout {
+      display: grid;
+      grid-template-columns: 1.4fr 1fr;
+      gap: 12px;
+    }
+    .status-card, .stage-card, .side-card {
+      border-radius: 14px;
+      background: #fff;
+      border: 1px solid var(--border);
+      padding: 14px;
+    }
+    .status-card {
+      border: 2px solid #52759a;
+    }
+    .status-top {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+    }
+    .stage-list {
+      margin: 10px 0 0 18px;
+      padding: 0;
+      color: #30465f;
+      line-height: 1.8;
+    }
+    .meta-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+    }
+    .analysis {
+      padding: 0 22px 22px;
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+    }
+    .pros, .cons {
+      border-radius: 16px;
+      padding: 14px 16px;
+    }
+    .pros {
+      background: var(--good);
+    }
+    .cons {
+      background: var(--bad);
+    }
+    h3 {
+      margin: 0 0 10px;
+      font-size: 16px;
+    }
+    ul {
+      margin: 0;
+      padding-left: 18px;
+      line-height: 1.75;
+    }
+    .recommend {
+      margin-top: 24px;
+      padding: 18px 20px;
+      border-radius: 18px;
+      background: #ffffffcc;
+      border: 1px solid var(--border);
+      box-shadow: var(--shadow);
+    }
+    .recommend strong {
+      color: var(--accent);
+    }
+    @media (max-width: 1100px) {
+      .compare { grid-template-columns: 1fr; }
+    }
+    @media (max-width: 720px) {
+      .page { padding: 18px; }
+      .status-layout, .meta-grid, .analysis { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <h1>&#x8BCA;&#x65AD;&#x4FEE;&#x590D;&#x5DE5;&#x4F5C;&#x53F0;&#x5E94;&#x8BE5;&#x600E;&#x4E48;&#x5206;&#x5C42;&#xFF1F;</h1>
+    <p class="subtitle">&#x5BF9;&#x6BD4;&#x4F60;&#x5F53;&#x524D;&#x7684;&#x201C;&#x7EAF;&#x4FE1;&#x606F;&#x6D41;&#x201D;&#x65B9;&#x6848;&#x548C;&#x4E00;&#x4E2A;&#x201C;&#x72B6;&#x6001;&#x5C42; + &#x4FE1;&#x606F;&#x6D41;&#x5C42;&#x201D;&#x7684;&#x63A8;&#x8350;&#x65B9;&#x6848;&#x3002;&#x70B9;&#x51FB;&#x4EFB;&#x610F;&#x5361;&#x7247;&#x53EF;&#x4EE5;&#x8BB0;&#x5F55;&#x504F;&#x597D;&#x3002;</p>
+
+    <div class="compare">
+      <section class="option" data-choice="feed-centric" onclick="document.querySelectorAll('.option').forEach(el=>el.classList.remove('selected'));this.classList.add('selected');">
+        <div class="head">
+          <span class="eyebrow">Option A</span>
+          <h2>&#x7EAF;&#x4FE1;&#x606F;&#x6D41;&#x4E3B;&#x5BFC;</h2>
+          <p>&#x6839;&#x56E0;&#x5361;&#x7247;&#x4F5C;&#x4E3A;&#x65F6;&#x95F4;&#x7EBF;&#x4E2D;&#x7684;&#x4E00;&#x4E2A;&#x8282;&#x70B9;&#x51FA;&#x73B0;&#xFF0C;&#x540E;&#x7EED;&#x72B6;&#x6001;&#x53D8;&#x5316;&#x7EE7;&#x7EED;&#x901A;&#x8FC7;&#x65B0;&#x7684;&#x6D88;&#x606F;&#x6216;&#x5361;&#x7247;&#x5411;&#x4E0B;&#x8FFD;&#x52A0;&#x3002;</p>
+        </div>
+        <div class="mockup">
+          <div class="mockup-title">&#x5F53;&#x524D;&#x7ED3;&#x6784;</div>
+          <div class="mockup-body">
+            <div class="pill-row">
+              <span class="pill">&#x4F1A;&#x8BDD;&#x72B6;&#x6001;</span>
+              <span class="pill">&#x4E25;&#x91CD;&#x7EA7;&#x522B;</span>
+              <span class="pill">&#x544A;&#x8B66;&#x5BF9;&#x8C61;</span>
+            </div>
+            <div class="bubble">&#x601D;&#x8003;&#x5757;&#xFF1A;&#x6B63;&#x5728;&#x6536;&#x655B;&#x8BCA;&#x65AD;&#x8DEF;&#x5F84;</div>
+            <div class="bubble">&#x5DE5;&#x5177;&#x8C03;&#x7528;&#xFF1A;query_metrics</div>
+            <div class="report">
+              <strong>&#x6839;&#x56E0;&#x5361;&#x7247;</strong>
+              <div style="margin-top:8px;">GPU contention &#x00B7; &#x786E;&#x8BA4;&#x5EA6; 0.91 &#x00B7; &#x7B49;&#x5F85;&#x5BA1;&#x6279;</div>
+            </div>
+            <div class="event">&#x7CFB;&#x7EDF;&#x4E8B;&#x4EF6;&#xFF1A;canary started</div>
+            <div class="event">&#x7CFB;&#x7EDF;&#x4E8B;&#x4EF6;&#xFF1A;validation passed</div>
+          </div>
+        </div>
+        <div class="analysis">
+          <div class="pros">
+            <h3>&#x5408;&#x9002;&#x7684;&#x5730;&#x65B9;</h3>
+            <ul>
+              <li>&#x975E;&#x5E38;&#x9002;&#x5408;&#x5C55;&#x793A; agent &#x63A8;&#x7406;&#x8FC7;&#x7A0B;&#xFF0C;&#x6545;&#x4E8B;&#x611F;&#x5F88;&#x5F3A;</li>
+              <li>&#x5BF9;&#x9996;&#x6B21;&#x8BCA;&#x65AD;&#x548C; demo &#x6F14;&#x793A;&#x975E;&#x5E38;&#x81EA;&#x7136;</li>
+              <li>&#x7528;&#x6237;&#x53EF;&#x4EE5;&#x987A;&#x5E8F;&#x9605;&#x8BFB;&#x201C;&#x53D1;&#x751F;&#x4E86;&#x4EC0;&#x4E48;&#x201D;</li>
+            </ul>
+          </div>
+          <div class="cons">
+            <h3>&#x4E0D;&#x5408;&#x9002;&#x7684;&#x5730;&#x65B9;</h3>
+            <ul>
+              <li>&#x201C;&#x5F53;&#x524D;&#x7ED3;&#x8BBA;&#x201D;&#x5F88;&#x5BB9;&#x6613;&#x88AB;&#x57CB;&#x8FDB;&#x5386;&#x53F2;&#x6D41;&#x91CC;</li>
+              <li>&#x6839;&#x56E0;&#x662F;&#x4E00;&#x4E2A;&#x6301;&#x7EED;&#x66F4;&#x65B0;&#x7684;&#x5BF9;&#x8C61;&#xFF0C;&#x5374;&#x88AB;&#x6E32;&#x67D3;&#x6210;&#x4E00;&#x6B21;&#x6027;&#x5361;&#x7247;</li>
+              <li>&#x6267;&#x884C;&#x63A8;&#x8FDB;&#x540E;&#xFF0C;&#x7528;&#x6237;&#x96BE;&#x4EE5;&#x5FEB;&#x901F;&#x56DE;&#x7B54;&#x201C;&#x73B0;&#x5728;&#x5230;&#x54EA;&#x4E00;&#x6B65;&#x4E86;&#x201D;</li>
+            </ul>
+          </div>
+        </div>
+      </section>
+
+      <section class="option" data-choice="hybrid-status-feed" onclick="document.querySelectorAll('.option').forEach(el=>el.classList.remove('selected'));this.classList.add('selected');">
+        <div class="head">
+          <span class="eyebrow">Option B</span>
+          <h2>&#x72B6;&#x6001;&#x5C42; + &#x4FE1;&#x606F;&#x6D41;&#x5C42;</h2>
+          <p>&#x628A;&#x201C;&#x5F53;&#x524D;&#x8BCA;&#x65AD;&#x5BF9;&#x8C61;&#x201D;&#x56FA;&#x5B9A;&#x5728;&#x9875;&#x9762;&#x4E0A;&#x65B9;&#xFF0C;&#x4FE1;&#x606F;&#x6D41;&#x4ECD;&#x7136;&#x4FDD;&#x7559;&#xFF0C;&#x4F46;&#x9000;&#x56DE;&#x5230;&#x201C;&#x8BC1;&#x636E;&#x4E0E;&#x8FC7;&#x7A0B;&#x8BB0;&#x5F55;&#x201D;&#x7684;&#x89D2;&#x8272;&#x3002;</p>
+        </div>
+        <div class="mockup">
+          <div class="mockup-title">&#x63A8;&#x8350;&#x7ED3;&#x6784;</div>
+          <div class="mockup-body">
+            <div class="status-layout">
+              <div class="status-card">
+                <div class="status-top">
+                  <strong>&#x5F53;&#x524D;&#x8BCA;&#x65AD;&#x7ED3;&#x8BBA;</strong>
+                  <span class="pill">&#x9A8C;&#x8BC1;&#x4E2D;</span>
+                </div>
+                <div style="margin-top:10px;line-height:1.65;">GPU contention &#x6B63;&#x5728;&#x88AB; canary &#x9A8C;&#x8BC1;</div>
+                <div class="pill-row" style="margin-top:10px;">
+                  <span class="pill">&#x786E;&#x8BA4;&#x5EA6; 0.91</span>
+                  <span class="pill">&#x7248;&#x672C; v3</span>
+                  <span class="pill">&#x6700;&#x540E;&#x66F4;&#x65B0; 13:42</span>
+                </div>
+              </div>
+              <div class="stage-card">
+                <strong>&#x5F53;&#x524D;&#x9636;&#x6BB5;</strong>
+                <ol class="stage-list">
+                  <li>&#x8BCA;&#x65AD;&#x6536;&#x655B;</li>
+                  <li><strong>&#x4FEE;&#x590D;&#x9A8C;&#x8BC1;</strong></li>
+                  <li>&#x4F1A;&#x8BDD;&#x5173;&#x95ED;</li>
+                </ol>
+              </div>
+            </div>
+            <div class="meta-grid">
+              <div class="side-card">
+                <strong>&#x5019;&#x9009;&#x6839;&#x56E0;&#x53D8;&#x5316;</strong>
+                <div style="margin-top:10px;line-height:1.8;">A. GPU contention &#x2191;<br/>B. RDMA jitter &#x00D7;<br/>C. traffic burst &#x89C2;&#x5BDF;&#x4E2D;</div>
+              </div>
+              <div class="side-card">
+                <strong>&#x6267;&#x884C;&#x6001;</strong>
+                <div style="margin-top:10px;line-height:1.8;">canary 10% &#x5DF2;&#x5F00;&#x59CB;<br/>&#x89C2;&#x6D4B;&#x7A97;&#x53E3;&#x5269;&#x4F59; 4m<br/>&#x6700;&#x8FD1;&#x6307;&#x6807;&#xFF1A;p95 &#x4E0B;&#x964D; 21%</div>
+              </div>
+            </div>
+            <div class="event">&#x4E0B;&#x9762;&#x7684;&#x4FE1;&#x606F;&#x6D41;&#x53EA;&#x8BB0;&#x5F55;&#x8BC1;&#x636E;&#x3001;&#x601D;&#x8003;&#x3001;&#x5DE5;&#x5177;&#x8C03;&#x7528;&#x548C;&#x7CFB;&#x7EDF;&#x4E8B;&#x4EF6;</div>
+          </div>
+        </div>
+        <div class="analysis">
+          <div class="pros">
+            <h3>&#x5408;&#x9002;&#x7684;&#x5730;&#x65B9;</h3>
+            <ul>
+              <li>&#x628A;&#x201C;&#x5F53;&#x524D;&#x72B6;&#x6001;&#x201D;&#x4ECE;&#x5386;&#x53F2;&#x6D41;&#x91CC;&#x5255;&#x79BB;&#x51FA;&#x6765;&#xFF0C;&#x66F4;&#x4FBF;&#x4E8E;&#x626B;&#x8BFB;</li>
+              <li>&#x6839;&#x56E0;&#x53EF;&#x4EE5;&#x88AB;&#x5F53;&#x6210;&#x4E00;&#x4E2A;&#x6301;&#x7EED;&#x6F14;&#x5316;&#x7684;&#x5BF9;&#x8C61;&#x6765;&#x66F4;&#x65B0;</li>
+              <li>&#x7528;&#x6237;&#x540C;&#x65F6;&#x62E5;&#x6709;&#x201C;&#x5F53;&#x524D;&#x9762;&#x677F;&#x201D;&#x548C;&#x201C;&#x8FC7;&#x7A0B;&#x8BC1;&#x636E;&#x201D;&#x4E24;&#x79CD;&#x89C6;&#x89D2;</li>
+            </ul>
+          </div>
+          <div class="cons">
+            <h3>&#x4EE3;&#x4EF7;</h3>
+            <ul>
+              <li>&#x5B9E;&#x73B0;&#x590D;&#x6742;&#x5EA6;&#x6BD4;&#x7EAF;&#x65F6;&#x95F4;&#x7EBF;&#x66F4;&#x9AD8;</li>
+              <li>&#x9700;&#x8981;&#x5B9A;&#x4E49;&#x4EC0;&#x4E48;&#x8FDB;&#x5165;&#x72B6;&#x6001;&#x5C42;&#xFF0C;&#x4EC0;&#x4E48;&#x7559;&#x5728;&#x4FE1;&#x606F;&#x6D41;&#x91CC;</li>
+              <li>&#x5982;&#x679C;&#x72B6;&#x6001;&#x5C42;&#x8FC7;&#x5927;&#xFF0C;&#x53CD;&#x800C;&#x4F1A;&#x7A00;&#x91CA; agent &#x8FC7;&#x7A0B;&#x611F;</li>
+            </ul>
+          </div>
+        </div>
+      </section>
+    </div>
+
+    <div class="recommend">
+      <strong>&#x6211;&#x5F53;&#x524D;&#x7684;&#x63A8;&#x8350;&#xFF1A;</strong>
+      &#x5927;&#x65B9;&#x5411;&#x63A8;&#x8350; Option B&#x3002;&#x4FDD;&#x7559;&#x4FE1;&#x606F;&#x6D41;&#xFF0C;&#x4F46;&#x53EA;&#x8BA9;&#x5B83;&#x627F;&#x62C5;&#x201C;&#x8BC1;&#x636E;&#x4E0E;&#x8FC7;&#x7A0B;&#x201D;&#x7684;&#x804C;&#x8D23;&#xFF1B;&#x628A;&#x201C;&#x5F53;&#x524D;&#x8BCA;&#x65AD;&#x5BF9;&#x8C61;&#x201D;&#x548C;&#x201C;&#x5F53;&#x524D;&#x6267;&#x884C;&#x72B6;&#x6001;&#x201D;&#x63D0;&#x5347;&#x4E3A;&#x56FA;&#x5B9A;&#x53EF;&#x66F4;&#x65B0;&#x7684;&#x4E0A;&#x5C42;&#x533A;&#x57DF;&#x3002;
+    </div>
+  </div>
+</body>
+</html>

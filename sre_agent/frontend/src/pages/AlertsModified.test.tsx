@@ -60,6 +60,7 @@ const summaries: DiagnosisSessionSummary[] = [
     severity: "critical",
     alert_name: "VLLM 延迟过高",
     fingerprint: "fp-001",
+    incident_key: "fpst:fp-001|2026-03-18T12:00:00Z",
     duration_seconds: 120,
     outcome: null,
     affected_services: [],
@@ -74,6 +75,7 @@ const summaries: DiagnosisSessionSummary[] = [
     severity: "warning",
     alert_name: "GPU 温度偏高",
     fingerprint: "fp-002",
+    incident_key: "fpst:fp-002|2026-03-18T11:57:00Z",
     duration_seconds: 98,
     outcome: "proposed_fix_ready",
     affected_services: [],
@@ -188,6 +190,7 @@ describe("AlertsModifiedPage", () => {
     expect(screen.getByText("尚未生成诊断结论")).toBeInTheDocument();
     expect(screen.getByText("待诊断")).toBeInTheDocument();
     expect(screen.getByText("告警工作项")).toBeInTheDocument();
+    expect(screen.getByText("incident_key fpst:fp-001|2026-03-18T12:00:00Z")).toBeInTheDocument();
+    expect(screen.queryByText(/event_id/i)).not.toBeInTheDocument();
   });
 });
-

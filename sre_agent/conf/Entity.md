@@ -2,6 +2,8 @@
 
 > 自动生成自 `conf/live_inventory.lab.yaml`，更新日期：2026-04-15
 
+后续需要将明文密码改为密钥仓库
+
 ---
 
 ## 1. GPU 服务器
@@ -25,9 +27,9 @@
 
 | 名称 | 角色 | SSH IP | SSH 端口 | SSH 用户 | SSH 密码 | BMC IP | BMC 用户 | BMC 密码 |
 |------|------|--------|---------|---------|---------|--------|---------|---------|
-| wj-lab-stor-01 | storage | 10.11.4.20 | 22 | yuyonghao | Yuyonghao@123 | 10.11.8.20 | admin | Admin@9000 |
-| wj-lab-stor-02 | storage | 10.11.4.21 | 22 | yuyonghao | Yuyonghao@123 | 10.11.8.21 | admin | Admin@9000 |
-| wj-lab-stor-03 | storage | 10.11.4.22 | 22 | yuyonghao | Yuyonghao@123 | 10.11.8.22 | admin | Admin@9000 |
+| wj-lab-stor-01 | storage | 10.11.4.20 | 22 | yuyonghao | a | 10.11.8.20 | admin | Admin@9000 |
+| wj-lab-stor-02 | storage | 10.11.4.21 | 22 | yuyonghao | a | 10.11.8.21 | admin | Admin@9000 |
+| wj-lab-stor-03 | storage | 10.11.4.22 | 22 | yuyonghao | a | 10.11.8.22 | admin | Admin@9000 |
 
 | 名称 | 型号 | 管理IP | 端口 | 用户名 | 密码 | 说明 |
 |------|------|--------|------|--------|------|------|

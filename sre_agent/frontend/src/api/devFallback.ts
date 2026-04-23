@@ -1,6 +1,7 @@
 import {
   alertClusters,
   alerts,
+  diagnosisHistorySessions,
   knowledgeBaseDetails,
   knowledgeBases,
   knowledgeDocuments,
@@ -13,6 +14,7 @@ import {
 import type {
   Alert,
   AlertCluster,
+  DiagnosisSessionSummary,
   KnowledgeBaseDetail,
   KnowledgeBaseSummary,
   KnowledgeDocument,
@@ -55,6 +57,10 @@ export function getAlertsFallback(): { alerts: Alert[]; clusters: AlertCluster[]
 
 export function getRemediationOverviewFallback(): RemediationOverview {
   return remediationOverview;
+}
+
+export function getDiagnosisHistorySessionsFallback(): DiagnosisSessionSummary[] {
+  return diagnosisHistorySessions;
 }
 
 export function getKnowledgeBasesFallback(): KnowledgeBaseSummary[] {

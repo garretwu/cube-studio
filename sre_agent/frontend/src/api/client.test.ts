@@ -1,4 +1,4 @@
-﻿import { http, HttpResponse } from "msw";
+﻿import { delay, http, HttpResponse } from "msw";
 import { describe, expect, it } from "vitest";
 
 import { apiClient, streamDiagnosis } from "./client";
@@ -417,6 +417,50 @@ describe("apiClient.getTopology", () => {
     expect(result.steps_completed).toBe(2);
   });
 
+  it("uses extended timeout for remediation approval requests", async () => {
+    server.use(
+      http.post("/api/remediate/:sessionId/approve", async () => {
+        await delay(11000);
+        return HttpResponse.json({
+          success: true,
+          data: {
+            plan_id: "plan-approve-timeout",
+            success: true,
+            steps_completed: 1,
+            steps_total: 1,
+            duration_seconds: 11,
+            error: null,
+          },
+          error: null,
+          trace_id: "trace-approve-timeout",
+          timestamp: "2026-03-26T00:00:11Z",
+        });
+      }),
+    );
+
+    const result = await apiClient.approveRemediation("sess-approve-timeout", true, "tester");
+    expect(result.success).toBe(true);
+    expect(result.duration_seconds).toBe(11);
+  }, 15000);
+
+  it("keeps non-approval API timeout policy unchanged", async () => {
+    server.use(
+      http.get("/api/sessions/:sessionId/events", async () => {
+        await delay(11000);
+        return HttpResponse.json({
+          success: true,
+          data: [],
+          error: null,
+          trace_id: "trace-events-timeout-policy",
+          timestamp: "2026-03-26T00:00:11Z",
+        });
+      }),
+    );
+
+    const events = await apiClient.getSessionEvents("sess-timeout-policy");
+    expect(events).toEqual([]);
+  }, 15000);
+
   it("returns session_id for duplicate handle response from error.details", async () => {
     server.use(
       http.post("/api/handle", async () =>
@@ -704,6 +748,113 @@ describe("apiClient.getTopology", () => {
 
     await expect(apiClient.getDiagnosisHistorySessions()).rejects.toThrow("Request failed with status 500.");
   });
+
+  it("derives canary and full rollout progress from remediation timeline events", async () => {
+    server.use(
+      http.get("/api/sessions/sess-rollout", async () =>
+        HttpResponse.json({
+          session_id: "sess-rollout",
+          alert: {
+            alert_name: "VLLMInterTokenLatencyP95High",
+            severity: "critical",
+            labels: {},
+            annotations: {},
+            starts_at: "2026-03-26T00:00:00Z",
+            fingerprint: "fp-rollout",
+            status: "firing",
+            source: "alertmanager",
+          },
+          status: "remediating",
+          duration_seconds: 120,
+          diagnosis_result: {
+            root_cause: "GPU contention",
+            root_cause_layer: "service",
+            root_cause_entities: ["svc-vllm"],
+            confidence: 0.93,
+            hypotheses: [],
+            impact_summary: "latency spike",
+            affected_services: ["vllm"],
+            triage_priority: "P1",
+            diagnosis_certainty: "confirmed",
+            recommended_fix: {
+              plan_id: "plan-rollout-v1",
+              root_cause: "GPU contention",
+              description: "Drain canary traffic before rolling out globally.",
+              steps: [
+                {
+                  step_id: 1,
+                  description: "Drain canary slice",
+                  tool: "traffic_shift",
+                  params: { percentage: 0.1 },
+                  rollback_tool: "traffic_restore",
+                  verification: { method: "wait", wait_seconds: 30 },
+                  timeout: 60,
+                },
+                {
+                  step_id: 2,
+                  description: "Observe metrics",
+                  tool: "metrics_query",
+                  params: { query: "vllm_p95_ms" },
+                  rollback_tool: null,
+                  verification: { method: "promql", query: "vllm_p95_ms < 300" },
+                  timeout: 120,
+                },
+              ],
+              canary: {
+                enabled: true,
+                target_percentage: 0.1,
+                monitor_duration: 120,
+                success_criteria: [{ metric: "vllm_p95_ms", operator: "<", value: 300 }],
+              },
+              estimated_impact: "low",
+              confidence: 0.93,
+              priority: "P1",
+            },
+          },
+        }),
+      ),
+      http.get("/api/sessions/sess-rollout/events", async () =>
+        HttpResponse.json([
+          {
+            schema_version: "1.0",
+            type: "remediation_progress",
+            session_id: "sess-rollout",
+            timestamp: "2026-03-26T00:00:01Z",
+            data: { stage: "canary_started", progress: 10 },
+          },
+          {
+            schema_version: "1.0",
+            type: "remediation_progress",
+            session_id: "sess-rollout",
+            timestamp: "2026-03-26T00:00:02Z",
+            data: { stage: "canary_succeeded", progress: 100 },
+          },
+          {
+            schema_version: "1.0",
+            type: "remediation_progress",
+            session_id: "sess-rollout",
+            timestamp: "2026-03-26T00:00:03Z",
+            data: { stage: "full_rollout_started", progress: 35 },
+          },
+          {
+            schema_version: "1.0",
+            type: "remediation_progress",
+            session_id: "sess-rollout",
+            timestamp: "2026-03-26T00:00:04Z",
+            data: { stage: "full_rollout_progress", progress: 72 },
+          },
+        ]),
+      ),
+    );
+
+    const overview = await apiClient.getRemediationOverview("sess-rollout");
+
+    expect(overview.progress.batch_status).toEqual([
+      { batch: "金丝雀", progress: 100, status: "canary_succeeded" },
+      { batch: "全量", progress: 72, status: "full_rollout_progress" },
+    ]);
+  });
+
   it("loads chat history from /api/chat/history", async () => {
     server.use(
       http.get("/api/chat/history", async () =>
@@ -795,4 +946,3 @@ describe("apiClient.getTopology", () => {
     expect(segmentsDatasetId).toBe("dataset-network");
   });
 });
-

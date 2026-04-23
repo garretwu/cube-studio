@@ -1,0 +1,116 @@
+      
+# =============================================================================
+# Demo 1 — vLLM End-to-End Request Latency P90 Live Demo
+# -----------------------------------------------------------------------------
+# Story: steady load -> GPU contention injection -> P90 alert ->
+#        SRE Agent ReAct diagnosis -> canary remediation (WAL-protected) ->
+#        P90 recovery -> pattern/memory sink.
+#
+# Runner: python sre_agent/scripts/vllm_latency_p95_live_demo.py \
+#           --demo-config demo-vllm-p90.yaml \
+#           --demo-key vllm_request_latency_p90_alert_remediation
+#
+# See demo1_design.md for the full storyline.
+# =============================================================================
+
+global:
+  session_dir: "./fault_injector/fault_reports/sessions/"
+  log_level: "INFO"
+  safety:
+    require_confirmation: false
+    auto_recover_timeout: 600
+    dry_run: false
+    max_concurrent_faults: 2
+    excluded_nodes: []
+
+monitor:
+  enabled: false
+  prometheus_url: "http://10.11.4.3:31260"
+  baseline_duration: 60
+  post_recovery_duration: 60
+
+# -----------------------------------------------------------------------------
+# demo: consumed by sre_agent/scripts/vllm_latency_p95_live_demo.py
+# -----------------------------------------------------------------------------
+demo:
+  vllm_request_latency_p90_alert_remediation:
+    alert_name: "VLLMRequestLatencyP90High"
+    alert_severity: "critical"
+    llm:
+      api_key: "sk-sp-4d2bf2aafa0e4ba9a9839bbfef78b6e2"
+      base_url: "https://coding.dashscope.aliyuncs.com/v1"
+      model: "MiniMax-M2.5"
+    kubeconfig: "~/.kube/config"
+    # Business-facing SLO: end-to-end request latency P90 on the qwen3-32b-fp8 service.
+    latency_promql: >-
+      histogram_quantile(0.90, sum by(le) (rate(vllm:e2e_request_latency_seconds_bucket{namespace="service",service="qwen3-32b-fp8-202602261"}[1m])))
+    # Threshold tuned for the qwen3-32b-fp8 baseline (~200-300ms) with headroom.
+    latency_threshold_ms: 500
+    remediation_wait_seconds: 60
+    load_simulator_config: "load_simulator/config/inference-qwen3-32b-fp8-10.11.4.3-20060.yaml"
+    load_warmup_seconds: 60
+    alert_wait_seconds: 360
+    total_timeout: 240
+    step_timeout: 60
+    # Slightly higher than the P95 demo: ReAct needs extra steps to rule out
+    # the thermal-throttle decoy before converging on gpu_contention.
+    max_steps: 20
+
+# -----------------------------------------------------------------------------
+# inventory: physical targets reachable via SSH / BMC
+# -----------------------------------------------------------------------------
+inventory:
+  workers:
+    - name: "worker-03"
+      ssh:
+        host: "10.11.4.12"
+        port: 22
+        user: "yuyonghao"
+        password: "Yuyonghao@123"
+        timeout: 30
+        use_sudo: true
+      interface: "eth0"
+
+switches:
+  sw-200g:
+    host: "10.11.8.52"
+    port: 830
+    username: "apitest"
+    password: "ApiTest@2026"
+    timeout: 30
+    type: "H3C S9855-24B8D"
+    description: "200G Data Network Switch"
+
+# -----------------------------------------------------------------------------
+# scenarios: fault_injector scenarios used by this demo
+#
+# Primary:   gpu_contention        (A in demo1_design.md)  -- enabled
+# Decoy:     thermal_throttling    (C in demo1_design.md)  -- DISABLED by default
+#            Flip `enabled: true` for the "misdiagnose->rollback->retry" bonus
+#            act that showcases WAL rollback and Loop Orchestrator.
+# -----------------------------------------------------------------------------
+scenarios:
+  gpu_contention:
+    enabled: true
+    target_nodes:
+      - "worker-03"
+    params:
+      duration: 600
+      memory: "90%"
+      gpu_ids: [0]
+      intensity: 90
+
+  thermal_throttling:
+    enabled: false
+    target_nodes:
+      - "worker-03"
+    params:
+      gpu_id: 0
+      power_limit: 200
+      fan_index: 0
+      fan_mode: "Manual"
+      fan_pwm: 30
+      fan_recover_mode: "Auto"
+      fan_control_backend: "redfish"
+
+    

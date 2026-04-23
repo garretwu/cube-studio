@@ -25,6 +25,7 @@ from sre_agent.agent import ConversationalAgent, run_diagnosis, run_diagnosis_st
 from sre_agent.agent.nodes import log_stream_lifecycle_event
 from sre_agent.agent.prompts import build_alert_diagnosis_prompt
 from sre_agent.agent.graph import get_last_llm_runtime_diagnostics
+from sre_agent.alerts_identity import build_incident_identity
 from sre_agent.alerts_filter import build_blocked_alert_name_set, filter_blocked_alerts, normalize_alert_name
 from sre_agent.api import build_api_router, build_websocket_router, install_middlewares
 from sre_agent.api.routes import AuditLogger
@@ -355,7 +356,7 @@ class AlertPollingService:
         self._task: asyncio.Task[None] | None = None
         self._last_versions: dict[str, str] = {}
         self._pending_auto_triggers: dict[str, asyncio.Task[None]] = {}
-        self._triggered_fingerprints: set[str] = set()
+        self._triggered_incidents: set[str] = set()
         self._diagnosis_tasks: set[asyncio.Task[None]] = set()
 
     async def start(self) -> None:
@@ -452,48 +453,54 @@ class AlertPollingService:
         # Level A: whitelist-based auto-diagnose (existing logic)
         candidates: dict[str, Alert] = {}
         if self._auto_diagnose_alert_names:
-            candidates = {alert.fingerprint: alert for alert in alerts if self._should_auto_diagnose(alert)}
+            candidates = {
+                build_incident_identity(alert).incident_key: alert
+                for alert in alerts
+                if self._should_auto_diagnose(alert)
+            }
 
         # Level C: entity correlation — same entity with multiple distinct alerts
         correlated = self._find_entity_correlated_alerts(alerts)
         for alert in correlated:
-            if alert.fingerprint in candidates or alert.fingerprint in self._triggered_fingerprints:
+            incident_key = build_incident_identity(alert).incident_key
+            if incident_key in candidates or incident_key in self._triggered_incidents:
                 continue
-            if alert.fingerprint in self._pending_auto_triggers:
+            if incident_key in self._pending_auto_triggers:
                 continue
-            candidates[alert.fingerprint] = alert
+            candidates[incident_key] = alert
 
-        active_fingerprints = set(candidates)
-        known_fingerprints = set(self._pending_auto_triggers) | set(self._triggered_fingerprints)
-        disappeared_fingerprints = known_fingerprints - active_fingerprints
+        active_incidents = set(candidates)
+        known_incidents = set(self._pending_auto_triggers) | set(self._triggered_incidents)
+        disappeared_incidents = known_incidents - active_incidents
 
-        for fingerprint in disappeared_fingerprints:
-            pending = self._pending_auto_triggers.pop(fingerprint, None)
+        for incident_key in disappeared_incidents:
+            pending = self._pending_auto_triggers.pop(incident_key, None)
             if pending is not None and not pending.done():
                 pending.cancel()
-            self._triggered_fingerprints.discard(fingerprint)
+            self._triggered_incidents.discard(incident_key)
 
-        for fingerprint, alert in candidates.items():
-            if fingerprint in self._pending_auto_triggers or fingerprint in self._triggered_fingerprints:
+        for incident_key, alert in candidates.items():
+            if incident_key in self._pending_auto_triggers or incident_key in self._triggered_incidents:
                 continue
             task = asyncio.create_task(
                 self._trigger_auto_diagnose_after_delay(alert),
-                name=f"sre-auto-diagnose-delay-{fingerprint}",
+                name=f"sre-auto-diagnose-delay-{incident_key}",
             )
-            self._pending_auto_triggers[fingerprint] = task
-            task.add_done_callback(lambda done, fp=fingerprint: self._on_auto_trigger_done(fp, done))
+            self._pending_auto_triggers[incident_key] = task
+            task.add_done_callback(lambda done, ik=incident_key: self._on_auto_trigger_done(ik, done))
 
-    def _on_auto_trigger_done(self, fingerprint: str, task: asyncio.Task[None]) -> None:
-        self._pending_auto_triggers.pop(fingerprint, None)
+    def _on_auto_trigger_done(self, incident_key: str, task: asyncio.Task[None]) -> None:
+        self._pending_auto_triggers.pop(incident_key, None)
         try:
             task.result()
         except asyncio.CancelledError:
             return
         except Exception as exc:  # noqa: BLE001
-            self._triggered_fingerprints.discard(fingerprint)
-            LOGGER.warning("auto diagnose trigger failed for %s: %s", fingerprint, exc)
+            self._triggered_incidents.discard(incident_key)
+            LOGGER.warning("auto diagnose trigger failed for %s: %s", incident_key, exc)
 
     async def _trigger_auto_diagnose_after_delay(self, alert: Alert) -> None:
+        identity = build_incident_identity(alert)
         if self._auto_diagnose_delay_seconds > 0:
             try:
                 await asyncio.wait_for(self._stop_event.wait(), timeout=self._auto_diagnose_delay_seconds)
@@ -512,9 +519,12 @@ class AlertPollingService:
                 "type": EventType.DIAGNOSIS_TRIGGERED.value,
                 "session_id": "alerts",
                 "data": {
+                    "incident_key": identity.incident_key,
                     "fingerprint": alert.fingerprint,
+                    "starts_at": identity.starts_at,
                     "alert_name": alert.alert_name,
                     "severity": alert.severity.value,
+                    "identity_source": identity.identity_source,
                     "trigger_reason": self._infer_trigger_reason(alert),
                 },
             }
@@ -525,19 +535,19 @@ class AlertPollingService:
             task_name_prefix="auto-diagnose",
             propagate_failure=True,
         )
-        self._triggered_fingerprints.add(alert.fingerprint)
+        self._triggered_incidents.add(identity.incident_key)
         self._diagnosis_tasks.add(handle.task)
-        handle.task.add_done_callback(lambda done, fp=alert.fingerprint: self._on_diagnosis_task_done(fp, done))
+        handle.task.add_done_callback(lambda done, ik=identity.incident_key: self._on_diagnosis_task_done(ik, done))
 
-    def _on_diagnosis_task_done(self, fingerprint: str, task: asyncio.Task[None]) -> None:
+    def _on_diagnosis_task_done(self, incident_key: str, task: asyncio.Task[None]) -> None:
         self._diagnosis_tasks.discard(task)
         try:
             task.result()
         except asyncio.CancelledError:
             return
         except Exception as exc:  # noqa: BLE001
-            self._triggered_fingerprints.discard(fingerprint)
-            LOGGER.warning("auto diagnose run failed for %s: %s", fingerprint, exc)
+            self._triggered_incidents.discard(incident_key)
+            LOGGER.warning("auto diagnose run failed for %s: %s", incident_key, exc)
 
     def _is_alert_present(self, fingerprint: str) -> bool:
         snapshot = self._alert_store.snapshot()
@@ -602,7 +612,7 @@ class AlertPollingService:
                 pass
         self._pending_auto_triggers.clear()
         self._diagnosis_tasks.clear()
-        self._triggered_fingerprints.clear()
+        self._triggered_incidents.clear()
 
 
 @dataclass(frozen=True)
@@ -1020,6 +1030,7 @@ class DefaultDiagnosisRunner:
             tool_registry=self._tool_registry,
             step_timeout_sec=self._config.agent.step_timeout_sec,
             total_timeout_sec=self._config.agent.total_timeout_sec,
+            max_steps=int(self._config.agent.max_steps or 0) or 50,
             checkpoint_dir=None,
             trace_callback=trace_callback,
             alert_snapshot=enriched_alert.model_dump(mode="json"),
@@ -1160,6 +1171,7 @@ class StreamingDiagnosisRunner:
                 tool_registry=self._tool_registry,
                 step_timeout_sec=self._config.agent.step_timeout_sec,
                 total_timeout_sec=self._config.agent.total_timeout_sec,
+                max_steps=int(self._config.agent.max_steps or 0) or 50,
                 checkpoint_dir=None,
                 alert_snapshot=enriched_alert.model_dump(mode="json"),
                 topology_context=topology_context,
@@ -1526,6 +1538,7 @@ class DefaultReDiagnoseRunner:
             session_id=session.session_id,
             step_timeout_sec=self._config.agent.step_timeout_sec,
             total_timeout_sec=self._config.agent.total_timeout_sec,
+            max_steps=int(self._config.agent.max_steps or 0) or 50,
             checkpoint_dir=None,
             trace_callback=trace_callback,
             alert_snapshot=alert.model_dump(mode="json"),
@@ -1602,18 +1615,24 @@ def _build_diagnosis_query(
         diagnosis_goal=(
             "This is AIServiceTTFT diagnosis; prioritize deterministic service->pod->node->gpu evidence chain "
             "before broad exploration. Use prometheus.query_instant only for verification and keep it within "
-            "two calls unless absolutely required for contradiction resolution. If suspicious load-generator processes "
-            "are not found on the serving pod node, continue with external pressure path and inspect likely load-source "
-            "nodes from context hints. If gpu.get_processes reveals suspicious synthetic/load-generator processes, "
-            "summarize the evidence and prepare proposal-only kill_process remediation steps per process. For two or "
-            "more suspicious processes on the same node, prefer process-level canary batches (50% then 100%, "
-            "approval-gated, not auto-executed)."
+            "two calls unless absolutely required for contradiction resolution. "
+            "Before concluding, you MUST complete minimum TTFT coverage: "
+            "at least one gpu.get_processes call and one process.find call for external load verification. "
+            "If process.find was not executed yet, schedule it now instead of calling unrelated tools. "
+            "Follow the evidence: if gpu.get_processes reveals non-service processes consuming significant GPU "
+            "resources, that is a strong GPU-contention signal — prioritize it over external traffic hypotheses. "
+            "If the serving node shows no GPU anomalies, then consider external traffic, KV cache pressure, "
+            "or scheduler bottlenecks as alternative hypotheses. "
+            "When suspicious processes are found, prepare proposal-only kill_process remediation steps per process. "
+            "For two or more suspicious processes on the same node, prefer process-level canary batches "
+            "(50% then 100%, approval-gated, not auto-executed)."
         ),
         investigation_steps=[
             "定位受影响 service 对应的 pod（k8s.resolve_service_pods / k8s.list_pods）。",
             "定位 pod 所在 node 与 node_ip（k8s.resolve_pod_node_ip + inventory mapping）。",
             "在目标 node 采集 GPU metrics/processes（gpu.get_metrics + gpu.get_processes），识别异常负载进程。",
-            "若服务侧 node 未发现可疑进程，必须在 external_process_default_node 执行 process.find(pattern=load_simulator|stress|benchmark|simulator) 复核外部压测源。",
+            "对外部压测源执行 process.find（优先 ttft_external_process_default_node），检查 stress/benchmark/load_simulator 进程。",
+            "综合 GPU metrics、进程信息和 Prometheus 指标判断根因类别；若 GPU 侧无异常，再考虑外部流量或 KV cache 压力。",
             "用 prometheus.query_instant 复核 TTFT 与请求时延变化，并给出处置结论。",
         ],
         context_hints=context_hints,

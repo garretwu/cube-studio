@@ -30,32 +30,33 @@ describe("RemediationPage", () => {
     });
 
     expect(container.querySelector(".remediation-record-table__expand-row")).toBeFalsy();
-    expect(container.querySelector(".remediation-drawer__panel")).toBeFalsy();
+    expect(container.querySelector(".remediation-sidepanel")).toBeFalsy();
 
     const firstRow = container.querySelector<HTMLElement>(".remediation-record-table__row");
     expect(firstRow).toBeTruthy();
     await user.click(firstRow!);
 
     const drawer = await waitFor(() => {
-      const panel = container.querySelector<HTMLElement>(".remediation-drawer__panel");
+      const panel = container.querySelector<HTMLElement>(".remediation-sidepanel");
       expect(panel).toBeTruthy();
       return panel;
     });
 
     const scoped = within(drawer!);
-    expect(drawer!.querySelector(".remediation-plan-overview__facts")).toBeTruthy();
+    expect(scoped.getByText("方案信息")).toBeInTheDocument();
     expect(scoped.getByRole("button", { name: /返回修复列表/ })).toBeTruthy();
+    expect(scoped.getByText("执行过程")).toBeInTheDocument();
 
-    const stepButton = scoped.getByRole("button", { name: /查看步骤 1 详情/ });
-    await user.click(stepButton);
+    const expandPlanStepsButton = scoped.getByRole("button", { name: /展开步骤详情/ });
+    await user.click(expandPlanStepsButton);
 
-    expect(scoped.getByText("步骤 1 详情")).toBeTruthy();
-    expect(scoped.getByText("执行参数")).toBeTruthy();
+    expect(scoped.getAllByText("步骤 1").length).toBeGreaterThan(0);
+    expect(scoped.getAllByText(/工具：/).length).toBeGreaterThan(0);
 
     await user.click(scoped.getByRole("button", { name: /返回修复列表/ }));
 
     await waitFor(() => {
-      expect(container.querySelector(".remediation-drawer__panel")).toBeFalsy();
+      expect(container.querySelector(".remediation-sidepanel")).toBeFalsy();
     });
   });
 
@@ -64,12 +65,13 @@ describe("RemediationPage", () => {
     const { container } = render(<RemediationPage />);
 
     const drawer = await waitFor(() => {
-      const panel = container.querySelector<HTMLElement>(".remediation-drawer__panel");
+      const panel = container.querySelector<HTMLElement>(".remediation-sidepanel");
       expect(panel).toBeTruthy();
       return panel;
     });
 
-    expect(within(drawer!).getByText("VLLM 延迟过高 · CRITICAL")).toBeInTheDocument();
+    expect(within(drawer!).getByText("VLLM 延迟过高")).toBeInTheDocument();
+    expect(within(drawer!).getByText("CRITICAL")).toBeInTheDocument();
     window.history.pushState({}, "", "/");
   });
 
@@ -86,7 +88,7 @@ describe("RemediationPage", () => {
     await user.click(firstRow!);
 
     const drawer = await waitFor(() => {
-      const panel = container.querySelector<HTMLElement>(".remediation-drawer__panel");
+      const panel = container.querySelector<HTMLElement>(".remediation-sidepanel");
       expect(panel).toBeTruthy();
       return panel;
     });
@@ -109,6 +111,29 @@ describe("RemediationPage", () => {
     });
 
     expect(within(drawer!).getByText("realtime observation updated")).toBeInTheDocument();
+  });
+
+  it("renders the same weighted overall progress in list and detail drawer", async () => {
+    const user = userEvent.setup();
+    const { container } = render(<RemediationPage />);
+
+    await waitFor(() => {
+      expect(container.querySelector(".remediation-record-table__row")).toBeTruthy();
+    });
+
+    const firstRow = container.querySelector<HTMLElement>(".remediation-record-table__row");
+    expect(firstRow).toBeTruthy();
+    expect(within(firstRow!).getByText("57%")).toBeInTheDocument();
+
+    await user.click(firstRow!);
+
+    const drawer = await waitFor(() => {
+      const panel = container.querySelector<HTMLElement>(".remediation-sidepanel");
+      expect(panel).toBeTruthy();
+      return panel;
+    });
+
+    expect(within(drawer!).getByText("总体 57%")).toBeInTheDocument();
   });
 
   it("falls back to 10s polling when realtime channel is unavailable", async () => {
@@ -153,7 +178,7 @@ describe("RemediationPage", () => {
       await user.click(firstRow!);
 
       const drawer = await waitFor(() => {
-        const panel = container.querySelector<HTMLElement>(".remediation-drawer__panel");
+        const panel = container.querySelector<HTMLElement>(".remediation-sidepanel");
         expect(panel).toBeTruthy();
         return panel;
       });

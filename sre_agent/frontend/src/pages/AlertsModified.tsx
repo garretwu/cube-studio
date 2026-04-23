@@ -7,6 +7,7 @@ import type { AlertStatus, DiagnosisSession, DiagnosisSessionSummary, Severity }
 import { AppButton, AppIcon, AppInput, MetricTile, StatusChip, SurfaceCard } from "../components/ui";
 import { useAlertStore } from "../store/alertStore";
 import { useDiagnosisStore } from "../store/diagnosisStore";
+import { buildAlertIncidentKey } from "../utils/alerts";
 import { formatSeverity } from "../utils/display";
 import { formatPercent, formatTimestamp } from "../utils/format";
 import {
@@ -101,8 +102,11 @@ function AlertsModifiedPage() {
   }, []);
 
   const matchingSummaries = useMemo(() => {
-    const activeFingerprints = new Set(alerts.map((alert) => alert.fingerprint));
-    return historySummaries.filter((summary) => summary.fingerprint && activeFingerprints.has(summary.fingerprint));
+    const activeIncidentKeys = new Set(alerts.map((alert) => buildAlertIncidentKey(alert)));
+    return historySummaries.filter((summary) => {
+      const incidentKey = String(summary.incident_key ?? "").trim();
+      return incidentKey.length > 0 && activeIncidentKeys.has(incidentKey);
+    });
   }, [alerts, historySummaries]);
 
   useEffect(() => {
@@ -193,7 +197,7 @@ function AlertsModifiedPage() {
   const visibleError = diagnosisError ?? alertsError ?? historyError;
 
   const startDiagnosis = async (item: AlertDashboardItem) => {
-    const candidates = alerts.filter((alert) => alert.fingerprint === item.primaryFingerprint);
+    const candidates = alerts.filter((alert) => buildAlertIncidentKey(alert) === item.incidentKey);
     if (candidates.length === 0) {
       setDiagnosisError("未找到可用于诊断的告警事件，请先刷新告警数据。");
       return;
@@ -223,7 +227,7 @@ function AlertsModifiedPage() {
 
     setDiagnosisError(null);
     setDiagnosingItemId(item.id);
-    const extraFingerprints = item.fingerprints.filter((fingerprint) => fingerprint !== item.primaryFingerprint);
+    const extraFingerprints = item.fingerprints.filter((fingerprint) => fingerprint !== selected.fingerprint);
     const fps = extraFingerprints.length > 0 ? extraFingerprints : undefined;
     try {
       const pendingSessionId = useDiagnosisStore.getState().startStreamingDiagnosis(
@@ -363,6 +367,7 @@ function AlertsModifiedPage() {
                           <p className="alerts-dashboard-table__summary">{item.summary}</p>
                           <div className="alerts-dashboard-table__meta">
                             <span>{`最新告警 ${formatTimestamp(item.latestStartsAt)}`}</span>
+                            <span>{`incident_key ${item.incidentKey}`}</span>
                           </div>
                         </td>
                         <td className="alerts-dashboard-table__cell alerts-dashboard-table__cell--entity">
@@ -434,6 +439,3 @@ function AlertsModifiedPage() {
 }
 
 export default AlertsModifiedPage;
-
-
-

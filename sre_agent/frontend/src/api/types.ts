@@ -246,6 +246,7 @@ export type DiagnosisResult = {
   root_cause_layer: string;
   root_cause_entities: string[];
   confidence: number;
+  next_action?: string | null;
   hypotheses: Hypothesis[];
   propagation_chain?: PropagationStep[];
   impact_summary: string;
@@ -322,6 +323,14 @@ export type DiagnosisStartedData = {
     affected_count: number;
     affected_entities: { id: string; type: string; name?: string }[];
     summary: string;
+    direct_relations?: Array<{
+      source: string;
+      target: string;
+      target_type: string;
+      target_name: string;
+      relation: string;
+      direction: "in" | "out";
+    }>;
   } | null;
   variables: Record<string, unknown>;
   bootstrap_state?: "thinking";
@@ -334,6 +343,8 @@ export type SessionSummary = {
   alert_name: string;
   severity: Severity;
   fingerprint: string;
+  incident_key?: string | null;
+  affected_services?: string[];
   outcome?: string | null;
   duration_seconds: number;
   updated_at: string;
@@ -349,6 +360,7 @@ export type DiagnosisSessionSummary = {
   severity: Severity;
   alert_name: string;
   fingerprint?: string | null;
+  incident_key?: string | null;
   duration_seconds: number;
   outcome?: string | null;
   triage_priority?: DiagnosisResult["triage_priority"] | null;
@@ -492,6 +504,7 @@ export type RemediationEvidence = {
 export type RemediationOverview = {
   session_id: string;
   plan: RemediationPlan;
+  affected_services?: string[];
   plan_version?: number;
   plan_history?: Array<{ version: number; plan_id: string; revised_at?: string; instruction?: string }>;
   progress: {

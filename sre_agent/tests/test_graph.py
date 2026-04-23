@@ -11,6 +11,7 @@ from langchain_core.messages import AIMessage
 
 import sre_agent.agent.graph as graph_module
 import sre_agent.agent.nodes as nodes_module
+from sre_agent.ttft_process_policy import is_ttft_suspect_process
 from sre_agent.agent import run_diagnosis, run_diagnosis_stream
 from sre_agent.agent.prompts import build_system_prompt
 from sre_agent.models.diagnosis import DiagnosisResult, ThinkingTrace
@@ -1663,6 +1664,7 @@ tags:
             reuse_runs = [item for item in prom_runs if "reuse" in str(item.get("source", ""))]
             self.assertLessEqual(len(real_exec_runs), 2)
             self.assertGreaterEqual(len(reuse_runs), 1)
+            self.assertFalse(result["force_final_turn"])
             trace_items = [item for item in result.get("trace_items", []) if isinstance(item, dict)]
             self.assertTrue(
                 any(
@@ -1769,8 +1771,99 @@ tags:
         self.assertEqual(len(plan["steps"]), 2)
         self.assertEqual(plan["steps"][0]["params"]["node"], "10.11.4.13")
         self.assertEqual(plan["steps"][1]["params"]["node"], "10.11.4.13")
-        self.assertEqual(plan["steps"][0]["params"]["entity_id"], "proc:473156")
-        self.assertEqual(plan["steps"][1]["params"]["entity_id"], "proc:473220")
+
+    def test_ttft_auto_kill_process_plan_caps_to_six_suspects_and_batches(self) -> None:
+        diagnosis = DiagnosisResult(
+            root_cause="异常负载导致 TTFT 抬高",
+            root_cause_layer="service",
+            root_cause_entities=["node:10.11.4.13"],
+            confidence=0.71,
+            hypotheses=[],
+            propagation_chain=[],
+            impact_summary="同节点多进程压测争用导致首 token 延迟上升",
+            affected_services=["qwen3-32b-fp8-202602261"],
+            recommended_fix=None,
+            triage_priority="P1",
+            ranked_candidates=[],
+            diagnosis_certainty="probable",
+        )
+        evidence_signals = {
+            "ttft_suspect_process_present": True,
+            "ttft_suspect_processes": [
+                {"pid": 11000 + idx, "process_name": f"load_simulator --tag ls_demo_{idx}"}
+                for idx in range(1, 8)
+            ],
+        }
+        tool_runs = [
+            {
+                "tool": "gpu.get_processes",
+                "params": {"node": "10.11.4.13"},
+                "success": True,
+                "data": {},
+            }
+        ]
+
+        plan = nodes_module._build_ttft_kill_process_plan_candidate(
+            diagnosis=diagnosis,
+            evidence_signals=evidence_signals,
+            session_id="sess-ttft-demo-06",
+            tool_runs=tool_runs,
+            variables={},
+        )
+
+        self.assertIsNotNone(plan)
+        assert plan is not None
+        self.assertEqual(len(plan["steps"]), 6)
+        self.assertEqual(plan["canary"]["max_batches"], 2)
+        self.assertFalse(plan["canary"]["progressive"])
+        self.assertAlmostEqual(plan["canary"]["target_percentage"], round(1.0 / 6, 4))
+
+    def test_ttft_auto_kill_process_plan_prefers_gpu_burn_suspects_over_load_simulator(self) -> None:
+        diagnosis = DiagnosisResult(
+            root_cause="GPU contention drives TTFT spike",
+            root_cause_layer="service",
+            root_cause_entities=["node:10.11.4.13"],
+            confidence=0.81,
+            hypotheses=[],
+            propagation_chain=[],
+            impact_summary="GPU burn and synthetic traffic overlap caused TTFT regression",
+            affected_services=["qwen3-32b-fp8-202602261"],
+            recommended_fix=None,
+            triage_priority="P1",
+            ranked_candidates=[],
+            diagnosis_certainty="probable",
+        )
+        evidence_signals = {
+            "ttft_suspect_process_present": True,
+            "ttft_suspect_processes": [
+                {"pid": 10001, "process_name": "python -m load_simulator run --tag normal"},
+                {"pid": 10002, "process_name": "fi_gpu_burn_gpu_contention_ad4cf1ee -m 100% -i 0 3600"},
+                {"pid": 10003, "process_name": "fi_gpu_burn_gpu_contention_ad4cf1ee -m 100% -i 1 3600"},
+            ],
+        }
+        tool_runs = [
+            {
+                "tool": "gpu.get_processes",
+                "params": {"node": "10.11.4.13"},
+                "success": True,
+                "data": {},
+            }
+        ]
+
+        plan = nodes_module._build_ttft_kill_process_plan_candidate(
+            diagnosis=diagnosis,
+            evidence_signals=evidence_signals,
+            session_id="sess-ttft-gpu-burn-priority",
+            tool_runs=tool_runs,
+            variables={},
+        )
+
+        self.assertIsNotNone(plan)
+        assert plan is not None
+        self.assertEqual(len(plan["steps"]), 2)
+        self.assertEqual(plan["steps"][0]["params"]["entity_id"], "proc:10002")
+        self.assertEqual(plan["steps"][1]["params"]["entity_id"], "proc:10003")
+        self.assertEqual(plan["canary"]["max_batches"], 2)
 
     def test_extract_evidence_signals_collects_process_find_suspects(self) -> None:
         tool_runs = [
@@ -1808,6 +1901,44 @@ tags:
         self.assertEqual(len(suspects), 2)
         self.assertEqual(suspects[0]["node"], "10.11.4.13")
 
+    def test_extract_evidence_signals_filters_non_whitelisted_process_find_matches(self) -> None:
+        tool_runs: list[dict[str, Any]] = [
+            {
+                "tool": "process.find",
+                "success": True,
+                "params": {"pattern": "load", "node": "10.11.4.13"},
+                "key_fields": {
+                    "match_count": 2,
+                    "node": "10.11.4.13",
+                    "suspicious_load_processes": [],
+                },
+                "data": {
+                    "matches": [
+                        {
+                            "pid": 9783,
+                            "process": "prometheus-config-reloader",
+                            "command": "/bin/prometheus-config-reloader --reload-url=http://localhost:12345/-/reload",
+                        },
+                        {
+                            "pid": 13312,
+                            "process": "uvicorn",
+                            "command": "uvicorn app.gateway.app:app --reload",
+                        },
+                    ]
+                },
+            }
+        ]
+
+        signals = nodes_module._extract_evidence_signals(tool_runs)
+        self.assertFalse(signals["ttft_suspect_process_present"])
+        self.assertEqual(signals["ttft_suspect_processes"], [])
+
+    def test_ttft_strict_process_policy_rejects_reloader_and_backend(self) -> None:
+        self.assertFalse(is_ttft_suspect_process("/bin/prometheus-config-reloader --reload-url=..."))
+        self.assertFalse(is_ttft_suspect_process("uvicorn app.gateway.app:app --reload"))
+        self.assertTrue(is_ttft_suspect_process("python -m load_simulator run --only inference"))
+        self.assertTrue(is_ttft_suspect_process("fi_gpu_burn_gpu_contention_ad4cf1ee -m 100% -i 0 3600"))
+
     def test_has_probed_ttft_external_node_detects_existing_probe(self) -> None:
         tool_runs: list[dict[str, Any]] = [
             {
@@ -1831,6 +1962,41 @@ tags:
             },
         ]
         self.assertTrue(nodes_module._has_probed_ttft_external_node(tool_runs, "10.11.4.13"))
+
+    def test_evaluate_ttft_min_coverage_detects_missing_external_probe(self) -> None:
+        state: dict[str, Any] = {
+            "alert_snapshot": {
+                "alert_name": "AIServiceTTFTP99High",
+                "ttft_external_process_default_node": "10.11.4.13",
+            }
+        }
+        tool_runs: list[dict[str, Any]] = [
+            {"tool": "gpu.get_processes", "success": True, "params": {"node": "worker-03"}},
+        ]
+        met, missing = nodes_module._evaluate_ttft_min_coverage(state=state, tool_runs=tool_runs)
+        self.assertFalse(met)
+        self.assertIn("external_process_find", missing)
+        self.assertNotIn("gpu_processes", missing)
+
+    def test_evaluate_ttft_min_coverage_met_with_gpu_and_external_probe(self) -> None:
+        state: dict[str, Any] = {
+            "alert_snapshot": {
+                "alert_name": "AIServiceTTFTP99High",
+                "ttft_external_process_default_node": "10.11.4.13",
+            }
+        }
+        tool_runs: list[dict[str, Any]] = [
+            {"tool": "gpu.get_processes", "success": True, "params": {"node": "worker-03"}},
+            {
+                "tool": "process.find",
+                "success": False,
+                "params": {"node": "10.11.4.13", "pattern": "load_simulator"},
+                "error": "permission denied",
+            },
+        ]
+        met, missing = nodes_module._evaluate_ttft_min_coverage(state=state, tool_runs=tool_runs)
+        self.assertTrue(met)
+        self.assertEqual(missing, [])
 
     def test_find_ttft_external_probe_auth_error_detects_permission_denied(self) -> None:
         tool_runs: list[dict[str, Any]] = [
@@ -1949,6 +2115,374 @@ tags:
             "variables": {},
         }
         self.assertEqual(nodes_module._get_ttft_external_node(state), "")
+
+    def test_is_force_canary_alert_name_matches_ttft_case_insensitive(self) -> None:
+        self.assertTrue(nodes_module._is_force_canary_alert_name("AIServiceTTFTP99High"))
+        self.assertTrue(nodes_module._is_force_canary_alert_name("AIServiceTTFT"))
+        self.assertTrue(nodes_module._is_force_canary_alert_name("foo-ttft-bar"))
+        self.assertFalse(nodes_module._is_force_canary_alert_name("NetworkLatencyHigh"))
+
+    def test_normalize_remediation_plan_payload_force_canary_for_ttft_alert(self) -> None:
+        diagnosis = DiagnosisResult(
+            root_cause="异常负载导致 TTFT 抬高",
+            root_cause_layer="service",
+            root_cause_entities=["node:10.11.4.13"],
+            confidence=0.71,
+            hypotheses=[],
+            propagation_chain=[],
+            impact_summary="同节点多进程压测争用导致首 token 延迟上升",
+            affected_services=["qwen3-32b-fp8-202602261"],
+            recommended_fix=None,
+            triage_priority="P1",
+            ranked_candidates=[],
+            diagnosis_certainty="probable",
+        )
+        raw_plan = {
+            "plan_id": "plan-force-canary",
+            "root_cause": diagnosis.root_cause,
+            "description": "terminate suspicious process",
+            "steps": [
+                {
+                    "step_id": 1,
+                    "description": "kill process",
+                    "tool": "kill_process",
+                    "params": {"node": "10.11.4.13", "entity_id": "proc:473156", "signal": "TERM"},
+                    "verification": {"method": "wait", "wait_seconds": 10},
+                    "timeout": 60,
+                }
+            ],
+            "estimated_impact": diagnosis.impact_summary,
+            "confidence": diagnosis.confidence,
+            "priority": diagnosis.triage_priority,
+            "safety_level": "high",
+        }
+
+        plan = nodes_module._normalize_remediation_plan_payload(
+            raw_plan=raw_plan,
+            diagnosis=diagnosis,
+            session_id="sess-force-canary",
+            registry=build_default_registry(),
+            tool_runs=[],
+            variables={},
+            alert_name="AIServiceTTFTP99High",
+        )
+
+        self.assertIsNotNone(plan)
+        assert plan is not None
+        self.assertIsNotNone(plan.canary)
+        assert plan.canary is not None
+        self.assertTrue(plan.canary.enabled)
+        self.assertEqual(plan.canary.max_batches, 1)
+        self.assertFalse(plan.canary.progressive)
+        self.assertEqual(plan.canary.target_percentage, 1.0)
+        self.assertGreaterEqual(plan.canary.monitor_duration, 60)
+
+    def test_normalize_remediation_plan_payload_force_canary_for_other_ttft_alert(self) -> None:
+        diagnosis = DiagnosisResult(
+            root_cause="异常负载导致 TTFT 抬高",
+            root_cause_layer="service",
+            root_cause_entities=["node:10.11.4.13"],
+            confidence=0.71,
+            hypotheses=[],
+            propagation_chain=[],
+            impact_summary="同节点多进程压测争用导致首 token 延迟上升",
+            affected_services=["qwen3-32b-fp8-202602261"],
+            recommended_fix=None,
+            triage_priority="P1",
+            ranked_candidates=[],
+            diagnosis_certainty="probable",
+        )
+        raw_plan = {
+            "plan_id": "plan-no-force-canary",
+            "root_cause": diagnosis.root_cause,
+            "description": "terminate suspicious process",
+            "steps": [
+                {
+                    "step_id": 1,
+                    "description": "kill process",
+                    "tool": "kill_process",
+                    "params": {"node": "10.11.4.13", "entity_id": "proc:473156", "signal": "TERM"},
+                    "verification": {"method": "wait", "wait_seconds": 10},
+                    "timeout": 60,
+                }
+            ],
+            "estimated_impact": diagnosis.impact_summary,
+            "confidence": diagnosis.confidence,
+            "priority": diagnosis.triage_priority,
+            "safety_level": "high",
+        }
+
+        plan = nodes_module._normalize_remediation_plan_payload(
+            raw_plan=raw_plan,
+            diagnosis=diagnosis,
+            session_id="sess-no-force-canary",
+            registry=build_default_registry(),
+            tool_runs=[],
+            variables={},
+            alert_name="AIServiceTTFTP95High",
+        )
+
+        self.assertIsNotNone(plan)
+        assert plan is not None
+        self.assertIsNotNone(plan.canary)
+        assert plan.canary is not None
+        self.assertTrue(plan.canary.enabled)
+        self.assertFalse(plan.canary.progressive)
+        self.assertEqual(plan.canary.max_batches, 1)
+        self.assertEqual(plan.canary.target_percentage, 1.0)
+
+    def test_normalize_remediation_plan_payload_force_canary_override_uses_two_batches_for_multiple_process_targets(self) -> None:
+        diagnosis = DiagnosisResult(
+            root_cause="异常负载导致 TTFT 抬高",
+            root_cause_layer="service",
+            root_cause_entities=["node:10.11.4.13"],
+            confidence=0.74,
+            hypotheses=[],
+            propagation_chain=[],
+            impact_summary="多进程负载争用导致首 token 延迟上升",
+            affected_services=["qwen3-32b-fp8-202602261"],
+            recommended_fix=None,
+            triage_priority="P1",
+            ranked_candidates=[],
+            diagnosis_certainty="probable",
+        )
+        raw_plan = {
+            "plan_id": "plan-force-canary-override",
+            "root_cause": diagnosis.root_cause,
+            "description": "terminate suspicious processes",
+            "steps": [
+                {
+                    "step_id": 1,
+                    "description": "kill process 1",
+                    "tool": "kill_process",
+                    "params": {"node": "10.11.4.13", "entity_id": "proc:101", "signal": "TERM"},
+                    "verification": {"method": "wait", "wait_seconds": 10},
+                    "timeout": 60,
+                },
+                {
+                    "step_id": 2,
+                    "description": "kill process 2",
+                    "tool": "kill_process",
+                    "params": {"node": "10.11.4.13", "entity_id": "proc:102", "signal": "TERM"},
+                    "verification": {"method": "wait", "wait_seconds": 10},
+                    "timeout": 60,
+                },
+                {
+                    "step_id": 3,
+                    "description": "kill process 3",
+                    "tool": "kill_process",
+                    "params": {"node": "10.11.4.13", "entity_id": "proc:103", "signal": "TERM"},
+                    "verification": {"method": "wait", "wait_seconds": 10},
+                    "timeout": 60,
+                },
+            ],
+            "estimated_impact": diagnosis.impact_summary,
+            "confidence": diagnosis.confidence,
+            "priority": diagnosis.triage_priority,
+            "safety_level": "high",
+        }
+
+        plan = nodes_module._normalize_remediation_plan_payload(
+            raw_plan=raw_plan,
+            diagnosis=diagnosis,
+            session_id="sess-force-canary-override",
+            registry=build_default_registry(),
+            tool_runs=[],
+            variables={},
+            alert_name="NetworkLatencyHigh",
+            force_canary_override=True,
+        )
+
+        self.assertIsNotNone(plan)
+        assert plan is not None
+        self.assertIsNotNone(plan.canary)
+        assert plan.canary is not None
+        self.assertTrue(plan.canary.enabled)
+        self.assertFalse(plan.canary.progressive)
+        self.assertEqual(plan.canary.max_batches, 2)
+        self.assertEqual(plan.canary.target_percentage, round(1.0 / 3, 4))
+
+    def test_normalize_remediation_plan_payload_force_canary_corrects_invalid_monitor_duration(self) -> None:
+        diagnosis = DiagnosisResult(
+            root_cause="异常负载导致 TTFT 抬高",
+            root_cause_layer="service",
+            root_cause_entities=["node:10.11.4.13"],
+            confidence=0.74,
+            hypotheses=[],
+            propagation_chain=[],
+            impact_summary="同节点异常进程导致首 token 延迟上升",
+            affected_services=["qwen3-32b-fp8-202602261"],
+            recommended_fix=None,
+            triage_priority="P1",
+            ranked_candidates=[],
+            diagnosis_certainty="probable",
+        )
+        raw_plan = {
+            "plan_id": "plan-force-canary-invalid-monitor-duration",
+            "root_cause": diagnosis.root_cause,
+            "description": "terminate suspicious process",
+            "steps": [
+                {
+                    "step_id": 1,
+                    "description": "kill process",
+                    "tool": "kill_process",
+                    "params": {"node": "10.11.4.13", "entity_id": "proc:473156", "signal": "TERM"},
+                    "verification": {"method": "wait", "wait_seconds": 10},
+                    "timeout": 60,
+                }
+            ],
+            "canary": {
+                "enabled": False,
+                "target_percentage": 0.0,
+                "monitor_duration": 0,
+                "success_criteria": [],
+                "max_batches": 0,
+            },
+            "estimated_impact": diagnosis.impact_summary,
+            "confidence": diagnosis.confidence,
+            "priority": diagnosis.triage_priority,
+            "safety_level": "high",
+        }
+
+        plan = nodes_module._normalize_remediation_plan_payload(
+            raw_plan=raw_plan,
+            diagnosis=diagnosis,
+            session_id="sess-force-canary-invalid-monitor-duration",
+            registry=build_default_registry(),
+            tool_runs=[],
+            variables={},
+            alert_name="AIServiceTTFTP99High",
+            force_canary_override=True,
+        )
+
+        self.assertIsNotNone(plan)
+        assert plan is not None
+        self.assertIsNotNone(plan.canary)
+        assert plan.canary is not None
+        self.assertTrue(plan.canary.enabled)
+        self.assertGreaterEqual(plan.canary.monitor_duration, 60)
+
+    def test_normalize_remediation_plan_payload_force_canary_corrects_invalid_ratio_and_batches(self) -> None:
+        diagnosis = DiagnosisResult(
+            root_cause="异常负载导致 TTFT 抬高",
+            root_cause_layer="service",
+            root_cause_entities=["node:10.11.4.13"],
+            confidence=0.74,
+            hypotheses=[],
+            propagation_chain=[],
+            impact_summary="多进程异常负载导致首 token 延迟上升",
+            affected_services=["qwen3-32b-fp8-202602261"],
+            recommended_fix=None,
+            triage_priority="P1",
+            ranked_candidates=[],
+            diagnosis_certainty="probable",
+        )
+        raw_plan = {
+            "plan_id": "plan-force-canary-invalid-ratio-batches",
+            "root_cause": diagnosis.root_cause,
+            "description": "terminate suspicious processes",
+            "steps": [
+                {
+                    "step_id": 1,
+                    "description": "kill process 1",
+                    "tool": "kill_process",
+                    "params": {"node": "10.11.4.13", "entity_id": "proc:101", "signal": "TERM"},
+                    "verification": {"method": "wait", "wait_seconds": 10},
+                    "timeout": 60,
+                },
+                {
+                    "step_id": 2,
+                    "description": "kill process 2",
+                    "tool": "kill_process",
+                    "params": {"node": "10.11.4.13", "entity_id": "proc:102", "signal": "TERM"},
+                    "verification": {"method": "wait", "wait_seconds": 10},
+                    "timeout": 60,
+                },
+            ],
+            "canary": {
+                "enabled": True,
+                "target_percentage": 0,
+                "monitor_duration": 0,
+                "success_criteria": [],
+                "max_batches": 0,
+                "progressive": True,
+            },
+            "estimated_impact": diagnosis.impact_summary,
+            "confidence": diagnosis.confidence,
+            "priority": diagnosis.triage_priority,
+            "safety_level": "high",
+        }
+
+        plan = nodes_module._normalize_remediation_plan_payload(
+            raw_plan=raw_plan,
+            diagnosis=diagnosis,
+            session_id="sess-force-canary-invalid-ratio-batches",
+            registry=build_default_registry(),
+            tool_runs=[],
+            variables={},
+            alert_name="AIServiceTTFTP99High",
+            force_canary_override=True,
+        )
+
+        self.assertIsNotNone(plan)
+        assert plan is not None
+        self.assertIsNotNone(plan.canary)
+        assert plan.canary is not None
+        self.assertTrue(plan.canary.enabled)
+        self.assertGreater(plan.canary.target_percentage, 0)
+        self.assertEqual(plan.canary.max_batches, 2)
+        self.assertFalse(plan.canary.progressive)
+
+    def test_normalize_remediation_plan_payload_does_not_force_canary_for_non_ttft_alert(self) -> None:
+        diagnosis = DiagnosisResult(
+            root_cause="异常负载导致延迟抬高",
+            root_cause_layer="service",
+            root_cause_entities=["node:10.11.4.13"],
+            confidence=0.71,
+            hypotheses=[],
+            propagation_chain=[],
+            impact_summary="同节点多进程压测争用导致延迟上升",
+            affected_services=["qwen3-32b-fp8-202602261"],
+            recommended_fix=None,
+            triage_priority="P1",
+            ranked_candidates=[],
+            diagnosis_certainty="probable",
+        )
+        raw_plan = {
+            "plan_id": "plan-no-force-canary-non-ttft",
+            "root_cause": diagnosis.root_cause,
+            "description": "terminate suspicious process",
+            "steps": [
+                {
+                    "step_id": 1,
+                    "description": "kill process",
+                    "tool": "kill_process",
+                    "params": {"node": "10.11.4.13", "entity_id": "proc:473156", "signal": "TERM"},
+                    "verification": {"method": "wait", "wait_seconds": 10},
+                    "timeout": 60,
+                }
+            ],
+            "estimated_impact": diagnosis.impact_summary,
+            "confidence": diagnosis.confidence,
+            "priority": diagnosis.triage_priority,
+            "safety_level": "high",
+        }
+
+        plan = nodes_module._normalize_remediation_plan_payload(
+            raw_plan=raw_plan,
+            diagnosis=diagnosis,
+            session_id="sess-no-force-canary-non-ttft",
+            registry=build_default_registry(),
+            tool_runs=[],
+            variables={},
+            alert_name="GPUUtilizationHigh",
+        )
+
+        self.assertIsNotNone(plan)
+        assert plan is not None
+        self.assertIsNotNone(plan.canary)
+        assert plan.canary is not None
+        self.assertTrue(plan.canary.progressive)
 
     async def test_run_diagnosis_stream_emits_real_duration_and_backend_next_action_without_trace_duplicates(self) -> None:
         stream_events = [

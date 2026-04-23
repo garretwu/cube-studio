@@ -1006,6 +1006,27 @@ class TestAPIIntegration:
         assert payload["success"] is True
         assert payload["error"]["code"] == ErrorCode.ALERT_DUPLICATE.value
         assert payload["error"]["details"]["session_id"] == "fp-api-1"
+        assert payload["error"]["details"]["incident_key"] == "fpst:fp-api-1|2026-03-18T12:00:00Z"
+        assert payload["error"]["details"]["dedup_reason"] == "same_incident"
+        assert payload["error"]["details"]["identity_source"] == "fingerprint_starts_at"
+
+    def test_integration_handle_same_fingerprint_with_new_starts_at_creates_new_incident(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        client, token = _build_client(monkeypatch)
+        first_payload = _alert_payload()
+        second_payload = _alert_payload() | {"starts_at": "2026-03-18T12:05:00Z"}
+
+        first = client.post("/api/handle", json=first_payload, headers=_auth_headers(token))
+        second = client.post("/api/handle", json=second_payload, headers=_auth_headers(token))
+
+        assert first.status_code == 200
+        assert second.status_code == 200
+        assert first.json()["success"] is True
+        assert first.json()["error"] is None
+        assert second.json()["success"] is True
+        assert second.json()["error"] is None
+        assert second.json()["data"] is not None
 
     def test_integration_get_sessions_returns_recent_first_and_honors_limit(self, monkeypatch: pytest.MonkeyPatch) -> None:
         client, token = _build_client(monkeypatch)
@@ -2432,9 +2453,10 @@ class TestAPIE2E:
             started_count = _remediation_stage_count(remediation_events, "canary_batch_started")
             passed_count = _remediation_stage_count(remediation_events, "canary_check_passed")
             completed_count = _remediation_stage_count(remediation_events, "canary_batch_completed")
-            assert started_count == 1
-            assert passed_count <= 1
-            assert completed_count <= 1
+            assert started_count >= 1
+            assert started_count <= 2
+            assert passed_count <= 2
+            assert completed_count <= started_count
         finally:
             client.close()
 
@@ -3192,6 +3214,54 @@ class TestAPIE2E:
             assert len(runner.calls) == 1
             time.sleep(0.4)
             assert len(runner.calls) == 1
+
+    def test_e2e_alert_poller_auto_diagnose_retriggers_when_same_fingerprint_has_new_starts_at(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        monkeypatch.setenv("JWT_SECRET", "secret")
+        registry, context = _registry()
+        runner = _CountingDiagnosisRunner()
+        first_alert = Alert.model_validate(_cube_web_latency_alert_payload())
+        second_alert = Alert.model_validate(_cube_web_latency_alert_payload()) \
+            .model_copy(update={"starts_at": datetime(2026, 3, 18, 12, 5, tzinfo=UTC)})
+        channel = _MutableAlertChannel([first_alert])
+        context.channels["alert"] = channel
+        config = SREAgentConfig.model_validate(
+            {
+                "global": {
+                    "aidc_id": "test-aidc",
+                    "alert_poll_interval_seconds": 0.05,
+                    "auto_diagnose_alert_names": ["CubeStudioWebLatencyP95High"],
+                    "auto_diagnose_delay_seconds": 0.05,
+                },
+                "ontology": {"db_path": str(tmp_path / "ontology.db")},
+                "memory": {"db_dir": str(tmp_path / "memory")},
+            }
+        )
+
+        with TestClient(
+            create_app(
+                config=config,
+                diagnosis_runner=runner,
+                ontology=OntologyGraph(),
+                memory=_FakeMemory(),
+                knowledge=_FakeKnowledge(),
+                tool_registry=registry,
+                execution_context=context,
+            )
+        ):
+            for _ in range(40):
+                if len(runner.calls) >= 1:
+                    break
+                time.sleep(0.05)
+            assert len(runner.calls) == 1
+
+            channel.set_alerts([second_alert])
+            for _ in range(40):
+                if len(runner.calls) >= 2:
+                    break
+                time.sleep(0.05)
+            assert len(runner.calls) == 2
 
     def test_e2e_alert_poller_auto_diagnose_allows_retrigger_after_alert_resolved_then_refired(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path

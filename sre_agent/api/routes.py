@@ -19,6 +19,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, ConfigDict, Field
 
 from sre_agent.alerts_filter import build_blocked_alert_name_set, is_blocked_alert
+from sre_agent.alerts_identity import build_incident_identity
 from sre_agent.auth.jwt import (
     CurrentUser,
     TokenDecodeError,
@@ -287,6 +288,7 @@ class SessionSummary(BaseModel):
     alert_name: str
     severity: str
     fingerprint: str
+    incident_key: str | None = None
     outcome: str | None = None
     duration_seconds: int = 0
     updated_at: datetime
@@ -2453,6 +2455,7 @@ def build_api_router() -> APIRouter:
                 alert_name=session.alert.alert_name,
                 severity=session.alert.severity.value,
                 fingerprint=session.alert.fingerprint,
+                incident_key=build_incident_identity(session.alert).incident_key,
                 outcome=session.outcome,
                 duration_seconds=session.duration_seconds,
                 updated_at=updated_at,
@@ -2942,15 +2945,24 @@ def build_api_router() -> APIRouter:
             details={
                 "plan_id": result.plan_id,
                 "error": result.error or "execution failed",
+                "error_code": result.error_code,
+                "error_details": result.error_details,
                 "rolled_back": result.rolled_back,
                 "plan_version": requested_plan_version,
                 "step_results": step_results,
                 "message": "修复执行失败",
             },
         )
+        error_code = ErrorCode.REMEDIATION_EXECUTION_FAILED
+        if str(result.error_code or "").strip().lower() == "stale_or_mismatched_pid":
+            error_code = ErrorCode.REMEDIATION_STALE_OR_MISMATCHED_PID
         return SREResponse(
             success=False,
-            error=SREError(code=ErrorCode.REMEDIATION_EXECUTION_FAILED, message=result.error or "execution failed"),
+            error=SREError(
+                code=error_code,
+                message=result.error or "execution failed",
+                details=result.error_details,
+            ),
             trace_id=trace_id,
         )
 

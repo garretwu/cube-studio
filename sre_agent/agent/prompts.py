@@ -47,6 +47,7 @@ Final JSON shape:
     "root_cause_layer": "hardware|network|os|platform|service",
     "root_cause_entities": ["string"],
     "confidence": 0.0,
+    "next_action": "中文下一步动作，说明用户应审批、补充验证或暂缓处置",
     "hypotheses": [
       {
         "description": "中文假设描述，可保留英文专业词汇",
