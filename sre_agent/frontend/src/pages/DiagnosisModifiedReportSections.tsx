@@ -1,4 +1,4 @@
-﻿import { useEffect, useState, type ReactNode } from "react";
+﻿import { useEffect, useRef, useState, type ReactNode } from "react";
 import type { TopologyLayer, TopologyObject, TopologyObjectType, TopologyRelation } from "../api/types";
 import TopologyCanvas from "../features/topologyExplorer/components/TopologyCanvas";
 import "../features/topologyExplorer/topologyExplorer.css";
@@ -42,6 +42,32 @@ export function ReportBadge({
     >
       {label}
     </span>
+  );
+}
+
+function ReportBadgeButton({
+  label,
+  tone = "neutral",
+  active = false,
+  onClick,
+}: {
+  label: string;
+  tone?: ReportTone;
+  active?: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      className={cn(
+        "diagnosis-modified-badge",
+        `diagnosis-modified-badge--${tone}`,
+        active && "diagnosis-modified-badge--active",
+      )}
+      onClick={onClick}
+      type="button"
+    >
+      {label}
+    </button>
   );
 }
 
@@ -129,20 +155,40 @@ export function ReportOverview({
 }: {
   view: DiagnosisModifiedReportView["overview"];
 }) {
-  const metaItems = [
-    {
-      key: "alert",
-      label: "Alert",
-      value: view.alertName || "--",
-      title: view.alertName || "--",
-    },
-    {
-      key: "updated",
-      label: "Updated",
-      value: view.updatedAt || "--",
-      title: view.updatedAt || "--",
-    },
-  ];
+  type MetaItem = {
+    key: string;
+    label: string;
+    value: string;
+    title: string;
+    tone?: ReportTone;
+  };
+
+  const metaItems: MetaItem[] = view.isDefaultPreview
+    ? view.severityLabel
+      ? [
+          {
+            key: "severity",
+            label: "Severity",
+            value: view.severityLabel,
+            title: view.severityLabel,
+            tone: "warning",
+          },
+        ]
+      : []
+    : [
+        {
+          key: "alert",
+          label: "Alert",
+          value: view.alertName || "--",
+          title: view.alertName || "--",
+        },
+        {
+          key: "updated",
+          label: "Updated",
+          value: view.updatedAt || "--",
+          title: view.updatedAt || "--",
+        },
+      ];
 
   return (
     <header
@@ -179,6 +225,7 @@ export function ReportOverview({
                 className={cn(
                   "diagnosis-modified-report-rail__inline-meta-item",
                   item.key === "alert" && "diagnosis-modified-report-rail__inline-meta-item--alert",
+                  item.tone && `diagnosis-modified-report-rail__inline-meta-item--${item.tone}`,
                 )}
                 key={item.key}
               >
@@ -192,6 +239,86 @@ export function ReportOverview({
         </div>
       </div>
     </header>
+  );
+}
+
+export type ReportEmptyPreviewModuleView = {
+  key: "context" | "hypotheses" | "rootCause";
+  title: string;
+  description: string;
+  lines: number;
+};
+
+export const DEFAULT_REPORT_PREVIEW_MODULES: ReportEmptyPreviewModuleView[] = [
+  {
+    key: "context",
+    title: "诊断拓扑信息",
+    description: "用于展示上下游依赖、受影响实体与拓扑关联关系。",
+    lines: 2,
+  },
+  {
+    key: "hypotheses",
+    title: "候选假设验证",
+    description: "用于呈现候选根因、验证依据与置信度变化。",
+    lines: 2,
+  },
+  {
+    key: "rootCause",
+    title: "根因结论和修复方案",
+    description: "用于沉淀最终根因判断，并关联后续修复结论。",
+    lines: 2,
+  },
+] as const;
+
+export function ReportEmptyPreviewModule({
+  title,
+  description,
+  lines = 2,
+  index = 0,
+  dataTestId = "diagnosis-modified-report-empty-preview-module",
+}: {
+  title: string;
+  description: string;
+  lines?: number;
+  index?: number;
+  dataTestId?: string;
+}) {
+  return (
+    <section
+      className="diagnosis-modified-report-rail__empty-preview-module"
+      data-testid={dataTestId}
+      style={{ animationDelay: `${index * 45}ms` }}
+    >
+      <div className="diagnosis-modified-report-rail__empty-preview-copy">
+        <h3 className="diagnosis-modified-report-rail__empty-preview-title">{title}</h3>
+        <p className="diagnosis-modified-report-rail__empty-preview-description">
+          {description} 等待该部分诊断结果输出后展示。
+        </p>
+      </div>
+      <div className="diagnosis-modified-report-rail__empty-preview-skeleton" aria-hidden="true">
+        <span className="diagnosis-modified-report-rail__empty-preview-line diagnosis-modified-report-rail__empty-preview-line--long" />
+        {lines > 1 ? (
+          <span className="diagnosis-modified-report-rail__empty-preview-line diagnosis-modified-report-rail__empty-preview-line--medium" />
+        ) : null}
+      </div>
+    </section>
+  );
+}
+
+export function ReportEmptyPreview() {
+  return (
+    <div className="diagnosis-modified-report-rail__empty-preview" data-testid="diagnosis-modified-report-empty-preview">
+      {DEFAULT_REPORT_PREVIEW_MODULES.map((module, index) => (
+        <ReportEmptyPreviewModule
+          dataTestId="diagnosis-modified-report-empty-preview-module"
+          description={module.description}
+          key={module.title}
+          lines={module.lines}
+          title={module.title}
+          index={index}
+        />
+      ))}
+    </div>
   );
 }
 
@@ -273,90 +400,85 @@ export function RootCauseLevelSection({
   const rootCauseItems = rootCause.items ?? [];
   const rootCauseReady = rootCause.state === "ready" && rootCauseItems.length > 0;
   const showCandidateFallback = candidateChanges.length > 0 && hypothesesState !== "ready";
-  const isMultiRootCause = rootCauseItems.length > 1;
-  const rootCauseIdsKey = rootCauseItems.map((item) => item.id).join("|");
-  const [expandedRemediationIds, setExpandedRemediationIds] = useState<string[]>([]);
-
-  useEffect(() => {
-    if (rootCauseItems.length <= 1) {
-      setExpandedRemediationIds(rootCauseItems.map((item) => item.id));
-      return;
-    }
-    setExpandedRemediationIds([]);
-  }, [rootCauseIdsKey, rootCauseItems.length]);
-
-  function toggleItem(itemId: string) {
-    setExpandedRemediationIds((previous) =>
-      previous.includes(itemId) ? previous.filter((id) => id !== itemId) : [...previous, itemId],
-    );
-  }
-
-  function expandAll() {
-    setExpandedRemediationIds(rootCauseItems.map((item) => item.id));
-  }
-
-  function collapseAll() {
-    setExpandedRemediationIds([]);
-  }
 
   return (
     <div className="diagnosis-modified-report-rail__level-stack">
       {rootCauseReady ? (
         <>
-          {isMultiRootCause ? (
-            <div className="diagnosis-modified-report-rail__rootcause-actions">
-              <button
-                className="diagnosis-modified-report-rail__candidate-detail-toggle"
-                onClick={expandAll}
-                type="button"
-              >
-                Expand all remediation plans
-              </button>
-              <button
-                className="diagnosis-modified-report-rail__candidate-detail-toggle"
-                onClick={collapseAll}
-                type="button"
-              >
-                Collapse all remediation plans
-              </button>
-            </div>
-          ) : null}
           <div className="diagnosis-modified-report-rail__stack">
             {rootCauseItems.map((item) => {
-              const isExpanded = expandedRemediationIds.includes(item.id);
+              const remediationSummary = String(item.remediation?.detail ?? "").trim();
+              const rankFact = item.facts.find((fact) => fact.label.trim().toLowerCase() === "rank");
+              const rankToken =
+                rankFact?.value?.trim() ||
+                (item.rankLabel ? `#${item.rankLabel.match(/\d+/)?.[0] ?? ""}`.replace(/#$/, "") : "");
+              const displayTitle = rankToken ? `RANK ${rankToken}：${item.title}` : item.title;
+              const layerFact = item.facts.find((fact) => fact.label.trim().toLowerCase() === "layer");
+              const entitiesFact = item.facts.find((fact) => fact.label.trim().toLowerCase() === "entities");
+              const confidenceFact = item.facts.find((fact) => fact.label.trim().toLowerCase() === "confidence");
+              const layerValue = layerFact?.value?.trim();
+              const entitiesValue = entitiesFact?.value?.trim();
+              const hasLayer = Boolean(layerValue && layerValue !== "--");
+              const hasEntities = Boolean(entitiesValue && entitiesValue !== "--");
+              const rootCauseMetaParts = [
+                hasLayer ? `层级：${layerValue}` : null,
+                hasEntities ? `实体：${entitiesValue}` : null,
+              ].filter((part): part is string => Boolean(part));
+              const visibleFacts = item.facts.filter(
+                (fact) =>
+                  !["rank", "layer", "entities", "confidence"].includes(fact.label.trim().toLowerCase()),
+              );
               return (
                 <article className="diagnosis-modified-report-rail__candidate" key={item.id}>
                   <div className="diagnosis-modified-report-rail__candidate-header">
                     <div className="diagnosis-modified-report-rail__candidate-copy">
-                      <strong>{item.title}</strong>
+                      <strong className="diagnosis-modified-report-rail__rootcause-title">
+                        <span>{displayTitle}</span>
+                        {confidenceFact?.value ? (
+                          <ReportBadge label={`置信度 ${confidenceFact.value}`} tone="neutral" />
+                        ) : null}
+                      </strong>
                       <p>{item.summary}</p>
-                    </div>
-                    <div className="diagnosis-modified-report-rail__candidate-meta">
-                      <ReportBadge
-                        label={item.isPrimary ? "Primary root cause" : "Candidate root cause"}
-                        tone={item.isPrimary ? "accent" : "neutral"}
-                      />
-                      {item.rankLabel ? <span>{item.rankLabel}</span> : null}
+                      {rootCauseMetaParts.length > 0 ? (
+                        <p className="diagnosis-modified-report-rail__rootcause-meta">
+                          {rootCauseMetaParts.join(" · ")}
+                        </p>
+                      ) : null}
+                      {remediationSummary ? (
+                        <div className="diagnosis-modified-report-rail__candidate-remediation">
+                          <div className="diagnosis-modified-report-rail__candidate-remediation-header">
+                            <div className="diagnosis-modified-report-rail__candidate-remediation-title">
+                              <span>修复方案</span>
+                              <ReportBadge label="已生成" tone="success" />
+                            </div>
+                          </div>
+                          <p className="diagnosis-modified-report-rail__candidate-remediation-summary">
+                            <span className="diagnosis-modified-report-rail__candidate-remediation-summary-label">
+                              修复方案总结：
+                            </span>
+                            <span title={remediationSummary}>{remediationSummary}</span>
+                          </p>
+                        </div>
+                      ) : null}
+                      {visibleFacts.length > 0 ? (
+                        <div className="diagnosis-modified-report-rail__candidate-facts" role="list">
+                          {visibleFacts.map((fact) => (
+                            <div
+                              className="diagnosis-modified-report-rail__candidate-fact"
+                              key={`${item.id}-${fact.label}`}
+                              role="listitem"
+                            >
+                              <span>{fact.label}</span>
+                              <strong>{fact.value}</strong>
+                            </div>
+                          ))}
+                        </div>
+                      ) : null}
                     </div>
                   </div>
-                  <div className="diagnosis-modified-report-rail__fact-list">
-                    {item.facts.map((fact) => (
-                      <FactRow fact={fact} key={`${item.id}-${fact.label}`} />
-                    ))}
+                  <div className="diagnosis-modified-report-rail__candidate-details">
+                    <RemediationKeySection hideConclusion remediation={item.remediation} />
                   </div>
-                  <button
-                    aria-expanded={isExpanded}
-                    className="diagnosis-modified-report-rail__candidate-detail-toggle"
-                    onClick={() => toggleItem(item.id)}
-                    type="button"
-                  >
-                    {isExpanded ? "Collapse remediation plan" : "Expand remediation plan"}
-                  </button>
-                  {isExpanded ? (
-                    <div className="diagnosis-modified-report-rail__candidate-details">
-                      <RemediationKeySection remediation={item.remediation} />
-                    </div>
-                  ) : null}
                 </article>
               );
             })}
@@ -635,30 +757,105 @@ function FactRow({ fact }: { fact: DiagnosisModifiedReportFact }) {
   );
 }
 
+function getCandidateCertaintyMeta(label: string | undefined, tone: ReportTone) {
+  const rawLabel = String(label ?? "").trim();
+  const normalized = rawLabel.toLowerCase();
+
+  if (normalized.includes("confirmed") || rawLabel.includes("已确认") || rawLabel.includes("当前根因")) {
+    return { label: "已确认", tone: "success" as const };
+  }
+
+  if (
+    normalized.includes("probable") ||
+    rawLabel.includes("高概率") ||
+    rawLabel.includes("较大概率") ||
+    rawLabel.includes("有可能") ||
+    rawLabel.includes("当前候选") ||
+    rawLabel.includes("候选")
+  ) {
+    return { label: "有可能", tone: "warning" as const };
+  }
+
+  if (
+    normalized.includes("ambiguous") ||
+    rawLabel.includes("模糊") ||
+    rawLabel.includes("证据不足") ||
+    rawLabel.includes("待确认")
+  ) {
+    return { label: "模糊", tone: "neutral" as const };
+  }
+
+  if (tone === "success" || tone === "accent") {
+    return { label: "已确认", tone: "success" as const };
+  }
+
+  if (tone === "warning") {
+    return { label: "有可能", tone: "warning" as const };
+  }
+
+  return { label: "模糊", tone: "neutral" as const };
+}
+
 function HypothesisSection({
   hypotheses,
 }: {
   hypotheses: DiagnosisModifiedHypothesesView;
 }) {
-  const [expandedCollapsedDetails, setExpandedCollapsedDetails] = useState<string[]>([]);
+  const [detailVisibilityOverrides, setDetailVisibilityOverrides] = useState<Record<string, boolean>>({});
+  const [focusTarget, setFocusTarget] = useState<{ itemId: string; group: HypothesisDetailGroupKey } | null>(null);
 
   if (hypotheses.state !== "ready") {
     return <SectionLoading copy="Waiting for report data." variant="list" />;
   }
 
-  function toggleCollapsedDetails(itemId: string) {
-    setExpandedCollapsedDetails((previous) =>
-      previous.includes(itemId) ? previous.filter((id) => id !== itemId) : [...previous, itemId],
-    );
+  function openDetails(itemId: string) {
+    setDetailVisibilityOverrides((previous) => {
+      if (previous[itemId] === true) {
+        return previous;
+      }
+
+      return {
+        ...previous,
+        [itemId]: true,
+      };
+    });
+  }
+
+  function toggleDetails(itemId: string, currentVisibility: boolean) {
+    setDetailVisibilityOverrides((previous) => ({
+      ...previous,
+      [itemId]: !currentVisibility,
+    }));
+  }
+
+  function formatHypothesisTitle(title: string) {
+    return title.replace(/^\s*假设\s*\d+\s*[:：]\s*/u, "").trim() || title.trim();
   }
 
   return (
-    <div className="diagnosis-modified-report-rail__subsection">
+    <div className="diagnosis-modified-report-rail__subsection diagnosis-modified-report-rail__subsection--hypotheses">
+      <div className="diagnosis-modified-report-rail__subsection-header">
+        <p className="diagnosis-modified-report-rail__callout-label">Hypothesis summary</p>
+        <span>{hypotheses.summary}</span>
+      </div>
       <div className="diagnosis-modified-report-rail__stack">
         {hypotheses.items.map((item) => {
-          const showDetails =
-            hypotheses.detailMode === "expanded" || expandedCollapsedDetails.includes(item.id);
-
+          const defaultExpanded = hypotheses.detailMode === "expanded";
+          const showDetails = detailVisibilityOverrides[item.id] ?? defaultExpanded;
+          const certainty = getCandidateCertaintyMeta(item.statusLabel, item.tone);
+          const evidenceMeta = item.evidenceItems.reduce(
+            (acc, entry) => {
+              if (entry.kind === "support") {
+                acc.support += 1;
+              } else if (entry.kind === "against") {
+                acc.against += 1;
+              } else if (entry.kind === "validation") {
+                acc.validation += 1;
+              }
+              return acc;
+            },
+            { support: 0, against: 0, validation: 0 },
+          );
           return (
             <article
               className="diagnosis-modified-report-rail__candidate"
@@ -667,24 +864,69 @@ function HypothesisSection({
             >
               <div className="diagnosis-modified-report-rail__candidate-header">
                 <div className="diagnosis-modified-report-rail__candidate-copy">
-                  <strong>{item.title}</strong>
+                  <strong>{formatHypothesisTitle(item.title)}</strong>
                   <p>{item.summary}</p>
+                  <p>{item.description}</p>
                 </div>
                 <div className="diagnosis-modified-report-rail__candidate-meta">
-                  <ReportBadge label={item.statusLabel} tone={item.tone} />
-                  <span>{item.confidenceLabel}</span>
+                  <div
+                    className={cn(
+                      "diagnosis-modified-report-rail__certainty-chip",
+                      `diagnosis-modified-report-rail__certainty-chip--${certainty.tone}`,
+                    )}
+                  >
+                    <span className="diagnosis-modified-report-rail__certainty-dot" aria-hidden="true" />
+                    <ReportBadge label={certainty.label} tone={certainty.tone} />
+                    <span className="diagnosis-modified-report-rail__certainty-label">置信度</span>
+                    <span className="diagnosis-modified-report-rail__certainty-value">{item.confidenceLabel}</span>
+                  </div>
+                  {evidenceMeta.support > 0 ? (
+                    <ReportBadgeButton
+                      label={`支持 ${evidenceMeta.support}`}
+                      onClick={() => {
+                        openDetails(item.id);
+                        setFocusTarget({ itemId: item.id, group: "support" });
+                      }}
+                      tone="success"
+                    />
+                  ) : null}
+                  {evidenceMeta.against > 0 ? (
+                    <ReportBadgeButton
+                      label={`反证 ${evidenceMeta.against}`}
+                      onClick={() => {
+                        openDetails(item.id);
+                        setFocusTarget({ itemId: item.id, group: "against" });
+                      }}
+                      tone="warning"
+                    />
+                  ) : null}
+                  {evidenceMeta.validation > 0 ? (
+                    <ReportBadgeButton
+                      label={`验证 ${evidenceMeta.validation}`}
+                      onClick={() => {
+                        openDetails(item.id);
+                        setFocusTarget({ itemId: item.id, group: "validation" });
+                      }}
+                      tone="info"
+                    />
+                  ) : null}
+                  <button
+                    aria-expanded={showDetails}
+                    className="diagnosis-modified-report-rail__candidate-detail-toggle diagnosis-modified-report-rail__candidate-detail-toggle--inline"
+                    onClick={() => toggleDetails(item.id, showDetails)}
+                    type="button"
+                  >
+                    {showDetails ? "收起证据链" : "展开证据链"}
+                  </button>
                 </div>
               </div>
-              {hypotheses.detailMode === "collapsed" ? (
-                <button
-                  className="diagnosis-modified-report-rail__candidate-detail-toggle"
-                  onClick={() => toggleCollapsedDetails(item.id)}
-                  type="button"
-                >
-                  {showDetails ? "Collapse details" : "Expand details"}
-                </button>
+              {showDetails ? (
+                <HypothesisDetailSections
+                  focusGroup={focusTarget?.itemId === item.id ? focusTarget.group : null}
+                  item={item}
+                  onFocused={() => setFocusTarget(null)}
+                />
               ) : null}
-              {showDetails ? <HypothesisDetailSections item={item} /> : null}
             </article>
           );
         })}
@@ -693,14 +935,43 @@ function HypothesisSection({
   );
 }
 
+type HypothesisDetailGroupKey = "support" | "against" | "validation" | "confidence";
+
 function HypothesisDetailSections({
   item,
+  focusGroup,
+  onFocused,
 }: {
   item: DiagnosisModifiedHypothesesView["items"][number];
+  focusGroup: HypothesisDetailGroupKey | null;
+  onFocused: () => void;
 }) {
   const supportItems = item.evidenceItems.filter((entry) => entry.kind === "support");
   const againstItems = item.evidenceItems.filter((entry) => entry.kind === "against");
   const validationItems = item.evidenceItems.filter((entry) => entry.kind === "validation");
+  const supportRef = useRef<HTMLDivElement | null>(null);
+  const againstRef = useRef<HTMLDivElement | null>(null);
+  const validationRef = useRef<HTMLDivElement | null>(null);
+  const confidenceRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!focusGroup) {
+      return;
+    }
+
+    const refMap = {
+      support: supportRef,
+      against: againstRef,
+      validation: validationRef,
+      confidence: confidenceRef,
+    } as const;
+
+    const target = refMap[focusGroup].current;
+    if (target) {
+      target.scrollIntoView({ behavior: "smooth", block: "nearest" });
+      onFocused();
+    }
+  }, [focusGroup, onFocused]);
 
   if (
     supportItems.length === 0 &&
@@ -717,26 +988,31 @@ function HypothesisDetailSections({
       data-testid={`diagnosis-modified-hypothesis-details-${item.id}`}
     >
       {supportItems.length > 0 ? (
-        <HypothesisDetailGroup
-          entries={supportItems}
-          title="Support evidence"
-        />
+        <div ref={supportRef}>
+          <HypothesisDetailGroup
+            entries={supportItems}
+            badgeLabel="支持证据"
+          />
+        </div>
       ) : null}
       {againstItems.length > 0 ? (
-        <HypothesisDetailGroup
-          entries={againstItems}
-          title="Counter-evidence"
-        />
+        <div ref={againstRef}>
+          <HypothesisDetailGroup
+            entries={againstItems}
+            badgeLabel="反证"
+          />
+        </div>
       ) : null}
       {validationItems.length > 0 ? (
-        <HypothesisDetailGroup
-          entries={validationItems}
-          title="Further validation"
-        />
+        <div ref={validationRef}>
+          <HypothesisDetailGroup
+            entries={validationItems}
+            badgeLabel="进一步验证"
+          />
+        </div>
       ) : null}
       {item.confidenceUpdates.length > 0 ? (
-        <div className="diagnosis-modified-report-rail__candidate-detail-group">
-          <p className="diagnosis-modified-report-rail__callout-label">Confidence updates</p>
+        <div className="diagnosis-modified-report-rail__candidate-detail-group" ref={confidenceRef}>
           <div className="diagnosis-modified-report-rail__stack">
             {item.confidenceUpdates.map((entry) => (
               <article className="diagnosis-modified-report-rail__feedback" key={entry.id}>
@@ -756,19 +1032,18 @@ function HypothesisDetailSections({
 
 function HypothesisDetailGroup({
   entries,
-  title,
+  badgeLabel,
 }: {
   entries: Array<{ id: string; summary: string; tone: ReportTone }>;
-  title: string;
+  badgeLabel: string;
 }) {
   return (
     <div className="diagnosis-modified-report-rail__candidate-detail-group">
-      <p className="diagnosis-modified-report-rail__callout-label">{title}</p>
       <div className="diagnosis-modified-report-rail__stack">
         {entries.map((entry) => (
           <article className="diagnosis-modified-report-rail__feedback" key={entry.id}>
             <div className="diagnosis-modified-report-rail__feedback-header">
-              <ReportBadge label={title} tone={entry.tone} />
+              <ReportBadge label={badgeLabel} tone={entry.tone} />
             </div>
             <strong>{entry.summary}</strong>
           </article>
@@ -845,28 +1120,34 @@ function CandidateChangesSection({
 
   return (
     <div className="diagnosis-modified-report-rail__stack">
-      {candidateChanges.map((candidate) => (
-        <article className="diagnosis-modified-report-rail__candidate" key={candidate.id}>
-          <div className="diagnosis-modified-report-rail__candidate-header">
-            <div className="diagnosis-modified-report-rail__candidate-copy">
-              <strong>{candidate.title}</strong>
-              <p>{candidate.summary}</p>
+      {candidateChanges.map((candidate) => {
+        const certainty = getCandidateCertaintyMeta(candidate.statusLabel, candidate.tone);
+
+        return (
+          <article className="diagnosis-modified-report-rail__candidate" key={candidate.id}>
+            <div className="diagnosis-modified-report-rail__candidate-header">
+              <div className="diagnosis-modified-report-rail__candidate-copy">
+                <strong>{candidate.title}</strong>
+                <p>{candidate.summary}</p>
+              </div>
+              <div className="diagnosis-modified-report-rail__candidate-meta">
+                <span>{candidate.confidenceLabel}</span>
+                <ReportBadge label={certainty.label} tone={certainty.tone} />
+              </div>
             </div>
-            <div className="diagnosis-modified-report-rail__candidate-meta">
-              <ReportBadge label={candidate.statusLabel} tone={candidate.tone} />
-              <span>{candidate.confidenceLabel}</span>
-            </div>
-          </div>
-        </article>
-      ))}
+          </article>
+        );
+      })}
     </div>
   );
 }
 
 export function RemediationKeySection({
   remediation,
+  hideConclusion = false,
 }: {
   remediation?: DiagnosisModifiedRemediationKeyView;
+  hideConclusion?: boolean;
 }) {
   if (!remediation) {
     return <SectionLoading copy="Waiting for report data." variant="list" />;
@@ -880,15 +1161,24 @@ export function RemediationKeySection({
     return <p className="diagnosis-modified-report-rail__empty">No remediation key points are available yet.</p>;
   }
 
+  const factsToShow = hideConclusion
+    ? remediation.facts.filter((fact) => {
+        const label = fact.label.trim().toLowerCase();
+        return label === "safety" || label === "canary";
+      })
+    : remediation.facts;
+
   return (
     <div className="diagnosis-modified-report-rail__remediation">
-      <div className="diagnosis-modified-report-rail__status-block">
-        <p className="diagnosis-modified-report-rail__callout-label">修复方案结论</p>
-        <strong>{remediation.title}</strong>
-        <p>{remediation.detail}</p>
-      </div>
+      {!hideConclusion ? (
+        <div className="diagnosis-modified-report-rail__status-block">
+          <p className="diagnosis-modified-report-rail__callout-label">修复方案结论</p>
+          <strong>{remediation.title}</strong>
+          <p>{remediation.detail}</p>
+        </div>
+      ) : null}
       <div className="diagnosis-modified-report-rail__fact-list">
-        {remediation.facts.map((fact) => (
+        {factsToShow.map((fact) => (
           <FactRow fact={fact} key={fact.label} />
         ))}
       </div>

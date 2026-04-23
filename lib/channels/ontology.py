@@ -65,6 +65,13 @@ class OntologyChannel(BaseChannel):
             return [str(item) for item in data]
         return [str(data)]
 
+    async def get_neighbors(self, entity_id: str, relation: str | None = None) -> list[dict[str, Any]]:
+        result = await self.execute("get_neighbors", {"entity_id": entity_id, "relation": relation})
+        data = self._unwrap(result, default=[])
+        if isinstance(data, list):
+            return data
+        return []
+
     async def refresh_entity(self, entity_id: str) -> dict[str, Any]:
         result = await self.execute("refresh_entity", {"entity_id": entity_id})
         data = self._unwrap(result, default={})
@@ -105,6 +112,10 @@ class OntologyChannel(BaseChannel):
                 str(params["to_id"]),
             )
             return ChannelResult(success=True, data=self._to_jsonable(data))
+        if action == "get_neighbors":
+            data = await self._invoke_ontology(("get_neighbors",), str(params["entity_id"]))
+            rows = data if isinstance(data, list) else []
+            return ChannelResult(success=True, data=self._to_jsonable(rows))
         if action == "refresh_entity":
             if self._has_any("refresh_entity"):
                 data = await self._invoke_ontology(("refresh_entity",), str(params["entity_id"]))

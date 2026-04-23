@@ -83,6 +83,17 @@ describe("TopologyPage", () => {
     expect(within(popover).getByRole("button", { name: "View topology" })).toBeInTheDocument();
   });
 
+  it("shows the same node action popover when hovering a node", async () => {
+    renderTopologyRoutes();
+
+    const nodeButton = await screen.findByRole("button", { name: /^BMC worker-01 \|/i });
+    fireEvent.mouseEnter(nodeButton);
+
+    const popover = await screen.findByTestId("topology-node-popover");
+    expect(within(popover).getByRole("button", { name: "Isolate" })).toBeInTheDocument();
+    expect(within(popover).getByRole("button", { name: "View topology" })).toBeInTheDocument();
+  });
+
   it("navigates to the object topology page from the node action popover", async () => {
     const user = userEvent.setup();
     renderTopologyRoutes();

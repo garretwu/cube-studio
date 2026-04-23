@@ -191,7 +191,11 @@ function RemediationJumpButton({
 }
 
 function shouldShowFlowRemediationEntry(status?: string) {
-  return FLOW_REMEDIATION_ENTRY_STATUSES.has(String(status ?? "").trim().toLowerCase());
+  const normalizedStatus = String(status ?? "").trim().toLowerCase();
+  if (normalizedStatus === "approval_required" || normalizedStatus === "awaiting_approval") {
+    return false;
+  }
+  return FLOW_REMEDIATION_ENTRY_STATUSES.has(normalizedStatus);
 }
 
 function FlowRemediationEntry({
@@ -252,9 +256,6 @@ function isDemoNarrativeCard(item: DiagnosisModifiedTimelineItem) {
 }
 
 function isTransientLiveTimelineItem(item: DiagnosisModifiedTimelineItem) {
-  if (item.kind === "thinking") {
-    return item.status === "thinking";
-  }
   if (item.kind === "tool") {
     return item.status === "loading";
   }
@@ -286,6 +287,69 @@ function upsertTimelineItems(
 function isTimelineNearBottom(container: HTMLElement, thresholdPx = TIMELINE_AUTO_FOLLOW_BOTTOM_THRESHOLD_PX) {
   const distanceToBottom = container.scrollHeight - container.clientHeight - container.scrollTop;
   return distanceToBottom <= thresholdPx;
+}
+
+function extractLatestThinkingSummary(content: string) {
+  const normalized = normalizeDiagnosisModifiedDisplayText(content);
+  if (!normalized) {
+    return "";
+  }
+  const lines = normalized
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+  const latest = lines.length > 0 ? lines[lines.length - 1] : normalized;
+  return latest.replace(/\s+/g, " ").trim();
+}
+
+function buildThinkingIdentitySet(item: Extract<DiagnosisModifiedTimelineItem, { kind: "thinking" }>) {
+  const identitySet = new Set<string>();
+  if (item.roundId && item.roundId.trim()) {
+    identitySet.add(`round:${item.roundId.trim()}`);
+  }
+  if (item.thoughtKey && item.thoughtKey.trim()) {
+    identitySet.add(`thought:${item.thoughtKey.trim()}`);
+  }
+  return identitySet;
+}
+
+function isSameThinkingRound(
+  first: Extract<DiagnosisModifiedTimelineItem, { kind: "thinking" }>,
+  second: Extract<DiagnosisModifiedTimelineItem, { kind: "thinking" }>,
+) {
+  const firstIdentities = buildThinkingIdentitySet(first);
+  if (firstIdentities.size === 0) {
+    return false;
+  }
+  const secondIdentities = buildThinkingIdentitySet(second);
+  for (const key of secondIdentities) {
+    if (firstIdentities.has(key)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function findCompletedThinkingReplacement(
+  sourceTimeline: DiagnosisModifiedTimelineItem[],
+  streamingItem: Extract<DiagnosisModifiedTimelineItem, { kind: "thinking" }>,
+) {
+  return sourceTimeline.find(
+    (
+      item,
+    ): item is Extract<DiagnosisModifiedTimelineItem, { kind: "thinking" }> =>
+      item.kind === "thinking" &&
+      item.status === "completed" &&
+      isSameThinkingRound(item, streamingItem),
+  );
+}
+
+function clampThinkingPreview(text: string) {
+  const normalized = text.trim();
+  if (normalized.length <= THINKING_PREVIEW_CHAR_LIMIT) {
+    return normalized;
+  }
+  return `${normalized.slice(0, THINKING_PREVIEW_CHAR_LIMIT)}...`;
 }
 
 
@@ -389,6 +453,8 @@ function getTraceSyncStageLabel(stageId: string) {
 function TraceStepFrame({
   type,
   title,
+  hideTitle = false,
+  titleClassName,
   meta,
   summary,
   children,
@@ -397,6 +463,8 @@ function TraceStepFrame({
 }: {
   type: TraceStepKind;
   title: string;
+  hideTitle?: boolean;
+  titleClassName?: string;
   meta?: string;
   summary?: string;
   children?: ReactNode;
@@ -404,6 +472,8 @@ function TraceStepFrame({
   testId?: string;
 }) {
   const typeMeta = TRACE_STEP_META[type];
+  const shouldRenderHeader = !hideTitle || Boolean(meta);
+  const isMetaOnlyHeader = hideTitle && Boolean(meta);
 
   return (
     <li
@@ -414,12 +484,21 @@ function TraceStepFrame({
         <span>{typeMeta.glyph}</span>
       </div>
       <article className="diagnosis-modified-trace-step__body">
-        <header className="diagnosis-modified-trace-step__header">
-          <div>
-            <h3 className="diagnosis-modified-trace-step__title">{title}</h3>
-          </div>
-          {meta ? <span className="diagnosis-modified-trace-step__meta">{meta}</span> : null}
-        </header>
+        {shouldRenderHeader ? (
+          <header
+            className={cn(
+              "diagnosis-modified-trace-step__header",
+              isMetaOnlyHeader && "diagnosis-modified-trace-step__header--meta-only",
+            )}
+          >
+            {!hideTitle ? (
+              <div>
+                <h3 className={cn("diagnosis-modified-trace-step__title", titleClassName)}>{title}</h3>
+              </div>
+            ) : null}
+            {meta ? <span className="diagnosis-modified-trace-step__meta">{meta}</span> : null}
+          </header>
+        ) : null}
         {summary ? <p className="diagnosis-modified-trace-step__summary">{summary}</p> : null}
         {children ? <div className="diagnosis-modified-trace-step__details">{children}</div> : null}
       </article>
@@ -547,44 +626,44 @@ function ThinkingBlock({
   onStreamComplete?: () => void;
 }) {
   const isThinking = item.status === "thinking";
-  const [isExpanded, setIsExpanded] = useState(true);
-  const canToggleCompletedContent = !isThinking && item.content.length > THINKING_PREVIEW_CHAR_LIMIT;
+  const [isExpanded, setIsExpanded] = useState(false);
+  const latestSummaryLine = item.summaryLine?.trim() || extractLatestThinkingSummary(item.content);
+  const hasCompletedContent = !isThinking && item.content.trim().length > 0;
+  const completedPreviewText = clampThinkingPreview(latestSummaryLine || item.content);
 
   useEffect(() => {
     if (isThinking) {
-      setIsExpanded(true);
+      setIsExpanded(false);
       return;
     }
-    setIsExpanded(item.content.length <= THINKING_PREVIEW_CHAR_LIMIT);
+    setIsExpanded(false);
   }, [isThinking, item.content, item.id]);
 
   const durationLabel = formatThoughtDurationLabel(item.thoughtDurationSec);
-  const displayContent =
-    !isThinking && canToggleCompletedContent && !isExpanded
-      ? `${item.content.slice(0, THINKING_PREVIEW_CHAR_LIMIT)}...`
-      : item.content;
 
   if (isThinking) {
     return (
-      <li className="diagnosis-modified-trace-step diagnosis-modified-trace-step--thought">
-        <div className="diagnosis-modified-trace-step__rail" aria-hidden="true">
-          <span className="diagnosis-modified-thinking__stream-rail-icon">
-            <span className="diagnosis-modified-thinking__pulse" />
-          </span>
+      <TraceStepFrame meta="Thinking..." title="推理中" type="thought">
+        <div className="diagnosis-modified-process-row">
+          <div className="diagnosis-modified-process-row__body">
+            <div className="diagnosis-modified-thinking__stream-body">
+              <span className="diagnosis-modified-thinking__stream-rail-icon" aria-hidden="true">
+                <span className="diagnosis-modified-thinking__pulse" />
+              </span>
+              <StreamingText
+                animate={animate}
+                onComplete={onStreamComplete}
+                text={latestSummaryLine}
+                className="diagnosis-modified-thinking__stream-text diagnosis-modified-thinking__stream-text--single-line"
+              />
+            </div>
+          </div>
         </div>
-        <div className="diagnosis-modified-thinking__stream-body">
-          <StreamingText
-            animate={animate}
-            onComplete={onStreamComplete}
-            text={item.content}
-            className="diagnosis-modified-thinking__stream-text"
-          />
-        </div>
-      </li>
+      </TraceStepFrame>
     );
   }
 
-  if (!canToggleCompletedContent) {
+  if (!hasCompletedContent) {
     return (
       <TraceStepFrame
         meta={durationLabel}
@@ -596,7 +675,7 @@ function ThinkingBlock({
             <div className="diagnosis-modified-thinking__content">
               {item.toolName ? <p className="diagnosis-modified-thinking__tool">{item.toolName}</p> : null}
               <p>
-                <StreamingText text={displayContent} />
+                <StreamingText text={item.content} />
               </p>
             </div>
           </div>
@@ -613,6 +692,7 @@ function ThinkingBlock({
     >
       <div className="diagnosis-modified-process-row">
         <div className="diagnosis-modified-process-row__body">
+          <>
         <button
           className={cn("diagnosis-modified-thinking__toggle", "diagnosis-modified-thinking__toggle--interactive")}
           onClick={() => {
@@ -630,16 +710,20 @@ function ThinkingBlock({
           </span>
           {item.toolName ? <span className="diagnosis-modified-thinking__tool">{item.toolName}</span> : null}
         </button>
+        {!isExpanded ? (
+          <p className="diagnosis-modified-thinking__summary-line">{completedPreviewText}</p>
+        ) : null}
 
         {isExpanded ? (
           <div className="diagnosis-modified-thinking__panel">
             <div className="diagnosis-modified-thinking__content">
               <p>
-                <StreamingText text={displayContent} />
+                <StreamingText text={item.content} />
               </p>
             </div>
           </div>
         ) : null}
+          </>
       </div>
       </div>
     </TraceStepFrame>
@@ -1101,8 +1185,32 @@ function DiagnosisModifiedPage() {
   } = useDiagnosisStore();
 
   const liveView = useMemo(() => buildDiagnosisModifiedLiveView(session, messages), [messages, session]);
+  const hasActiveThinkingStream = Boolean(
+    liveThinking &&
+    liveThinking.status === "thinking" &&
+    liveThinking.content.trim().length > 0 &&
+    (liveThinking.node ?? "").trim().toLowerCase() !== "bootstrap",
+  );
+  const activeStreamingThinkingItem = useMemo<Extract<DiagnosisModifiedTimelineItem, { kind: "thinking" }> | null>(() => {
+    if (!hasActiveThinkingStream || !liveThinking) {
+      return null;
+    }
+    return {
+      id: liveThinking.round_id ?? `live-thinking-${liveThinking.thought_key}`,
+      kind: "thinking",
+      title: "Agent is analyzing the request",
+      content: normalizeDiagnosisModifiedDisplayText(liveThinking.content),
+      timestamp: liveThinking.timestamp,
+      toolName: liveThinking.tool_name ?? undefined,
+      status: "thinking",
+      thoughtKey: liveThinking.thought_key,
+      roundId: liveThinking.round_id ?? null,
+      phase: "streaming",
+      summaryLine: extractLatestThinkingSummary(liveThinking.content),
+    };
+  }, [hasActiveThinkingStream, liveThinking]);
   const liveTimelineSource = useMemo<DiagnosisModifiedTimelineItem[]>(() => {
-    const timeline = [...liveView.timeline];
+    let timeline = [...liveView.timeline];
     const normalizedAlertName = normalizeDiagnosisModifiedDisplayText(alertSnapshot?.alert_name ?? session?.alert.alert_name ?? "");
     const severity = normalizeDiagnosisModifiedDisplayText(alertSnapshot?.severity ?? session?.alert.severity ?? "");
     const topologySummary = normalizeDiagnosisModifiedDisplayText(topologyContext?.summary ?? "");
@@ -1134,21 +1242,14 @@ function DiagnosisModifiedPage() {
       });
     }
 
-    if (
-      liveThinking &&
-      liveThinking.status === "thinking" &&
-      liveThinking.content.trim().length > 0 &&
-      (liveThinking.node ?? "").trim().toLowerCase() !== "bootstrap"
-    ) {
-      timeline.push({
-        id: liveThinking.round_id ?? `live-thinking-${liveThinking.thought_key}`,
-        kind: "thinking",
-        title: "Agent is analyzing the request",
-        content: normalizeDiagnosisModifiedDisplayText(liveThinking.content),
-        timestamp: liveThinking.timestamp,
-        toolName: liveThinking.tool_name ?? undefined,
-        status: "thinking",
+    if (activeStreamingThinkingItem) {
+      timeline = timeline.filter((item) => {
+        if (item.kind !== "thinking" || item.status !== "completed") {
+          return true;
+        }
+        return !isSameThinkingRound(item, activeStreamingThinkingItem);
       });
+      timeline.push(activeStreamingThinkingItem);
     }
 
     activeStreamingTools.forEach((toolCall, index) => {
@@ -1189,6 +1290,8 @@ function DiagnosisModifiedPage() {
     liveFinalAnswer,
     liveThinking,
     liveView.timeline,
+    activeStreamingThinkingItem,
+    hasActiveThinkingStream,
     session?.alert.alert_name,
     session?.alert.severity,
     session?.alert.starts_at,
@@ -1479,7 +1582,13 @@ function DiagnosisModifiedPage() {
       clearDemoToolLoadingStates();
       clearLiveToolWaiters();
     },
-    [clearDemoTimers, clearDemoToolLoadingStates, clearLiveToolWaiters, clearPendingMessageStreams, clearPendingThinkingStreams],
+    [
+      clearDemoTimers,
+      clearDemoToolLoadingStates,
+      clearLiveToolWaiters,
+      clearPendingMessageStreams,
+      clearPendingThinkingStreams,
+    ],
   );
 
   const resolveMessageStream = useCallback((messageId: string) => {
@@ -1722,6 +1831,22 @@ function DiagnosisModifiedPage() {
       current.flatMap((item) => {
         const latest = sourceById.get(item.id);
         if (!latest) {
+          if (item.kind === "thinking" && item.status === "thinking") {
+            const replacement = findCompletedThinkingReplacement(sourceTimeline, item);
+            if (replacement) {
+              liveDisplayedIdsRef.current.delete(item.id);
+              liveDisplayedIdsRef.current.add(replacement.id);
+              liveQueuedIdsRef.current.delete(replacement.id);
+              return [replacement];
+            }
+            if (
+              hasActiveThinkingStream &&
+              activeStreamingThinkingItem &&
+              (item.id === activeStreamingThinkingItem.id || isSameThinkingRound(item, activeStreamingThinkingItem))
+            ) {
+              return [item];
+            }
+          }
           if (isTransientLiveTimelineItem(item)) {
             return [item];
           }
@@ -1743,7 +1868,9 @@ function DiagnosisModifiedPage() {
     );
 
     const queuedItems = sourceTimeline.filter(
-      (item) => !liveDisplayedIdsRef.current.has(item.id) && !liveQueuedIdsRef.current.has(item.id),
+      (item) =>
+        !liveDisplayedIdsRef.current.has(item.id) &&
+        !liveQueuedIdsRef.current.has(item.id),
     );
 
     if (queuedItems.length > 0) {
@@ -1757,6 +1884,8 @@ function DiagnosisModifiedPage() {
     activeSessionId,
     clearLiveToolWaiters,
     hasLiveSession,
+    hasActiveThinkingStream,
+    activeStreamingThinkingItem,
     liveTimelineSource,
     processLiveQueue,
     routeSessionId,

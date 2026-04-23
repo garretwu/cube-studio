@@ -41,6 +41,15 @@ class CanaryExecutor:
         # Build batches: progressive doubles each round, flat uses fixed size.
         batches = self._build_batches(targets, canary)
         max_batches = min(canary.max_batches, len(batches))
+        if not getattr(canary, "progressive", True) and max_batches > 0 and len(batches) > max_batches:
+            merged_batches = [list(batch) for batch in batches[:max_batches]]
+            overflow_targets: list[str] = []
+            for overflow_batch in batches[max_batches:]:
+                overflow_targets.extend(list(overflow_batch))
+            if overflow_targets:
+                merged_batches[-1].extend(overflow_targets)
+            batches = merged_batches
+            max_batches = len(batches)
         suspect_process_count = len(targets)
 
         total_completed = 0
