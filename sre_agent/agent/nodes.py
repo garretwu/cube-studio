@@ -634,41 +634,12 @@ async def reason_node(
             tool_runs=tool_runs,
         )
         if not coverage_met:
-            forced_calls: list[dict[str, Any]] = []
-            pending_names = {
-                str(item.get("name", "")).strip()
-                for item in pending_tool_calls
-                if isinstance(item, dict)
-            }
-            variables = dict(state.get("variables", {}) or {})
-            alert_snapshot = state.get("alert_snapshot")
-            snapshot = alert_snapshot if isinstance(alert_snapshot, dict) else {}
-            if "gpu_processes" in coverage_missing and "gpu.get_processes" not in pending_names:
-                probe_node = (
-                    str(variables.get("node") or "").strip()
-                    or str(variables.get("node_ip") or "").strip()
-                    or str(snapshot.get("labels", {}).get("node", "") if isinstance(snapshot.get("labels"), dict) else "").strip()
-                )
-                if probe_node:
-                    forced_calls.append(
-                        {
-                            "name": "gpu.get_processes",
-                            "args": {"node": probe_node},
-                            "id": f"ttft-forced-gpu-processes-{step_index}",
-                        }
-                    )
-            if "external_process_find" in coverage_missing and "process.find" not in pending_names:
-                ext_node = _get_ttft_external_node(state)
-                find_args: dict[str, Any] = {"pattern": TTFT_STRICT_PROCESS_FIND_PATTERN}
-                if ext_node:
-                    find_args["node"] = ext_node
-                forced_calls.append(
-                    {
-                        "name": "process.find",
-                        "args": find_args,
-                        "id": f"ttft-forced-process-find-{step_index}",
-                    }
-                )
+            forced_calls = _build_ttft_forced_coverage_calls(
+                state=state,
+                coverage_missing=coverage_missing,
+                step_index=step_index,
+                pending_tool_calls=pending_tool_calls,
+            )
             if forced_calls:
                 pending_tool_calls = forced_calls
                 updated_trace.append(
@@ -681,8 +652,43 @@ async def reason_node(
                         "tool_params": pending_tool_calls[0].get("args", {}),
                         "confidence": None,
                         "meta": {
+                            "reason": "ttft_coverage_gate",
                             "ttft_coverage_met": False,
                             "coverage_missing": coverage_missing,
+                            "forced_calls": [str(call.get("name", "")).strip() for call in pending_tool_calls],
+                        },
+                    }
+                )
+
+    if not pending_tool_calls and _is_ttft_alert_state(state):
+        tool_runs = list(state.get("tool_runs", []) or [])
+        coverage_met, coverage_missing = _evaluate_ttft_min_coverage(
+            state=state,
+            tool_runs=tool_runs,
+        )
+        if not coverage_met and not _is_ttft_external_probe_blocked(state=state, tool_runs=tool_runs):
+            forced_calls = _build_ttft_forced_coverage_calls(
+                state=state,
+                coverage_missing=coverage_missing,
+                step_index=step_index,
+                pending_tool_calls=[],
+            )
+            if forced_calls:
+                pending_tool_calls = forced_calls
+                updated_trace.append(
+                    {
+                        "type": "thought",
+                        "step": step_index,
+                        "content": "TTFT 覆盖未完成，拦截 finalize 并强制补齐最小取证。",
+                        "action": "tool_call",
+                        "tool_name": pending_tool_calls[0]["name"],
+                        "tool_params": pending_tool_calls[0].get("args", {}),
+                        "confidence": None,
+                        "meta": {
+                            "reason": "ttft_coverage_gate",
+                            "ttft_coverage_met": False,
+                            "coverage_missing": coverage_missing,
+                            "forced_calls": [str(call.get("name", "")).strip() for call in pending_tool_calls],
                         },
                     }
                 )
@@ -957,6 +963,7 @@ async def reason_node(
     # 即注入 process.find 并继续诊断，不依赖 remediation_plan 是否已生成。
     if _is_ttft_alert_state(state) and not state.get("_ttft_external_probe_injected"):
         _tool_runs = list(state.get("tool_runs", []) or [])
+        probe_blocked = _is_ttft_external_probe_blocked(state=state, tool_runs=_tool_runs)
         coverage_met, coverage_missing = _evaluate_ttft_min_coverage(
             state=state,
             tool_runs=_tool_runs,
@@ -964,6 +971,7 @@ async def reason_node(
         _ext_node = _get_ttft_external_node(state)
         if (
             not coverage_met
+            and not probe_blocked
             and "external_process_find" in coverage_missing
             and _ext_node
             and not _has_probed_ttft_external_node(_tool_runs, _ext_node)
@@ -3127,6 +3135,65 @@ def _evaluate_ttft_min_coverage(
     return len(missing) == 0, missing
 
 
+def _build_ttft_forced_coverage_calls(
+    *,
+    state: SREAgentState,
+    coverage_missing: list[str],
+    step_index: int,
+    pending_tool_calls: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    pending_names = {
+        str(item.get("name", "")).strip()
+        for item in list(pending_tool_calls or [])
+        if isinstance(item, dict)
+    }
+    forced_calls: list[dict[str, Any]] = []
+
+    variables = dict(state.get("variables", {}) or {})
+    alert_snapshot = state.get("alert_snapshot")
+    snapshot = alert_snapshot if isinstance(alert_snapshot, dict) else {}
+    if "gpu_processes" in coverage_missing and "gpu.get_processes" not in pending_names:
+        probe_node = (
+            str(variables.get("node") or "").strip()
+            or str(variables.get("node_ip") or "").strip()
+            or str(snapshot.get("labels", {}).get("node", "") if isinstance(snapshot.get("labels"), dict) else "").strip()
+        )
+        if probe_node:
+            forced_calls.append(
+                {
+                    "name": "gpu.get_processes",
+                    "args": {"node": probe_node},
+                    "id": f"ttft-forced-gpu-processes-{step_index}",
+                }
+            )
+
+    if "external_process_find" in coverage_missing and "process.find" not in pending_names:
+        ext_node = _get_ttft_external_node(state)
+        find_args: dict[str, Any] = {"pattern": TTFT_STRICT_PROCESS_FIND_PATTERN}
+        if ext_node:
+            find_args["node"] = ext_node
+        forced_calls.append(
+            {
+                "name": "process.find",
+                "args": find_args,
+                "id": f"ttft-forced-process-find-{step_index}",
+            }
+        )
+    return forced_calls
+
+
+def _is_ttft_external_probe_blocked(
+    *,
+    state: SREAgentState,
+    tool_runs: list[dict[str, Any]],
+) -> bool:
+    variables = dict(state.get("variables", {}) or {})
+    blocked_reason = str(variables.get("ttft_external_probe_blocked_reason", "") or "").strip()
+    external_node = _get_ttft_external_node(state)
+    auth_error = _find_ttft_external_probe_auth_error(tool_runs, external_node)
+    return bool(blocked_reason or auth_error)
+
+
 def _find_ttft_external_probe_auth_error(
     tool_runs: list[dict[str, Any]],
     external_node: str,
@@ -5235,7 +5302,14 @@ def _build_ttft_kill_process_plan_candidate(
         else:
             continue
         step_params["entity_id"] = f"proc:{target_token}"
-        verification_pattern = extract_ttft_verification_pattern(process_name or target_token)
+        # For canary batching, verify step-level target convergence.
+        # If PID is available, use PID-specific process.find pattern so batch-1
+        # does not require all suspects to disappear at once.
+        verification_pattern: str | None
+        if isinstance(pid, int) and pid > 0:
+            verification_pattern = str(pid)
+        else:
+            verification_pattern = extract_ttft_verification_pattern(process_name or target_token)
         if not verification_pattern:
             filtered_targets += 1
             _llm_logger.info(

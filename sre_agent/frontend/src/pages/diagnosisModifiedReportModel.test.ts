@@ -751,6 +751,70 @@ describe("buildDiagnosisModifiedReportView", () => {
     expect(view.hypotheses.items[0]?.confidenceUpdates[1]?.summary).toContain("86%");
   });
 
+  it("filters prompt-like hypothesis summaries and evidence payloads from display", () => {
+    const session = createSession("diagnosing");
+    session.diagnosis_result = null;
+
+    const noisyPrompt =
+      "query=Diagnose the operational issue described by the alert below using a read-only ReAct workflow. " +
+      "This is AIServiceTTFT diagnosis; prioritize deterministic service->pod->node->gpu evidence chain before broad exploration. " +
+      "Available read-only tools for this run: [\"gpu.get_processes\"].";
+
+    const view = buildDiagnosisModifiedReportView({
+      session,
+      timeline: [],
+      candidates: [
+        {
+          id: "candidate-noise-filter",
+          title: "GPU 争用",
+          summary: noisyPrompt,
+          confidence: 0.74,
+          confidenceLabel: "74%",
+          statusLabel: "当前根因",
+          statusTone: "accent",
+          evidenceFor: [noisyPrompt, "GPU util 持续 99%，请求排队时长同步抬升。"],
+          evidenceAgainst: [noisyPrompt],
+          entities: ["worker-03"],
+          rank: 1,
+          evidenceSummary: noisyPrompt,
+          distinguishingVerification: noisyPrompt,
+          isPrimary: true,
+        },
+      ],
+      candidateSnapshots: [
+        {
+          id: "candidate-noise-filter-snapshot",
+          timestamp: "2026-04-08T10:05:00.000Z",
+          candidates: [
+            {
+              id: "candidate-noise-filter",
+              title: "GPU 争用",
+              summary: noisyPrompt,
+              confidence: 0.74,
+              confidenceLabel: "74%",
+              statusLabel: "当前根因",
+              statusTone: "accent",
+              evidenceFor: [noisyPrompt, "GPU util 持续 99%，请求排队时长同步抬升。"],
+              evidenceAgainst: [noisyPrompt],
+              entities: ["worker-03"],
+              rank: 1,
+              evidenceSummary: noisyPrompt,
+              distinguishingVerification: noisyPrompt,
+              isPrimary: true,
+            },
+          ],
+        },
+      ],
+      events: [],
+      localAuditRecords: [],
+    });
+
+    expect(view.hypotheses.items[0]?.summary).toBe("");
+    expect(view.hypotheses.items[0]?.evidenceItems.map((item) => item.summary)).toEqual([
+      "GPU util 持续 99%，请求排队时长同步抬升。",
+    ]);
+  });
+
   it("keeps support-evidence tone consistent across primary and non-primary hypotheses", () => {
     const candidateSnapshots = createCandidateSnapshots();
     const session = createSession("diagnosing");
