@@ -360,6 +360,32 @@ describe("buildDiagnosisModifiedLiveView next-action narration", () => {
     expect(firstNextAction?.id).toBe("diagnosis-result-next-action-sess-live-1");
     expect(secondNextAction?.id).toBe("diagnosis-result-next-action-sess-live-1");
   });
+
+  it("passes remediation message metadata through for timeline ordering decisions", () => {
+    const session = createSession([]);
+    const view = buildDiagnosisModifiedLiveView(session, [
+      {
+        id: "assistant-remediation-progress",
+        role: "assistant",
+        content: "审批通过，准备执行修复",
+        created_at: "2026-04-08T11:20:00.000Z",
+        metadata: {
+          event_type: "remediation_progress",
+          event_key: "remediation_progress:execution_sync:2026-04-08T11:20:00.000Z",
+        },
+      },
+    ]);
+
+    const remediationMessage = view.timeline.find(
+      (item): item is Extract<DiagnosisModifiedTimelineItem, { kind: "message" }> =>
+        item.kind === "message" && item.sourceEventType === "remediation_progress",
+    );
+
+    expect(remediationMessage).toBeDefined();
+    expect(remediationMessage?.sourceEventKey).toBe(
+      "remediation_progress:execution_sync:2026-04-08T11:20:00.000Z",
+    );
+  });
 });
 describe("buildDiagnosisModifiedDemoScenario ReAct cadence", () => {
   it("ensures every thinking append is followed by an assistant conclusion append", () => {

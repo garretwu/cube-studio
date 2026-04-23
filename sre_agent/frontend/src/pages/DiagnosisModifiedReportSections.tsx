@@ -295,11 +295,22 @@ export function ReportEmptyPreviewModule({
           {description} 等待该部分诊断结果输出后展示。
         </p>
       </div>
-      <div className="diagnosis-modified-report-rail__empty-preview-skeleton" aria-hidden="true">
-        <span className="diagnosis-modified-report-rail__empty-preview-line diagnosis-modified-report-rail__empty-preview-line--long" />
-        {lines > 1 ? (
-          <span className="diagnosis-modified-report-rail__empty-preview-line diagnosis-modified-report-rail__empty-preview-line--medium" />
-        ) : null}
+      <div
+        className="diagnosis-modified-report-rail__loading-progress"
+        data-testid={`${dataTestId}-progress`}
+        aria-hidden="true"
+      >
+        {Array.from({ length: Math.max(2, lines + 1) }).map((_, progressIndex) => (
+          <span
+            className={cn(
+              "diagnosis-modified-report-rail__loading-progress-line",
+              progressIndex === 0 && "diagnosis-modified-report-rail__loading-progress-line--long",
+              progressIndex > 0 && progressIndex < 2 && "diagnosis-modified-report-rail__loading-progress-line--medium",
+              progressIndex >= 2 && "diagnosis-modified-report-rail__loading-progress-line--short",
+            )}
+            key={`${dataTestId}-progress-${progressIndex}`}
+          />
+        ))}
       </div>
     </section>
   );
