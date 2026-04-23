@@ -1046,13 +1046,22 @@ export const apiClient = {
     return loop;
   },
 
-  approveRemediation: async (sessionId: string, approved: boolean, user = "ui-operator", planVersion?: number) => {
+  approveRemediation: async (
+    sessionId: string,
+    approved: boolean,
+    user = "ui-operator",
+    planVersion?: number,
+    planKey?: string,
+    approveAll?: boolean,
+  ) => {
     const response = await api.post<SREApiEnvelope<RemediationResult> | RemediationResult>(
       `/api/remediate/${sessionId}/approve`,
       {
         approved,
         user,
         plan_version: planVersion,
+        plan_key: planKey,
+        approve_all: approveAll,
       },
       {
         timeout: APPROVE_REMEDIATION_TIMEOUT_MS,
@@ -1061,7 +1070,12 @@ export const apiClient = {
     return unwrapPayload(response.data);
   },
 
-  reviseRemediationPlan: async (sessionId: string, instruction: string, basePlanVersion?: number) => {
+  reviseRemediationPlan: async (
+    sessionId: string,
+    instruction: string,
+    basePlanVersion?: number,
+    planKey?: string,
+  ) => {
     const response = await api.post<
       SREApiEnvelope<{
         session_id: string;
@@ -1072,6 +1086,7 @@ export const apiClient = {
     >(`/api/remediate/${sessionId}/plan/revise`, {
       instruction,
       base_plan_version: basePlanVersion,
+      plan_key: planKey,
     });
     return unwrapPayload(response.data);
   },
@@ -1191,7 +1206,7 @@ export const apiClient = {
         session_id: loop.session_id,
         plan: {
           plan_id: loop.session_id,
-          root_cause: loop.winning_candidate?.root_cause ?? "pending",
+          root_cause: loop.winning_candidate?.title ?? "pending",
           description: "Derived from loop result",
           steps: [],
           estimated_impact: "unknown",

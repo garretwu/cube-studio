@@ -2,6 +2,7 @@ import { create } from "zustand";
 
 import { apiClient } from "../api/client";
 import type { LoopResult, RemediationOverview, SessionEvent, WSEvent } from "../api/types";
+import { getPrimaryPlanKey } from "../pages/rootCauseModel";
 
 type RealtimeState = "connecting" | "open" | "closed" | "error";
 
@@ -61,6 +62,25 @@ function getLastEventId(events: SessionEvent[]): string | undefined {
     const eventId = getEventId(events[index]);
     if (eventId) {
       return eventId;
+    }
+  }
+  return undefined;
+}
+
+function derivePlanKeyFromEvents(events: SessionEvent[]): string | undefined {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const data = isRecord(events[index]?.data) ? events[index].data : {};
+    const explicit = typeof data.plan_key === "string" ? data.plan_key.trim() : "";
+    if (explicit) {
+      return explicit;
+    }
+    const planKeys = Array.isArray(data.plan_keys)
+      ? data.plan_keys
+          .map((item) => (typeof item === "string" ? item.trim() : ""))
+          .filter((item) => item.length > 0)
+      : [];
+    if (planKeys.length > 0) {
+      return planKeys[0];
     }
   }
   return undefined;
@@ -199,6 +219,13 @@ export const useRemediationStore = create<RemediationState>((set, get) => ({
     if (!sessionId) {
       return;
     }
+    let planKey =
+      derivePlanKeyFromEvents(state.events) ??
+      derivePlanKeyFromEvents(state.overview?.timeline ?? []);
+    if (!planKey) {
+      const session = await apiClient.getDiagnosisSession(sessionId).catch(() => null);
+      planKey = getPrimaryPlanKey(session?.diagnosis_result);
+    }
 
     let pollingStopped = false;
     let pollTimer: number | undefined;
@@ -222,7 +249,7 @@ export const useRemediationStore = create<RemediationState>((set, get) => ({
     }
 
     try {
-      await apiClient.approveRemediation(sessionId, approved, "ui-operator", planVersion);
+      await apiClient.approveRemediation(sessionId, approved, "ui-operator", planVersion, planKey);
     } finally {
       pollingStopped = true;
       if (pollTimer !== undefined && typeof window !== "undefined") {

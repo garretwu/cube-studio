@@ -22,6 +22,7 @@ import type {
   WSEvent,
 } from "../api/types";
 import { formatDateTime } from "../utils/format";
+import { getPrimaryPlan, getPrimaryPlanKey, getPrimaryRootCause } from "../pages/rootCauseModel";
 
 type ConnectionState = "connecting" | "open" | "closed" | "error";
 type BootstrapStatus = "idle" | "loading" | "ready" | "empty" | "error";
@@ -39,6 +40,7 @@ export type ApprovalDecisionInput = {
   approved: boolean;
   reason?: string;
   user?: string;
+  planKey?: string;
 };
 
 type DiagnosisState = {
@@ -581,39 +583,46 @@ function toTraceEntryFromNodeSnapshot(
   return null;
 }
 
-function sortByCandidateRank(left: { rank?: number }, right: { rank?: number }) {
-  const lhs = Number(left.rank ?? Number.POSITIVE_INFINITY);
-  const rhs = Number(right.rank ?? Number.POSITIVE_INFINITY);
-  return lhs - rhs;
-}
-
 function extractRecommendedPlan(session: DiagnosisSession | undefined): RemediationPlan | null {
+  /**
+   * Extract the single effective remediation plan.
+   *
+   * Purpose:
+   * - keep store-level plan selection consistent with first-root-cause strategy.
+   * Input/Output:
+   * - input: optional diagnosis session;
+   * - output: remediation plan or null.
+   * Compatibility rationale:
+   * - no fallback to removed ranked-candidate plans.
+   * Why:
+   * - this migration intentionally avoids multi-plan execution in store workflows.
+   */
   if (!session?.diagnosis_result) {
     return null;
   }
-  if (session.diagnosis_result.recommended_fix) {
-    return session.diagnosis_result.recommended_fix;
-  }
-  const rankedCandidates = [...(session.diagnosis_result.ranked_candidates ?? [])].sort(sortByCandidateRank);
-  for (const candidate of rankedCandidates) {
-    if (candidate.recommended_fix) {
-      return candidate.recommended_fix;
-    }
-  }
-  return null;
+  return getPrimaryPlan(session.diagnosis_result) ?? null;
 }
 
 function diagnosisResultHasRecommendedPlan(
   diagnosisResult: DiagnosisSession["diagnosis_result"] | null | undefined,
 ): boolean {
+  /**
+   * Check whether diagnosis result currently has one effective remediation plan.
+   *
+   * Purpose:
+   * - gate approval and plan-status UI logic in store selectors.
+   * Input/Output:
+   * - input: optional diagnosis result payload;
+   * - output: boolean.
+   * Compatibility rationale:
+   * - checks top-level and primary root-cause plan only.
+   * Why:
+   * - aligns with current first-root-cause-only remediation policy.
+   */
   if (!diagnosisResult) {
     return false;
   }
-  if (diagnosisResult.recommended_fix) {
-    return true;
-  }
-  const rankedCandidates = diagnosisResult.ranked_candidates ?? [];
-  return rankedCandidates.some((candidate) => Boolean(candidate?.recommended_fix));
+  return Boolean(getPrimaryPlan(diagnosisResult) ?? getPrimaryRootCause(diagnosisResult)?.recommended_fix);
 }
 
 function getEventDataEventId(event: { data?: Record<string, unknown> }): string | undefined {
@@ -1352,6 +1361,7 @@ export const useDiagnosisStore = create<DiagnosisState>((set, get) => ({
   revisePlan: async (instruction: string) => {
     const sessionId = get().activeSessionId;
     const basePlanVersion = get().latestPlanVersion ?? undefined;
+    const planKey = getPrimaryPlanKey(get().session?.diagnosis_result);
     const text = instruction.trim();
     const effectiveInstruction = text || DEFAULT_REVISE_INSTRUCTION;
     if (!sessionId) {
@@ -1365,7 +1375,7 @@ export const useDiagnosisStore = create<DiagnosisState>((set, get) => ({
     });
 
     try {
-      const payload = await apiClient.reviseRemediationPlan(sessionId, effectiveInstruction, basePlanVersion);
+      const payload = await apiClient.reviseRemediationPlan(sessionId, effectiveInstruction, basePlanVersion, planKey);
       const events = await apiClient.getSessionEvents(sessionId).catch(() => []);
       const approvalState = deriveApprovalState(payload.session, events);
       set((state) => ({
@@ -1392,6 +1402,7 @@ export const useDiagnosisStore = create<DiagnosisState>((set, get) => ({
         : inputOrApproved;
     const sessionId = get().activeSessionId;
     const planVersion = get().latestPlanVersion ?? undefined;
+    const selectedPlanKey = input.planKey?.trim() || getPrimaryPlanKey(get().session?.diagnosis_result);
     const reason = input.reason?.trim() || (!input.approved ? "需要人工复核" : undefined);
     const user = resolveDisplayUser(input.user);
 
@@ -1456,7 +1467,7 @@ export const useDiagnosisStore = create<DiagnosisState>((set, get) => ({
     const pollingPromise = pollApprovalEvents();
 
     try {
-      await apiClient.approveRemediation(sessionId, input.approved, user, planVersion);
+      await apiClient.approveRemediation(sessionId, input.approved, user, planVersion, selectedPlanKey);
     } catch (error) {
       keepPollingApprovalEvents = false;
       void pollingPromise.catch(() => undefined);
