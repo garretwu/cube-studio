@@ -21,6 +21,8 @@ export type DiagnosisModifiedTimelineItem =
       content: string;
       timestamp: string;
       label?: string;
+      sourceEventType?: string;
+      sourceEventKey?: string;
     }
   | {
       id: string;
@@ -34,6 +36,7 @@ export type DiagnosisModifiedTimelineItem =
       id: string;
       kind: "thinking";
       title: string;
+      streamingTitle?: string;
       content: string;
       timestamp: string;
       toolName?: string | null;
@@ -541,6 +544,21 @@ function extractDiagnosisNextAction(result: DiagnosisSession["diagnosis_result"]
   return normalized.length > 0 ? normalized : undefined;
 }
 
+function resolveMessageMetadataField(
+  metadata: ChatMessage["metadata"] | undefined,
+  key: string,
+): string | undefined {
+  if (!metadata) {
+    return undefined;
+  }
+  const value = metadata[key];
+  if (typeof value !== "string") {
+    return undefined;
+  }
+  const normalized = normalizeDiagnosisModifiedDisplayText(value).trim();
+  return normalized.length > 0 ? normalized : undefined;
+}
+
 export function buildDiagnosisModifiedLiveView(
   session: DiagnosisSession | undefined,
   messages: ChatMessage[],
@@ -655,7 +673,9 @@ export function buildDiagnosisModifiedLiveView(
       role: message.role === "user" ? "user" : "assistant",
       content: normalizeDiagnosisModifiedDisplayText(message.display?.answer ?? message.content),
       timestamp: message.created_at,
-      label: message.role === "user" ? "User input" : "Agent response",
+      label: message.role === "user" ? "User input" : "修复状态更新",
+      sourceEventType: resolveMessageMetadataField(message.metadata, "event_type"),
+      sourceEventKey: resolveMessageMetadataField(message.metadata, "event_key"),
     });
   });
 

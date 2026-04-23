@@ -15925,6 +15925,43 @@
   gap: 6px;
 }
 
+.diagnosis-modified-report-rail__loading-progress {
+  display: grid;
+  gap: 8px;
+  width: min(100%, 560px);
+  min-height: 82px;
+  padding: 12px 14px;
+  border: 1px solid rgba(96, 165, 250, 0.5);
+  border-radius: 10px;
+  background: linear-gradient(180deg, rgba(239, 246, 255, 0.72) 0%, rgba(248, 250, 252, 0.95) 100%);
+}
+
+.diagnosis-modified-report-rail__loading-progress-line {
+  display: block;
+  height: 8px;
+  border-radius: 999px;
+  background: linear-gradient(
+    90deg,
+    rgba(186, 230, 253, 0.28) 0%,
+    rgba(96, 165, 250, 0.78) 48%,
+    rgba(186, 230, 253, 0.28) 100%
+  );
+  background-size: 220% 100%;
+  animation: diagnosis-modified-report-loading-progress-shimmer 1.15s ease-in-out infinite;
+}
+
+.diagnosis-modified-report-rail__loading-progress-line--long {
+  width: min(100%, 468px);
+}
+
+.diagnosis-modified-report-rail__loading-progress-line--medium {
+  width: min(84%, 400px);
+}
+
+.diagnosis-modified-report-rail__loading-progress-line--short {
+  width: min(66%, 320px);
+}
+
 .diagnosis-modified-report-rail__empty-preview-title {
   margin: 0;
   color: rgba(15, 23, 42, 0.96);
@@ -15961,6 +15998,16 @@
 
 .diagnosis-modified-report-rail__empty-preview-line--medium {
   width: min(72%, 220px);
+}
+
+@keyframes diagnosis-modified-report-loading-progress-shimmer {
+  0% {
+    background-position: 200% 0;
+  }
+
+  100% {
+    background-position: -200% 0;
+  }
 }
 
 .diagnosis-modified-report-rail__candidate-header,
@@ -16805,6 +16852,11 @@
 @media (prefers-reduced-motion: reduce) {
   .diagnosis-modified-report-rail__loading-card::after {
     animation: none;
+  }
+
+  .diagnosis-modified-report-rail__loading-progress-line {
+    animation: none;
+    background: rgba(148, 163, 184, 0.38);
   }
 }
 
