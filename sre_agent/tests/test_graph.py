@@ -1502,7 +1502,7 @@ tags:
             ssh_runs = [item for item in result["tool_runs"] if item.get("tool") == "ssh.run_command"]
             self.assertEqual(len(ssh_runs), 1)
 
-    async def test_cross_round_dedup_uses_normalized_params_with_runtime_defaults(self) -> None:
+    async def test_cross_round_dedup_preserves_explicit_params_over_runtime_defaults(self) -> None:
         llm = _FakeLLM(
             [
                 AIMessage(
@@ -1561,7 +1561,9 @@ tags:
             )
 
             nic_runs = [item for item in result["tool_runs"] if item.get("tool") == "network.get_nic_counters"]
-            self.assertEqual(len(nic_runs), 1)
+            self.assertEqual(len(nic_runs), 2)
+            self.assertEqual(nic_runs[0]["params"].get("namespace"), "nvidia-dcgm")
+            self.assertEqual(nic_runs[1]["params"].get("namespace"), "other-ns")
 
     async def test_loop_guard_triggers_on_repeated_prometheus_family_calls(self) -> None:
         llm = _FakeLLM(
@@ -1635,6 +1637,274 @@ tags:
             self.assertEqual(result["status"], "diagnosed")
             self.assertTrue(result["loop_guard"]["triggered"])
             self.assertEqual(llm.calls[-1]["tool_choice"], "none")
+
+    async def test_act_node_skips_loop_guard_count_while_ttft_coverage_incomplete(self) -> None:
+        session_id = "ttft-incomplete-loop-guard"
+        expected_run = nodes_module._canonicalize_tool_run(
+            {
+                "step": 1,
+                "tool": "network.get_nic_counters",
+                "params": {"node": "worker-03"},
+                "success": True,
+                "data": {
+                    "output": "ok",
+                    "error": "",
+                    "node": "worker-03",
+                    "iface": None,
+                    "source": "ethtool/sysfs counters",
+                },
+                "error": "",
+            },
+            session_id=session_id,
+            source="tool",
+        )
+        recent_fingerprint = nodes_module._build_tool_call_fingerprint(expected_run)
+        state: dict[str, Any] = {
+            "session_id": session_id,
+            "messages": [],
+            "tool_runs": [],
+            "pending_tool_calls": [
+                {
+                    "name": "network.get_nic_counters",
+                    "args": {"node": "worker-03"},
+                    "id": "call-nic",
+                }
+            ],
+            "variables": {},
+            "alert_snapshot": {
+                "alert_name": "AIServiceTTFTP99High",
+                "ttft_external_process_default_node": "10.11.4.13",
+            },
+            "trace_items": [],
+            "step_count": 0,
+            "step_timeout_sec": 5.0,
+            "max_steps": 8,
+            "force_final_turn": False,
+            "loop_guard": {
+                "recent_fingerprint": recent_fingerprint,
+                "repeat_count": 2,
+                "threshold": 2,
+                "recent_family_fingerprint": "network.get_nic_counters",
+                "family_repeat_count": 2,
+                "family_threshold": 2,
+                "triggered": False,
+            },
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state["checkpoint_dir"] = tmpdir
+            result = await nodes_module.act_node(
+                state,
+                registry=build_default_registry(),
+                context=_happy_context(),
+            )
+
+        self.assertEqual(len(result["tool_runs"]), 1)
+        self.assertEqual(result["loop_guard"]["repeat_count"], 2)
+        self.assertEqual(result["loop_guard"]["family_repeat_count"], 2)
+        self.assertFalse(result["loop_guard"]["triggered"])
+        self.assertFalse(result["force_final_turn"])
+
+    async def test_act_node_counts_loop_guard_after_ttft_coverage_met(self) -> None:
+        state: dict[str, Any] = {
+            "session_id": "ttft-complete-loop-guard",
+            "messages": [],
+            "tool_runs": [
+                {
+                    "step": 1,
+                    "tool": "gpu.get_processes",
+                    "params": {"node": "worker-03"},
+                    "success": True,
+                    "data": {"processes": []},
+                    "error": None,
+                },
+                {
+                    "step": 2,
+                    "tool": "process.find",
+                    "params": {"node": "10.11.4.13", "pattern": "load_simulator"},
+                    "success": True,
+                    "data": {"node": "10.11.4.13", "count": 0, "matches": []},
+                    "error": None,
+                },
+            ],
+            "pending_tool_calls": [
+                {
+                    "name": "network.get_nic_counters",
+                    "args": {"node": "worker-03"},
+                    "id": "call-nic",
+                }
+            ],
+            "variables": {},
+            "alert_snapshot": {
+                "alert_name": "AIServiceTTFTP99High",
+                "ttft_external_process_default_node": "10.11.4.13",
+            },
+            "trace_items": [],
+            "step_count": 0,
+            "step_timeout_sec": 5.0,
+            "max_steps": 8,
+            "force_final_turn": False,
+            "loop_guard": {
+                "recent_fingerprint": "previous-tool",
+                "repeat_count": 2,
+                "threshold": 2,
+                "recent_family_fingerprint": "network.get_nic_counters",
+                "family_repeat_count": 2,
+                "family_threshold": 2,
+                "triggered": False,
+            },
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state["checkpoint_dir"] = tmpdir
+            result = await nodes_module.act_node(
+                state,
+                registry=build_default_registry(),
+                context=_happy_context(),
+            )
+
+        self.assertEqual(len(result["tool_runs"]), 3)
+        self.assertEqual(result["loop_guard"]["family_repeat_count"], 3)
+        self.assertTrue(result["loop_guard"]["triggered"])
+        self.assertTrue(result["force_final_turn"])
+
+    async def test_act_node_ttft_first_cross_round_duplicate_does_not_force_final(self) -> None:
+        session_id = "ttft-first-duplicate"
+        gpu_run = nodes_module._canonicalize_tool_run(
+            {
+                "step": 2,
+                "tool": "gpu.get_processes",
+                "params": {"node": "worker-03", "namespace": "service"},
+                "success": True,
+                "data": {"output": "1234 fi_gpu_burn_gpu_cont 127984MiB", "error": ""},
+                "error": "",
+            },
+            session_id=session_id,
+            source="tool",
+        )
+        state: dict[str, Any] = {
+            "session_id": session_id,
+            "messages": [],
+            "tool_runs": [
+                {
+                    "step": 1,
+                    "tool": "process.find",
+                    "params": {"node": "10.11.4.13", "pattern": "load_simulator"},
+                    "success": True,
+                    "data": {"node": "10.11.4.13", "count": 1, "matches": []},
+                    "error": None,
+                },
+                gpu_run,
+            ],
+            "pending_tool_calls": [
+                {
+                    "name": "gpu.get_processes",
+                    "args": {"node": "worker-03", "namespace": "service"},
+                    "id": "call-gpu-duplicate",
+                }
+            ],
+            "variables": {"namespace": "service"},
+            "alert_snapshot": {
+                "alert_name": "AIServiceTTFTP99High",
+                "ttft_external_process_default_node": "10.11.4.13",
+            },
+            "trace_items": [],
+            "step_count": 3,
+            "step_timeout_sec": 5.0,
+            "max_steps": 8,
+            "force_final_turn": False,
+            "loop_guard": {"threshold": 2},
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state["checkpoint_dir"] = tmpdir
+            result = await nodes_module.act_node(
+                state,
+                registry=build_default_registry(),
+                context=_happy_context(),
+            )
+
+        self.assertEqual(len(result["tool_runs"]), 2)
+        self.assertFalse(result["force_final_turn"])
+        self.assertEqual(result["loop_guard"]["duplicate_repeat_count"], 1)
+        duplicate_trace = next(
+            item
+            for item in result["trace_items"]
+            if str((item.get("tool_params") or {}).get("reason", "")) == "cross_round_duplicate"
+        )
+        self.assertEqual(duplicate_trace["action"], "observe")
+        self.assertFalse((duplicate_trace["tool_params"] or {}).get("force_final_turn"))
+
+    async def test_act_node_ttft_repeated_cross_round_duplicate_forces_final_after_threshold(self) -> None:
+        session_id = "ttft-repeated-duplicate"
+        gpu_run = nodes_module._canonicalize_tool_run(
+            {
+                "step": 2,
+                "tool": "gpu.get_processes",
+                "params": {"node": "worker-03", "namespace": "service"},
+                "success": True,
+                "data": {"output": "1234 fi_gpu_burn_gpu_cont 127984MiB", "error": ""},
+                "error": "",
+            },
+            session_id=session_id,
+            source="tool",
+        )
+        duplicate_fingerprint = nodes_module._build_tool_call_fingerprint(gpu_run)
+        state: dict[str, Any] = {
+            "session_id": session_id,
+            "messages": [],
+            "tool_runs": [
+                {
+                    "step": 1,
+                    "tool": "process.find",
+                    "params": {"node": "10.11.4.13", "pattern": "load_simulator"},
+                    "success": True,
+                    "data": {"node": "10.11.4.13", "count": 1, "matches": []},
+                    "error": None,
+                },
+                gpu_run,
+            ],
+            "pending_tool_calls": [
+                {
+                    "name": "gpu.get_processes",
+                    "args": {"node": "worker-03", "namespace": "service"},
+                    "id": "call-gpu-duplicate",
+                }
+            ],
+            "variables": {"namespace": "service"},
+            "alert_snapshot": {
+                "alert_name": "AIServiceTTFTP99High",
+                "ttft_external_process_default_node": "10.11.4.13",
+            },
+            "trace_items": [],
+            "step_count": 4,
+            "step_timeout_sec": 5.0,
+            "max_steps": 8,
+            "force_final_turn": False,
+            "loop_guard": {
+                "threshold": 2,
+                "recent_duplicate_fingerprint": duplicate_fingerprint,
+                "duplicate_repeat_count": 2,
+                "duplicate_threshold": 2,
+                "triggered": False,
+            },
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state["checkpoint_dir"] = tmpdir
+            result = await nodes_module.act_node(
+                state,
+                registry=build_default_registry(),
+                context=_happy_context(),
+            )
+
+        self.assertEqual(len(result["tool_runs"]), 2)
+        self.assertEqual(result["loop_guard"]["duplicate_repeat_count"], 3)
+        self.assertTrue(result["loop_guard"]["triggered"])
+        self.assertTrue(result["force_final_turn"])
+        duplicate_trace = next(
+            item
+            for item in result["trace_items"]
+            if str((item.get("tool_params") or {}).get("reason", "")) == "cross_round_duplicate"
+        )
+        self.assertEqual(duplicate_trace["action"], "conclude")
+        self.assertTrue((duplicate_trace["tool_params"] or {}).get("force_final_turn"))
 
     async def test_ttft_prometheus_budget_limits_real_execution_and_reuses_cached_results(self) -> None:
         llm = _FakeLLM(
@@ -2541,6 +2811,20 @@ tags:
         )
         self.assertEqual(rendered.get("node"), "10.11.4.99")
 
+    def test_render_trace_tool_params_keeps_nested_kwargs_process_find_node(self) -> None:
+        state: dict[str, Any] = {
+            "alert_snapshot": {
+                "alert_name": "AIServiceTTFTP99High",
+                "ttft_external_process_default_node": "10.11.4.13",
+            }
+        }
+        rendered = nodes_module._render_trace_tool_params(
+            state=state,
+            tool_name="process.find",
+            tool_args={"kwargs": {"node": "10.11.4.12", "pattern": "stress"}},
+        )
+        self.assertEqual(rendered, {"node": "10.11.4.12", "pattern": "stress"})
+
     def test_build_tool_prompt_fields_gpu_metrics_carries_node_hint(self) -> None:
         fields = nodes_module._build_tool_prompt_fields(
             session_id="sess-1",
@@ -2556,6 +2840,34 @@ tags:
         self.assertIsInstance(key_fields, dict)
         self.assertEqual(key_fields.get("node"), "worker-03")
         self.assertIn("node=worker-03", str(fields.get("prompt_summary", "")))
+
+    def test_build_tool_prompt_fields_gpu_processes_emits_suspect_details(self) -> None:
+        fields = nodes_module._build_tool_prompt_fields(
+            session_id="sess-1",
+            source="tool",
+            step=2,
+            tool="gpu.get_processes",
+            params={"node": "worker-03"},
+            data={
+                "output": (
+                    "391287, VLLM::Worker_TP0, GPU-a, 22676\n"
+                    "2087515, fi_gpu_burn_gpu_contention_6f8d3724, GPU-a, 9272\n"
+                )
+            },
+            error="",
+            skill_id=None,
+        )
+        key_fields = fields.get("key_fields")
+        self.assertIsInstance(key_fields, dict)
+        assert isinstance(key_fields, dict)
+        self.assertTrue(key_fields.get("suspicious_load_present"))
+        self.assertEqual(key_fields.get("total_mem"), 31948)
+        suspicious = key_fields.get("suspicious_load_processes")
+        self.assertIsInstance(suspicious, list)
+        assert isinstance(suspicious, list)
+        self.assertEqual(suspicious[0].get("pid"), 2087515)
+        self.assertIn("fi_gpu_burn", str(suspicious[0].get("process_name")))
+        self.assertIn("suspicious_load_present=true", str(fields.get("prompt_summary", "")))
 
     def test_build_tool_prompt_fields_bmc_fan_status_carries_node_hint(self) -> None:
         fields = nodes_module._build_tool_prompt_fields(
@@ -2582,6 +2894,81 @@ tags:
         self.assertIsInstance(key_fields, dict)
         self.assertEqual(key_fields.get("node"), "10.11.4.13")
         self.assertIn("node=10.11.4.13", str(fields.get("prompt_summary", "")))
+
+    def test_extract_evidence_signals_tracks_gpu_temperature_process_and_fan_status(self) -> None:
+        gpu_metrics_fields = nodes_module._build_tool_prompt_fields(
+            session_id="sess-1",
+            source="tool",
+            step=1,
+            tool="gpu.get_metrics",
+            params={"node": "worker-03"},
+            data={"output": "0, NVIDIA-A100, 100, 12000, 80000, 68"},
+            error="",
+            skill_id=None,
+        )
+        gpu_process_fields = nodes_module._build_tool_prompt_fields(
+            session_id="sess-1",
+            source="tool",
+            step=2,
+            tool="gpu.get_processes",
+            params={"node": "worker-03"},
+            data={"output": "2087515, fi_gpu_burn_gpu_contention_6f8d3724, GPU-a, 9272"},
+            error="",
+            skill_id=None,
+        )
+        fan_fields = nodes_module._build_tool_prompt_fields(
+            session_id="sess-1",
+            source="tool",
+            step=3,
+            tool="bmc.get_fan_status",
+            params={"node": "worker-03"},
+            data={
+                "fan_status_summary": {
+                    "mode_name": "Auto",
+                    "is_manual": False,
+                    "is_fixed_pwm": False,
+                    "fixed_pwm": None,
+                    "unique_pwm_values": [40, 42],
+                    "fan_count": 8,
+                }
+            },
+            error="",
+            skill_id=None,
+        )
+        tool_runs = [
+            {
+                "step": 1,
+                "tool": "gpu.get_metrics",
+                "success": True,
+                "params": {"node": "worker-03"},
+                "key_fields": gpu_metrics_fields.get("key_fields"),
+            },
+            {
+                "step": 2,
+                "tool": "gpu.get_processes",
+                "success": True,
+                "params": {"node": "worker-03"},
+                "key_fields": gpu_process_fields.get("key_fields"),
+            },
+            {
+                "step": 3,
+                "tool": "bmc.get_fan_status",
+                "success": True,
+                "params": {"node": "worker-03"},
+                "key_fields": fan_fields.get("key_fields"),
+            },
+        ]
+        signals = nodes_module._extract_evidence_signals(tool_runs)
+        self.assertEqual(signals["ttft_gpu_metrics_steps"], [1])
+        self.assertEqual(signals["ttft_gpu_process_steps"], [2])
+        self.assertEqual(signals["gpu_max_temp"], 68)
+        self.assertEqual(signals["gpu_max_util"], 100)
+        self.assertTrue(signals["gpu_thermal_normal"])
+        self.assertTrue(signals["ttft_suspect_process_present"])
+        self.assertEqual(signals["bmc_fan_status_steps"], [3])
+        self.assertEqual(signals["bmc_fan_mode"], "Auto")
+        self.assertFalse(signals["bmc_fan_is_manual"])
+        self.assertEqual(signals["bmc_fan_count"], 8)
 
     def test_evaluate_ttft_min_coverage_detects_missing_external_probe(self) -> None:
         state: dict[str, Any] = {

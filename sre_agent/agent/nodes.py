@@ -673,6 +673,7 @@ async def reason_node(
                         },
                     }
                 )
+                forced_trace_tool_call_emitted = True
 
     if not pending_tool_calls and _is_ttft_alert_state(state):
         tool_runs = list(state.get("tool_runs", []) or [])
@@ -2230,9 +2231,11 @@ def _summarize_gpu_processes(data: Any) -> tuple[str, dict[str, Any] | None]:
         for item in sorted_rows[:4]
         if str(item.get("process_name", "")).strip()
     ]
+    total_mem = sum(float(item.get("memory_mib") or 0.0) for item in sorted_rows)
     summary_parts = [
         f"process_count={len(sorted_rows)}",
         f"suspicious_load_present={str(bool(suspicious_rows)).lower()}",
+        f"total_mem={int(total_mem)}MiB",
     ]
     if sample_names:
         summary_parts.append(f"top_processes={','.join(sample_names)}")
@@ -2246,6 +2249,20 @@ def _summarize_gpu_processes(data: Any) -> tuple[str, dict[str, Any] | None]:
         "; ".join(summary_parts),
         {
             "process_count": len(sorted_rows),
+            "process_names": [
+                str(item.get("process_name", "")).strip()
+                for item in sorted_rows[:8]
+                if str(item.get("process_name", "")).strip()
+            ],
+            "total_mem": int(total_mem),
+            "processes": [
+                {
+                    "pid": int(item.get("pid", 0) or 0),
+                    "name": str(item.get("process_name", "")).strip(),
+                    "mem": item.get("memory_mib"),
+                }
+                for item in sorted_rows[:8]
+            ],
             "sample_pids": [int(item.get("pid", 0) or 0) for item in sorted_rows[:8]],
             "sample_process_names": [
                 str(item.get("process_name", "")).strip()
@@ -2444,36 +2461,6 @@ def _summarize_gpu_metrics(data: Any, *, node_hint: str = "") -> tuple[str, dict
     return prompt_summary, key_fields
 
 
-def _summarize_gpu_processes(data: Any) -> tuple[str, dict[str, Any]]:
-    """Summarize GPU processes for prompt."""
-    output = _extract_output_blob(data)
-    if not output:
-        return "output=empty", None
-    # Parse CSV output: pid, process_name, gpu_uuid, mem_used
-    lines = [line.strip() for line in output.splitlines() if line.strip()]
-    processes: list[dict[str, Any]] = []
-    process_names: set[str] = set()
-    total_mem = 0
-    for line in lines:
-        parts = [p.strip() for p in line.split(",")]
-        if len(parts) >= 4:
-            try:
-                pid = int(parts[0])
-                name = parts[1][:20]  # truncate process name
-                gpu_uuid = parts[2][:20]
-                mem = int(parts[3])
-                processes.append({"pid": pid, "name": name, "mem": mem})
-                process_names.add(name)
-                total_mem += mem
-            except (ValueError, IndexError):
-                continue
-    if not processes:
-        return f"lines={len(lines)}; no_processes", None
-    prompt_summary = f"process_count={len(processes)}; names={list(process_names)}; total_mem={total_mem}MiB"
-    key_fields = {"process_count": len(processes), "process_names": list(process_names)[:3], "total_mem": total_mem, "processes": processes[:4]}
-    return prompt_summary, key_fields
-
-
 def _summarize_skill_load(data: Any) -> tuple[str, dict[str, Any]]:
     """Summarize skills.load_skill result for prompt - pass full SKILL.md content to LLM."""
     if not isinstance(data, dict):
@@ -2619,6 +2606,42 @@ def _build_state_rebuilt_evidence_metadata(
     }
 
 
+def _build_ttft_evidence_status_text(state: SREAgentState, tool_runs: list[dict[str, Any]]) -> str:
+    if not _is_ttft_alert_state(state):
+        return "not_applicable"
+
+    lines: list[str] = []
+    gpu_run = _find_latest_successful_tool_run(tool_runs, tool_name="gpu.get_processes")
+    if gpu_run is not None:
+        params = gpu_run.get("params")
+        node = str((params or {}).get("node", "") if isinstance(params, dict) else "").strip()
+        step = int(gpu_run.get("step", 0) or 0)
+        lines.append(
+            f"- gpu.get_processes({node or 'unknown-node'}): satisfied at step {step}; "
+            "reuse this evidence and do not call gpu.get_processes again with the same node before remediation."
+        )
+    else:
+        lines.append("- gpu.get_processes: missing; collect it once for the affected GPU node.")
+
+    external_node = _get_ttft_external_node(state)
+    external_done = _has_probed_ttft_external_node(tool_runs, external_node) if external_node else _count_tool_runs(tool_runs, "process.find") > 0
+    if external_done:
+        lines.append(
+            f"- process.find({external_node or 'external-node'}): satisfied; "
+            "reuse this external-load evidence unless a different node or pattern is required."
+        )
+    else:
+        lines.append(
+            f"- process.find({external_node or 'external-node'}): missing; collect external-load evidence before final diagnosis."
+        )
+
+    coverage_met, missing = _evaluate_ttft_min_coverage(state=state, tool_runs=tool_runs)
+    lines.append(f"- minimum_ttft_coverage_met={str(coverage_met).lower()}; missing={missing}")
+    if coverage_met:
+        lines.append("- If the next tool call would repeat a satisfied tool with identical params, return final JSON instead.")
+    return "\n".join(lines)
+
+
 def _build_state_rebuilt_sections(
     state: SREAgentState,
     *,
@@ -2641,6 +2664,7 @@ def _build_state_rebuilt_sections(
     rendered_tool_runs = [_render_tool_run_for_prompt(item) for item in tool_runs if isinstance(item, dict)]
     skill_history_text = _json_line(rendered_skill_runs) if rendered_skill_runs else "none"
     tool_ledger_text = _json_line(rendered_tool_runs) if rendered_tool_runs else "none"
+    ttft_evidence_status_text = _build_ttft_evidence_status_text(state, tool_runs)
 
     instruction = (
         "Use the canonical evidence above and return the final JSON now. "
@@ -2690,6 +2714,11 @@ def _build_state_rebuilt_sections(
             "tool_ledger",
             "Tool evidence ledger:\n"
             f"{tool_ledger_text}",
+        ),
+        (
+            "evidence_status",
+            "Evidence status and tool budget:\n"
+            f"{ttft_evidence_status_text}",
         ),
         (
             "conversation_note",
@@ -3057,6 +3086,8 @@ def _normalize_loop_guard_state(raw: Any, *, threshold_default: int = 2) -> dict
     repeat_count = _normalize_positive_int(payload.get("repeat_count"), default=0, minimum=0)
     family_threshold = _normalize_positive_int(payload.get("family_threshold"), default=threshold_default, minimum=1)
     family_repeat_count = _normalize_positive_int(payload.get("family_repeat_count"), default=0, minimum=0)
+    duplicate_threshold = _normalize_positive_int(payload.get("duplicate_threshold"), default=threshold, minimum=1)
+    duplicate_repeat_count = _normalize_positive_int(payload.get("duplicate_repeat_count"), default=0, minimum=0)
     return {
         "recent_fingerprint": str(payload.get("recent_fingerprint", "") or "").strip() or None,
         "repeat_count": repeat_count,
@@ -3064,6 +3095,9 @@ def _normalize_loop_guard_state(raw: Any, *, threshold_default: int = 2) -> dict
         "recent_family_fingerprint": str(payload.get("recent_family_fingerprint", "") or "").strip() or None,
         "family_repeat_count": family_repeat_count,
         "family_threshold": family_threshold,
+        "recent_duplicate_fingerprint": str(payload.get("recent_duplicate_fingerprint", "") or "").strip() or None,
+        "duplicate_repeat_count": duplicate_repeat_count,
+        "duplicate_threshold": duplicate_threshold,
         "triggered": bool(payload.get("triggered", False)),
         "trigger_step": payload.get("trigger_step"),
     }
@@ -3161,6 +3195,10 @@ def _render_trace_tool_params(
 ) -> dict[str, Any]:
     """Render display-friendly params for trace visualization only."""
     rendered = dict(tool_args) if isinstance(tool_args, dict) else {}
+    nested_kwargs = rendered.pop("kwargs", None)
+    if isinstance(nested_kwargs, dict):
+        for key, value in nested_kwargs.items():
+            rendered.setdefault(str(key), value)
     if tool_name == "process.find":
         node = str(rendered.get("node", "") or "").strip()
         if not node:
@@ -3408,6 +3446,17 @@ def _extract_evidence_signals(tool_runs: list[dict[str, Any]]) -> dict[str, Any]
         "ttft_suspect_process_present": False,
         "ttft_suspect_processes": [],
         "ttft_gpu_process_steps": [],
+        "ttft_gpu_metrics_steps": [],
+        "gpu_temperature_steps": [],
+        "gpu_temps": [],
+        "gpu_max_temp": None,
+        "gpu_max_util": None,
+        "gpu_thermal_normal": None,
+        "bmc_fan_status_steps": [],
+        "bmc_fan_mode": None,
+        "bmc_fan_fixed_pwm": None,
+        "bmc_fan_is_manual": None,
+        "bmc_fan_count": None,
     }
     for run in tool_runs:
         if not isinstance(run, dict) or not bool(run.get("success", False)):
@@ -3450,6 +3499,23 @@ def _extract_evidence_signals(tool_runs: list[dict[str, Any]]) -> dict[str, Any]
             if tc_process_present:
                 signals["tc_process_present"] = True
                 signals["process_evidence_steps"].append(int(run.get("step", 0) or 0))
+        elif tool == "gpu.get_metrics":
+            step = int(run.get("step", 0) or 0)
+            signals["ttft_gpu_metrics_steps"].append(step)
+            temps = fields.get("temps")
+            if isinstance(temps, list):
+                signals["gpu_temps"] = temps
+            max_temp = fields.get("max_temp")
+            if max_temp is not None:
+                signals["gpu_max_temp"] = max_temp
+                signals["gpu_temperature_steps"].append(step)
+                try:
+                    signals["gpu_thermal_normal"] = float(max_temp) < 75.0
+                except Exception:  # noqa: BLE001
+                    signals["gpu_thermal_normal"] = None
+            max_util = fields.get("max_util")
+            if max_util is not None:
+                signals["gpu_max_util"] = max_util
         elif tool == "gpu.get_processes":
             suspect_items: list[dict[str, Any]] = []
             run_params = run.get("params")
@@ -3510,6 +3576,16 @@ def _extract_evidence_signals(tool_runs: list[dict[str, Any]]) -> dict[str, Any]
                 for item in suspect_items:
                     if item not in target:
                         target.append(item)
+        elif tool == "bmc.get_fan_status":
+            signals["bmc_fan_status_steps"].append(int(run.get("step", 0) or 0))
+            if fields.get("mode") is not None:
+                signals["bmc_fan_mode"] = fields.get("mode")
+            if fields.get("is_manual") is not None:
+                signals["bmc_fan_is_manual"] = fields.get("is_manual")
+            if fields.get("is_fixed_pwm") is not None:
+                signals["bmc_fan_fixed_pwm"] = fields.get("is_fixed_pwm")
+            if fields.get("fan_count") is not None:
+                signals["bmc_fan_count"] = fields.get("fan_count")
         elif tool == "process.find":
             suspect_items = []
             run_params = run.get("params")
@@ -4418,16 +4494,38 @@ async def act_node(
                 )
                 serialized_source = "duplicate_suppressed"
                 coverage_met, coverage_missing = _ttft_coverage_state(tool_runs)
+                duplicate_fingerprint = _build_tool_call_fingerprint(latest_same_call)
+                duplicate_threshold = int(loop_guard.get("duplicate_threshold", loop_guard.get("threshold", 2)) or 2)
+                duplicate_repeat_count = int(loop_guard.get("duplicate_repeat_count", 0) or 0)
+                duplicate_force_final = False
                 if coverage_met:
-                    force_final_turn = True
+                    if is_ttft_alert:
+                        if duplicate_fingerprint and duplicate_fingerprint == loop_guard.get("recent_duplicate_fingerprint"):
+                            duplicate_repeat_count += 1
+                        else:
+                            loop_guard["recent_duplicate_fingerprint"] = duplicate_fingerprint
+                            duplicate_repeat_count = 1
+                        loop_guard["duplicate_repeat_count"] = duplicate_repeat_count
+                        if duplicate_repeat_count > duplicate_threshold:
+                            duplicate_force_final = True
+                            if not bool(loop_guard.get("triggered", False)):
+                                loop_guard["triggered"] = True
+                                loop_guard["trigger_step"] = len(tool_runs) + 1
+                            force_final_turn = True
+                    else:
+                        duplicate_force_final = True
+                        force_final_turn = True
                 suppressed_reasons.append(
                     {
                         "reason": "cross_round_duplicate",
                         "tool": tool_name,
                         "dedupe_key": merged_call_key,
-                        "fingerprint": _build_tool_call_fingerprint(latest_same_call),
+                        "fingerprint": duplicate_fingerprint,
                         "reused_from_step": reused_step,
                         "reused": True,
+                        "force_final_turn": duplicate_force_final,
+                        "duplicate_repeat_count": duplicate_repeat_count,
+                        "duplicate_threshold": duplicate_threshold,
                         "ttft_coverage_met": coverage_met,
                         "coverage_missing": coverage_missing,
                     }
@@ -4585,6 +4683,10 @@ async def act_node(
                 "ttft_family_cache_reuse",
                 "ttft_total_cache_reuse",
             }
+            if counts_for_loop_guard and is_ttft_alert:
+                coverage_met_after_run, _ = _ttft_coverage_state(tool_runs)
+                if not coverage_met_after_run:
+                    counts_for_loop_guard = False
             if counts_for_loop_guard:
                 fingerprint = _build_tool_call_fingerprint(serialized)
                 if fingerprint and fingerprint == loop_guard.get("recent_fingerprint"):
@@ -4754,6 +4856,16 @@ async def act_node(
         if reason == "cross_round_duplicate":
             suppressed_coverage_met = bool(suppressed.get("ttft_coverage_met", True))
             suppressed_coverage_missing = suppressed.get("coverage_missing", [])
+            suppressed_force_final = bool(suppressed.get("force_final_turn", True))
+            if is_ttft_alert and not suppressed_coverage_met:
+                duplicate_content = "已复用重复工具结果；TTFT 覆盖未完成，继续补齐缺失证据。"
+                duplicate_action = "tool_call"
+            elif is_ttft_alert and not suppressed_force_final:
+                duplicate_content = "已复用重复工具结果，继续基于现有证据判断是否需要换角度取证或总结。"
+                duplicate_action = "observe"
+            else:
+                duplicate_content = "已停止重复查询，进入总结阶段。"
+                duplicate_action = "conclude"
             updated_trace_items.append(
                 {
                     "type": "thought",
@@ -4783,6 +4895,15 @@ async def act_node(
                     },
                 }
             )
+            latest_trace_item = updated_trace_items[-1] if updated_trace_items else None
+            if isinstance(latest_trace_item, dict):
+                latest_trace_item["content"] = duplicate_content
+                latest_trace_item["action"] = duplicate_action
+                duplicate_params = latest_trace_item.get("tool_params")
+                if isinstance(duplicate_params, dict):
+                    duplicate_params["force_final_turn"] = suppressed_force_final
+                    duplicate_params["duplicate_repeat_count"] = suppressed.get("duplicate_repeat_count")
+                    duplicate_params["duplicate_threshold"] = suppressed.get("duplicate_threshold")
             continue
         suppressed_coverage_met = bool(suppressed.get("ttft_coverage_met", True))
         suppressed_coverage_missing = suppressed.get("coverage_missing", [])
@@ -5010,32 +5131,42 @@ def _merge_tool_args(
         for key, value in nested_kwargs.items():
             merged.setdefault(str(key), value)
     if not variables:
-        _normalize_runtime_defaults(merged, variables, tool_name=tool_name)
+        _prune_unsupported_tool_params(tool_name, merged)
         return merged
     try:
         tool_def = registry.get_tool(tool_name)
     except Exception:  # noqa: BLE001
         tool_def = None
 
-    required: list[str] = []
+    required: set[str] = set()
     if tool_def is not None:
         schema = tool_def.params_schema or {}
         raw_required = schema.get("required", [])
         if isinstance(raw_required, list):
-            required = [str(item).strip() for item in raw_required if str(item).strip()]
+            required = {str(item).strip() for item in raw_required if str(item).strip()}
 
     for key, value in variables.items():
-        if key not in merged and (not required or key in required):
+        if key not in merged and key in required:
             merged[key] = value
     if tool_name == "process.find":
         alert_name = str(variables.get("alert_name", "") or "").strip()
         if _is_force_canary_alert_name(alert_name):
             merged["pattern"] = _normalize_ttft_process_find_pattern(merged.get("pattern"))
-    _normalize_runtime_defaults(merged, variables, tool_name=tool_name)
+    _normalize_runtime_defaults(
+        merged,
+        variables,
+        tool_name=tool_name,
+        runtime_default_keys=required,
+    )
+    _prune_unsupported_tool_params(tool_name, merged)
     return merged
 
 
 _NODE_SELF_RESOLVING_TOOLS: frozenset[str] = frozenset({"process.find"})
+_TOOL_PARAM_ALLOWLISTS: dict[str, frozenset[str]] = {
+    "prometheus.query_instant": frozenset({"promql"}),
+    "prometheus.query_range": frozenset({"promql", "start", "end", "step"}),
+}
 
 
 def _normalize_ttft_process_find_pattern(raw_pattern: Any) -> str:
@@ -5065,15 +5196,31 @@ def _normalize_ttft_process_find_pattern(raw_pattern: Any) -> str:
     return "|".join(normalized)
 
 
+def _prune_unsupported_tool_params(tool_name: str, params: dict[str, Any]) -> None:
+    allowed = _TOOL_PARAM_ALLOWLISTS.get(str(tool_name or "").strip())
+    if not allowed:
+        return
+    for key in list(params.keys()):
+        if str(key) not in allowed:
+            params.pop(key, None)
+
+
 def _normalize_runtime_defaults(
     params: dict[str, Any],
     variables: dict[str, Any],
     *,
     tool_name: str = "",
+    runtime_default_keys: set[str] | None = None,
 ) -> None:
-    if "node" in variables and tool_name not in _NODE_SELF_RESOLVING_TOOLS:
+    default_keys = set(runtime_default_keys or set())
+    if (
+        "node" in variables
+        and "node" in default_keys
+        and _is_blank_param(params.get("node"))
+        and tool_name not in _NODE_SELF_RESOLVING_TOOLS
+    ):
         params["node"] = variables["node"]
-    if "namespace" in variables:
+    if "namespace" in variables and "namespace" in default_keys and _is_blank_param(params.get("namespace")):
         params["namespace"] = variables["namespace"]
 
 

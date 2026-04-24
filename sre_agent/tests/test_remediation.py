@@ -356,6 +356,93 @@ class TestRemediationIntegration:
         assert result.error == "verification failed"
 
     @pytest.mark.asyncio
+    async def test_integration_engine_defers_duplicate_verification_until_plan_end(self, tmp_path: Path) -> None:
+        registry = ToolRegistry()
+        action_calls: list[dict[str, Any]] = []
+        verify_calls: list[dict[str, Any]] = []
+
+        async def _terminate(params: dict[str, Any], context: ToolExecutionContext) -> dict[str, Any]:
+            _ = context
+            action_calls.append(dict(params))
+            return {"ok": True}
+
+        async def _find_remaining(params: dict[str, Any], context: ToolExecutionContext) -> dict[str, Any]:
+            _ = context
+            verify_calls.append(dict(params))
+            return {"count": 0 if len(action_calls) == 2 else 1}
+
+        registry.register(
+            ToolDefinition(
+                name="test.terminate",
+                description="terminate one synthetic target",
+                safety_level=SafetyLevel.HIGH,
+                params_schema={"type": "object", "required": ["target"]},
+                needs_approval=True,
+            ),
+            _terminate,
+        )
+        registry.register(
+            ToolDefinition(
+                name="process.find",
+                description="find remaining synthetic targets",
+                safety_level=SafetyLevel.READ_ONLY,
+                params_schema={"type": "object", "required": ["pattern"]},
+            ),
+            _find_remaining,
+        )
+        verification = VerificationConfig(
+            method="tool_call",
+            tool="process.find",
+            tool_params={"pattern": "synthetic_load"},
+            condition=VerificationCondition(field="count", operator="==", value=0),
+            wait_seconds=1,
+        )
+        plan = RemediationPlan(
+            plan_id="plan-final-verify",
+            root_cause="synthetic load",
+            description="terminate all synthetic targets before final verification",
+            estimated_impact="ttft recovers",
+            confidence=0.8,
+            priority="P1",
+            steps=[
+                RemediationStep(
+                    step_id=1,
+                    description="terminate target A",
+                    tool="test.terminate",
+                    params={"target": "a"},
+                    verification=verification,
+                ),
+                RemediationStep(
+                    step_id=2,
+                    description="terminate target B",
+                    tool="test.terminate",
+                    params={"target": "b"},
+                    verification=verification,
+                ),
+            ],
+        )
+        engine = RemediationEngine(
+            registry,
+            ApprovalGate(default_policy="auto_approve"),
+            RollbackJournal(tmp_path / "wal.jsonl"),
+            execution_context=ToolExecutionContext(),
+        )
+
+        result = await engine.execute(plan)
+
+        assert result.success is True
+        assert len(action_calls) == 2
+        assert len(verify_calls) == 1
+        assert result.verification_results == [
+            {
+                "step_id": 2,
+                "verification_index": 1,
+                "verification_scope": "plan_final",
+                "verified": True,
+            }
+        ]
+
+    @pytest.mark.asyncio
     async def test_integration_engine_canary_batches_process_targets_on_same_node(self, tmp_path: Path) -> None:
         registry = _make_registry()
         gate = ApprovalGate(default_policy="auto_approve")

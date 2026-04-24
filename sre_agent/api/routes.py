@@ -3037,6 +3037,25 @@ def build_api_router() -> APIRouter:
             )
 
         if len(target_plans) > 1:
+            pre_check = await _capture_check_snapshot(services, session=session, plan=plan)
+            pre_evidence = RemediationEvidence(pre_check=pre_check)
+            session = _update_session_evidence(services, session=session, evidence=pre_evidence)
+            await _publish_remediation_progress(
+                services,
+                session_id=session_id,
+                stage="pre_remediation_baseline_collected",
+                details={
+                    "plan_version": requested_plan_version,
+                    "plan_key": requested_plan_key,
+                    "plan_keys": [str(item["plan_key"]) for item in target_plans],
+                    "plan_count": len(target_plans),
+                    "baseline_alert": pre_check.alert.model_dump(mode="json") if pre_check.alert is not None else None,
+                    "baseline_metrics": [item.model_dump(mode="json") for item in pre_check.metrics],
+                    "pre_check": pre_check.model_dump(mode="json"),
+                    "collected_at": pre_evidence.collected_at.isoformat(),
+                    "message": "已采集多根因修复前基线",
+                },
+            )
             multi_results: list[dict[str, Any]] = []
             total_steps = 0
             completed_steps = 0
@@ -3162,6 +3181,48 @@ def build_api_router() -> APIRouter:
                 steps_total=total_steps,
                 verification_results=multi_results,
             )
+            remaining_timeout = execution_timeout_seconds - (time.monotonic() - workflow_started_at)
+            if remaining_timeout <= 0:
+                return await _timeout_response()
+            try:
+                observed_ok, observation_details, evidence = await asyncio.wait_for(
+                    _observe_post_remediation(
+                        services,
+                        session=session,
+                        pre_check=pre_check,
+                        observation_seconds=observation_seconds,
+                        observation_poll_seconds=observation_poll_seconds,
+                        plan=plan,
+                    ),
+                    timeout=remaining_timeout,
+                )
+                session = _update_session_evidence(services, session=session, evidence=evidence)
+            except TimeoutError:
+                return await _timeout_response()
+            if not observed_ok:
+                _update_session_status(services, session=session, status="escalated", outcome="escalated")
+                await _publish_remediation_progress(
+                    services,
+                    session_id=session_id,
+                    stage="escalation_required",
+                    details={
+                        **observation_details,
+                        "plan_count": len(target_plans),
+                        "plan_keys": [str(item["plan_key"]) for item in target_plans],
+                        "steps_completed": completed_steps,
+                        "steps_total": total_steps,
+                        "results": multi_results,
+                        "message": "多根因修复已执行完成，但最终指标/告警未回落",
+                    },
+                )
+                return SREResponse(
+                    success=False,
+                    error=SREError(
+                        code=ErrorCode.REMEDIATION_EXECUTION_FAILED,
+                        message="多根因修复已执行完成，但最终指标/告警未回落",
+                    ),
+                    trace_id=trace_id,
+                )
             _update_session_status(services, session=session, status="resolved", outcome="resolved")
             await _publish_remediation_progress(
                 services,

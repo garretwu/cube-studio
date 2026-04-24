@@ -418,32 +418,45 @@ class RemediationEngine:
                     rolled_back=True,
                     error=result.error,
                 )
+            completed += 1
+
+        final_verifications = self._final_verification_configs(steps_to_run)
+        if final_verifications:
             if progress_callback is not None:
                 await progress_callback(
                     stage="validating",
                     details={
-                        "step_id": step.step_id,
+                        "step_id": steps_to_run[-1].step_id if steps_to_run else None,
                         "steps_completed": completed,
                         "steps_total": total_steps,
-                        "message": f"验证步骤 {step.step_id} 执行结果",
+                        "verification_scope": "plan_final",
+                        "verification_count": len(final_verifications),
+                        "message": "验证修复计划最终结果",
                     },
                 )
-            verified = await self._verify(step.verification)
-            verification_results.append({"step_id": step.step_id, "verified": verified})
-            if not verified:
-                failed_step = step
-                await self.wal.recover_all()
-                return RemediationResult(
-                    plan_id=plan.plan_id,
-                    success=False,
-                    steps_completed=completed,
-                    steps_total=total_steps,
-                    failed_step=failed_step,
-                    rolled_back=True,
-                    verification_results=verification_results,
-                    error="verification failed",
+            for verification_index, verification in enumerate(final_verifications, start=1):
+                verified = await self._verify(verification)
+                verification_results.append(
+                    {
+                        "step_id": steps_to_run[-1].step_id if steps_to_run else None,
+                        "verification_index": verification_index,
+                        "verification_scope": "plan_final",
+                        "verified": verified,
+                    }
                 )
-            completed += 1
+                if not verified:
+                    failed_step = steps_to_run[-1] if steps_to_run else None
+                    await self.wal.recover_all()
+                    return RemediationResult(
+                        plan_id=plan.plan_id,
+                        success=False,
+                        steps_completed=completed,
+                        steps_total=total_steps,
+                        failed_step=failed_step,
+                        rolled_back=True,
+                        verification_results=verification_results,
+                        error="verification failed",
+                    )
 
         return RemediationResult(
             plan_id=plan.plan_id,
@@ -452,6 +465,31 @@ class RemediationEngine:
             steps_total=total_steps,
             verification_results=verification_results,
         )
+
+    @staticmethod
+    def _final_verification_configs(steps: Iterable[Any]) -> list[VerificationConfig]:
+        """Return deduplicated plan-final verification configs.
+
+        Step-level verification is intentionally deferred until all actions in the
+        current plan/root-cause have run. Repeated generated plans often attach the
+        same global verification to every step; keeping one final check avoids
+        false failures after the first partial action.
+        """
+        step_list = list(steps)
+        if not step_list:
+            return []
+        candidates = [step.verification for step in step_list if getattr(step, "verification", None) is not None]
+        non_wait_candidates = [item for item in candidates if item.method != "wait"]
+        selected = non_wait_candidates or candidates[-1:]
+        deduped_reversed: list[VerificationConfig] = []
+        seen: set[str] = set()
+        for config in reversed(selected):
+            key = json.dumps(config.model_dump(mode="json"), sort_keys=True, default=str)
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped_reversed.append(config)
+        return list(reversed(deduped_reversed))
 
     async def _precheck_kill_process_target(
         self,
