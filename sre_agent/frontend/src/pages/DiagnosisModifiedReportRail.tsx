@@ -53,10 +53,7 @@ function DiagnosisModifiedReportRail({
               data-testid="diagnosis-modified-report-progressive-context"
             >
               {contextReady ? (
-                <ReportSection
-                  title="诊断拓扑信息"
-                  description="仅展示告警主体与其直连关联实体；当缺少直连关系时，仅展示主体节点并给出提示。"
-                >
+                <ReportSection title="诊断拓扑信息">
                   <SessionLevelSection context={view.context} />
                 </ReportSection>
               ) : contextModule ? (
@@ -82,10 +79,7 @@ function DiagnosisModifiedReportRail({
               data-testid="diagnosis-modified-report-progressive-hypotheses"
             >
               {hypothesesReady ? (
-                <ReportSection
-                  title="候选假设验证"
-                  description={view.hypotheses.description}
-                >
+                <ReportSection title="候选假设验证">
                   <HypothesisLevelSection hypotheses={view.hypotheses} />
                 </ReportSection>
               ) : hypothesesModule ? (

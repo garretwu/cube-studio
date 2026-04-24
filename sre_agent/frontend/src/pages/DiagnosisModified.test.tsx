@@ -467,6 +467,21 @@ describe("DiagnosisModifiedPage sequential playback", () => {
     expect(within(reportRail).getByTestId("diagnosis-modified-report-placeholder-context-progress")).toBeInTheDocument();
     expect(within(reportRail).getByTestId("diagnosis-modified-report-placeholder-hypotheses-progress")).toBeInTheDocument();
     expect(within(reportRail).getByTestId("diagnosis-modified-report-placeholder-rootcause-progress")).toBeInTheDocument();
+    expect(
+      within(reportRail)
+        .getByTestId("diagnosis-modified-report-placeholder-context-progress")
+        .querySelectorAll(".diagnosis-modified-report-rail__loading-progress-line").length,
+    ).toBe(1);
+    expect(
+      within(reportRail)
+        .getByTestId("diagnosis-modified-report-placeholder-hypotheses-progress")
+        .querySelectorAll(".diagnosis-modified-report-rail__loading-progress-line").length,
+    ).toBe(1);
+    expect(
+      within(reportRail)
+        .getByTestId("diagnosis-modified-report-placeholder-rootcause-progress")
+        .querySelectorAll(".diagnosis-modified-report-rail__loading-progress-line").length,
+    ).toBe(1);
     expect(within(reportRail).getByTestId("diagnosis-modified-report-progressive-context")).toHaveAttribute(
       "data-state",
       "placeholder",
@@ -479,6 +494,8 @@ describe("DiagnosisModifiedPage sequential playback", () => {
       "data-state",
       "placeholder",
     );
+    expect(within(reportRail).queryByText("用于展示上下游依赖、受影响实体与拓扑关联关系。")).not.toBeInTheDocument();
+    expect(within(reportRail).queryByText("用于呈现候选根因、验证依据与置信度变化。")).not.toBeInTheDocument();
   });
 
   it("reveals report modules progressively in demo mode as each section data becomes ready", async () => {
@@ -1744,7 +1761,8 @@ describe("DiagnosisModifiedPage split workspace", () => {
     expect(within(reportRail).queryByText(/^01$/)).not.toBeInTheDocument();
     expect(within(reportRail).queryByText(/^02$/)).not.toBeInTheDocument();
     expect(within(reportRail).queryByText(/^03$/)).not.toBeInTheDocument();
-    expect(within(reportRail).getByText(/状态: 当前根因 \| 置信度: 86% \| 关联实体:/)).toBeInTheDocument();
+    expect(within(reportRail).queryByText(/状态:\s*当前根因/u)).not.toBeInTheDocument();
+    expect(within(reportRail).queryByText(/关联实体:/u)).not.toBeInTheDocument();
     expect(container.querySelector(".diagnosis-modified-report-rail__context-graph")).toBeTruthy();
     expect(container.querySelector(".diagnosis-modified-report-rail__context-lists")).toBeNull();
     expect(container.querySelectorAll(".diagnosis-modified-report-rail__section").length).toBe(3);
@@ -1756,8 +1774,16 @@ describe("DiagnosisModifiedPage split workspace", () => {
     expect(within(reportRail).queryByText("Layer")).not.toBeInTheDocument();
     expect(within(reportRail).queryByText("Entities")).not.toBeInTheDocument();
     expect(within(reportRail).queryByText("Confidence")).not.toBeInTheDocument();
+    expect(within(reportRail).queryByText(/^根因$/)).not.toBeInTheDocument();
+    expect(within(reportRail).queryByText(/^层级$/)).not.toBeInTheDocument();
+    expect(within(reportRail).queryByText(/^实体$/)).not.toBeInTheDocument();
     expect(within(reportRail).getAllByText(/置信度/).length).toBeGreaterThan(0);
     expect(within(reportRail).queryByText("Execute 10% canary first, then observe Redis timeout recovery.")).not.toBeInTheDocument();
+    expect(within(reportRail).queryByText("Hypothesis summary")).not.toBeInTheDocument();
+    expect(within(reportRail).queryByText("结论已趋于稳定，默认折叠细节；可按候选展开查看证据与置信度变化。")).not.toBeInTheDocument();
+    expect(within(reportRail).queryByText("已选中 3 个候选假设。")).not.toBeInTheDocument();
+    expect(within(reportRail).getByText("Redis timeout and retry loop align with alert timing.")).toBeInTheDocument();
+    expect(within(reportRail).queryByText("仅展示告警主体与其直连关联实体；当缺少直连关系时，仅展示主体节点并给出提示。")).not.toBeInTheDocument();
     expect(screen.queryByTestId("diagnosis-modified-report-rail-loading")).not.toBeInTheDocument();
   });
 
@@ -1943,6 +1969,74 @@ describe("DiagnosisModifiedPage split workspace", () => {
     const beforeNode = screen.getByText("Before replace marker");
     const completedNode = screen.getByText("推理完成最终内容");
     expect(beforeNode.compareDocumentPosition(completedNode) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it("shows only the latest semantic fragment for long streaming thinking text", () => {
+    resetDiagnosisStore({
+      session: createLiveSession("sess-live-thinking-fragment"),
+      activeSessionId: "sess-live-thinking-fragment",
+      bootstrapStatus: "ready",
+      traceStatus: "ready",
+      messages: [],
+      liveThinking: {
+        round_id: "run-fragment@2026-04-08T12:23:05.000Z",
+        round_seq: 1,
+        thought_key: "run-fragment:reason",
+        run_id: "run-fragment",
+        node: "reason",
+        timestamp: "2026-04-08T12:23:05.000Z",
+        content:
+          "第一步检查 GPU 指标与进程状态，确认服务节点异常。第二步排除外部压测干扰。现在需要生成 remediation_plan 部分。",
+        status: "thinking",
+        stream_seq: 1,
+        thought_duration_sec: null,
+        next_action: null,
+        tool_name: null,
+        active_tools: [],
+      },
+      bootstrapSession: vi.fn().mockResolvedValue(undefined),
+    });
+
+    renderLivePage("/diagnosis-modified/sess-live-thinking-fragment");
+
+    expect(screen.getByText("推理中")).toBeInTheDocument();
+    expect(screen.getByText("现在需要生成 remediation_plan 部分")).toBeInTheDocument();
+    expect(screen.queryByText(/第一步检查 GPU 指标与进程状态/)).not.toBeInTheDocument();
+  });
+
+  it("falls back to a tail preview for long structured streaming content", () => {
+    const longStructuredLine =
+      'query=Diagnose the operational issue described by the alert below using a read-only workflow, keep collecting evidence, remediation_plan={"step":"kill","target":"fi_gpu_burn_gpu_cont","node":"worker-03","decision":"prepare approval gate before execution"}';
+    const expectedTail = `...${longStructuredLine.slice(-80)}`;
+
+    resetDiagnosisStore({
+      session: createLiveSession("sess-live-thinking-tail"),
+      activeSessionId: "sess-live-thinking-tail",
+      bootstrapStatus: "ready",
+      traceStatus: "ready",
+      messages: [],
+      liveThinking: {
+        round_id: "run-tail@2026-04-08T12:24:05.000Z",
+        round_seq: 1,
+        thought_key: "run-tail:reason",
+        run_id: "run-tail",
+        node: "reason",
+        timestamp: "2026-04-08T12:24:05.000Z",
+        content: longStructuredLine,
+        status: "thinking",
+        stream_seq: 1,
+        thought_duration_sec: null,
+        next_action: null,
+        tool_name: null,
+        active_tools: [],
+      },
+      bootstrapSession: vi.fn().mockResolvedValue(undefined),
+    });
+
+    renderLivePage("/diagnosis-modified/sess-live-thinking-tail");
+
+    expect(screen.getByText(expectedTail)).toBeInTheDocument();
+    expect(screen.queryByText(longStructuredLine)).not.toBeInTheDocument();
   });
 
   it("does not keep stale thinking from a previous round when a new round starts streaming", async () => {
@@ -2266,7 +2360,7 @@ describe("DiagnosisModifiedPage split workspace", () => {
     expect(screen.getByText("wj-lab-cpt-01")).toBeInTheDocument();
   });
 
-  it("shows alert subject only with hint when no direct topology relation is available", () => {
+  it("shows alert subject only when no direct topology relation is available", () => {
     mockedBuildLiveView.mockReturnValue({
       timeline: [],
       candidates: [],
@@ -2292,7 +2386,7 @@ describe("DiagnosisModifiedPage split workspace", () => {
     renderLivePage("/diagnosis-modified/sess-live-topology-empty-direct");
 
     expect(screen.getByText("auth-svc")).toBeInTheDocument();
-    expect(screen.getByText("暂无直连关联实体，当前仅展示告警主体。")).toBeInTheDocument();
+    expect(screen.queryByText("暂无直连关联实体，当前仅展示告警主体。")).not.toBeInTheDocument();
   });
 
   it("renders diagnosis-start context as a single live thinking card", async () => {
@@ -2365,7 +2459,7 @@ describe("DiagnosisModifiedPage split workspace", () => {
     expect(screen.getByRole("heading", { name: "正在构建上下文..." })).toBeInTheDocument();
     expect(screen.queryByText("诊断开始上下文")).not.toBeInTheDocument();
     await advance(5000);
-    expect(screen.getByText(/正在聚合 GPUTemperatureHigh 的告警上下文/)).toBeInTheDocument();
+    expect(screen.getByText("拓扑摘要 gpu -> node -> bmc")).toBeInTheDocument();
     expect(screen.queryByText("正在检查 GPU 温度告警的上下文与拓扑链路。")).not.toBeInTheDocument();
     expect(screen.getAllByText("ssh.run_command").length).toBeGreaterThan(0);
     expect(screen.getByText("建议先检查风扇策略与机柜散热。")).toBeInTheDocument();
@@ -2541,6 +2635,41 @@ describe("DiagnosisModifiedPage split workspace", () => {
     const actionStepHeading = within(traceList).getByText("已生成修复建议");
 
     expect(nextActionHeading.compareDocumentPosition(actionStepHeading) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it("renders action-generated step for proposal-only approval flows without next-action or remediation messages", () => {
+    mockedBuildLiveView.mockReturnValue({
+      timeline: [
+        {
+          id: "live-msg-proposal-only",
+          kind: "message",
+          role: "assistant",
+          content: "已基于主根因补全 proposal-only 修复方案，等待人工审批。",
+          timestamp: "2026-04-08T12:21:00.000Z",
+        },
+      ],
+      candidates: [],
+      summary: baseSummary,
+      plan: basePlan,
+    });
+
+    const proposalOnlySession = createDetailedLiveSession("sess-live-proposal-only");
+    proposalOnlySession.status = "approval_required";
+
+    resetDiagnosisStore({
+      session: proposalOnlySession,
+      activeSessionId: "sess-live-proposal-only",
+      bootstrapStatus: "ready",
+      traceStatus: "ready",
+      messages: [],
+      bootstrapSession: vi.fn().mockResolvedValue(undefined),
+    });
+
+    renderLivePage("/diagnosis-modified/sess-live-proposal-only");
+
+    const traceList = screen.getByTestId("diagnosis-modified-trace-list");
+    expect(within(traceList).getByText("已生成修复建议")).toBeInTheDocument();
+    expect(within(traceList).getByTestId("diagnosis-modified-approval-surface")).toBeInTheDocument();
   });
 
   it("keeps the trace header stage synchronized without rendering a right-side progress summary card", async () => {

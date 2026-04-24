@@ -191,6 +191,12 @@ const ANSI_ESCAPE_PATTERN = /\u001b\[[0-?]*[ -/]*[@-~]/g;
 const UNICODE_FORMAT_CHARS_PATTERN = /[\u200B-\u200F\u202A-\u202E\u2060-\u206F\uFEFF]/g;
 const TOOL_CALL_BLOCK_PATTERN = /\[TOOL_CALL\][\s\S]*?\[\/TOOL_CALL\]/gi;
 const TOOL_CALL_TOKEN_PATTERN = /\[\/?TOOL_CALL\]/gi;
+const HYPOTHESIS_PROMPT_NOISE_SNIPPETS = [
+  "query=diagnose the operational issue",
+  "available read-only tools",
+  "prioritize deterministic service->pod->node->gpu",
+  "must complete minimum ttft coverage",
+];
 
 function stripControlCharacters(text: string) {
   return text
@@ -206,6 +212,39 @@ export function normalizeDiagnosisModifiedDisplayText(text?: string | null) {
     .replace(/[ \t]{2,}/g, " ")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
+}
+
+function isPromptNoiseParagraph(paragraph: string) {
+  const normalized = paragraph.trim().toLowerCase();
+  if (!normalized) {
+    return false;
+  }
+  return HYPOTHESIS_PROMPT_NOISE_SNIPPETS.some((snippet) => normalized.includes(snippet));
+}
+
+export function sanitizeHypothesisSummaryForDisplay(text?: string | null) {
+  const normalized = normalizeDiagnosisModifiedDisplayText(text);
+  if (!normalized) {
+    return "";
+  }
+
+  const paragraphs = normalized
+    .split(/\n{2,}/)
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+
+  if (paragraphs.length === 0) {
+    return "";
+  }
+
+  const filteredParagraphs = paragraphs.filter((paragraph) => !isPromptNoiseParagraph(paragraph));
+  if (filteredParagraphs.length > 0) {
+    return filteredParagraphs.join("\n\n").trim();
+  }
+
+  const lines = normalized.split(/\n+/).map((entry) => entry.trim()).filter(Boolean);
+  const filteredLines = lines.filter((line) => !isPromptNoiseParagraph(line));
+  return filteredLines.join("\n").trim();
 }
 
 function formatValue(value: unknown): string {

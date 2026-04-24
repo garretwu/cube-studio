@@ -186,14 +186,6 @@ function AlertsModifiedPage() {
     (summary) => summary.session_id && !Object.prototype.hasOwnProperty.call(sessionDetails, summary.session_id),
   );
 
-  const syncTone: ChipTone = isLoading ? "warning" : historyLoading || detailLoading ? "info" : "success";
-  const syncLabel = isLoading
-    ? "告警同步中"
-    : historyLoading
-      ? "会话同步中"
-      : detailLoading
-        ? "诊断补充中"
-        : "已同步";
   const visibleError = diagnosisError ?? alertsError ?? historyError;
 
   const startDiagnosis = async (item: AlertDashboardItem) => {
@@ -293,7 +285,6 @@ function AlertsModifiedPage() {
         <SurfaceCard
           actions={
             <div className="alerts-dashboard-workbench__actions">
-              <StatusChip tone={syncTone}>{syncLabel}</StatusChip>
               <StatusChip tone="neutral">{`${filteredItems.length} / ${view.items.length} 项`}</StatusChip>
             </div>
           }

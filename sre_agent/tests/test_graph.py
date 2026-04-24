@@ -1723,6 +1723,13 @@ tags:
         self.assertEqual(step_two["params"]["entity_id"], "proc:11002")
         self.assertEqual(step_one["params"]["node"], "10.11.4.13")
         self.assertEqual(step_two["params"]["node"], "10.11.4.13")
+        self.assertEqual(step_one["verification"]["tool"], "process.find")
+        self.assertEqual(step_two["verification"]["tool"], "process.find")
+        self.assertEqual(step_one["verification"]["tool_params"]["pattern"], "11001")
+        self.assertEqual(step_two["verification"]["tool_params"]["pattern"], "11002")
+        self.assertEqual(step_one["verification"]["condition"]["field"], "count")
+        self.assertEqual(step_one["verification"]["condition"]["operator"], "==")
+        self.assertEqual(step_one["verification"]["condition"]["value"], 0)
         self.assertEqual(plan["canary"]["target_percentage"], 0.5)
         self.assertEqual(plan["canary"]["max_batches"], 2)
         self.assertFalse(plan["canary"]["progressive"])
@@ -1863,6 +1870,8 @@ tags:
         self.assertEqual(len(plan["steps"]), 2)
         self.assertEqual(plan["steps"][0]["params"]["entity_id"], "proc:10002")
         self.assertEqual(plan["steps"][1]["params"]["entity_id"], "proc:10003")
+        self.assertEqual(plan["steps"][0]["verification"]["tool_params"]["pattern"], "10002")
+        self.assertEqual(plan["steps"][1]["verification"]["tool_params"]["pattern"], "10003")
         self.assertEqual(plan["canary"]["max_batches"], 2)
 
     def test_extract_evidence_signals_collects_process_find_suspects(self) -> None:
@@ -2816,6 +2825,149 @@ tags:
         )
         self.assertEqual(result["status"], "timeout")
         self.assertEqual(result["error"], "diagnosis session timed out")
+
+    async def test_reason_node_ttft_coverage_gate_injects_forced_calls_when_fallback_has_no_tool_calls(self) -> None:
+        llm = _FakeLLM(
+            [
+                AIMessage(content="基于已收集的证据链，诊断结论已经明确。让我整理最终诊断结果。"),
+            ]
+        )
+        state = nodes_module.initialize_state(
+            query="Diagnose AIServiceTTFTP99High with strict TTFT workflow.",
+            variables={"node": "worker-03"},
+            session_id="sess-ttft-gate",
+            step_timeout_sec=5.0,
+            total_timeout_sec=30.0,
+            max_steps=6,
+            alert_snapshot={
+                "alert_name": "AIServiceTTFTP99High",
+                "ttft_external_process_default_node": "10.11.4.13",
+            },
+        )
+
+        result = await nodes_module.reason_node(state, llm=llm, registry=build_default_registry())
+        self.assertEqual(result["status"], "running")
+        pending_names = [str(item.get("name", "")).strip() for item in result.get("pending_tool_calls", [])]
+        self.assertIn("gpu.get_processes", pending_names)
+        self.assertIn("process.find", pending_names)
+        trace_items = [item for item in result.get("trace_items", []) if isinstance(item, dict)]
+        self.assertTrue(
+            any(
+                str((item.get("meta") or {}).get("reason", "")).strip() == "ttft_coverage_gate"
+                for item in trace_items
+            )
+        )
+
+    async def test_reason_node_ttft_coverage_gate_only_injects_external_probe_when_gpu_coverage_met(self) -> None:
+        llm = _FakeLLM(
+            [
+                AIMessage(content="诊断结果已经明确，可以给出最终诊断。"),
+            ]
+        )
+        state = nodes_module.initialize_state(
+            query="Diagnose AIServiceTTFTP99High with strict TTFT workflow.",
+            variables={"node": "worker-03"},
+            session_id="sess-ttft-gate-external-only",
+            step_timeout_sec=5.0,
+            total_timeout_sec=30.0,
+            max_steps=6,
+            alert_snapshot={
+                "alert_name": "AIServiceTTFTP99High",
+                "ttft_external_process_default_node": "10.11.4.13",
+            },
+        )
+        state["tool_runs"] = [
+            {
+                "tool": "gpu.get_processes",
+                "params": {"node": "worker-03"},
+                "success": True,
+                "data": {},
+            }
+        ]
+
+        result = await nodes_module.reason_node(state, llm=llm, registry=build_default_registry())
+        self.assertEqual(result["status"], "running")
+        pending = result.get("pending_tool_calls", [])
+        self.assertEqual(len(pending), 1)
+        self.assertEqual(str(pending[0].get("name", "")).strip(), "process.find")
+
+    async def test_reason_node_ttft_coverage_met_non_json_still_generates_auto_remediation_plan(self) -> None:
+        llm = _FakeLLM(
+            [
+                AIMessage(content="基于已收集的证据链，诊断结论已经明确。让我整理最终诊断结果。"),
+                AIMessage(content="诊断已完成，但本轮不返回 remediation_plan 字段。"),
+            ]
+        )
+        state = nodes_module.initialize_state(
+            query="Diagnose AIServiceTTFTP99High with strict TTFT workflow.",
+            variables={"node": "worker-03"},
+            session_id="sess-ttft-auto-plan",
+            step_timeout_sec=5.0,
+            total_timeout_sec=30.0,
+            max_steps=6,
+            alert_snapshot={
+                "alert_name": "AIServiceTTFTP99High",
+                "ttft_external_process_default_node": "10.11.4.13",
+            },
+        )
+        state["tool_runs"] = [
+            {
+                "tool": "gpu.get_processes",
+                "params": {"node": "worker-03"},
+                "success": True,
+                "data": {},
+                "key_fields": {
+                    "suspicious_load_processes": [
+                        {
+                            "pid": 509120,
+                            "process_name": "fi_gpu_burn_gpu_contention_ad4cf1ee -m 100% -i 0 3600",
+                            "memory_mib": 63884,
+                        }
+                    ]
+                },
+            },
+            {
+                "tool": "process.find",
+                "params": {"pattern": "load_simulator|gpu_burn", "node": "10.11.4.13"},
+                "success": True,
+                "data": {"node": "10.11.4.13", "count": 0},
+            },
+        ]
+
+        result = await nodes_module.reason_node(state, llm=llm, registry=build_default_registry())
+        self.assertEqual(result["status"], "diagnosed")
+        self.assertIsNotNone(result.get("remediation_plan"))
+        diagnosis_result = result.get("diagnosis_result") or {}
+        self.assertIsNotNone((diagnosis_result or {}).get("recommended_fix"))
+        self.assertEqual(result.get("plan_missing_reason"), None)
+
+    async def test_reason_node_ttft_external_probe_blocked_can_finalize_without_coverage_gate(self) -> None:
+        llm = _FakeLLM(
+            [
+                AIMessage(content="最终诊断结论：证据链受外部节点权限限制。"),
+                AIMessage(content="诊断已完成，但不返回结构化 remediation_plan。"),
+            ]
+        )
+        state = nodes_module.initialize_state(
+            query="Diagnose AIServiceTTFTP99High with strict TTFT workflow.",
+            variables={
+                "node": "worker-03",
+                "ttft_external_probe_blocked_reason": "SSH precheck failed for TTFT external node 10.11.4.13",
+            },
+            session_id="sess-ttft-blocked-finalize",
+            step_timeout_sec=5.0,
+            total_timeout_sec=30.0,
+            max_steps=6,
+            alert_snapshot={
+                "alert_name": "AIServiceTTFTP99High",
+                "ttft_external_process_default_node": "10.11.4.13",
+            },
+        )
+
+        result = await nodes_module.reason_node(state, llm=llm, registry=build_default_registry())
+        self.assertEqual(result["status"], "diagnosed")
+        self.assertEqual(result.get("pending_tool_calls"), [])
+        self.assertIn("TTFT external probe blocked by SSH authentication failure", str(result.get("plan_missing_reason", "")))
 
 
 class TestSelectBoundToolNamesForTurn(unittest.TestCase):

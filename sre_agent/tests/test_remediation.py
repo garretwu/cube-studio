@@ -599,7 +599,7 @@ class TestRemediationIntegration:
         assert batch_started[1]["targets_in_batch"] == ["proc:2", "proc:3", "proc:4"]
 
     @pytest.mark.asyncio
-    async def test_integration_engine_ttft_stale_pid_precheck_fails_before_kill(self, tmp_path: Path) -> None:
+    async def test_integration_engine_ttft_stale_pid_precheck_treats_absent_pid_as_completed(self, tmp_path: Path) -> None:
         class _SSHResult:
             success = True
             output = ""
@@ -649,11 +649,74 @@ class TestRemediationIntegration:
 
         result = await engine.execute(plan, session_id="session-kill-entity-stale")
 
+        assert result.success is True
+        assert result.steps_completed == 1
+        assert result.error_code is None
+        assert result.verification_results
+        assert result.verification_results[0]["verified"] is True
+        assert result.verification_results[0]["skipped"] is True
+        assert result.verification_results[0]["reason"] == "pid_already_absent"
+        # only precheck command should run; kill is skipped because pid already absent
+        assert len(ssh.calls) == 1
+        assert "ps -eo pid=,comm=,args=" in ssh.calls[0]["command"]
+
+    @pytest.mark.asyncio
+    async def test_integration_engine_ttft_precheck_still_fails_for_non_suspect_pid(self, tmp_path: Path) -> None:
+        class _SSHResult:
+            success = True
+            output = ""
+            error = ""
+
+        class _FakeSSHChannel:
+            def __init__(self) -> None:
+                self.calls: list[dict[str, Any]] = []
+
+            async def run_command(self, node: str, command: str, use_sudo: bool = False) -> _SSHResult:
+                self.calls.append({"node": node, "command": command, "use_sudo": use_sudo})
+                result = _SSHResult()
+                if "ps -eo pid=,comm=,args=" in command:
+                    # target pid exists but commandline does not match TTFT suspect allowlist
+                    result.output = "9783 python python -m uvicorn app.main:app"
+                else:
+                    result.output = "ok"
+                return result
+
+        registry = build_default_registry()
+        gate = ApprovalGate(default_policy="auto_approve")
+        wal = RollbackJournal(tmp_path / "wal.jsonl")
+        ssh = _FakeSSHChannel()
+        engine = RemediationEngine(
+            registry,
+            gate,
+            wal,
+            execution_context=ToolExecutionContext(channels={"ssh": ssh}),
+        )
+        plan = RemediationPlan(
+            plan_id="proposal-c40d7a64-ttft-kill",
+            root_cause="synthetic load process",
+            description="kill suspicious processes with strict precheck",
+            estimated_impact="ttft recovers",
+            confidence=0.86,
+            priority="P1",
+            steps=[
+                RemediationStep(
+                    step_id=1,
+                    description="kill process A",
+                    tool="kill_process",
+                    params={"node": "10.11.4.13", "entity_id": "proc:9783", "signal": "TERM"},
+                    verification=VerificationConfig(method="wait", wait_seconds=1),
+                ),
+            ],
+        )
+
+        result = await engine.execute(plan, session_id="session-kill-entity-non-suspect")
+
         assert result.success is False
         assert result.error_code == "stale_or_mismatched_pid"
         assert result.error_details is not None
         assert result.error_details.get("pid") == 9783
         assert result.error_details.get("action") == "re_diagnose_required"
+        assert "not TTFT-suspect process" in str(result.error_details.get("reason"))
         # only precheck command should run; kill must not execute
         assert len(ssh.calls) == 1
         assert "ps -eo pid=,comm=,args=" in ssh.calls[0]["command"]
