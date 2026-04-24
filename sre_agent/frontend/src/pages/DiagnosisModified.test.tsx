@@ -467,6 +467,21 @@ describe("DiagnosisModifiedPage sequential playback", () => {
     expect(within(reportRail).getByTestId("diagnosis-modified-report-placeholder-context-progress")).toBeInTheDocument();
     expect(within(reportRail).getByTestId("diagnosis-modified-report-placeholder-hypotheses-progress")).toBeInTheDocument();
     expect(within(reportRail).getByTestId("diagnosis-modified-report-placeholder-rootcause-progress")).toBeInTheDocument();
+    expect(
+      within(reportRail)
+        .getByTestId("diagnosis-modified-report-placeholder-context-progress")
+        .querySelectorAll(".diagnosis-modified-report-rail__loading-progress-line").length,
+    ).toBe(1);
+    expect(
+      within(reportRail)
+        .getByTestId("diagnosis-modified-report-placeholder-hypotheses-progress")
+        .querySelectorAll(".diagnosis-modified-report-rail__loading-progress-line").length,
+    ).toBe(1);
+    expect(
+      within(reportRail)
+        .getByTestId("diagnosis-modified-report-placeholder-rootcause-progress")
+        .querySelectorAll(".diagnosis-modified-report-rail__loading-progress-line").length,
+    ).toBe(1);
     expect(within(reportRail).getByTestId("diagnosis-modified-report-progressive-context")).toHaveAttribute(
       "data-state",
       "placeholder",
@@ -1956,6 +1971,74 @@ describe("DiagnosisModifiedPage split workspace", () => {
     expect(beforeNode.compareDocumentPosition(completedNode) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
+  it("shows only the latest semantic fragment for long streaming thinking text", () => {
+    resetDiagnosisStore({
+      session: createLiveSession("sess-live-thinking-fragment"),
+      activeSessionId: "sess-live-thinking-fragment",
+      bootstrapStatus: "ready",
+      traceStatus: "ready",
+      messages: [],
+      liveThinking: {
+        round_id: "run-fragment@2026-04-08T12:23:05.000Z",
+        round_seq: 1,
+        thought_key: "run-fragment:reason",
+        run_id: "run-fragment",
+        node: "reason",
+        timestamp: "2026-04-08T12:23:05.000Z",
+        content:
+          "第一步检查 GPU 指标与进程状态，确认服务节点异常。第二步排除外部压测干扰。现在需要生成 remediation_plan 部分。",
+        status: "thinking",
+        stream_seq: 1,
+        thought_duration_sec: null,
+        next_action: null,
+        tool_name: null,
+        active_tools: [],
+      },
+      bootstrapSession: vi.fn().mockResolvedValue(undefined),
+    });
+
+    renderLivePage("/diagnosis-modified/sess-live-thinking-fragment");
+
+    expect(screen.getByText("推理中")).toBeInTheDocument();
+    expect(screen.getByText("现在需要生成 remediation_plan 部分")).toBeInTheDocument();
+    expect(screen.queryByText(/第一步检查 GPU 指标与进程状态/)).not.toBeInTheDocument();
+  });
+
+  it("falls back to a tail preview for long structured streaming content", () => {
+    const longStructuredLine =
+      'query=Diagnose the operational issue described by the alert below using a read-only workflow, keep collecting evidence, remediation_plan={"step":"kill","target":"fi_gpu_burn_gpu_cont","node":"worker-03","decision":"prepare approval gate before execution"}';
+    const expectedTail = `...${longStructuredLine.slice(-80)}`;
+
+    resetDiagnosisStore({
+      session: createLiveSession("sess-live-thinking-tail"),
+      activeSessionId: "sess-live-thinking-tail",
+      bootstrapStatus: "ready",
+      traceStatus: "ready",
+      messages: [],
+      liveThinking: {
+        round_id: "run-tail@2026-04-08T12:24:05.000Z",
+        round_seq: 1,
+        thought_key: "run-tail:reason",
+        run_id: "run-tail",
+        node: "reason",
+        timestamp: "2026-04-08T12:24:05.000Z",
+        content: longStructuredLine,
+        status: "thinking",
+        stream_seq: 1,
+        thought_duration_sec: null,
+        next_action: null,
+        tool_name: null,
+        active_tools: [],
+      },
+      bootstrapSession: vi.fn().mockResolvedValue(undefined),
+    });
+
+    renderLivePage("/diagnosis-modified/sess-live-thinking-tail");
+
+    expect(screen.getByText(expectedTail)).toBeInTheDocument();
+    expect(screen.queryByText(longStructuredLine)).not.toBeInTheDocument();
+  });
+
   it("does not keep stale thinking from a previous round when a new round starts streaming", async () => {
     let liveViewSource: ReturnType<typeof diagnosisModifiedModel.buildDiagnosisModifiedLiveView> = {
       timeline: [],
@@ -2376,7 +2459,7 @@ describe("DiagnosisModifiedPage split workspace", () => {
     expect(screen.getByRole("heading", { name: "正在构建上下文..." })).toBeInTheDocument();
     expect(screen.queryByText("诊断开始上下文")).not.toBeInTheDocument();
     await advance(5000);
-    expect(screen.getByText(/正在聚合 GPUTemperatureHigh 的告警上下文/)).toBeInTheDocument();
+    expect(screen.getByText("拓扑摘要 gpu -> node -> bmc")).toBeInTheDocument();
     expect(screen.queryByText("正在检查 GPU 温度告警的上下文与拓扑链路。")).not.toBeInTheDocument();
     expect(screen.getAllByText("ssh.run_command").length).toBeGreaterThan(0);
     expect(screen.getByText("建议先检查风扇策略与机柜散热。")).toBeInTheDocument();

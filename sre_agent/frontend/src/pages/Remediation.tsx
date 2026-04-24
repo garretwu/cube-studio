@@ -10,7 +10,7 @@ import { AppIcon, AppInput, MetricTile, StatusChip, SurfaceCard } from "../compo
 import { useWebSocket } from "../hooks/useWebSocket";
 import { useRemediationStore } from "../store/remediationStore";
 import { formatPercent, formatTimestamp } from "../utils/format";
-import { getRemediationOverallProgressDisplay } from "../utils/remediationProgress";
+import { deriveRemediationExecutionView } from "../utils/remediationProgress";
 
 type RemediationRecord = {
   summary: DiagnosisSessionSummary;
@@ -417,7 +417,12 @@ function RemediationPage() {
                       const currentStatus = String(recordOverview?.progress.status ?? record.summary.status ?? "pending").trim();
                       const approver = getApprover(recordOverview?.timeline) ?? (recordOverview?.approval_required ? "待审批" : "未记录");
                       const startedAt = getExecutionStartedAt(recordOverview?.timeline);
-                      const totalProgress = getRemediationOverallProgressDisplay(recordOverview);
+                      const totalProgress = deriveRemediationExecutionView({
+                        overview: recordOverview,
+                        fallbackStartedAt: record.summary.started_at,
+                        fallbackUpdatedAt: record.summary.updated_at,
+                        fallbackDurationSeconds: record.summary.duration_seconds,
+                      }).overallProgress;
                       const isExpanded = selectedRecord?.summary.session_id === record.summary.session_id;
 
                       return (

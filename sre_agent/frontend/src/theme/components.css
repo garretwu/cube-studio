@@ -14091,6 +14091,7 @@
 .diagnosis-modified-thinking__stream-body {
   display: flex;
   align-items: baseline;
+  min-width: 0;
   min-height: 20px;
   padding: 4px 0;
   line-height: 20px;
@@ -15926,40 +15927,30 @@
 }
 
 .diagnosis-modified-report-rail__loading-progress {
-  display: grid;
-  gap: 8px;
+  display: flex;
+  align-items: center;
   width: min(100%, 560px);
-  min-height: 82px;
-  padding: 12px 14px;
-  border: 1px solid rgba(96, 165, 250, 0.5);
+  min-height: 54px;
+  padding: 10px 14px;
+  border: 1px solid rgba(203, 213, 225, 0.9);
   border-radius: 10px;
-  background: linear-gradient(180deg, rgba(239, 246, 255, 0.72) 0%, rgba(248, 250, 252, 0.95) 100%);
+  background: linear-gradient(180deg, rgba(248, 250, 252, 0.98) 0%, rgba(241, 245, 249, 0.94) 100%);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.7);
 }
 
 .diagnosis-modified-report-rail__loading-progress-line {
   display: block;
-  height: 8px;
+  width: min(100%, 468px);
+  height: 10px;
   border-radius: 999px;
   background: linear-gradient(
     90deg,
-    rgba(186, 230, 253, 0.28) 0%,
-    rgba(96, 165, 250, 0.78) 48%,
-    rgba(186, 230, 253, 0.28) 100%
+    rgba(226, 232, 240, 0.45) 0%,
+    rgba(248, 250, 252, 0.98) 50%,
+    rgba(226, 232, 240, 0.45) 100%
   );
   background-size: 220% 100%;
   animation: diagnosis-modified-report-loading-progress-shimmer 1.15s ease-in-out infinite;
-}
-
-.diagnosis-modified-report-rail__loading-progress-line--long {
-  width: min(100%, 468px);
-}
-
-.diagnosis-modified-report-rail__loading-progress-line--medium {
-  width: min(84%, 400px);
-}
-
-.diagnosis-modified-report-rail__loading-progress-line--short {
-  width: min(66%, 320px);
 }
 
 .diagnosis-modified-report-rail__empty-preview-title {
@@ -16856,7 +16847,7 @@
 
   .diagnosis-modified-report-rail__loading-progress-line {
     animation: none;
-    background: rgba(148, 163, 184, 0.38);
+    background: rgba(226, 232, 240, 0.92);
   }
 }
 
