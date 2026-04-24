@@ -108,14 +108,30 @@ function createLiveSession(sessionId: string): DiagnosisSession {
   };
 }
 
+/**
+ * Build an approval-ready session fixture for diagnosis page tests.
+ * Input: session id; Output: diagnosis session using the formal multi-root-cause contract.
+ * Why: test cases must validate that UI behavior only depends on `root_cause[]`, not legacy fields.
+ */
 function createApprovalSession(sessionId: string): DiagnosisSession {
   return {
     ...createLiveSession(sessionId),
     status: "approval_required",
     diagnosis_result: {
-      root_cause: "GPU contention",
-      root_cause_layer: "platform",
-      root_cause_entities: ["node:worker-03"],
+      root_cause: [
+        {
+          id: "rc-gpu-contention",
+          title: "GPU contention",
+          layer: "platform",
+          entities: ["node:worker-03"],
+          confidence: 0.82,
+          certainty: "probable",
+          status: "confirmed",
+          evidence_summary: "GPU utilization and queue latency rose together.",
+          impact_summary: "impact",
+          distinguishing_verification: "Drain canary on worker-03 and validate p95 recovery.",
+        },
+      ],
       confidence: 0.82,
       hypotheses: [],
       impact_summary: "impact",

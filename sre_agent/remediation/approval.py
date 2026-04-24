@@ -18,6 +18,8 @@ class ApprovalInput(BaseModel):
     user: str = Field(default="unknown", min_length=1)
     reason: str | None = None
     plan_version: int | None = Field(default=None, ge=1)
+    plan_key: str | None = None
+    approve_all: bool = False
 
 
 class ApprovalResult(BaseModel):

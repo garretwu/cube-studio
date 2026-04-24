@@ -1,5 +1,6 @@
 import type { ChatMessage, DiagnosisLocalAuditRecord, DiagnosisResult, DiagnosisSession, Observation, SessionEvent, ThinkingStep } from "../api/types";
 import { formatDateTime, formatDateTimeParts } from "../utils/format";
+import { getNormalizedRootCauses, getPrimaryPlan, getPrimaryRootCause } from "./rootCauseModel";
 
 type ChipTone = "neutral" | "accent" | "success" | "warning" | "danger" | "info";
 
@@ -541,6 +542,19 @@ function formatParamsSummary(params: Record<string, unknown>) {
 }
 
 function buildSummary(session: DiagnosisSession | undefined): DiagnosisSummaryView | undefined {
+  /**
+   * Build summary card data from diagnosis result.
+   *
+   * Purpose:
+   * - render a stable summary using the primary root cause while exposing multi-root-cause count in subtitle.
+   * Input/Output:
+   * - input: optional diagnosis session;
+   * - output: summary view model or undefined.
+   * Compatibility rationale:
+   * - no fallback to removed legacy root-cause fields; we read from normalized `root_cause[]`.
+   * Why:
+   * - summary should emphasize primary root cause without hiding co-existing root causes.
+   */
   const result = session?.diagnosis_result;
   const updatedLabels = getUpdatedLabelParts(getLatestTraceTimestamp(session));
   if (!result) {
@@ -566,9 +580,11 @@ function buildSummary(session: DiagnosisSession | undefined): DiagnosisSummaryVi
       : undefined;
   }
 
+  const rootCauses = getNormalizedRootCauses(result);
+  const primary = getPrimaryRootCause(result);
   return {
     title: "\u6839\u56e0\u8bca\u65ad",
-    subtitle: "\u57fa\u4e8e\u73b0\u6709\u8bc1\u636e\u6574\u7406\u51fa\u7684\u5f53\u524d\u7ed3\u8bba\u3002",
+    subtitle: `\u57fa\u4e8e\u73b0\u6709\u8bc1\u636e\u6574\u7406\u51fa\u7684\u5f53\u524d\u7ed3\u8bba\uff08\u5171 ${rootCauses.length} \u4e2a\u6839\u56e0\u9879\uff09\u3002`,
     certaintyLabel: getCertaintyLabel(result.diagnosis_certainty),
     certaintyTone: getCertaintyTone(result.diagnosis_certainty),
     confidenceLabel: getConfidenceLabel(result.confidence),
@@ -579,108 +595,54 @@ function buildSummary(session: DiagnosisSession | undefined): DiagnosisSummaryVi
     updatedDateTimeLabel: updatedLabels.updatedDateTimeLabel,
     affectedServices: normalizeStringList(result.affected_services),
     impactSummary: normalizeDiagnosisDisplayText(result.impact_summary),
-    rootCause: normalizeDiagnosisDisplayText(result.root_cause),
-    rootCauseLayer: result.root_cause_layer,
-    rootCauseLayerLabel: getLayerLabel(result.root_cause_layer),
-    rootCauseEntities: normalizeStringList(result.root_cause_entities),
+    rootCause: primary ? normalizeDiagnosisDisplayText(primary.title) : undefined,
+    rootCauseLayer: primary?.layer,
+    rootCauseLayerLabel: getLayerLabel(primary?.layer),
+    rootCauseEntities: primary ? normalizeStringList(primary.entities) : [],
   };
 }
 
 function buildCandidates(session: DiagnosisSession | undefined): DiagnosisCandidateView[] {
+  /**
+   * Build candidate cards from formal multi-root-cause list.
+   *
+   * Purpose:
+   * - render "多根因分析" cards directly from diagnosis root-cause items.
+   * Input/Output:
+   * - input: optional diagnosis session;
+   * - output: candidate card list.
+   * Compatibility rationale:
+   * - candidate cards no longer read legacy ranked candidates.
+   * Why:
+   * - root-cause array now represents official diagnosis conclusions, not temporary candidate hints.
+   */
   const result = session?.diagnosis_result;
   if (!result) {
     return [];
   }
-
-  const hypotheses = result.hypotheses ?? [];
-  const rankedCandidates = [...(result.ranked_candidates ?? [])].sort((left, right) => left.rank - right.rank);
-
-  if (rankedCandidates.length > 0) {
-    return rankedCandidates.map((candidate, index) => {
-      const matchedHypothesis = hypotheses.find(
-        (item) => item.description.trim().toLowerCase() === candidate.root_cause.trim().toLowerCase(),
-      );
-      const isPrimary = candidate.rank === 1 || index === 0;
-
-      return {
-        id: `ranked-${candidate.rank}-${candidate.root_cause}`,
-        title: normalizeDiagnosisDisplayText(candidate.root_cause),
-        summary: normalizeDiagnosisDisplayText(candidate.evidence_summary),
-        confidence: candidate.confidence,
-        confidenceLabel: getConfidenceLabel(candidate.confidence),
-        statusLabel: isPrimary
-          ? getCertaintyLabel(result.diagnosis_certainty)
-          : matchedHypothesis
-            ? getHypothesisLabel(matchedHypothesis.status)
-            : "\u5019\u9009",
-        statusTone: isPrimary
-          ? getCertaintyTone(result.diagnosis_certainty)
-          : matchedHypothesis
-            ? getHypothesisTone(matchedHypothesis.status)
-            : "neutral",
-        evidenceFor: normalizeStringList(matchedHypothesis?.evidence_for?.slice(0, 3) ?? [candidate.evidence_summary]),
-        evidenceAgainst: normalizeStringList(matchedHypothesis?.evidence_against?.slice(0, 2) ?? []),
-        layer: candidate.root_cause_layer,
-        entities: normalizeStringList(candidate.root_cause_entities),
-        rank: candidate.rank,
-        evidenceSummary: normalizeDiagnosisDisplayText(candidate.evidence_summary),
-        distinguishingVerification: candidate.distinguishing_verification
-          ? normalizeDiagnosisDisplayText(candidate.distinguishing_verification)
-          : candidate.distinguishing_verification,
-        isPrimary,
-      };
-    });
-  }
-
-  const items: DiagnosisCandidateView[] = [];
-  const normalizedRootCause = normalizeDiagnosisDisplayText(result.root_cause).trim();
-
-  if (normalizedRootCause) {
-    items.push({
-      id: `primary-${normalizedRootCause}`,
-      title: normalizedRootCause,
-      summary: "\u5b9e\u65f6\u8bc1\u636e\u4e0e\u5386\u53f2\u7279\u5f81\u5f3a\u4e00\u81f4\uff0c\u5f53\u524d\u4f18\u5148\u7ea7\u6700\u9ad8\u3002",
-      confidence: result.confidence,
-      confidenceLabel: getConfidenceLabel(result.confidence),
-      statusLabel: getCertaintyLabel(result.diagnosis_certainty),
-      statusTone: getCertaintyTone(result.diagnosis_certainty),
-      evidenceFor: normalizeStringList(hypotheses[0]?.evidence_for?.slice(0, 3) ?? [result.impact_summary]),
-      evidenceAgainst: normalizeStringList(hypotheses[0]?.evidence_against?.slice(0, 2) ?? []),
-      layer: result.root_cause_layer,
-      entities: normalizeStringList(result.root_cause_entities),
-      rank: 1,
-      evidenceSummary: normalizeDiagnosisDisplayText(hypotheses[0]?.evidence_for?.[0] ?? result.impact_summary),
-      distinguishingVerification: null,
-      isPrimary: true,
-    });
-  }
-
-  hypotheses.forEach((hypothesis, index) => {
-    const normalizedHypothesisDescription = normalizeDiagnosisDisplayText(hypothesis.description).trim();
-    if (normalizedHypothesisDescription === normalizedRootCause) {
-      return;
-    }
-
-    items.push({
-      id: `hypothesis-${index + 1}`,
-      title: normalizedHypothesisDescription,
-      summary: hypothesis.status === "eliminated" ? "\u5f53\u524d\u8bc1\u636e\u4e0d\u652f\u6301\u8be5\u8def\u5f84\u3002" : "\u8be5\u8def\u5f84\u4ecd\u5728\u5019\u9009\u8303\u56f4\u5185\u3002",
-      confidence: hypothesis.confidence,
-      confidenceLabel: getConfidenceLabel(hypothesis.confidence),
-      statusLabel: getHypothesisLabel(hypothesis.status),
-      statusTone: getHypothesisTone(hypothesis.status),
-      evidenceFor: normalizeStringList(hypothesis.evidence_for.slice(0, 3)),
-      evidenceAgainst: normalizeStringList(hypothesis.evidence_against.slice(0, 2)),
-      layer: index === 0 ? result.root_cause_layer : undefined,
-      entities: index === 0 ? normalizeStringList(result.root_cause_entities) : [],
-      rank: index + 2,
-      evidenceSummary: normalizeDiagnosisDisplayText(hypothesis.evidence_for[0] ?? "\u8bc1\u636e\u6458\u8981"),
-      distinguishingVerification: null,
-      isPrimary: false,
-    });
+  const rootCauses = getNormalizedRootCauses(result);
+  return rootCauses.map((rootCause, index) => {
+    const isPrimary = index === 0;
+    return {
+      id: rootCause.id || `root-cause-${index + 1}`,
+      title: normalizeDiagnosisDisplayText(rootCause.title),
+      summary: normalizeDiagnosisDisplayText(rootCause.impact_summary || rootCause.evidence_summary),
+      confidence: rootCause.confidence,
+      confidenceLabel: getConfidenceLabel(rootCause.confidence),
+      statusLabel: isPrimary ? getCertaintyLabel(result.diagnosis_certainty) : "\u5e76\u5b58\u6839\u56e0",
+      statusTone: isPrimary ? getCertaintyTone(result.diagnosis_certainty) : "neutral",
+      evidenceFor: normalizeStringList([rootCause.evidence_summary]),
+      evidenceAgainst: [],
+      layer: rootCause.layer,
+      entities: normalizeStringList(rootCause.entities),
+      rank: index + 1,
+      evidenceSummary: normalizeDiagnosisDisplayText(rootCause.evidence_summary),
+      distinguishingVerification: rootCause.distinguishing_verification
+        ? normalizeDiagnosisDisplayText(rootCause.distinguishing_verification)
+        : null,
+      isPrimary,
+    };
   });
-
-  return items;
 }
 
 function buildHypotheses(session: DiagnosisSession | undefined): DiagnosisHypothesisView[] {
@@ -710,7 +672,20 @@ function buildPropagationChain(session: DiagnosisSession | undefined): Diagnosis
 }
 
 function buildPlan(session: DiagnosisSession | undefined): DiagnosisPlanView | undefined {
-  const plan = session?.diagnosis_result?.recommended_fix;
+  /**
+   * Build remediation plan view from top-level plan or primary-root-cause fallback.
+   *
+   * Purpose:
+   * - keep current single-plan UI behavior while diagnosis supports multiple root causes.
+   * Input/Output:
+   * - input: optional diagnosis session;
+   * - output: plan view or undefined.
+   * Compatibility rationale:
+   * - plan selection intentionally reads only top-level and `root_cause[0].recommended_fix`.
+   * Why:
+   * - multi-plan approval/execution is intentionally out of scope for this migration.
+   */
+  const plan = getPrimaryPlan(session?.diagnosis_result);
   if (!plan) {
     return undefined;
   }
@@ -856,7 +831,20 @@ function isSyntheticRemediationMessage(message: ChatMessage) {
 }
 
 function buildPlanStepDetailLines(plan: DiagnosisSession["diagnosis_result"] | undefined) {
-  const steps = plan?.recommended_fix?.steps ?? [];
+  /**
+   * Build step detail lines from the current single effective remediation plan.
+   *
+   * Purpose:
+   * - provide compact plan-step text used by execution/approval timeline records.
+   * Input/Output:
+   * - input: diagnosis_result payload;
+   * - output: user-facing step detail lines.
+   * Compatibility rationale:
+   * - reads top-level plan first, then falls back to primary root-cause plan.
+   * Why:
+   * - current migration keeps first-root-cause-first remediation execution.
+   */
+  const steps = getPrimaryPlan(plan)?.steps ?? [];
   if (steps.length === 0) {
     return ["\u6267\u884c\u6b65\u9aa4\uff1a--"];
   }
@@ -890,6 +878,19 @@ function buildApprovalResultFromExecutionEvent(
   event: SessionEvent,
   session: DiagnosisSession | undefined,
 ): DiagnosisLocalAuditRecord | null {
+  /**
+   * Build approval-result audit record from remediation execution events.
+   *
+   * Purpose:
+   * - convert execution start event into timeline-friendly approval confirmation entry.
+   * Input/Output:
+   * - input: websocket session event and optional session snapshot;
+   * - output: local audit record or null when event is not applicable.
+   * Compatibility rationale:
+   * - plan lookup uses top-level plan + primary-root-cause fallback.
+   * Why:
+   * - preserves existing timeline behavior while diagnosis structure migrated to root_cause[].
+   */
   if (event.type !== "remediation_progress") {
     return null;
   }
@@ -900,7 +901,7 @@ function buildApprovalResultFromExecutionEvent(
     return null;
   }
 
-  const plan = session?.diagnosis_result?.recommended_fix;
+  const plan = getPrimaryPlan(session?.diagnosis_result);
   const planVersion = normalizePlanVersion(data.plan_version) ?? parsePlanVersionFromPlanId(plan?.plan_id) ?? null;
   const versionLabel = planVersion ? "v" + planVersion : "v?";
   const approver = resolveRecordUser(data);
@@ -928,7 +929,8 @@ function buildApprovalResultFromExecutionEvent(
 }
 
 function hasCanaryPlan(session: DiagnosisSession | undefined) {
-  return Boolean(session?.diagnosis_result?.recommended_fix?.canary?.enabled);
+  /** Determine whether the currently effective single plan enables canary execution. */
+  return Boolean(getPrimaryPlan(session?.diagnosis_result)?.canary?.enabled);
 }
 
 function clampProgress(value: unknown): number | null {
@@ -1920,9 +1922,34 @@ export function buildDiagnosisDemoScenario(prompt: string): DiagnosisDemoScenari
   const toolThreeId = `demo-tool-deploy-${now}`;
 
   const diagnosisResult: DiagnosisResult = {
-    root_cause: "worker-03 \u8282\u70b9 GPU \u4e89\u7528",
-    root_cause_layer: "platform",
-    root_cause_entities: ["node:worker-03", "gpu:0"],
+    root_cause: [
+      {
+        id: "rc-1",
+        title: "worker-03 \u8282\u70b9 GPU \u4e89\u7528",
+        layer: "platform",
+        entities: ["node:worker-03", "gpu:0"],
+        confidence: 0.91,
+        certainty: "confirmed",
+        status: "confirmed",
+        evidence_summary: "GPU util \u6301\u7eed 99%\uff0c\u8bf7\u6c42\u6392\u961f\u65f6\u957f\u4e0e\u8d85\u65f6\u544a\u8b66\u540c\u6b65\u51fa\u73b0\u3002",
+        impact_summary: "vLLM p95 \u5ef6\u8fdf\u6301\u7eed\u8d70\u9ad8\uff0c\u63a8\u7406\u541e\u5410\u51fa\u73b0\u660e\u663e\u4e0b\u964d\u3002",
+        distinguishing_verification: "\u786e\u8ba4 worker-03 \u7684 GPU \u5f02\u5e38\u5360\u7528\u662f\u5426\u6765\u81ea\u989d\u5916\u8d1f\u8f7d\u6216\u8d44\u6e90\u51b2\u7a81\u3002",
+        recommended_fix: null,
+      },
+      {
+        id: "rc-2",
+        title: "ECN \u914d\u7f6e\u4e0d\u4e00\u81f4",
+        layer: "network",
+        entities: ["switch:tor-07"],
+        confidence: 0.62,
+        certainty: "probable",
+        status: "contributing",
+        evidence_summary: "ECN \u6ce2\u52a8\u5b58\u5728\u95f4\u6b47\u6027\u5f02\u5e38\uff0c\u4f46\u4e0d\u8db3\u4ee5\u89e3\u91ca\u5f53\u524d\u5168\u91cf\u75c7\u72b6\u3002",
+        impact_summary: "网络抖动对延迟有叠加影响，但非主导因素。",
+        distinguishing_verification: "\u68c0\u67e5\u4ea4\u6362\u673a ECN \u914d\u7f6e\u5dee\u5f02\uff0c\u91cd\u70b9\u6bd4\u5bf9\u5f02\u5e38 TOR\u3002",
+        recommended_fix: null,
+      },
+    ],
     confidence: 0.91,
     hypotheses: [
       {
@@ -1960,35 +1987,6 @@ export function buildDiagnosisDemoScenario(prompt: string): DiagnosisDemoScenari
     impact_summary: "vLLM p95 \u5ef6\u8fdf\u6301\u7eed\u8d70\u9ad8\uff0c\u63a8\u7406\u541e\u5410\u51fa\u73b0\u660e\u663e\u4e0b\u964d\u3002",
     affected_services: ["inference-gateway", "vllm-serving"],
     triage_priority: "P1",
-    ranked_candidates: [
-      {
-        rank: 1,
-        root_cause: "GPU \u4e89\u7528",
-        root_cause_layer: "platform",
-        root_cause_entities: ["node:worker-03", "gpu:0"],
-        confidence: 0.91,
-        evidence_summary: "GPU util \u6301\u7eed 99%\uff0c\u8bf7\u6c42\u6392\u961f\u65f6\u957f\u4e0e\u8d85\u65f6\u544a\u8b66\u540c\u6b65\u51fa\u73b0\u3002",
-        distinguishing_verification: "\u786e\u8ba4 worker-03 \u7684 GPU \u5f02\u5e38\u5360\u7528\u662f\u5426\u6765\u81ea\u989d\u5916\u8d1f\u8f7d\u6216\u8d44\u6e90\u51b2\u7a81\u3002",
-      },
-      {
-        rank: 2,
-        root_cause: "ECN \u914d\u7f6e\u4e0d\u4e00\u81f4",
-        root_cause_layer: "network",
-        root_cause_entities: ["switch:tor-07"],
-        confidence: 0.62,
-        evidence_summary: "ECN \u6ce2\u52a8\u5b58\u5728\u95f4\u6b47\u6027\u5f02\u5e38\uff0c\u4f46\u4e0d\u8db3\u4ee5\u89e3\u91ca\u5f53\u524d\u5168\u91cf\u75c7\u72b6\u3002",
-        distinguishing_verification: "\u68c0\u67e5\u4ea4\u6362\u673a ECN \u914d\u7f6e\u5dee\u5f02\uff0c\u91cd\u70b9\u6bd4\u5bf9\u5f02\u5e38 TOR\u3002",
-      },
-      {
-        rank: 3,
-        root_cause: "\u6d41\u91cf\u7a81\u589e",
-        root_cause_layer: "service",
-        root_cause_entities: ["service:inference-gateway"],
-        confidence: 0.4,
-        evidence_summary: "\u8bf7\u6c42\u91cf\u867d\u6709\u4e0a\u5347\uff0c\u4f46\u4f4e\u4e8e\u5386\u53f2\u5cf0\u503c\uff0c\u7f3a\u5c11\u6392\u961f\u653e\u5927\u94fe\u8def\u8bc1\u636e\u3002",
-        distinguishing_verification: "\u5bf9\u6bd4\u5386\u53f2\u5cf0\u503c\u65f6\u6bb5 QPS \u4e0e\u5ef6\u8fdf\u7684\u8026\u5408\u7a0b\u5ea6\u3002",
-      },
-    ],
     diagnosis_certainty: "confirmed",
     recommended_fix: {
       plan_id: `plan-gpu-contention-${now}`,

@@ -9,7 +9,7 @@ import re
 import time
 from dataclasses import replace
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Iterable
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -54,41 +54,110 @@ class RemediationEngine:
         self.canary = CanaryExecutor(wal=wal, prometheus=prometheus)
         self._plans_by_session: dict[str, RemediationPlan] = {}
         self._plan_versions_by_session: dict[str, list[RemediationPlan]] = {}
+        self._plans_by_session_key: dict[str, dict[str, RemediationPlan]] = {}
+        self._plan_versions_by_session_key: dict[str, dict[str, list[RemediationPlan]]] = {}
+        self._default_plan_key_by_session: dict[str, str] = {}
         mode = str(execution_mode or "real").strip().lower()
         self.execution_mode = mode if mode in {"mock", "real"} else "real"
 
-    def register_plan(self, session_id: str, plan: RemediationPlan) -> None:
-        self._plans_by_session[session_id] = plan
-        versions = self._plan_versions_by_session.setdefault(session_id, [])
+    def register_plan(
+        self,
+        session_id: str,
+        plan: RemediationPlan,
+        *,
+        plan_key: str | None = None,
+        set_default: bool = True,
+    ) -> None:
+        resolved_key = self._normalize_plan_key(plan_key)
+        session_plans = self._plans_by_session_key.setdefault(session_id, {})
+        session_versions = self._plan_versions_by_session_key.setdefault(session_id, {})
+        session_plans[resolved_key] = plan
+        versions = session_versions.setdefault(resolved_key, [])
         if not versions:
             versions.append(plan)
-            return
-        latest = versions[-1]
-        if latest.model_dump(mode="json") != plan.model_dump(mode="json"):
-            versions.append(plan)
+        else:
+            latest = versions[-1]
+            if latest.model_dump(mode="json") != plan.model_dump(mode="json"):
+                versions.append(plan)
+        if set_default or session_id not in self._default_plan_key_by_session:
+            self._default_plan_key_by_session[session_id] = resolved_key
+        self._sync_legacy_session_views(session_id)
+
+    def register_plans(
+        self,
+        session_id: str,
+        plans: Iterable[tuple[str, RemediationPlan]],
+        *,
+        clear_existing: bool = True,
+    ) -> list[str]:
+        if clear_existing:
+            self.clear_session_plans(session_id)
+        registered_keys: list[str] = []
+        for index, (plan_key, plan) in enumerate(plans):
+            self.register_plan(
+                session_id,
+                plan,
+                plan_key=plan_key,
+                set_default=index == 0,
+            )
+            registered_keys.append(self._normalize_plan_key(plan_key))
+        self._sync_legacy_session_views(session_id)
+        return registered_keys
 
     async def approve_and_execute(
         self,
         session_id: str,
         approval: ApprovalInput,
         *,
+        plan_key: str | None = None,
         progress_callback: Any | None = None,
     ) -> RemediationResult:
-        plan = self._plans_by_session[session_id]
+        plan = self.get_plan(session_id, plan_key=plan_key)
+        if plan is None:
+            raise KeyError(session_id if plan_key is None else f"{session_id}:{plan_key}")
         await self.approval.submit_decision(session_id, approval)
-        return await self.execute(plan, session_id=session_id, progress_callback=progress_callback)
+        return await self.execute(
+            plan,
+            session_id=session_id,
+            plan_key=plan_key,
+            progress_callback=progress_callback,
+        )
 
-    def get_plan(self, session_id: str) -> RemediationPlan | None:
-        return self._plans_by_session.get(session_id)
+    def get_plan(self, session_id: str, *, plan_key: str | None = None) -> RemediationPlan | None:
+        if plan_key is None:
+            return self._plans_by_session.get(session_id)
+        resolved_key = self._normalize_plan_key(plan_key)
+        return self._plans_by_session_key.get(session_id, {}).get(resolved_key)
 
-    def get_plan_history(self, session_id: str) -> list[RemediationPlan]:
-        return list(self._plan_versions_by_session.get(session_id, []))
+    def get_plan_history(self, session_id: str, *, plan_key: str | None = None) -> list[RemediationPlan]:
+        if plan_key is None:
+            return list(self._plan_versions_by_session.get(session_id, []))
+        resolved_key = self._normalize_plan_key(plan_key)
+        return list(self._plan_versions_by_session_key.get(session_id, {}).get(resolved_key, []))
 
-    def get_latest_plan_version(self, session_id: str) -> int:
-        versions = self._plan_versions_by_session.get(session_id) or []
+    def get_latest_plan_version(self, session_id: str, *, plan_key: str | None = None) -> int:
+        if plan_key is None:
+            versions = self._plan_versions_by_session.get(session_id) or []
+        else:
+            resolved_key = self._normalize_plan_key(plan_key)
+            versions = self._plan_versions_by_session_key.get(session_id, {}).get(resolved_key) or []
         if not versions:
             return 0
         return len(versions)
+
+    def list_plan_keys(self, session_id: str) -> list[str]:
+        session_plans = self._plans_by_session_key.get(session_id, {})
+        default_key = self._default_plan_key_by_session.get(session_id)
+        ordered = sorted(session_plans.keys())
+        if default_key is not None and default_key in ordered:
+            ordered.remove(default_key)
+            ordered.insert(0, default_key)
+        return ordered
+
+    def get_all_plans(self, session_id: str) -> list[tuple[str, RemediationPlan]]:
+        session_plans = self._plans_by_session_key.get(session_id, {})
+        keys = self.list_plan_keys(session_id)
+        return [(key, session_plans[key]) for key in keys if key in session_plans]
 
     def revise_plan(
         self,
@@ -96,8 +165,12 @@ class RemediationEngine:
         session_id: str,
         instruction: str,
         base_plan_version: int | None = None,
+        plan_key: str | None = None,
     ) -> tuple[int, RemediationPlan]:
-        versions = self._plan_versions_by_session.get(session_id) or []
+        resolved_key = self._resolve_plan_key_or_default(session_id, plan_key)
+        if resolved_key is None:
+            raise KeyError(session_id)
+        versions = self._plan_versions_by_session_key.get(session_id, {}).get(resolved_key) or []
         if not versions:
             raise KeyError(session_id)
 
@@ -118,8 +191,11 @@ class RemediationEngine:
         plan_data["estimated_impact"] = f"{base_plan.estimated_impact} | Revision note: {revised_note}"
         revised_plan = RemediationPlan.model_validate(plan_data)
         versions.append(revised_plan)
-        self._plans_by_session[session_id] = revised_plan
-        self._plan_versions_by_session[session_id] = versions
+        session_plans = self._plans_by_session_key.setdefault(session_id, {})
+        session_versions = self._plan_versions_by_session_key.setdefault(session_id, {})
+        session_plans[resolved_key] = revised_plan
+        session_versions[resolved_key] = versions
+        self._sync_legacy_session_views(session_id)
         return next_version, revised_plan
 
     async def rollback(self, session_id: str) -> RollbackResult:
@@ -134,6 +210,7 @@ class RemediationEngine:
         plan: RemediationPlan,
         session_id: str | None = None,
         *,
+        plan_key: str | None = None,
         progress_callback: Any | None = None,
     ) -> RemediationResult:
         errors = self.validator.validate(plan)
@@ -141,7 +218,7 @@ class RemediationEngine:
             raise PlanValidationError(errors)
 
         if session_id:
-            self.register_plan(session_id, plan)
+            self.register_plan(session_id, plan, plan_key=plan_key)
         approval = await self.approval.request_approval(plan, session_id=session_id)
         if not approval.approved:
             return RemediationResult(
@@ -559,6 +636,48 @@ class RemediationEngine:
     def _base_plan_id(plan_id: str) -> str:
         normalized = re.sub(r"-v\d+$", "", str(plan_id or "").strip())
         return normalized or "plan"
+
+    def clear_session_plans(self, session_id: str) -> None:
+        self._plans_by_session_key.pop(session_id, None)
+        self._plan_versions_by_session_key.pop(session_id, None)
+        self._default_plan_key_by_session.pop(session_id, None)
+        self._plans_by_session.pop(session_id, None)
+        self._plan_versions_by_session.pop(session_id, None)
+
+    @staticmethod
+    def _normalize_plan_key(plan_key: str | None) -> str:
+        value = str(plan_key or "").strip()
+        return value or "default"
+
+    def _resolve_plan_key_or_default(self, session_id: str, plan_key: str | None) -> str | None:
+        if plan_key is not None and str(plan_key).strip():
+            resolved = self._normalize_plan_key(plan_key)
+            if resolved in self._plans_by_session_key.get(session_id, {}):
+                return resolved
+            return None
+        default_key = self._default_plan_key_by_session.get(session_id)
+        if default_key is not None:
+            return default_key
+        keys = sorted(self._plans_by_session_key.get(session_id, {}).keys())
+        if keys:
+            return keys[0]
+        if session_id in self._plans_by_session:
+            return "default"
+        return None
+
+    def _sync_legacy_session_views(self, session_id: str) -> None:
+        default_key = self._resolve_plan_key_or_default(session_id, None)
+        if default_key is None:
+            self._plans_by_session.pop(session_id, None)
+            self._plan_versions_by_session.pop(session_id, None)
+            return
+        session_plans = self._plans_by_session_key.get(session_id, {})
+        session_versions = self._plan_versions_by_session_key.get(session_id, {})
+        plan = session_plans.get(default_key)
+        versions = session_versions.get(default_key, [])
+        if plan is not None:
+            self._plans_by_session[session_id] = plan
+            self._plan_versions_by_session[session_id] = list(versions)
 
     def _revise_steps(self, raw_steps: list[dict[str, Any]], instruction: str) -> list[dict[str, Any]]:
         steps = [dict(item) for item in raw_steps if isinstance(item, dict)]

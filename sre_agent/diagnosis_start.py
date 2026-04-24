@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import logging
+import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -103,20 +104,26 @@ class DiagnosisStartCoordinator:
                     }
                 )
 
-            plan = self._extract_recommended_fix(completed)
-            if plan is not None:
-                self._remediation_engine.register_plan(completed.session_id, plan)
+            plans = self._extract_root_cause_plans(completed)
+            plan_summaries = self._register_root_cause_plans(completed.session_id, plans)
+            if plan_summaries:
                 completed = completed.model_copy(update={"status": "approval_required"})
             elif completed.status == "diagnosing":
                 completed = completed.model_copy(update={"status": "diagnosed"})
             self._session_store.put(completed)
 
-            if plan is not None:
-                plan_version = self._remediation_engine.get_latest_plan_version(completed.session_id)
+            if plan_summaries:
+                primary = plan_summaries[0]
                 await self._publish_session_event(
                     event_type=EventType.APPROVAL_REQUIRED,
                     session_id=completed.session_id,
-                    data={"plan_id": plan.plan_id, "plan_version": plan_version},
+                    data={
+                        "plan_count": len(plan_summaries),
+                        "plans": plan_summaries,
+                        "plan_key": primary["plan_key"],
+                        "plan_id": primary["plan_id"],
+                        "plan_version": primary["plan_version"],
+                    },
                 )
         except asyncio.CancelledError:
             raise
@@ -199,14 +206,91 @@ class DiagnosisStartCoordinator:
         )
 
     @staticmethod
+    def _extract_root_cause_plans(session: DiagnosisSession) -> list[tuple[str, RemediationPlan]]:
+        """Extract all remediation plans from `root_cause[]` in diagnosis order.
+
+        Purpose:
+        - materialize multi-plan approval candidates directly from root-cause items.
+        Input/Output:
+        - input: diagnosis session;
+        - output: ordered `(plan_key, plan)` pairs.
+        Compatibility rationale:
+        - no longer reads legacy top-level remediation plan fields.
+        Why:
+        - root-cause list is now the only plan source.
+        """
+        if session.diagnosis_result is None:
+            return []
+        plans: list[tuple[str, RemediationPlan]] = []
+        for index, item in enumerate(session.diagnosis_result.root_cause):
+            if item.recommended_fix is None:
+                continue
+            plan_key = DiagnosisStartCoordinator._build_root_cause_plan_key(index=index, root_cause_id=item.id)
+            plans.append((plan_key, item.recommended_fix))
+        return plans
+
+    @staticmethod
+    def _build_root_cause_plan_key(*, index: int, root_cause_id: str | None) -> str:
+        cleaned = re.sub(r"[^a-zA-Z0-9._:-]+", "-", str(root_cause_id or "").strip()).strip("-")
+        if cleaned:
+            return f"rc:{cleaned}"
+        return f"rc:{index + 1}"
+
+    def _register_root_cause_plans(
+        self,
+        session_id: str,
+        plans: list[tuple[str, RemediationPlan]],
+    ) -> list[dict[str, Any]]:
+        if not plans:
+            clear = getattr(self._remediation_engine, "clear_session_plans", None)
+            if callable(clear):
+                clear(session_id)
+            return []
+        register_plans = getattr(self._remediation_engine, "register_plans", None)
+        if callable(register_plans):
+            register_plans(session_id, plans, clear_existing=True)
+        else:
+            clear = getattr(self._remediation_engine, "clear_session_plans", None)
+            if callable(clear):
+                clear(session_id)
+            for idx, (plan_key, plan) in enumerate(plans):
+                try:
+                    self._remediation_engine.register_plan(
+                        session_id,
+                        plan,
+                        plan_key=plan_key,
+                        set_default=idx == 0,
+                    )
+                except TypeError:
+                    self._remediation_engine.register_plan(session_id, plan)
+        summaries: list[dict[str, Any]] = []
+        for idx, (plan_key, plan) in enumerate(plans):
+            get_version = getattr(self._remediation_engine, "get_latest_plan_version", None)
+            if callable(get_version):
+                try:
+                    plan_version = int(get_version(session_id, plan_key=plan_key))
+                except TypeError:
+                    plan_version = int(get_version(session_id))
+            else:
+                plan_version = 0
+            summaries.append(
+                {
+                    "rank": idx + 1,
+                    "plan_key": plan_key,
+                    "plan_id": plan.plan_id,
+                    "plan_version": plan_version,
+                }
+            )
+        return summaries
+
+    @staticmethod
     def _extract_recommended_fix(session: DiagnosisSession) -> RemediationPlan | None:
+        """Deprecated compatibility helper; returns the first root-cause plan if present."""
         if session.diagnosis_result is None:
             return None
-        if session.diagnosis_result.recommended_fix is not None:
-            return session.diagnosis_result.recommended_fix
-        for candidate in session.diagnosis_result.ranked_candidates:
-            if candidate.recommended_fix is not None:
-                return candidate.recommended_fix
+        for item in session.diagnosis_result.root_cause:
+            if item.recommended_fix is not None:
+                return item.recommended_fix
         return None
 
     @staticmethod

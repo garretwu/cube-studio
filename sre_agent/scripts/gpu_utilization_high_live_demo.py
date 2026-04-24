@@ -32,6 +32,18 @@ from sre_agent.tools import ToolExecutionContext
 DEFAULT_AGENT_CONFIG = Path("config.yaml")
 DEFAULT_DEMO_CONFIG = Path("fault_injector/gpu-utilization-high-live-demo.yaml")
 DEFAULT_DEMO_KEY = "gpu_utilization_high_alert_remediation"
+DEFAULT_ALLOWED_TOOLS = [
+    "gpu.get_metrics",
+    "gpu.get_processes",
+    "bmc.get_fan_status",
+    "prometheus.query_instant",
+    "k8s.list_pods",
+]
+REQUIRED_MULTI_ROOT_TOOLS = (
+    "gpu.get_metrics",
+    "gpu.get_processes",
+    "bmc.get_fan_status",
+)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -160,6 +172,29 @@ def infer_service_from_pod_name(pod_name: str) -> str:
     return text
 
 
+def resolve_allowed_tools(raw_allowed_tools: Any) -> list[str]:
+    candidate = raw_allowed_tools if raw_allowed_tools is not None else DEFAULT_ALLOWED_TOOLS
+    if not isinstance(candidate, list) or not all(isinstance(item, str) for item in candidate):
+        raise SystemExit("demo.allowed_tools must be a list of tool names")
+
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for item in candidate:
+        name = str(item or "").strip()
+        if not name or name in seen:
+            continue
+        deduped.append(name)
+        seen.add(name)
+
+    # Demo reliability guard: keep required evidence tools available even if YAML misses one.
+    for required in REQUIRED_MULTI_ROOT_TOOLS:
+        if required in seen:
+            continue
+        deduped.append(required)
+        seen.add(required)
+    return deduped
+
+
 def _node_match_score(node: str, labels: dict[str, Any]) -> int:
     node_text = str(node or "").strip().lower()
     if not node_text:
@@ -249,14 +284,26 @@ def build_query(
     return (
         "You are running the GPUUtilizationHigh demo.\n"
         "An alert was received and you should perform a read-only ReAct diagnosis.\n"
-        "Focus on deciding whether the high GPU utilization is caused by GPU contention, "
-        "thermal throttling, or normal inference load.\n"
+        "Focus on identifying all plausible concurrent causes for high GPU utilization.\n"
+        "Treat root causes as non-exclusive.\n"
+        "This demo explicitly targets two root-cause tracks:\n"
+        f"- Service/workload track on node {node}: GPU burn or contention from non-vLLM compute processes.\n"
+        f"- Hardware track on node {node}: thermal risk shown by high GPU temperature and fan/cooling anomalies.\n"
+        "If evidence supports both tracks, diagnosis_result.root_cause MUST contain at least two items, one per track.\n"
+        "Do not collapse both tracks into one generic root cause.\n"
         "Use the available read-only tools to gather concrete evidence.\n"
-        "Preferred evidence order:\n"
-        f"1. Inspect gpu metrics on node {node} with gpu.get_metrics and pay special attention to GPU {target_gpu or '<target>'}.\n"
+        "Required evidence order:\n"
+        f"1. Inspect gpu metrics on node {node} with gpu.get_metrics and pay special attention to GPU {target_gpu or '<target>'}; capture utilization and temperature.\n"
         f"2. Inspect GPU processes on node {node} with gpu.get_processes and look for non-vLLM compute processes on GPU {target_gpu or '<target>'}.\n"
-        f"3. If useful, inspect pods in namespace {namespace} with k8s.list_pods.\n"
-        "4. If useful, use Prometheus for one supporting metric check.\n"
+        f"3. Inspect BMC fan status on node {node} with bmc.get_fan_status and capture fan mode/PWM/RPM.\n"
+        f"4. If useful, inspect pods in namespace {namespace} with k8s.list_pods.\n"
+        "5. If useful, use Prometheus for one supporting metric check.\n"
+        "Output contract:\n"
+        "- diagnosis_result.root_cause is the canonical output field.\n"
+        "- Keep root_cause[0] as the highest-confidence primary cause for remediation planning.\n"
+        "- When burn/contention and thermal evidence both exist, return at least two root_cause items.\n"
+        "- Use layer=service/platform for burn-contention and layer=hardware for thermal.\n"
+        "- If thermal evidence is missing because bmc.get_fan_status failed, explicitly mark that evidence gap and lower confidence.\n"
         "If the evidence is strong enough, produce a proposal-only remediation plan.\n"
         "If you propose k8s.delete_pod, use params.namespace plus either params.label_selector or params.pod_name.\n"
         "Do not use params.pod_selector.\n"
@@ -348,14 +395,7 @@ async def main_async(args: argparse.Namespace) -> int:
     lookback = str(demo.get("lookback") or "6h").strip()
     kubeconfig = str(demo.get("kubeconfig") or "~/.kube/config").strip()
     promql = str(demo.get("promql") or "DCGM_FI_DEV_GPU_UTIL").strip()
-    allowed_tools = demo.get("allowed_tools") or [
-        "gpu.get_metrics",
-        "gpu.get_processes",
-        "prometheus.query_instant",
-        "k8s.list_pods",
-    ]
-    if not isinstance(allowed_tools, list) or not all(isinstance(item, str) for item in allowed_tools):
-        raise SystemExit("demo.allowed_tools must be a list of tool names")
+    allowed_tools = resolve_allowed_tools(demo.get("allowed_tools"))
 
     prometheus_url = load_prometheus_url(raw_demo_cfg) or str(agent_cfg.global_.prometheus_url or "").strip()
     if not prometheus_url:
@@ -405,6 +445,12 @@ async def main_async(args: argparse.Namespace) -> int:
                 "pod_name": pod_name,
                 "service": service,
                 "promql": promql,
+                "demo_require_multi_root_cause": True,
+                "demo_expected_root_cause_tracks": [
+                    "gpu_burn_or_contention",
+                    "gpu_thermal_or_cooling",
+                ],
+                "demo_required_evidence_tools": list(REQUIRED_MULTI_ROOT_TOOLS),
                 "alert": normalize_alert_payload(selected_alert),
             },
             allowed_tool_names=allowed_tools,

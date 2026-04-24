@@ -4,6 +4,11 @@ import type { DiagnosisLocalAuditRecord, DiagnosisSession, SessionEvent } from "
 import type { DiagnosisModifiedCandidateView } from "./diagnosisModifiedModel";
 import { buildDiagnosisModifiedReportView, mapDiagnosisModifiedStage } from "./diagnosisModifiedReportModel";
 
+/**
+ * Build a reusable report-model session fixture with the formal multi-root-cause diagnosis contract.
+ * Input: target session status; Output: diagnosis session suitable for report projection tests.
+ * Why: guarantee report tests no longer depend on removed legacy root-cause fields.
+ */
 function createSession(status = "approval_required"): DiagnosisSession {
   return {
     session_id: "sess-report-model",
@@ -21,9 +26,56 @@ function createSession(status = "approval_required"): DiagnosisSession {
     duration_seconds: 420,
     outcome: status === "resolved" ? "resolved" : undefined,
     diagnosis_result: {
-      root_cause: "Redis connection saturation",
-      root_cause_layer: "service",
-      root_cause_entities: ["redis-primary", "auth-svc"],
+      root_cause: [
+        {
+          id: "rc-redis-saturation",
+          title: "Redis connection saturation",
+          layer: "service",
+          entities: ["redis-primary", "auth-svc"],
+          confidence: 0.86,
+          certainty: "confirmed",
+          status: "confirmed",
+          evidence_summary: "Redis timeout aligns with alert window.",
+          impact_summary: "Auth login latency spikes and partial failures.",
+          distinguishing_verification: "Check Redis saturation before scaling rollout.",
+        },
+        {
+          id: "rc-db-queue",
+          title: "Downstream database wait queue",
+          layer: "service",
+          entities: ["orders-db"],
+          confidence: 0.54,
+          certainty: "probable",
+          status: "contributing",
+          evidence_summary: "Database wait queue increased after retries.",
+          impact_summary: "Auth login latency spikes and partial failures.",
+          distinguishing_verification: "Check queue depth after Redis recovers.",
+        },
+        {
+          id: "rc-ingress-throttle",
+          title: "Ingress throttling",
+          layer: "network",
+          entities: ["edge-gateway"],
+          confidence: 0.32,
+          certainty: "ambiguous",
+          status: "suspected",
+          evidence_summary: "Ingress latency rose later in the incident.",
+          impact_summary: "Auth login latency spikes and partial failures.",
+          distinguishing_verification: "Validate queue pressure on edge gateway.",
+        },
+        {
+          id: "rc-node-pressure",
+          title: "Node pressure",
+          layer: "hardware",
+          entities: ["node-17"],
+          confidence: 0.18,
+          certainty: "ambiguous",
+          status: "monitoring",
+          evidence_summary: "Node pressure is lower-confidence background noise.",
+          impact_summary: "Auth login latency spikes and partial failures.",
+          distinguishing_verification: "Re-check host pressure after primary mitigation.",
+        },
+      ],
       confidence: 0.86,
       hypotheses: [
         {
@@ -38,40 +90,6 @@ function createSession(status = "approval_required"): DiagnosisSession {
       affected_services: ["auth-svc", "login-api"],
       triage_priority: "P1",
       diagnosis_certainty: "confirmed",
-      ranked_candidates: [
-        {
-          rank: 1,
-          root_cause: "Redis connection saturation",
-          root_cause_layer: "service",
-          root_cause_entities: ["redis-primary", "auth-svc"],
-          confidence: 0.86,
-          evidence_summary: "Redis timeout aligns with alert window.",
-        },
-        {
-          rank: 2,
-          root_cause: "Downstream database wait queue",
-          root_cause_layer: "service",
-          root_cause_entities: ["orders-db"],
-          confidence: 0.54,
-          evidence_summary: "Database wait queue increased after retries.",
-        },
-        {
-          rank: 3,
-          root_cause: "Ingress throttling",
-          root_cause_layer: "network",
-          root_cause_entities: ["edge-gateway"],
-          confidence: 0.32,
-          evidence_summary: "Ingress latency rose later in the incident.",
-        },
-        {
-          rank: 4,
-          root_cause: "Node pressure",
-          root_cause_layer: "hardware",
-          root_cause_entities: ["node-17"],
-          confidence: 0.18,
-          evidence_summary: "Node pressure is lower-confidence background noise.",
-        },
-      ],
       recommended_fix: {
         plan_id: "plan-auth-redis-v2",
         root_cause: "Redis connection saturation",
@@ -429,8 +447,10 @@ describe("buildDiagnosisModifiedReportView", () => {
     if (!session.diagnosis_result) {
       throw new Error("expected diagnosis result");
     }
-    session.diagnosis_result.root_cause =
-      '[TOOL_CALL] {tool => "ssh.run_command"} [/TOOL_CALL] GPU 温度异常来自风扇策略偏移';
+    session.diagnosis_result.root_cause[0] = {
+      ...session.diagnosis_result.root_cause[0],
+      title: '[TOOL_CALL] {tool => "ssh.run_command"} [/TOOL_CALL] GPU 温度异常来自风扇策略偏移',
+    };
 
     const view = buildDiagnosisModifiedReportView({
       session,
@@ -585,8 +605,8 @@ describe("buildDiagnosisModifiedReportView", () => {
 
   it("prefers the remediation plan attached to the confirmed ranked candidate", () => {
     const session = createSession("approval_required");
-    if (!session.diagnosis_result?.ranked_candidates?.[0]) {
-      throw new Error("expected ranked candidate");
+    if (!session.diagnosis_result?.root_cause?.[0]) {
+      throw new Error("expected root cause");
     }
 
     session.diagnosis_result.recommended_fix = {
@@ -609,7 +629,7 @@ describe("buildDiagnosisModifiedReportView", () => {
       safety_level: "fallback",
     };
 
-    session.diagnosis_result.ranked_candidates[0].recommended_fix = {
+    session.diagnosis_result.root_cause[0].recommended_fix = {
       plan_id: "plan-ranked-redis",
       root_cause: "Redis connection saturation",
       description: "Candidate-specific Redis mitigation should be bound to the confirmed root cause.",

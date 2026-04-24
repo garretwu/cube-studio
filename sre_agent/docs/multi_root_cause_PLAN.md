@@ -72,3 +72,13 @@
 - 默认 `root_cause[0]` 就是主根因，且主修复建议只由它驱动。
 - 默认不新增新的修复计划数组字段，本次诊断先解决“多根因表达”和“多根因展示”。
 - 默认为了避免模型过渡期输出导致服务失败，可以在后端解析里保留对旧单字符串形态的临时兜底输入处理，但这只是解析容错，不属于正式 API 兼容承诺，代码注释里必须写明。
+
+### Multi-Factor Split Principle (2026-04-23)
+- When multiple abnormal factors are observed, prefer separating them into distinct ranked candidates if they can be independently validated, independently remediated, or independently observed after remediation.
+- Only merge multiple abnormal factors into one candidate when they form one inseparable causal chain or share the same remediation action.
+- 中文约束：当存在多个异常因素时，若这些因素可以独立验证、独立修复或独立观察修复效果，应优先拆分为独立 candidate；只有在它们构成不可分割的同一因果链，或共享同一个修复动作时，才合并为一个候选根因。
+
+### Update 2026-04-23: Multi-Plan Candidates
+- For TTFT multi-root-cause sessions, each independently remediable `root_cause[i]` may carry its own `recommended_fix` proposal as a candidate plan.
+- Top-level `diagnosis.recommended_fix` remains the primary approval path and stays aligned with `root_cause[0].recommended_fix`.
+- This keeps approval-gated execution compatible with the existing flow while exposing independent remediation options for factors such as `fi_gpu_burn` and `load_simulator`.

@@ -676,9 +676,21 @@ export const diagnosisSession: DiagnosisSession = {
     },
   },
   diagnosis_result: {
-    root_cause: "异常基准测试进程导致 GPU 资源争用",
-    root_cause_layer: "hardware",
-    root_cause_entities: ["gpu-01", "node-gpu-01"],
+    root_cause: [
+      {
+        id: "rc-1",
+        title: "异常基准测试进程导致 GPU 资源争用",
+        layer: "hardware",
+        entities: ["gpu-01", "node-gpu-01"],
+        confidence: 0.93,
+        certainty: "confirmed",
+        status: "confirmed",
+        evidence_summary: "DCGM 进程列表出现 gpu-burn，利用率持续高位",
+        impact_summary: "推理响应延迟升高，吞吐出现下降",
+        distinguishing_verification: "关注 GPU 进程列表与利用率变化",
+        recommended_fix: null,
+      },
+    ],
     confidence: 0.93,
     recommended_fix: remediationPlan,
     hypotheses: [
@@ -878,7 +890,7 @@ export const diagnosisHistorySessions: DiagnosisSessionSummary[] = [
     duration_seconds: diagnosisSession.duration_seconds,
     outcome: diagnosisSession.outcome,
     triage_priority: diagnosisSession.diagnosis_result?.triage_priority,
-    root_cause: diagnosisSession.diagnosis_result?.root_cause,
+    root_cause: diagnosisSession.diagnosis_result?.root_cause?.[0]?.title ?? null,
     affected_services:
       diagnosisSession.diagnosis_result?.affected_services ?? [],
     re_diagnosis_round: diagnosisSession.re_diagnosis_round,

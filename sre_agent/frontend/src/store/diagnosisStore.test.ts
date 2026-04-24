@@ -523,8 +523,8 @@ describe("useDiagnosisStore", () => {
         ? {
             ...diagnosisSession.diagnosis_result,
             recommended_fix: undefined,
-            ranked_candidates: (diagnosisSession.diagnosis_result.ranked_candidates ?? []).map((candidate) => ({
-              ...candidate,
+            root_cause: diagnosisSession.diagnosis_result.root_cause.map((rootCause) => ({
+              ...rootCause,
               recommended_fix: undefined,
             })),
           }

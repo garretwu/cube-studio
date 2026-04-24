@@ -15,6 +15,7 @@ from sre_agent.ttft_process_policy import is_ttft_suspect_process
 from sre_agent.agent import run_diagnosis, run_diagnosis_stream
 from sre_agent.agent.prompts import build_system_prompt
 from sre_agent.models.diagnosis import DiagnosisResult, ThinkingTrace
+from sre_agent.models.remediation import RemediationPlan
 from sre_agent.tools import ToolExecutionContext, build_default_registry
 
 
@@ -1032,6 +1033,12 @@ tags:
         self.assertIn("skills.run_skill", prompt)
         self.assertNotIn("Current turn guidance:", prompt)
         self.assertIn("k8s.apply_manifest", prompt)
+        self.assertIn("Alert catalog reference (from sre_agent/conf/Entity.md):", prompt)
+        self.assertIn("GPUTemperatureHigh", prompt)
+        self.assertIn(
+            "When multiple abnormal factors are observed, prefer separating them into distinct root-cause candidates",
+            prompt,
+        )
 
     async def test_prompt_includes_active_skill_guidance_when_provided(self) -> None:
         registry = build_default_registry()
@@ -1886,6 +1893,518 @@ tags:
         self.assertFalse(signals["ttft_suspect_process_present"])
         self.assertEqual(signals["ttft_suspect_processes"], [])
 
+    def test_attach_per_root_cause_recommended_fixes_builds_independent_ttft_plans(self) -> None:
+        diagnosis = DiagnosisResult.model_validate(
+            {
+                "root_cause": [
+                    {
+                        "id": "rc-1",
+                        "title": "GPU contention caused by fi_gpu_burn process",
+                        "layer": "service",
+                        "entities": ["worker-03", "fi_gpu_burn_gpu_contention_4d080fa0"],
+                        "confidence": 0.95,
+                        "certainty": "confirmed",
+                        "status": "confirmed",
+                        "evidence_summary": "gpu.get_processes found fi_gpu_burn process on worker-03",
+                        "impact_summary": "GPU occupied and TTFT increased",
+                        "distinguishing_verification": "terminate fi_gpu_burn and observe TTFT",
+                        "recommended_fix": None,
+                    },
+                    {
+                        "id": "rc-2",
+                        "title": "External load_simulator continuously sends high request volume",
+                        "layer": "service",
+                        "entities": ["10.11.4.13", "load_simulator"],
+                        "confidence": 0.85,
+                        "certainty": "confirmed",
+                        "status": "contributing",
+                        "evidence_summary": "process.find on 10.11.4.13 found load_simulator processes",
+                        "impact_summary": "queueing pressure increased",
+                        "distinguishing_verification": "stop load_simulator and observe TTFT",
+                        "recommended_fix": None,
+                    },
+                ],
+                "confidence": 0.95,
+                "next_action": "proposal only",
+                "hypotheses": [],
+                "propagation_chain": [],
+                "impact_summary": "TTFT P99 elevated",
+                "affected_services": ["qwen3-32b-fp8-202602261"],
+                "recommended_fix": None,
+                "triage_priority": "P0",
+                "diagnosis_certainty": "confirmed",
+            }
+        )
+        evidence_signals = {
+            "ttft_suspect_process_present": True,
+            "ttft_suspect_processes": [
+                {
+                    "pid": 1155497,
+                    "process_name": "fi_gpu_burn_gpu_contention_4d080fa0",
+                    "memory_mib": 9272,
+                    "node": "worker-03",
+                },
+                {
+                    "pid": 1392199,
+                    "process_name": "python -m load_simulator run --only inference",
+                    "memory_mib": None,
+                    "node": "10.11.4.13",
+                },
+            ],
+        }
+
+        updated_diagnosis, primary_plan = nodes_module._attach_per_root_cause_recommended_fixes(
+            diagnosis=diagnosis,
+            primary_plan=None,
+            evidence_signals=evidence_signals,
+            session_id="sess-multi-root-plan",
+            registry=build_default_registry(),
+            tool_runs=[],
+            variables={},
+            alert_name="AIServiceTTFTP99High",
+        )
+
+        self.assertIsNotNone(primary_plan)
+        assert primary_plan is not None
+        self.assertIsNotNone(updated_diagnosis.recommended_fix)
+        assert updated_diagnosis.recommended_fix is not None
+        self.assertEqual(updated_diagnosis.recommended_fix.plan_id, primary_plan.plan_id)
+
+        root_causes = updated_diagnosis.root_cause
+        self.assertEqual(len(root_causes), 2)
+        self.assertIsNotNone(root_causes[0].recommended_fix)
+        self.assertIsNotNone(root_causes[1].recommended_fix)
+        assert root_causes[0].recommended_fix is not None
+        assert root_causes[1].recommended_fix is not None
+
+        first_step = root_causes[0].recommended_fix.steps[0]
+        second_step = root_causes[1].recommended_fix.steps[0]
+        self.assertEqual(first_step.tool, "kill_process")
+        self.assertEqual(second_step.tool, "kill_process")
+        self.assertEqual(first_step.params.get("node"), "worker-03")
+        self.assertIn(str(second_step.params.get("node")), {"10.11.4.13", "worker-04"})
+        self.assertEqual(first_step.params.get("pid"), 1155497)
+        self.assertEqual(second_step.params.get("pid"), 1392199)
+
+    def test_attach_per_root_cause_recommended_fixes_replaces_mismatched_primary_plan(self) -> None:
+        diagnosis = DiagnosisResult.model_validate(
+            {
+                "root_cause": [
+                    {
+                        "id": "rc-1",
+                        "title": "GPU contention caused by fi_gpu_burn process",
+                        "layer": "service",
+                        "entities": ["worker-03", "fi_gpu_burn_gpu_contention_4d080fa0"],
+                        "confidence": 0.95,
+                        "certainty": "confirmed",
+                        "status": "confirmed",
+                        "evidence_summary": "gpu.get_processes found fi_gpu_burn process on worker-03",
+                        "impact_summary": "GPU occupied and TTFT increased",
+                        "distinguishing_verification": "terminate fi_gpu_burn and observe TTFT",
+                        "recommended_fix": None,
+                    },
+                    {
+                        "id": "rc-2",
+                        "title": "External load_simulator continuously sends high request volume",
+                        "layer": "service",
+                        "entities": ["10.11.4.13", "load_simulator"],
+                        "confidence": 0.85,
+                        "certainty": "confirmed",
+                        "status": "contributing",
+                        "evidence_summary": "process.find on 10.11.4.13 found load_simulator processes",
+                        "impact_summary": "queueing pressure increased",
+                        "distinguishing_verification": "stop load_simulator and observe TTFT",
+                        "recommended_fix": None,
+                    },
+                ],
+                "confidence": 0.95,
+                "next_action": "proposal only",
+                "hypotheses": [],
+                "propagation_chain": [],
+                "impact_summary": "TTFT P99 elevated",
+                "affected_services": ["qwen3-32b-fp8-202602261"],
+                "recommended_fix": None,
+                "triage_priority": "P0",
+                "diagnosis_certainty": "confirmed",
+            }
+        )
+        stale_primary_plan = RemediationPlan.model_validate(
+            {
+                "plan_id": "proposal-stale-primary",
+                "root_cause": "GPU contention caused by fi_gpu_burn process",
+                "description": "stale plan targets external load only",
+                "steps": [
+                    {
+                        "step_id": 1,
+                        "description": "terminate load process",
+                        "tool": "kill_process",
+                        "params": {"node": "10.11.4.13", "pid": 1392199, "entity_id": "proc:1392199", "signal": "TERM"},
+                        "verification": {"method": "wait", "wait_seconds": 30},
+                        "timeout": 60,
+                    }
+                ],
+                "estimated_impact": "reduced queueing",
+                "confidence": 0.8,
+                "priority": "P0",
+                "safety_level": "high",
+            }
+        )
+        evidence_signals = {
+            "ttft_suspect_process_present": True,
+            "ttft_suspect_processes": [
+                {
+                    "pid": 1155497,
+                    "process_name": "fi_gpu_burn_gpu_contention_4d080fa0",
+                    "memory_mib": 9272,
+                    "node": "worker-03",
+                },
+                {
+                    "pid": 1392199,
+                    "process_name": "python -m load_simulator run --only inference",
+                    "memory_mib": None,
+                    "node": "10.11.4.13",
+                },
+            ],
+        }
+
+        updated_diagnosis, primary_plan = nodes_module._attach_per_root_cause_recommended_fixes(
+            diagnosis=diagnosis,
+            primary_plan=stale_primary_plan,
+            evidence_signals=evidence_signals,
+            session_id="sess-multi-root-plan-replace",
+            registry=build_default_registry(),
+            tool_runs=[],
+            variables={},
+            alert_name="AIServiceTTFTP99High",
+        )
+
+        self.assertIsNotNone(primary_plan)
+        assert primary_plan is not None
+        self.assertNotEqual(primary_plan.plan_id, "proposal-stale-primary")
+        self.assertEqual(primary_plan.steps[0].params.get("pid"), 1155497)
+        self.assertEqual(updated_diagnosis.root_cause[0].recommended_fix.steps[0].params.get("pid"), 1155497)
+
+    def test_normalize_diagnosis_payload_repairs_zero_canary_target_percentage(self) -> None:
+        def _plan(plan_id: str, root_title: str, pid: int, node: str) -> dict[str, Any]:
+            return {
+                "plan_id": plan_id,
+                "root_cause": root_title,
+                "description": f"terminate suspect process {pid}",
+                "steps": [
+                    {
+                        "step_id": 1,
+                        "description": f"kill pid {pid} on {node}",
+                        "tool": "kill_process",
+                        "params": {"node": node, "pid": pid, "entity_id": f"proc:{pid}", "signal": "TERM"},
+                        "verification": {"method": "wait", "wait_seconds": 30},
+                        "timeout": 60,
+                    }
+                ],
+                "canary": {
+                    "enabled": True,
+                    "target_percentage": 0,
+                    "monitor_duration": 60,
+                    "success_criteria": [],
+                    "criteria_mode": "all",
+                    "max_batches": 0,
+                    "auto_rollback_on_regression": True,
+                    "progressive": False,
+                },
+                "estimated_impact": "release abnormal contention",
+                "confidence": 0.82,
+                "priority": "P0",
+                "safety_level": "high",
+            }
+
+        root1_plan = _plan("proposal-root-1", "GPU contention by gpuburn", 1172212, "worker-03")
+        root2_plan = _plan("proposal-root-2", "External load_simulator pressure", 1583596, "10.11.4.13")
+        payload = {
+            "root_cause": [
+                {
+                    "id": "rc-1",
+                    "title": "GPU contention by gpuburn",
+                    "layer": "service",
+                    "entities": ["worker-03", "fi_gpu_burn_gpu_contention_fcd3e47b"],
+                    "confidence": 0.91,
+                    "certainty": "confirmed",
+                    "status": "confirmed",
+                    "evidence_summary": "gpu.get_processes found fi_gpu_burn process",
+                    "impact_summary": "TTFT elevated due to GPU contention",
+                    "distinguishing_verification": "stop gpuburn and observe TTFT",
+                    "recommended_fix": root1_plan,
+                },
+                {
+                    "id": "rc-2",
+                    "title": "External load_simulator pressure",
+                    "layer": "service",
+                    "entities": ["10.11.4.13", "load_simulator"],
+                    "confidence": 0.87,
+                    "certainty": "confirmed",
+                    "status": "contributing",
+                    "evidence_summary": "process.find found python -m load_simulator",
+                    "impact_summary": "queue pressure remains high",
+                    "distinguishing_verification": "stop load_simulator and observe TTFT",
+                    "recommended_fix": root2_plan,
+                },
+            ],
+            "confidence": 0.92,
+            "next_action": "proposal-only remediation",
+            "hypotheses": [],
+            "propagation_chain": [],
+            "impact_summary": "TTFT p99 over threshold",
+            "affected_services": ["qwen3-32b-fp8-202602261"],
+            "recommended_fix": root1_plan,
+            "triage_priority": "P0",
+            "diagnosis_certainty": "confirmed",
+        }
+
+        normalized = nodes_module._normalize_diagnosis_payload(payload)
+        diagnosis = DiagnosisResult.model_validate(normalized)
+
+        self.assertIsNotNone(diagnosis.recommended_fix)
+        assert diagnosis.recommended_fix is not None
+        assert diagnosis.recommended_fix.canary is not None
+        self.assertGreater(diagnosis.recommended_fix.canary.target_percentage, 0.0)
+        self.assertGreaterEqual(diagnosis.recommended_fix.canary.max_batches, 1)
+
+        secondary_plan = diagnosis.root_cause[1].recommended_fix
+        self.assertIsNotNone(secondary_plan)
+        assert secondary_plan is not None
+        assert secondary_plan.canary is not None
+        self.assertGreater(secondary_plan.canary.target_percentage, 0.0)
+        self.assertGreaterEqual(secondary_plan.canary.max_batches, 1)
+
+    def test_normalize_diagnosis_payload_drops_invalid_inline_recommended_fix(self) -> None:
+        payload = {
+            "root_cause": [
+                {
+                    "id": "rc-1",
+                    "title": "GPU contention by gpuburn",
+                    "layer": "service",
+                    "entities": ["worker-03"],
+                    "confidence": 0.9,
+                    "certainty": "probable",
+                    "status": "suspected",
+                    "evidence_summary": "gpu util remains high",
+                    "impact_summary": "TTFT elevated",
+                    "distinguishing_verification": "inspect GPU processes",
+                    "recommended_fix": {
+                        "plan_id": "broken-inline-plan",
+                        "root_cause": "GPU contention by gpuburn",
+                        "description": "invalid because steps are missing",
+                        "steps": [],
+                        "canary": {"enabled": True, "target_percentage": 0},
+                        "estimated_impact": "unknown",
+                        "confidence": 0.7,
+                        "priority": "P1",
+                        "safety_level": "high",
+                    },
+                }
+            ],
+            "confidence": 0.9,
+            "next_action": "continue diagnosis",
+            "hypotheses": [],
+            "propagation_chain": [],
+            "impact_summary": "TTFT elevated",
+            "affected_services": ["qwen3-32b-fp8-202602261"],
+            "recommended_fix": None,
+            "triage_priority": "P1",
+            "diagnosis_certainty": "probable",
+        }
+
+        normalized = nodes_module._normalize_diagnosis_payload(payload)
+        diagnosis = DiagnosisResult.model_validate(normalized)
+        self.assertIsNone(diagnosis.recommended_fix)
+        self.assertIsNone(diagnosis.root_cause[0].recommended_fix)
+
+    def test_enrich_ttft_root_causes_from_evidence_replaces_generic_fallback(self) -> None:
+        payload: dict[str, Any] = {
+            "root_cause": [
+                {
+                    "id": "rc-fallback-non-json",
+                    "title": "基于现有证据链，我已经收集到关键证据",
+                    "layer": "platform",
+                    "entities": [],
+                    "confidence": 0.35,
+                    "certainty": "ambiguous",
+                    "status": "suspected",
+                    "evidence_summary": "fallback summary",
+                    "impact_summary": "fallback impact",
+                    "distinguishing_verification": None,
+                    "recommended_fix": {
+                        "plan_id": "proposal-load-only",
+                        "root_cause": "external load process",
+                        "description": "proposal-only kill load",
+                        "steps": [
+                            {
+                                "step_id": 1,
+                                "description": "kill load simulator",
+                                "tool": "kill_process",
+                                "params": {"node": "10.11.4.13", "pid": 1696455, "entity_id": "proc:1696455"},
+                                "verification": {"method": "wait", "wait_seconds": 30},
+                                "timeout": 60,
+                            }
+                        ],
+                        "estimated_impact": "reduce queue pressure",
+                        "confidence": 0.7,
+                        "priority": "P1",
+                        "safety_level": "high",
+                    },
+                }
+            ],
+            "confidence": 0.35,
+            "recommended_fix": {
+                "plan_id": "proposal-load-only",
+                "root_cause": "external load process",
+                "description": "proposal-only kill load",
+                "steps": [
+                    {
+                        "step_id": 1,
+                        "description": "kill load simulator",
+                        "tool": "kill_process",
+                        "params": {"node": "10.11.4.13", "pid": 1696455, "entity_id": "proc:1696455"},
+                        "verification": {"method": "wait", "wait_seconds": 30},
+                        "timeout": 60,
+                    }
+                ],
+                "estimated_impact": "reduce queue pressure",
+                "confidence": 0.7,
+                "priority": "P1",
+                "safety_level": "high",
+            },
+        }
+        evidence_signals = {
+            "ttft_suspect_processes": [
+                {
+                    "pid": 1194134,
+                    "process_name": "fi_gpu_burn_gpu_contention_4ee2a720",
+                    "node": "worker-03",
+                },
+                {
+                    "pid": 1696455,
+                    "process_name": "python -m load_simulator run --only inference",
+                    "node": "10.11.4.13",
+                },
+            ]
+        }
+
+        nodes_module._enrich_ttft_root_causes_from_evidence(payload, evidence_signals)
+
+        root_causes = payload.get("root_cause")
+        self.assertIsInstance(root_causes, list)
+        assert isinstance(root_causes, list)
+        self.assertEqual(len(root_causes), 2)
+        titles = [str(item.get("title", "")).lower() for item in root_causes if isinstance(item, dict)]
+        self.assertTrue(any("gpu" in title for title in titles))
+        self.assertTrue(any("load_simulator" in title for title in titles))
+        self.assertIsInstance(payload.get("recommended_fix"), dict)
+        self.assertEqual(
+            str(payload.get("recommended_fix", {}).get("plan_id", "")),
+            str(root_causes[0].get("recommended_fix", {}).get("plan_id", "")),
+        )
+
+    def test_enrich_ttft_root_causes_from_evidence_appends_missing_factor(self) -> None:
+        payload: dict[str, Any] = {
+            "root_cause": [
+                {
+                    "id": "rc-1",
+                    "title": "GPU contention caused by fi_gpu_burn process",
+                    "layer": "service",
+                    "entities": ["worker-03", "fi_gpu_burn_gpu_contention_4ee2a720"],
+                    "confidence": 0.92,
+                    "certainty": "confirmed",
+                    "status": "confirmed",
+                    "evidence_summary": "gpu.get_processes found fi_gpu_burn process",
+                    "impact_summary": "TTFT elevated",
+                    "distinguishing_verification": "terminate gpu burn process",
+                    "recommended_fix": None,
+                }
+            ],
+            "confidence": 0.92,
+            "recommended_fix": None,
+        }
+        evidence_signals = {
+            "ttft_suspect_processes": [
+                {
+                    "pid": 1194134,
+                    "process_name": "fi_gpu_burn_gpu_contention_4ee2a720",
+                    "node": "worker-03",
+                },
+                {
+                    "pid": 1696455,
+                    "process_name": "python -m load_simulator run --only inference",
+                    "node": "10.11.4.13",
+                },
+            ]
+        }
+
+        nodes_module._enrich_ttft_root_causes_from_evidence(payload, evidence_signals)
+
+        root_causes = payload.get("root_cause")
+        self.assertIsInstance(root_causes, list)
+        assert isinstance(root_causes, list)
+        self.assertEqual(len(root_causes), 2)
+        self.assertIn("fi_gpu_burn", str(root_causes[0].get("title", "")).lower())
+        self.assertIn("load_simulator", str(root_causes[1].get("title", "")).lower())
+
+    def test_summarize_process_find_detects_suspect_beyond_first_twelve_matches(self) -> None:
+        matches: list[dict[str, Any]] = []
+        for idx in range(1, 13):
+            matches.append(
+                {
+                    "pid": 7000 + idx,
+                    "process": "containerd-shim",
+                    "command": f"/usr/local/bin/containerd-shim-runc-v2 --idx={idx}",
+                }
+            )
+        matches.append(
+            {
+                "pid": 1124321,
+                "process": "python",
+                "command": "python -m load_simulator run --only inference --output-format json",
+            }
+        )
+
+        _, fields = nodes_module._summarize_process_find(
+            {
+                "node": "10.11.4.13",
+                "count": len(matches),
+                "matches": matches,
+            }
+        )
+
+        self.assertIsInstance(fields, dict)
+        assert isinstance(fields, dict)
+        self.assertTrue(bool(fields.get("suspicious_load_present")))
+        suspicious = fields.get("suspicious_load_processes")
+        self.assertIsInstance(suspicious, list)
+        assert isinstance(suspicious, list)
+        self.assertTrue(any(int(item.get("pid") or 0) == 1124321 for item in suspicious if isinstance(item, dict)))
+
+    def test_merge_tool_args_normalizes_ttft_process_find_bare_load_pattern(self) -> None:
+        registry = build_default_registry()
+        merged = nodes_module._merge_tool_args(
+            registry=registry,
+            tool_name="process.find",
+            tool_args={"pattern": "stress|benchmark|load|wrk|ab|locust|jmeter"},
+            variables={"alert_name": "AIServiceTTFTP99High", "namespace": "service"},
+        )
+
+        pattern = str(merged.get("pattern", ""))
+        self.assertIn("load_simulator", pattern)
+        self.assertNotIn("|load|", f"|{pattern}|")
+
+    def test_merge_tool_args_keeps_non_ttft_process_find_bare_load_pattern(self) -> None:
+        registry = build_default_registry()
+        merged = nodes_module._merge_tool_args(
+            registry=registry,
+            tool_name="process.find",
+            tool_args={"pattern": "stress|load|wrk"},
+            variables={"alert_name": "GPUUtilizationHigh", "namespace": "service"},
+        )
+
+        self.assertEqual(str(merged.get("pattern", "")), "stress|load|wrk")
+
     def test_ttft_strict_process_policy_rejects_reloader_and_backend(self) -> None:
         self.assertFalse(is_ttft_suspect_process("/bin/prometheus-config-reloader --reload-url=..."))
         self.assertFalse(is_ttft_suspect_process("uvicorn app.gateway.app:app --reload"))
@@ -1914,6 +2433,77 @@ tags:
             },
         ]
         self.assertTrue(nodes_module._has_probed_ttft_external_node(tool_runs, "10.11.4.13"))
+
+    def test_render_trace_tool_params_backfills_external_node_for_process_find(self) -> None:
+        state: dict[str, Any] = {
+            "alert_snapshot": {
+                "alert_name": "AIServiceTTFTP99High",
+                "ttft_external_process_default_node": "10.11.4.13",
+            }
+        }
+        rendered = nodes_module._render_trace_tool_params(
+            state=state,
+            tool_name="process.find",
+            tool_args={"pattern": "stress|benchmark"},
+        )
+        self.assertEqual(rendered.get("node"), "10.11.4.13")
+        self.assertEqual(rendered.get("pattern"), "stress|benchmark")
+
+    def test_render_trace_tool_params_keeps_explicit_process_find_node(self) -> None:
+        state: dict[str, Any] = {
+            "alert_snapshot": {
+                "alert_name": "AIServiceTTFTP99High",
+                "ttft_external_process_default_node": "10.11.4.13",
+            }
+        }
+        rendered = nodes_module._render_trace_tool_params(
+            state=state,
+            tool_name="process.find",
+            tool_args={"node": "10.11.4.99", "pattern": "stress"},
+        )
+        self.assertEqual(rendered.get("node"), "10.11.4.99")
+
+    def test_build_tool_prompt_fields_gpu_metrics_carries_node_hint(self) -> None:
+        fields = nodes_module._build_tool_prompt_fields(
+            session_id="sess-1",
+            source="tool",
+            step=1,
+            tool="gpu.get_metrics",
+            params={"node": "worker-03"},
+            data={"output": "0, NVIDIA-A100, 71, 12000, 80000, 68"},
+            error="",
+            skill_id=None,
+        )
+        key_fields = fields.get("key_fields")
+        self.assertIsInstance(key_fields, dict)
+        self.assertEqual(key_fields.get("node"), "worker-03")
+        self.assertIn("node=worker-03", str(fields.get("prompt_summary", "")))
+
+    def test_build_tool_prompt_fields_bmc_fan_status_carries_node_hint(self) -> None:
+        fields = nodes_module._build_tool_prompt_fields(
+            session_id="sess-1",
+            source="tool",
+            step=2,
+            tool="bmc.get_fan_status",
+            params={"node": "10.11.4.13"},
+            data={
+                "fan_status_summary": {
+                    "mode_name": "Auto",
+                    "is_manual": False,
+                    "is_fixed_pwm": False,
+                    "fixed_pwm": None,
+                    "unique_pwm_values": [40, 42],
+                    "fan_count": 8,
+                },
+                "bmc_host": "10.11.4.13",
+            },
+            error="",
+            skill_id=None,
+        )
+        key_fields = fields.get("key_fields")
+        self.assertIsInstance(key_fields, dict)
+        self.assertEqual(key_fields.get("node"), "10.11.4.13")
+        self.assertIn("node=10.11.4.13", str(fields.get("prompt_summary", "")))
 
     def test_evaluate_ttft_min_coverage_detects_missing_external_probe(self) -> None:
         state: dict[str, Any] = {
@@ -2232,6 +2822,151 @@ tags:
         self.assertIsNotNone(plan.canary)
         assert plan.canary is not None
         self.assertTrue(plan.canary.progressive)
+
+    def test_normalize_diagnosis_payload_promotes_strong_confirmed_hypothesis(self) -> None:
+        payload: dict[str, Any] = {
+            "root_cause": [
+                {
+                    "id": "rc-1",
+                    "title": "GPU contention from fi_gpu_burn process",
+                    "layer": "service",
+                    "entities": ["worker-03", "fi_gpu_burn_gpu_cont"],
+                    "confidence": 0.95,
+                    "certainty": "confirmed",
+                    "status": "confirmed",
+                    "evidence_summary": "gpu.get_processes found fi_gpu_burn occupying GPU resources",
+                    "impact_summary": "TTFT P99 increased significantly",
+                    "distinguishing_verification": "Terminate fi_gpu_burn and observe TTFT recovery",
+                    "recommended_fix": None,
+                }
+            ],
+            "confidence": 0.95,
+            "diagnosis_certainty": "confirmed",
+            "impact_summary": "TTFT P99 increased significantly",
+            "hypotheses": [
+                {
+                    "description": "External load_simulator continuously sends high request volume",
+                    "status": "confirmed",
+                    "evidence_for": [
+                        "process.find on 10.11.4.13 found 42 matching processes",
+                        "python -m load_simulator run process exists",
+                    ],
+                    "evidence_against": [],
+                    "confidence": 0.85,
+                }
+            ],
+        }
+
+        normalized = nodes_module._normalize_diagnosis_payload(payload)
+        root_causes = normalized.get("root_cause")
+        self.assertIsInstance(root_causes, list)
+        assert isinstance(root_causes, list)
+        self.assertEqual(len(root_causes), 2)
+        self.assertEqual(root_causes[0]["title"], "GPU contention from fi_gpu_burn process")
+        self.assertEqual(root_causes[1]["title"], "External load_simulator continuously sends high request volume")
+        self.assertEqual(root_causes[1]["status"], "contributing")
+        self.assertAlmostEqual(float(root_causes[1]["confidence"]), 0.85)
+
+    def test_normalize_diagnosis_payload_does_not_duplicate_same_confirmed_hypothesis(self) -> None:
+        payload: dict[str, Any] = {
+            "root_cause": [
+                {
+                    "id": "rc-1",
+                    "title": "GPU contention from fi_gpu_burn_gpu_cont process",
+                    "layer": "service",
+                    "entities": ["worker-03", "fi_gpu_burn_gpu_cont"],
+                    "confidence": 0.94,
+                    "certainty": "confirmed",
+                    "status": "confirmed",
+                    "evidence_summary": "gpu.get_processes found fi_gpu_burn_gpu_cont occupying GPU resources",
+                    "impact_summary": "TTFT P99 increased significantly",
+                    "distinguishing_verification": "Terminate fi_gpu_burn_gpu_cont and observe TTFT recovery",
+                    "recommended_fix": None,
+                }
+            ],
+            "confidence": 0.94,
+            "diagnosis_certainty": "confirmed",
+            "impact_summary": "TTFT P99 increased significantly",
+            "hypotheses": [
+                {
+                    "description": "GPU contention from fi_gpu_burn process",
+                    "status": "confirmed",
+                    "evidence_for": [
+                        "gpu.get_processes found fi_gpu_burn_gpu_cont process",
+                        "GPU utilization remained close to 100%",
+                    ],
+                    "evidence_against": [],
+                    "confidence": 0.9,
+                }
+            ],
+        }
+
+        normalized = nodes_module._normalize_diagnosis_payload(payload)
+        root_causes = normalized.get("root_cause")
+        self.assertIsInstance(root_causes, list)
+        assert isinstance(root_causes, list)
+        self.assertEqual(len(root_causes), 1)
+
+    def test_normalize_diagnosis_payload_decouples_multi_root_evidence_summary(self) -> None:
+        payload: dict[str, Any] = {
+            "root_cause": [
+                {
+                    "id": "rc-1",
+                    "title": "GPU contention from fi_gpu_burn process",
+                    "layer": "service",
+                    "entities": ["worker-03", "fi_gpu_burn_gpu_cont"],
+                    "confidence": 0.95,
+                    "certainty": "confirmed",
+                    "status": "confirmed",
+                    "evidence_summary": (
+                        "gpu.get_processes found fi_gpu_burn; "
+                        "process.find on 10.11.4.13 found load_simulator; "
+                        "TTFT P99 exceeded threshold"
+                    ),
+                    "impact_summary": "TTFT P99 increased significantly",
+                    "distinguishing_verification": "Terminate fi_gpu_burn and observe TTFT recovery",
+                    "recommended_fix": None,
+                }
+            ],
+            "confidence": 0.95,
+            "diagnosis_certainty": "confirmed",
+            "impact_summary": "TTFT P99 increased significantly",
+            "hypotheses": [
+                {
+                    "description": "GPU contention from fi_gpu_burn process",
+                    "status": "confirmed",
+                    "evidence_for": [
+                        "gpu.get_processes found fi_gpu_burn process",
+                        "GPU utilization remained close to 100%",
+                    ],
+                    "evidence_against": [],
+                    "confidence": 0.95,
+                },
+                {
+                    "description": "External load_simulator continuously sends high request volume",
+                    "status": "confirmed",
+                    "evidence_for": [
+                        "process.find on 10.11.4.13 found 42 matching processes",
+                        "python -m load_simulator run process exists",
+                    ],
+                    "evidence_against": [],
+                    "confidence": 0.85,
+                },
+            ],
+        }
+
+        normalized = nodes_module._normalize_diagnosis_payload(payload)
+        root_causes = normalized.get("root_cause")
+        self.assertIsInstance(root_causes, list)
+        assert isinstance(root_causes, list)
+        self.assertEqual(len(root_causes), 2)
+
+        primary_summary = str(root_causes[0].get("evidence_summary", ""))
+        secondary_summary = str(root_causes[1].get("evidence_summary", ""))
+
+        self.assertIn("gpu.get_processes found fi_gpu_burn process", primary_summary)
+        self.assertNotIn("10.11.4.13", primary_summary)
+        self.assertIn("process.find on 10.11.4.13 found 42 matching processes", secondary_summary)
 
     async def test_run_diagnosis_stream_emits_real_duration_and_backend_next_action_without_trace_duplicates(self) -> None:
         stream_events = [

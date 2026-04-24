@@ -3,6 +3,7 @@ import { Tooltip } from "antd";
 import type { DiagnosisBootstrapAlertItem, DiagnosisBootstrapImpact, DiagnosisSession } from "../api/types";
 import { formatSeverity } from "../utils/display";
 import { formatDateTime, formatDurationSeconds } from "../utils/format";
+import { getPrimaryRootCause } from "../pages/rootCauseModel";
 import { StatusChip } from "./ui";
 
 type DiagnosisSessionLike = DiagnosisSession & {
@@ -79,11 +80,25 @@ function resolveAlertSummary(session: DiagnosisSessionLike) {
 }
 
 function resolveImpact(session: DiagnosisSessionLike): DiagnosisBootstrapImpact | null {
+  /**
+   * Resolve impact summary using primary root-cause entities when bootstrap impact is unavailable.
+   *
+   * Purpose:
+   * - provide consistent impact stats for session summary card.
+   * Input/Output:
+   * - input: diagnosis session-like payload;
+   * - output: bootstrap-compatible impact object or null.
+   * Compatibility rationale:
+   * - reads entities from `root_cause[0]` because legacy entity fields are removed.
+   * Why:
+   * - keeps card behavior stable during schema migration.
+   */
   if (session.bootstrap?.impact) {
     return session.bootstrap.impact;
   }
 
-  const objectCount = session.diagnosis_result?.root_cause_entities?.length ?? 0;
+  const primaryRoot = getPrimaryRootCause(session.diagnosis_result);
+  const objectCount = primaryRoot?.entities?.length ?? 0;
   const serviceCount = session.diagnosis_result?.affected_services?.length ?? 0;
 
   if (!objectCount && !serviceCount) {
@@ -93,7 +108,7 @@ function resolveImpact(session: DiagnosisSessionLike): DiagnosisBootstrapImpact 
   return {
     object_count: objectCount,
     service_count: serviceCount,
-    affected_entities: session.diagnosis_result?.root_cause_entities ?? [],
+    affected_entities: primaryRoot?.entities ?? [],
     affected_services: session.diagnosis_result?.affected_services ?? [],
     blast_radius_summary: session.diagnosis_result?.impact_summary,
   };

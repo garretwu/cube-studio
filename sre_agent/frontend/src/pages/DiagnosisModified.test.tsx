@@ -58,6 +58,11 @@ function createLiveSession(sessionId: string): DiagnosisSession {
   };
 }
 
+/**
+ * Build a detailed live session fixture with multiple root causes.
+ * Input: session id; Output: approval-ready diagnosis session using `root_cause[]` as the source of truth.
+ * Why: keep modified-page tests aligned with the breaking contract and primary-root-cause-first behavior.
+ */
 function createDetailedLiveSession(sessionId: string): DiagnosisSession {
   return {
     ...createLiveSession(sessionId),
@@ -65,9 +70,32 @@ function createDetailedLiveSession(sessionId: string): DiagnosisSession {
     outcome: "resolved",
     re_diagnosis_round: 2,
     diagnosis_result: {
-      root_cause: "Redis connection saturation",
-      root_cause_layer: "service",
-      root_cause_entities: ["redis-primary", "auth-svc"],
+      root_cause: [
+        {
+          id: "rc-redis-saturation",
+          title: "Redis connection saturation",
+          layer: "service",
+          entities: ["redis-primary", "auth-svc"],
+          confidence: 0.86,
+          certainty: "confirmed",
+          status: "confirmed",
+          evidence_summary: "Redis timeout and retry loop align with the alert window.",
+          impact_summary: "Auth login latency spikes and partial 5xx responses.",
+          distinguishing_verification: "Check Redis saturation before scaling rollout.",
+        },
+        {
+          id: "rc-db-queue",
+          title: "Downstream database wait queue",
+          layer: "service",
+          entities: ["orders-db"],
+          confidence: 0.54,
+          certainty: "probable",
+          status: "contributing",
+          evidence_summary: "Database wait queue increased after retry amplification.",
+          impact_summary: "Auth login latency spikes and partial 5xx responses.",
+          distinguishing_verification: "Verify queue depth after Redis recovery.",
+        },
+      ],
       confidence: 0.86,
       hypotheses: [
         {
@@ -82,25 +110,6 @@ function createDetailedLiveSession(sessionId: string): DiagnosisSession {
       affected_services: ["auth-svc", "login-api"],
       triage_priority: "P1",
       diagnosis_certainty: "confirmed",
-      ranked_candidates: [
-        {
-          rank: 1,
-          root_cause: "Redis connection saturation",
-          root_cause_layer: "service",
-          root_cause_entities: ["redis-primary", "auth-svc"],
-          confidence: 0.86,
-          evidence_summary: "Redis timeout and retry loop align with the alert window.",
-          distinguishing_verification: "Check Redis saturation before scaling rollout.",
-        },
-        {
-          rank: 2,
-          root_cause: "Downstream database wait queue",
-          root_cause_layer: "service",
-          root_cause_entities: ["orders-db"],
-          confidence: 0.54,
-          evidence_summary: "Database wait queue increased after retry amplification.",
-        },
-      ],
       recommended_fix: {
         plan_id: "plan-auth-redis-v2",
         root_cause: "Redis connection saturation",

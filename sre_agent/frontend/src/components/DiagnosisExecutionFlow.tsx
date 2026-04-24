@@ -1,6 +1,7 @@
 import type { DiagnosisSession } from "../api/types";
 import { formatTimestamp } from "../utils/format";
 import { formatWorkflowStatus } from "../utils/display";
+import { getPrimaryRootCause } from "../pages/rootCauseModel";
 import { StatusChip } from "./ui";
 
 type LifecycleVisualState = "completed" | "current" | "pending" | "skipped" | "failed";
@@ -43,6 +44,19 @@ function getStateLabel(state: LifecycleVisualState) {
   }
 }
 
+/**
+ * Build lifecycle visualization steps from session state.
+ *
+ * Purpose:
+ * - map diagnosis/remediation status into timeline-ready lifecycle entries.
+ * Input/Output:
+ * - input: optional diagnosis session;
+ * - output: ordered lifecycle step list.
+ * Compatibility rationale:
+ * - root-cause display now reads primary item from `root_cause[]`.
+ * Why:
+ * - aligns lifecycle panel with multi-root-cause diagnosis contract.
+ */
 function buildLifecycleSteps(session?: DiagnosisSession): LifecycleStep[] {
   const status = session?.status;
   const isTerminal = Boolean(status && ["resolved", "failed", "escalated", "timeout"].includes(status));
@@ -69,7 +83,7 @@ function buildLifecycleSteps(session?: DiagnosisSession): LifecycleStep[] {
     {
       key: "diagnosed",
       label: "根因确认",
-      detail: session?.diagnosis_result?.root_cause ?? "等待输出根因和影响摘要",
+      detail: getPrimaryRootCause(session?.diagnosis_result)?.title ?? "等待输出根因和影响摘要",
       state: !session
         ? "pending"
         : status === "diagnosing"

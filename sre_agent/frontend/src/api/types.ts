@@ -230,21 +230,24 @@ export type PropagationStep = {
   description: string;
 };
 
-export type RankedRootCause = {
-  rank: number;
-  root_cause: string;
-  root_cause_layer: "hardware" | "network" | "os" | "platform" | "service";
-  root_cause_entities?: string[];
+/** Formal multi-root-cause diagnosis item. `root_cause[0]` is the primary root cause. */
+export type DiagnosedRootCause = {
+  id: string;
+  title: string;
+  layer: "hardware" | "network" | "os" | "platform" | "service";
+  entities: string[];
   confidence: number;
+  certainty: "confirmed" | "probable" | "ambiguous";
+  status: "confirmed" | "contributing" | "suspected" | "monitoring";
   evidence_summary: string;
-  recommended_fix?: RemediationPlan | null;
+  impact_summary: string;
   distinguishing_verification?: string | null;
+  recommended_fix?: RemediationPlan | null;
 };
 
+/** DiagnosisResult now uses `root_cause` as the formal multi-root-cause array structure. */
 export type DiagnosisResult = {
-  root_cause: string;
-  root_cause_layer: string;
-  root_cause_entities: string[];
+  root_cause: DiagnosedRootCause[];
   confidence: number;
   next_action?: string | null;
   hypotheses: Hypothesis[];
@@ -252,7 +255,6 @@ export type DiagnosisResult = {
   impact_summary: string;
   affected_services: string[];
   triage_priority: "P0" | "P1" | "P2" | "P3";
-  ranked_candidates?: RankedRootCause[];
   diagnosis_certainty: "confirmed" | "probable" | "ambiguous";
   recommended_fix?: RemediationPlan | null;
 };
@@ -372,7 +374,7 @@ export type RemediationResult = {
 
 export type CandidateAttempt = {
   candidate: {
-    root_cause: string;
+    title: string;
     confidence: number;
   };
   remediation_result: RemediationResult;
@@ -386,7 +388,7 @@ export type LoopResult = {
   session_id: string;
   outcome: "resolved" | "partially_resolved" | "exhausted" | "escalated" | "re_diagnosed";
   winning_candidate?: {
-    root_cause: string;
+    title: string;
     confidence: number;
   } | null;
   attempts: CandidateAttempt[];

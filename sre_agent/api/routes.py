@@ -298,6 +298,7 @@ class RevisePlanRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     instruction: str = Field(min_length=1)
+    plan_key: str | None = None
     base_plan_version: int | None = Field(default=None, ge=1)
 
 
@@ -1066,8 +1067,20 @@ def build_api_router() -> APIRouter:
         if not isinstance(diagnosis, dict):
             diagnosis = payload.get("diagnosis")
         diagnosis = diagnosis if isinstance(diagnosis, dict) else {}
-        root_cause = str(diagnosis.get("root_cause", "")).strip()
-        root_layer = str(diagnosis.get("root_cause_layer", "")).strip()
+        root_cause = ""
+        root_layer = ""
+        root_causes = diagnosis.get("root_cause")
+        if isinstance(root_causes, list):
+            for item in root_causes:
+                if not isinstance(item, dict):
+                    continue
+                root_cause = str(item.get("title") or item.get("root_cause") or "").strip()
+                root_layer = str(item.get("layer") or item.get("root_cause_layer") or "").strip()
+                if root_cause:
+                    break
+        elif isinstance(root_causes, str):
+            # Model-output tolerance: allow legacy string payload in chat-context rendering only.
+            root_cause = root_causes.strip()
         confidence = diagnosis.get("confidence")
         impact_summary = str(diagnosis.get("impact_summary", "")).strip()
         affected_services = diagnosis.get("affected_services")
@@ -1115,15 +1128,121 @@ def build_api_router() -> APIRouter:
             return None, meta
         return {"session_id": scoped_session_id, "context_text": context_text}, meta
 
+    def _build_root_cause_plan_key(*, index: int, root_cause_id: str | None) -> str:
+        cleaned = re.sub(r"[^a-zA-Z0-9._:-]+", "-", str(root_cause_id or "").strip()).strip("-")
+        if cleaned:
+            return f"rc:{cleaned}"
+        return f"rc:{index + 1}"
+
+    def _extract_root_cause_plans(session: DiagnosisSession) -> list[dict[str, Any]]:
+        if session.diagnosis_result is None:
+            return []
+        plans: list[dict[str, Any]] = []
+        for index, item in enumerate(session.diagnosis_result.root_cause):
+            if item.recommended_fix is None:
+                continue
+            plans.append(
+                {
+                    "rank": index + 1,
+                    "plan_key": _build_root_cause_plan_key(index=index, root_cause_id=item.id),
+                    "plan": item.recommended_fix,
+                    "root_cause_id": item.id,
+                    "root_cause_title": item.title,
+                }
+            )
+        return plans
+
+    def _build_plan_summaries(services: Any, *, session_id: str, plans: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        summaries: list[dict[str, Any]] = []
+        for item in plans:
+            plan_key = str(item["plan_key"])
+            get_version = getattr(services.remediation_engine, "get_latest_plan_version", None)
+            if callable(get_version):
+                try:
+                    plan_version = int(get_version(session_id, plan_key=plan_key))
+                except TypeError:
+                    plan_version = int(get_version(session_id))
+            else:
+                plan_version = 0
+            plan = item["plan"]
+            summaries.append(
+                {
+                    "rank": int(item["rank"]),
+                    "plan_key": plan_key,
+                    "plan_id": plan.plan_id,
+                    "plan_version": plan_version,
+                    "root_cause_id": item.get("root_cause_id"),
+                    "root_cause_title": item.get("root_cause_title"),
+                }
+            )
+        return summaries
+
+    def _register_root_cause_plans(services: Any, *, session_id: str, plans: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        if not plans:
+            clear = getattr(services.remediation_engine, "clear_session_plans", None)
+            if callable(clear):
+                clear(session_id)
+            return []
+        register_plans = getattr(services.remediation_engine, "register_plans", None)
+        if callable(register_plans):
+            register_plans(
+                session_id,
+                [(str(item["plan_key"]), item["plan"]) for item in plans],
+                clear_existing=True,
+            )
+        else:
+            clear = getattr(services.remediation_engine, "clear_session_plans", None)
+            if callable(clear):
+                clear(session_id)
+            for idx, item in enumerate(plans):
+                plan_key = str(item["plan_key"])
+                plan = item["plan"]
+                try:
+                    services.remediation_engine.register_plan(
+                        session_id,
+                        plan,
+                        plan_key=plan_key,
+                        set_default=idx == 0,
+                    )
+                except TypeError:
+                    services.remediation_engine.register_plan(session_id, plan)
+        return _build_plan_summaries(services, session_id=session_id, plans=plans)
+
     def _extract_recommended_fix(session: DiagnosisSession) -> RemediationPlan | None:
+        """Deprecated compatibility helper; returns the first root-cause plan."""
+        plans = _extract_root_cause_plans(session)
+        if not plans:
+            return None
+        return plans[0]["plan"]
+
+    def _find_root_cause_index_by_plan_key(session: DiagnosisSession, plan_key: str) -> int | None:
         if session.diagnosis_result is None:
             return None
-        if session.diagnosis_result.recommended_fix is not None:
-            return session.diagnosis_result.recommended_fix
-        for candidate in session.diagnosis_result.ranked_candidates:
-            if candidate.recommended_fix is not None:
-                return candidate.recommended_fix
+        target = str(plan_key or "").strip()
+        if not target:
+            return None
+        for index, item in enumerate(session.diagnosis_result.root_cause):
+            candidate = _build_root_cause_plan_key(index=index, root_cause_id=item.id)
+            if candidate == target:
+                return index
         return None
+
+    def _update_root_cause_plan(
+        session: DiagnosisSession,
+        *,
+        plan_key: str,
+        revised_plan: RemediationPlan,
+    ) -> DiagnosisSession:
+        diagnosis = session.diagnosis_result
+        if diagnosis is None:
+            return session
+        root_causes = list(diagnosis.root_cause)
+        index = _find_root_cause_index_by_plan_key(session, plan_key)
+        if index is None:
+            return session
+        root_causes[index] = root_causes[index].model_copy(update={"recommended_fix": revised_plan})
+        updated_diagnosis = diagnosis.model_copy(update={"root_cause": root_causes})
+        return session.model_copy(update={"diagnosis_result": updated_diagnosis})
 
     def _supports_trace_callback(method: Any) -> bool:
         try:
@@ -1512,7 +1631,7 @@ def build_api_router() -> APIRouter:
                 after_val = after.value if after is not None else None
                 before_val = before.value if before is not None else None
                 if after_val is None and isinstance(before_val, (int, float)) and float(before_val) > 0:
-                    improved = True  # 基线异常高、修复后无数据 → 视为改善
+                    improved = True  # 基线异常高、修复后无数�?�?视为改善
                 elif after_val is not None and before_val is not None:
                     try:
                         improved = float(after_val) <= float(before_val)
@@ -1548,6 +1667,7 @@ def build_api_router() -> APIRouter:
         pre_check: RemediationCheckSnapshot | None,
         observation_seconds: int,
         observation_poll_seconds: int,
+        plan: RemediationPlan | None = None,
     ) -> tuple[bool, dict[str, Any], RemediationEvidence]:
         total_observation_seconds = max(0, int(observation_seconds))
         poll_interval_seconds = max(1, int(observation_poll_seconds))
@@ -1560,7 +1680,8 @@ def build_api_router() -> APIRouter:
                 "poll_interval_seconds": poll_interval_seconds,
             },
         )
-        plan = services.remediation_engine.get_plan(session.session_id)
+        if plan is None:
+            plan = services.remediation_engine.get_plan(session.session_id)
         observation_started_at = time.monotonic()
         poll_count = 0
         post_check = await _capture_check_snapshot(services, session=session, plan=plan)
@@ -1931,7 +2052,7 @@ def build_api_router() -> APIRouter:
         preview_summary = str(payload.get("preview_summary") or preview_payload.get("description") or excerpt or "暂无摘要")
         warning = str(preview_payload.get("warning") or "").strip() or None
         if warning is None and index_status != "ready":
-            warning = "该文档索引未就绪，预览可能不完整。"
+            warning = "knowledge index is not ready; preview may be incomplete"
 
         preview = {
             "title": str(preview_payload.get("title") or title),
@@ -2224,18 +2345,24 @@ def build_api_router() -> APIRouter:
             session = await services.diagnosis_runner.adiagnose(prepared_alert, extra_alerts=extra_alerts)
         else:
             session = await services.diagnosis_runner.adiagnose(prepared_alert)
-        plan = _extract_recommended_fix(session)
-        if plan is not None:
-            services.remediation_engine.register_plan(session.session_id, plan)
+        plans = _extract_root_cause_plans(session)
+        plan_summaries = _register_root_cause_plans(services, session_id=session.session_id, plans=plans)
+        if plan_summaries:
             session = session.model_copy(update={"status": "approval_required"})
         services.session_store.put(session)
-        if plan is not None:
-            plan_version = services.remediation_engine.get_latest_plan_version(session.session_id)
+        if plan_summaries:
+            primary = plan_summaries[0]
             await _publish_session_event(
                 services,
                 event_type=EventType.APPROVAL_REQUIRED,
                 session_id=session.session_id,
-                data={"plan_id": plan.plan_id, "plan_version": plan_version},
+                data={
+                    "plan_count": len(plan_summaries),
+                    "plans": plan_summaries,
+                    "plan_key": primary["plan_key"],
+                    "plan_id": primary["plan_id"],
+                    "plan_version": primary["plan_version"],
+                },
             )
         return SREResponse(success=True, data=session, trace_id=_trace_id(request))
 
@@ -2558,11 +2685,28 @@ def build_api_router() -> APIRouter:
                 error=SREError(code=ErrorCode.VALIDATION_ERROR, message="session not found"),
                 trace_id=trace_id,
             )
+        requested_plan_key = str(payload.plan_key or "").strip()
+        if not requested_plan_key:
+            list_keys = getattr(services.remediation_engine, "list_plan_keys", None)
+            plan_keys = list_keys(session_id) if callable(list_keys) else []
+            if len(plan_keys) == 1:
+                requested_plan_key = str(plan_keys[0])
+            elif len(plan_keys) > 1:
+                return SREResponse(
+                    success=False,
+                    error=SREError(
+                        code=ErrorCode.VALIDATION_ERROR,
+                        message="plan_key is required when multiple remediation plans exist",
+                        details={"available_plan_keys": plan_keys},
+                    ),
+                    trace_id=trace_id,
+                )
         try:
             plan_version, revised_plan = services.remediation_engine.revise_plan(
                 session_id=session_id,
                 instruction=payload.instruction,
                 base_plan_version=payload.base_plan_version,
+                plan_key=requested_plan_key or None,
             )
         except KeyError:
             return SREResponse(
@@ -2577,10 +2721,11 @@ def build_api_router() -> APIRouter:
                 trace_id=trace_id,
             )
 
-        diagnosis = session.diagnosis_result
-        if diagnosis is not None:
-            diagnosis = diagnosis.model_copy(update={"recommended_fix": revised_plan})
-        session_with_plan = session.model_copy(update={"diagnosis_result": diagnosis})
+        session_with_plan = _update_root_cause_plan(
+            session,
+            plan_key=requested_plan_key or "default",
+            revised_plan=revised_plan,
+        )
         services.session_store.put(session_with_plan)
         updated_session = _update_session_status(
             services,
@@ -2588,11 +2733,17 @@ def build_api_router() -> APIRouter:
             status="approval_required",
             outcome=None,
         )
+        updated_plan_summaries = _build_plan_summaries(
+            services,
+            session_id=session_id,
+            plans=_extract_root_cause_plans(updated_session),
+        )
         await _publish_session_event(
             services,
             event_type=EventType.PLAN_REVISED,
             session_id=session_id,
             data={
+                "plan_key": requested_plan_key or "default",
                 "plan_id": revised_plan.plan_id,
                 "plan_version": plan_version,
                 "instruction": payload.instruction,
@@ -2602,7 +2753,13 @@ def build_api_router() -> APIRouter:
             services,
             event_type=EventType.APPROVAL_REQUIRED,
             session_id=session_id,
-            data={"plan_id": revised_plan.plan_id, "plan_version": plan_version},
+            data={
+                "plan_count": len(updated_plan_summaries),
+                "plans": updated_plan_summaries,
+                "plan_key": requested_plan_key or "default",
+                "plan_id": revised_plan.plan_id,
+                "plan_version": plan_version,
+            },
         )
 
         response_payload = RevisePlanResponse(
@@ -2631,65 +2788,139 @@ def build_api_router() -> APIRouter:
                 trace_id,
                 exc_info=exc,
             )
+        list_plan_keys = getattr(services.remediation_engine, "list_plan_keys", None)
+        available_plan_keys = [str(key) for key in list_plan_keys(session_id)] if callable(list_plan_keys) else []
+        get_plan = getattr(services.remediation_engine, "get_plan", None)
+        if not available_plan_keys and callable(get_plan):
+            fallback_plan = get_plan(session_id)
+            if fallback_plan is not None:
+                available_plan_keys = ["default"]
+        if not available_plan_keys:
+            return SREResponse(
+                success=False,
+                error=SREError(
+                    code=ErrorCode.REMEDIATION_PLAN_INVALID,
+                    message=f"remediation plan not found for session {session_id}",
+                ),
+                trace_id=trace_id,
+            )
+
+        requested_plan_key = str(getattr(approval, "plan_key", "") or "").strip()
+        approve_all = bool(getattr(approval, "approve_all", False))
+        if requested_plan_key:
+            target_plan_keys = [requested_plan_key]
+        elif approve_all or len(available_plan_keys) <= 1:
+            target_plan_keys = list(available_plan_keys)
+        else:
+            return SREResponse(
+                success=False,
+                error=SREError(
+                    code=ErrorCode.VALIDATION_ERROR,
+                    message="plan_key is required when multiple remediation plans are pending",
+                    details={"available_plan_keys": available_plan_keys},
+                ),
+                trace_id=trace_id,
+            )
+
         get_latest_plan_version = getattr(services.remediation_engine, "get_latest_plan_version", None)
-        latest_plan_version = int(get_latest_plan_version(session_id)) if callable(get_latest_plan_version) else 0
-        if latest_plan_version <= 0:
-            return SREResponse(
-                success=False,
-                error=SREError(
-                    code=ErrorCode.REMEDIATION_PLAN_INVALID,
-                    message=f"remediation plan not found for session {session_id}",
-                ),
-                trace_id=trace_id,
+        target_plans: list[dict[str, Any]] = []
+        for plan_key in target_plan_keys:
+            latest_plan_version = 0
+            if callable(get_latest_plan_version):
+                try:
+                    latest_plan_version = int(get_latest_plan_version(session_id, plan_key=plan_key))
+                except TypeError:
+                    latest_plan_version = int(get_latest_plan_version(session_id))
+            if latest_plan_version <= 0:
+                return SREResponse(
+                    success=False,
+                    error=SREError(
+                        code=ErrorCode.REMEDIATION_PLAN_INVALID,
+                        message=f"remediation plan not found for session {session_id} (plan_key={plan_key})",
+                    ),
+                    trace_id=trace_id,
+                )
+            plan = None
+            if callable(get_plan):
+                try:
+                    plan = get_plan(session_id, plan_key=plan_key)
+                except TypeError:
+                    plan = get_plan(session_id)
+            if plan is None:
+                return SREResponse(
+                    success=False,
+                    error=SREError(
+                        code=ErrorCode.REMEDIATION_PLAN_INVALID,
+                        message=f"remediation plan not found for session {session_id} (plan_key={plan_key})",
+                    ),
+                    trace_id=trace_id,
+                )
+            target_plans.append(
+                {
+                    "plan_key": plan_key,
+                    "plan": plan,
+                    "latest_plan_version": latest_plan_version,
+                }
             )
-        requested_plan_version = int(approval.plan_version or latest_plan_version)
-        if requested_plan_version != latest_plan_version:
-            return SREResponse(
-                success=False,
-                error=SREError(
-                    code=ErrorCode.REMEDIATION_PLAN_VERSION_OUTDATED,
-                    message="plan_version_outdated",
-                    details={
-                        "requested_plan_version": requested_plan_version,
-                        "latest_plan_version": latest_plan_version,
-                    },
-                ),
-                trace_id=trace_id,
-            )
-        plan = services.remediation_engine.get_plan(session_id)
-        if plan is None:
-            return SREResponse(
-                success=False,
-                error=SREError(
-                    code=ErrorCode.REMEDIATION_PLAN_INVALID,
-                    message=f"remediation plan not found for session {session_id}",
-                ),
-                trace_id=trace_id,
-            )
+
+        if approval.plan_version is not None:
+            if len(target_plans) != 1:
+                return SREResponse(
+                    success=False,
+                    error=SREError(
+                        code=ErrorCode.VALIDATION_ERROR,
+                        message="plan_version can only be used when approving a single plan_key",
+                    ),
+                    trace_id=trace_id,
+                )
+            requested = int(approval.plan_version)
+            latest = int(target_plans[0]["latest_plan_version"])
+            if requested != latest:
+                return SREResponse(
+                    success=False,
+                    error=SREError(
+                        code=ErrorCode.REMEDIATION_PLAN_VERSION_OUTDATED,
+                        message="plan_version_outdated",
+                        details={
+                            "plan_key": target_plans[0]["plan_key"],
+                            "requested_plan_version": requested,
+                            "latest_plan_version": latest,
+                        },
+                    ),
+                    trace_id=trace_id,
+                )
+            target_plans[0]["requested_plan_version"] = requested
+        for item in target_plans:
+            item.setdefault("requested_plan_version", int(item["latest_plan_version"]))
+
         if approval.approved:
-            # 参数有效性检查（占位值阻断）
-            plan_param_errors = _validate_plan_param_values(plan)
-            if plan_param_errors:
-                return SREResponse(
-                    success=False,
-                    error=SREError(
-                        code=ErrorCode.VALIDATION_ERROR,
-                        message=plan_param_errors[0],
-                        details={"param_errors": plan_param_errors},
-                    ),
-                    trace_id=trace_id,
-                )
-            readiness_issue = _validate_real_execution_readiness(services, plan=plan)
-            if readiness_issue is not None:
-                return SREResponse(
-                    success=False,
-                    error=SREError(
-                        code=ErrorCode.VALIDATION_ERROR,
-                        message=str(readiness_issue["message"]),
-                        details=readiness_issue,
-                    ),
-                    trace_id=trace_id,
-                )
+            for item in target_plans:
+                plan = item["plan"]
+                plan_param_errors = _validate_plan_param_values(plan)
+                if plan_param_errors:
+                    return SREResponse(
+                        success=False,
+                        error=SREError(
+                            code=ErrorCode.VALIDATION_ERROR,
+                            message=plan_param_errors[0],
+                            details={"plan_key": item["plan_key"], "param_errors": plan_param_errors},
+                        ),
+                        trace_id=trace_id,
+                    )
+                readiness_issue = _validate_real_execution_readiness(services, plan=plan)
+                if readiness_issue is not None:
+                    return SREResponse(
+                        success=False,
+                        error=SREError(
+                            code=ErrorCode.VALIDATION_ERROR,
+                            message=str(readiness_issue["message"]),
+                            details={"plan_key": item["plan_key"], **readiness_issue},
+                        ),
+                        trace_id=trace_id,
+                    )
+        plan = target_plans[0]["plan"]
+        requested_plan_version = int(target_plans[0]["requested_plan_version"])
+        requested_plan_key = str(target_plans[0]["plan_key"])
         transition_status = getattr(services.session_store, "transition_status", None)
         if callable(transition_status):
             target_status = "remediating" if approval.approved else "rejected"
@@ -2732,7 +2963,7 @@ def build_api_router() -> APIRouter:
                 services,
                 session_id=session_id,
                 stage="approval_rejected",
-                details={"user": approval.user, "reason": approval.reason or ""},
+                details={"user": approval.user, "reason": approval.reason or "", "plan_keys": [str(item["plan_key"]) for item in target_plans]},
             )
             return SREResponse(
                 success=False,
@@ -2749,8 +2980,11 @@ def build_api_router() -> APIRouter:
             stage="approval_accepted",
             details={
                 "user": approval.user,
+                "plan_key": requested_plan_key,
+                "plan_keys": [str(item["plan_key"]) for item in target_plans],
+                "plan_count": len(target_plans),
                 "plan_version": requested_plan_version,
-                "message": "审批通过，准备执行修复",
+                "message": "remediation status update",
             },
         )
         await _publish_remediation_progress(
@@ -2759,8 +2993,11 @@ def build_api_router() -> APIRouter:
             stage="execution_started",
             details={
                 "user": approval.user,
+                "plan_key": requested_plan_key,
+                "plan_keys": [str(item["plan_key"]) for item in target_plans],
+                "plan_count": len(target_plans),
                 "plan_version": requested_plan_version,
-                "message": "执行修复中",
+                "message": "remediation status update",
             },
         )
         app_config = getattr(request.app.state, "config", None)
@@ -2784,8 +3021,9 @@ def build_api_router() -> APIRouter:
                 session_id=session_id,
                 stage="execution_timeout",
                 details={
-                    "message": "修复执行超时退出",
+                    "message": "remediation status update",
                     "timeout_seconds": execution_timeout_seconds,
+                    "plan_key": requested_plan_key,
                     "plan_version": requested_plan_version,
                 },
             )
@@ -2798,6 +3036,148 @@ def build_api_router() -> APIRouter:
                 trace_id=trace_id,
             )
 
+        if len(target_plans) > 1:
+            multi_results: list[dict[str, Any]] = []
+            total_steps = 0
+            completed_steps = 0
+            for target in target_plans:
+                current_plan_key = str(target["plan_key"])
+                current_plan_version = int(target["requested_plan_version"])
+                await _publish_remediation_progress(
+                    services,
+                    session_id=session_id,
+                    stage="execution_started",
+                    details={
+                        "user": approval.user,
+                        "plan_key": current_plan_key,
+                        "plan_version": current_plan_version,
+                        "message": "remediation status update",
+                    },
+                )
+
+                async def _multi_progress_callback(
+                    *,
+                    stage: str,
+                    details: dict[str, Any] | None = None,
+                    _plan_key: str = current_plan_key,
+                    _plan_version: int = current_plan_version,
+                ) -> None:
+                    payload = dict(details or {})
+                    payload.setdefault("plan_key", _plan_key)
+                    payload.setdefault("plan_version", _plan_version)
+                    await _publish_remediation_progress(
+                        services,
+                        session_id=session_id,
+                        stage=stage,
+                        details=payload,
+                    )
+
+                try:
+                    try:
+                        target_result = await asyncio.wait_for(
+                            services.remediation_engine.approve_and_execute(
+                                session_id,
+                                approval,
+                                plan_key=current_plan_key,
+                                progress_callback=_multi_progress_callback,
+                            ),
+                            timeout=execution_timeout_seconds,
+                        )
+                    except TypeError:
+                        target_result = await asyncio.wait_for(
+                            services.remediation_engine.approve_and_execute(
+                                session_id,
+                                approval,
+                                progress_callback=_multi_progress_callback,
+                            ),
+                            timeout=execution_timeout_seconds,
+                        )
+                except TimeoutError:
+                    return await _timeout_response()
+                except Exception as exc:  # noqa: BLE001
+                    _update_session_status(services, session=session, status="failed", outcome="failed")
+                    await _publish_remediation_progress(
+                        services,
+                        session_id=session_id,
+                        stage="execution_failed",
+                        details={
+                            "plan_key": current_plan_key,
+                            "plan_version": current_plan_version,
+                            "error": str(exc),
+                            "message": "remediation status update",
+                        },
+                    )
+                    return SREResponse(
+                        success=False,
+                        error=SREError(code=ErrorCode.REMEDIATION_EXECUTION_FAILED, message=str(exc)),
+                        trace_id=trace_id,
+                    )
+
+                total_steps += int(target_result.steps_total)
+                completed_steps += int(target_result.steps_completed)
+                multi_results.append(
+                    {
+                        "plan_key": current_plan_key,
+                        "plan_version": current_plan_version,
+                        "plan_id": target_result.plan_id,
+                        "success": target_result.success,
+                        "error": target_result.error,
+                        "verification_results": target_result.verification_results,
+                    }
+                )
+                if not target_result.success:
+                    _update_session_status(services, session=session, status="failed", outcome="failed")
+                    await _publish_remediation_progress(
+                        services,
+                        session_id=session_id,
+                        stage="execution_failed",
+                        details={
+                            "plan_key": current_plan_key,
+                            "plan_version": current_plan_version,
+                            "plan_id": target_result.plan_id,
+                            "error": target_result.error or "execution failed",
+                            "error_code": target_result.error_code,
+                            "error_details": target_result.error_details,
+                            "rolled_back": target_result.rolled_back,
+                            "message": "remediation status update",
+                        },
+                    )
+                    error_code = ErrorCode.REMEDIATION_EXECUTION_FAILED
+                    if str(target_result.error_code or "").strip().lower() == "stale_or_mismatched_pid":
+                        error_code = ErrorCode.REMEDIATION_STALE_OR_MISMATCHED_PID
+                    return SREResponse(
+                        success=False,
+                        error=SREError(
+                            code=error_code,
+                            message=target_result.error or "execution failed",
+                            details=target_result.error_details,
+                        ),
+                        trace_id=trace_id,
+                    )
+
+            aggregate = RemediationResult(
+                plan_id=f"{session_id}-multi-plan",
+                success=True,
+                steps_completed=completed_steps,
+                steps_total=total_steps,
+                verification_results=multi_results,
+            )
+            _update_session_status(services, session=session, status="resolved", outcome="resolved")
+            await _publish_remediation_progress(
+                services,
+                session_id=session_id,
+                stage="execution_succeeded",
+                details={
+                    "plan_count": len(target_plans),
+                    "plan_keys": [str(item["plan_key"]) for item in target_plans],
+                    "steps_completed": completed_steps,
+                    "steps_total": total_steps,
+                    "results": multi_results,
+                    "message": "remediation status update",
+                },
+            )
+            return SREResponse(success=True, data=aggregate, trace_id=trace_id)
+
         pre_check = await _capture_check_snapshot(services, session=session, plan=plan)
         pre_evidence = RemediationEvidence(pre_check=pre_check)
         session = _update_session_evidence(services, session=session, evidence=pre_evidence)
@@ -2807,6 +3187,7 @@ def build_api_router() -> APIRouter:
             stage="pre_remediation_baseline_collected",
             details={
                 "plan_version": requested_plan_version,
+                "plan_key": requested_plan_key,
                 "baseline_alert": pre_check.alert.model_dump(mode="json") if pre_check.alert is not None else None,
                 "baseline_metrics": [item.model_dump(mode="json") for item in pre_check.metrics],
                 "pre_check": pre_check.model_dump(mode="json"),
@@ -2816,17 +3197,31 @@ def build_api_router() -> APIRouter:
         )
 
         async def _engine_progress_callback(*, stage: str, details: dict[str, Any] | None = None) -> None:
-            await _publish_remediation_progress(services, session_id=session_id, stage=stage, details=details)
+            payload = dict(details or {})
+            payload.setdefault("plan_key", requested_plan_key)
+            payload.setdefault("plan_version", requested_plan_version)
+            await _publish_remediation_progress(services, session_id=session_id, stage=stage, details=payload)
 
         try:
-            result = await asyncio.wait_for(
-                services.remediation_engine.approve_and_execute(
-                    session_id,
-                    approval,
-                    progress_callback=_engine_progress_callback,
-                ),
-                timeout=execution_timeout_seconds,
-            )
+            try:
+                result = await asyncio.wait_for(
+                    services.remediation_engine.approve_and_execute(
+                        session_id,
+                        approval,
+                        plan_key=requested_plan_key,
+                        progress_callback=_engine_progress_callback,
+                    ),
+                    timeout=execution_timeout_seconds,
+                )
+            except TypeError:
+                result = await asyncio.wait_for(
+                    services.remediation_engine.approve_and_execute(
+                        session_id,
+                        approval,
+                        progress_callback=_engine_progress_callback,
+                    ),
+                    timeout=execution_timeout_seconds,
+                )
         except KeyError:
             _update_session_status(services, session=session, status="failed", outcome="failed")
             await _publish_remediation_progress(
@@ -2836,6 +3231,7 @@ def build_api_router() -> APIRouter:
                 details={
                     "error": "remediation plan not found",
                     "message": "修复执行失败：未找到修复计划",
+                    "plan_key": requested_plan_key,
                     "plan_version": requested_plan_version,
                 },
             )
@@ -2858,6 +3254,7 @@ def build_api_router() -> APIRouter:
                 details={
                     "error": str(exc),
                     "message": "修复执行失败",
+                    "plan_key": requested_plan_key,
                     "plan_version": requested_plan_version,
                 },
             )
@@ -2875,8 +3272,9 @@ def build_api_router() -> APIRouter:
                     session_id=session_id,
                     stage="execution_mocked",
                     details={
-                        "message": "mock 已执行修复计划",
+                        "message": "remediation status update",
                         "plan_id": result.plan_id,
+                        "plan_key": requested_plan_key,
                         "plan_version": requested_plan_version,
                         "step_results": step_results,
                     },
@@ -2894,6 +3292,7 @@ def build_api_router() -> APIRouter:
                         pre_check=pre_check,
                         observation_seconds=observation_seconds,
                         observation_poll_seconds=observation_poll_seconds,
+                        plan=plan,
                     ),
                     timeout=remaining_timeout,
                 )
@@ -2910,6 +3309,7 @@ def build_api_router() -> APIRouter:
                     details={
                         **observation_details,
                         "message": "需要工程师介入",
+                        "plan_key": requested_plan_key,
                         "plan_version": requested_plan_version,
                         "step_results": step_results,
                     },
@@ -2930,6 +3330,7 @@ def build_api_router() -> APIRouter:
                 details={
                     "plan_id": result.plan_id,
                     "steps_completed": result.steps_completed,
+                    "plan_key": requested_plan_key,
                     "plan_version": requested_plan_version,
                     "step_results": step_results,
                     "message": "修复执行成功",
@@ -2948,6 +3349,7 @@ def build_api_router() -> APIRouter:
                 "error_code": result.error_code,
                 "error_details": result.error_details,
                 "rolled_back": result.rolled_back,
+                "plan_key": requested_plan_key,
                 "plan_version": requested_plan_version,
                 "step_results": step_results,
                 "message": "修复执行失败",

@@ -186,9 +186,20 @@ describe("buildDiagnosisModifiedLiveView next-action narration", () => {
         },
       ]),
       diagnosis_result: {
-        root_cause: "GPU contention",
-        root_cause_layer: "platform",
-        root_cause_entities: ["node:worker-03"],
+        root_cause: [
+          {
+            id: "rc-gpu-contention",
+            title: "GPU contention",
+            layer: "platform",
+            entities: ["node:worker-03"],
+            confidence: 0.9,
+            certainty: "confirmed",
+            status: "confirmed",
+            evidence_summary: "GPU utilization and queue latency rose together.",
+            impact_summary: "impact",
+            distinguishing_verification: "Use canary drain on worker-03 and validate p95 recovery.",
+          },
+        ],
         confidence: 0.9,
         next_action: "Use canary drain on worker-03 and validate p95 before full rollout.",
         hypotheses: [],
@@ -253,9 +264,20 @@ describe("buildDiagnosisModifiedLiveView next-action narration", () => {
         },
       ]),
       diagnosis_result: {
-        root_cause: "GPU contention",
-        root_cause_layer: "platform",
-        root_cause_entities: ["node:worker-03"],
+        root_cause: [
+          {
+            id: "rc-gpu-contention",
+            title: "GPU contention",
+            layer: "platform",
+            entities: ["node:worker-03"],
+            confidence: 0.9,
+            certainty: "confirmed",
+            status: "confirmed",
+            evidence_summary: "GPU utilization and queue latency rose together.",
+            impact_summary: "impact",
+            distinguishing_verification: "Approve canary rollback.",
+          },
+        ],
         confidence: 0.9,
         next_action: "Approve canary rollback.",
         hypotheses: [],
@@ -285,9 +307,20 @@ describe("buildDiagnosisModifiedLiveView next-action narration", () => {
 
   it("keeps next-action id stable when fallback timestamp changes", () => {
     const diagnosisResult: NonNullable<DiagnosisSession["diagnosis_result"]> = {
-      root_cause: "GPU contention",
-      root_cause_layer: "platform",
-      root_cause_entities: ["node:worker-03"],
+      root_cause: [
+        {
+          id: "rc-gpu-contention",
+          title: "GPU contention",
+          layer: "platform",
+          entities: ["node:worker-03"],
+          confidence: 0.9,
+          certainty: "confirmed",
+          status: "confirmed",
+          evidence_summary: "GPU utilization and queue latency rose together.",
+          impact_summary: "impact",
+          distinguishing_verification: "Approve canary rollback.",
+        },
+      ],
       confidence: 0.9,
       next_action: "Approve canary rollback.",
       hypotheses: [],
