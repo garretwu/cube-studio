@@ -1,4 +1,5 @@
 import { render, within } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { DiagnosisSessionSummary, RemediationOverview, SessionEvent } from "../api/types";
 import RemediationDetailDrawer from "./RemediationDetailDrawer";
@@ -90,6 +91,15 @@ function buildEvents(): SessionEvent[] {
 }
 
 describe("RemediationDetailDrawer", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-04-21T07:28:10Z"));
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it("fills affected services, shows observation strategy without canary, and filters non-remediation events", () => {
     const summary = buildSummary();
     const overview = buildOverview();
@@ -119,5 +129,64 @@ describe("RemediationDetailDrawer", () => {
     expect(scoped.getByText("观察结论：通过")).toBeInTheDocument();
     expect(scoped.queryByText("should-not-show-token-delta")).toBeNull();
   });
-});
 
+  it("renders live-derived duration and canary progress from remediation events", () => {
+    const summary = buildSummary();
+    const overview = buildOverview();
+    overview.plan.canary = {
+      enabled: true,
+      target_percentage: 0.5,
+      monitor_duration: 120,
+      max_batches: 2,
+      success_criteria: [],
+    };
+    overview.progress.status = "validating";
+    overview.progress.completed_steps = 0;
+    overview.progress.total_steps = 4;
+    overview.timeline = [
+      {
+        schema_version: "1.0",
+        type: "remediation_progress",
+        session_id: "sess-ttft-001",
+        timestamp: "2026-04-21T07:27:00Z",
+        data: { stage: "execution_started" },
+      },
+      {
+        schema_version: "1.0",
+        type: "remediation_progress",
+        session_id: "sess-ttft-001",
+        timestamp: "2026-04-21T07:28:00Z",
+        data: { stage: "canary_batch_completed", batch: "canary-1", batch_index: 1, batch_total: 2 },
+      },
+      {
+        schema_version: "1.0",
+        type: "remediation_progress",
+        session_id: "sess-ttft-001",
+        timestamp: "2026-04-21T07:28:05Z",
+        data: { stage: "canary_batch_started", batch: "canary-2", batch_index: 2, batch_total: 2 },
+      },
+    ];
+
+    const { container } = render(
+      <RemediationDetailDrawer
+        open
+        actionLoading={false}
+        isLoading={false}
+        onClose={() => {}}
+        onOpenApproval={() => {}}
+        record={{ summary, overview }}
+        overview={overview}
+        events={overview.timeline}
+      />,
+    );
+
+    const drawer = container.querySelector(".remediation-sidepanel");
+    expect(drawer).toBeTruthy();
+    const scoped = within(drawer as HTMLElement);
+
+    expect(scoped.getByText("1分 10秒")).toBeInTheDocument();
+    expect(scoped.getByText("总体 55%")).toBeInTheDocument();
+    expect(scoped.getByText("灰度 75%")).toBeInTheDocument();
+
+  });
+});

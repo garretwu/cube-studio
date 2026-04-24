@@ -95,6 +95,7 @@ export type TopologyCanvasNodeAction = {
   node: TopologyObject;
   clientX: number;
   clientY: number;
+  trigger: "click" | "hover";
 };
 
 type ExplorerFlowNodeData = {
@@ -1168,6 +1169,16 @@ const TopologyCanvas = forwardRef<TopologyCanvasHandle, TopologyCanvasProps>(fun
           }
           onHoverNode(node.id);
           const data = node.data as ExplorerFlowNodeData;
+          if (onOpenNodeActions) {
+            onOpenNodeActions({
+              node: data.node,
+              clientX: event.clientX,
+              clientY: event.clientY,
+              trigger: "hover",
+            });
+            setTooltip(null);
+            return;
+          }
           setTooltip({
             x: event.clientX,
             y: event.clientY,
@@ -1184,6 +1195,16 @@ const TopologyCanvas = forwardRef<TopologyCanvasHandle, TopologyCanvasProps>(fun
             return;
           }
           const data = node.data as ExplorerFlowNodeData;
+          if (onOpenNodeActions) {
+            setTooltip(null);
+            onOpenNodeActions({
+              node: data.node,
+              clientX: event.clientX,
+              clientY: event.clientY,
+              trigger: "hover",
+            });
+            return;
+          }
           setTooltip({
             x: event.clientX,
             y: event.clientY,
@@ -1205,6 +1226,7 @@ const TopologyCanvas = forwardRef<TopologyCanvasHandle, TopologyCanvasProps>(fun
             node: data.node,
             clientX: event.clientX,
             clientY: event.clientY,
+            trigger: "click",
           });
         }}
         onPaneClick={() => {

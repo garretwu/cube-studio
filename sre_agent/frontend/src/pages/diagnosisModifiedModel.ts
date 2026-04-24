@@ -22,6 +22,8 @@ export type DiagnosisModifiedTimelineItem =
       content: string;
       timestamp: string;
       label?: string;
+      sourceEventType?: string;
+      sourceEventKey?: string;
     }
   | {
       id: string;
@@ -35,11 +37,16 @@ export type DiagnosisModifiedTimelineItem =
       id: string;
       kind: "thinking";
       title: string;
+      streamingTitle?: string;
       content: string;
       timestamp: string;
       toolName?: string | null;
       status: "thinking" | "completed";
       thoughtDurationSec?: number;
+      thoughtKey?: string | null;
+      roundId?: string | null;
+      phase?: "streaming" | "completed";
+      summaryLine?: string;
     }
   | {
       id: string;
@@ -185,6 +192,12 @@ const ANSI_ESCAPE_PATTERN = /\u001b\[[0-?]*[ -/]*[@-~]/g;
 const UNICODE_FORMAT_CHARS_PATTERN = /[\u200B-\u200F\u202A-\u202E\u2060-\u206F\uFEFF]/g;
 const TOOL_CALL_BLOCK_PATTERN = /\[TOOL_CALL\][\s\S]*?\[\/TOOL_CALL\]/gi;
 const TOOL_CALL_TOKEN_PATTERN = /\[\/?TOOL_CALL\]/gi;
+const HYPOTHESIS_PROMPT_NOISE_SNIPPETS = [
+  "query=diagnose the operational issue",
+  "available read-only tools",
+  "prioritize deterministic service->pod->node->gpu",
+  "must complete minimum ttft coverage",
+];
 
 function stripControlCharacters(text: string) {
   return text
@@ -200,6 +213,39 @@ export function normalizeDiagnosisModifiedDisplayText(text?: string | null) {
     .replace(/[ \t]{2,}/g, " ")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
+}
+
+function isPromptNoiseParagraph(paragraph: string) {
+  const normalized = paragraph.trim().toLowerCase();
+  if (!normalized) {
+    return false;
+  }
+  return HYPOTHESIS_PROMPT_NOISE_SNIPPETS.some((snippet) => normalized.includes(snippet));
+}
+
+export function sanitizeHypothesisSummaryForDisplay(text?: string | null) {
+  const normalized = normalizeDiagnosisModifiedDisplayText(text);
+  if (!normalized) {
+    return "";
+  }
+
+  const paragraphs = normalized
+    .split(/\n{2,}/)
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+
+  if (paragraphs.length === 0) {
+    return "";
+  }
+
+  const filteredParagraphs = paragraphs.filter((paragraph) => !isPromptNoiseParagraph(paragraph));
+  if (filteredParagraphs.length > 0) {
+    return filteredParagraphs.join("\n\n").trim();
+  }
+
+  const lines = normalized.split(/\n+/).map((entry) => entry.trim()).filter(Boolean);
+  const filteredLines = lines.filter((line) => !isPromptNoiseParagraph(line));
+  return filteredLines.join("\n").trim();
 }
 
 function formatValue(value: unknown): string {
@@ -505,6 +551,21 @@ function extractDiagnosisNextAction(result: DiagnosisSession["diagnosis_result"]
   return normalized.length > 0 ? normalized : undefined;
 }
 
+function resolveMessageMetadataField(
+  metadata: ChatMessage["metadata"] | undefined,
+  key: string,
+): string | undefined {
+  if (!metadata) {
+    return undefined;
+  }
+  const value = metadata[key];
+  if (typeof value !== "string") {
+    return undefined;
+  }
+  const normalized = normalizeDiagnosisModifiedDisplayText(value).trim();
+  return normalized.length > 0 ? normalized : undefined;
+}
+
 export function buildDiagnosisModifiedLiveView(
   session: DiagnosisSession | undefined,
   messages: ChatMessage[],
@@ -520,8 +581,11 @@ export function buildDiagnosisModifiedLiveView(
     }
 
     if (isThinkingStep(entry)) {
+      const normalizedThoughtKey = normalizeDiagnosisModifiedDisplayText(entry.thought_key).trim();
       timelineItems.push({
-        id: `trace-thinking-${index + 1}-${entry.timestamp}`,
+        id: normalizedThoughtKey
+          ? `trace-thinking-${normalizedThoughtKey}`
+          : `trace-thinking-${index + 1}-${entry.timestamp}`,
         kind: "thinking",
         title:
           entry.action_type === "tool_call"
@@ -533,6 +597,9 @@ export function buildDiagnosisModifiedLiveView(
         timestamp: entry.timestamp,
         toolName: entry.tool_name,
         status: "completed",
+        thoughtKey: entry.thought_key ?? null,
+        roundId: null,
+        phase: "completed",
       });
 
       if (entry.action_type === "tool_call" && entry.tool_name) {
@@ -590,6 +657,7 @@ export function buildDiagnosisModifiedLiveView(
         content: normalizeDiagnosisModifiedDisplayText(message.display.thinking_raw),
         timestamp: message.created_at,
         status: "completed",
+        phase: "completed",
       });
     }
 
@@ -612,7 +680,9 @@ export function buildDiagnosisModifiedLiveView(
       role: message.role === "user" ? "user" : "assistant",
       content: normalizeDiagnosisModifiedDisplayText(message.display?.answer ?? message.content),
       timestamp: message.created_at,
-      label: message.role === "user" ? "User input" : "Agent response",
+      label: message.role === "user" ? "User input" : "修复状态更新",
+      sourceEventType: resolveMessageMetadataField(message.metadata, "event_type"),
+      sourceEventKey: resolveMessageMetadataField(message.metadata, "event_key"),
     });
   });
 

@@ -23,6 +23,7 @@ from sre_agent.runtime.token_estimation import estimate_token_count
 from sre_agent.ttft_process_policy import (
     TTFT_STRICT_PROCESS_FIND_PATTERN,
     extract_ttft_verification_pattern,
+    is_ttft_gpu_burn_process,
     is_ttft_suspect_process,
 )
 from sre_agent.tools import SafetyLevel, ToolExecutionContext, ToolRegistry, ToolResult
@@ -643,41 +644,12 @@ async def reason_node(
             tool_runs=tool_runs,
         )
         if not coverage_met:
-            forced_calls: list[dict[str, Any]] = []
-            pending_names = {
-                str(item.get("name", "")).strip()
-                for item in pending_tool_calls
-                if isinstance(item, dict)
-            }
-            variables = dict(state.get("variables", {}) or {})
-            alert_snapshot = state.get("alert_snapshot")
-            snapshot = alert_snapshot if isinstance(alert_snapshot, dict) else {}
-            if "gpu_processes" in coverage_missing and "gpu.get_processes" not in pending_names:
-                probe_node = (
-                    str(variables.get("node") or "").strip()
-                    or str(variables.get("node_ip") or "").strip()
-                    or str(snapshot.get("labels", {}).get("node", "") if isinstance(snapshot.get("labels"), dict) else "").strip()
-                )
-                if probe_node:
-                    forced_calls.append(
-                        {
-                            "name": "gpu.get_processes",
-                            "args": {"node": probe_node},
-                            "id": f"ttft-forced-gpu-processes-{step_index}",
-                        }
-                    )
-            if "external_process_find" in coverage_missing and "process.find" not in pending_names:
-                ext_node = _get_ttft_external_node(state)
-                find_args: dict[str, Any] = {"pattern": TTFT_STRICT_PROCESS_FIND_PATTERN}
-                if ext_node:
-                    find_args["node"] = ext_node
-                forced_calls.append(
-                    {
-                        "name": "process.find",
-                        "args": find_args,
-                        "id": f"ttft-forced-process-find-{step_index}",
-                    }
-                )
+            forced_calls = _build_ttft_forced_coverage_calls(
+                state=state,
+                coverage_missing=coverage_missing,
+                step_index=step_index,
+                pending_tool_calls=pending_tool_calls,
+            )
             if forced_calls:
                 pending_tool_calls = forced_calls
                 updated_trace.append(
@@ -694,8 +666,43 @@ async def reason_node(
                         ),
                         "confidence": None,
                         "meta": {
+                            "reason": "ttft_coverage_gate",
                             "ttft_coverage_met": False,
                             "coverage_missing": coverage_missing,
+                            "forced_calls": [str(call.get("name", "")).strip() for call in pending_tool_calls],
+                        },
+                    }
+                )
+
+    if not pending_tool_calls and _is_ttft_alert_state(state):
+        tool_runs = list(state.get("tool_runs", []) or [])
+        coverage_met, coverage_missing = _evaluate_ttft_min_coverage(
+            state=state,
+            tool_runs=tool_runs,
+        )
+        if not coverage_met and not _is_ttft_external_probe_blocked(state=state, tool_runs=tool_runs):
+            forced_calls = _build_ttft_forced_coverage_calls(
+                state=state,
+                coverage_missing=coverage_missing,
+                step_index=step_index,
+                pending_tool_calls=[],
+            )
+            if forced_calls:
+                pending_tool_calls = forced_calls
+                updated_trace.append(
+                    {
+                        "type": "thought",
+                        "step": step_index,
+                        "content": "TTFT 覆盖未完成，拦截 finalize 并强制补齐最小取证。",
+                        "action": "tool_call",
+                        "tool_name": pending_tool_calls[0]["name"],
+                        "tool_params": pending_tool_calls[0].get("args", {}),
+                        "confidence": None,
+                        "meta": {
+                            "reason": "ttft_coverage_gate",
+                            "ttft_coverage_met": False,
+                            "coverage_missing": coverage_missing,
+                            "forced_calls": [str(call.get("name", "")).strip() for call in pending_tool_calls],
                         },
                     }
                 )
@@ -849,6 +856,7 @@ async def reason_node(
             final_thought = f"{final_thought}\n已根据 tc/netem 强证据执行一致性纠偏。"
 
     diagnosis = DiagnosisResult.model_validate(diagnosis_payload)
+    is_ttft_alert = _is_ttft_alert_state(state)
     remediation_plan = _normalize_remediation_plan_payload(
         raw_plan=raw_remediation_plan,
         diagnosis=diagnosis,
@@ -857,6 +865,7 @@ async def reason_node(
         tool_runs=list(state.get("tool_runs", []) or []),
         variables=dict(state.get("variables", {}) or {}),
         alert_name=_get_alert_name_from_state(state),
+        force_canary_override=is_ttft_alert,
     )
     plan_missing_reason: str | None = None
     if remediation_plan is None:
@@ -930,6 +939,7 @@ async def reason_node(
                 tool_runs=list(state.get("tool_runs", []) or []),
                 variables=dict(state.get("variables", {}) or {}),
                 alert_name=_get_alert_name_from_state(state),
+                force_canary_override=is_ttft_alert,
             )
             if remediation_plan is not None:
                 diagnosis = diagnosis.model_copy(update={"recommended_fix": remediation_plan})
@@ -943,7 +953,7 @@ async def reason_node(
                 plan_missing_reason = f"诊断已完成，但自动补全修复方案失败：{plan_completion_error}"
             else:
                 plan_missing_reason = "诊断已完成，但模型未返回可执行修复方案。"
-    if _is_ttft_alert_state(state):
+    if is_ttft_alert:
         auto_ttft_plan = _build_ttft_kill_process_plan_candidate(
             diagnosis=diagnosis,
             evidence_signals=evidence_signals,
@@ -960,6 +970,7 @@ async def reason_node(
                 tool_runs=list(state.get("tool_runs", []) or []),
                 variables=dict(state.get("variables", {}) or {}),
                 alert_name=_get_alert_name_from_state(state),
+                force_canary_override=True,
             )
             if auto_normalized is not None:
                 remediation_plan = auto_normalized
@@ -985,6 +996,7 @@ async def reason_node(
         )
     if _is_ttft_alert_state(state) and not state.get("_ttft_external_probe_injected"):
         _tool_runs = list(state.get("tool_runs", []) or [])
+        probe_blocked = _is_ttft_external_probe_blocked(state=state, tool_runs=_tool_runs)
         coverage_met, coverage_missing = _evaluate_ttft_min_coverage(
             state=state,
             tool_runs=_tool_runs,
@@ -992,6 +1004,7 @@ async def reason_node(
         _ext_node = _get_ttft_external_node(state)
         if (
             not coverage_met
+            and not probe_blocked
             and "external_process_find" in coverage_missing
             and _ext_node
             and not _has_probed_ttft_external_node(_tool_runs, _ext_node)
@@ -3217,6 +3230,65 @@ def _evaluate_ttft_min_coverage(
     if not external_probe_done:
         missing.append("external_process_find")
     return len(missing) == 0, missing
+
+
+def _build_ttft_forced_coverage_calls(
+    *,
+    state: SREAgentState,
+    coverage_missing: list[str],
+    step_index: int,
+    pending_tool_calls: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    pending_names = {
+        str(item.get("name", "")).strip()
+        for item in list(pending_tool_calls or [])
+        if isinstance(item, dict)
+    }
+    forced_calls: list[dict[str, Any]] = []
+
+    variables = dict(state.get("variables", {}) or {})
+    alert_snapshot = state.get("alert_snapshot")
+    snapshot = alert_snapshot if isinstance(alert_snapshot, dict) else {}
+    if "gpu_processes" in coverage_missing and "gpu.get_processes" not in pending_names:
+        probe_node = (
+            str(variables.get("node") or "").strip()
+            or str(variables.get("node_ip") or "").strip()
+            or str(snapshot.get("labels", {}).get("node", "") if isinstance(snapshot.get("labels"), dict) else "").strip()
+        )
+        if probe_node:
+            forced_calls.append(
+                {
+                    "name": "gpu.get_processes",
+                    "args": {"node": probe_node},
+                    "id": f"ttft-forced-gpu-processes-{step_index}",
+                }
+            )
+
+    if "external_process_find" in coverage_missing and "process.find" not in pending_names:
+        ext_node = _get_ttft_external_node(state)
+        find_args: dict[str, Any] = {"pattern": TTFT_STRICT_PROCESS_FIND_PATTERN}
+        if ext_node:
+            find_args["node"] = ext_node
+        forced_calls.append(
+            {
+                "name": "process.find",
+                "args": find_args,
+                "id": f"ttft-forced-process-find-{step_index}",
+            }
+        )
+    return forced_calls
+
+
+def _is_ttft_external_probe_blocked(
+    *,
+    state: SREAgentState,
+    tool_runs: list[dict[str, Any]],
+) -> bool:
+    variables = dict(state.get("variables", {}) or {})
+    blocked_reason = str(variables.get("ttft_external_probe_blocked_reason", "") or "").strip()
+    external_node = _get_ttft_external_node(state)
+    auth_error = _find_ttft_external_probe_auth_error(tool_runs, external_node)
+    return bool(blocked_reason or auth_error)
 
 
 def _find_ttft_external_probe_auth_error(
@@ -5957,6 +6029,14 @@ _CANARY_ALLOWED_KEYS = frozenset({
 })
 
 
+def _coerce_positive_int(value: Any, *, default: int, minimum: int = 1) -> int:
+    try:
+        parsed = int(value)
+    except Exception:  # noqa: BLE001
+        parsed = default
+    return max(minimum, parsed)
+
+
 def _normalize_canary_config(
     *,
     raw_canary: Any,
@@ -6008,11 +6088,20 @@ def _normalize_canary_config(
                     process_count,
                 )
                 process_count = 6
+            forced_batch_total = 1 if process_count <= 1 else 2
+            forced_target_ratio = round(1.0 / process_count, 4)
             canary["enabled"] = True
-            canary["target_percentage"] = round(1.0 / process_count, 4)
-            canary["max_batches"] = process_count
+            canary["target_percentage"] = forced_target_ratio
+            canary["max_batches"] = forced_batch_total
             canary["progressive"] = False
-            canary.setdefault("monitor_duration", 60)
+            canary["monitor_duration"] = _coerce_positive_int(
+                canary.get("monitor_duration"),
+                default=60,
+                minimum=60,
+            )
+            canary["auto_rollback_on_regression"] = process_count >= 2
+            canary.setdefault("success_criteria", [])
+            canary.setdefault("criteria_mode", "all")
         sanitized = _sanitize_inline_canary_payload(canary, step_count=max(1, len(normalized_steps)))
         return sanitized if sanitized is not None else canary
 
@@ -6025,13 +6114,14 @@ def _normalize_canary_config(
             )
             process_count = 6
         if process_count >= 1:
+            forced_batch_total = 1 if process_count <= 1 else 2
             forced_canary = {
                 "enabled": True,
                 "target_percentage": round(1.0 / process_count, 4),
                 "monitor_duration": 60,
                 "success_criteria": [],
                 "criteria_mode": "all",
-                "max_batches": process_count,
+                "max_batches": forced_batch_total,
                 "auto_rollback_on_regression": process_count >= 2,
                 "progressive": False,
             }
@@ -6064,6 +6154,7 @@ def _normalize_remediation_plan_payload(
     tool_runs: list[dict[str, Any]] | None = None,
     variables: dict[str, Any] | None = None,
     alert_name: str | None = None,
+    force_canary_override: bool | None = None,
 ) -> RemediationPlan | None:
     """Normalize remediation plan payload while enforcing first-root-cause-first behavior.
 
@@ -6169,8 +6260,12 @@ def _normalize_remediation_plan_payload(
     candidate.setdefault("confidence", _normalize_plan_confidence(diagnosis.confidence))
     candidate.setdefault("priority", _normalize_plan_priority(diagnosis.triage_priority))
     candidate.setdefault("safety_level", "high")
-    force_canary = _is_force_canary_alert_name(str(alert_name or ""))
+    if force_canary_override is None:
+        force_canary = _is_force_canary_alert_name(str(alert_name or ""))
+    else:
+        force_canary = bool(force_canary_override)
     raw_canary_provided = isinstance(candidate.get("canary"), dict)
+    raw_canary_payload = _safe_jsonable(candidate.get("canary"))
 
     # ── Canary normalization ───────────────────────────────────────────
     candidate["canary"] = _normalize_canary_config(
@@ -6188,7 +6283,16 @@ def _normalize_remediation_plan_payload(
         try:
             from sre_agent.models.remediation import CanaryConfig
             CanaryConfig.model_validate(candidate["canary"])
-        except Exception:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001
+            if force_canary:
+                _llm_logger.warning(
+                    "force canary normalization dropped invalid config: session_id=%s force_canary_reason=ttft_match "
+                    "raw_canary=%s normalized_canary=%s error=%s",
+                    session_id,
+                    raw_canary_payload if raw_canary_provided else None,
+                    _safe_jsonable(candidate.get("canary")),
+                    str(exc).strip() or exc.__class__.__name__,
+                )
             candidate["canary"] = None
     if force_canary:
         normalized_canary = candidate.get("canary")
@@ -6783,6 +6887,14 @@ def _build_ttft_kill_process_plan_candidate(
     if not suspect_present or not suspect_processes:
         return None
 
+    gpu_burn_suspects = [
+        item
+        for item in suspect_processes
+        if is_ttft_gpu_burn_process(str(item.get("process_name", "") or ""))
+    ]
+    if gpu_burn_suspects:
+        suspect_processes = gpu_burn_suspects
+
     default_node = _resolve_ttft_target_node(tool_runs=tool_runs, variables=variables)
 
     steps: list[dict[str, Any]] = []
@@ -6810,7 +6922,14 @@ def _build_ttft_kill_process_plan_candidate(
         else:
             continue
         step_params["entity_id"] = f"proc:{target_token}"
-        verification_pattern = extract_ttft_verification_pattern(process_name or target_token)
+        # For canary batching, verify step-level target convergence.
+        # If PID is available, use PID-specific process.find pattern so batch-1
+        # does not require all suspects to disappear at once.
+        verification_pattern: str | None
+        if isinstance(pid, int) and pid > 0:
+            verification_pattern = str(pid)
+        else:
+            verification_pattern = extract_ttft_verification_pattern(process_name or target_token)
         if not verification_pattern:
             filtered_targets += 1
             _llm_logger.info(
@@ -6848,13 +6967,14 @@ def _build_ttft_kill_process_plan_candidate(
         return None
 
     step_count = len(steps)
+    batch_total = 1 if step_count <= 1 else 2
     canary: dict[str, Any] = {
         "enabled": True,
         "target_percentage": round(1.0 / step_count, 4),
         "monitor_duration": 60,
         "success_criteria": [],
         "criteria_mode": "all",
-        "max_batches": step_count,
+        "max_batches": batch_total,
         "auto_rollback_on_regression": step_count >= 2,
         "progressive": False,
     }

@@ -7,6 +7,7 @@ import type {
 } from "../api/types";
 import {
   normalizeDiagnosisModifiedDisplayText,
+  sanitizeHypothesisSummaryForDisplay,
 } from "./diagnosisModifiedModel";
 import { getNormalizedRootCauses, getPrimaryPlan, getPrimaryRootCause } from "./rootCauseModel";
 import type {
@@ -87,6 +88,7 @@ export type DiagnosisModifiedHypothesisItemView = {
   id: string;
   title: string;
   summary: string;
+  description: string;
   confidenceLabel: string;
   statusLabel: string;
   tone: ReportTone;
@@ -104,6 +106,7 @@ export type DiagnosisModifiedHypothesisEvidenceItemView = {
 export type DiagnosisModifiedHypothesesView = {
   state: ReportSectionState;
   summary: string;
+  description: string;
   detailMode: "expanded" | "collapsed";
   items: DiagnosisModifiedHypothesisItemView[];
 };
@@ -198,9 +201,11 @@ export type DiagnosisModifiedReportView = {
     eyebrow: string;
     title: string;
     subtitle: string;
+    isDefaultPreview: boolean;
     sessionId?: string;
     alertName: string;
     service?: string;
+    severityLabel?: string;
     updatedAt?: string;
     status: DiagnosisModifiedStageView;
     meta: string[];
@@ -283,6 +288,14 @@ type ParsedTopologyContext = {
   affected_count?: number;
   affected_entities?: Array<{ id?: string; name?: string } & Record<string, unknown>>;
   summary?: string;
+  direct_relations?: Array<{
+    source: string;
+    target: string;
+    target_type: string;
+    target_name: string;
+    relation: string;
+    direction: "in" | "out";
+  }>;
 };
 
 function formatConfidence(value: number | undefined) {
@@ -349,6 +362,11 @@ function sanitizeId(value: string) {
 export function mapDiagnosisModifiedStage(status?: string | null): DiagnosisModifiedStageView {
   const normalized = String(status ?? "").trim().toLowerCase();
   switch (normalized) {
+    case "":
+    case "idle":
+    case "not_started":
+    case "pending":
+      return { label: "未开始", tone: "neutral", detail: "诊断尚未开始，报告框架已就绪。", isActive: false };
     case "diagnosing":
       return { label: "诊断中", tone: "info", detail: "正在收集证据并归纳根因结论。", isActive: true };
     case "diagnosed":
@@ -479,19 +497,28 @@ function buildHypotheses(input: BuildDiagnosisModifiedReportViewInput): Diagnosi
     return {
       state: "loading",
       summary: "Waiting for candidate root-cause selection.",
+      description: "Each shortlisted hypothesis will include concise evidence and confidence movement once candidates appear.",
       detailMode,
       items: [],
     };
   }
 
+  const sectionSummary = `已选中 ${latestSnapshot.candidates.length} 个候选假设。`;
+  const sectionDescription =
+    detailMode === "collapsed"
+      ? "结论已趋于稳定，默认折叠细节；可按候选展开查看证据与置信度变化。"
+      : "每个候选假设展示证据与置信度变化，帮助快速定位当前最可信路径。";
+
   return {
     state: "ready",
-    summary: `Showing ${latestSnapshot.candidates.length} selected hypotheses with candidate-specific validation context.`,
+    summary: sectionSummary,
+    description: sectionDescription,
     detailMode,
     items: latestSnapshot.candidates.map((candidate, index) => ({
       id: candidate.id,
       title: candidate.title,
-      summary: candidate.evidenceSummary ?? candidate.summary,
+      summary: sanitizeHypothesisSummaryForDisplay(candidate.evidenceSummary ?? candidate.summary),
+      description: buildHypothesisDescription(candidate, index),
       confidenceLabel: candidate.confidenceLabel,
       statusLabel: getHypothesisStatusLabel(candidate, index),
       tone: getHypothesisTone(candidate),
@@ -501,33 +528,60 @@ function buildHypotheses(input: BuildDiagnosisModifiedReportViewInput): Diagnosi
   };
 }
 
+function buildHypothesisDescription(candidate: DiagnosisModifiedCandidateView, index: number) {
+  const statusLabel = getHypothesisStatusLabel(candidate, index);
+  const entities = uniqueStrings(candidate.entities).map((entity) => getEntityLabel(entity));
+  const segments: string[] = [`状态: ${statusLabel}`, `置信度: ${candidate.confidenceLabel}`];
+
+  if (entities.length > 0) {
+    segments.push(`关联实体: ${entities.join(", ")}`);
+  }
+
+  const verification = normalizeText(candidate.distinguishingVerification);
+  if (verification) {
+    segments.push(`区分验证: ${verification}`);
+  }
+
+  return segments.join(" | ");
+}
+
 function buildHypothesisEvidenceItems(
   candidate: DiagnosisModifiedCandidateView,
 ): DiagnosisModifiedHypothesisEvidenceItemView[] {
-  const supportItems = candidate.evidenceFor.map((summary, index) => ({
-    id: `${candidate.id}-support-${index + 1}`,
-    kind: "support" as const,
-    summary,
-    tone: (candidate.isPrimary ? "accent" : "success") as ReportTone,
-  }));
+  const supportItems = candidate.evidenceFor
+    .map((summary, index) => ({
+      id: `${candidate.id}-support-${index + 1}`,
+      kind: "support" as const,
+      summary: sanitizeHypothesisSummaryForDisplay(summary),
+      tone: "success" as const,
+    }))
+    .filter((item) => item.summary.length > 0);
 
-  const againstItems = candidate.evidenceAgainst.map((summary, index) => ({
-    id: `${candidate.id}-against-${index + 1}`,
-    kind: "against" as const,
-    summary,
-    tone: "warning" as const,
-  }));
+  const againstItems = candidate.evidenceAgainst
+    .map((summary, index) => ({
+      id: `${candidate.id}-against-${index + 1}`,
+      kind: "against" as const,
+      summary: sanitizeHypothesisSummaryForDisplay(summary),
+      tone: "warning" as const,
+    }))
+    .filter((item) => item.summary.length > 0);
 
   const validationItems =
     candidate.distinguishingVerification && candidate.distinguishingVerification.trim().length > 0
-      ? [
-          {
-            id: `${candidate.id}-validation-next`,
-            kind: "validation" as const,
-            summary: candidate.distinguishingVerification,
-            tone: "info" as const,
-          },
-        ]
+      ? (() => {
+          const sanitized = sanitizeHypothesisSummaryForDisplay(candidate.distinguishingVerification);
+          if (!sanitized) {
+            return [];
+          }
+          return [
+            {
+              id: `${candidate.id}-validation-next`,
+              kind: "validation" as const,
+              summary: sanitized,
+              tone: "info" as const,
+            },
+          ];
+        })()
       : [];
 
   return [...supportItems, ...againstItems, ...validationItems];
@@ -1217,6 +1271,27 @@ function getDirectRelationLabel(alertName: string, subjectKind: string, neighbor
   return "关联";
 }
 
+function translateRelationLabel(relation: string): string {
+  const normalized = relation.trim().toLowerCase();
+  switch (normalized) {
+    case "runs_on":
+    case "hosted_on":
+      return "运行于";
+    case "part_of":
+    case "serves":
+      return "隶属";
+    case "connected_to":
+      return "连接";
+    case "depends_on":
+      return "依赖";
+    case "manages":
+    case "monitored_by":
+      return "管理";
+    default:
+      return "关联";
+  }
+}
+
 function buildDirectOnlyContext(input: BuildDiagnosisModifiedReportViewInput): DiagnosisModifiedContextView {
   const parsedTopology = parseTopologyContextCandidate(input.topologyContext);
   const normalizedAlertName = normalizeText(input.session?.alert.alert_name).toLowerCase();
@@ -1239,6 +1314,51 @@ function buildDirectOnlyContext(input: BuildDiagnosisModifiedReportViewInput): D
     tone: "danger",
     detail: subjectEntity,
   };
+
+  const directRelations = parsedTopology?.direct_relations;
+  if (directRelations && directRelations.length > 0) {
+    const neighbors: DiagnosisModifiedContextNodeView[] = [];
+    const edges: DiagnosisModifiedContextEdgeView[] = [];
+    const seenIds = new Set<string>();
+
+    for (const rel of directRelations) {
+      const targetId = getContextNodeId(rel.target);
+      if (!targetId || targetId === subjectNode.id || seenIds.has(targetId)) continue;
+      seenIds.add(targetId);
+
+      neighbors.push({
+        id: targetId,
+        label: rel.target_name || getEntityLabel(rel.target),
+        role: "affected",
+        tone: "warning",
+        detail: rel.target,
+      });
+      edges.push({
+        id: `context-edge-${sanitizeId(subjectNode.id)}-${sanitizeId(targetId)}-${sanitizeId(rel.relation)}`,
+        sourceId: subjectNode.id,
+        targetId,
+        label: translateRelationLabel(rel.relation),
+      });
+    }
+
+    const hasRelations = edges.length > 0;
+    const summary =
+      typeof parsedTopology?.summary === "string" && normalizeText(parsedTopology.summary) && hasRelations
+        ? normalizeText(parsedTopology.summary)
+        : hasRelations
+          ? "展示告警主体的直连关联实体。"
+          : "暂无告警主体的直连关联实体。";
+
+    return {
+      state: "ready",
+      summary,
+      topologyEmptyReason: hasRelations ? undefined : "no_direct_relations",
+      problemNodes: [subjectNode],
+      affectedNodes: neighbors,
+      graph: { nodes: [subjectNode, ...neighbors], edges },
+    };
+  }
+
   const subjectKind = inferEntityKind(subjectEntity);
   const allEntities = uniqueStrings([subjectEntity, ...collectTopologyEntities(parsedTopology)]);
 
@@ -1320,6 +1440,14 @@ function extractLatestUpdateTimestamp(input: BuildDiagnosisModifiedReportViewInp
   return timestamps.sort((left, right) => timestampValue(right) - timestampValue(left))[0];
 }
 
+function formatDateMd(timestamp?: string | null) {
+  const value = Date.parse(String(timestamp ?? ""));
+  if (!Number.isFinite(value)) {
+    return undefined;
+  }
+  return new Date(value).toISOString().slice(5, 10);
+}
+
 function getResult(input: BuildDiagnosisModifiedReportViewInput) {
   return input.session?.diagnosis_result;
 }
@@ -1383,27 +1511,57 @@ function hasRootCauseConclusion(input: BuildDiagnosisModifiedReportViewInput) {
   return String(rootCause ?? "").trim().length > 0;
 }
 
+function isDefaultReportPreview(input: BuildDiagnosisModifiedReportViewInput) {
+  const normalizedStatus = String(input.session?.status ?? "").trim().toLowerCase();
+  const result = getResult(input);
+  const hasTimeline = input.timeline.length > 0;
+  const hasCandidates = (input.candidates?.length ?? 0) > 0 || (input.candidateSnapshots?.length ?? 0) > 0;
+  const hasSummary = Boolean(input.summary);
+  const hasPlan = Boolean(input.plan);
+  const hasEvents = (input.events?.length ?? 0) > 0 || (input.localAuditRecords?.length ?? 0) > 0;
+  const hasDiagnosisResult = Boolean(result);
+  const isIdleLikeStatus =
+    normalizedStatus.length === 0 ||
+    normalizedStatus === "idle" ||
+    normalizedStatus === "not_started" ||
+    normalizedStatus === "pending";
+
+  return isIdleLikeStatus && !hasTimeline && !hasCandidates && !hasSummary && !hasPlan && !hasEvents && !hasDiagnosisResult;
+}
+
 function buildOverview(input: BuildDiagnosisModifiedReportViewInput, stage: DiagnosisModifiedStageView) {
   const session = input.session;
   const result = getResult(input);
   const alertName = normalizeText(session?.alert.alert_name ?? "当前告警");
-  const summaryTitle = normalizeText(input.summary?.rootCause ?? getPrimaryRootCause(result)?.title ?? "诊断修复报告");
+  const defaultPreview = isDefaultReportPreview(input);
+  const primaryRootCause = getPrimaryRootCause(result);
+  const summaryTitle = normalizeText(
+    defaultPreview ? "\u8bca\u65ad\u4fee\u590d\u62a5\u544a" : input.summary?.rootCause ?? primaryRootCause?.title ?? "\u8bca\u65ad\u4fee\u590d\u62a5\u544a",
+  );
   const affectedServices = (input.summary?.affectedServices ?? result?.affected_services ?? []).map((item) => normalizeText(item));
   const primaryService =
     normalizeText(session?.alert?.labels?.service) ||
     normalizeText(session?.alert?.labels?.app) ||
     affectedServices[0] ||
     undefined;
-  const latestTimestamp = extractLatestUpdateTimestamp(input);
+  const latestTimestamp = defaultPreview ? undefined : extractLatestUpdateTimestamp(input);
+  const reportDate = formatDateMd(latestTimestamp) ?? formatDateMd(session?.alert?.starts_at);
+  const overviewTitle = defaultPreview
+    ? "诊断报告"
+    : [reportDate, alertName, "诊断报告"].filter((part) => Boolean(part && part.trim())).join("") || summaryTitle;
   const duration = session?.duration_seconds ? `持续 ${formatDuration(session.duration_seconds)}` : "";
   const round = session?.re_diagnosis_round ? `第 ${session.re_diagnosis_round} 轮` : "";
+  const severityLabel = session?.alert?.severity ? formatSeverity(session.alert.severity) : undefined;
 
   return {
     eyebrow: "诊断总览",
-    title: summaryTitle,
+    isDefaultPreview: defaultPreview,
+    title: overviewTitle,
     subtitle:
       normalizeText(
-        result?.impact_summary ??
+        defaultPreview
+          ? "诊断开始后，将在此持续生成结构化分析结论与修复建议"
+          : result?.impact_summary ??
           input.summary?.impactSummary ??
           input.summary?.subtitle ??
           "当前报告用于持续呈现最新结论、执行状态与修复反馈。",
@@ -1411,6 +1569,7 @@ function buildOverview(input: BuildDiagnosisModifiedReportViewInput, stage: Diag
     sessionId: session?.session_id,
     alertName,
     service: primaryService,
+    severityLabel,
     updatedAt: latestTimestamp,
     status: stage,
     meta: [

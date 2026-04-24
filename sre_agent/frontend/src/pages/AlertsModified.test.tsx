@@ -212,6 +212,11 @@ describe("AlertsModifiedPage", () => {
     expect(screen.getByText("尚未生成诊断结论")).toBeInTheDocument();
     expect(screen.getByText("待诊断")).toBeInTheDocument();
     expect(screen.getByText("告警工作项")).toBeInTheDocument();
+    expect(screen.getByText("3 / 3 项")).toBeInTheDocument();
+    expect(screen.queryByText("告警同步中")).not.toBeInTheDocument();
+    expect(screen.queryByText("会话同步中")).not.toBeInTheDocument();
+    expect(screen.queryByText("诊断补充中")).not.toBeInTheDocument();
+    expect(screen.queryByText("已同步")).not.toBeInTheDocument();
     expect(screen.getByText("incident_key fpst:fp-001|2026-03-18T12:00:00Z")).toBeInTheDocument();
     expect(screen.queryByText(/event_id/i)).not.toBeInTheDocument();
   });

@@ -212,6 +212,7 @@ function createCandidateSnapshots(): Array<{
 
 describe("mapDiagnosisModifiedStage", () => {
   it("maps session statuses into lifecycle labels", () => {
+    expect(mapDiagnosisModifiedStage(undefined).label).toBe("未开始");
     expect(mapDiagnosisModifiedStage("diagnosing").label).toBe("诊断中");
     expect(mapDiagnosisModifiedStage("diagnosed").label).toBe("已诊断");
     expect(mapDiagnosisModifiedStage("approval_required").label).toBe("待审批");
@@ -276,6 +277,7 @@ describe("buildDiagnosisModifiedReportView", () => {
     });
 
     expect(view.overview.sessionId).toBe("sess-report-model");
+    expect(view.overview.title).toBe("04-08Latency spike诊断报告");
     expect(view.overview.alertName).toBe("Latency spike");
     expect(view.overview.service).toBe("auth-svc");
     expect(view.overview.status.label).toBe("验证中");
@@ -460,7 +462,7 @@ describe("buildDiagnosisModifiedReportView", () => {
       localAuditRecords: [],
     });
 
-    expect(view.overview.title).toContain("GPU 温度异常");
+    expect(view.overview.title).toContain("Latency spike");
     expect(view.overview.title).not.toContain("[TOOL_CALL]");
   });
 
@@ -714,6 +716,13 @@ describe("buildDiagnosisModifiedReportView", () => {
     ]);
     expect(view.hypotheses.state).toBe("ready");
     expect(view.hypotheses.items).toHaveLength(2);
+    expect(view.hypotheses.summary).toBe("已选中 2 个候选假设。");
+    expect(view.hypotheses.description).toContain("每个候选假设展示证据与置信度变化");
+    expect(view.hypotheses.items[0]?.summary).toContain("Redis timeout and retry amplification");
+    expect(view.hypotheses.items[0]?.description).toContain("状态:");
+    expect(view.hypotheses.items[0]?.description).toContain("置信度:");
+    expect(view.hypotheses.items[0]?.description).toContain("关联实体:");
+    expect(view.hypotheses.items[0]?.description).toContain("区分验证:");
     expect(view.verification.state).toBe("ready");
     expect(view.verification.items[0]?.title).toBe("query_service_metrics");
     expect(view.confidence.state).toBe("ready");
@@ -762,6 +771,92 @@ describe("buildDiagnosisModifiedReportView", () => {
     expect(view.hypotheses.items[0]?.confidenceUpdates[1]?.summary).toContain("86%");
   });
 
+  it("filters prompt-like hypothesis summaries and evidence payloads from display", () => {
+    const session = createSession("diagnosing");
+    session.diagnosis_result = null;
+
+    const noisyPrompt =
+      "query=Diagnose the operational issue described by the alert below using a read-only ReAct workflow. " +
+      "This is AIServiceTTFT diagnosis; prioritize deterministic service->pod->node->gpu evidence chain before broad exploration. " +
+      "Available read-only tools for this run: [\"gpu.get_processes\"].";
+
+    const view = buildDiagnosisModifiedReportView({
+      session,
+      timeline: [],
+      candidates: [
+        {
+          id: "candidate-noise-filter",
+          title: "GPU 争用",
+          summary: noisyPrompt,
+          confidence: 0.74,
+          confidenceLabel: "74%",
+          statusLabel: "当前根因",
+          statusTone: "accent",
+          evidenceFor: [noisyPrompt, "GPU util 持续 99%，请求排队时长同步抬升。"],
+          evidenceAgainst: [noisyPrompt],
+          entities: ["worker-03"],
+          rank: 1,
+          evidenceSummary: noisyPrompt,
+          distinguishingVerification: noisyPrompt,
+          isPrimary: true,
+        },
+      ],
+      candidateSnapshots: [
+        {
+          id: "candidate-noise-filter-snapshot",
+          timestamp: "2026-04-08T10:05:00.000Z",
+          candidates: [
+            {
+              id: "candidate-noise-filter",
+              title: "GPU 争用",
+              summary: noisyPrompt,
+              confidence: 0.74,
+              confidenceLabel: "74%",
+              statusLabel: "当前根因",
+              statusTone: "accent",
+              evidenceFor: [noisyPrompt, "GPU util 持续 99%，请求排队时长同步抬升。"],
+              evidenceAgainst: [noisyPrompt],
+              entities: ["worker-03"],
+              rank: 1,
+              evidenceSummary: noisyPrompt,
+              distinguishingVerification: noisyPrompt,
+              isPrimary: true,
+            },
+          ],
+        },
+      ],
+      events: [],
+      localAuditRecords: [],
+    });
+
+    expect(view.hypotheses.items[0]?.summary).toBe("");
+    expect(view.hypotheses.items[0]?.evidenceItems.map((item) => item.summary)).toEqual([
+      "GPU util 持续 99%，请求排队时长同步抬升。",
+    ]);
+  });
+
+  it("keeps support-evidence tone consistent across primary and non-primary hypotheses", () => {
+    const candidateSnapshots = createCandidateSnapshots();
+    const session = createSession("diagnosing");
+    session.diagnosis_result = null;
+
+    const view = buildDiagnosisModifiedReportView({
+      session,
+      timeline: [],
+      candidates: candidateSnapshots[1]?.candidates ?? [],
+      candidateSnapshots,
+      events: [],
+      localAuditRecords: [],
+    });
+
+    const supportTones = view.hypotheses.items.flatMap((item) =>
+      item.evidenceItems.filter((entry) => entry.kind === "support").map((entry) => entry.tone),
+    );
+
+    expect(supportTones.length).toBeGreaterThan(0);
+    expect(new Set(supportTones)).toEqual(new Set(["success"]));
+  });
+
   it("collapses hypothesis-level validation details once the root cause is settled", () => {
     const candidateSnapshots = createCandidateSnapshots();
 
@@ -775,6 +870,7 @@ describe("buildDiagnosisModifiedReportView", () => {
     });
 
     expect(view.hypotheses.detailMode).toBe("collapsed");
+    expect(view.hypotheses.description).toContain("默认折叠细节");
     expect(view.hypotheses.items[0]?.evidenceItems.length).toBeGreaterThan(0);
     expect(view.hypotheses.items[0]?.confidenceUpdates.length).toBeGreaterThan(0);
   });
@@ -823,9 +919,28 @@ describe("buildDiagnosisModifiedReportView", () => {
     expect(view.rootCauseReady).toBe(false);
     expect(view.context.state).toBe("ready");
     expect(view.context.topologyEmptyReason).toBe("no_direct_relations");
+    expect(view.hypotheses.state).toBe("loading");
+    expect(view.hypotheses.summary).toBe("Waiting for candidate root-cause selection.");
+    expect(view.hypotheses.description).toContain("confidence movement");
     expect(view.rootCause.state).toBe("loading");
     expect(view.remediation.state).toBe("loading");
     expect(view.conclusion.title).toBe("等待形成明确结论");
     expect(view.candidateChanges).toHaveLength(0);
+  });
+
+  it("builds a report-preview default state before diagnosis starts", () => {
+    const view = buildDiagnosisModifiedReportView({
+      session: undefined,
+      timeline: [],
+      candidates: [],
+      events: [],
+      localAuditRecords: [],
+    });
+
+    expect(view.overview.title).toBe("诊断报告");
+    expect(view.overview.subtitle).toBe("诊断开始后，将在此持续生成结构化分析结论与修复建议");
+    expect(view.overview.status.label).toBe("未开始");
+    expect(view.overview.updatedAt).toBeUndefined();
+    expect(view.rootCauseReady).toBe(false);
   });
 });

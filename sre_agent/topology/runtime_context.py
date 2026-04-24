@@ -610,6 +610,29 @@ async def build_topology_context(
         except Exception as exc:  # noqa: BLE001
             ontology_summary["blast_radius_error"] = str(exc)
 
+        subject_entity_id = pod_entity_id or node_entity_id or service_entity_id
+        if subject_entity_id:
+            try:
+                neighbors = await ontology_channel.get_neighbors(subject_entity_id)
+                direct_relations: list[dict[str, Any]] = []
+                for neighbor in neighbors:
+                    entity = neighbor.get("entity", {})
+                    edge = neighbor.get("relation", {})
+                    if not isinstance(entity, dict) or not isinstance(edge, dict):
+                        continue
+                    direct_relations.append({
+                        "source": subject_entity_id,
+                        "target": str(entity.get("id", "")),
+                        "target_type": str(entity.get("entity_type", "")),
+                        "target_name": str(entity.get("name", "")),
+                        "relation": str(edge.get("relation", "")),
+                        "direction": neighbor.get("direction", "out"),
+                    })
+                if direct_relations:
+                    topology["direct_relations"] = direct_relations
+            except Exception:  # noqa: BLE001
+                pass
+
     if ontology_summary:
         topology["ontology"] = ontology_summary
 

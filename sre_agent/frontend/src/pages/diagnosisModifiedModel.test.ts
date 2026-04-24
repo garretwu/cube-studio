@@ -4,6 +4,7 @@ import type { Alert, DiagnosisSession } from "../api/types";
 import {
   buildDiagnosisModifiedDemoScenario,
   buildDiagnosisModifiedLiveView,
+  sanitizeHypothesisSummaryForDisplay,
   type DiagnosisModifiedTimelineItem,
 } from "./diagnosisModifiedModel";
 
@@ -149,6 +150,33 @@ describe("buildDiagnosisModifiedLiveView tool matching", () => {
   });
 });
 
+describe("sanitizeHypothesisSummaryForDisplay", () => {
+  it("removes prompt-like instruction payloads from summaries", () => {
+    const raw =
+      "query=Diagnose the operational issue described by the alert below using a read-only ReAct workflow. " +
+      "This is AIServiceTTFT diagnosis; prioritize deterministic service->pod->node->gpu evidence chain before broad exploration. " +
+      "Available read-only tools for this run: [\"gpu.get_metrics\"].";
+
+    expect(sanitizeHypothesisSummaryForDisplay(raw)).toBe("");
+  });
+
+  it("keeps normal business summary text untouched", () => {
+    const raw = "GPU util 持续 99%，请求排队时长与超时告警同步出现。";
+    expect(sanitizeHypothesisSummaryForDisplay(raw)).toBe(raw);
+  });
+
+  it("drops only prompt-noise paragraph and preserves useful conclusion paragraph", () => {
+    const raw =
+      "基于已收集证据，根因已明确：fi_gpu_burn_gpu_cont 占用 GPU 算力。\n\n" +
+      "query=Diagnose the operational issue described by the alert below using a read-only ReAct workflow. " +
+      "Available read-only tools for this run: [\"gpu.get_processes\"].";
+
+    expect(sanitizeHypothesisSummaryForDisplay(raw)).toBe(
+      "基于已收集证据，根因已明确：fi_gpu_burn_gpu_cont 占用 GPU 算力。",
+    );
+  });
+});
+
 describe("buildDiagnosisModifiedLiveView next-action narration", () => {
   it("does not synthesize next-action assistant messages from thinking steps", () => {
     const session = createSession([
@@ -251,6 +279,27 @@ describe("buildDiagnosisModifiedLiveView next-action narration", () => {
       expect(thinkingItems[0].content).toContain("First thought");
       expect(thinkingItems[1].content).toContain("Second thought");
     }
+  });
+
+  it("annotates trace thinking items with thought-key metadata for live round merge", () => {
+    const session = createSession([
+      {
+        step: 1,
+        timestamp: "2026-04-08T11:05:00.000Z",
+        thought: "Round thought",
+        action_type: "conclude",
+        thought_key: "run-1:reason",
+      },
+    ]);
+
+    const view = buildDiagnosisModifiedLiveView(session, []);
+    const thinkingItem = view.timeline.find(
+      (item): item is Extract<DiagnosisModifiedTimelineItem, { kind: "thinking" }> => item.kind === "thinking",
+    );
+
+    expect(thinkingItem).toBeDefined();
+    expect(thinkingItem?.thoughtKey).toBe("run-1:reason");
+    expect(thinkingItem?.phase).toBe("completed");
   });
 
   it("appends next-action after trace and chat timeline entries", () => {
@@ -371,6 +420,32 @@ describe("buildDiagnosisModifiedLiveView next-action narration", () => {
 
     expect(firstNextAction?.id).toBe("diagnosis-result-next-action-sess-live-1");
     expect(secondNextAction?.id).toBe("diagnosis-result-next-action-sess-live-1");
+  });
+
+  it("passes remediation message metadata through for timeline ordering decisions", () => {
+    const session = createSession([]);
+    const view = buildDiagnosisModifiedLiveView(session, [
+      {
+        id: "assistant-remediation-progress",
+        role: "assistant",
+        content: "审批通过，准备执行修复",
+        created_at: "2026-04-08T11:20:00.000Z",
+        metadata: {
+          event_type: "remediation_progress",
+          event_key: "remediation_progress:execution_sync:2026-04-08T11:20:00.000Z",
+        },
+      },
+    ]);
+
+    const remediationMessage = view.timeline.find(
+      (item): item is Extract<DiagnosisModifiedTimelineItem, { kind: "message" }> =>
+        item.kind === "message" && item.sourceEventType === "remediation_progress",
+    );
+
+    expect(remediationMessage).toBeDefined();
+    expect(remediationMessage?.sourceEventKey).toBe(
+      "remediation_progress:execution_sync:2026-04-08T11:20:00.000Z",
+    );
   });
 });
 describe("buildDiagnosisModifiedDemoScenario ReAct cadence", () => {

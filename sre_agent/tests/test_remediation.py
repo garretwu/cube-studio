@@ -510,7 +510,96 @@ class TestRemediationIntegration:
         assert batch_started[1]["current_batch_target"] == "proc:473573"
 
     @pytest.mark.asyncio
-    async def test_integration_engine_ttft_stale_pid_precheck_fails_before_kill(self, tmp_path: Path) -> None:
+    async def test_integration_engine_flat_canary_merges_overflow_targets_into_last_batch(self, tmp_path: Path) -> None:
+        class _SSHResult:
+            success = True
+            output = "ok"
+            error = ""
+
+        class _FakeSSHChannel:
+            def __init__(self) -> None:
+                self.calls: list[dict[str, Any]] = []
+
+            async def run_command(self, node: str, command: str, use_sudo: bool = False) -> _SSHResult:
+                self.calls.append({"node": node, "command": command, "use_sudo": use_sudo})
+                return _SSHResult()
+
+        registry = build_default_registry()
+        gate = ApprovalGate(default_policy="auto_approve")
+        wal = RollbackJournal(tmp_path / "wal.jsonl")
+        ssh = _FakeSSHChannel()
+        engine = RemediationEngine(
+            registry,
+            gate,
+            wal,
+            prometheus=_FakePrometheus(1.0),
+            execution_context=ToolExecutionContext(channels={"ssh": ssh}),
+        )
+        plan = RemediationPlan(
+            plan_id="proposal-ttft-two-batches",
+            root_cause="gpu burn contention",
+            description="terminate burn processes with fixed two-batch canary",
+            estimated_impact="ttft recovers",
+            confidence=0.88,
+            priority="P1",
+            canary=CanaryConfig(
+                enabled=True,
+                target_percentage=0.25,
+                monitor_duration=1,
+                success_criteria=[
+                    CanaryCondition(metric="vector(1)", operator=">=", value=1),
+                ],
+                criteria_mode="all",
+                max_batches=2,
+                progressive=False,
+            ),
+            steps=[
+                RemediationStep(
+                    step_id=1,
+                    description="kill process 1",
+                    tool="kill_process",
+                    params={"node": "10.11.4.13", "entity_id": "proc:1", "signal": "SIGTERM"},
+                    verification=VerificationConfig(method="wait", wait_seconds=1),
+                ),
+                RemediationStep(
+                    step_id=2,
+                    description="kill process 2",
+                    tool="kill_process",
+                    params={"node": "10.11.4.13", "entity_id": "proc:2", "signal": "SIGTERM"},
+                    verification=VerificationConfig(method="wait", wait_seconds=1),
+                ),
+                RemediationStep(
+                    step_id=3,
+                    description="kill process 3",
+                    tool="kill_process",
+                    params={"node": "10.11.4.13", "entity_id": "proc:3", "signal": "SIGTERM"},
+                    verification=VerificationConfig(method="wait", wait_seconds=1),
+                ),
+                RemediationStep(
+                    step_id=4,
+                    description="kill process 4",
+                    tool="kill_process",
+                    params={"node": "10.11.4.13", "entity_id": "proc:4", "signal": "SIGTERM"},
+                    verification=VerificationConfig(method="wait", wait_seconds=1),
+                ),
+            ],
+        )
+        progress_events: list[tuple[str, dict[str, Any]]] = []
+
+        async def _on_progress(*, stage: str, details: dict[str, Any] | None = None) -> None:
+            progress_events.append((stage, dict(details or {})))
+
+        result = await engine.execute(plan, session_id="session-flat-overflow-merge", progress_callback=_on_progress)
+
+        assert result.success is True
+        assert result.steps_completed == 4
+        batch_started = [details for stage, details in progress_events if stage == "canary_batch_started"]
+        assert len(batch_started) == 2
+        assert batch_started[0]["targets_in_batch"] == ["proc:1"]
+        assert batch_started[1]["targets_in_batch"] == ["proc:2", "proc:3", "proc:4"]
+
+    @pytest.mark.asyncio
+    async def test_integration_engine_ttft_stale_pid_precheck_treats_absent_pid_as_completed(self, tmp_path: Path) -> None:
         class _SSHResult:
             success = True
             output = ""
@@ -560,11 +649,74 @@ class TestRemediationIntegration:
 
         result = await engine.execute(plan, session_id="session-kill-entity-stale")
 
+        assert result.success is True
+        assert result.steps_completed == 1
+        assert result.error_code is None
+        assert result.verification_results
+        assert result.verification_results[0]["verified"] is True
+        assert result.verification_results[0]["skipped"] is True
+        assert result.verification_results[0]["reason"] == "pid_already_absent"
+        # only precheck command should run; kill is skipped because pid already absent
+        assert len(ssh.calls) == 1
+        assert "ps -eo pid=,comm=,args=" in ssh.calls[0]["command"]
+
+    @pytest.mark.asyncio
+    async def test_integration_engine_ttft_precheck_still_fails_for_non_suspect_pid(self, tmp_path: Path) -> None:
+        class _SSHResult:
+            success = True
+            output = ""
+            error = ""
+
+        class _FakeSSHChannel:
+            def __init__(self) -> None:
+                self.calls: list[dict[str, Any]] = []
+
+            async def run_command(self, node: str, command: str, use_sudo: bool = False) -> _SSHResult:
+                self.calls.append({"node": node, "command": command, "use_sudo": use_sudo})
+                result = _SSHResult()
+                if "ps -eo pid=,comm=,args=" in command:
+                    # target pid exists but commandline does not match TTFT suspect allowlist
+                    result.output = "9783 python python -m uvicorn app.main:app"
+                else:
+                    result.output = "ok"
+                return result
+
+        registry = build_default_registry()
+        gate = ApprovalGate(default_policy="auto_approve")
+        wal = RollbackJournal(tmp_path / "wal.jsonl")
+        ssh = _FakeSSHChannel()
+        engine = RemediationEngine(
+            registry,
+            gate,
+            wal,
+            execution_context=ToolExecutionContext(channels={"ssh": ssh}),
+        )
+        plan = RemediationPlan(
+            plan_id="proposal-c40d7a64-ttft-kill",
+            root_cause="synthetic load process",
+            description="kill suspicious processes with strict precheck",
+            estimated_impact="ttft recovers",
+            confidence=0.86,
+            priority="P1",
+            steps=[
+                RemediationStep(
+                    step_id=1,
+                    description="kill process A",
+                    tool="kill_process",
+                    params={"node": "10.11.4.13", "entity_id": "proc:9783", "signal": "TERM"},
+                    verification=VerificationConfig(method="wait", wait_seconds=1),
+                ),
+            ],
+        )
+
+        result = await engine.execute(plan, session_id="session-kill-entity-non-suspect")
+
         assert result.success is False
         assert result.error_code == "stale_or_mismatched_pid"
         assert result.error_details is not None
         assert result.error_details.get("pid") == 9783
         assert result.error_details.get("action") == "re_diagnose_required"
+        assert "not TTFT-suspect process" in str(result.error_details.get("reason"))
         # only precheck command should run; kill must not execute
         assert len(ssh.calls) == 1
         assert "ps -eo pid=,comm=,args=" in ssh.calls[0]["command"]

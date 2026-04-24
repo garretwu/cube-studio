@@ -43,12 +43,11 @@ describe("App shell", () => {
       </MemoryRouter>,
     );
 
-    const textboxes = await screen.findAllByRole("textbox");
-    expect(textboxes.length).toBeGreaterThan(0);
+    await screen.findByTestId("diagnosis-modified-split-workspace");
 
     expect(screen.getByText("QinClaw")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: diagnosisLabel! }).className).toContain("nav-item--active");
-    expect(document.querySelector(".diagnosis-workspace-page")).toBeTruthy();
+    expect(document.querySelector(".diagnosis-modified-page")).toBeTruthy();
     expect(document.querySelector("main.shell-content--full-width")).toBeTruthy();
   });
 

@@ -352,6 +352,42 @@ class RemediationEngine:
                 )
             precheck_error = await self._precheck_kill_process_target(plan=plan, step=step)
             if precheck_error is not None:
+                if str(precheck_error.get("action") or "").strip() == "pid_already_absent":
+                    LOGGER.info(
+                        "ttft kill_process precheck: pid_already_absent=true plan_id=%s step_id=%s node=%s pid=%s",
+                        plan.plan_id,
+                        step.step_id,
+                        precheck_error.get("node"),
+                        precheck_error.get("pid"),
+                    )
+                    if progress_callback is not None:
+                        await progress_callback(
+                            stage="validating",
+                            details={
+                                "step_id": step.step_id,
+                                "steps_completed": completed,
+                                "steps_total": total_steps,
+                                "message": (
+                                    f"目标进程 PID {precheck_error.get('pid')} 已不存在，"
+                                    "跳过执行并视为完成"
+                                ),
+                                "pid_already_absent": True,
+                                "node": precheck_error.get("node"),
+                                "pid": precheck_error.get("pid"),
+                            },
+                        )
+                    verification_results.append(
+                        {
+                            "step_id": step.step_id,
+                            "verified": True,
+                            "skipped": True,
+                            "reason": "pid_already_absent",
+                            "pid": precheck_error.get("pid"),
+                            "node": precheck_error.get("node"),
+                        }
+                    )
+                    completed += 1
+                    continue
                 failed_step = step
                 await self.wal.recover_all()
                 return RemediationResult(
@@ -489,7 +525,7 @@ class RemediationEngine:
         )
         if pid_match is None:
             return {
-                "action": "re_diagnose_required",
+                "action": "pid_already_absent",
                 "plan_id": plan.plan_id,
                 "step_id": step.step_id,
                 "node": node,

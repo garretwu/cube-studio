@@ -3,10 +3,12 @@ from __future__ import annotations
 import re
 
 TTFT_STRICT_PROCESS_FIND_PATTERN = (
-    r"load_simulator|stress-ng|stress|wrk|locust|jmeter|fio|iperf|apachebench|\bhey\b"
+    r"load_simulator|fi_gpu_burn_gpu_contention|gpu_burn|stress-ng|stress|wrk|locust|jmeter|fio|iperf|apachebench|\bhey\b"
 )
 
 _TTFT_SUSPECT_ALLOW_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"\bfi_gpu_burn_gpu_contention\w*\b", re.IGNORECASE),
+    re.compile(r"\bgpu[_-]?burn\b", re.IGNORECASE),
     re.compile(r"\bload_simulator\b", re.IGNORECASE),
     re.compile(r"\bstress-ng\b", re.IGNORECASE),
     re.compile(r"\bstress\b", re.IGNORECASE),
@@ -31,6 +33,8 @@ _TTFT_SUSPECT_DENY_PATTERNS: tuple[re.Pattern[str], ...] = (
 )
 
 _TTFT_VERIFICATION_TOKEN_ALLOWLIST: tuple[str, ...] = (
+    "fi_gpu_burn_gpu_contention",
+    "gpu_burn",
     "load_simulator",
     "stress-ng",
     "stress",
@@ -63,3 +67,9 @@ def extract_ttft_verification_pattern(process_text: str) -> str | None:
             return token
     return None
 
+
+def is_ttft_gpu_burn_process(process_text: str) -> bool:
+    lowered = str(process_text or "").strip().lower()
+    if not lowered:
+        return False
+    return "fi_gpu_burn_gpu_contention" in lowered or "gpu_burn" in lowered
