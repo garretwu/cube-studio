@@ -766,10 +766,96 @@ async def reason_node(
                 )
     final_thought = parsed.thought
     raw_remediation_plan = parsed.remediation_plan
-    evidence_signals = _extract_evidence_signals(list(state.get("tool_runs", []) or []))
+    evidence_signals = _extract_evidence_signals(
+        list(state.get("tool_runs", []) or []),
+        variables=dict(state.get("variables", {}) or {}),
+    )
     diagnosis_payload = _normalize_diagnosis_payload(parsed.diagnosis)
     if _is_ttft_alert_state(state):
         _enrich_ttft_root_causes_from_evidence(diagnosis_payload, evidence_signals)
+        ttft_evidence_cards = list(evidence_signals.get("ttft_evidence_cards") or [])
+        consistency_findings = _validate_ttft_root_cause_consistency(diagnosis_payload, ttft_evidence_cards)
+        if consistency_findings:
+            repair_messages = _build_ttft_consistency_retry_messages(
+                system_prompt=system_prompt,
+                query=str(state.get("query", "") or "").strip(),
+                diagnosis_payload=diagnosis_payload,
+                evidence_cards=ttft_evidence_cards,
+                findings=consistency_findings,
+            )
+            repair_stats = _build_prompt_message_stats(repair_messages)
+            repair_response: AIMessage | None = None
+            repair_raw_response_text = ""
+            repair_error = ""
+            repaired_payload: dict[str, Any] | None = None
+            repaired_thought = ""
+            if llm_supports_message_invocation:
+                try:
+                    retry_response = await _invoke_llm_message(llm, repair_messages, timeout=state["step_timeout_sec"])
+                    if isinstance(retry_response, AIMessage):
+                        repair_response = retry_response
+                        repair_raw_response_text = _extract_text(retry_response.content)
+                        repair_parsed = _parse_reasoning_output(repair_raw_response_text)
+                        if repair_parsed.diagnosis is not None:
+                            repaired_payload = _normalize_diagnosis_payload(repair_parsed.diagnosis)
+                            _enrich_ttft_root_causes_from_evidence(repaired_payload, evidence_signals)
+                        repaired_thought = repair_parsed.thought
+                    else:
+                        repair_raw_response_text = _extract_text(getattr(retry_response, "content", retry_response))
+                except Exception as exc:  # noqa: BLE001
+                    repair_error = _normalized_exception_message(exc)
+
+            _log_llm_interaction(
+                session_id=str(state.get("session_id", "unknown")),
+                step=step_index,
+                prompt_messages=repair_messages,
+                response=repair_response,
+                mode="ttft_consistency_retry",
+                tool_choice="none",
+                tool_calls=[],
+                prompt_message_stats=repair_stats,
+                prompt_fallback_used=False,
+                prompt_metadata={
+                    "ttft_evidence_cards": _safe_jsonable(ttft_evidence_cards),
+                    "validator_findings": _safe_jsonable(consistency_findings),
+                    "repair_error": repair_error or None,
+                    "provider_invocation_skipped": not llm_supports_message_invocation,
+                },
+            )
+            updated_interactions.append(
+                {
+                    "step": step_index,
+                    "mode": "ttft_consistency_retry",
+                    "tool_choice": "none",
+                    "bound_tool_names": [],
+                    "prompt_messages": messages_to_dict(repair_messages),
+                    "prompt_message_stats": repair_stats,
+                    "prompt_fallback_used": False,
+                    "prompt_metadata": {
+                        "ttft_evidence_cards": _safe_jsonable(ttft_evidence_cards),
+                        "validator_findings": _safe_jsonable(consistency_findings),
+                        "repair_error": repair_error or None,
+                        "provider_invocation_skipped": not llm_supports_message_invocation,
+                    },
+                    "response_message": messages_to_dict([repair_response])[0] if repair_response is not None else None,
+                    "raw_response_text": repair_raw_response_text,
+                    "tool_calls": [],
+                }
+            )
+
+            if repaired_payload is not None:
+                repaired_findings = _validate_ttft_root_cause_consistency(repaired_payload, ttft_evidence_cards)
+                if not repaired_findings:
+                    diagnosis_payload = repaired_payload
+                    if repaired_thought:
+                        final_thought = repaired_thought
+                else:
+                    diagnosis_payload = _apply_ttft_consistency_fallback(repaired_payload, repaired_findings)
+            else:
+                diagnosis_payload = _apply_ttft_consistency_fallback(diagnosis_payload, consistency_findings)
+        _augment_ttft_hardware_hypotheses_from_evidence(diagnosis_payload, evidence_signals)
+        _dedupe_ttft_root_causes(diagnosis_payload)
+        _normalize_ttft_root_cause_certainty_from_confidence(diagnosis_payload)
 
     tc_strong_evidence = bool(
         evidence_signals.get("tc_netem_present", False) or evidence_signals.get("tc_process_present", False)
@@ -1197,6 +1283,9 @@ def _select_bound_tool_names_for_turn(state: SREAgentState) -> list[str] | None:
     if allowed_tool_names:
         names = [str(name).strip() for name in allowed_tool_names if str(name).strip()]
         if names:
+            skill_names = [name for name in names if name.startswith("skills.")]
+            if skill_names and not state.get("tool_runs"):
+                return skill_names
             return names
 
     # 2) First turn (no tool_runs yet) — allow pending tool calls if present.
@@ -2665,6 +2754,10 @@ def _build_state_rebuilt_sections(
     skill_history_text = _json_line(rendered_skill_runs) if rendered_skill_runs else "none"
     tool_ledger_text = _json_line(rendered_tool_runs) if rendered_tool_runs else "none"
     ttft_evidence_status_text = _build_ttft_evidence_status_text(state, tool_runs)
+    ttft_evidence_cards: list[dict[str, Any]] = []
+    if _is_ttft_alert_state(state):
+        current_ttft_signals = _extract_evidence_signals(tool_runs, variables=variables)
+        ttft_evidence_cards = list(current_ttft_signals.get("ttft_evidence_cards") or [])
 
     instruction = (
         "Use the canonical evidence above and return the final JSON now. "
@@ -2719,6 +2812,11 @@ def _build_state_rebuilt_sections(
             "evidence_status",
             "Evidence status and tool budget:\n"
             f"{ttft_evidence_status_text}",
+        ),
+        (
+            "ttft_evidence_cards",
+            "TTFT structured evidence cards (hints, not conclusions; cite evidence_id in root_cause[].evidence_refs):\n"
+            f"{_json_line(ttft_evidence_cards) if ttft_evidence_cards else 'none'}",
         ),
         (
             "conversation_note",
@@ -2798,6 +2896,12 @@ def _build_transcript_compact_reason_messages(
         default=6,
         minimum=1,
     )
+    ttft_evidence_cards_text = "none"
+    if _is_ttft_alert_state(state):
+        variables = dict(state.get("variables", {}) or {})
+        cards = _extract_evidence_signals(list(state.get("tool_runs", []) or []), variables=variables).get("ttft_evidence_cards")
+        if cards:
+            ttft_evidence_cards_text = _json_line(cards)
 
     if final_turn:
         compact_messages = _apply_context_window_budget(
@@ -2805,6 +2909,7 @@ def _build_transcript_compact_reason_messages(
                 SystemMessage(content=system_prompt),
                 HumanMessage(content=f"Original query: {state['query']}"),
                 HumanMessage(content=f"Collected evidence:\n{_summarize_tool_runs(state.get('tool_runs', []))}"),
+                HumanMessage(content=f"TTFT structured evidence cards:\n{ttft_evidence_cards_text}"),
                 HumanMessage(
                     content=(
                         "Use the evidence already collected and return the final JSON now. "
@@ -2821,6 +2926,7 @@ def _build_transcript_compact_reason_messages(
                 SystemMessage(content=system_prompt),
                 HumanMessage(content=f"Original query: {state['query']}"),
                 HumanMessage(content=f"Collected evidence:\n{_summarize_tool_runs(state.get('tool_runs', []))}"),
+                HumanMessage(content=f"TTFT structured evidence cards:\n{ttft_evidence_cards_text}"),
                 HumanMessage(
                     content=(
                         "Tool-binding is unavailable for the current LLM provider. "
@@ -3433,7 +3539,99 @@ def _find_latest_tool_run_by_dedupe_key(
     return None
 
 
-def _extract_evidence_signals(tool_runs: list[dict[str, Any]]) -> dict[str, Any]:
+def _ttft_process_family(process_text: Any) -> str:
+    text = str(process_text or "").strip()
+    if not text:
+        return "unknown"
+    if _is_gpu_contention_suspect_process(text):
+        return "gpu_contention"
+    if is_ttft_suspect_process(text):
+        return "external_load"
+    if "vllm::worker" in text.lower() or "vllm" in text.lower():
+        return "service_worker"
+    return "unknown"
+
+
+def _ttft_node_role_hint(*, tool: str, node: str, process_family: str, external_node: str = "") -> str:
+    normalized_node = str(node or "").strip().lower()
+    normalized_external = str(external_node or "").strip().lower()
+    if process_family == "gpu_contention":
+        return "serving_gpu_node"
+    if tool == "gpu.get_processes":
+        return "serving_gpu_node"
+    if process_family == "external_load":
+        if normalized_external and normalized_node == normalized_external:
+            return "external_load_node"
+        if tool == "process.find":
+            return "external_load_node"
+    return "unknown"
+
+
+def _ttft_evidence_id(run: dict[str, Any], tool: str) -> str:
+    step = int(run.get("step", 0) or 0)
+    return f"tool:{step}:{tool}"
+
+
+def _append_ttft_evidence_card(
+    signals: dict[str, Any],
+    *,
+    evidence_id: str,
+    source_tool: str,
+    source_node: str,
+    node_role_hint: str,
+    process_family_hint: str,
+    summary: str,
+    processes: list[dict[str, Any]],
+) -> None:
+    if not processes:
+        return
+    cards = signals.get("ttft_evidence_cards")
+    if not isinstance(cards, list):
+        cards = []
+        signals["ttft_evidence_cards"] = cards
+    if any(isinstance(item, dict) and item.get("evidence_id") == evidence_id for item in cards):
+        return
+    cards.append(
+        {
+            "evidence_id": evidence_id,
+            "source_tool": source_tool,
+            "source_node": source_node,
+            "node_role_hint": node_role_hint,
+            "process_family_hint": process_family_hint,
+            "evidence_role_hint": "root_cause_evidence",
+            "summary": summary,
+            "processes": processes,
+        }
+    )
+
+
+def _decorate_ttft_suspect(
+    *,
+    suspect: dict[str, Any],
+    run: dict[str, Any],
+    tool: str,
+    node: str,
+    external_node: str,
+) -> dict[str, Any]:
+    process_name = str(suspect.get("process_name", "") or "").strip()
+    family = _ttft_process_family(process_name)
+    role = _ttft_node_role_hint(tool=tool, node=node, process_family=family, external_node=external_node)
+    return {
+        **suspect,
+        "node": str(suspect.get("node", "") or "").strip() or node,
+        "source_tool": tool,
+        "source_step": int(run.get("step", 0) or 0),
+        "source_node": node,
+        "evidence_id": _ttft_evidence_id(run, tool),
+        "node_role_hint": role,
+        "process_family_hint": family,
+        "evidence_kind": "gpu_process" if family == "gpu_contention" else "external_process" if family == "external_load" else "process",
+    }
+
+
+def _extract_evidence_signals(tool_runs: list[dict[str, Any]], variables: dict[str, Any] | None = None) -> dict[str, Any]:
+    variables = dict(variables or {})
+    external_node = str(variables.get("ttft_external_process_default_node", "") or "").strip()
     signals: dict[str, Any] = {
         "tc_netem_present": False,
         "tc_process_present": False,
@@ -3445,6 +3643,7 @@ def _extract_evidence_signals(tool_runs: list[dict[str, Any]]) -> dict[str, Any]
         "process_evidence_steps": [],
         "ttft_suspect_process_present": False,
         "ttft_suspect_processes": [],
+        "ttft_evidence_cards": [],
         "ttft_gpu_process_steps": [],
         "ttft_gpu_metrics_steps": [],
         "gpu_temperature_steps": [],
@@ -3573,9 +3772,31 @@ def _extract_evidence_signals(tool_runs: list[dict[str, Any]]) -> dict[str, Any]
                 if not isinstance(target, list):
                     target = []
                     signals["ttft_suspect_processes"] = target
-                for item in suspect_items:
+                decorated_items = [
+                    _decorate_ttft_suspect(
+                        suspect=item,
+                        run=run,
+                        tool=tool,
+                        node=run_node,
+                        external_node=external_node,
+                    )
+                    for item in suspect_items
+                ]
+                for item in decorated_items:
                     if item not in target:
                         target.append(item)
+                family = "gpu_contention" if any(item.get("process_family_hint") == "gpu_contention" for item in decorated_items) else "unknown"
+                summary_process = str(decorated_items[0].get("process_name") or "suspect process") if decorated_items else "suspect process"
+                _append_ttft_evidence_card(
+                    signals,
+                    evidence_id=_ttft_evidence_id(run, tool),
+                    source_tool=tool,
+                    source_node=run_node,
+                    node_role_hint="serving_gpu_node",
+                    process_family_hint=family,
+                    summary=f"{run_node or 'unknown-node'} gpu.get_processes found {summary_process}",
+                    processes=decorated_items,
+                )
         elif tool == "bmc.get_fan_status":
             signals["bmc_fan_status_steps"].append(int(run.get("step", 0) or 0))
             if fields.get("mode") is not None:
@@ -3646,9 +3867,34 @@ def _extract_evidence_signals(tool_runs: list[dict[str, Any]]) -> dict[str, Any]
                 if not isinstance(target, list):
                     target = []
                     signals["ttft_suspect_processes"] = target
-                for item in suspect_items:
+                decorated_items = [
+                    _decorate_ttft_suspect(
+                        suspect=item,
+                        run=run,
+                        tool=tool,
+                        node=str(item.get("node", "") or "").strip() or run_node,
+                        external_node=external_node,
+                    )
+                    for item in suspect_items
+                ]
+                for item in decorated_items:
                     if item not in target:
                         target.append(item)
+                family = "external_load" if any(item.get("process_family_hint") == "external_load" for item in decorated_items) else (
+                    "gpu_contention" if any(item.get("process_family_hint") == "gpu_contention" for item in decorated_items) else "unknown"
+                )
+                role = _ttft_node_role_hint(tool=tool, node=run_node, process_family=family, external_node=external_node)
+                summary_process = str(decorated_items[0].get("process_name") or "suspect process") if decorated_items else "suspect process"
+                _append_ttft_evidence_card(
+                    signals,
+                    evidence_id=_ttft_evidence_id(run, tool),
+                    source_tool=tool,
+                    source_node=run_node,
+                    node_role_hint=role,
+                    process_family_hint=family,
+                    summary=f"{run_node or 'unknown-node'} process.find found {summary_process}",
+                    processes=decorated_items,
+                )
     return signals
 
 
@@ -4948,7 +5194,7 @@ async def act_node(
         "status": "running",
         "summary": state.get("summary"),
         "error": None,
-        "evidence_signals": _extract_evidence_signals(tool_runs),
+        "evidence_signals": _extract_evidence_signals(tool_runs, variables=variables),
         "loop_guard": loop_guard,
         "force_final_turn": force_final_turn,
     }
@@ -5463,6 +5709,16 @@ def _normalize_root_cause_item_payload(
     evidence_summary = str(raw_item.get("evidence_summary") or default_impact_summary or title).strip()
     impact_summary = str(raw_item.get("impact_summary") or default_impact_summary or evidence_summary).strip()
     recommended_fix = _normalize_inline_recommended_fix_payload(raw_item.get("recommended_fix"))
+    factor_type = str(raw_item.get("factor_type") or "").strip().lower()
+    if factor_type not in {"gpu_contention", "external_load", "cache_pressure", "scheduler", "mixed", "unknown"}:
+        factor_type = ""
+    raw_evidence_refs = raw_item.get("evidence_refs")
+    evidence_refs = [str(item).strip() for item in raw_evidence_refs if str(item).strip()] if isinstance(raw_evidence_refs, list) else []
+    evidence_interpretation = (
+        str(raw_item.get("evidence_interpretation")).strip()
+        if raw_item.get("evidence_interpretation") is not None
+        else None
+    )
     return {
         "id": str(raw_item.get("id") or f"rc-{index}").strip() or f"rc-{index}",
         "title": title,
@@ -5471,6 +5727,9 @@ def _normalize_root_cause_item_payload(
         "confidence": confidence,
         "certainty": certainty,
         "status": status,
+        "factor_type": factor_type or None,
+        "evidence_refs": evidence_refs,
+        "evidence_interpretation": evidence_interpretation,
         "evidence_summary": evidence_summary or title,
         "impact_summary": impact_summary or evidence_summary or title,
         "distinguishing_verification": (
@@ -6646,8 +6905,31 @@ def _build_ttft_kill_process_plan_for_root_cause(
         return None
     root_item = diagnosis.root_cause[root_cause_index]
     root_payload = root_item.model_dump(mode="json")
+    if "consistency_validation_failed" in str(root_payload.get("evidence_interpretation") or ""):
+        return None
+    root_factor = _ttft_factor_for_root_item(root_payload)
+    evidence_refs = {str(ref).strip() for ref in (root_payload.get("evidence_refs") or []) if str(ref).strip()}
     tokens = _root_cause_process_tokens(root_payload)
     if not tokens:
+        if not evidence_refs and root_factor == "unknown":
+            return None
+        tokens = set()
+
+    allowed_family: str | None = None
+    if root_factor == "gpu_contention":
+        allowed_family = "gpu_contention"
+    elif root_factor == "external_load":
+        allowed_family = "external_load"
+    if root_factor == "mixed":
+        explicit_mixed = str(root_payload.get("evidence_interpretation") or "").lower()
+        if "inseparable" not in explicit_mixed and "不可分割" not in explicit_mixed:
+            return None
+
+    family_tokens = {
+        token for token in tokens
+        if any(marker in token for marker in ("fi_gpu_burn", "gpu_burn", "gpu_contention", "load_simulator", "stress", "benchmark", "locust", "vegeta", "wrk"))
+    }
+    if not evidence_refs and allowed_family is None and not family_tokens:
         return None
 
     default_node = _resolve_ttft_target_node(tool_runs=tool_runs, variables=variables)
@@ -6659,10 +6941,20 @@ def _build_ttft_kill_process_plan_for_root_cause(
         lowered = process_name.lower()
         if not lowered:
             continue
-        if any(token in lowered for token in tokens):
+        suspect_family = str(suspect.get("process_family_hint") or _ttft_process_family(process_name)).strip()
+        suspect_evidence_id = str(suspect.get("evidence_id") or "").strip()
+        if evidence_refs:
+            if suspect_evidence_id not in evidence_refs:
+                continue
+            if allowed_family is not None and suspect_family != allowed_family:
+                continue
             matched.append(suspect)
             continue
-        if _is_gpu_contention_suspect_process(lowered) and any(token in {"fi_gpu_burn", "gpu_burn", "gpu_contention"} for token in tokens):
+        if allowed_family is not None:
+            if suspect_family == allowed_family:
+                matched.append(suspect)
+            continue
+        if family_tokens and any(token in lowered for token in family_tokens):
             matched.append(suspect)
 
     if not matched:
@@ -6884,6 +7176,410 @@ def _enrich_ttft_root_causes_from_evidence(
     _sync_primary_recommended_fix_from_root_cause(payload)
 
 
+def _ttft_factor_hints_from_text(*segments: Any) -> set[str]:
+    text = " ".join(str(segment or "") for segment in segments).lower()
+    factors: set[str] = set()
+    gpu_tokens = (
+        "gpu.get_processes",
+        "fi_gpu_burn",
+        "gpu_burn",
+        "gpu_contention",
+        "gpu contention",
+        "gpu资源",
+        "gpu竞争",
+        "gpu占用",
+        "非服务进程",
+    )
+    external_tokens = (
+        "process.find",
+        "load_simulator",
+        "external load",
+        "load generator",
+        "stress",
+        "benchmark",
+        "wrk",
+        "locust",
+        "vegeta",
+        "外部负载",
+        "压测",
+        "负载生成器",
+        "请求激增",
+    )
+    if any(token in text for token in gpu_tokens):
+        factors.add("gpu_contention")
+    if any(token in text for token in external_tokens):
+        factors.add("external_load")
+    return factors
+
+
+def _ttft_factor_for_root_item(item: dict[str, Any]) -> str:
+    explicit = str(item.get("factor_type") or "").strip().lower()
+    if explicit in {"gpu_contention", "external_load", "cache_pressure", "scheduler", "mixed", "unknown"}:
+        return explicit
+    label_factors = _ttft_factor_hints_from_text(
+        item.get("title"),
+        " ".join(str(v) for v in (item.get("entities") or []) if isinstance(v, str)),
+    )
+    evidence_factors = _ttft_factor_hints_from_text(
+        item.get("evidence_summary"),
+        item.get("distinguishing_verification"),
+        item.get("evidence_interpretation"),
+    )
+    factors = label_factors | evidence_factors
+    if len(factors) >= 2:
+        return "mixed"
+    if factors:
+        return next(iter(factors))
+    return "unknown"
+
+
+def _ttft_root_cause_has_consistency_failure(item: dict[str, Any]) -> bool:
+    return "consistency_validation_failed" in str(item.get("evidence_interpretation") or "")
+
+
+def _ttft_tool_ref_tokens(*segments: Any) -> set[str]:
+    text = " ".join(str(segment or "") for segment in segments)
+    return {match.group(0).strip() for match in re.finditer(r"tool:\d+:[A-Za-z0-9_.-]+", text)}
+
+
+def _ttft_root_cause_dedupe_key(item: dict[str, Any]) -> str:
+    factor = _ttft_factor_for_root_item(item)
+    refs = sorted(str(ref).strip() for ref in (item.get("evidence_refs") or []) if str(ref).strip())
+    if refs:
+        return f"{factor}|evidence:{','.join(refs)}"
+    tool_refs = sorted(
+        _ttft_tool_ref_tokens(
+            item.get("title"),
+            item.get("evidence_summary"),
+            item.get("evidence_interpretation"),
+            item.get("distinguishing_verification"),
+        )
+    )
+    if tool_refs:
+        return f"{factor}|evidence:{','.join(tool_refs)}"
+    tokens = sorted(
+        token
+        for token in _extract_causal_signal_tokens(
+            item.get("title"),
+            item.get("evidence_summary"),
+            item.get("evidence_interpretation"),
+        )
+        if token in {"fi_gpu_burn", "gpu_burn", "gpu_contention", "load_simulator", "stress", "benchmark", "locust", "vegeta", "wrk"}
+        or token.startswith("fi_gpu_burn")
+    )
+    if tokens:
+        return f"{factor}|tokens:{','.join(tokens[:4])}"
+    return ""
+
+
+def _ttft_root_cause_quality(item: dict[str, Any]) -> tuple[float, int, int, int, int]:
+    certainty_rank = {"confirmed": 3, "probable": 2, "ambiguous": 1}
+    status_rank = {"confirmed": 3, "contributing": 2, "suspected": 1, "monitoring": 1}
+    confidence = _clamp_confidence(item.get("confidence"), default=0.0)
+    has_refs = 1 if any(str(ref).strip() for ref in (item.get("evidence_refs") or [])) else 0
+    has_factor = 1 if str(item.get("factor_type") or "").strip() else 0
+    has_fix = 1 if isinstance(item.get("recommended_fix"), dict) else 0
+    return (
+        confidence,
+        certainty_rank.get(str(item.get("certainty") or "").strip().lower(), 0),
+        status_rank.get(str(item.get("status") or "").strip().lower(), 0),
+        has_refs + has_factor,
+        has_fix,
+    )
+
+
+def _merge_ttft_duplicate_root_cause(current: dict[str, Any], incoming: dict[str, Any]) -> dict[str, Any]:
+    keep_current = _ttft_root_cause_quality(current) >= _ttft_root_cause_quality(incoming)
+    winner = dict(current if keep_current else incoming)
+    loser = incoming if keep_current else current
+    refs: list[str] = []
+    for ref in list(current.get("evidence_refs") or []) + list(incoming.get("evidence_refs") or []):
+        ref_text = str(ref).strip()
+        if ref_text and ref_text not in refs:
+            refs.append(ref_text)
+    if refs:
+        winner["evidence_refs"] = refs
+    if not winner.get("factor_type") and loser.get("factor_type"):
+        winner["factor_type"] = loser.get("factor_type")
+    if not winner.get("recommended_fix") and loser.get("recommended_fix"):
+        winner["recommended_fix"] = loser.get("recommended_fix")
+    if not winner.get("evidence_interpretation") and loser.get("evidence_interpretation"):
+        winner["evidence_interpretation"] = loser.get("evidence_interpretation")
+    return winner
+
+
+def _ttft_root_cause_duplicate_index(item: dict[str, Any], existing_items: list[dict[str, Any]]) -> int | None:
+    factor = _ttft_factor_for_root_item(item)
+    tokens = _extract_causal_signal_tokens(
+        item.get("title"),
+        item.get("evidence_summary"),
+        item.get("evidence_interpretation"),
+        " ".join(str(v) for v in (item.get("entities") or []) if isinstance(v, str)),
+    )
+    specific_tokens = {
+        token
+        for token in tokens
+        if token in {"fi_gpu_burn", "gpu_burn", "gpu_contention", "load_simulator", "process.find", "gpu.get_processes"}
+        or token.startswith("fi_gpu_burn")
+        or token.startswith("tool:")
+    }
+    if not specific_tokens:
+        return None
+    for index, existing in enumerate(existing_items):
+        if _ttft_factor_for_root_item(existing) != factor:
+            continue
+        existing_tokens = _extract_causal_signal_tokens(
+            existing.get("title"),
+            existing.get("evidence_summary"),
+            existing.get("evidence_interpretation"),
+            " ".join(str(v) for v in (existing.get("entities") or []) if isinstance(v, str)),
+        )
+        if specific_tokens & existing_tokens:
+            return index
+    return None
+
+
+def _dedupe_ttft_root_causes(payload: dict[str, Any]) -> None:
+    root_causes = payload.get("root_cause")
+    if not isinstance(root_causes, list) or len(root_causes) < 2:
+        return
+    deduped: list[dict[str, Any]] = []
+    key_to_index: dict[str, int] = {}
+    for item in root_causes:
+        if not isinstance(item, dict):
+            continue
+        key = _ttft_root_cause_dedupe_key(item)
+        if key and key in key_to_index:
+            existing_index = key_to_index[key]
+            deduped[existing_index] = _merge_ttft_duplicate_root_cause(deduped[existing_index], item)
+            continue
+        duplicate_index = _ttft_root_cause_duplicate_index(item, deduped)
+        if duplicate_index is not None:
+            deduped[duplicate_index] = _merge_ttft_duplicate_root_cause(deduped[duplicate_index], item)
+            continue
+        if key:
+            key_to_index[key] = len(deduped)
+        deduped.append(item)
+    payload["root_cause"] = deduped
+    _sync_primary_recommended_fix_from_root_cause(payload)
+
+
+def _normalize_ttft_root_cause_certainty_from_confidence(payload: dict[str, Any]) -> None:
+    root_causes = payload.get("root_cause")
+    if not isinstance(root_causes, list):
+        return
+    for item in root_causes:
+        if not isinstance(item, dict):
+            continue
+        if _ttft_root_cause_has_consistency_failure(item):
+            continue
+        certainty = str(item.get("certainty") or "").strip().lower()
+        confidence = _clamp_confidence(item.get("confidence"), default=0.0)
+        if certainty == "ambiguous" and confidence >= 0.85:
+            item["certainty"] = "confirmed"
+        elif certainty == "ambiguous" and confidence >= 0.7:
+            item["certainty"] = "probable"
+
+
+def _append_diagnosis_hypothesis_once(
+    payload: dict[str, Any],
+    *,
+    description: str,
+    status: str,
+    confidence: float,
+    evidence_for: list[str] | None = None,
+    evidence_against: list[str] | None = None,
+) -> None:
+    hypotheses = payload.get("hypotheses")
+    if not isinstance(hypotheses, list):
+        hypotheses = []
+        payload["hypotheses"] = hypotheses
+    candidate_key = _canonical_cause_text(description)
+    for item in hypotheses:
+        if not isinstance(item, dict):
+            continue
+        existing_key = _canonical_cause_text(item.get("description"))
+        if existing_key and candidate_key and (existing_key == candidate_key or existing_key in candidate_key or candidate_key in existing_key):
+            return
+    hypotheses.append(
+        {
+            "description": description,
+            "status": status if status in {"testing", "confirmed", "eliminated"} else "testing",
+            "evidence_for": list(evidence_for or []),
+            "evidence_against": list(evidence_against or []),
+            "confidence": _clamp_confidence(confidence, default=0.3),
+        }
+    )
+
+
+def _augment_ttft_hardware_hypotheses_from_evidence(
+    payload: dict[str, Any],
+    evidence_signals: dict[str, Any],
+) -> None:
+    """Add temperature/fan alternatives when those tools have been observed.
+
+    These are hypotheses, not backend-decided root causes. Confirmed root-cause
+    promotion still requires the normal hypothesis promotion threshold/status.
+    """
+    temp_steps = evidence_signals.get("gpu_temperature_steps")
+    if isinstance(temp_steps, list) and temp_steps:
+        max_temp = evidence_signals.get("gpu_max_temp")
+        thermal_normal = evidence_signals.get("gpu_thermal_normal")
+        if thermal_normal is True:
+            _append_diagnosis_hypothesis_once(
+                payload,
+                description="GPU thermal throttling contributes to TTFT latency",
+                status="eliminated",
+                confidence=0.2,
+                evidence_against=[f"gpu.get_metrics max_temp={max_temp}C is below the thermal concern threshold."],
+            )
+        elif thermal_normal is False:
+            _append_diagnosis_hypothesis_once(
+                payload,
+                description="GPU thermal throttling contributes to TTFT latency",
+                status="testing",
+                confidence=0.65,
+                evidence_for=[f"gpu.get_metrics observed max_temp={max_temp}C; verify clocks/throttle counters before treating it as a root cause."],
+            )
+
+    fan_steps = evidence_signals.get("bmc_fan_status_steps")
+    if isinstance(fan_steps, list) and fan_steps:
+        mode = str(evidence_signals.get("bmc_fan_mode") or "").strip() or "unknown"
+        is_manual = bool(evidence_signals.get("bmc_fan_is_manual"))
+        fixed_pwm = bool(evidence_signals.get("bmc_fan_fixed_pwm"))
+        fan_count = evidence_signals.get("bmc_fan_count")
+        if is_manual or fixed_pwm:
+            _append_diagnosis_hypothesis_once(
+                payload,
+                description="Fan control policy limits GPU cooling and worsens latency",
+                status="testing",
+                confidence=0.55,
+                evidence_for=[f"bmc.get_fan_status mode={mode}, manual={is_manual}, fixed_pwm={fixed_pwm}, fan_count={fan_count}."],
+            )
+        else:
+            _append_diagnosis_hypothesis_once(
+                payload,
+                description="Fan control policy limits GPU cooling and worsens latency",
+                status="eliminated",
+                confidence=0.2,
+                evidence_against=[f"bmc.get_fan_status mode={mode}, manual={is_manual}, fixed_pwm={fixed_pwm}, fan_count={fan_count}."],
+            )
+
+
+def _ttft_cards_by_id(evidence_cards: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    return {
+        str(card.get("evidence_id") or "").strip(): card
+        for card in evidence_cards
+        if isinstance(card, dict) and str(card.get("evidence_id") or "").strip()
+    }
+
+
+def _validate_ttft_root_cause_consistency(
+    payload: dict[str, Any],
+    evidence_cards: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    root_causes = payload.get("root_cause")
+    if not isinstance(root_causes, list):
+        return []
+    cards_by_id = _ttft_cards_by_id(evidence_cards)
+    findings: list[dict[str, Any]] = []
+    for index, item in enumerate(root_causes):
+        if not isinstance(item, dict):
+            continue
+        refs = [str(ref).strip() for ref in (item.get("evidence_refs") or []) if str(ref).strip()]
+        factor = _ttft_factor_for_root_item(item)
+        ref_cards = [cards_by_id[ref] for ref in refs if ref in cards_by_id]
+        ref_families = {
+            str(card.get("process_family_hint") or "").strip()
+            for card in ref_cards
+            if str(card.get("process_family_hint") or "").strip()
+        }
+        text_factors = _ttft_factor_hints_from_text(
+            item.get("title"),
+            item.get("evidence_summary"),
+            item.get("distinguishing_verification"),
+            item.get("evidence_interpretation"),
+            " ".join(str(v) for v in (item.get("entities") or []) if isinstance(v, str)),
+        )
+        if refs and ref_cards:
+            if factor == "external_load" and ref_families and ref_families <= {"gpu_contention"}:
+                findings.append({"index": index, "type": "evidence_mismatch", "factor": factor, "evidence_refs": refs})
+                continue
+            if factor == "gpu_contention" and ref_families and ref_families <= {"external_load"}:
+                findings.append({"index": index, "type": "evidence_mismatch", "factor": factor, "evidence_refs": refs})
+                continue
+        elif not refs:
+            if not text_factors:
+                findings.append({"index": index, "type": "missing_evidence_ref", "factor": factor, "evidence_refs": []})
+                continue
+            label_factors = _ttft_factor_hints_from_text(
+                item.get("title"),
+                " ".join(str(v) for v in (item.get("entities") or []) if isinstance(v, str)),
+            )
+            evidence_factors = _ttft_factor_hints_from_text(
+                item.get("evidence_summary"),
+                item.get("distinguishing_verification"),
+                item.get("evidence_interpretation"),
+            )
+            if label_factors == {"external_load"} and evidence_factors == {"gpu_contention"}:
+                findings.append({"index": index, "type": "evidence_mismatch", "factor": "external_load", "evidence_refs": []})
+                continue
+            if label_factors == {"gpu_contention"} and evidence_factors == {"external_load"}:
+                findings.append({"index": index, "type": "evidence_mismatch", "factor": "gpu_contention", "evidence_refs": []})
+    return findings
+
+
+def _apply_ttft_consistency_fallback(
+    payload: dict[str, Any],
+    findings: list[dict[str, Any]],
+) -> dict[str, Any]:
+    if not findings:
+        return payload
+    fixed = dict(payload)
+    root_causes = list(fixed.get("root_cause") or [])
+    for finding in findings:
+        index = int(finding.get("index", -1))
+        if index < 0 or index >= len(root_causes) or not isinstance(root_causes[index], dict):
+            continue
+        item = dict(root_causes[index])
+        item["certainty"] = "ambiguous"
+        item["status"] = "suspected"
+        item["recommended_fix"] = None
+        item["factor_type"] = item.get("factor_type") or "unknown"
+        reason = f"consistency_validation_failed:{finding.get('type')}"
+        interpretation = str(item.get("evidence_interpretation") or "").strip()
+        item["evidence_interpretation"] = f"{interpretation}; {reason}" if interpretation else reason
+        root_causes[index] = item
+    fixed["root_cause"] = root_causes
+    _sync_primary_recommended_fix_from_root_cause(fixed)
+    return fixed
+
+
+def _build_ttft_consistency_retry_messages(
+    *,
+    system_prompt: str,
+    query: str,
+    diagnosis_payload: dict[str, Any],
+    evidence_cards: list[dict[str, Any]],
+    findings: list[dict[str, Any]],
+) -> list[Any]:
+    repair_instruction = (
+        "The TTFT root_cause[] payload has evidence-consistency findings. "
+        "Return JSON only with keys thought and diagnosis. Preserve all valid evidence, but repair root_cause[] so "
+        "each item cites evidence_cards via evidence_refs and the title/factor_type match the cited evidence. "
+        "Do not invent new tools or execute remediation. If a candidate is unsupported, mark it suspected/ambiguous "
+        "and set recommended_fix to null."
+    )
+    user_content = (
+        f"Original query:\n{query}\n\n"
+        f"evidence_cards={_json_line(evidence_cards)}\n\n"
+        f"validator_findings={_json_line(findings)}\n\n"
+        f"diagnosis_payload={_json_line(diagnosis_payload)}\n\n"
+        f"{repair_instruction}"
+    )
+    return [SystemMessage(content=system_prompt), HumanMessage(content=user_content)]
+
+
 def _diagnosis_view_with_primary_index(diagnosis: DiagnosisResult, index: int) -> DiagnosisResult:
     """Build a temporary diagnosis view whose primary root cause is the selected index."""
     if index <= 0 or index >= len(diagnosis.root_cause):
@@ -7001,6 +7697,17 @@ def _collect_ttft_suspect_processes(raw_items: Any, *, max_items: int = 6) -> li
         }
         if node:
             entry["node"] = node
+        for key in (
+            "source_tool",
+            "source_step",
+            "source_node",
+            "evidence_id",
+            "node_role_hint",
+            "process_family_hint",
+            "evidence_kind",
+        ):
+            if item.get(key) is not None:
+                entry[key] = item.get(key)
         normalized.append(entry)
         if len(normalized) >= max_items:
             break
@@ -7152,6 +7859,7 @@ def _normalize_step_params_in_place(
     params = step.get("params")
     if not isinstance(params, dict):
         return "missing_required_params: params must be an object"
+    original_node = str(params.get("node") or "").strip()
     node_param_error = _normalize_node_param_in_place(params)
     if node_param_error:
         return node_param_error
@@ -7202,6 +7910,17 @@ def _normalize_step_params_in_place(
         process_entity_id = _resolve_kill_process_entity_id(params)
         if process_entity_id:
             params["entity_id"] = process_entity_id
+        verification = step.get("verification")
+        if isinstance(verification, dict):
+            tool_params = verification.get("tool_params")
+            if isinstance(tool_params, dict):
+                verification_node = str(tool_params.get("node") or "").strip()
+                if verification_node:
+                    _normalize_node_param_in_place(tool_params)
+                elif params.get("node"):
+                    tool_params["node"] = params.get("node")
+                elif original_node:
+                    tool_params["node"] = original_node
 
     if registry is None or not tool_name:
         return None

@@ -178,6 +178,49 @@ describe("sanitizeHypothesisSummaryForDisplay", () => {
 });
 
 describe("buildDiagnosisModifiedLiveView next-action narration", () => {
+  it("uses each root cause certainty for non-primary candidate badges", () => {
+    const session: DiagnosisSession = {
+      ...createSession([]),
+      diagnosis_result: {
+        root_cause: [
+          {
+            id: "rc-gpu",
+            title: "GPU contention",
+            layer: "service",
+            entities: ["worker-03"],
+            confidence: 0.95,
+            certainty: "confirmed",
+            status: "confirmed",
+            evidence_summary: "gpu.get_processes found fi_gpu_burn",
+            impact_summary: "TTFT elevated",
+          },
+          {
+            id: "rc-load",
+            title: "External load_simulator pressure",
+            layer: "service",
+            entities: ["10.11.4.13"],
+            confidence: 0.9,
+            certainty: "confirmed",
+            status: "contributing",
+            evidence_summary: "process.find found load_simulator",
+            impact_summary: "TTFT elevated",
+          },
+        ],
+        confidence: 0.95,
+        hypotheses: [],
+        impact_summary: "TTFT elevated",
+        affected_services: ["qwen"],
+        triage_priority: "P0",
+        diagnosis_certainty: "confirmed",
+      },
+    };
+
+    const view = buildDiagnosisModifiedLiveView(session, []);
+
+    expect(view.candidates[1]?.statusLabel).toBe("已确认");
+    expect(view.candidates[1]?.statusTone).toBe("success");
+  });
+
   it("does not synthesize next-action assistant messages from thinking steps", () => {
     const session = createSession([
       {

@@ -443,6 +443,116 @@ class TestRemediationIntegration:
         ]
 
     @pytest.mark.asyncio
+    async def test_integration_engine_canary_runs_global_verification_only_after_all_batches(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        async def _fast_sleep(delay: float) -> None:
+            _ = delay
+
+        monkeypatch.setattr(asyncio, "sleep", _fast_sleep)
+        registry = ToolRegistry()
+        action_calls: list[dict[str, Any]] = []
+        verify_calls: list[dict[str, Any]] = []
+
+        async def _kill_process(params: dict[str, Any], context: ToolExecutionContext) -> dict[str, Any]:
+            _ = context
+            action_calls.append(dict(params))
+            return {"ok": True}
+
+        async def _find_remaining(params: dict[str, Any], context: ToolExecutionContext) -> dict[str, Any]:
+            _ = context
+            verify_calls.append(dict(params))
+            return {"count": 0 if len(action_calls) == 4 else 3}
+
+        registry.register(
+            ToolDefinition(
+                name="kill_process",
+                description="terminate process",
+                safety_level=SafetyLevel.HIGH,
+                params_schema={"type": "object", "required": ["node"]},
+                needs_approval=True,
+            ),
+            _kill_process,
+        )
+        registry.register(
+            ToolDefinition(
+                name="process.find",
+                description="find remaining processes",
+                safety_level=SafetyLevel.READ_ONLY,
+                params_schema={"type": "object", "required": ["pattern"]},
+            ),
+            _find_remaining,
+        )
+        verification = VerificationConfig(
+            method="tool_call",
+            tool="process.find",
+            tool_params={"pattern": "fi_gpu_burn_gpu_contention", "node": "worker-03"},
+            condition=VerificationCondition(field="count", operator="==", value=0),
+            wait_seconds=1,
+        )
+        plan = RemediationPlan(
+            plan_id="proposal-ttft-canary-final-verify",
+            root_cause="gpu burn contention",
+            description="terminate all burn processes before global verification",
+            estimated_impact="ttft recovers",
+            confidence=0.9,
+            priority="P1",
+            canary=CanaryConfig(
+                enabled=True,
+                target_percentage=0.25,
+                monitor_duration=1,
+                success_criteria=[],
+                criteria_mode="all",
+                max_batches=2,
+                progressive=False,
+            ),
+            steps=[
+                RemediationStep(
+                    step_id=index,
+                    description=f"kill process {index}",
+                    tool="kill_process",
+                    params={"node": "worker-03", "pid": 2141570 + index, "entity_id": f"proc:{index}", "signal": "TERM"},
+                    verification=verification,
+                )
+                for index in range(1, 5)
+            ],
+        )
+        engine = RemediationEngine(
+            registry,
+            ApprovalGate(default_policy="auto_approve"),
+            RollbackJournal(tmp_path / "wal.jsonl"),
+            execution_context=ToolExecutionContext(),
+        )
+        progress_events: list[tuple[str, dict[str, Any]]] = []
+
+        async def _on_progress(*, stage: str, details: dict[str, Any] | None = None) -> None:
+            progress_events.append((stage, dict(details or {})))
+
+        result = await engine.execute(
+            plan,
+            session_id="session-ttft-canary-final-verify",
+            progress_callback=_on_progress,
+        )
+
+        assert result.success is True
+        assert len(action_calls) == 4
+        assert len(verify_calls) == 1
+        assert verify_calls[0] == {"pattern": "fi_gpu_burn_gpu_contention", "node": "worker-03"}
+        assert result.verification_results == [
+            {
+                "step_id": 4,
+                "verification_index": 1,
+                "verification_scope": "plan_final",
+                "verified": True,
+            }
+        ]
+        batch_started = [details for stage, details in progress_events if stage == "canary_batch_started"]
+        assert batch_started[0]["targets_in_batch"] == ["proc:1"]
+        assert batch_started[1]["targets_in_batch"] == ["proc:2", "proc:3", "proc:4"]
+
+    @pytest.mark.asyncio
     async def test_integration_engine_canary_batches_process_targets_on_same_node(self, tmp_path: Path) -> None:
         registry = _make_registry()
         gate = ApprovalGate(default_policy="auto_approve")

@@ -262,16 +262,39 @@ class RemediationEngine:
                         steps_total=len(plan.steps),
                         error="process canary target mismatch; manual approval required",
                     )
-                return await self.canary.execute_with_canary(
+                result = await self.canary.execute_with_canary(
                     plan,
                     targets,
                     lambda batch_targets: self._execute_steps(
                         plan,
                         progress_callback=progress_callback,
                         target_filter=set(batch_targets) if batch_targets else None,
+                        verify_final=False,
                     ),
                     progress_callback=progress_callback,
                     session_id=session_id,
+                )
+                if not result.success:
+                    duration = int(time.monotonic() - start)
+                    return result.model_copy(update={"duration_seconds": duration})
+                verification_results = list(result.verification_results or [])
+                final_failure = await self._run_final_verifications(
+                    plan=plan,
+                    steps_to_verify=plan.steps,
+                    completed=result.steps_completed,
+                    total_steps=len(plan.steps),
+                    verification_results=verification_results,
+                    progress_callback=progress_callback,
+                )
+                if final_failure is not None:
+                    duration = int(time.monotonic() - start)
+                    return final_failure.model_copy(update={"duration_seconds": duration})
+                duration = int(time.monotonic() - start)
+                return result.model_copy(
+                    update={
+                        "duration_seconds": duration,
+                        "verification_results": verification_results,
+                    }
                 )
             result = await self._execute_steps(plan, progress_callback=progress_callback)
             duration = int(time.monotonic() - start)
@@ -320,6 +343,7 @@ class RemediationEngine:
         *,
         progress_callback: Any | None = None,
         target_filter: set[str] | None = None,
+        verify_final: bool = True,
     ) -> RemediationResult:
         completed = 0
         verification_results: list[dict[str, Any]] = []
@@ -420,6 +444,15 @@ class RemediationEngine:
                 )
             completed += 1
 
+        if not verify_final:
+            return RemediationResult(
+                plan_id=plan.plan_id,
+                success=True,
+                steps_completed=completed,
+                steps_total=total_steps,
+                verification_results=verification_results,
+            )
+
         final_verifications = self._final_verification_configs(steps_to_run)
         if final_verifications:
             if progress_callback is not None:
@@ -465,6 +498,56 @@ class RemediationEngine:
             steps_total=total_steps,
             verification_results=verification_results,
         )
+
+    async def _run_final_verifications(
+        self,
+        *,
+        plan: RemediationPlan,
+        steps_to_verify: list[Any],
+        completed: int,
+        total_steps: int,
+        verification_results: list[dict[str, Any]],
+        progress_callback: Any | None = None,
+    ) -> RemediationResult | None:
+        final_verifications = self._final_verification_configs(steps_to_verify)
+        if not final_verifications:
+            return None
+
+        if progress_callback is not None:
+            await progress_callback(
+                stage="validating",
+                details={
+                    "step_id": steps_to_verify[-1].step_id if steps_to_verify else None,
+                    "steps_completed": completed,
+                    "steps_total": total_steps,
+                    "verification_scope": "plan_final",
+                    "verification_count": len(final_verifications),
+                    "message": "验证修复计划最终结果",
+                },
+            )
+        for verification_index, verification in enumerate(final_verifications, start=1):
+            verified = await self._verify(verification)
+            verification_results.append(
+                {
+                    "step_id": steps_to_verify[-1].step_id if steps_to_verify else None,
+                    "verification_index": verification_index,
+                    "verification_scope": "plan_final",
+                    "verified": verified,
+                }
+            )
+            if not verified:
+                await self.wal.recover_all()
+                return RemediationResult(
+                    plan_id=plan.plan_id,
+                    success=False,
+                    steps_completed=completed,
+                    steps_total=total_steps,
+                    failed_step=steps_to_verify[-1] if steps_to_verify else None,
+                    rolled_back=True,
+                    verification_results=verification_results,
+                    error="verification failed",
+                )
+        return None
 
     @staticmethod
     def _final_verification_configs(steps: Iterable[Any]) -> list[VerificationConfig]:

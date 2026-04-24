@@ -236,6 +236,9 @@ class DiagnosedRootCause(StrictFrozenModel):
     evidence_summary: str = Field(min_length=1)
     impact_summary: str = Field(min_length=1)
     distinguishing_verification: str | None = None
+    factor_type: Literal["gpu_contention", "external_load", "cache_pressure", "scheduler", "mixed", "unknown"] | None = None
+    evidence_refs: list[str] = Field(default_factory=list)
+    evidence_interpretation: str | None = None
     recommended_fix: RemediationPlan | None = None
 
 

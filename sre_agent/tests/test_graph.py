@@ -2210,6 +2210,43 @@ tags:
         self.assertIsInstance(suspects, list)
         self.assertEqual(len(suspects), 2)
         self.assertEqual(suspects[0]["node"], "10.11.4.13")
+        self.assertEqual(suspects[0]["source_tool"], "process.find")
+        self.assertEqual(suspects[0]["process_family_hint"], "external_load")
+        self.assertEqual(suspects[0]["node_role_hint"], "external_load_node")
+        self.assertEqual(signals["ttft_evidence_cards"][0]["process_family_hint"], "external_load")
+
+    def test_extract_evidence_signals_allows_process_find_gpu_contention_on_serving_node(self) -> None:
+        tool_runs = [
+            {
+                "tool": "process.find",
+                "success": True,
+                "step": 7,
+                "params": {"pattern": "fi_gpu_burn", "node": "worker-03"},
+                "key_fields": {
+                    "match_count": 1,
+                    "node": "worker-03",
+                    "suspicious_load_present": True,
+                    "suspicious_load_processes": [
+                        {
+                            "pid": 2167682,
+                            "process_name": "fi_gpu_burn_gpu_contention_b084ded0",
+                            "memory_mib": None,
+                            "node": "worker-03",
+                        }
+                    ],
+                },
+                "data": {},
+            }
+        ]
+
+        signals = nodes_module._extract_evidence_signals(tool_runs)
+
+        self.assertTrue(signals["ttft_suspect_process_present"])
+        suspect = signals["ttft_suspect_processes"][0]
+        self.assertEqual(suspect["process_family_hint"], "gpu_contention")
+        self.assertEqual(suspect["node_role_hint"], "serving_gpu_node")
+        self.assertEqual(suspect["evidence_id"], "tool:7:process.find")
+        self.assertEqual(signals["ttft_evidence_cards"][0]["process_family_hint"], "gpu_contention")
 
     def test_extract_evidence_signals_filters_non_whitelisted_process_find_matches(self) -> None:
         tool_runs: list[dict[str, Any]] = [
@@ -2243,6 +2280,189 @@ tags:
         self.assertFalse(signals["ttft_suspect_process_present"])
         self.assertEqual(signals["ttft_suspect_processes"], [])
 
+    def test_validate_ttft_root_cause_consistency_flags_external_title_with_gpu_only_refs(self) -> None:
+        payload = nodes_module._normalize_diagnosis_payload(
+            {
+                "root_cause": [
+                    {
+                        "id": "rc-1",
+                        "title": "外部负载生成器加剧GPU资源紧张",
+                        "layer": "service",
+                        "entities": ["10.11.4.13", "python load generator"],
+                        "confidence": 0.7,
+                        "certainty": "probable",
+                        "status": "contributing",
+                        "factor_type": "external_load",
+                        "evidence_refs": ["tool:1:gpu.get_processes"],
+                        "evidence_summary": "gpu.get_processes发现fi_gpu_burn_gpu_contention_b084ded0进程",
+                        "impact_summary": "TTFT elevated",
+                    }
+                ],
+                "confidence": 0.9,
+                "hypotheses": [],
+                "impact_summary": "TTFT elevated",
+                "affected_services": [],
+                "triage_priority": "P0",
+                "diagnosis_certainty": "confirmed",
+            }
+        )
+        evidence_cards = [
+            {
+                "evidence_id": "tool:1:gpu.get_processes",
+                "source_tool": "gpu.get_processes",
+                "source_node": "worker-03",
+                "node_role_hint": "serving_gpu_node",
+                "process_family_hint": "gpu_contention",
+                "evidence_role_hint": "root_cause_evidence",
+                "summary": "worker-03 gpu.get_processes found fi_gpu_burn",
+                "processes": [],
+            }
+        ]
+
+        findings = nodes_module._validate_ttft_root_cause_consistency(payload, evidence_cards)
+        fallback = nodes_module._apply_ttft_consistency_fallback(payload, findings)
+
+        self.assertEqual(findings[0]["type"], "evidence_mismatch")
+        self.assertEqual(fallback["root_cause"][0]["certainty"], "ambiguous")
+        self.assertEqual(fallback["root_cause"][0]["status"], "suspected")
+        self.assertIsNone(fallback["root_cause"][0]["recommended_fix"])
+
+    def test_validate_ttft_root_cause_consistency_allows_mixed_with_both_refs(self) -> None:
+        payload = nodes_module._normalize_diagnosis_payload(
+            {
+                "root_cause": [
+                    {
+                        "id": "rc-1",
+                        "title": "外部负载加剧GPU争用",
+                        "layer": "service",
+                        "entities": ["worker-03", "10.11.4.13"],
+                        "confidence": 0.8,
+                        "certainty": "probable",
+                        "status": "contributing",
+                        "factor_type": "mixed",
+                        "evidence_refs": ["tool:1:gpu.get_processes", "tool:2:process.find"],
+                        "evidence_summary": "gpu.get_processes发现GPU burn；process.find发现load_simulator",
+                        "impact_summary": "TTFT elevated",
+                    }
+                ],
+                "confidence": 0.9,
+                "hypotheses": [],
+                "impact_summary": "TTFT elevated",
+                "affected_services": [],
+                "triage_priority": "P0",
+                "diagnosis_certainty": "confirmed",
+            }
+        )
+        evidence_cards = [
+            {"evidence_id": "tool:1:gpu.get_processes", "process_family_hint": "gpu_contention"},
+            {"evidence_id": "tool:2:process.find", "process_family_hint": "external_load"},
+        ]
+
+        findings = nodes_module._validate_ttft_root_cause_consistency(payload, evidence_cards)
+
+        self.assertEqual(findings, [])
+
+    def test_dedupe_ttft_root_causes_merges_same_external_evidence(self) -> None:
+        payload = nodes_module._normalize_diagnosis_payload(
+            {
+                "root_cause": [
+                    {
+                        "id": "rc-1",
+                        "title": "External load_simulator process causes high request pressure",
+                        "layer": "service",
+                        "entities": ["10.11.4.13", "load_simulator"],
+                        "confidence": 0.9,
+                        "certainty": "confirmed",
+                        "status": "contributing",
+                        "factor_type": "external_load",
+                        "evidence_refs": ["tool:2:process.find"],
+                        "evidence_summary": "tool:2:process.find found load_simulator on 10.11.4.13",
+                        "impact_summary": "TTFT elevated",
+                    },
+                    {
+                        "id": "rc-2",
+                        "title": "load_simulator generates high concurrency inference requests",
+                        "layer": "service",
+                        "entities": ["10.11.4.13"],
+                        "confidence": 0.9,
+                        "certainty": "confirmed",
+                        "status": "contributing",
+                        "evidence_summary": "tool:2:process.find found load_simulator on 10.11.4.13",
+                        "impact_summary": "TTFT elevated",
+                        "recommended_fix": {
+                            "plan_id": "proposal-load",
+                            "root_cause": "load_simulator generates high concurrency inference requests",
+                            "description": "stop load simulator",
+                            "steps": [
+                                {
+                                    "step_id": 1,
+                                    "description": "stop load simulator",
+                                    "tool": "kill_process",
+                                    "params": {"node": "10.11.4.13", "pid": 4077465},
+                                    "verification": {"method": "wait", "wait_seconds": 30},
+                                }
+                            ],
+                            "estimated_impact": "reduce request pressure",
+                            "confidence": 0.9,
+                            "priority": "P0",
+                            "safety_level": "medium",
+                        },
+                    },
+                ],
+                "confidence": 0.9,
+                "hypotheses": [],
+                "impact_summary": "TTFT elevated",
+                "affected_services": [],
+                "triage_priority": "P0",
+                "diagnosis_certainty": "confirmed",
+            }
+        )
+
+        nodes_module._dedupe_ttft_root_causes(payload)
+
+        self.assertEqual(len(payload["root_cause"]), 1)
+        self.assertEqual(payload["root_cause"][0]["factor_type"], "external_load")
+        self.assertEqual(payload["root_cause"][0]["evidence_refs"], ["tool:2:process.find"])
+        self.assertIsNotNone(payload["root_cause"][0]["recommended_fix"])
+
+    def test_normalize_ttft_root_cause_certainty_raises_high_confidence_ambiguous(self) -> None:
+        payload = {
+            "root_cause": [
+                {
+                    "title": "External load_simulator process causes high request pressure",
+                    "confidence": 0.9,
+                    "certainty": "ambiguous",
+                    "status": "contributing",
+                    "evidence_summary": "tool:2:process.find found load_simulator",
+                    "impact_summary": "TTFT elevated",
+                }
+            ]
+        }
+
+        nodes_module._normalize_ttft_root_cause_certainty_from_confidence(payload)
+
+        self.assertEqual(payload["root_cause"][0]["certainty"], "confirmed")
+
+    def test_augment_ttft_hardware_hypotheses_adds_temperature_and_fan_eliminations(self) -> None:
+        payload = {"hypotheses": []}
+        evidence_signals = {
+            "gpu_temperature_steps": [1],
+            "gpu_max_temp": 68,
+            "gpu_thermal_normal": True,
+            "bmc_fan_status_steps": [2],
+            "bmc_fan_mode": "Auto",
+            "bmc_fan_is_manual": False,
+            "bmc_fan_fixed_pwm": False,
+            "bmc_fan_count": 8,
+        }
+
+        nodes_module._augment_ttft_hardware_hypotheses_from_evidence(payload, evidence_signals)
+
+        descriptions = [item["description"] for item in payload["hypotheses"]]
+        self.assertIn("GPU thermal throttling contributes to TTFT latency", descriptions)
+        self.assertIn("Fan control policy limits GPU cooling and worsens latency", descriptions)
+        self.assertTrue(all(item["status"] == "eliminated" for item in payload["hypotheses"]))
+
     def test_attach_per_root_cause_recommended_fixes_builds_independent_ttft_plans(self) -> None:
         diagnosis = DiagnosisResult.model_validate(
             {
@@ -2256,6 +2476,8 @@ tags:
                         "certainty": "confirmed",
                         "status": "confirmed",
                         "evidence_summary": "gpu.get_processes found fi_gpu_burn process on worker-03",
+                        "factor_type": "gpu_contention",
+                        "evidence_refs": ["tool:1:gpu.get_processes"],
                         "impact_summary": "GPU occupied and TTFT increased",
                         "distinguishing_verification": "terminate fi_gpu_burn and observe TTFT",
                         "recommended_fix": None,
@@ -2269,6 +2491,8 @@ tags:
                         "certainty": "confirmed",
                         "status": "contributing",
                         "evidence_summary": "process.find on 10.11.4.13 found load_simulator processes",
+                        "factor_type": "external_load",
+                        "evidence_refs": ["tool:2:process.find"],
                         "impact_summary": "queueing pressure increased",
                         "distinguishing_verification": "stop load_simulator and observe TTFT",
                         "recommended_fix": None,
@@ -2293,12 +2517,18 @@ tags:
                     "process_name": "fi_gpu_burn_gpu_contention_4d080fa0",
                     "memory_mib": 9272,
                     "node": "worker-03",
+                    "source_tool": "gpu.get_processes",
+                    "evidence_id": "tool:1:gpu.get_processes",
+                    "process_family_hint": "gpu_contention",
                 },
                 {
                     "pid": 1392199,
-                    "process_name": "python -m load_simulator run --only inference",
+                    "process_name": "python -m load_simulator run --config inference-qwen3-32b-fp8.yaml --only inference",
                     "memory_mib": None,
                     "node": "10.11.4.13",
+                    "source_tool": "process.find",
+                    "evidence_id": "tool:2:process.find",
+                    "process_family_hint": "external_load",
                 },
             ],
         }
@@ -2332,6 +2562,8 @@ tags:
         self.assertIn(str(second_step.params.get("node")), {"10.11.4.13", "worker-04"})
         self.assertEqual(first_step.params.get("pid"), 1155497)
         self.assertEqual(second_step.params.get("pid"), 1392199)
+        self.assertEqual(len(root_causes[0].recommended_fix.steps), 1)
+        self.assertEqual(len(root_causes[1].recommended_fix.steps), 1)
 
     def test_attach_per_root_cause_recommended_fixes_replaces_mismatched_primary_plan(self) -> None:
         diagnosis = DiagnosisResult.model_validate(
@@ -3090,6 +3322,41 @@ tags:
 
         self.assertIsNone(error)
         self.assertEqual(step["params"]["signal"], "TERM")
+
+    def test_normalize_step_params_in_place_aligns_kill_verification_node(self) -> None:
+        diagnosis = _diagnosis_result(
+            title="external load contention",
+            layer="service",
+            entities=["10.11.4.13"],
+            confidence=0.86,
+            impact_summary="ttft elevated",
+            affected_services=["qwen3-32b-fp8-202602261"],
+            triage_priority="P1",
+            diagnosis_certainty="confirmed",
+        )
+        registry = build_default_registry()
+        step = {
+            "tool": "kill_process",
+            "params": {"node": "10.11.4.13", "pid": 4077465, "signal": "TERM"},
+            "verification": {
+                "method": "tool_call",
+                "tool": "process.find",
+                "tool_params": {"node": "10.11.4.13", "pattern": "4077465"},
+                "condition": {"field": "count", "operator": "==", "value": 0},
+                "wait_seconds": 30,
+            },
+        }
+
+        error = nodes_module._normalize_step_params_in_place(
+            step,
+            diagnosis=diagnosis,
+            registry=registry,
+            tool_runs=[],
+            variables={},
+        )
+
+        self.assertIsNone(error)
+        self.assertEqual(step["verification"]["tool_params"]["node"], step["params"]["node"])
 
     def test_get_ttft_external_node_prefers_alert_snapshot(self) -> None:
         state: dict[str, Any] = {

@@ -59,6 +59,9 @@ Final JSON shape:
         "confidence": 0.0,
         "certainty": "confirmed|probable|ambiguous",
         "status": "confirmed|contributing|suspected|monitoring",
+        "factor_type": "gpu_contention|external_load|cache_pressure|scheduler|mixed|unknown",
+        "evidence_refs": ["tool:<step>:<tool_name>"],
+        "evidence_interpretation": "Chinese explanation of why the cited evidence supports this cause",
         "evidence_summary": "Chinese evidence summary",
         "impact_summary": "Chinese impact summary",
         "distinguishing_verification": "Chinese distinguishing verification suggestion",
@@ -114,6 +117,9 @@ Additional root-cause rules:
 - If multiple root causes are identified, keep the primary one at index 0.
 - When multiple abnormal factors are observed, prefer separating them into distinct root-cause candidates if they can be independently validated, independently remediated, or independently observed after remediation.
 - Only merge them into a single root-cause candidate when they form one inseparable causal chain or share the same remediation action.
+- For TTFT cases, decide evidence attribution from source_tool + node_role + process_family + evidence role, not from tool name alone.
+- TTFT hints: gpu.get_processes on the serving/GPU node finding fi_gpu_burn/gpu_burn is strong GPU contention evidence; process.find on an external node finding load_simulator/stress/benchmark/wrk is strong external load evidence; process.find on the serving/GPU node finding fi_gpu_burn or a PID from gpu.get_processes can support GPU contention or remediation verification.
+- Each TTFT root_cause should cite the evidence_cards it relies on via evidence_refs. Do not label a root cause as external load if its cited evidence is only gpu.get_processes/fi_gpu_burn; do not label a root cause as GPU contention if its cited evidence is only process.find on an external load node.
 - Keep remediation proposals embedded only in `root_cause[i].recommended_fix`.
 - Do not output top-level `diagnosis.recommended_fix` or top-level `remediation_plan`.
 - Do not output legacy `ranked_candidates`, `root_cause_layer`, or `root_cause_entities`.
