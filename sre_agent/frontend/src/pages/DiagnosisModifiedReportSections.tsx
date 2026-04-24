@@ -300,17 +300,10 @@ export function ReportEmptyPreviewModule({
         data-testid={`${dataTestId}-progress`}
         aria-hidden="true"
       >
-        {Array.from({ length: Math.max(2, lines + 1) }).map((_, progressIndex) => (
-          <span
-            className={cn(
-              "diagnosis-modified-report-rail__loading-progress-line",
-              progressIndex === 0 && "diagnosis-modified-report-rail__loading-progress-line--long",
-              progressIndex > 0 && progressIndex < 2 && "diagnosis-modified-report-rail__loading-progress-line--medium",
-              progressIndex >= 2 && "diagnosis-modified-report-rail__loading-progress-line--short",
-            )}
-            key={`${dataTestId}-progress-${progressIndex}`}
-          />
-        ))}
+        <span
+          className="diagnosis-modified-report-rail__loading-progress-line"
+          data-lines={lines}
+        />
       </div>
     </section>
   );

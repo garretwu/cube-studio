@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 
 import type { DiagnosisSessionSummary, RemediationOverview, SessionEvent } from "../api/types";
 import { formatDateTime, formatDurationSeconds, formatPercent } from "../utils/format";
-import { getRemediationOverallProgressDisplay, getRemediationStepProgress } from "../utils/remediationProgress";
+import { deriveRemediationExecutionView } from "../utils/remediationProgress";
 import { AppIcon } from "./ui";
 import RemediationTimeline from "./RemediationTimeline";
 
@@ -142,17 +142,6 @@ function getApprover(events: SessionEvent[] | undefined): string | null {
   return null;
 }
 
-function getCanaryProgress(overview?: RemediationOverview): number | null {
-  if (!overview?.plan.canary?.enabled) return null;
-  const batches = overview.progress.batch_status ?? [];
-  if (batches.length > 0) {
-    const canaryBatch = batches.find((item) => /canary|金丝雀/i.test(item.batch)) ?? batches[0];
-    return Math.max(0, Math.min(100, Math.round(Number(canaryBatch.progress ?? 0))));
-  }
-  if (String(overview.progress.status ?? "").trim().toLowerCase() === "resolved") return 100;
-  return getRemediationStepProgress(overview);
-}
-
 function normalizeBoolean(value: unknown): boolean | null {
   if (typeof value === "boolean") return value;
   return null;
@@ -256,13 +245,7 @@ export default function RemediationDetailDrawer({
   const alertOnlyPolicy = observationPolicy === "alert_status_only_when_post_metrics_unavailable";
   const observationPassed =
     alertCleared !== null && (alertOnlyPolicy ? alertCleared : alertCleared && metricsImproved === true);
-  const completedSteps = Number(drawerOverview?.progress.completed_steps ?? 0);
-  const totalSteps = Number(drawerOverview?.progress.total_steps ?? detailSteps.length);
-  const overallProgress = getRemediationOverallProgressDisplay(drawerOverview ?? undefined);
-  const canaryProgress = getCanaryProgress(drawerOverview ?? undefined);
-  const normalizedDrawerStatus = drawerStatus.trim().toLowerCase();
-  const shouldAutoPlayExecution = detailSteps.length > 0 && ACTIVE_EXECUTION_STATUSES.has(normalizedDrawerStatus);
-  const flowTotalSteps = detailSteps.length > 0 ? detailSteps.length : totalSteps;
+  const [nowMs, setNowMs] = useState(() => Date.now());
   const [planStepsExpanded, setPlanStepsExpanded] = useState(false);
   const [strategyExpanded, setStrategyExpanded] = useState(true);
   const [timelinePlayback, setTimelinePlayback] = useState<TimelinePlaybackState>({
@@ -272,6 +255,31 @@ export default function RemediationDetailDrawer({
     visibleCount: 0,
     overallPercent: 0,
   });
+
+  useEffect(() => {
+    if (!open) return;
+    setPlanStepsExpanded(false);
+    setStrategyExpanded(true);
+  }, [open, drawerOverview?.session_id]);
+
+  useEffect(() => {
+    setNowMs(Date.now());
+  }, [drawerOverview?.session_id, open]);
+
+  const executionView = useMemo(
+    () =>
+      deriveRemediationExecutionView({
+        overview: drawerOverview ?? undefined,
+        now: nowMs,
+        fallbackStartedAt: summary?.started_at,
+        fallbackUpdatedAt: summary?.updated_at,
+        fallbackDurationSeconds: summary?.duration_seconds,
+      }),
+    [drawerOverview, nowMs, summary?.duration_seconds, summary?.started_at, summary?.updated_at],
+  );
+  const normalizedDrawerStatus = drawerStatus.trim().toLowerCase();
+  const shouldAutoPlayExecution = detailSteps.length > 0 && ACTIVE_EXECUTION_STATUSES.has(normalizedDrawerStatus);
+  const flowTotalSteps = detailSteps.length > 0 ? detailSteps.length : executionView.totalSteps;
 
   useEffect(() => {
     setTimelinePlayback({
@@ -284,21 +292,27 @@ export default function RemediationDetailDrawer({
   }, [drawerOverview?.session_id, shouldAutoPlayExecution]);
 
   useEffect(() => {
-    if (!open) return;
-    setPlanStepsExpanded(false);
-    setStrategyExpanded(true);
-  }, [open, drawerOverview?.session_id]);
+    if (!open || !executionView.startedAt || executionView.isTerminal || typeof window === "undefined") {
+      return undefined;
+    }
+    const timer = window.setInterval(() => {
+      setNowMs(Date.now());
+    }, 1000);
+    return () => {
+      window.clearInterval(timer);
+    };
+  }, [executionView.isTerminal, executionView.startedAt, open]);
 
-  const displayTotalSteps = flowTotalSteps > 0 ? flowTotalSteps : totalSteps;
+  const displayTotalSteps = flowTotalSteps > 0 ? flowTotalSteps : executionView.totalSteps;
   const playbackBasedCompletedSteps = shouldAutoPlayExecution && timelinePlayback.totalCount > 0
     ? Math.floor((timelinePlayback.completedCount / Math.max(timelinePlayback.totalCount, 1)) * displayTotalSteps)
-    : completedSteps;
+    : executionView.completedSteps;
   const displayCompletedSteps = Math.max(0, Math.min(displayTotalSteps, playbackBasedCompletedSteps));
-  const displayOverallProgress = overallProgress;
+  const displayOverallProgress = executionView.overallProgress;
   const displayCanaryProgress = drawerOverview?.plan.canary?.enabled
     ? shouldAutoPlayExecution && timelinePlayback.totalCount > 0
-      ? canaryProgress ?? getRemediationStepProgress(drawerOverview)
-      : (canaryProgress ?? overallProgress)
+      ? executionView.canaryProgress
+      : (executionView.canaryProgress ?? executionView.overallProgress)
     : null;
 
   if (!open || !record || !summary || !drawerOverview) return null;
@@ -476,11 +490,11 @@ export default function RemediationDetailDrawer({
             <div className="remediation-panel-kv-grid remediation-panel-kv-grid--execution">
               <div className="remediation-panel-kv">
                 <span className="remediation-panel-kv__label">开始时间</span>
-                <p className="remediation-panel-kv__value">{drawerStartedAt ? formatDateTime(drawerStartedAt) : "尚未开始"}</p>
+                <p className="remediation-panel-kv__value">{executionView.startedAt ? formatDateTime(executionView.startedAt) : (drawerStartedAt ? formatDateTime(drawerStartedAt) : "尚未开始")}</p>
               </div>
               <div className="remediation-panel-kv">
                 <span className="remediation-panel-kv__label">持续时长</span>
-                <p className="remediation-panel-kv__value">{formatDurationSeconds(summary.duration_seconds)}</p>
+                <p className="remediation-panel-kv__value">{formatDurationSeconds(executionView.durationSeconds)}</p>
               </div>
               <div className="remediation-panel-kv">
                 <span className="remediation-panel-kv__label">审批人</span>
@@ -488,12 +502,12 @@ export default function RemediationDetailDrawer({
               </div>
               <div className="remediation-panel-kv">
                 <span className="remediation-panel-kv__label">最近更新</span>
-                <p className="remediation-panel-kv__value">{formatDateTime(summary.updated_at)}</p>
+                <p className="remediation-panel-kv__value">{formatDateTime(executionView.updatedAt ?? summary.updated_at)}</p>
               </div>
             </div>
             <div className="remediation-panel-progress">
               <div className="remediation-panel-progress__head">
-                <span className="remediation-panel-progress__title">{`当前推进  已完成 ${displayCompletedSteps} / ${displayTotalSteps} 步`}</span>
+                <span className="remediation-panel-progress__title">当前推进</span>
                 <span className="remediation-panel-progress__percent">{`总体 ${displayOverallProgress}%`}</span>
               </div>
               <div className="progress-track remediation-progress-track remediation-progress-track--thin">
@@ -504,7 +518,7 @@ export default function RemediationDetailDrawer({
               </div>
               <p className="remediation-panel-progress__meta">
                 {drawerOverview.plan.canary?.enabled
-                  ? `灰度 ${displayCanaryProgress ?? 0}%（目标 ${formatPercent(drawerOverview.plan.canary.target_percentage)}，观察窗口 ${drawerOverview.plan.canary.monitor_duration}s）`
+                  ? `灰度 ${displayCanaryProgress ?? 0}%`
                   : "未启用灰度，按全量策略执行。"}
               </p>
             </div>
@@ -525,6 +539,3 @@ export default function RemediationDetailDrawer({
     </div>
   );
 }
-
-
-

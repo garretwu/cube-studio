@@ -303,6 +303,91 @@ function extractLatestThinkingSummary(content: string) {
   return latest.replace(/\s+/g, " ").trim();
 }
 
+function isLowSignalThinkingFragment(fragment: string) {
+  const normalized = fragment.replace(/\s+/g, "");
+  if (!normalized) {
+    return true;
+  }
+  return /^[\[\]{}"',:|]+$/.test(normalized);
+}
+
+function isStructuredThinkingLine(line: string) {
+  const normalized = line.replace(/\s+/g, " ").trim();
+  if (!normalized) {
+    return false;
+  }
+
+  const structuredPatternHits = [
+    /(?:^|[?&])query=/i.test(normalized),
+    /available read-only tools/i.test(normalized),
+    /remediation_plan\s*=/i.test(normalized),
+    /"\w[\w.-]*"\s*:/.test(normalized),
+    /(?:^|[{,])\s*\w[\w.-]*\s*:/.test(normalized),
+    /[{}[\]]/.test(normalized) && /[:=]/.test(normalized),
+  ].filter(Boolean).length;
+
+  const punctuationDensity =
+    (normalized.match(/["'{}[\]:=]/g)?.length ?? 0) / Math.max(normalized.length, 1);
+
+  return structuredPatternHits >= 2 || punctuationDensity >= 0.12;
+}
+
+function extractLatestThinkingFragment(line: string) {
+  const normalized = line.replace(/\s+/g, " ").trim();
+  if (!normalized) {
+    return "";
+  }
+
+  const fragments = normalized
+    .split(/[。！？；：|,，]/)
+    .map((fragment) => fragment.trim())
+    .filter((fragment) => fragment.length > 0);
+
+  if (fragments.length === 0) {
+    return normalized;
+  }
+
+  const latest = fragments[fragments.length - 1] ?? normalized;
+  const previous = fragments.length > 1 ? fragments[fragments.length - 2] ?? "" : "";
+
+  if (!isLowSignalThinkingFragment(latest) && latest.length >= 6) {
+    return latest;
+  }
+
+  if (previous && !isLowSignalThinkingFragment(previous) && previous.length > latest.length) {
+    return previous;
+  }
+
+  if (!isLowSignalThinkingFragment(latest)) {
+    return latest;
+  }
+
+  return normalized;
+}
+
+function clampThinkingTailPreview(text: string, maxChars = 80) {
+  const normalized = text.replace(/\s+/g, " ").trim();
+  if (!normalized) {
+    return "";
+  }
+  if (normalized.length <= maxChars) {
+    return normalized;
+  }
+  return `...${normalized.slice(-maxChars)}`;
+}
+
+function buildStreamingThinkingPreview(contentOrLine: string) {
+  const latestLine = extractLatestThinkingSummary(contentOrLine);
+  if (!latestLine) {
+    return "";
+  }
+  if (isStructuredThinkingLine(latestLine)) {
+    return clampThinkingTailPreview(latestLine);
+  }
+  const fragment = extractLatestThinkingFragment(latestLine);
+  return clampThinkingTailPreview(fragment || latestLine);
+}
+
 function buildDiagnosisStartContextStreamText({
   alertName,
   severity,
@@ -652,6 +737,7 @@ function ThinkingBlock({
   const isThinking = item.status === "thinking";
   const [isExpanded, setIsExpanded] = useState(false);
   const latestSummaryLine = item.summaryLine?.trim() || extractLatestThinkingSummary(item.content);
+  const streamingPreviewText = buildStreamingThinkingPreview(latestSummaryLine || item.content);
   const hasCompletedContent = !isThinking && item.content.trim().length > 0;
   const completedPreviewText = clampThinkingPreview(latestSummaryLine || item.content);
 
@@ -677,7 +763,7 @@ function ThinkingBlock({
               <StreamingText
                 animate={animate}
                 onComplete={onStreamComplete}
-                text={latestSummaryLine}
+                text={streamingPreviewText}
                 className="diagnosis-modified-thinking__stream-text diagnosis-modified-thinking__stream-text--single-line"
               />
             </div>
