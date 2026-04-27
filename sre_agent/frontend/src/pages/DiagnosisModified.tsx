@@ -1296,7 +1296,7 @@ function DiagnosisModifiedPage() {
     setConnectionState,
   } = useDiagnosisStore();
 
-  const liveView = useMemo(() => buildDiagnosisModifiedLiveView(session, messages), [messages, session]);
+  const liveView = useMemo(() => buildDiagnosisModifiedLiveView(session, messages, events), [events, messages, session]);
   const isTerminalLiveSession = TERMINAL_SESSION_STATUSES.has(
     String(session?.status ?? "").trim().toLowerCase(),
   );

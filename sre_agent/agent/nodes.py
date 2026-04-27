@@ -6603,7 +6603,12 @@ def _normalize_remediation_plan_payload(
                         )
                         continue
                 except Exception:  # noqa: BLE001
-                    pass
+                    _llm_logger.debug(
+                        "skipping unknown tool %r in remediation plan for session %s",
+                        step_tool_name,
+                        session_id,
+                    )
+                    continue
             normalized_step = dict(step)
             normalized_step.setdefault("step_id", index)
             normalized_step.setdefault(
@@ -7588,6 +7593,32 @@ def _diagnosis_view_with_primary_index(diagnosis: DiagnosisResult, index: int) -
     return diagnosis.model_copy(update={"root_cause": reordered, "recommended_fix": reordered[0].recommended_fix})
 
 
+def _sanitize_existing_root_cause_plan(
+    *,
+    plan: RemediationPlan | None,
+    diagnosis: DiagnosisResult,
+    root_cause_index: int,
+    session_id: str,
+    registry: ToolRegistry | None,
+    tool_runs: list[dict[str, Any]] | None,
+    variables: dict[str, Any] | None,
+    alert_name: str | None,
+) -> RemediationPlan | None:
+    """Run an already parsed root-cause plan through the executable-plan sanitizer."""
+    if plan is None:
+        return None
+    scoped_diagnosis = _diagnosis_view_with_primary_index(diagnosis, root_cause_index)
+    return _normalize_remediation_plan_payload(
+        raw_plan=plan.model_dump(mode="json"),
+        diagnosis=scoped_diagnosis,
+        session_id=session_id,
+        registry=registry,
+        tool_runs=tool_runs,
+        variables=variables,
+        alert_name=alert_name,
+    )
+
+
 def _attach_per_root_cause_recommended_fixes(
     *,
     diagnosis: DiagnosisResult,
@@ -7602,29 +7633,43 @@ def _attach_per_root_cause_recommended_fixes(
     """Attach independent remediation plan candidates to each root cause when possible.
 
     Purpose:
-    - produce multi-root-cause remediation candidates without breaking single-plan approval flow.
+    - produce sanitized multi-root-cause remediation candidates.
     Input/Output:
     - input: diagnosis result, current primary plan, evidence signals, and runtime metadata;
-    - output: updated diagnosis plus selected primary plan for top-level approval path.
-    Compatibility rationale:
-    - top-level `recommended_fix` remains tied to `root_cause[0]`, while secondary plans are stored
-      in `root_cause[i].recommended_fix` as candidate proposals.
+    - output: updated diagnosis plus selected primary plan for legacy compatibility.
     Why:
-    - enables independent remediation for factors such as GPU burn and external load generators.
+    - every root-cause-level plan is an independent executable proposal and must pass the same
+      write-tool sanitation, regardless of whether it came from LLM inline output or a generator.
     """
     if not diagnosis.root_cause:
         return diagnosis, primary_plan
     updated_root_causes = list(diagnosis.root_cause)
-    selected_primary_plan = primary_plan
+    selected_primary_plan = _sanitize_existing_root_cause_plan(
+        plan=primary_plan,
+        diagnosis=diagnosis,
+        root_cause_index=0,
+        session_id=session_id,
+        registry=registry,
+        tool_runs=tool_runs,
+        variables=variables,
+        alert_name=alert_name,
+    )
 
     for index, root_item in enumerate(updated_root_causes):
-        existing_plan = root_item.recommended_fix
-        if existing_plan is not None and index > 0:
-            continue
+        sanitized_existing_plan = _sanitize_existing_root_cause_plan(
+            plan=root_item.recommended_fix,
+            diagnosis=diagnosis,
+            root_cause_index=index,
+            session_id=session_id,
+            registry=registry,
+            tool_runs=tool_runs,
+            variables=variables,
+            alert_name=alert_name,
+        )
         # For primary root cause, always try to build a root-cause-specific plan first.
         # This avoids reusing a generic plan that may target a different contributing factor.
-        if existing_plan is not None and index == 0 and selected_primary_plan is None:
-            selected_primary_plan = existing_plan
+        if sanitized_existing_plan is not None and index == 0 and selected_primary_plan is None:
+            selected_primary_plan = sanitized_existing_plan
         raw_candidate = _build_ttft_kill_process_plan_for_root_cause(
             diagnosis=diagnosis,
             root_cause_index=index,
@@ -7634,8 +7679,8 @@ def _attach_per_root_cause_recommended_fixes(
             variables=variables,
         )
         if raw_candidate is None:
-            if index == 0 and existing_plan is None and selected_primary_plan is not None:
-                updated_root_causes[index] = root_item.model_copy(update={"recommended_fix": selected_primary_plan})
+            plan_for_root = selected_primary_plan if index == 0 and sanitized_existing_plan is None else sanitized_existing_plan
+            updated_root_causes[index] = root_item.model_copy(update={"recommended_fix": plan_for_root})
             continue
         scoped_diagnosis = _diagnosis_view_with_primary_index(diagnosis, index)
         normalized_candidate = _normalize_remediation_plan_payload(
@@ -7648,16 +7693,15 @@ def _attach_per_root_cause_recommended_fixes(
             alert_name=alert_name,
         )
         if normalized_candidate is None:
-            if index == 0 and existing_plan is None and selected_primary_plan is not None:
-                updated_root_causes[index] = root_item.model_copy(update={"recommended_fix": selected_primary_plan})
+            plan_for_root = selected_primary_plan if index == 0 and sanitized_existing_plan is None else sanitized_existing_plan
+            updated_root_causes[index] = root_item.model_copy(update={"recommended_fix": plan_for_root})
             continue
         updated_root_causes[index] = root_item.model_copy(update={"recommended_fix": normalized_candidate})
         if index == 0:
             selected_primary_plan = normalized_candidate
 
     updated_diagnosis = diagnosis.model_copy(update={"root_cause": updated_root_causes})
-    if selected_primary_plan is not None:
-        updated_diagnosis = updated_diagnosis.model_copy(update={"recommended_fix": selected_primary_plan})
+    updated_diagnosis = updated_diagnosis.model_copy(update={"recommended_fix": selected_primary_plan})
     return updated_diagnosis, selected_primary_plan
 
 

@@ -1,4 +1,4 @@
-import type { DiagnosedRootCause, DiagnosisResult, RemediationPlan } from "../api/types";
+import type { DiagnosedRootCause, DiagnosisResult, RemediationPlan, SessionEvent } from "../api/types";
 
 /**
  * Normalize diagnosis root causes into a render-safe non-empty array.
@@ -128,6 +128,54 @@ export function getPrimaryPlanKey(result?: DiagnosisResult | null): string | und
     return undefined;
   }
   return buildRootCausePlanKey(0, primary.id);
+}
+
+function getEventStage(event: SessionEvent): string {
+  if (event.type !== "remediation_progress") {
+    return String(event.type ?? "").trim().toLowerCase();
+  }
+  return String(event.data?.stage ?? "").trim().toLowerCase();
+}
+
+/**
+ * Resolve the currently pending remediation approval plan key.
+ *
+ * Purpose:
+ * - after a root-cause plan fails observation, backend emits `next_plan_approval_required`;
+ *   approval must target that next plan instead of always targeting root_cause[0].
+ */
+export function getPendingApprovalPlanKey(
+  events: SessionEvent[] | undefined,
+  result?: DiagnosisResult | null,
+): string | undefined {
+  const timeline = Array.isArray(events) ? events : [];
+  for (let index = timeline.length - 1; index >= 0; index -= 1) {
+    const event = timeline[index];
+    if (!event || getEventStage(event) !== "next_plan_approval_required") {
+      continue;
+    }
+    const planKey = String(event.data?.plan_key ?? "").trim();
+    if (planKey) {
+      return planKey;
+    }
+  }
+  return getPrimaryPlanKey(result);
+}
+
+export function getPlanByPlanKey(
+  result: DiagnosisResult | null | undefined,
+  planKey: string | undefined,
+): RemediationPlan | undefined {
+  if (!result || !planKey || !Array.isArray(result.root_cause)) {
+    return undefined;
+  }
+  for (let index = 0; index < result.root_cause.length; index += 1) {
+    const rootCause = result.root_cause[index];
+    if (buildRootCausePlanKey(index, rootCause?.id) === planKey) {
+      return rootCause?.recommended_fix ?? undefined;
+    }
+  }
+  return undefined;
 }
 
 /**

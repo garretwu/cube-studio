@@ -10,7 +10,13 @@ import {
   normalizeDiagnosisModifiedDisplayText,
   sanitizeHypothesisSummaryForDisplay,
 } from "./diagnosisModifiedModel";
-import { getNormalizedRootCauses, getPrimaryPlan, getPrimaryRootCause } from "./rootCauseModel";
+import {
+  getNormalizedRootCauses,
+  getPendingApprovalPlanKey,
+  getPlanByPlanKey,
+  getPrimaryPlan,
+  getPrimaryRootCause,
+} from "./rootCauseModel";
 import type {
   DiagnosisModifiedCandidateView,
   DiagnosisModifiedPlanView,
@@ -1585,7 +1591,10 @@ type ReportRootCauseCandidate = {
  */
 function getReportRootCauseCandidates(input: BuildDiagnosisModifiedReportViewInput): ReportRootCauseCandidate[] {
   const result = getResult(input);
-  const rootCauses = getNormalizedRootCauses(result);
+  const rootCauses = getNormalizedRootCauses(result).filter((item) => {
+    const status = String(item.status ?? "").trim().toLowerCase();
+    return Boolean(item.recommended_fix) && ["confirmed", "contributing"].includes(status);
+  });
   return rootCauses.map((item, index) => ({
     rank: index + 1,
     root_cause: item.title,
@@ -1760,6 +1769,8 @@ function mapEventStage(stage: string) {
     case "observation_started":
     case "observation_result":
       return { eventKind: "metric_feedback" as const, label: "指标反馈", tone: "info" as ReportTone };
+    case "next_plan_approval_required":
+      return { eventKind: "approval_result" as const, label: "下一根因修复待审批", tone: "warning" as ReportTone };
     case "full_rollout_started":
     case "full_rollout_progress":
       return { eventKind: "execution_progress" as const, label: "全量执行中", tone: "warning" as ReportTone };
@@ -1857,6 +1868,10 @@ function buildUnifiedRecords(input: BuildDiagnosisModifiedReportViewInput) {
 
 function getPreferredRemediationPlan(input: BuildDiagnosisModifiedReportViewInput): RemediationPlan | undefined {
   const result = getResult(input);
+  const pendingPlan = getPlanByPlanKey(result, getPendingApprovalPlanKey(input.events, result));
+  if (pendingPlan) {
+    return pendingPlan;
+  }
   const rankedCandidates = getReportRootCauseCandidates(input);
   const normalizedRootCause = normalizeText(input.summary?.rootCause ?? getPrimaryRootCause(result)?.title ?? "").toLowerCase();
 

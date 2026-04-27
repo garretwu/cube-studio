@@ -86,6 +86,61 @@ function derivePlanKeyFromEvents(events: SessionEvent[]): string | undefined {
   return undefined;
 }
 
+function getLatestRemediationStage(events: SessionEvent[]): string {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index];
+    if (event.type !== "remediation_progress") {
+      continue;
+    }
+    const stage = getEventStage(event);
+    if (stage) {
+      return stage;
+    }
+  }
+  return "";
+}
+
+function syncOverviewProgressFromEvents(overview: RemediationOverview, events: SessionEvent[]): RemediationOverview {
+  const stage = getLatestRemediationStage(events);
+  const totalSteps = Number(overview.progress.total_steps ?? overview.plan.steps.length ?? 0);
+  if (stage === "execution_succeeded" || stage === "resolved") {
+    return {
+      ...overview,
+      timeline: events,
+      approval_required: false,
+      progress: {
+        ...overview.progress,
+        status: "resolved",
+        completed_steps: totalSteps,
+      },
+    };
+  }
+  if (stage === "next_plan_approval_required") {
+    return {
+      ...overview,
+      timeline: events,
+      approval_required: true,
+      progress: { ...overview.progress, status: "approval_required" },
+    };
+  }
+  const failureStatusByStage: Record<string, string> = {
+    execution_failed: "failed",
+    execution_timeout: "timeout",
+    escalation_required: "escalated",
+    rollback_failed: "failed",
+  };
+  const failureStatus = failureStatusByStage[stage];
+  if (failureStatus) {
+    return {
+      ...overview,
+      timeline: events,
+      approval_required: false,
+      progress: { ...overview.progress, status: failureStatus },
+    };
+  }
+  return { ...overview, timeline: events };
+}
+
 type RemediationState = {
   loop?: LoopResult;
   overview?: RemediationOverview;
@@ -135,7 +190,7 @@ export const useRemediationStore = create<RemediationState>((set, get) => ({
         lastEventId: getLastEventId(mergedEvents) ?? state.lastEventId,
         overview:
           state.overview && state.overview.session_id === targetSessionId
-            ? { ...state.overview, timeline: mergedEvents }
+            ? syncOverviewProgressFromEvents(state.overview, mergedEvents)
             : state.overview,
       };
     });
@@ -172,7 +227,7 @@ export const useRemediationStore = create<RemediationState>((set, get) => ({
         lastEventId: getLastEventId(mergedEvents) ?? state.lastEventId,
         overview:
           state.overview && state.overview.session_id === resolved
-            ? { ...state.overview, timeline: mergedEvents }
+            ? syncOverviewProgressFromEvents(state.overview, mergedEvents)
             : state.overview,
       };
     });

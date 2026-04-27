@@ -104,7 +104,7 @@ describe("getRemediationOverallProgressDisplay", () => {
     expect(getRemediationOverallProgressDisplay(overview)).toBe(100);
   });
 
-  it("keeps observation contribution at 0 when observation_result is missing", () => {
+  it("treats execution_succeeded as complete even when observation_result is missing", () => {
     const overview = createOverview({
       status: "execution_succeeded",
       completedSteps: 3,
@@ -114,7 +114,7 @@ describe("getRemediationOverallProgressDisplay", () => {
         remediationEvent("execution_succeeded", {}, "2026-04-21T10:08:00Z"),
       ],
     });
-    expect(getRemediationOverallProgressDisplay(overview)).toBe(80);
+    expect(getRemediationOverallProgressDisplay(overview)).toBe(100);
   });
 
   it("derives non-zero canary progress from batch events before all batches complete", () => {

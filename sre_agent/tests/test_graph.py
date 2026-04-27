@@ -2565,6 +2565,128 @@ tags:
         self.assertEqual(len(root_causes[0].recommended_fix.steps), 1)
         self.assertEqual(len(root_causes[1].recommended_fix.steps), 1)
 
+    def test_attach_per_root_cause_recommended_fixes_sanitizes_existing_secondary_plans(self) -> None:
+        mixed_secondary_plan = RemediationPlan.model_validate(
+            {
+                "plan_id": "proposal-external-load-001",
+                "root_cause": "External load",
+                "description": "stop load and verify TTFT",
+                "steps": [
+                    {
+                        "step_id": 1,
+                        "description": "terminate load simulator",
+                        "tool": "kill_process",
+                        "params": {"node": "10.11.4.13", "pid": 4076302, "entity_id": "proc:4076302", "signal": "TERM"},
+                        "verification": {"method": "wait", "wait_seconds": 30},
+                        "timeout": 60,
+                    },
+                    {
+                        "step_id": 2,
+                        "description": "verify TTFT with Prometheus",
+                        "tool": "prometheus.query_instant",
+                        "params": {"promql": "histogram_quantile(0.99, rate(vllm_bucket[5m]))"},
+                        "verification": {"method": "wait", "wait_seconds": 30},
+                        "timeout": 60,
+                    },
+                ],
+                "estimated_impact": "reduce queueing",
+                "confidence": 0.9,
+                "priority": "P0",
+                "safety_level": "high",
+            }
+        )
+        read_only_plan = RemediationPlan.model_validate(
+            {
+                "plan_id": "proposal-read-only",
+                "root_cause": "Metric-only followup",
+                "description": "verify only",
+                "steps": [
+                    {
+                        "step_id": 1,
+                        "description": "check TTFT only",
+                        "tool": "prometheus.query_instant",
+                        "params": {"promql": "up"},
+                        "verification": {"method": "wait", "wait_seconds": 30},
+                        "timeout": 60,
+                    }
+                ],
+                "estimated_impact": "none",
+                "confidence": 0.5,
+                "priority": "P2",
+                "safety_level": "high",
+            }
+        )
+        diagnosis = DiagnosisResult.model_validate(
+            {
+                "root_cause": [
+                    {
+                        "id": "rc-1",
+                        "title": "GPU contention",
+                        "layer": "service",
+                        "entities": ["worker-03"],
+                        "confidence": 0.95,
+                        "certainty": "confirmed",
+                        "status": "confirmed",
+                        "evidence_summary": "gpu busy",
+                        "impact_summary": "TTFT high",
+                        "recommended_fix": None,
+                    },
+                    {
+                        "id": "rc-2",
+                        "title": "External load",
+                        "layer": "service",
+                        "entities": ["10.11.4.13"],
+                        "confidence": 0.9,
+                        "certainty": "confirmed",
+                        "status": "confirmed",
+                        "evidence_summary": "load_simulator present",
+                        "impact_summary": "TTFT high",
+                        "recommended_fix": mixed_secondary_plan.model_dump(mode="json"),
+                    },
+                    {
+                        "id": "rc-3",
+                        "title": "Metric-only followup",
+                        "layer": "service",
+                        "entities": ["qwen3"],
+                        "confidence": 0.6,
+                        "certainty": "probable",
+                        "status": "suspected",
+                        "evidence_summary": "metric check only",
+                        "impact_summary": "TTFT high",
+                        "recommended_fix": read_only_plan.model_dump(mode="json"),
+                    },
+                ],
+                "confidence": 0.95,
+                "next_action": "proposal only",
+                "hypotheses": [],
+                "propagation_chain": [],
+                "impact_summary": "TTFT P99 elevated",
+                "affected_services": ["qwen3-32b-fp8-202602261"],
+                "recommended_fix": None,
+                "triage_priority": "P0",
+                "diagnosis_certainty": "confirmed",
+            }
+        )
+
+        updated_diagnosis, primary_plan = nodes_module._attach_per_root_cause_recommended_fixes(
+            diagnosis=diagnosis,
+            primary_plan=None,
+            evidence_signals={},
+            session_id="sess-secondary-plan-sanitize",
+            registry=build_default_registry(),
+            tool_runs=[],
+            variables={},
+            alert_name="AIServiceTTFTP99High",
+        )
+
+        self.assertIsNone(primary_plan)
+        sanitized_secondary = updated_diagnosis.root_cause[1].recommended_fix
+        self.assertIsNotNone(sanitized_secondary)
+        assert sanitized_secondary is not None
+        self.assertEqual([step.tool for step in sanitized_secondary.steps], ["kill_process"])
+        self.assertEqual(sanitized_secondary.steps[0].step_id, 1)
+        self.assertIsNone(updated_diagnosis.root_cause[2].recommended_fix)
+
     def test_attach_per_root_cause_recommended_fixes_replaces_mismatched_primary_plan(self) -> None:
         diagnosis = DiagnosisResult.model_validate(
             {

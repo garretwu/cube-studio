@@ -1152,6 +1152,76 @@ def build_api_router() -> APIRouter:
             )
         return plans
 
+    def _event_data(event: Any) -> dict[str, Any]:
+        if hasattr(event, "data"):
+            data = getattr(event, "data")
+            return dict(data) if isinstance(data, dict) else {}
+        if isinstance(event, dict):
+            data = event.get("data")
+            return dict(data) if isinstance(data, dict) else {}
+        return {}
+
+    def _event_type(event: Any) -> str:
+        if hasattr(event, "type"):
+            event_type = getattr(event, "type")
+            return str(getattr(event_type, "value", event_type) or "")
+        if isinstance(event, dict):
+            return str(event.get("type") or "")
+        return ""
+
+    def _list_session_events(services: Any, session_id: str) -> list[Any]:
+        list_events = getattr(services.trace_publisher, "list_events", None)
+        if not callable(list_events):
+            return []
+        try:
+            return list(list_events(session_id, limit=None))
+        except TypeError:
+            return list(list_events(session_id))
+
+    def _remediation_stage(event: Any) -> str:
+        if _event_type(event) != EventType.REMEDIATION_PROGRESS.value:
+            return ""
+        return str(_event_data(event).get("stage") or "").strip().lower()
+
+    def _latest_next_plan_key(events: list[Any]) -> str | None:
+        for event in reversed(events):
+            if _remediation_stage(event) != "next_plan_approval_required":
+                continue
+            plan_key = str(_event_data(event).get("plan_key") or "").strip()
+            if plan_key:
+                return plan_key
+        return None
+
+    def _attempted_plan_keys(events: list[Any]) -> set[str]:
+        attempted: set[str] = set()
+        terminal_stages = {
+            "observation_result",
+            "execution_failed",
+            "execution_timeout",
+            "execution_succeeded",
+            "escalation_required",
+        }
+        for event in events:
+            stage = _remediation_stage(event)
+            data = _event_data(event)
+            if stage in terminal_stages:
+                plan_key = str(data.get("plan_key") or "").strip()
+                if plan_key:
+                    attempted.add(plan_key)
+            if stage == "next_plan_approval_required":
+                previous_plan_key = str(data.get("previous_plan_key") or "").strip()
+                if previous_plan_key:
+                    attempted.add(previous_plan_key)
+        return attempted
+
+    def _next_unattempted_plan(plans: list[dict[str, Any]], attempted_plan_keys: set[str]) -> dict[str, Any] | None:
+        ordered = sorted(plans, key=lambda item: int(item.get("rank") or 0))
+        for item in ordered:
+            plan_key = str(item.get("plan_key") or "").strip()
+            if plan_key and plan_key not in attempted_plan_keys:
+                return item
+        return None
+
     def _build_plan_summaries(services: Any, *, session_id: str, plans: list[dict[str, Any]]) -> list[dict[str, Any]]:
         summaries: list[dict[str, Any]] = []
         for item in plans:
@@ -1177,7 +1247,33 @@ def build_api_router() -> APIRouter:
             )
         return summaries
 
+    def _validate_executable_remediation_plan(services: Any, plan: RemediationPlan) -> list[str]:
+        engine = getattr(services, "remediation_engine", None)
+        validator = getattr(engine, "validator", None)
+        validate = getattr(validator, "validate", None)
+        if not callable(validate):
+            return []
+        try:
+            return [str(item) for item in validate(plan)]
+        except Exception as exc:  # noqa: BLE001
+            return [str(exc) or exc.__class__.__name__]
+
     def _register_root_cause_plans(services: Any, *, session_id: str, plans: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        valid_plans: list[dict[str, Any]] = []
+        for item in plans:
+            plan = item["plan"]
+            validation_errors = _validate_executable_remediation_plan(services, plan)
+            if validation_errors:
+                LOGGER.warning(
+                    "skipping invalid root-cause remediation plan: session_id=%s plan_key=%s plan_id=%s errors=%s",
+                    session_id,
+                    item.get("plan_key"),
+                    getattr(plan, "plan_id", None),
+                    validation_errors,
+                )
+                continue
+            valid_plans.append(item)
+        plans = valid_plans
         if not plans:
             clear = getattr(services.remediation_engine, "clear_session_plans", None)
             if callable(clear):
@@ -1668,14 +1764,29 @@ def build_api_router() -> APIRouter:
         observation_seconds: int,
         observation_poll_seconds: int,
         plan: RemediationPlan | None = None,
+        plan_key: str | None = None,
+        plan_version: int | None = None,
+        observation_policy: str | None = None,
+        has_next_ranked_plan: bool | None = None,
     ) -> tuple[bool, dict[str, Any], RemediationEvidence]:
         total_observation_seconds = max(0, int(observation_seconds))
         poll_interval_seconds = max(1, int(observation_poll_seconds))
+        plan_context = {
+            key: value
+            for key, value in {
+                "plan_key": plan_key,
+                "plan_version": plan_version,
+                "observation_policy": observation_policy,
+                "has_next_ranked_plan": has_next_ranked_plan,
+            }.items()
+            if value is not None and (isinstance(value, bool) or str(value).strip())
+        }
         await _publish_remediation_progress(
             services,
             session_id=session.session_id,
             stage="observation_started",
             details={
+                **plan_context,
                 "seconds": total_observation_seconds,
                 "poll_interval_seconds": poll_interval_seconds,
             },
@@ -1737,6 +1848,7 @@ def build_api_router() -> APIRouter:
             metrics_improved=metrics_improved,
         )
         details = {
+            **plan_context,
             "alert_cleared": alert_cleared,
             "metrics_improved": metrics_improved,
             "observation_seconds": total_observation_seconds,
@@ -2788,6 +2900,18 @@ def build_api_router() -> APIRouter:
                 trace_id,
                 exc_info=exc,
             )
+        current_session = services.session_store.get(session_id)
+        if current_session is None:
+            return SREResponse(
+                success=False,
+                error=SREError(code=ErrorCode.VALIDATION_ERROR, message="session not found"),
+                trace_id=trace_id,
+            )
+
+        root_cause_plans = _extract_root_cause_plans(current_session)
+        session_events = _list_session_events(services, session_id)
+        attempted_plan_keys = _attempted_plan_keys(session_events)
+
         list_plan_keys = getattr(services.remediation_engine, "list_plan_keys", None)
         available_plan_keys = [str(key) for key in list_plan_keys(session_id)] if callable(list_plan_keys) else []
         get_plan = getattr(services.remediation_engine, "get_plan", None)
@@ -2804,20 +2928,57 @@ def build_api_router() -> APIRouter:
                 ),
                 trace_id=trace_id,
             )
+        available_plan_key_set = set(available_plan_keys)
+        if available_plan_key_set:
+            root_cause_plans = [
+                item for item in root_cause_plans if str(item.get("plan_key") or "").strip() in available_plan_key_set
+            ]
+        plan_meta_by_key = {str(item["plan_key"]): item for item in root_cause_plans}
 
         requested_plan_key = str(getattr(approval, "plan_key", "") or "").strip()
         approve_all = bool(getattr(approval, "approve_all", False))
-        if requested_plan_key:
-            target_plan_keys = [requested_plan_key]
-        elif approve_all or len(available_plan_keys) <= 1:
-            target_plan_keys = list(available_plan_keys)
-        else:
+        if approve_all and len(available_plan_keys) > 1:
             return SREResponse(
                 success=False,
                 error=SREError(
                     code=ErrorCode.VALIDATION_ERROR,
-                    message="plan_key is required when multiple remediation plans are pending",
+                    message="approve_all is disabled for ranked root-cause remediation; approve one plan_key at a time",
                     details={"available_plan_keys": available_plan_keys},
+                ),
+                trace_id=trace_id,
+            )
+        if requested_plan_key:
+            target_plan_keys = [requested_plan_key]
+        else:
+            latest_next_plan_key = _latest_next_plan_key(session_events)
+            if latest_next_plan_key and latest_next_plan_key not in attempted_plan_keys:
+                requested_plan_key = latest_next_plan_key
+            else:
+                next_plan = _next_unattempted_plan(root_cause_plans, attempted_plan_keys)
+                if next_plan is not None:
+                    requested_plan_key = str(next_plan["plan_key"])
+                elif len(available_plan_keys) == 1:
+                    requested_plan_key = available_plan_keys[0]
+            target_plan_keys = [requested_plan_key] if requested_plan_key else []
+
+        if not target_plan_keys:
+            return SREResponse(
+                success=False,
+                error=SREError(
+                    code=ErrorCode.VALIDATION_ERROR,
+                    message="no pending remediation plan is available for approval",
+                    details={"available_plan_keys": available_plan_keys, "attempted_plan_keys": sorted(attempted_plan_keys)},
+                ),
+                trace_id=trace_id,
+            )
+
+        if requested_plan_key in attempted_plan_keys:
+            return SREResponse(
+                success=False,
+                error=SREError(
+                    code=ErrorCode.VALIDATION_ERROR,
+                    message=f"remediation plan has already been attempted (plan_key={requested_plan_key})",
+                    details={"plan_key": requested_plan_key, "attempted_plan_keys": sorted(attempted_plan_keys)},
                 ),
                 trace_id=trace_id,
             )
@@ -2860,6 +3021,7 @@ def build_api_router() -> APIRouter:
                     "plan_key": plan_key,
                     "plan": plan,
                     "latest_plan_version": latest_plan_version,
+                    **(plan_meta_by_key.get(plan_key) or {}),
                 }
             )
 
@@ -2896,6 +3058,21 @@ def build_api_router() -> APIRouter:
         if approval.approved:
             for item in target_plans:
                 plan = item["plan"]
+                validation_errors = _validate_executable_remediation_plan(services, plan)
+                if validation_errors:
+                    return SREResponse(
+                        success=False,
+                        error=SREError(
+                            code=ErrorCode.REMEDIATION_PLAN_INVALID,
+                            message=validation_errors[0],
+                            details={
+                                "plan_key": item["plan_key"],
+                                "plan_id": plan.plan_id,
+                                "validation_errors": validation_errors,
+                            },
+                        ),
+                        trace_id=trace_id,
+                    )
                 plan_param_errors = _validate_plan_param_values(plan)
                 if plan_param_errors:
                     return SREResponse(
@@ -3002,15 +3179,44 @@ def build_api_router() -> APIRouter:
         )
         app_config = getattr(request.app.state, "config", None)
         remediation_cfg = getattr(app_config, "remediation", None)
-        observation_seconds = int(getattr(remediation_cfg, "observation_seconds", 180) or 180) if remediation_cfg else 180
-        observation_poll_seconds = (
-            int(getattr(remediation_cfg, "observation_poll_seconds", 10) or 10) if remediation_cfg else 10
+        observation_seconds_raw = getattr(remediation_cfg, "observation_seconds", 180) if remediation_cfg else 180
+        observation_poll_seconds_raw = (
+            getattr(remediation_cfg, "observation_poll_seconds", 10) if remediation_cfg else 10
         )
-        execution_timeout_seconds = (
-            int(getattr(remediation_cfg, "execution_timeout_seconds", 600) or 600) if remediation_cfg else 600
+        ranked_intermediate_observation_seconds_raw = (
+            getattr(remediation_cfg, "ranked_intermediate_observation_seconds", 30) if remediation_cfg else 30
+        )
+        execution_timeout_seconds_raw = (
+            getattr(remediation_cfg, "execution_timeout_seconds", 600) if remediation_cfg else 600
+        )
+        observation_seconds = int(180 if observation_seconds_raw is None else observation_seconds_raw)
+        ranked_intermediate_observation_seconds = int(
+            30
+            if ranked_intermediate_observation_seconds_raw is None
+            else ranked_intermediate_observation_seconds_raw
+        )
+        observation_poll_seconds = int(
+            10 if observation_poll_seconds_raw is None else observation_poll_seconds_raw
+        )
+        execution_timeout_seconds = int(
+            600 if execution_timeout_seconds_raw is None else execution_timeout_seconds_raw
         )
         execution_timeout_seconds = max(1, execution_timeout_seconds)
+        ranked_intermediate_observation_seconds = max(0, ranked_intermediate_observation_seconds)
         observation_poll_seconds = max(1, observation_poll_seconds)
+        attempted_plan_keys_after_current = {*attempted_plan_keys, requested_plan_key}
+        next_ranked_plan_after_current = _next_unattempted_plan(root_cause_plans, attempted_plan_keys_after_current)
+        has_next_ranked_plan = next_ranked_plan_after_current is not None
+        is_ranked_root_cause_flow = len(root_cause_plans) > 1
+        if is_ranked_root_cause_flow and has_next_ranked_plan and observation_seconds > 0:
+            effective_observation_seconds = min(observation_seconds, ranked_intermediate_observation_seconds)
+            observation_policy = "ranked_intermediate"
+        elif is_ranked_root_cause_flow:
+            effective_observation_seconds = observation_seconds
+            observation_policy = "ranked_final"
+        else:
+            effective_observation_seconds = observation_seconds
+            observation_policy = "default"
         workflow_started_at = time.monotonic()
         pre_check: RemediationCheckSnapshot | None = None
 
@@ -3037,6 +3243,18 @@ def build_api_router() -> APIRouter:
             )
 
         if len(target_plans) > 1:
+            return SREResponse(
+                success=False,
+                error=SREError(
+                    code=ErrorCode.VALIDATION_ERROR,
+                    message=(
+                        "multiple remediation plans cannot be approved in one request; "
+                        "approve one ranked root-cause plan at a time"
+                    ),
+                    details={"plan_keys": [str(item["plan_key"]) for item in target_plans]},
+                ),
+                trace_id=trace_id,
+            )
             pre_check = await _capture_check_snapshot(services, session=session, plan=plan)
             pre_evidence = RemediationEvidence(pre_check=pre_check)
             session = _update_session_evidence(services, session=session, evidence=pre_evidence)
@@ -3190,9 +3408,13 @@ def build_api_router() -> APIRouter:
                         services,
                         session=session,
                         pre_check=pre_check,
-                        observation_seconds=observation_seconds,
+                        observation_seconds=effective_observation_seconds,
                         observation_poll_seconds=observation_poll_seconds,
                         plan=plan,
+                        plan_key=requested_plan_key,
+                        plan_version=requested_plan_version,
+                        observation_policy=observation_policy,
+                        has_next_ranked_plan=has_next_ranked_plan,
                     ),
                     timeout=remaining_timeout,
                 )
@@ -3327,6 +3549,43 @@ def build_api_router() -> APIRouter:
 
         step_results = _extract_step_results(result)
         if result.success:
+            async def _request_next_plan_approval_if_available() -> bool:
+                attempted_after_current = {*attempted_plan_keys, requested_plan_key}
+                next_plan = _next_unattempted_plan(root_cause_plans, attempted_after_current)
+                if next_plan is None:
+                    return False
+                next_plan_key = str(next_plan["plan_key"])
+                next_plan_version = 0
+                get_next_plan_version = getattr(services.remediation_engine, "get_latest_plan_version", None)
+                if callable(get_next_plan_version):
+                    try:
+                        next_plan_version = int(get_next_plan_version(session_id, plan_key=next_plan_key))
+                    except TypeError:
+                        next_plan_version = int(get_next_plan_version(session_id))
+                _update_session_status(services, session=session, status="approval_required")
+                await _publish_remediation_progress(
+                    services,
+                    session_id=session_id,
+                    stage="next_plan_approval_required",
+                    details={
+                        "message": (
+                            f"上一个修复未恢复，建议继续审批 RANK #{int(next_plan.get('rank') or 0)} "
+                            f"修复方案：{next_plan.get('root_cause_title') or next_plan_key}"
+                        ),
+                        "plan_key": next_plan_key,
+                        "plan_version": next_plan_version or None,
+                        "rank": int(next_plan.get("rank") or 0),
+                        "root_cause_id": next_plan.get("root_cause_id"),
+                        "root_cause_title": next_plan.get("root_cause_title"),
+                        "previous_plan_key": requested_plan_key,
+                        "previous_plan_version": requested_plan_version,
+                        "previous_plan_id": result.plan_id,
+                        "previous_step_results": step_results,
+                        "attempted_plan_keys": sorted(attempted_after_current),
+                        "observation_details": observation_details,
+                    },
+                )
+                return True
             if getattr(services.remediation_engine, "execution_mode", "real") == "mock":
                 await _publish_remediation_progress(
                     services,
@@ -3351,9 +3610,13 @@ def build_api_router() -> APIRouter:
                         services,
                         session=session,
                         pre_check=pre_check,
-                        observation_seconds=observation_seconds,
+                        observation_seconds=effective_observation_seconds,
                         observation_poll_seconds=observation_poll_seconds,
                         plan=plan,
+                        plan_key=requested_plan_key,
+                        plan_version=requested_plan_version,
+                        observation_policy=observation_policy,
+                        has_next_ranked_plan=has_next_ranked_plan,
                     ),
                     timeout=remaining_timeout,
                 )
@@ -3362,6 +3625,8 @@ def build_api_router() -> APIRouter:
                 return await _timeout_response()
             if not observed_ok:
                 print("需要工程师介入")
+                if await _request_next_plan_approval_if_available():
+                    return SREResponse(success=True, data=result, trace_id=trace_id)
                 _update_session_status(services, session=session, status="escalated", outcome="escalated")
                 await _publish_remediation_progress(
                     services,

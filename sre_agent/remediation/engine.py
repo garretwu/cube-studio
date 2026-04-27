@@ -396,6 +396,7 @@ class RemediationEngine:
                                     "跳过执行并视为完成"
                                 ),
                                 "pid_already_absent": True,
+                                "process_not_found_treated_as_success": True,
                                 "node": precheck_error.get("node"),
                                 "pid": precheck_error.get("pid"),
                             },
@@ -403,9 +404,11 @@ class RemediationEngine:
                     verification_results.append(
                         {
                             "step_id": step.step_id,
+                            "success": True,
                             "verified": True,
                             "skipped": True,
-                            "reason": "pid_already_absent",
+                            "reason": "process_not_found_treated_as_success",
+                            "process_not_found_treated_as_success": True,
                             "pid": precheck_error.get("pid"),
                             "node": precheck_error.get("node"),
                         }
@@ -431,6 +434,44 @@ class RemediationEngine:
                 replace(self.execution_context, write_approved=True),
             )
             if not result.success:
+                if self._is_absent_process_kill_result(step=step, error=result.error):
+                    target_pid = self._extract_target_pid(step.params)
+                    target = target_pid if target_pid is not None else step.params.get("pid_or_name") or step.params.get("process_name")
+                    if progress_callback is not None:
+                        await progress_callback(
+                            stage="validating",
+                            details={
+                                "step_id": step.step_id,
+                                "steps_completed": completed,
+                                "steps_total": total_steps,
+                                "message": (
+                                    f"Target process {target or '<unknown>'} was not found; "
+                                    "treating this kill step as successful."
+                                ),
+                                "process_already_absent": True,
+                                "process_not_found_treated_as_success": True,
+                                "node": step.params.get("node"),
+                                "pid": target_pid,
+                                "target": target,
+                                "error": result.error,
+                            },
+                        )
+                    verification_results.append(
+                        {
+                            "step_id": step.step_id,
+                            "success": True,
+                            "verified": True,
+                            "skipped": True,
+                            "reason": "process_not_found_treated_as_success",
+                            "process_not_found_treated_as_success": True,
+                            "pid": target_pid,
+                            "target": target,
+                            "node": step.params.get("node"),
+                            "error": result.error,
+                        }
+                    )
+                    completed += 1
+                    continue
                 failed_step = step
                 await self.wal.recover_all()
                 return RemediationResult(
@@ -665,6 +706,26 @@ class RemediationEngine:
                 "pid_commandline_sample": commandline_sample,
             }
         return None
+
+    @staticmethod
+    def _is_absent_process_kill_result(*, step: Any, error: str | None) -> bool:
+        if str(getattr(step, "tool", "") or "").strip() != "kill_process":
+            return False
+        text = str(error or "").strip().casefold()
+        if not text:
+            return False
+        absent_markers = (
+            "no such process",
+            "no matching process",
+            "no matching processes",
+            "process not found",
+            "pid not found",
+            "target process not found",
+            "process already exited",
+            "already absent",
+            "not running",
+        )
+        return any(marker in text for marker in absent_markers)
 
     @staticmethod
     def _extract_target_pid(params: dict[str, Any]) -> int | None:

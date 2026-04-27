@@ -1121,14 +1121,29 @@ export const apiClient = {
       const remediationEvents = events.filter((event) => event.type === "remediation_progress");
       const latestRemediationEvent = remediationEvents.at(-1);
       const latestStage = String(latestRemediationEvent?.data?.["stage"] ?? "").trim().toLowerCase();
+      const normalizedSessionStatus = String(session.status ?? "").trim().toLowerCase();
+      const terminalStageStatusMap: Record<string, string> = {
+        execution_succeeded: "resolved",
+        resolved: "resolved",
+        execution_failed: "failed",
+        execution_timeout: "timeout",
+        escalation_required: "escalated",
+        rollback_failed: "failed",
+      };
+      const latestStageStatus =
+        terminalStageStatusMap[latestStage] ??
+        (latestStage === "next_plan_approval_required" ? "approval_required" : "");
+      const progressStatus = latestStageStatus || normalizedSessionStatus || latestStage || "pending";
       const latestSucceededEvent = [...remediationEvents]
         .reverse()
         .find((event) => String(event.data?.["stage"] ?? "").trim().toLowerCase() === "execution_succeeded");
+      const isSucceeded = progressStatus === "resolved" || latestStage === "execution_succeeded";
       const completedSteps = Number(
-        latestSucceededEvent?.data?.["steps_completed"] ??
-          (String(session.status ?? "").trim().toLowerCase() === "resolved" ? currentPlan.steps.length : 0),
+        isSucceeded
+          ? currentPlan.steps.length
+          : latestSucceededEvent?.data?.["steps_completed"] ??
+              (normalizedSessionStatus === "resolved" ? currentPlan.steps.length : 0),
       );
-      const progressStatus = String(session.status || "").trim() || latestStage || "pending";
       // Extract canary batch status from remediation_progress events
       const batchStatusMap = new Map<string, { batch: string; progress: number; status: string }>();
       for (const event of remediationEvents) {

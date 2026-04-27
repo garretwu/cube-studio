@@ -22,7 +22,13 @@ import type {
   WSEvent,
 } from "../api/types";
 import { formatDateTime } from "../utils/format";
-import { getPrimaryPlan, getPrimaryPlanKey, getPrimaryRootCause } from "../pages/rootCauseModel";
+import {
+  getPendingApprovalPlanKey,
+  getPlanByPlanKey,
+  getPrimaryPlan,
+  getPrimaryPlanKey,
+  getPrimaryRootCause,
+} from "../pages/rootCauseModel";
 
 type ConnectionState = "connecting" | "open" | "closed" | "error";
 type BootstrapStatus = "idle" | "loading" | "ready" | "empty" | "error";
@@ -583,7 +589,10 @@ function toTraceEntryFromNodeSnapshot(
   return null;
 }
 
-function extractRecommendedPlan(session: DiagnosisSession | undefined): RemediationPlan | null {
+function extractRecommendedPlan(
+  session: DiagnosisSession | undefined,
+  events: SessionEvent[] = [],
+): RemediationPlan | null {
   /**
    * Extract the single effective remediation plan.
    *
@@ -599,6 +608,11 @@ function extractRecommendedPlan(session: DiagnosisSession | undefined): Remediat
    */
   if (!session?.diagnosis_result) {
     return null;
+  }
+  const pendingPlanKey = getPendingApprovalPlanKey(events, session.diagnosis_result);
+  const pendingPlan = getPlanByPlanKey(session.diagnosis_result, pendingPlanKey);
+  if (pendingPlan) {
+    return pendingPlan;
   }
   return getPrimaryPlan(session.diagnosis_result) ?? null;
 }
@@ -723,6 +737,9 @@ function formatRemediationEventMessage(event: EventLike): string | null {
     if (stage === "execution_timeout") {
       return "修复执行超时退出";
     }
+    if (stage === "next_plan_approval_required") {
+      return String(data.message ?? "上一个修复未恢复，下一根因修复方案待审批");
+    }
     if (typeof data.message === "string" && data.message.trim()) {
       return data.message;
     }
@@ -792,6 +809,7 @@ function shouldTriggerSessionBackfill(event: WSEvent): boolean {
     "execution_timeout",
     "escalation_required",
     "observation_result",
+    "next_plan_approval_required",
   ].includes(stage);
 }
 
@@ -884,10 +902,11 @@ function resolveDisplayUser(user?: string) {
 
 function buildPlanDetailLines(
   session: DiagnosisSession | undefined,
+  events: SessionEvent[],
   planVersion: number | null,
   timestamp: string,
 ) {
-  const plan = extractRecommendedPlan(session);
+  const plan = extractRecommendedPlan(session, events);
   const lines = [
     `审批时间：${formatDateTime(timestamp)}`,
     `方案版本：${planVersion ? `v${planVersion}` : "--"}`,
@@ -912,6 +931,7 @@ function buildPlanDetailLines(
 function buildApprovalAuditRecord(
   sessionId: string,
   session: DiagnosisSession | undefined,
+  events: SessionEvent[],
   input: ApprovalDecisionInput,
   planVersion: number | null,
 ): DiagnosisLocalAuditRecord {
@@ -920,7 +940,7 @@ function buildApprovalAuditRecord(
   const reason = input.reason?.trim();
   const timestamp = new Date().toISOString();
   const versionLabel = planVersion ? `v${planVersion}` : "v?";
-  const details = buildPlanDetailLines(session, planVersion, timestamp);
+  const details = buildPlanDetailLines(session, events, planVersion, timestamp);
 
   details.splice(3, 0, `审批人：${approver}`);
   details.splice(4, 0, `审批动作：${approved ? "同意，通过执行" : "拒绝执行"}`);
@@ -1402,7 +1422,10 @@ export const useDiagnosisStore = create<DiagnosisState>((set, get) => ({
         : inputOrApproved;
     const sessionId = get().activeSessionId;
     const planVersion = get().latestPlanVersion ?? undefined;
-    const selectedPlanKey = input.planKey?.trim() || getPrimaryPlanKey(get().session?.diagnosis_result);
+    const selectedPlanKey =
+      input.planKey?.trim() ||
+      getPendingApprovalPlanKey(get().events, get().session?.diagnosis_result) ||
+      getPrimaryPlanKey(get().session?.diagnosis_result);
     const reason = input.reason?.trim() || (!input.approved ? "需要人工复核" : undefined);
     const user = resolveDisplayUser(input.user);
 
@@ -1424,6 +1447,7 @@ export const useDiagnosisStore = create<DiagnosisState>((set, get) => ({
     const approvalRecord = buildApprovalAuditRecord(
       sessionId,
       get().session,
+      get().events,
       { approved: input.approved, reason, user },
       planVersion ?? null,
     );
@@ -2167,6 +2191,12 @@ export const useDiagnosisStore = create<DiagnosisState>((set, get) => ({
           nextSession = {
             ...nextSession,
             status: "escalated",
+          };
+        }
+        if (stage === "next_plan_approval_required") {
+          nextSession = {
+            ...nextSession,
+            status: "approval_required",
           };
         }
       }

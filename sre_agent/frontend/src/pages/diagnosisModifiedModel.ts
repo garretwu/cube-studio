@@ -1,6 +1,12 @@
-import type { ChatMessage, DiagnosisResult, DiagnosisSession, Observation, ThinkingStep } from "../api/types";
+import type { ChatMessage, DiagnosisResult, DiagnosisSession, Observation, SessionEvent, ThinkingStep } from "../api/types";
 import { normalizeDiagnosisDisplayText } from "./diagnosisModel";
-import { getNormalizedRootCauses, getPrimaryPlan, getPrimaryRootCause } from "./rootCauseModel";
+import {
+  getNormalizedRootCauses,
+  getPendingApprovalPlanKey,
+  getPlanByPlanKey,
+  getPrimaryPlan,
+  getPrimaryRootCause,
+} from "./rootCauseModel";
 
 type ChipTone = "neutral" | "accent" | "success" | "warning" | "danger" | "info";
 
@@ -495,7 +501,7 @@ function buildPropagationChain(session: DiagnosisSession | undefined): Diagnosis
   }));
 }
 
-function buildPlan(session: DiagnosisSession | undefined): DiagnosisModifiedPlanView | undefined {
+function buildPlan(session: DiagnosisSession | undefined, events: SessionEvent[] = []): DiagnosisModifiedPlanView | undefined {
   /**
    * Build plan view from top-level plan or primary root-cause plan fallback.
    *
@@ -509,7 +515,10 @@ function buildPlan(session: DiagnosisSession | undefined): DiagnosisModifiedPlan
    * Why:
    * - multi-plan orchestration is postponed to a separate phase.
    */
-  const plan = getPrimaryPlan(session?.diagnosis_result);
+  const pendingPlanKey = getPendingApprovalPlanKey(events, session?.diagnosis_result);
+  const plan =
+    getPlanByPlanKey(session?.diagnosis_result, pendingPlanKey) ??
+    getPrimaryPlan(session?.diagnosis_result);
   if (!plan) {
     return undefined;
   }
@@ -569,6 +578,7 @@ function resolveMessageMetadataField(
 export function buildDiagnosisModifiedLiveView(
   session: DiagnosisSession | undefined,
   messages: ChatMessage[],
+  events: SessionEvent[] = [],
 ): DiagnosisModifiedLiveView {
   const timelineItems: DiagnosisModifiedTimelineItem[] = [];
   const traceEntries = session?.trace?.steps ?? [];
@@ -711,7 +721,7 @@ export function buildDiagnosisModifiedLiveView(
     hypotheses: buildHypotheses(session),
     propagationChain: buildPropagationChain(session),
     summary: buildSummary(session),
-    plan: buildPlan(session),
+    plan: buildPlan(session, events),
   };
 }
 

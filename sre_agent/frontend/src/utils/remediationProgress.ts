@@ -369,12 +369,8 @@ export function getRemediationOverallProgressDisplay(overview?: RemediationOverv
     ]),
   );
 
-  if (currentStage === "resolved") {
+  if (currentStage === "resolved" || currentStage === "execution_succeeded") {
     return 100;
-  }
-
-  if (currentStage === "execution_succeeded") {
-    return 80;
   }
 
   if (TERMINAL_REMEDIATION_STATUSES.has(currentStage)) {

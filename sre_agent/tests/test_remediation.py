@@ -15,7 +15,14 @@ from sre_agent.models.remediation import (
     VerificationConfig,
 )
 from sre_agent.remediation import ApprovalGate, ApprovalInput, PlanValidationError, PlanValidator, RemediationEngine, RollbackJournal
-from sre_agent.tools import SafetyLevel, ToolDefinition, ToolExecutionContext, ToolRegistry, build_default_registry
+from sre_agent.tools import (
+    SafetyLevel,
+    ToolDefinition,
+    ToolExecutionContext,
+    ToolRegistry,
+    ToolValidationError,
+    build_default_registry,
+)
 
 
 def _make_registry() -> ToolRegistry:
@@ -850,12 +857,99 @@ class TestRemediationIntegration:
         assert result.steps_completed == 1
         assert result.error_code is None
         assert result.verification_results
+        assert result.verification_results[0]["success"] is True
         assert result.verification_results[0]["verified"] is True
         assert result.verification_results[0]["skipped"] is True
-        assert result.verification_results[0]["reason"] == "pid_already_absent"
+        assert result.verification_results[0]["reason"] == "process_not_found_treated_as_success"
+        assert result.verification_results[0]["process_not_found_treated_as_success"] is True
         # only precheck command should run; kill is skipped because pid already absent
         assert len(ssh.calls) == 1
         assert "ps -eo pid=,comm=,args=" in ssh.calls[0]["command"]
+
+    @pytest.mark.asyncio
+    async def test_integration_engine_continues_when_kill_process_target_disappears(self, tmp_path: Path) -> None:
+        registry = ToolRegistry()
+        calls: list[str] = []
+
+        async def _kill_process(params: dict[str, Any], context: ToolExecutionContext) -> dict[str, Any]:
+            _ = (params, context)
+            calls.append("kill_process")
+            raise ToolValidationError("kill: (9783) - No such process")
+
+        async def _delete_pod(params: dict[str, Any], context: ToolExecutionContext) -> dict[str, Any]:
+            _ = context
+            calls.append("k8s.delete_pod")
+            return {"deleted": params["pod_name"]}
+
+        registry.register(
+            ToolDefinition(
+                name="kill_process",
+                description="terminate process",
+                safety_level=SafetyLevel.HIGH,
+                params_schema={"type": "object", "required": ["node"]},
+                needs_approval=True,
+            ),
+            _kill_process,
+        )
+        registry.register(
+            ToolDefinition(
+                name="k8s.delete_pod",
+                description="delete pod",
+                safety_level=SafetyLevel.HIGH,
+                params_schema={"type": "object", "required": ["namespace", "pod_name"]},
+                needs_approval=True,
+            ),
+            _delete_pod,
+        )
+        engine = RemediationEngine(
+            registry,
+            ApprovalGate(default_policy="auto_approve"),
+            RollbackJournal(tmp_path / "wal.jsonl"),
+            execution_context=ToolExecutionContext(),
+        )
+        progress_events: list[tuple[str, dict[str, Any]]] = []
+        plan = RemediationPlan(
+            plan_id="plan-process-disappears",
+            root_cause="synthetic load process",
+            description="kill process and continue with follow-up action",
+            estimated_impact="ttft recovers",
+            confidence=0.9,
+            priority="P1",
+            steps=[
+                RemediationStep(
+                    step_id=1,
+                    description="kill process A",
+                    tool="kill_process",
+                    params={"node": "worker-03", "pid": 9783, "signal": "TERM"},
+                    verification=VerificationConfig(method="wait", wait_seconds=1),
+                ),
+                RemediationStep(
+                    step_id=2,
+                    description="delete canary pod",
+                    tool="k8s.delete_pod",
+                    params={"namespace": "infer", "pod_name": "vllm-canary-0"},
+                    verification=VerificationConfig(method="wait", wait_seconds=1),
+                ),
+            ],
+        )
+
+        async def _progress_callback(*, stage: str, details: dict[str, Any] | None = None) -> None:
+            progress_events.append((stage, details or {}))
+
+        result = await engine.execute(plan, session_id="session-process-disappears", progress_callback=_progress_callback)
+
+        assert result.success is True
+        assert result.steps_completed == 2
+        assert result.verification_results[0]["success"] is True
+        assert result.verification_results[0]["verified"] is True
+        assert result.verification_results[0]["skipped"] is True
+        assert result.verification_results[0]["reason"] == "process_not_found_treated_as_success"
+        assert result.verification_results[0]["process_not_found_treated_as_success"] is True
+        assert calls == ["kill_process", "k8s.delete_pod"]
+        absent_events = [details for stage, details in progress_events if details.get("process_already_absent")]
+        assert absent_events
+        assert absent_events[-1]["process_not_found_treated_as_success"] is True
+        assert "treating this kill step as successful" in absent_events[-1]["message"]
 
     @pytest.mark.asyncio
     async def test_integration_engine_ttft_precheck_still_fails_for_non_suspect_pid(self, tmp_path: Path) -> None:

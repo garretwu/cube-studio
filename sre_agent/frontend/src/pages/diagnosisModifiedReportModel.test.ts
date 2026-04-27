@@ -466,9 +466,42 @@ describe("buildDiagnosisModifiedReportView", () => {
     expect(view.overview.title).not.toContain("[TOOL_CALL]");
   });
 
-  it("prefers ranked candidates from the contract and caps them at three", () => {
+  it("shows only confirmed or contributing root causes that have their own remediation plan", () => {
+    const session = createSession();
+    if (!session.diagnosis_result) {
+      throw new Error("expected diagnosis result");
+    }
+    const basePlan = session.diagnosis_result.recommended_fix;
+    if (!basePlan) {
+      throw new Error("expected remediation plan");
+    }
+    session.diagnosis_result.root_cause[0] = {
+      ...session.diagnosis_result.root_cause[0],
+      recommended_fix: {
+        ...basePlan,
+        plan_id: "plan-redis-specific",
+        root_cause: "Redis connection saturation",
+      },
+    };
+    session.diagnosis_result.root_cause[1] = {
+      ...session.diagnosis_result.root_cause[1],
+      recommended_fix: {
+        ...basePlan,
+        plan_id: "plan-db-specific",
+        root_cause: "Downstream database wait queue",
+      },
+    };
+    session.diagnosis_result.root_cause[2] = {
+      ...session.diagnosis_result.root_cause[2],
+      recommended_fix: {
+        ...basePlan,
+        plan_id: "plan-suspected-should-not-render",
+        root_cause: "Ingress throttling",
+      },
+    };
+
     const view = buildDiagnosisModifiedReportView({
-      session: createSession(),
+      session,
       timeline: [],
       candidates: [],
       events: [],
@@ -484,8 +517,6 @@ describe("buildDiagnosisModifiedReportView", () => {
     expect(view.rootCause.items.map((item) => item.title)).toEqual([
       "Redis connection saturation",
       "Downstream database wait queue",
-      "Ingress throttling",
-      "Node pressure",
     ]);
   });
 
@@ -542,6 +573,31 @@ describe("buildDiagnosisModifiedReportView", () => {
     expect(view.nextAction.mode).toBe("executing");
     expect(view.remediation.state).toBe("ready");
     expect(view.remediation.steps).toHaveLength(2);
+  });
+
+  it("shows the next ranked remediation approval event in feedback", () => {
+    const view = buildDiagnosisModifiedReportView({
+      session: createSession("approval_required"),
+      timeline: [],
+      candidates: [],
+      events: [
+        {
+          schema_version: "1",
+          type: "remediation_progress",
+          session_id: "sess-report-model",
+          timestamp: "2026-04-08T10:08:00.000Z",
+          data: {
+            stage: "next_plan_approval_required",
+            message: "上一个修复未恢复，建议继续审批 RANK #2 修复方案：External load",
+            plan_key: "rc:rc-2",
+          },
+        },
+      ],
+      localAuditRecords: [],
+    });
+
+    expect(view.feedback[0]?.label).toBe("下一根因修复待审批");
+    expect(view.feedback[0]?.summary).toContain("RANK #2");
   });
 
   it("keeps the full post-approval session feedback chain visible through closure", () => {

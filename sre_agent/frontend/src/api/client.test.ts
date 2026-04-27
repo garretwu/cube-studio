@@ -855,6 +855,84 @@ describe("apiClient.getTopology", () => {
     ]);
   });
 
+  it("prefers execution_succeeded event over stale remediating session status", async () => {
+    server.use(
+      http.get("/api/sessions/sess-remediation-success", async () =>
+        HttpResponse.json({
+          session_id: "sess-remediation-success",
+          alert: {
+            alert_name: "AIServiceTTFTP99High",
+            severity: "warning",
+            labels: {},
+            annotations: {},
+            starts_at: "2026-04-27T00:00:00Z",
+            fingerprint: "fp-remediation-success",
+            status: "firing",
+            source: "alertmanager",
+          },
+          status: "remediating",
+          diagnosis_result: {
+            confidence: 0.93,
+            impact_summary: "latency spike",
+            affected_services: ["vllm"],
+            triage_priority: "P1",
+            diagnosis_certainty: "confirmed",
+            recommended_fix: {
+              plan_id: "plan-success",
+              root_cause: "External load",
+              description: "Terminate load process.",
+              steps: [
+                {
+                  step_id: 1,
+                  description: "Terminate process",
+                  tool: "kill_process",
+                  params: { node: "worker-03", pid: 123 },
+                  verification: { method: "wait", wait_seconds: 1 },
+                  timeout: 30,
+                },
+                {
+                  step_id: 2,
+                  description: "Observe metrics",
+                  tool: "prometheus.query_instant",
+                  params: { query: "ttft" },
+                  verification: { method: "wait", wait_seconds: 1 },
+                  timeout: 30,
+                },
+              ],
+              estimated_impact: "low",
+              confidence: 0.93,
+              priority: "P1",
+            },
+          },
+        }),
+      ),
+      http.get("/api/sessions/sess-remediation-success/events", async () =>
+        HttpResponse.json([
+          {
+            schema_version: "1.0",
+            type: "remediation_progress",
+            session_id: "sess-remediation-success",
+            timestamp: "2026-04-27T00:00:01Z",
+            data: { stage: "execution_started" },
+          },
+          {
+            schema_version: "1.0",
+            type: "remediation_progress",
+            session_id: "sess-remediation-success",
+            timestamp: "2026-04-27T00:00:02Z",
+            data: { stage: "execution_succeeded", steps_completed: 1 },
+          },
+        ]),
+      ),
+    );
+
+    const overview = await apiClient.getRemediationOverview("sess-remediation-success");
+
+    expect(overview.progress.status).toBe("resolved");
+    expect(overview.progress.completed_steps).toBe(2);
+    expect(overview.progress.total_steps).toBe(2);
+  });
+
   it("loads chat history from /api/chat/history", async () => {
     server.use(
       http.get("/api/chat/history", async () =>
