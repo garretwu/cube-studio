@@ -1,12 +1,7 @@
-﻿import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { useNavigate } from "react-router-dom";
+﻿import { useEffect, useRef, useState, type ReactNode } from "react";
 import type { TopologyLayer, TopologyObject, TopologyObjectType, TopologyRelation } from "../api/types";
 import TopologyCanvas from "../features/topologyExplorer/components/TopologyCanvas";
 import "../features/topologyExplorer/topologyExplorer.css";
-import { AppButton, StatusChip } from "../components/ui";
-import { formatTopologyStatus, formatTopologyType, getLocationLabel, getStatusTone } from "../features/topologyExplorer/formatters";
-import { buildTopologyObjectPath } from "../features/topologyExplorer/topologyObjectRoute";
-import type { TopologyCanvasNodeAction } from "../features/topologyExplorer/components/TopologyCanvas";
 
 import type {
   DiagnosisModifiedCandidateChangeView,
@@ -305,18 +300,10 @@ export function ReportEmptyPreviewModule({
         data-testid={`${dataTestId}-progress`}
         aria-hidden="true"
       >
-        {Array.from({ length: Math.max(1, lines) }, (_, lineIndex) => (
-          <span
-            className={cn(
-              "diagnosis-modified-report-rail__loading-progress-line",
-              lineIndex === 0
-                ? "diagnosis-modified-report-rail__loading-progress-line--primary"
-                : "diagnosis-modified-report-rail__loading-progress-line--secondary",
-            )}
-            data-lines={lines}
-            key={`loading-line-${lineIndex}`}
-          />
-        ))}
+        <span
+          className="diagnosis-modified-report-rail__loading-progress-line"
+          data-lines={lines}
+        />
       </div>
     </section>
   );
@@ -425,28 +412,23 @@ export function RootCauseLevelSection({
           <div className="diagnosis-modified-report-rail__stack">
             {rootCauseItems.map((item) => {
               const remediationSummary = String(item.remediation?.detail ?? "").trim();
+              const rankFact = item.facts.find((fact) => fact.label.trim().toLowerCase() === "rank");
+              const rankToken =
+                rankFact?.value?.trim() ||
+                (item.rankLabel ? `#${item.rankLabel.match(/\d+/)?.[0] ?? ""}`.replace(/#$/, "") : "");
+              const displayTitle = rankToken ? `RANK ${rankToken}：${item.title}` : item.title;
               const confidenceFact = item.facts.find((fact) => fact.label.trim().toLowerCase() === "confidence");
               return (
                 <article className="diagnosis-modified-report-rail__candidate" key={item.id}>
                   <div className="diagnosis-modified-report-rail__candidate-header">
                     <div className="diagnosis-modified-report-rail__candidate-copy">
                       <strong className="diagnosis-modified-report-rail__rootcause-title">
-                        <span
-                          className="diagnosis-modified-report-rail__rootcause-title-text diagnosis-modified-report-rail__candidate-title"
-                          title={item.title}
-                        >
-                          {item.title}
-                        </span>
+                        <span>{displayTitle}</span>
                         {confidenceFact?.value ? (
                           <ReportBadge label={`置信度 ${confidenceFact.value}`} tone="neutral" />
                         ) : null}
                       </strong>
-                      <p
-                        className="diagnosis-modified-report-rail__candidate-summary"
-                        title={item.summary}
-                      >
-                        {item.summary}
-                      </p>
+                      <p>{item.summary}</p>
                       {remediationSummary ? (
                         <div className="diagnosis-modified-report-rail__candidate-remediation">
                           <div className="diagnosis-modified-report-rail__candidate-remediation-header">
@@ -695,79 +677,10 @@ function mapContextEdgeToTopologyRelation(
   };
 }
 
-function normalizeDiagnosisContextPopoverText(value: string, { maxLength = 96 }: { maxLength?: number } = {}) {
-  const cleaned = String(value ?? "")
-    .replace(/\b(?:svc:service:|service:|entity:|ns:|pod:|node:|gpu:|proc:|process:)\b/giu, "")
-    .replace(/\s+/g, " ")
-    .trim();
-  if (!cleaned) {
-    return "";
-  }
-  if (cleaned.length <= maxLength) {
-    return cleaned;
-  }
-  return `${cleaned.slice(0, Math.max(1, maxLength - 1)).trimEnd()}…`;
-}
-
-function buildDiagnosisContextLocationText(node: TopologyObject) {
-  const readable = normalizeDiagnosisContextPopoverText(getLocationLabel(node) || "", { maxLength: 56 });
-  if (readable && readable !== "global / global") {
-    return readable;
-  }
-  const attrs = node.attributes as Record<string, unknown>;
-  const zone = normalizeDiagnosisContextPopoverText(String(attrs.zone ?? attrs.namespace ?? attrs.node ?? ""), { maxLength: 56 });
-  return zone || "未提供";
-}
-
 function ContextTopologyGraph({ context }: { context: DiagnosisModifiedContextView }) {
-  const navigate = useNavigate();
-  const [nodeActions, setNodeActions] = useState<TopologyCanvasNodeAction | null>(null);
-  const closeTimerRef = useRef<number | null>(null);
-  const isNodeHoveringRef = useRef(false);
-  const isPopoverHoveringRef = useRef(false);
   const topologyNodes = context.graph.nodes.map(mapContextNodeToTopologyNode);
   const nodeRoleMap = new Map(context.graph.nodes.map((node) => [node.id, node.role] as const));
   const topologyEdges = context.graph.edges.map((edge) => mapContextEdgeToTopologyRelation(edge, nodeRoleMap));
-  const actionNode = nodeActions?.node;
-  const actionPosition = useMemo(
-    () =>
-      nodeActions
-        ? {
-            left: Math.min(nodeActions.clientX + 16, window.innerWidth - 360),
-            top: Math.max(nodeActions.clientY - 24, 92),
-          }
-        : null,
-    [nodeActions],
-  );
-
-  const clearCloseTimer = () => {
-    if (closeTimerRef.current != null) {
-      window.clearTimeout(closeTimerRef.current);
-      closeTimerRef.current = null;
-    }
-  };
-
-  const closePopover = () => {
-    clearCloseTimer();
-    setNodeActions(null);
-  };
-
-  const scheduleClose = () => {
-    clearCloseTimer();
-    closeTimerRef.current = window.setTimeout(() => {
-      if (isNodeHoveringRef.current || isPopoverHoveringRef.current) {
-        return;
-      }
-      setNodeActions(null);
-      closeTimerRef.current = null;
-    }, 150);
-  };
-
-  useEffect(() => {
-    return () => {
-      clearCloseTimer();
-    };
-  }, []);
 
   return (
     <div
@@ -777,88 +690,14 @@ function ContextTopologyGraph({ context }: { context: DiagnosisModifiedContextVi
       <TopologyCanvas
         edges={topologyEdges}
         forceEdgeLabels={false}
-        hoverInfoTooltipEnabled={false}
         layoutPreset="layered"
         matchedNodeIds={[]}
         neighborDepths={new Map()}
         nodes={topologyNodes}
-        nativeTitleEnabled={false}
-        nodeActionOpenMode="hover-and-click"
-        onCanvasInteraction={() => {
-          isNodeHoveringRef.current = false;
-          isPopoverHoveringRef.current = false;
-          closePopover();
-        }}
-        onHoverNode={(nodeId) => {
-          if (nodeId) {
-            isNodeHoveringRef.current = true;
-            clearCloseTimer();
-            return;
-          }
-          isNodeHoveringRef.current = false;
-          if (!isPopoverHoveringRef.current) {
-            scheduleClose();
-          }
-        }}
-        onOpenNodeActions={(payload) => {
-          clearCloseTimer();
-          setNodeActions(payload);
-        }}
+        onHoverNode={() => undefined}
         onSelectNode={() => undefined}
         variant="modified"
       />
-      {actionNode && actionPosition ? (
-        <aside
-          className="topology-node-menu topology-node-menu--diagnosis"
-          data-testid="diagnosis-context-node-popover"
-          onMouseEnter={() => {
-            isPopoverHoveringRef.current = true;
-            clearCloseTimer();
-          }}
-          onMouseLeave={() => {
-            isPopoverHoveringRef.current = false;
-            if (!isNodeHoveringRef.current) {
-              scheduleClose();
-            }
-          }}
-          style={actionPosition}
-        >
-          <div className="topology-node-menu__header">
-            <div>
-              <p className="topology-node-menu__eyebrow">{formatTopologyType(actionNode.type)}</p>
-              <h3 className="topology-node-menu__title">
-                {normalizeDiagnosisContextPopoverText(actionNode.name, { maxLength: 56 }) || actionNode.name}
-              </h3>
-            </div>
-            <StatusChip tone={getStatusTone(actionNode.status)}>{formatTopologyStatus(actionNode.status)}</StatusChip>
-          </div>
-          <dl className="topology-node-menu__facts">
-            <div>
-              <dt>位置</dt>
-              <dd>{buildDiagnosisContextLocationText(actionNode)}</dd>
-            </div>
-            <div>
-              <dt>摘要</dt>
-              <dd className="topology-node-menu__summary--diagnosis">
-                {normalizeDiagnosisContextPopoverText(actionNode.summary, { maxLength: 120 })}
-              </dd>
-            </div>
-          </dl>
-          <div className="topology-node-menu__actions">
-            <AppButton
-              onClick={() => {
-                navigate(buildTopologyObjectPath(actionNode.id, "default"));
-                closePopover();
-              }}
-              size="sm"
-              variant="primary"
-            >
-              查看拓扑
-            </AppButton>
-          </div>
-          <p className="topology-node-menu__hint">当前对象已匹配，点击画布空白区域可关闭此浮层。</p>
-        </aside>
-      ) : null}
     </div>
   );
 }
@@ -987,22 +826,10 @@ function HypothesisSection({
               data-testid={`diagnosis-modified-hypothesis-card-${item.id}`}
               key={item.id}
             >
-              <div className="diagnosis-modified-report-rail__candidate-header diagnosis-modified-report-rail__candidate-header--two-col-hypothesis">
+              <div className="diagnosis-modified-report-rail__candidate-header">
                 <div className="diagnosis-modified-report-rail__candidate-copy">
-                  <strong
-                    className="diagnosis-modified-report-rail__candidate-title"
-                    title={formatHypothesisTitle(item.title)}
-                  >
-                    {formatHypothesisTitle(item.title)}
-                  </strong>
-                  {item.summary ? (
-                    <p
-                      className="diagnosis-modified-report-rail__candidate-summary"
-                      title={item.summary}
-                    >
-                      {item.summary}
-                    </p>
-                  ) : null}
+                  <strong>{formatHypothesisTitle(item.title)}</strong>
+                  {item.summary ? <p>{item.summary}</p> : null}
                 </div>
                 <div className="diagnosis-modified-report-rail__candidate-meta">
                   <div
@@ -1263,18 +1090,8 @@ function CandidateChangesSection({
           <article className="diagnosis-modified-report-rail__candidate" key={candidate.id}>
             <div className="diagnosis-modified-report-rail__candidate-header">
               <div className="diagnosis-modified-report-rail__candidate-copy">
-                <strong
-                  className="diagnosis-modified-report-rail__candidate-title"
-                  title={candidate.title}
-                >
-                  {candidate.title}
-                </strong>
-                <p
-                  className="diagnosis-modified-report-rail__candidate-summary"
-                  title={candidate.summary}
-                >
-                  {candidate.summary}
-                </p>
+                <strong>{candidate.title}</strong>
+                <p>{candidate.summary}</p>
               </div>
               <div className="diagnosis-modified-report-rail__candidate-meta">
                 <span>{candidate.confidenceLabel}</span>

@@ -294,6 +294,16 @@ function TopologyExplorer({
   }, [graphNodes, nodeActions]);
 
   useEffect(() => {
+    if (!nodeActions || nodeActions.trigger !== "hover") {
+      return;
+    }
+
+    if (!hoveredNodeId || hoveredNodeId !== nodeActions.node.id) {
+      setNodeActions(null);
+    }
+  }, [hoveredNodeId, nodeActions]);
+
+  useEffect(() => {
     if (!filterPanelOpen || filterPanelEntryMode !== "search") {
       return;
     }
@@ -686,10 +696,17 @@ function TopologyExplorer({
                 onToggleAggregateNode?.(payload.node.id);
                 return;
               }
+              if (
+                variant === "modified" &&
+                payload.trigger === "hover" &&
+                (isSyntheticServiceAggregateNode(payload.node) || isSyntheticGpuAggregateNode(payload.node) || isSyntheticBmcAggregateNode(payload.node))
+              ) {
+                setNodeActions(null);
+                return;
+              }
+
               setNodeActions(payload);
             }}
-            hoverInfoTooltipEnabled={false}
-            nodeActionOpenMode="click-only"
             onSelectNode={handleCanvasSelect}
             onZoomChange={setZoomPercent}
             selectedNodeId={selectedNodeId}
@@ -733,7 +750,7 @@ function TopologyExplorer({
               size="sm"
               variant="secondary"
             >
-              隔离节点
+              Isolate
             </AppButton>
             <AppButton
               onClick={() => {
@@ -743,10 +760,14 @@ function TopologyExplorer({
               size="sm"
               variant="primary"
             >
-              查看拓扑
+              View topology
             </AppButton>
           </div>
-          <p className="topology-node-menu__hint">当前对象已选中，点击画布空白区域可关闭此浮层。</p>
+          {actionNode && nodeActions?.trigger === "click" && selectedNode && selectedNode.id === actionNode.id ? (
+            <p className="topology-node-menu__hint">{"\u5f53\u524d\u5bf9\u8c61\u5df2\u88ab\u9009\u4e2d\uff0c\u53f3\u952e\u5916\u7a7a\u767d\u533a\u57df\u53ef\u5173\u95ed\u6b64\u6d6e\u5c42\u3002"}</p>
+          ) : actionNode && nodeActions?.trigger === "hover" ? (
+            <p className="topology-node-menu__hint">{"\u6eda\u8f6e\u6216\u79fb\u52a8\u753b\u5e03\u4e0d\u4f1a\u9501\u5b9a\u6b64\u6d6e\u5c42\uff0c\u70b9\u51fb\u8282\u70b9\u53ef\u56fa\u5b9a\u64cd\u4f5c\u9762\u677f\u3002"}</p>
+          ) : null}
         </aside>
       ) : null}
     </div>

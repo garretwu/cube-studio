@@ -1311,25 +1311,6 @@
   flex: 1 1 0;
 }
 
-.topology-node-menu--diagnosis {
-  z-index: 42;
-  width: min(332px, calc(100vw - 28px));
-  padding: 14px;
-}
-
-.topology-node-menu--diagnosis .topology-node-menu__title {
-  font-size: 18px;
-  line-height: 1.2;
-}
-
-.topology-node-menu__summary--diagnosis {
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-  word-break: break-word;
-}
-
 .topology-flow-node {
   position: relative;
   overflow: visible;
