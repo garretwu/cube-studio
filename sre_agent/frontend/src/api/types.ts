@@ -242,6 +242,9 @@ export type DiagnosedRootCause = {
   evidence_summary: string;
   impact_summary: string;
   distinguishing_verification?: string | null;
+  factor_type?: string | null;
+  evidence_refs?: string[];
+  evidence_interpretation?: string | null;
   recommended_fix?: RemediationPlan | null;
 };
 

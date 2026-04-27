@@ -481,6 +481,12 @@ describe("buildDiagnosisModifiedReportView", () => {
     expect(view.candidateChanges[2]?.title).toBe("Ingress throttling");
     expect(view.rootCauseReady).toBe(true);
     expect(view.rootCause.state).toBe("ready");
+    expect(view.rootCause.items.map((item) => item.title)).toEqual([
+      "Redis connection saturation",
+      "Downstream database wait queue",
+      "Ingress throttling",
+      "Node pressure",
+    ]);
   });
 
   it("compresses execution and feedback from existing event and audit sources", () => {
@@ -857,7 +863,7 @@ describe("buildDiagnosisModifiedReportView", () => {
     expect(new Set(supportTones)).toEqual(new Set(["success"]));
   });
 
-  it("collapses hypothesis-level validation details once the root cause is settled", () => {
+  it("uses backend hypotheses after settlement and keeps their details collapsed", () => {
     const candidateSnapshots = createCandidateSnapshots();
 
     const view = buildDiagnosisModifiedReportView({
@@ -870,9 +876,54 @@ describe("buildDiagnosisModifiedReportView", () => {
     });
 
     expect(view.hypotheses.detailMode).toBe("collapsed");
-    expect(view.hypotheses.description).toContain("默认折叠细节");
+    expect(view.hypotheses.description).toContain("默认折叠证据链");
     expect(view.hypotheses.items[0]?.evidenceItems.length).toBeGreaterThan(0);
-    expect(view.hypotheses.items[0]?.confidenceUpdates.length).toBeGreaterThan(0);
+    expect(view.hypotheses.items[0]?.title).toBe("Redis timeout amplifies auth retry pressure");
+    expect(view.hypotheses.items[0]?.confidenceUpdates).toHaveLength(0);
+  });
+
+  it("sorts backend hypotheses with confirmed items first", () => {
+    const session = createSession("approval_required");
+    if (!session.diagnosis_result) {
+      throw new Error("expected diagnosis result");
+    }
+    session.diagnosis_result.hypotheses = [
+      {
+        description: "KV cache pressure remains possible",
+        status: "testing",
+        confidence: 0.3,
+        evidence_for: ["GPU utilization is high"],
+        evidence_against: [],
+      },
+      {
+        description: "Thermal throttling explains TTFT",
+        status: "eliminated",
+        confidence: 0.2,
+        evidence_for: [],
+        evidence_against: ["Temperature is normal"],
+      },
+      {
+        description: "GPU contention explains TTFT",
+        status: "confirmed",
+        confidence: 0.92,
+        evidence_for: ["fi_gpu_burn process is present"],
+        evidence_against: [],
+      },
+    ];
+
+    const view = buildDiagnosisModifiedReportView({
+      session,
+      timeline: [],
+      candidates: [],
+      events: [],
+      localAuditRecords: [],
+    });
+
+    expect(view.hypotheses.items.map((item) => item.title)).toEqual([
+      "GPU contention explains TTFT",
+      "KV cache pressure remains possible",
+      "Thermal throttling explains TTFT",
+    ]);
   });
 
   it("keeps confidence loading when only an initial candidate snapshot exists", () => {

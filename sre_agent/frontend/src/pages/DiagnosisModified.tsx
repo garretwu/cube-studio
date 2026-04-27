@@ -36,6 +36,7 @@ const DEMO_EVENT_SLOWDOWN = 4.5;
 const DEMO_MIN_TOOL_LOADING_DWELL_MS = 3500;
 const TOOL_RESULT_TIMEOUT_MS = 15_000;
 const STREAM_COMPLETION_BUFFER_MS = 640;
+const LIVE_SESSION_RECONCILE_INTERVAL_MS = 2_000;
 const DEMO_DEFAULT_PROMPT = "Analyze auth-svc latency and error-rate spike in the past hour";
 const THINKING_PREVIEW_CHAR_LIMIT = 200;
 const DEMO_POST_APPROVAL_AUTO_FLOW = [
@@ -735,7 +736,7 @@ function ThinkingBlock({
   onStreamComplete?: () => void;
 }) {
   const isThinking = item.status === "thinking";
-  const [isExpanded, setIsExpanded] = useState(false);
+  const [isExpanded, setIsExpanded] = useState(true);
   const latestSummaryLine = item.summaryLine?.trim() || extractLatestThinkingSummary(item.content);
   const streamingPreviewText = buildStreamingThinkingPreview(latestSummaryLine || item.content);
   const hasCompletedContent = !isThinking && item.content.trim().length > 0;
@@ -743,10 +744,10 @@ function ThinkingBlock({
 
   useEffect(() => {
     if (isThinking) {
-      setIsExpanded(false);
+      setIsExpanded(true);
       return;
     }
-    setIsExpanded(false);
+    setIsExpanded(true);
   }, [isThinking, item.content, item.id]);
 
   const durationLabel = formatThoughtDurationLabel(item.thoughtDurationSec);
@@ -1290,6 +1291,7 @@ function DiagnosisModifiedPage() {
     currentPlanVersion,
     approvePlan,
     bootstrapSession,
+    reconcileSession,
     applyEvent,
     setConnectionState,
   } = useDiagnosisStore();
@@ -1520,6 +1522,31 @@ function DiagnosisModifiedPage() {
     }
     void bootstrapSession(routeSessionId);
   }, [bootstrapSession, routeSessionId, shouldBootstrapLiveSession]);
+
+  useEffect(() => {
+    if (!shouldBootstrapLiveSession || bootstrapStatus !== "ready" || !activeSessionId || !session?.session_id) {
+      return undefined;
+    }
+    if (isTerminalLiveSession) {
+      return undefined;
+    }
+
+    void reconcileSession(activeSessionId);
+    const timer = window.setInterval(() => {
+      void reconcileSession(activeSessionId);
+    }, LIVE_SESSION_RECONCILE_INTERVAL_MS);
+
+    return () => {
+      window.clearInterval(timer);
+    };
+  }, [
+    activeSessionId,
+    bootstrapStatus,
+    isTerminalLiveSession,
+    reconcileSession,
+    session?.session_id,
+    shouldBootstrapLiveSession,
+  ]);
 
   useEffect(() => {
     setLiveApprovalResolution(null);

@@ -36,6 +36,9 @@ export function getNormalizedRootCauses(result?: DiagnosisResult | null): Diagno
       evidence_summary: String(item.evidence_summary ?? result.impact_summary ?? title).trim() || title,
       impact_summary: String(item.impact_summary ?? result.impact_summary ?? title).trim() || title,
       distinguishing_verification: item.distinguishing_verification ?? null,
+      factor_type: item.factor_type ?? null,
+      evidence_refs: Array.isArray(item.evidence_refs) ? item.evidence_refs.filter(Boolean) : [],
+      evidence_interpretation: item.evidence_interpretation ?? null,
       recommended_fix: item.recommended_fix ?? null,
     });
   }
@@ -57,6 +60,9 @@ export function getNormalizedRootCauses(result?: DiagnosisResult | null): Diagno
       evidence_summary: String(result.impact_summary || "证据不足，暂无法确认根因"),
       impact_summary: String(result.impact_summary || "证据不足，暂无法确认根因"),
       distinguishing_verification: null,
+      factor_type: null,
+      evidence_refs: [],
+      evidence_interpretation: null,
       recommended_fix: null,
     },
   ];
