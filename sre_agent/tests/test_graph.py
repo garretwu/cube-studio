@@ -701,7 +701,7 @@ description: >
         self.assertIn("not allowed in the current turn", result["tool_runs"][0]["error"])
         self.assertIn("skills.list_skills", result["tool_runs"][0]["error"])
 
-    async def test_xml_like_provider_tool_calls_are_recovered_into_pending_tool_calls(self) -> None:
+    async def test_xml_like_provider_tool_calls_are_recovered_into_pending_tool_calls_for_ttft(self) -> None:
         llm = _FakeLLM(
             [
                 AIMessage(
@@ -739,13 +739,14 @@ description: >
         )
 
         result = await run_diagnosis(
-            query="Diagnose GPU temperature alert on node 10.11.4.12.",
+            query="Diagnose AIServiceTTFT alert on node 10.11.4.12.",
             context=_happy_context(),
             variables={},
             llm=llm,
             step_timeout_sec=5.0,
             total_timeout_sec=10.0,
             checkpoint_dir=None,
+            alert_snapshot={"alert_name": "AIServiceTTFTHigh"},
             allowed_tool_names=[
                 "gpu.get_metrics",
                 "gpu.get_processes",
@@ -758,6 +759,93 @@ description: >
             ["gpu.get_metrics", "gpu.get_processes"],
         )
         self.assertTrue(all(item["success"] for item in result["tool_runs"][:2]))
+
+    async def test_non_ttft_first_turn_forces_skills_list_before_provider_tools(self) -> None:
+        llm = _FakeLLM(
+            [
+                AIMessage(
+                    content=(
+                        "I will collect evidence from the node.\n"
+                        "<invoke name=\"gpu.get_metrics\">\n"
+                        "<parameter name=\"node\">10.11.4.12</parameter>\n"
+                        "</invoke>\n"
+                        "</minimax:tool_call>"
+                    ),
+                    tool_calls=[],
+                ),
+                AIMessage(
+                    content=json.dumps(
+                        {
+                            "thought": "首轮已按策略先执行 skills.list_skills。",
+                            "diagnosis": {
+                                "root_cause": "首轮先做 skill discovery，后续再决定具体取证路径。",
+                                "root_cause_layer": "service",
+                                "root_cause_entities": ["service:test"],
+                                "confidence": 0.61,
+                                "impact_summary": "非 TTFT 告警的首轮工具调用已被收紧为 skills.list_skills。",
+                                "affected_services": ["service:test"],
+                                "triage_priority": "P2",
+                                "diagnosis_certainty": "probable",
+                            },
+                            "remediation_plan": None,
+                        }
+                    )
+                ),
+            ]
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            skill_root = Path(tmpdir) / "skills"
+            skill_dir = skill_root / "gpu-thermal-diagnosis"
+            skill_dir.mkdir(parents=True, exist_ok=True)
+            (skill_dir / "SKILL.md").write_text(
+                """---
+name: GPU Thermal Diagnosis
+description: Diagnose GPU thermal alerts.
+tags:
+  - gpu
+  - thermal
+  - gputemperaturehigh
+---
+
+# GPU Thermal Diagnosis
+""",
+                encoding="utf-8",
+            )
+
+            from sre_agent.skills import SkillRegistry
+
+            result = await run_diagnosis(
+                query="Diagnose GPU temperature alert on node 10.11.4.12.",
+                context=_happy_context(),
+                variables={},
+                llm=llm,
+                step_timeout_sec=5.0,
+                total_timeout_sec=10.0,
+                checkpoint_dir=None,
+                alert_snapshot={
+                    "alert_name": "GPUTemperatureHighAll",
+                    "annotations": {
+                        "summary": "GPU temperature is high",
+                        "description": "GPU temperature high thermal fan anomaly",
+                    },
+                },
+                allowed_tool_names=[
+                    "skills.list_skills",
+                    "skills.load_skill",
+                    "skills.read_skill_ref",
+                    "skills.run_skill",
+                    "gpu.get_metrics",
+                ],
+                skill_registry=SkillRegistry(root=skill_root),
+            )
+
+        self.assertEqual(result["status"], "diagnosed")
+        self.assertGreaterEqual(len(result["tool_runs"]), 1)
+        self.assertEqual(result["tool_runs"][0]["tool"], "skills.list_skills")
+        self.assertEqual(
+            (result["tool_runs"][0].get("params") or {}).get("query"),
+            "Diagnose alert 'GPUTemperatureHighAll'. Summary: GPU temperature is high. Description: GPU temperature high thermal fan anomaly. Use available tools to identify root cause and produce ranked candidates.",
+        )
 
     async def test_repeated_skill_list_is_promoted_to_load_skill(self) -> None:
         llm = _FakeLLM(

@@ -510,6 +510,10 @@ async def reason_node(
                 "Recovered %d XML-like tool_calls from provider text response",
                 len(provider_tool_calls),
             )
+    provider_tool_calls = _enforce_first_turn_skill_listing_policy(
+        state=state,
+        pending_tool_calls=provider_tool_calls,
+    )
 
     updated_messages = [*messages, response]
     updated_trace = list(state.get("trace_items", []))
@@ -1187,7 +1191,7 @@ def _find_latest_successful_skill_listing(tool_runs: list[dict[str, Any]]) -> di
     return None
 
 
-_AUTO_LOAD_SKILL_MATCH_THRESHOLD = 0.6
+_AUTO_LOAD_SKILL_MATCH_THRESHOLD = 10.0
 _SKILL_LIST_COOLDOWN_STEPS = 6
 
 
@@ -4764,6 +4768,68 @@ def _extract_xml_like_tool_calls(content: str) -> list[dict[str, Any]]:
             }
         )
     return tool_calls
+
+
+def _build_first_turn_skill_listing_query(state: SREAgentState) -> str:
+    snapshot = state.get("alert_snapshot")
+    alert_name = ""
+    severity = ""
+    summary = ""
+    description = ""
+    if isinstance(snapshot, dict):
+        alert_name = str(snapshot.get("alert_name", "") or "").strip()
+        severity_value = snapshot.get("severity")
+        if isinstance(severity_value, dict):
+            severity = str(severity_value.get("value", "") or "").strip()
+        else:
+            severity = str(severity_value or "").strip()
+        annotations = snapshot.get("annotations")
+        if isinstance(annotations, dict):
+            summary = str(annotations.get("summary", "") or "").strip()
+            description = str(annotations.get("description", "") or "").strip()
+
+    if alert_name or severity or summary or description:
+        parts: list[str] = []
+        if alert_name:
+            if severity:
+                parts.append(f"Diagnose alert '{alert_name}' with severity '{severity}'.")
+            else:
+                parts.append(f"Diagnose alert '{alert_name}'.")
+        if summary:
+            parts.append(f"Summary: {summary}.")
+        if description:
+            parts.append(f"Description: {description}.")
+        parts.append("Use available tools to identify root cause and produce ranked candidates.")
+        merged = " ".join(part for part in parts if part).strip()
+        if merged:
+            return merged
+
+    query = str(state.get("query", "") or "").strip()
+    compact = re.sub(r"\s+", " ", query).strip()
+    return compact[:120] or "alert diagnosis"
+
+
+def _enforce_first_turn_skill_listing_policy(
+    *,
+    state: SREAgentState,
+    pending_tool_calls: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    if state.get("tool_runs"):
+        return pending_tool_calls
+    if _is_ttft_alert_state(state):
+        return pending_tool_calls
+    call_id = ""
+    if pending_tool_calls:
+        call_id = str((pending_tool_calls[0] or {}).get("id", "")).strip()
+    call_id = call_id or "call-first-turn-skill-list"
+    return [
+        {
+            "name": "skills.list_skills",
+            "args": {"query": _build_first_turn_skill_listing_query(state)},
+            "id": call_id,
+            "type": "tool_call",
+        }
+    ]
 
 
 def _parse_reasoning_output(content: str) -> ReasoningEnvelope:
