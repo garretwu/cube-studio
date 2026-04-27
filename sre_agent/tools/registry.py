@@ -536,6 +536,16 @@ def build_default_registry() -> ToolRegistry:
         ),
         network.get_switch_port_counters,
     )
+    registry.register(
+        ToolDefinition(
+            name="network.get_switch_qos_config",
+            description="Read switch interface QoS/CAR configuration and parse car cir entries.",
+            safety_level=SafetyLevel.READ_ONLY,
+            params_schema={"type": "object", "required": ["switch", "interface"]},
+            tags=("network", "readonly", "switch", "qos"),
+        ),
+        network.get_switch_qos_config,
+    )
 
     # readonly/ontology.py
     registry.register(
@@ -543,7 +553,14 @@ def build_default_registry() -> ToolRegistry:
             name="ontology.query",
             description="Ontology entity query.",
             safety_level=SafetyLevel.READ_ONLY,
-            params_schema={"type": "object", "required": ["entity_type"]},
+            params_schema={
+                "type": "object",
+                "required": ["entity_type"],
+                "properties": {
+                    "entity_type": {"type": "string"},
+                    "filters": {"type": "object"},
+                },
+            },
             tags=("ontology", "readonly"),
         ),
         ontology.query_entities,
@@ -637,7 +654,7 @@ def build_default_registry() -> ToolRegistry:
     registry.register(
         ToolDefinition(
             name="skills.list_skills",
-            description="List discovered skills ranked by a required non-empty query, including available scripts/references.",
+            description="List discovered skills ranked by a required non-empty query, returning only lightweight catalog fields such as skill_id, name, description, and match_score.",
             safety_level=SafetyLevel.READ_ONLY,
             params_schema={
                 "type": "object",
@@ -655,7 +672,7 @@ def build_default_registry() -> ToolRegistry:
     registry.register(
         ToolDefinition(
             name="skills.load_skill",
-            description="Load a skill's SKILL.md content and resource inventory, including the exact `scripts` list you must choose from before calling `skills.run_skill`.",
+            description="Load a skill's SKILL.md content and resource inventory, including `scripts` and `script_descriptions` used to choose the exact script before calling `skills.run_skill`.",
             safety_level=SafetyLevel.READ_ONLY,
             params_schema={"type": "object", "required": ["skill_id"]},
             tags=("skills", "readonly"),
@@ -675,7 +692,7 @@ def build_default_registry() -> ToolRegistry:
     registry.register(
         ToolDefinition(
             name="skills.run_skill",
-            description="Run one specific script from a loaded skill. Always provide both `skill_id` and an exact `script` value copied from the skill's `scripts` list.",
+            description="Run one specific script from a loaded skill. Always provide both `skill_id` and the exact `script` value whose description best matches the current alert.",
             safety_level=SafetyLevel.READ_ONLY,
             params_schema={
                 "type": "object",
@@ -927,6 +944,18 @@ def build_default_registry() -> ToolRegistry:
             command_template="route update --switch {switch} --config <config_xml>",
         ),
         write_network.update_route,
+    )
+    registry.register(
+        ToolDefinition(
+            name="network.repair_switch_qos_config",
+            description="Repair switch interface QoS/CAR configuration.",
+            safety_level=SafetyLevel.CRITICAL,
+            params_schema={"type": "object", "required": ["switch", "interface"]},
+            tags=("network", "write", "switch", "qos"),
+            needs_approval=True,
+            command_template="switch qos repair --switch {switch} --interface {interface}",
+        ),
+        write_network.repair_switch_qos_config,
     )
     registry.register(
         ToolDefinition(

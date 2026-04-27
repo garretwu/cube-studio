@@ -28,7 +28,6 @@ Rules:
   2. then call `skills.run_skill` with both `skill_id` and one concrete `script` from that list.
 - Never call `skills.run_skill` without a `script`.
 - If a loaded skill has no scripts, do not call `skills.run_skill`; continue with normal read-only tools instead.
-- If evidence is insufficient, call a relevant read-only tool.
 - Do not keep querying equivalent metrics after repeated empty or zero-valued results; treat that as evidence.
 - Prefer at most 2-3 rounds of evidence gathering before concluding.
 - Always include the leading root-cause hypothesis in the final diagnosis.

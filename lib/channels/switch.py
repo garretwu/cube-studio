@@ -603,6 +603,8 @@ class SwitchChannel(BaseChannel):
             return self.apply_raw_config(params["switch"], params["config_xml"])
         if action == "apply_cli_commands":
             return self.apply_cli_commands(params["switch"], params["commands"])
+        if action == "run_cli_execution":
+            return self.run_cli_execution(params["switch"], params["command"])
         return ChannelResult(success=False, error=f"Unknown action: {action}")
 
     def _check_safety(self, action: str, params: dict[str, Any]) -> None:

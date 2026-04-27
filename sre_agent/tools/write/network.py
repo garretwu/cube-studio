@@ -10,6 +10,7 @@ network-write approval metadata is present.
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from sre_agent.tools.registry import ToolExecutionContext, ToolValidationError
@@ -24,6 +25,39 @@ def _require_str(params: dict[str, Any], key: str) -> str:
 
 def _is_unknown_action_error(error: str) -> bool:
     return "unknown action" in error.casefold()
+
+
+def _require_safe_cli_token(params: dict[str, Any], key: str) -> str:
+    value = _require_str(params, key)
+    if not re.fullmatch(r"[A-Za-z0-9/._:-]+", value):
+        raise ToolValidationError(f"parameter {key!r} contains unsafe CLI characters")
+    return value
+
+
+def _optional_bool(params: dict[str, Any], key: str, default: bool = False) -> bool:
+    value = params.get(key, default)
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        text = value.strip().lower()
+        if text in {"1", "true", "yes", "y"}:
+            return True
+        if text in {"0", "false", "no", "n", ""}:
+            return False
+    return bool(value)
+
+
+def _qos_directions(raw: Any) -> list[str]:
+    direction = str(raw or "both").strip().lower()
+    if direction in {"both", "all"}:
+        return ["inbound", "outbound"]
+    if direction in {"in", "ingress"}:
+        return ["inbound"]
+    if direction in {"out", "egress"}:
+        return ["outbound"]
+    if direction in {"inbound", "outbound"}:
+        return [direction]
+    raise ToolValidationError("parameter 'direction' must be inbound, outbound, or both")
 
 
 def _extract_result(value: Any, *, action: str, unsupported_message: str | None = None) -> Any:
@@ -125,6 +159,51 @@ async def update_route(params: dict[str, Any], context: ToolExecutionContext) ->
         result = await switch.execute("apply_raw_config", {"switch": switch_name, "config_xml": config_xml})
         return _extract_result(result, action="apply_raw_config")
     raise ToolValidationError("switch backend does not support route/config update")
+
+
+async def repair_switch_qos_config(params: dict[str, Any], context: ToolExecutionContext) -> Any:
+    switch = context.channels.get("switch")
+    if switch is None:
+        raise ToolValidationError("required channel is missing: switch")
+
+    switch_name = _require_safe_cli_token(params, "switch")
+    interface = _require_safe_cli_token(params, "interface")
+    mode = str(params.get("mode") or "remove_car").strip().lower()
+    directions = _qos_directions(params.get("direction"))
+    save = _optional_bool(params, "save", default=False)
+
+    commands = ["system-view", f"interface {interface}"]
+    if mode == "remove_car":
+        commands.extend(f"undo qos car {direction}" for direction in directions)
+    elif mode == "set_car":
+        cir_raw = params.get("cir")
+        try:
+            cir = int(str(cir_raw).strip())
+        except (TypeError, ValueError):
+            raise ToolValidationError("parameter 'cir' must be an integer for mode='set_car'") from None
+        if cir <= 0:
+            raise ToolValidationError("parameter 'cir' must be positive")
+        for direction in directions:
+            commands.append(f"undo qos car {direction}")
+            commands.append(f"qos car {direction} any cir {cir}")
+    elif mode == "unapply_policy":
+        policy_name = _require_safe_cli_token(params, "policy_name")
+        commands.extend(f"undo qos apply policy {policy_name} {direction}" for direction in directions)
+    else:
+        raise ToolValidationError("parameter 'mode' must be remove_car, set_car, or unapply_policy")
+
+    if save:
+        commands.append("save force")
+
+    if hasattr(switch, "apply_cli_commands"):
+        return _extract_result(
+            switch.apply_cli_commands(switch_name, commands),
+            action="apply_cli_commands",
+        )
+    if hasattr(switch, "execute"):
+        result = await switch.execute("apply_cli_commands", {"switch": switch_name, "commands": commands})
+        return _extract_result(result, action="apply_cli_commands")
+    raise ToolValidationError("switch backend does not support CLI configuration")
 
 
 async def clear_tc_qdisc(params: dict[str, Any], context: ToolExecutionContext) -> Any:

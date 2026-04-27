@@ -1425,6 +1425,14 @@ def _choose_recommended_tool_call_from_skill_load(
         if not content:
             return None
         candidates = _extract_recommended_tool_calls_from_skill_content(content)
+        if candidates:
+            candidates = [
+                {
+                    "name": str(item.get("name", "")).strip(),
+                    "args": _interpolate_params(item.get("args") or {}, variables),
+                }
+                for item in candidates
+            ]
 
     for candidate in candidates:
         tool_name = str(candidate.get("name", "")).strip()
@@ -1936,6 +1944,25 @@ def _summarize_prometheus_result(data: Any) -> tuple[str, dict[str, Any] | None]
     return f"value={text or 'none'}", {"result_shape": _detect_data_kind(data)}
 
 
+def _summarize_ssh_run_command(params: dict[str, Any], data: Any) -> tuple[str, dict[str, Any] | None]:
+    command = str(params.get("command", "") or "").strip()
+    output = _extract_output_blob(data)
+    if not output:
+        return "output=empty", None
+
+    lines = [line.strip() for line in output.splitlines() if line.strip()]
+    full_output = "\n".join(lines) if lines else output
+    return (
+        f"output_lines={len(lines)}; output={full_output}",
+        {
+            "command": command,
+            "line_count": len(lines),
+            "output": full_output,
+            "lines": lines,
+        },
+    )
+
+
 def _summarize_k8s_pods(data: Any) -> tuple[str, int | None, dict[str, Any] | None]:
     if not isinstance(data, list):
         return f"unexpected_shape={_detect_data_kind(data)}", _estimate_item_count(data), None
@@ -2288,6 +2315,8 @@ def _build_tool_prompt_fields(
         prompt_summary, key_fields = _summarize_gpu_metrics(data)
     elif tool == "gpu.get_processes":
         prompt_summary, key_fields = _summarize_gpu_processes(data)
+    elif tool == "ssh.run_command":
+        prompt_summary, key_fields = _summarize_ssh_run_command(params, data)
     elif tool == "skills.load_skill":
         prompt_summary, key_fields = _summarize_skill_load(data)
     else:
@@ -2456,6 +2485,8 @@ def _render_tool_run_for_prompt(item: dict[str, Any]) -> dict[str, Any]:
         # For BMC/GPU tools, include full key_fields as output_summary (no compression)
         elif tool.startswith("bmc.") or tool.startswith("gpu."):
             rendered["output_summary"] = key_fields  # Pass full content, no truncation
+        elif tool == "ssh.run_command":
+            rendered["output_summary"] = key_fields
         else:
             rendered["key_fields"] = _compact_prompt_value(key_fields, max_items=4, max_keys=6, max_string=96)
     return rendered

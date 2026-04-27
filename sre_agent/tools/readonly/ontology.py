@@ -29,8 +29,10 @@ async def query_entities(params: dict[str, Any], context: ToolExecutionContext) 
     channel = _require_channel(context, "ontology")
     entity_type = _require_str(params, "entity_type")
     filters = params.get("filters")
-    if not isinstance(filters, dict):
+    if filters is None:
         filters = {}
+    elif not isinstance(filters, dict):
+        raise ToolValidationError("parameter 'filters' must be an object/dict")
     return await channel.query(entity_type, filters=filters)
 
 

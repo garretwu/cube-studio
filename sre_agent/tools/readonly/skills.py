@@ -38,7 +38,16 @@ def _get_skill_executor(context: ToolExecutionContext) -> SkillExecutor:
     return SkillExecutor()
 
 
-def _serialize_skill(skill: Any) -> dict[str, Any]:
+def _serialize_skill_listing(skill: Any) -> dict[str, Any]:
+    return {
+        "skill_id": skill.id,
+        "name": skill.name,
+        "description": skill.summary,
+        "match_score": skill.match_score,
+    }
+
+
+def _serialize_loaded_skill(skill: Any) -> dict[str, Any]:
     return {
         "skill_id": skill.id,
         "name": skill.name,
@@ -48,6 +57,7 @@ def _serialize_skill(skill: Any) -> dict[str, Any]:
         "source": skill.source,
         "path": skill.path,
         "scripts": list(skill.scripts),
+        "script_descriptions": dict(getattr(skill, "script_descriptions", {}) or {}),
         "references": list(skill.references),
         "permissions": list(skill.permissions),
         "tags": list(skill.tags),
@@ -151,7 +161,7 @@ async def list_skills(params: dict[str, Any], context: ToolExecutionContext) -> 
     skills = registry.discover(refresh=refresh)
     skills = rank_skills(query, skills, top_k=top_k)
     return {
-        "skills": [_serialize_skill(skill) for skill in skills],
+        "skills": [_serialize_skill_listing(skill) for skill in skills],
         "warnings": registry.warnings,
     }
 
@@ -161,7 +171,7 @@ async def load_skill(params: dict[str, Any], context: ToolExecutionContext) -> A
     skill_id = _require_str(params, "skill_id")
     skill, content = registry.load_skill(skill_id)
     return {
-        **_serialize_skill(skill),
+        **_serialize_loaded_skill(skill),
         "content": content,
         "version": skill.version,
     }

@@ -126,6 +126,16 @@ class _FakeSwitchChannel:
         self.calls.append({"action": "apply_raw_config", "switch": switch, "config_xml": config_xml})
         return _FakeChannelResult(output=f"config:{switch}")
 
+    def apply_cli_commands(self, switch: str, commands: list[str]) -> _FakeChannelResult:
+        self.calls.append({"action": "apply_cli_commands", "switch": switch, "commands": commands})
+        return _FakeChannelResult(output="\n".join(commands))
+
+    def run_cli_execution(self, switch: str, command: str) -> _FakeChannelResult:
+        self.calls.append({"action": "run_cli_execution", "switch": switch, "command": command})
+        if "current-configuration" in command:
+            return _FakeChannelResult(output=" qos car inbound any cir 5000000\n")
+        return _FakeChannelResult(output=f"{switch}:{command}")
+
 
 class _FailingSwitchChannel:
     def bringup_port(self, switch: str, interface: str) -> _FakeChannelResult:
@@ -519,6 +529,18 @@ class TestToolRegistryUnit(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(missing_command.success)
         self.assertIn("parameter 'command' is required", missing_command.error)
 
+    async def test_unit_ontology_query_rejects_non_dict_filters(self) -> None:
+        registry = build_default_registry()
+        context = ToolExecutionContext(channels={"ontology": _FakeOntologyChannel()})
+        result = await registry.execute(
+            "ontology.query",
+            {"entity_type": "node", "filters": '[{"field":"ip","operator":"eq","value":"10.11.4.10"}]'},
+            context,
+        )
+
+        self.assertFalse(result.success)
+        self.assertIn("parameter 'filters' must be an object/dict", result.error)
+
     async def test_unit_file_read_returns_full_content(self) -> None:
         registry = build_default_registry()
         with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False) as fp:
@@ -861,12 +883,54 @@ class TestToolRegistryUnit(unittest.IsolatedAsyncioTestCase):
             await registry.execute("gpu.get_metrics", {"node": "gpu-1-1"}, context),
             await registry.execute("kill_process", {"node": "gpu-1-1", "pid": 999}, context),
             await registry.execute("network.get_switch_port_counters", {"switch": "sw-1", "interface": "GE1/0/1"}, context),
+            await registry.execute("network.get_switch_qos_config", {"switch": "sw-1", "interface": "GE1/0/1"}, context),
             await registry.execute("ontology.path", {"from_id": "a", "to_id": "b"}, context),
             await registry.execute("memory.search_patterns", {"query": "gpu timeout"}, context),
             await registry.execute("remediation.execute_plan", {"plan": {"id": "p-1"}}, context),
             await registry.execute("network.switch_port_enable", {"switch": "sw-1", "interface": "GE1/0/1"}, context),
+            await registry.execute("network.repair_switch_qos_config", {"switch": "sw-1", "interface": "GE1/0/1"}, context),
         ]
         self.assertTrue(all(item.success for item in results))
+
+    async def test_unit_switch_qos_read_parses_car_cir(self) -> None:
+        registry = build_default_registry()
+        context = ToolExecutionContext(channels={"switch": _FakeSwitchChannel()})
+
+        result = await registry.execute(
+            "network.get_switch_qos_config",
+            {"switch": "sw-1", "interface": "GE1/0/1"},
+            context,
+        )
+
+        self.assertTrue(result.success)
+        self.assertEqual(result.data["car_cir"][0]["cir"], 5000000)
+        self.assertEqual(result.data["car_cir"][0]["direction"], "inbound")
+
+    async def test_unit_switch_qos_repair_removes_interface_car(self) -> None:
+        registry = build_default_registry()
+        switch = _FakeSwitchChannel()
+        context = ToolExecutionContext(channels={"switch": switch}, write_approved=True)
+
+        result = await registry.execute(
+            "network.repair_switch_qos_config",
+            {"switch": "sw-1", "interface": "GE1/0/1"},
+            context,
+        )
+
+        self.assertTrue(result.success)
+        self.assertEqual(
+            switch.calls[-1],
+            {
+                "action": "apply_cli_commands",
+                "switch": "sw-1",
+                "commands": [
+                    "system-view",
+                    "interface GE1/0/1",
+                    "undo qos car inbound",
+                    "undo qos car outbound",
+                ],
+            },
+        )
 
 
 class TestToolRegistryContract(unittest.IsolatedAsyncioTestCase):

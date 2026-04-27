@@ -30,10 +30,8 @@ class TestSkillsUnit(unittest.IsolatedAsyncioTestCase):
         gpu_drop = registry.get("builtin-gpu-drop-diagnosis")
         self.assertIn("gpu_drop_recover.sh", gpu_drop.scripts)
         rdma_skill = registry.get("builtin-rdma-diagnosis")
-        self.assertIn("rdma_health_check.sh", rdma_skill.scripts)
-        self.assertIn("rdma_remediate.sh", rdma_skill.scripts)
-        self.assertIn("rdma_switch_health_check.sh", rdma_skill.scripts)
-        self.assertIn("rdma_switch_restore.sh", rdma_skill.scripts)
+        self.assertEqual(rdma_skill.scripts, [])
+        self.assertEqual(rdma_skill.script_descriptions, {})
 
     async def test_registry_supports_claude_style_skill_with_scripts_and_references(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -52,6 +50,11 @@ version: "1.0"
 
 ## Notes
 Read the reference first and then run the script.
+
+## Scripts
+
+- `check.sh`
+  - Collect link state evidence.
 """,
                 encoding="utf-8",
             )
@@ -65,6 +68,7 @@ Read the reference first and then run the script.
             self.assertEqual(skill.id, "sre:network-check")
             self.assertEqual(skill.version, "1.0")
             self.assertEqual(skill.scripts, ["check.sh"])
+            self.assertEqual(skill.script_descriptions["check.sh"], "Collect link state evidence.")
             self.assertEqual(skill.references, ["triage.md"])
 
     async def test_registry_skips_invalid_skill_and_records_warning(self) -> None:
@@ -180,6 +184,10 @@ Read the reference first and then run the script.
             listed = await tool_registry.execute("skills.list_skills", {"query": "doc scripted"}, context)
             self.assertTrue(listed.success)
             self.assertEqual(listed.data["skills"][0]["skill_id"], "doc-skill")
+            self.assertEqual(listed.data["skills"][0]["name"], "doc-skill")
+            self.assertEqual(listed.data["skills"][0]["description"], "a scripted diagnosis skill")
+            self.assertNotIn("scripts", listed.data["skills"][0])
+            self.assertNotIn("references", listed.data["skills"][0])
 
             missing_query = await tool_registry.execute("skills.list_skills", {}, context)
             self.assertFalse(missing_query.success)
@@ -200,6 +208,8 @@ Read the reference first and then run the script.
             loaded = await tool_registry.execute("skills.load_skill", {"skill_id": "doc-skill"}, context)
             self.assertTrue(loaded.success)
             self.assertIn("Doc Skill", loaded.data["content"])
+            self.assertEqual(loaded.data["scripts"], ["run.sh"])
+            self.assertEqual(loaded.data["references"], ["guide.md"])
 
             reference = await tool_registry.execute(
                 "skills.read_skill_ref",
