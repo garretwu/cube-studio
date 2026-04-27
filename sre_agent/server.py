@@ -37,6 +37,7 @@ from sre_agent.memory.factory import create_memory_store
 from sre_agent.models.alert import Alert, AlertSeverity
 from sre_agent.models.diagnosis import DiagnosisSession
 from sre_agent.models.events import EventType, WSEvent
+from sre_agent.models.ontology import EntityType, OntologyEdge, OntologyNode, RelationType
 from sre_agent.ontology.graph import OntologyGraph
 from sre_agent.diagnosis_start import DiagnosisStartCoordinator
 from sre_agent.remediation import ApprovalGate, IncidentHandler, LoopConfig, LoopOrchestrator, PlanValidator, RemediationEngine, RollbackJournal
@@ -880,6 +881,27 @@ class MissingDiagnosisRunner:
         raise RuntimeError("diagnosis runner is not configured")
 
 
+_TOPOLOGY_ALLOWED_KINDS = {"service", "pod", "node", "gpu", "process"}
+_TOPOLOGY_POLICY_TAG = "direct_l1_plus_scoped_l2_v1"
+_TOPOLOGY_MAX_DEPTH = 2
+_TOPOLOGY_MAX_ENTITIES_TOTAL = 12
+_TOPOLOGY_MAX_PER_TYPE = 4
+_TOPOLOGY_MAX_PER_NAMESPACE = 6
+_TOPOLOGY_MANDATORY_KINDS = ("service", "pod", "node", "gpu")
+_TOPOLOGY_INFRA_NAMESPACES = {"kube-system", "monitoring", "istio-system", "ceph", "ceph-csi", "platform-system"}
+_TOPOLOGY_INFRA_NAME_TOKENS = (
+    "ceph-csi",
+    "node-exporter",
+    "kube-proxy",
+    "prometheus",
+    "grafana",
+    "otel",
+    "fluentd",
+    "coredns",
+)
+_TOPOLOGY_RELATION_ALLOWLIST = {RelationType.SERVES, RelationType.HOSTED_ON, RelationType.DEPENDS_ON}
+
+
 def _extract_alert_entities(alert: Alert) -> list[str]:
     ordered_keys = (
         "node",
@@ -900,6 +922,117 @@ def _extract_alert_entities(alert: Alert) -> list[str]:
         if text and text not in values:
             values.append(text)
     return values
+
+
+def _extract_alert_namespace(alert: Alert) -> str:
+    labels = dict(alert.labels or {})
+    namespace = str(labels.get("exported_namespace") or labels.get("namespace") or "").strip()
+    return namespace
+
+
+def _extract_entity_namespace(entity: dict[str, Any]) -> str:
+    key_attrs = entity.get("key_attributes") if isinstance(entity.get("key_attributes"), dict) else {}
+    props = entity.get("properties") if isinstance(entity.get("properties"), dict) else {}
+    namespace = str(key_attrs.get("namespace") or props.get("namespace") or "").strip()
+    return namespace
+
+
+def _extract_entity_node(entity: dict[str, Any]) -> str:
+    key_attrs = entity.get("key_attributes") if isinstance(entity.get("key_attributes"), dict) else {}
+    props = entity.get("properties") if isinstance(entity.get("properties"), dict) else {}
+    node = str(
+        key_attrs.get("node")
+        or key_attrs.get("host")
+        or props.get("node")
+        or props.get("host")
+        or ""
+    ).strip()
+    return node
+
+
+def _infer_entity_kind(entity: dict[str, Any]) -> str:
+    entity_id = str(entity.get("id") or "").strip().lower()
+    entity_type = str(entity.get("type") or "").strip().lower()
+    if entity_type == EntityType.INFERENCE_SERVICE.value or entity_id.startswith("svc:"):
+        return "service"
+    if entity_type == EntityType.K8S_POD.value or entity_id.startswith("pod:"):
+        return "pod"
+    if entity_type == EntityType.NODE.value or entity_id.startswith("node:"):
+        return "node"
+    if entity_type == EntityType.GPU.value or entity_id.startswith("gpu:"):
+        return "gpu"
+    if entity_id.startswith("proc:") or "process" in entity_id:
+        return "process"
+    return "other"
+
+
+def _is_infrastructure_entity(entity: dict[str, Any]) -> bool:
+    namespace = _extract_entity_namespace(entity).lower()
+    if namespace and namespace in _TOPOLOGY_INFRA_NAMESPACES:
+        return True
+    entity_id = str(entity.get("id") or "").strip().lower()
+    entity_name = str(entity.get("name") or "").strip().lower()
+    combined = f"{entity_id} {entity_name}"
+    return any(token in combined for token in _TOPOLOGY_INFRA_NAME_TOKENS)
+
+
+def _score_topology_candidate(
+    *,
+    entity: dict[str, Any],
+    level: int,
+    relation: RelationType,
+    alert_namespace: str,
+    root_namespace: str,
+    root_node: str,
+) -> int:
+    kind = _infer_entity_kind(entity)
+    namespace = _extract_entity_namespace(entity)
+    node = _extract_entity_node(entity)
+    score = 100 if level == 1 else 68
+    if relation == RelationType.SERVES:
+        score += 8
+    elif relation == RelationType.HOSTED_ON:
+        score += 6
+    elif relation == RelationType.DEPENDS_ON:
+        score += 4
+    if kind in {"service", "pod"}:
+        score += 10
+    elif kind in {"node", "gpu", "process"}:
+        score += 8
+    if alert_namespace and namespace and namespace == alert_namespace:
+        score += 18
+    if root_namespace and namespace and namespace == root_namespace:
+        score += 10
+    if root_node and node and node == root_node:
+        score += 12
+    return score
+
+
+def _same_l2_domain(entity: dict[str, Any], *, root_namespace: str, root_node: str) -> bool:
+    namespace = _extract_entity_namespace(entity)
+    node = _extract_entity_node(entity)
+    return bool((root_namespace and namespace and namespace == root_namespace) or (root_node and node and node == root_node))
+
+
+def _has_direct_allowed_relation_to_any(
+    ontology: OntologyGraph,
+    *,
+    entity_id: str,
+    anchor_ids: set[str],
+) -> bool:
+    if not entity_id or not anchor_ids:
+        return False
+    for neighbor in ontology.get_neighbors(entity_id):
+        relation = neighbor.get("relation")
+        if not isinstance(relation, OntologyEdge) or relation.relation not in _TOPOLOGY_RELATION_ALLOWLIST:
+            continue
+        neighbor_entity = neighbor.get("entity")
+        if not isinstance(neighbor_entity, OntologyNode):
+            continue
+        neighbor_id = str(neighbor_entity.id or "").strip()
+        if neighbor_id in anchor_ids:
+            return True
+    return False
 
 
 def _compact_blast_entity(entity: Any) -> dict[str, Any]:
@@ -929,8 +1062,23 @@ def _compact_blast_entity(entity: Any) -> dict[str, Any]:
 
 def _build_alert_blast_radius_context(ontology: OntologyGraph, alert: Alert) -> dict[str, Any]:
     resolved_entities: list[str] = []
-    blast_entities: list[dict[str, Any]] = []
+    raw_entities: list[dict[str, Any]] = []
     total_affected = 0
+    dropped_by_policy: dict[str, int] = {
+        "missing_entity": 0,
+        "entity_type_filtered": 0,
+        "infra_filtered": 0,
+        "l2_domain_filtered": 0,
+        "kept_mandatory": 0,
+        "budget_total": 0,
+        "budget_per_type": 0,
+        "budget_per_namespace": 0,
+        "dropped_after_mandatory_budget": 0,
+    }
+    alert_namespace = _extract_alert_namespace(alert)
+    root_domains: dict[str, dict[str, str]] = {}
+    candidates: list[dict[str, Any]] = []
+    root_is_infra = False
     for candidate in _extract_alert_entities(alert):
         target_id = candidate
         if ontology.get_entity(target_id) is None:
@@ -938,33 +1086,213 @@ def _build_alert_blast_radius_context(ontology: OntologyGraph, alert: Alert) -> 
             if by_name:
                 target_id = by_name[0].id
             else:
+                dropped_by_policy["missing_entity"] += 1
                 continue
         if target_id in resolved_entities:
             continue
         resolved_entities.append(target_id)
-        blast = ontology.get_blast_radius(target_id)
+        root_node = ontology.get_entity(target_id)
+        root_compact = _compact_blast_entity(root_node) if root_node is not None else {"id": target_id, "type": "unknown"}
+        root_domains[target_id] = {
+            "namespace": _extract_entity_namespace(root_compact),
+            "node": _extract_entity_node(root_compact),
+        }
+        if _is_infrastructure_entity(root_compact):
+            root_is_infra = True
+
+        blast = ontology.get_blast_radius(target_id, max_depth=_TOPOLOGY_MAX_DEPTH)
         affected = blast.get("affected_entities", [])
         if isinstance(affected, list):
-            blast_entities.extend([_compact_blast_entity(item) for item in affected])
+            raw_entities.extend([_compact_blast_entity(item) for item in affected])
             total_affected += len(affected)
 
-    deduped: dict[str, dict[str, Any]] = {}
-    for entity in blast_entities:
+        l1_neighbors = ontology.get_neighbors(target_id)
+        for neighbor in l1_neighbors:
+            relation = neighbor.get("relation")
+            if not isinstance(relation, OntologyEdge) or relation.relation not in _TOPOLOGY_RELATION_ALLOWLIST:
+                continue
+            neighbor_entity = neighbor.get("entity")
+            if not isinstance(neighbor_entity, OntologyNode):
+                continue
+            compact_neighbor = _compact_blast_entity(neighbor_entity)
+            candidates.append(
+                {
+                    "entity": compact_neighbor,
+                    "level": 1,
+                    "root_id": target_id,
+                    "relation": relation.relation,
+                }
+            )
+
+        l1_ids = [str(entry["entity"].get("id", "")).strip() for entry in candidates if entry.get("root_id") == target_id and entry.get("level") == 1]
+        for l1_id in [item for item in l1_ids if item]:
+            l2_neighbors = ontology.get_neighbors(l1_id)
+            for neighbor in l2_neighbors:
+                relation = neighbor.get("relation")
+                if not isinstance(relation, OntologyEdge) or relation.relation not in _TOPOLOGY_RELATION_ALLOWLIST:
+                    continue
+                neighbor_entity = neighbor.get("entity")
+                if not isinstance(neighbor_entity, OntologyNode):
+                    continue
+                compact_neighbor = _compact_blast_entity(neighbor_entity)
+                compact_id = str(compact_neighbor.get("id", "")).strip()
+                if not compact_id or compact_id == target_id:
+                    continue
+                domain = root_domains.get(target_id, {})
+                l2_domain_match = _same_l2_domain(
+                    compact_neighbor,
+                    root_namespace=str(domain.get("namespace") or ""),
+                    root_node=str(domain.get("node") or ""),
+                )
+                candidates.append(
+                    {
+                        "entity": compact_neighbor,
+                        "level": 2,
+                        "root_id": target_id,
+                        "relation": relation.relation,
+                        "l2_domain_match": l2_domain_match,
+                    }
+                )
+
+    deduped_raw: dict[str, dict[str, Any]] = {}
+    for entity in raw_entities:
         entity_id = str(entity.get("id", "")).strip()
         if entity_id:
-            deduped[entity_id] = entity
-    entity_list = list(deduped.values())
+            deduped_raw[entity_id] = entity
+    raw_entity_list = list(deduped_raw.values())
+
+    candidate_entity_ids = {
+        str(entry.get("entity", {}).get("id", "")).strip()
+        for entry in candidates
+        if str(entry.get("entity", {}).get("id", "")).strip()
+    }
+
+    scored_candidates: list[dict[str, Any]] = []
+    for entry in candidates:
+        entity = entry["entity"]
+        entity_id = str(entity.get("id", "")).strip()
+        if not entity_id or entity_id in resolved_entities:
+            continue
+        kind = _infer_entity_kind(entity)
+        if kind not in _TOPOLOGY_ALLOWED_KINDS:
+            dropped_by_policy["entity_type_filtered"] += 1
+            continue
+        if not root_is_infra and _is_infrastructure_entity(entity):
+            dropped_by_policy["infra_filtered"] += 1
+            continue
+        root_domain = root_domains.get(str(entry.get("root_id") or ""), {})
+        score = _score_topology_candidate(
+            entity=entity,
+            level=int(entry.get("level") or 2),
+            relation=entry.get("relation") if isinstance(entry.get("relation"), RelationType) else RelationType.DEPENDS_ON,
+            alert_namespace=alert_namespace,
+            root_namespace=str(root_domain.get("namespace") or ""),
+            root_node=str(root_domain.get("node") or ""),
+        )
+        scored_candidates.append({**entry, "score": score, "kind": kind, "namespace": _extract_entity_namespace(entity)})
+
+    scored_candidates.sort(
+        key=lambda item: (
+            int(item.get("score") or 0),
+            -int(item.get("level") or 2),
+        ),
+        reverse=True,
+    )
+
+    selected: dict[str, dict[str, Any]] = {}
+    kind_counts: dict[str, int] = {}
+    namespace_counts: dict[str, int] = {}
+    mandatory_kept: dict[str, int] = {kind: 0 for kind in _TOPOLOGY_MANDATORY_KINDS}
+
+    # Stage A: reserve critical types first so they are not squeezed out by noisy entities.
+    for mandatory_kind in _TOPOLOGY_MANDATORY_KINDS:
+        for item in scored_candidates:
+            if str(item.get("kind") or "") != mandatory_kind:
+                continue
+            entity = item["entity"]
+            entity_id = str(entity.get("id", "")).strip()
+            if not entity_id or entity_id in selected:
+                continue
+            if len(selected) >= _TOPOLOGY_MAX_ENTITIES_TOTAL:
+                dropped_by_policy["budget_total"] += 1
+                dropped_by_policy["dropped_after_mandatory_budget"] += 1
+                break
+            namespace = str(item.get("namespace") or "")
+            selected[entity_id] = entity
+            kind_counts[mandatory_kind] = kind_counts.get(mandatory_kind, 0) + 1
+            if namespace:
+                namespace_counts[namespace] = namespace_counts.get(namespace, 0) + 1
+            mandatory_kept[mandatory_kind] += 1
+            dropped_by_policy["kept_mandatory"] += 1
+            break
+
+    mandatory_anchor_ids = {
+        entity_id
+        for entity_id, entity in selected.items()
+        if _infer_entity_kind(entity) in _TOPOLOGY_MANDATORY_KINDS
+    }
+
+    # Stage B: fill remaining slots using existing score + budget control.
+    for item in scored_candidates:
+        entity = item["entity"]
+        entity_id = str(entity.get("id", "")).strip()
+        if not entity_id:
+            continue
+        if entity_id in selected:
+            continue
+        level = int(item.get("level") or 2)
+        if len(selected) >= _TOPOLOGY_MAX_ENTITIES_TOTAL:
+            dropped_by_policy["budget_total"] += 1
+            dropped_by_policy["dropped_after_mandatory_budget"] += 1
+            continue
+        kind = str(item.get("kind") or "other")
+        if level == 2 and not bool(item.get("l2_domain_match", True)):
+            if kind not in _TOPOLOGY_MANDATORY_KINDS and not _has_direct_allowed_relation_to_any(
+                ontology,
+                entity_id=entity_id,
+                anchor_ids=mandatory_anchor_ids,
+            ):
+                dropped_by_policy["l2_domain_filtered"] += 1
+                continue
+        if kind_counts.get(kind, 0) >= _TOPOLOGY_MAX_PER_TYPE:
+            dropped_by_policy["budget_per_type"] += 1
+            continue
+        namespace = str(item.get("namespace") or "")
+        if namespace and namespace_counts.get(namespace, 0) >= _TOPOLOGY_MAX_PER_NAMESPACE:
+            dropped_by_policy["budget_per_namespace"] += 1
+            continue
+        selected[entity_id] = entity
+        kind_counts[kind] = kind_counts.get(kind, 0) + 1
+        if namespace:
+            namespace_counts[namespace] = namespace_counts.get(namespace, 0) + 1
+
+    entity_list = list(selected.values())
+    filtered_count = len(entity_list)
+    raw_unique_count = max(len(raw_entity_list), len(candidate_entity_ids))
+    dropped_count = max(raw_unique_count - filtered_count, 0)
     entity_preview = ", ".join(item["id"] for item in entity_list[:6]) if entity_list else "none"
+    mandatory_kept_summary = ", ".join(f"{kind}:{mandatory_kept.get(kind, 0)}" for kind in _TOPOLOGY_MANDATORY_KINDS)
     summary = (
         f"topology blast radius: roots={resolved_entities or ['none']}, "
-        f"affected_count={len(entity_list)}, affected_preview={entity_preview}"
+        f"affected_count={filtered_count}, raw_affected_count={raw_unique_count}, "
+        f"dropped_count={dropped_count}, filter_policy={_TOPOLOGY_POLICY_TAG}, "
+        f"mandatory_kept={{{mandatory_kept_summary}}}, "
+        f"affected_preview={entity_preview}"
     )
     return {
         "roots": resolved_entities,
-        "affected_count": len(entity_list),
+        "affected_count": filtered_count,
+        "filtered_affected_count": filtered_count,
         "affected_entities": entity_list,
         "summary": summary,
-        "raw_affected_count": total_affected,
+        "filter_policy": _TOPOLOGY_POLICY_TAG,
+        "dropped_count": dropped_count,
+        "dropped_by_policy": dropped_by_policy,
+        "mandatory_kept": mandatory_kept,
+        "dropped_after_mandatory_budget": int(dropped_by_policy.get("dropped_after_mandatory_budget", 0)),
+        "raw_affected_entities": raw_entity_list,
+        "raw_affected_count": raw_unique_count,
+        "raw_affected_total_count": total_affected,
     }
 
 

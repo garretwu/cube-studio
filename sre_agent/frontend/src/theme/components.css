@@ -15927,30 +15927,35 @@
 }
 
 .diagnosis-modified-report-rail__loading-progress {
-  display: flex;
-  align-items: center;
+  display: grid;
+  gap: 8px;
   width: min(100%, 560px);
-  min-height: 54px;
-  padding: 10px 14px;
-  border: 1px solid rgba(203, 213, 225, 0.9);
-  border-radius: 10px;
-  background: linear-gradient(180deg, rgba(248, 250, 252, 0.98) 0%, rgba(241, 245, 249, 0.94) 100%);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.7);
+  min-height: 32px;
+  padding: 2px 0;
 }
 
 .diagnosis-modified-report-rail__loading-progress-line {
   display: block;
-  width: min(100%, 468px);
-  height: 10px;
+  width: 100%;
+  max-width: 468px;
+  height: 9px;
   border-radius: 999px;
   background: linear-gradient(
     90deg,
-    rgba(226, 232, 240, 0.45) 0%,
-    rgba(248, 250, 252, 0.98) 50%,
-    rgba(226, 232, 240, 0.45) 100%
+    rgba(226, 232, 240, 0.62) 0%,
+    rgba(241, 245, 249, 0.95) 50%,
+    rgba(226, 232, 240, 0.62) 100%
   );
   background-size: 220% 100%;
-  animation: diagnosis-modified-report-loading-progress-shimmer 1.15s ease-in-out infinite;
+  animation: diagnosis-modified-report-loading-progress-shimmer 1.2s ease-in-out infinite;
+}
+
+.diagnosis-modified-report-rail__loading-progress-line--primary {
+  width: min(82%, 420px);
+}
+
+.diagnosis-modified-report-rail__loading-progress-line--secondary {
+  width: min(56%, 280px);
 }
 
 .diagnosis-modified-report-rail__empty-preview-title {
@@ -16366,8 +16371,8 @@
 .diagnosis-modified-report-rail__section-label {
   margin: 0;
   color: rgba(15, 23, 42, 0.98);
-  font-size: 15px;
-  line-height: 22px;
+  font-size: 17.5px;
+  line-height: 25px;
   font-weight: 700;
   display: inline-flex;
   align-items: center;
@@ -16472,6 +16477,7 @@
 }
 
 .diagnosis-modified-report-rail__subsection--hypotheses {
+  --hypothesis-meta-col-width: clamp(220px, 33%, 340px);
   margin-top: 6px;
 }
 
@@ -16480,9 +16486,27 @@
   gap: 10px;
 }
 
+.diagnosis-modified-report-rail__subsection--hypotheses .diagnosis-modified-report-rail__candidate-header--two-col-hypothesis {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) var(--hypothesis-meta-col-width);
+  align-items: start;
+  column-gap: 12px;
+  row-gap: 8px;
+}
+
 .diagnosis-modified-report-rail__subsection--hypotheses .diagnosis-modified-report-rail__candidate {
   padding: 0;
   border-top: 0;
+}
+
+.diagnosis-modified-report-rail__subsection--hypotheses .diagnosis-modified-report-rail__candidate-copy {
+  min-width: 0;
+}
+
+.diagnosis-modified-report-rail__subsection--hypotheses .diagnosis-modified-report-rail__candidate-meta {
+  width: var(--hypothesis-meta-col-width);
+  justify-content: flex-end;
+  align-content: flex-start;
 }
 
 .diagnosis-modified-report-rail__subsection--hypotheses .diagnosis-modified-report-rail__candidate-details {
@@ -16495,11 +16519,41 @@
   min-width: 0;
 }
 
+.diagnosis-modified-report-rail__candidate-title {
+  margin: 0;
+  color: var(--color-text);
+  font-size: 15.5px;
+  line-height: 24.5px;
+  font-weight: 620;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.diagnosis-modified-report-rail__candidate-summary {
+  margin: 0;
+  color: var(--color-text-secondary);
+  font-size: 14.5px;
+  line-height: 22.5px;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .diagnosis-modified-report-rail__rootcause-title {
   display: flex;
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
+}
+
+.diagnosis-modified-report-rail__rootcause-title-text {
+  flex: 1 1 240px;
+  min-width: 0;
 }
 
 .diagnosis-modified-report-rail__rootcause-meta {
@@ -16887,8 +16941,18 @@
     align-items: stretch;
   }
 
+  .diagnosis-modified-report-rail__subsection--hypotheses .diagnosis-modified-report-rail__candidate-header--two-col-hypothesis {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) var(--hypothesis-meta-col-width);
+    align-items: start;
+  }
+
   .diagnosis-modified-report-rail__candidate-meta {
     justify-content: flex-start;
+  }
+
+  .diagnosis-modified-report-rail__subsection--hypotheses .diagnosis-modified-report-rail__candidate-meta {
+    justify-content: flex-end;
   }
 
   .diagnosis-modified-report-rail__report-layout,

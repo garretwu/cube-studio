@@ -80,6 +80,48 @@ class TestOntologyStorageUnit:
 
         await graph.close()
 
+    @pytest.mark.asyncio
+    async def test_unit_filters_blast_radius_when_allowlist_namespace_and_budget_are_set(self) -> None:
+        graph = OntologyGraph()
+        await graph.connect()
+        await graph.add_nodes(
+            [
+                _node("service-a", EntityType.INFERENCE_SERVICE, namespace="infer"),
+                _node("pod-a", EntityType.K8S_POD, namespace="infer"),
+                _node("node-a", EntityType.NODE, namespace="infer"),
+                _node("gpu-a", EntityType.GPU, namespace="infer"),
+                _node("service-infra", EntityType.INFERENCE_SERVICE, namespace="kube-system"),
+            ]
+        )
+        await graph.add_edges(
+            [
+                OntologyEdge(source_id="service-a", target_id="pod-a", relation=RelationType.SERVES),
+                OntologyEdge(source_id="pod-a", target_id="node-a", relation=RelationType.HOSTED_ON),
+                OntologyEdge(source_id="node-a", target_id="gpu-a", relation=RelationType.PART_OF),
+                OntologyEdge(source_id="service-infra", target_id="node-a", relation=RelationType.HOSTED_ON),
+            ]
+        )
+
+        filtered = graph.get_blast_radius(
+            "node-a",
+            max_depth=2,
+            relation_allowlist=[RelationType.SERVES, RelationType.HOSTED_ON],
+            entity_type_allowlist=[EntityType.INFERENCE_SERVICE, EntityType.K8S_POD],
+            namespace_scope="infer",
+            max_entities=1,
+        )
+        filtered_ids = [entity.id for entity in filtered["affected_entities"]]
+
+        assert filtered["raw_count"] >= 2
+        assert filtered["filtered_count"] == 1
+        assert filtered["affected_count"] == 1
+        assert filtered_ids == ["pod-a"]
+        assert filtered["dropped_by_policy"]["relation_filtered"] >= 1
+        assert filtered["dropped_by_policy"]["namespace_filtered"] >= 1
+        assert filtered["dropped_by_policy"]["budget_filtered"] >= 1
+
+        await graph.close()
+
 
 class TestOntologyStorageIntegration:
     @pytest.mark.asyncio

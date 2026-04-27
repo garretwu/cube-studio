@@ -290,11 +290,45 @@ class OntologyGraph:
         except (nx.NetworkXNoPath, getattr(nx, "NodeNotFound", nx.NetworkXNoPath)):
             return None
 
-    def get_blast_radius(self, entity_id: str, max_depth: int = 3) -> dict[str, Any]:
-        propagate_via_out = {RelationType.HOSTED_ON, RelationType.PART_OF}
+    def get_blast_radius(
+        self,
+        entity_id: str,
+        max_depth: int = 3,
+        relation_allowlist: list[str] | list[RelationType] | None = None,
+        entity_type_allowlist: list[str] | list[EntityType] | None = None,
+        namespace_scope: str | None = None,
+        max_entities: int | None = None,
+    ) -> dict[str, Any]:
+        propagate_via_out = {RelationType.HOSTED_ON, RelationType.PART_OF, RelationType.SERVES}
         propagate_via_in = {RelationType.SERVES, RelationType.DEPENDS_ON, RelationType.HOSTED_ON}
 
-        affected: list[OntologyNode] = []
+        normalized_relation_allowlist: set[RelationType] | None = None
+        if relation_allowlist:
+            normalized_relation_allowlist = set()
+            for relation in relation_allowlist:
+                try:
+                    normalized_relation_allowlist.add(RelationType(relation))
+                except Exception:
+                    continue
+
+        normalized_entity_type_allowlist: set[EntityType] | None = None
+        if entity_type_allowlist:
+            normalized_entity_type_allowlist = set()
+            for entity_type in entity_type_allowlist:
+                try:
+                    normalized_entity_type_allowlist.add(EntityType(entity_type))
+                except Exception:
+                    continue
+
+        raw_affected: list[tuple[OntologyNode, RelationType]] = []
+        filtered_affected: list[OntologyNode] = []
+        dropped_by_policy: dict[str, int] = {
+            "relation_filtered": 0,
+            "entity_type_filtered": 0,
+            "namespace_filtered": 0,
+            "budget_filtered": 0,
+        }
+
         visited = {entity_id}
         queue: deque[tuple[str, int]] = deque([(entity_id, 0)])
         while queue:
@@ -310,8 +344,9 @@ class OntologyGraph:
                     continue
                 visited.add(target_id)
                 entity = self._node_entity(target_id)
-                if entity is not None:
-                    affected.append(entity)
+                if entity is None:
+                    continue
+                raw_affected.append((entity, edge.relation))
                 queue.append((target_id, depth + 1))
 
             for source_id, _, data in self.graph.in_edges(current, data=True):
@@ -322,14 +357,35 @@ class OntologyGraph:
                     continue
                 visited.add(source_id)
                 entity = self._node_entity(source_id)
-                if entity is not None:
-                    affected.append(entity)
+                if entity is None:
+                    continue
+                raw_affected.append((entity, edge.relation))
                 queue.append((source_id, depth + 1))
+
+        for entity, traversed_relation in raw_affected:
+            if normalized_relation_allowlist and traversed_relation not in normalized_relation_allowlist:
+                dropped_by_policy["relation_filtered"] += 1
+                continue
+            if normalized_entity_type_allowlist and entity.entity_type not in normalized_entity_type_allowlist:
+                dropped_by_policy["entity_type_filtered"] += 1
+                continue
+            if namespace_scope:
+                entity_namespace = str(entity.properties.get("namespace") or "").strip()
+                if entity_namespace and entity_namespace != namespace_scope:
+                    dropped_by_policy["namespace_filtered"] += 1
+                    continue
+            if max_entities is not None and len(filtered_affected) >= max_entities:
+                dropped_by_policy["budget_filtered"] += 1
+                continue
+            filtered_affected.append(entity)
 
         return {
             "root_entity_id": entity_id,
-            "affected_entities": affected,
-            "affected_count": len(affected),
+            "affected_entities": filtered_affected,
+            "affected_count": len(filtered_affected),
+            "filtered_count": len(filtered_affected),
+            "raw_count": len(raw_affected),
+            "dropped_by_policy": dropped_by_policy,
         }
 
     async def refresh_entity(self, node: OntologyNode) -> OntologyNode:
