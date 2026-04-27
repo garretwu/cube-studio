@@ -258,7 +258,7 @@ class InMemoryTracePublisher:
             events.append(ws_event)
             if len(events) > self._max_events_per_session:
                 overflow = len(events) - self._max_events_per_session
-                del events[:overflow]
+                self._trim_events_preserving_diagnosis_anchor(events, overflow)
             self._condition.notify_all()
 
     async def subscribe(self, session_id: str, after: str | None = None) -> AsyncIterator[WSEvent]:
@@ -292,6 +292,28 @@ class InMemoryTracePublisher:
         if limit is not None and limit > 0:
             return sliced[-limit:]
         return sliced
+
+    @staticmethod
+    def _is_diagnosis_started(event: WSEvent) -> bool:
+        return event.type == EventType.DIAGNOSIS_STARTED
+
+    def _trim_events_preserving_diagnosis_anchor(self, events: list[WSEvent], overflow: int) -> None:
+        if overflow <= 0:
+            return
+        while overflow > 0 and events:
+            drop_index = next(
+                (
+                    idx
+                    for idx, item in enumerate(events)
+                    if not self._is_diagnosis_started(item)
+                ),
+                None,
+            )
+            if drop_index is None:
+                del events[0]
+            else:
+                del events[drop_index]
+            overflow -= 1
 
 
 class InMemoryAlertStore:
@@ -1062,6 +1084,8 @@ def _compact_blast_entity(entity: Any) -> dict[str, Any]:
 
 def _build_alert_blast_radius_context(ontology: OntologyGraph, alert: Alert) -> dict[str, Any]:
     resolved_entities: list[str] = []
+    direct_relations: list[dict[str, Any]] = []
+    direct_relation_keys: set[tuple[str, str, str, str]] = set()
     raw_entities: list[dict[str, Any]] = []
     total_affected = 0
     dropped_by_policy: dict[str, int] = {
@@ -1115,6 +1139,23 @@ def _build_alert_blast_radius_context(ontology: OntologyGraph, alert: Alert) -> 
             if not isinstance(neighbor_entity, OntologyNode):
                 continue
             compact_neighbor = _compact_blast_entity(neighbor_entity)
+            compact_neighbor_id = str(compact_neighbor.get("id", "")).strip()
+            relation_value = str(getattr(relation.relation, "value", relation.relation) or "").strip().lower()
+            direction = str(neighbor.get("direction") or "out").strip().lower()
+            if compact_neighbor_id and relation_value:
+                relation_key = (target_id, compact_neighbor_id, relation_value, direction)
+                if relation_key not in direct_relation_keys:
+                    direct_relation_keys.add(relation_key)
+                    direct_relations.append(
+                        {
+                            "source": target_id,
+                            "target": compact_neighbor_id,
+                            "target_type": str(compact_neighbor.get("type", "") or ""),
+                            "target_name": str(compact_neighbor.get("name") or compact_neighbor_id),
+                            "relation": relation_value,
+                            "direction": "in" if direction == "in" else "out",
+                        }
+                    )
             candidates.append(
                 {
                     "entity": compact_neighbor,
@@ -1284,6 +1325,7 @@ def _build_alert_blast_radius_context(ontology: OntologyGraph, alert: Alert) -> 
         "affected_count": filtered_count,
         "filtered_affected_count": filtered_count,
         "affected_entities": entity_list,
+        "direct_relations": direct_relations,
         "summary": summary,
         "filter_policy": _TOPOLOGY_POLICY_TAG,
         "dropped_count": dropped_count,

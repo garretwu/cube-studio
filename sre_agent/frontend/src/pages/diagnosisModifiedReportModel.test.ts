@@ -371,7 +371,7 @@ describe("buildDiagnosisModifiedReportView", () => {
     expect(labels).toContain("硬件管理");
   });
 
-  it("maps TTFT alerts to one-hop pod/node relations only", () => {
+  it("maps TTFT alerts to one-hop relations with service/pod/node priority", () => {
     const session = createSession("diagnosing");
     session.alert.alert_name = "TTFTLatencyHigh";
     session.alert.labels = { pod: "service/qwen3-32b-fp8-202602261-6778dcf4d8-6hmld" };
@@ -396,9 +396,124 @@ describe("buildDiagnosisModifiedReportView", () => {
     });
 
     expect(view.context.problemNodes.map((node) => node.label)).toEqual(["service/qwen3-32b-fp8-202602261-6778dcf4d8-6hmld"]);
-    expect(view.context.affectedNodes.map((node) => node.label)).toEqual(["wj-lab-cpt-03", "qwen3-32b-fp8-202602261"]);
-    expect(view.context.graph.edges.map((edge) => edge.label)).toEqual(["运行于", "隶属服务"]);
-    expect(view.context.graph.nodes.map((node) => node.label)).not.toContain("1");
+    expect(view.context.affectedNodes.map((node) => node.label)).toEqual([
+      "wj-lab-cpt-03",
+      "qwen3-32b-fp8-202602261",
+      "1",
+    ]);
+    expect(view.context.graph.edges.map((edge) => edge.label)).toEqual(["运行于", "隶属服务", "关联"]);
+  });
+
+  it("keeps GPU and process neighbors for TTFT context instead of hard-filtering", () => {
+    const session = createSession("diagnosing");
+    session.alert.alert_name = "AIServiceTTFTP99High";
+    session.alert.labels = { pod: "qwen-main-0" };
+    session.diagnosis_result = null;
+
+    const view = buildDiagnosisModifiedReportView({
+      session,
+      topologyContext: {
+        roots: ["pod:service:qwen-main-0"],
+        affected_count: 4,
+        affected_entities: [
+          { id: "node:worker-03", type: "node", name: "worker-03" },
+          { id: "service:qwen-main", type: "service", name: "qwen-main" },
+          { id: "gpu:worker-03:0", type: "gpu", name: "GPU 0" },
+          { id: "proc:gpu-burn", type: "process", name: "gpu-burn" },
+        ],
+        summary: "ttft with gpu/process neighbors",
+      },
+      timeline: [],
+      candidates: [],
+      events: [],
+      localAuditRecords: [],
+    });
+
+    expect(view.context.affectedNodes.map((node) => node.label)).toEqual([
+      "worker-03",
+      "qwen-main",
+      "0",
+      "gpu-burn",
+    ]);
+    expect(view.context.graph.edges).toHaveLength(4);
+  });
+
+  it("keeps unknown affected entity ids as generic neighbors in TTFT context", () => {
+    const session = createSession("diagnosing");
+    session.alert.alert_name = "AIServiceTTFTP99High";
+    session.alert.labels = { service: "auth-svc" };
+    session.diagnosis_result = null;
+
+    const view = buildDiagnosisModifiedReportView({
+      session,
+      topologyContext: {
+        roots: ["service:auth-svc"],
+        affected_count: 1,
+        affected_entities: [{ id: "mystery-target", name: "mystery-target" }],
+        summary: "ttft with unknown id",
+      },
+      timeline: [],
+      candidates: [],
+      events: [],
+      localAuditRecords: [],
+    });
+
+    expect(view.context.graph.nodes.some((node) => node.id === "entity:mystery-target")).toBe(true);
+    expect(view.context.graph.edges).toHaveLength(1);
+  });
+
+  it("does not merge same-label entities when types differ", () => {
+    const session = createSession("diagnosing");
+    session.alert.alert_name = "AIServiceTTFTP99High";
+    session.alert.labels = { service: "shared" };
+    session.diagnosis_result = null;
+
+    const view = buildDiagnosisModifiedReportView({
+      session,
+      topologyContext: {
+        roots: ["service:shared"],
+        affected_count: 2,
+        affected_entities: [
+          { id: "pod:service:shared", name: "shared" },
+          { id: "service:shared-sidecar", name: "shared-sidecar" },
+        ],
+        summary: "same label different types",
+      },
+      timeline: [],
+      candidates: [],
+      events: [],
+      localAuditRecords: [],
+    });
+
+    const ids = view.context.graph.nodes.map((node) => node.id);
+    expect(ids).toContain("service:shared");
+    expect(ids).toContain("pod:service:shared");
+    expect(view.context.graph.edges).toHaveLength(2);
+  });
+
+  it("adds fallback one-hop edges when strict semantic filtering drops all neighbors", () => {
+    const session = createSession("diagnosing");
+    session.alert.alert_name = "GPUTemperatureHigh";
+    session.alert.labels = { gpu: "0" };
+    session.diagnosis_result = null;
+
+    const view = buildDiagnosisModifiedReportView({
+      session,
+      topologyContext: {
+        roots: ["gpu:0"],
+        affected_count: 1,
+        affected_entities: [{ id: "service:auth-svc", name: "auth-svc" }],
+        summary: "fallback topology",
+      },
+      timeline: [],
+      candidates: [],
+      events: [],
+      localAuditRecords: [],
+    });
+
+    expect(view.context.graph.edges).toHaveLength(1);
+    expect(view.context.graph.edges[0]?.label).toBe("关联");
+    expect(view.context.affectedNodes.map((node) => node.id)).toContain("service:auth-svc");
   });
 
   it("keeps alert subject node when topology context has no direct neighbors", () => {

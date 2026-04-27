@@ -34,6 +34,17 @@ def _infer_kind_from_entity_payload(entity: dict[str, object]) -> str:
     return "other"
 
 
+def _assert_direct_relations_shape(context: dict[str, object]) -> None:
+    relations = context.get("direct_relations")
+    assert isinstance(relations, list)
+    for item in relations:
+        assert isinstance(item, dict)
+        assert str(item.get("source") or "").strip()
+        assert str(item.get("target") or "").strip()
+        assert str(item.get("relation") or "").strip()
+        assert item.get("direction") in {"in", "out"}
+
+
 def test_create_app_assembles_default_diagnosis_runner_and_serves_diagnose(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("JWT_SECRET", "secret")
     monkeypatch.setenv("SRE_OPENAI_API_KEY", "test-key")
@@ -360,6 +371,8 @@ def test_build_alert_blast_radius_context_limits_noise_for_large_topology(tmp_pa
     assert context["mandatory_kept"]["node"] >= 1
     assert "mandatory_kept={" in context["summary"]
     assert context["dropped_after_mandatory_budget"] == context["dropped_by_policy"]["dropped_after_mandatory_budget"]
+    _assert_direct_relations_shape(context)
+    assert len(context["direct_relations"]) >= 1
 
 
 def test_build_alert_blast_radius_context_keeps_node_gpu_for_temperature_alert(tmp_path) -> None:
@@ -428,6 +441,7 @@ def test_build_alert_blast_radius_context_keeps_node_gpu_for_temperature_alert(t
     kinds = {_entity_kind for _entity_kind in (_infer_kind_from_entity_payload(e) for e in context["affected_entities"])}
     assert "node" in kinds
     assert "gpu" in kinds
+    _assert_direct_relations_shape(context)
 
 
 def test_build_alert_blast_radius_context_keeps_service_pod_node_for_ttft(tmp_path) -> None:
@@ -511,6 +525,10 @@ def test_build_alert_blast_radius_context_keeps_service_pod_node_for_ttft(tmp_pa
     assert "node" in kinds
     assert context["affected_count"] <= 12
     assert context["raw_affected_count"] >= context["affected_count"]
+    _assert_direct_relations_shape(context)
+    assert len(context["direct_relations"]) >= 1
+    relation_types = {str(item.get("relation") or "") for item in context["direct_relations"]}
+    assert "serves" in relation_types or "hosted_on" in relation_types
 
 
 def test_default_runner_allows_explicit_transcript_compact_override(monkeypatch, tmp_path) -> None:
