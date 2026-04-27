@@ -166,6 +166,7 @@
     - `rollback_started`、`rollback_succeeded`、`rollback_failed`
 - 执行步骤展示口径：前端优先使用当前会话诊断结果中的 `recommended_fix.steps`（审批后最终版本）展示“执行步骤”。
 - 金丝雀进度口径：当前版本为单次执行，前端使用单条 `batch_status`（`batch=一次性执行`）展示进度和终态。
+- 完成态进度口径：前端总体进度在 `execution_succeeded` 或 `observation_result` 判定通过时直接显示 `100%`，不依赖时间线中存在 `resolved` 事件。
 
 ### 3.4 重复告警响应 `POST /api/handle`（兼容成功信封）
 
