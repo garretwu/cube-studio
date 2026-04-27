@@ -826,10 +826,12 @@ function HypothesisSection({
               data-testid={`diagnosis-modified-hypothesis-card-${item.id}`}
               key={item.id}
             >
-              <div className="diagnosis-modified-report-rail__candidate-header">
+              <div className="diagnosis-modified-report-rail__candidate-header diagnosis-modified-report-rail__candidate-header--two-col-hypothesis">
                 <div className="diagnosis-modified-report-rail__candidate-copy">
-                  <strong>{formatHypothesisTitle(item.title)}</strong>
-                  {item.summary ? <p>{item.summary}</p> : null}
+                  <strong className="diagnosis-modified-report-rail__hypothesis-title">
+                    {formatHypothesisTitle(item.title)}
+                  </strong>
+                  {item.summary ? <p className="diagnosis-modified-report-rail__hypothesis-summary">{item.summary}</p> : null}
                 </div>
                 <div className="diagnosis-modified-report-rail__candidate-meta">
                   <div

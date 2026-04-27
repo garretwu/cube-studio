@@ -35,7 +35,7 @@ const rootPageChrome: Record<
     subtitle: string;
     contentSpacing: "compact";
     contentMode?: "default" | "workspace";
-    contentWidthMode?: "default" | "full";
+    contentWidthMode?: "default" | "wide" | "full";
   }
 > = {
   "/topology": {
@@ -43,11 +43,13 @@ const rootPageChrome: Record<
     subtitle: "按 AIDC 资源、服务与上下游关系查看当前运行档案。",
     contentSpacing: "compact",
     contentMode: "workspace",
+    contentWidthMode: "wide",
   },
   "/alerts": {
     title: "报警事件",
     subtitle: "聚合当前报警、影响对象与处置入口，便于快速分诊。",
     contentSpacing: "compact",
+    contentWidthMode: "wide",
   },
   "/diagnosis": {
     title: "问题诊断",
@@ -67,16 +69,26 @@ const rootPageChrome: Record<
     title: "修复记录",
     subtitle: "查看修复执行过程、审批结论与结果反馈。",
     contentSpacing: "compact",
+    contentWidthMode: "wide",
+  },
+  "/history": {
+    title: "诊断历史",
+    subtitle: "回看会话轨迹与修复结果，快速复盘处置过程。",
+    contentSpacing: "compact",
+    contentMode: "workspace",
+    contentWidthMode: "wide",
   },
   "/knowledge": {
     title: "知识库",
     subtitle: "管理诊断与修复过程中使用的知识资产。",
     contentSpacing: "compact",
+    contentWidthMode: "wide",
   },
   "/skills": {
     title: "技能管理",
     subtitle: "查看已接入平台的技能定义与说明。",
     contentSpacing: "compact",
+    contentWidthMode: "wide",
   },
 };
 
@@ -109,7 +121,7 @@ function resolvePageChrome(pathname: string): {
   subtitle?: string;
   contentSpacing?: "default" | "compact";
   contentMode?: "default" | "workspace";
-  contentWidthMode?: "default" | "full";
+  contentWidthMode?: "default" | "wide" | "full";
 } {
   const rootChrome = rootPageChrome[pathname];
   if (rootChrome) {
@@ -121,7 +133,7 @@ function resolvePageChrome(pathname: string): {
       title: "诊断历史",
       contentSpacing: "compact",
       contentMode: "workspace",
-      contentWidthMode: "full",
+      contentWidthMode: "wide",
     };
   }
 
@@ -129,6 +141,7 @@ function resolvePageChrome(pathname: string): {
     return {
       title: "AIDC档案",
       contentSpacing: "compact",
+      contentWidthMode: "wide",
     };
   }
 
@@ -136,6 +149,7 @@ function resolvePageChrome(pathname: string): {
     return {
       title: "报警事件",
       contentSpacing: "compact",
+      contentWidthMode: "wide",
     };
   }
 
@@ -161,6 +175,7 @@ function resolvePageChrome(pathname: string): {
     return {
       title: "修复记录",
       contentSpacing: "compact",
+      contentWidthMode: "wide",
     };
   }
 
@@ -168,6 +183,7 @@ function resolvePageChrome(pathname: string): {
     return {
       title: "知识库",
       contentSpacing: "compact",
+      contentWidthMode: "wide",
     };
   }
 
@@ -175,6 +191,7 @@ function resolvePageChrome(pathname: string): {
     return {
       title: "技能管理",
       contentSpacing: "compact",
+      contentWidthMode: "wide",
     };
   }
 

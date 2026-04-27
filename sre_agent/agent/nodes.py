@@ -4389,7 +4389,7 @@ async def act_node(
                 "content": (
                     "已停止重复指标查询，切换下一工具继续取证。"
                     if is_ttft_alert and not ttft_coverage_met
-                    else "已停止重复查询，进入总结阶段。"
+                    else "进入总结阶段"
                 ),
                 "action": (
                     "tool_call"
@@ -4418,7 +4418,7 @@ async def act_node(
                 "content": (
                     f"已停止 {suppressed_in_round} 次重复指标查询，切换下一工具继续取证。"
                     if is_ttft_alert and not ttft_coverage_met
-                    else f"已停止 {suppressed_in_round} 次重复查询，进入总结阶段。"
+                    else "进入总结阶段"
                 ),
                 "action": (
                     "tool_call"
@@ -4447,7 +4447,7 @@ async def act_node(
                     "content": (
                         "已停止重复指标查询，切换下一工具继续取证。"
                         if is_ttft_alert and not suppressed_coverage_met
-                        else "已停止重复查询，进入总结阶段。"
+                        else "进入总结阶段"
                     ),
                     "action": (
                         "tool_call"
