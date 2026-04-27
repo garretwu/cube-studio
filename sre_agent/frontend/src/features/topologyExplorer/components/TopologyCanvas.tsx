@@ -72,6 +72,7 @@ type TopologyCanvasProps = {
   onZoomChange?: (zoomPercent: number) => void;
   onOpenNodeActions?: (payload: TopologyCanvasNodeAction) => void;
   onCanvasInteraction?: () => void;
+  nodeActionOpenMode?: "hover-and-click" | "click-only";
 };
 
 export type TopologyCanvasFitMode = "full" | "balanced";
@@ -590,6 +591,7 @@ const TopologyCanvas = forwardRef<TopologyCanvasHandle, TopologyCanvasProps>(fun
     onZoomChange,
     onOpenNodeActions,
     onCanvasInteraction,
+    nodeActionOpenMode = "hover-and-click",
   },
   ref,
 ) {
@@ -1170,12 +1172,14 @@ const TopologyCanvas = forwardRef<TopologyCanvasHandle, TopologyCanvasProps>(fun
           onHoverNode(node.id);
           const data = node.data as ExplorerFlowNodeData;
           if (onOpenNodeActions) {
-            onOpenNodeActions({
-              node: data.node,
-              clientX: event.clientX,
-              clientY: event.clientY,
-              trigger: "hover",
-            });
+            if (nodeActionOpenMode === "hover-and-click") {
+              onOpenNodeActions({
+                node: data.node,
+                clientX: event.clientX,
+                clientY: event.clientY,
+                trigger: "hover",
+              });
+            }
             setTooltip(null);
             return;
           }
@@ -1197,12 +1201,14 @@ const TopologyCanvas = forwardRef<TopologyCanvasHandle, TopologyCanvasProps>(fun
           const data = node.data as ExplorerFlowNodeData;
           if (onOpenNodeActions) {
             setTooltip(null);
-            onOpenNodeActions({
-              node: data.node,
-              clientX: event.clientX,
-              clientY: event.clientY,
-              trigger: "hover",
-            });
+            if (nodeActionOpenMode === "hover-and-click") {
+              onOpenNodeActions({
+                node: data.node,
+                clientX: event.clientX,
+                clientY: event.clientY,
+                trigger: "hover",
+              });
+            }
             return;
           }
           setTooltip({
