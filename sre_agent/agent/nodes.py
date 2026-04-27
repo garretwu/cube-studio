@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import html
 import json
 import logging
 import os
@@ -500,6 +501,16 @@ async def reason_node(
     if not isinstance(response, AIMessage):
         raise RuntimeError(f"expected AIMessage from LLM, got {type(response).__name__}")
 
+    raw_response_text = _extract_text(response.content)
+    provider_tool_calls = list(response.tool_calls or [])
+    if not provider_tool_calls and raw_response_text:
+        provider_tool_calls = _extract_xml_like_tool_calls(raw_response_text)
+        if provider_tool_calls:
+            _llm_logger.info(
+                "Recovered %d XML-like tool_calls from provider text response",
+                len(provider_tool_calls),
+            )
+
     updated_messages = [*messages, response]
     updated_trace = list(state.get("trace_items", []))
     updated_interactions = list(state.get("llm_interactions", []))
@@ -519,7 +530,7 @@ async def reason_node(
         )
     pending_tool_calls = _auto_load_high_score_skill(
         state,
-        list(response.tool_calls or []),
+        provider_tool_calls,
     )
     pending_tool_calls = _auto_run_single_script_skill(
         state,
@@ -546,8 +557,6 @@ async def reason_node(
             for call in pending_tool_calls
             if isinstance(call.get("args"), dict) and len(call.get("args") or {}) > 0
         ]
-    raw_response_text = _extract_text(response.content)
-
     # 记录 LLM 交互到日志文件
     _log_llm_interaction(
         session_id=str(state.get("session_id", "unknown")),
@@ -4719,6 +4728,42 @@ def _extract_text(content: Any) -> str:
                 parts.append(str(item.get("text", "")))
         return "\n".join(part.strip() for part in parts if str(part).strip()).strip()
     return str(content or "").strip()
+
+
+def _extract_xml_like_tool_calls(content: str) -> list[dict[str, Any]]:
+    if not isinstance(content, str) or "<invoke" not in content:
+        return []
+
+    tool_calls: list[dict[str, Any]] = []
+    invoke_pattern = re.compile(
+        r"<invoke\b[^>]*\bname\s*=\s*['\"](?P<name>[^'\"]+)['\"][^>]*>(?P<body>.*?)</invoke>",
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    param_pattern = re.compile(
+        r"<parameter\b[^>]*\bname\s*=\s*['\"](?P<name>[^'\"]+)['\"][^>]*>(?P<value>.*?)</parameter>",
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+
+    for index, match in enumerate(invoke_pattern.finditer(content), start=1):
+        tool_name = html.unescape(str(match.group("name") or "").strip())
+        if not tool_name:
+            continue
+        args: dict[str, Any] = {}
+        body = str(match.group("body") or "")
+        for param_match in param_pattern.finditer(body):
+            param_name = html.unescape(str(param_match.group("name") or "").strip())
+            if not param_name:
+                continue
+            args[param_name] = html.unescape(str(param_match.group("value") or "").strip())
+        tool_calls.append(
+            {
+                "name": tool_name,
+                "args": args,
+                "id": f"xml-call-{index}",
+                "type": "tool_call",
+            }
+        )
+    return tool_calls
 
 
 def _parse_reasoning_output(content: str) -> ReasoningEnvelope:
