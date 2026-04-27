@@ -321,6 +321,14 @@ export type DiagnosisStartedData = {
   topology: {
     roots: string[];
     affected_count: number;
+    filtered_affected_count?: number;
+    raw_affected_count?: number;
+    raw_affected_total_count?: number;
+    filter_policy?: string;
+    dropped_count?: number;
+    mandatory_kept?: Record<string, number>;
+    dropped_after_mandatory_budget?: number;
+    dropped_by_policy?: Record<string, number>;
     affected_entities: { id: string; type: string; name?: string }[];
     summary: string;
     direct_relations?: Array<{

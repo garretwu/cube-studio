@@ -285,6 +285,14 @@ function normalizeText(value?: string | null) {
 type ParsedTopologyContext = {
   roots: string[];
   affected_count?: number;
+  filtered_affected_count?: number;
+  raw_affected_count?: number;
+  raw_affected_total_count?: number;
+  filter_policy?: string;
+  dropped_count?: number;
+  mandatory_kept?: Record<string, number>;
+  dropped_after_mandatory_budget?: number;
+  dropped_by_policy?: Record<string, number>;
   affected_entities?: Array<{ id?: string; name?: string } & Record<string, unknown>>;
   summary?: string;
   direct_relations?: Array<{
