@@ -92,6 +92,25 @@ Read the reference first and then run the script.
         )
         self.assertEqual(ranked[0].id, "builtin-vllm-diagnosis")
 
+    async def test_rank_skills_uses_raw_match_totals_without_length_normalization(self) -> None:
+        registry = SkillRegistry()
+        skills = registry.discover(refresh=True)
+        ranked = rank_skills(
+            (
+                "Diagnose alert 'GPUTemperatureHighAll' with severity 'critical'. "
+                "Summary: GPU temperature is high. "
+                "Description: GPU 2 on 10.0.8.137:9400 temperature is above 60C for 60 seconds. "
+                "Host=wj-lab-cpt-02, pod=admin-20260305, namespace=jupyter, value=68C. "
+                "Use available tools to identify root cause and produce ranked candidates."
+            ),
+            skills,
+            top_k=3,
+        )
+        self.assertEqual(ranked[0].id, "gpu-thermal-diagnosis")
+        self.assertEqual(ranked[0].match_score, 15.0)
+        self.assertEqual(ranked[1].id, "builtin-vllm-diagnosis")
+        self.assertEqual(ranked[1].match_score, 14.5)
+
     async def test_skill_policy_returns_allow_ask_and_deny(self) -> None:
         policy = SkillPolicy(deny=["builtin-danger:*"], ask=["gpu-fault-sop:gpu_benchmark.sh"])
         self.assertEqual(
@@ -211,6 +230,28 @@ Read the reference first and then run the script.
             self.assertTrue(executed.success)
             self.assertEqual(executed.data["status"], "success")
             self.assertIn("hello", executed.data["stdout"])
+
+    async def test_list_skills_returns_only_best_match_even_when_top_k_is_larger(self) -> None:
+        registry = SkillRegistry()
+        tool_registry = build_default_registry()
+        context = ToolExecutionContext(
+            metadata={
+                "skill_registry": registry,
+                "skill_policy": SkillPolicy(),
+                "skill_executor": SkillExecutor(),
+                "tool_registry": tool_registry,
+            }
+        )
+
+        listed = await tool_registry.execute(
+            "skills.list_skills",
+            {"query": "GPU temperature high thermal cooling", "top_k": 5},
+            context,
+        )
+        self.assertTrue(listed.success)
+        skills = listed.data["skills"]
+        self.assertEqual(len(skills), 1)
+        self.assertEqual(skills[0]["skill_id"], "gpu-thermal-diagnosis")
 
     async def test_read_skill_ref_rejects_escape_path(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

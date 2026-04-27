@@ -147,9 +147,9 @@ async def list_skills(params: dict[str, Any], context: ToolExecutionContext) -> 
         raise ToolValidationError(
             "parameter 'query' is required; or provide alert_name/labels/annotations so a query can be derived"
         )
-    top_k = max(1, int(params.get("top_k", 20)))
     skills = registry.discover(refresh=refresh)
-    skills = rank_skills(query, skills, top_k=top_k)
+    # Keep skill discovery decisive: return only the single highest-scoring skill.
+    skills = rank_skills(query, skills, top_k=1)
     return {
         "skills": [_serialize_skill(skill) for skill in skills],
         "warnings": registry.warnings,

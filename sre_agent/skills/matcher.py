@@ -47,7 +47,4 @@ def _score(skill: SkillDescriptor, terms: list[str]) -> float:
     joined_terms = " ".join(terms)
     if tags and all(tag in joined_terms for tag in tags[:2]):
         total += 1.0
-    max_score = 2.0 * len(terms)
-    if max_score <= 0:
-        return 0.0
-    return round(min(1.0, total / max_score), 4)
+    return round(total, 4)
