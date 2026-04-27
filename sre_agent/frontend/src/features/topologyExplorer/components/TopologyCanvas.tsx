@@ -72,6 +72,9 @@ type TopologyCanvasProps = {
   onZoomChange?: (zoomPercent: number) => void;
   onOpenNodeActions?: (payload: TopologyCanvasNodeAction) => void;
   onCanvasInteraction?: () => void;
+  hoverInfoTooltipEnabled?: boolean;
+  nodeActionOpenMode?: TopologyCanvasNodeActionOpenMode;
+  nativeTitleEnabled?: boolean;
 };
 
 export type TopologyCanvasFitMode = "full" | "balanced";
@@ -98,6 +101,8 @@ export type TopologyCanvasNodeAction = {
   trigger: "click" | "hover";
 };
 
+export type TopologyCanvasNodeActionOpenMode = "click-only" | "hover-and-click";
+
 type ExplorerFlowNodeData = {
   node: TopologyObject;
   selected: boolean;
@@ -108,6 +113,9 @@ type ExplorerFlowNodeData = {
   neighborDepth: number;
   metrics: TopologyCanvasMetrics;
   variant: TopologyCanvasVariant;
+  nativeTitleEnabled: boolean;
+  onPointerHover?: (node: TopologyObject, clientX: number, clientY: number) => void;
+  onPointerLeave?: () => void;
   onSelectNode: (nodeId: string) => void;
 };
 
@@ -436,7 +444,21 @@ function getModifiedHandleStyle(position: Position, metrics: TopologyCanvasMetri
 }
 
 function ExplorerNode({ data }: NodeProps<Node<ExplorerFlowNodeData>>) {
-  const { node, selected, searchHit, typeHighlighted, dimmed, isGroupMember, neighborDepth, metrics, variant, onSelectNode } = data;
+  const {
+    node,
+    selected,
+    searchHit,
+    typeHighlighted,
+    dimmed,
+    isGroupMember,
+    neighborDepth,
+    metrics,
+    variant,
+    nativeTitleEnabled,
+    onPointerHover,
+    onPointerLeave,
+    onSelectNode,
+  } = data;
   const isAggregate = isSyntheticServiceAggregateNode(node) || isSyntheticGpuAggregateNode(node) || isSyntheticBmcAggregateNode(node);
   const aggregateCount = getAggregateCount(node);
   const handleStyle = { ...HANDLE_STYLE, top: metrics.nodeCircleSize / 2 + 2 };
@@ -460,7 +482,7 @@ function ExplorerNode({ data }: NodeProps<Node<ExplorerFlowNodeData>>) {
         ]
           .filter(Boolean)
           .join(" ")}
-        title={`${node.name} | ${getNodeSummary(node)}`}
+        title={nativeTitleEnabled ? `${node.name} | ${getNodeSummary(node)}` : undefined}
       >
         {Object.values(MODIFIED_EDGE_HANDLE_IDS.target).map((handleId) => {
           const position = getModifiedHandlePosition(handleId);
@@ -474,7 +496,15 @@ function ExplorerNode({ data }: NodeProps<Node<ExplorerFlowNodeData>>) {
             />
           );
         })}
-        <button aria-label={title} className="topology-flow-node__button" onClick={() => onSelectNode(node.id)} type="button">
+        <button
+          aria-label={title}
+          className="topology-flow-node__button"
+          onClick={() => onSelectNode(node.id)}
+          onMouseEnter={(event) => onPointerHover?.(node, event.clientX, event.clientY)}
+          onMouseLeave={() => onPointerLeave?.()}
+          onMouseMove={(event) => onPointerHover?.(node, event.clientX, event.clientY)}
+          type="button"
+        >
           <span className="topology-flow-node__orb" aria-hidden="true">
             <img
               alt=""
@@ -516,10 +546,18 @@ function ExplorerNode({ data }: NodeProps<Node<ExplorerFlowNodeData>>) {
       ]
         .filter(Boolean)
         .join(" ")}
-      title={`${node.name} | ${node.summary}`}
+      title={nativeTitleEnabled ? `${node.name} | ${node.summary}` : undefined}
     >
       <Handle position={Position.Left} style={handleStyle} type="target" />
-      <button aria-label={title} className="topology-flow-node__button" onClick={() => onSelectNode(node.id)} type="button">
+      <button
+        aria-label={title}
+        className="topology-flow-node__button"
+        onClick={() => onSelectNode(node.id)}
+        onMouseEnter={(event) => onPointerHover?.(node, event.clientX, event.clientY)}
+        onMouseLeave={() => onPointerLeave?.()}
+        onMouseMove={(event) => onPointerHover?.(node, event.clientX, event.clientY)}
+        type="button"
+      >
         <span className="topology-flow-node__orb" aria-hidden="true">
           <img
             alt=""
@@ -590,6 +628,9 @@ const TopologyCanvas = forwardRef<TopologyCanvasHandle, TopologyCanvasProps>(fun
     onZoomChange,
     onOpenNodeActions,
     onCanvasInteraction,
+    hoverInfoTooltipEnabled,
+    nodeActionOpenMode = "hover-and-click",
+    nativeTitleEnabled = true,
   },
   ref,
 ) {
@@ -614,6 +655,36 @@ const TopologyCanvas = forwardRef<TopologyCanvasHandle, TopologyCanvasProps>(fun
   );
   const hasExpandedAggregate = expandedMemberIdSet.size > 0;
   const nodeTypeById = useMemo(() => new Map(nodes.map((node) => [node.id, node.type] as const)), [nodes]);
+  const enableHoverInfoTooltip = hoverInfoTooltipEnabled ?? !onOpenNodeActions;
+
+  const handleNodePointerHover = (node: TopologyObject, clientX: number, clientY: number) => {
+    onHoverNode(node.id);
+    if (onOpenNodeActions && nodeActionOpenMode === "hover-and-click") {
+      onOpenNodeActions({
+        node,
+        clientX,
+        clientY,
+        trigger: "hover",
+      });
+      setTooltip(null);
+      return;
+    }
+    if (!enableHoverInfoTooltip) {
+      setTooltip(null);
+      return;
+    }
+    setTooltip({
+      x: clientX,
+      y: clientY,
+      title: node.name,
+      summary: getNodeSummary(node),
+    });
+  };
+
+  const handleNodePointerLeave = () => {
+    onHoverNode(undefined);
+    setTooltip(null);
+  };
 
   if (layoutRef.current !== layoutPreset || nodeKeyRef.current !== nodeKey || variantRef.current !== variant) {
     positionsRef.current = {};
@@ -665,7 +736,10 @@ const TopologyCanvas = forwardRef<TopologyCanvasHandle, TopologyCanvasProps>(fun
           neighborDepth,
           metrics,
           variant,
+          nativeTitleEnabled,
           onSelectNode,
+          onPointerHover: handleNodePointerHover,
+          onPointerLeave: handleNodePointerLeave,
         },
       };
     });
@@ -679,6 +753,9 @@ const TopologyCanvas = forwardRef<TopologyCanvasHandle, TopologyCanvasProps>(fun
     metrics,
     neighborDepths,
     nodes,
+    nativeTitleEnabled,
+    handleNodePointerHover,
+    handleNodePointerLeave,
     onSelectNode,
     selectedNodeId,
     variant,
@@ -1167,50 +1244,18 @@ const TopologyCanvas = forwardRef<TopologyCanvasHandle, TopologyCanvasProps>(fun
           if (node.type !== "assetNode") {
             return;
           }
-          onHoverNode(node.id);
           const data = node.data as ExplorerFlowNodeData;
-          if (onOpenNodeActions) {
-            onOpenNodeActions({
-              node: data.node,
-              clientX: event.clientX,
-              clientY: event.clientY,
-              trigger: "hover",
-            });
-            setTooltip(null);
-            return;
-          }
-          setTooltip({
-            x: event.clientX,
-            y: event.clientY,
-            title: data.node.name,
-            summary: getNodeSummary(data.node),
-          });
+          handleNodePointerHover(data.node, event.clientX, event.clientY);
         }}
         onNodeMouseLeave={() => {
-          onHoverNode(undefined);
-          setTooltip(null);
+          handleNodePointerLeave();
         }}
         onNodeMouseMove={(event, node) => {
           if (node.type !== "assetNode") {
             return;
           }
           const data = node.data as ExplorerFlowNodeData;
-          if (onOpenNodeActions) {
-            setTooltip(null);
-            onOpenNodeActions({
-              node: data.node,
-              clientX: event.clientX,
-              clientY: event.clientY,
-              trigger: "hover",
-            });
-            return;
-          }
-          setTooltip({
-            x: event.clientX,
-            y: event.clientY,
-            title: data.node.name,
-            summary: getNodeSummary(data.node),
-          });
+          handleNodePointerHover(data.node, event.clientX, event.clientY);
         }}
         onEdgeClick={(_, edge) => {
           setActiveEdgeId(edge.id);
@@ -1222,12 +1267,14 @@ const TopologyCanvas = forwardRef<TopologyCanvasHandle, TopologyCanvasProps>(fun
           }
           onSelectNode(node.id);
           const data = node.data as ExplorerFlowNodeData;
-          onOpenNodeActions?.({
-            node: data.node,
-            clientX: event.clientX,
-            clientY: event.clientY,
-            trigger: "click",
-          });
+          if (onOpenNodeActions && (nodeActionOpenMode === "click-only" || nodeActionOpenMode === "hover-and-click")) {
+            onOpenNodeActions({
+              node: data.node,
+              clientX: event.clientX,
+              clientY: event.clientY,
+              trigger: "click",
+            });
+          }
         }}
         onPaneClick={() => {
           onCanvasInteraction?.();

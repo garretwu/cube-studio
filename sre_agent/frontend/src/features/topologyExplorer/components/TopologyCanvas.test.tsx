@@ -1,4 +1,4 @@
-import { render, waitFor } from "@testing-library/react";
+import { act, render, waitFor } from "@testing-library/react";
 import { createRef, type ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -195,5 +195,92 @@ describe("TopologyCanvas", () => {
 
     expect(() => ref.current?.fitView()).not.toThrow();
     expect(() => ref.current?.recenter()).not.toThrow();
+  });
+
+  it("shows hover info tooltip when enabled", async () => {
+    const { container } = render(
+      <TopologyCanvas
+        edges={sampleEdges}
+        hoverInfoTooltipEnabled
+        layoutPreset="layered"
+        matchedNodeIds={[]}
+        neighborDepths={new Map()}
+        nodes={sampleNodes}
+        onHoverNode={() => undefined}
+        onSelectNode={() => undefined}
+      />,
+    );
+
+    const latestProps = reactFlowMock.getLatestProps() as {
+      onNodeMouseEnter?: (event: { clientX: number; clientY: number }, node: unknown) => void;
+    };
+    const testNode = {
+      id: sampleNodes[0]?.id,
+      type: "assetNode",
+      data: { node: sampleNodes[0] },
+    };
+
+    act(() => {
+      latestProps.onNodeMouseEnter?.({ clientX: 120, clientY: 88 }, testNode);
+    });
+
+    await waitFor(() => {
+      expect(container.querySelector(".topology-modified-tooltip")).toBeTruthy();
+    });
+  });
+
+  it("does not show hover info tooltip when disabled", async () => {
+    const { container } = render(
+      <TopologyCanvas
+        edges={sampleEdges}
+        hoverInfoTooltipEnabled={false}
+        layoutPreset="layered"
+        matchedNodeIds={[]}
+        neighborDepths={new Map()}
+        nodes={sampleNodes}
+        onHoverNode={() => undefined}
+        onSelectNode={() => undefined}
+      />,
+    );
+
+    const latestProps = reactFlowMock.getLatestProps() as {
+      onNodeMouseEnter?: (event: { clientX: number; clientY: number }, node: unknown) => void;
+    };
+    const testNode = {
+      id: sampleNodes[0]?.id,
+      type: "assetNode",
+      data: { node: sampleNodes[0] },
+    };
+
+    act(() => {
+      latestProps.onNodeMouseEnter?.({ clientX: 120, clientY: 88 }, testNode);
+    });
+
+    await waitFor(() => {
+      expect(container.querySelector(".topology-modified-tooltip")).toBeNull();
+    });
+  });
+
+  it("passes native title flag to node data when disabled", async () => {
+    render(
+      <TopologyCanvas
+        edges={sampleEdges}
+        layoutPreset="layered"
+        matchedNodeIds={[]}
+        nativeTitleEnabled={false}
+        neighborDepths={new Map()}
+        nodes={sampleNodes}
+        onHoverNode={() => undefined}
+        onSelectNode={() => undefined}
+      />,
+    );
+
+    const latestProps = reactFlowMock.getLatestProps() as {
+      nodes?: Array<{ data?: { nativeTitleEnabled?: boolean } }>;
+    };
+
+    await waitFor(() => {
+      expect(latestProps.nodes?.[0]?.data?.nativeTitleEnabled).toBe(false);
+    });
   });
 });

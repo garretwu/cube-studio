@@ -471,17 +471,17 @@ describe("DiagnosisModifiedPage sequential playback", () => {
       within(reportRail)
         .getByTestId("diagnosis-modified-report-placeholder-context-progress")
         .querySelectorAll(".diagnosis-modified-report-rail__loading-progress-line").length,
-    ).toBe(1);
+    ).toBe(2);
     expect(
       within(reportRail)
         .getByTestId("diagnosis-modified-report-placeholder-hypotheses-progress")
         .querySelectorAll(".diagnosis-modified-report-rail__loading-progress-line").length,
-    ).toBe(1);
+    ).toBe(2);
     expect(
       within(reportRail)
         .getByTestId("diagnosis-modified-report-placeholder-rootcause-progress")
         .querySelectorAll(".diagnosis-modified-report-rail__loading-progress-line").length,
-    ).toBe(1);
+    ).toBe(2);
     expect(within(reportRail).getByTestId("diagnosis-modified-report-progressive-context")).toHaveAttribute(
       "data-state",
       "placeholder",
@@ -1742,6 +1742,9 @@ describe("DiagnosisModifiedPage split workspace", () => {
     const actionStep = screen.getByTestId("diagnosis-modified-action-generated-step");
     expect(within(actionStep).queryByTestId("diagnosis-modified-flow-remediation-entry")).not.toBeInTheDocument();
     expect(within(actionStep).getByTestId("diagnosis-modified-approval-surface")).toBeInTheDocument();
+    expect(within(actionStep).getByText("诊断修复方案")).toBeInTheDocument();
+    expect(within(actionStep).getByRole("button", { name: "同意执行" })).toBeInTheDocument();
+    expect(screen.queryByText(/\\u[0-9a-fA-F]{4}/)).not.toBeInTheDocument();
     expect(actionStep.querySelector(".diagnosis-modified-trace-step__rail")).toBeTruthy();
     expect(container.querySelector(".diagnosis-modified-message-row--user")).toBeNull();
     expect(within(reportRail).getByText("诊断拓扑信息")).toBeInTheDocument();
@@ -1766,7 +1769,7 @@ describe("DiagnosisModifiedPage split workspace", () => {
     expect(container.querySelector(".diagnosis-modified-report-rail__context-graph")).toBeTruthy();
     expect(container.querySelector(".diagnosis-modified-report-rail__context-lists")).toBeNull();
     expect(container.querySelectorAll(".diagnosis-modified-report-rail__section").length).toBe(3);
-    expect(within(reportRail).getAllByText("RANK #1：Redis connection saturation").length).toBeGreaterThan(0);
+    expect(within(reportRail).getAllByText("Redis connection saturation").length).toBeGreaterThan(0);
     expect(
       within(reportRail).getAllByText("Throttle rollout and validate Redis recovery before expanding.").length,
     ).toBeGreaterThan(0);
@@ -1782,7 +1785,16 @@ describe("DiagnosisModifiedPage split workspace", () => {
     expect(within(reportRail).queryByText("Hypothesis summary")).not.toBeInTheDocument();
     expect(within(reportRail).queryByText("结论已趋于稳定，默认折叠细节；可按候选展开查看证据与置信度变化。")).not.toBeInTheDocument();
     expect(within(reportRail).queryByText("已选中 3 个候选假设。")).not.toBeInTheDocument();
-    expect(within(reportRail).getByText("Redis timeout and retry loop align with alert timing.")).toBeInTheDocument();
+    const rootCauseSummary = within(reportRail).getByText("Redis timeout and retry loop align with alert timing.");
+    expect(rootCauseSummary).toBeInTheDocument();
+    expect(rootCauseSummary).toHaveClass("diagnosis-modified-report-rail__candidate-summary");
+    expect(rootCauseSummary).toHaveAttribute("title", "Redis timeout and retry loop align with alert timing.");
+    const rootCauseTitleMatches = within(reportRail).getAllByTitle("Redis connection saturation");
+    expect(
+      rootCauseTitleMatches.some((node) =>
+        node.classList.contains("diagnosis-modified-report-rail__rootcause-title-text"),
+      ),
+    ).toBe(true);
     expect(within(reportRail).queryByText("仅展示告警主体与其直连关联实体；当缺少直连关系时，仅展示主体节点并给出提示。")).not.toBeInTheDocument();
     expect(screen.queryByTestId("diagnosis-modified-report-rail-loading")).not.toBeInTheDocument();
   });
@@ -2358,6 +2370,98 @@ describe("DiagnosisModifiedPage split workspace", () => {
     expect(within(screen.getByTestId("diagnosis-modified-report-rail")).queryByTestId("diagnosis-modified-report-progress")).not.toBeInTheDocument();
     expect(screen.getByText("0")).toBeInTheDocument();
     expect(screen.getByText("wj-lab-cpt-01")).toBeInTheDocument();
+  });
+
+  it("shows context node popover in diagnosis context topology graph", () => {
+    mockedBuildLiveView.mockReturnValue({
+      timeline: [],
+      candidates: [],
+      summary: undefined,
+      plan: undefined,
+    });
+
+    resetDiagnosisStore({
+      session: createLiveSession("sess-live-topology-tooltip"),
+      activeSessionId: "sess-live-topology-tooltip",
+      bootstrapStatus: "ready",
+      traceStatus: "ready",
+      messages: [],
+      topologyContext: {
+        roots: ["gpu:0"],
+        affected_count: 2,
+        affected_entities: [
+          { id: "svc:service:qwen3-32b-fp8-202602261", type: "service", name: "svc:service:qwen3-32b-fp8-202602261" },
+          { id: "gpu:0", type: "gpu", name: "GPU 0" },
+        ],
+        summary: "svc:service:qwen3-32b-fp8-202602261 -> entity:node:worker-03",
+      },
+      bootstrapSession: vi.fn().mockResolvedValue(undefined),
+    });
+
+    const { container } = renderLivePage("/diagnosis-modified/sess-live-topology-tooltip");
+    const reportRail = screen.getByTestId("diagnosis-modified-report-rail");
+    const nodeButton = within(reportRail)
+      .getAllByRole("button")
+      .find((button) => /\|/.test(button.getAttribute("aria-label") ?? ""));
+    expect(nodeButton).toBeTruthy();
+    fireEvent.mouseEnter(nodeButton as HTMLButtonElement);
+
+    const popover = container.querySelector("[data-testid=\"diagnosis-context-node-popover\"]");
+    expect(popover).toBeTruthy();
+    expect(within(popover as HTMLElement).getByRole("button", { name: "查看拓扑" })).toBeInTheDocument();
+    expect(within(popover as HTMLElement).queryByRole("button", { name: "隔离节点" })).toBeNull();
+    expect(popover?.textContent ?? "").not.toContain("svc:service:");
+    expect(popover?.textContent ?? "").not.toContain("entity:");
+  });
+
+  it("keeps diagnosis context popover open while pointer moves from node to card and closes after delay", async () => {
+    mockedBuildLiveView.mockReturnValue({
+      timeline: [],
+      candidates: [],
+      summary: undefined,
+      plan: undefined,
+    });
+
+    resetDiagnosisStore({
+      session: createLiveSession("sess-live-topology-hover-stable"),
+      activeSessionId: "sess-live-topology-hover-stable",
+      bootstrapStatus: "ready",
+      traceStatus: "ready",
+      messages: [],
+      topologyContext: {
+        roots: ["gpu:0"],
+        affected_count: 2,
+        affected_entities: [
+          { id: "svc:service:qwen3-32b-fp8-202602261", type: "service", name: "svc:service:qwen3-32b-fp8-202602261" },
+          { id: "gpu:0", type: "gpu", name: "GPU 0" },
+        ],
+        summary: "svc:service:qwen3-32b-fp8-202602261 -> entity:node:worker-03",
+      },
+      bootstrapSession: vi.fn().mockResolvedValue(undefined),
+    });
+
+    const { container } = renderLivePage("/diagnosis-modified/sess-live-topology-hover-stable");
+    const reportRail = screen.getByTestId("diagnosis-modified-report-rail");
+    const nodeButton = within(reportRail)
+      .getAllByRole("button")
+      .find((button) => /\|/.test(button.getAttribute("aria-label") ?? ""));
+    expect(nodeButton).toBeTruthy();
+
+    fireEvent.mouseEnter(nodeButton as HTMLButtonElement);
+    let popover = container.querySelector("[data-testid=\"diagnosis-context-node-popover\"]");
+    expect(popover).toBeTruthy();
+
+    fireEvent.mouseLeave(nodeButton as HTMLButtonElement);
+    fireEvent.mouseEnter(popover as HTMLElement);
+    await advance(160);
+
+    popover = container.querySelector("[data-testid=\"diagnosis-context-node-popover\"]");
+    expect(popover).toBeTruthy();
+
+    fireEvent.mouseLeave(popover as HTMLElement);
+    await advance(160);
+
+    expect(container.querySelector("[data-testid=\"diagnosis-context-node-popover\"]")).toBeNull();
   });
 
   it("shows alert subject only when no direct topology relation is available", () => {
@@ -2953,6 +3057,14 @@ describe("DiagnosisModifiedPage split workspace", () => {
     expect(within(hypothesisCard).queryByText("Primary root cause")).not.toBeInTheDocument();
     expect(within(hypothesisCard).queryByText("Candidate root cause")).not.toBeInTheDocument();
     expect(within(hypothesisCard).queryByRole("button", { name: "Expand details" })).not.toBeInTheDocument();
+    const hypothesisHeader = hypothesisCard.querySelector(".diagnosis-modified-report-rail__candidate-header");
+    expect(hypothesisHeader).toHaveClass("diagnosis-modified-report-rail__candidate-header--two-col-hypothesis");
+    const hypothesisTitle = within(hypothesisCard).getByTitle("Redis connection saturation");
+    expect(hypothesisTitle).toHaveClass("diagnosis-modified-report-rail__candidate-title");
+    const hypothesisSummary = hypothesisCard.querySelector(".diagnosis-modified-report-rail__candidate-summary");
+    expect(hypothesisSummary).toBeTruthy();
+    expect(hypothesisSummary).toHaveClass("diagnosis-modified-report-rail__candidate-summary");
+    expect(hypothesisSummary).toHaveAttribute("title");
 
     await flushPendingTimers();
 
