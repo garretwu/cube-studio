@@ -36,6 +36,7 @@ from sre_agent.knowledge.store import KnowledgeStore
 from sre_agent.memory.factory import create_memory_store
 from sre_agent.models.alert import Alert, AlertSeverity
 from sre_agent.models.diagnosis import DiagnosisSession
+from sre_agent.models.diagnosis_event_payloads import build_diagnosis_candidates_ready_payload
 from sre_agent.models.events import EventType, WSEvent
 from sre_agent.models.ontology import EntityType, OntologyEdge, OntologyNode, RelationType
 from sre_agent.ontology.graph import OntologyGraph
@@ -1689,14 +1690,23 @@ class StreamingDiagnosisRunner:
                     event_type="supplemental_prepare",
                     session_hint=final_session_id,
                 )
-                if completed.diagnosis_result is not None and EventType.DIAGNOSIS_RESULT.value not in emitted_event_types:
-                    supplemental_events.append(
-                        {
-                            "type": EventType.DIAGNOSIS_RESULT.value,
-                            "session_id": final_session_id,
-                            "data": completed.diagnosis_result.model_dump(mode="json"),
-                        }
-                    )
+                if completed.diagnosis_result is not None:
+                    if EventType.DIAGNOSIS_CANDIDATES_READY.value not in emitted_event_types:
+                        supplemental_events.append(
+                            {
+                                "type": EventType.DIAGNOSIS_CANDIDATES_READY.value,
+                                "session_id": final_session_id,
+                                "data": build_diagnosis_candidates_ready_payload(completed.diagnosis_result),
+                            }
+                        )
+                    if EventType.DIAGNOSIS_RESULT.value not in emitted_event_types:
+                        supplemental_events.append(
+                            {
+                                "type": EventType.DIAGNOSIS_RESULT.value,
+                                "session_id": final_session_id,
+                                "data": completed.diagnosis_result.model_dump(mode="json"),
+                            }
+                        )
                 if plan is not None and EventType.APPROVAL_REQUIRED.value not in emitted_event_types:
                     plan_version = self._remediation_engine.get_latest_plan_version(final_session_id)
                     supplemental_events.append(

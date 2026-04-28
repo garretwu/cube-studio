@@ -42,6 +42,7 @@ from sre_agent.models.diagnosis import (
     RemediationMetricReview,
     RemediationMetricSnapshot,
 )
+from sre_agent.models.diagnosis_event_payloads import build_diagnosis_candidates_ready_payload
 from sre_agent.models.events import EventType, WSEvent
 from sre_agent.models.memory import ConfigBaseline, IncidentRecord, LearnedPattern
 from sre_agent.models.remediation import LoopResult, RemediationPlan, RemediationResult
@@ -1240,6 +1241,13 @@ def build_api_router() -> APIRouter:
                     }
                 )
         if session.diagnosis_result is not None:
+            await services.trace_publisher.publish(
+                {
+                    "type": EventType.DIAGNOSIS_CANDIDATES_READY.value,
+                    "session_id": session.session_id,
+                    "data": build_diagnosis_candidates_ready_payload(session.diagnosis_result),
+                }
+            )
             await services.trace_publisher.publish(
                 {
                     "type": EventType.DIAGNOSIS_RESULT.value,

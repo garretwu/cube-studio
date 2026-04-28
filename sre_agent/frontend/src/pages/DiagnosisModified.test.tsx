@@ -471,17 +471,22 @@ describe("DiagnosisModifiedPage sequential playback", () => {
       within(reportRail)
         .getByTestId("diagnosis-modified-report-placeholder-context-progress")
         .querySelectorAll(".diagnosis-modified-report-rail__loading-progress-line").length,
-    ).toBe(1);
+    ).toBe(3);
     expect(
       within(reportRail)
         .getByTestId("diagnosis-modified-report-placeholder-hypotheses-progress")
         .querySelectorAll(".diagnosis-modified-report-rail__loading-progress-line").length,
-    ).toBe(1);
+    ).toBe(3);
     expect(
       within(reportRail)
         .getByTestId("diagnosis-modified-report-placeholder-rootcause-progress")
         .querySelectorAll(".diagnosis-modified-report-rail__loading-progress-line").length,
-    ).toBe(1);
+    ).toBe(3);
+    expect(
+      within(reportRail)
+        .getByTestId("diagnosis-modified-report-placeholder-rootcause-progress")
+        .querySelector(".diagnosis-modified-report-rail__loading-progress-line--tertiary"),
+    ).toBeInTheDocument();
     expect(within(reportRail).getByTestId("diagnosis-modified-report-progressive-context")).toHaveAttribute(
       "data-state",
       "placeholder",
@@ -724,9 +729,20 @@ describe("DiagnosisModifiedPage sequential playback", () => {
       useDiagnosisStore.setState((state) => ({
         ...state,
         session: createDetailedLiveSession("sess-live-progressive-report"),
+        events: [
+          ...state.events,
+          {
+            schema_version: "1",
+            type: "diagnosis_result",
+            session_id: "sess-live-progressive-report",
+            timestamp: "2026-04-08T12:00:02.000Z",
+            data: {},
+          },
+        ],
       }));
       await Promise.resolve();
     });
+    await advance(1500);
 
     expect(within(reportRail).getByTestId("diagnosis-modified-report-progressive-rootcause")).toHaveAttribute(
       "data-state",
@@ -1680,6 +1696,13 @@ describe("DiagnosisModifiedPage split workspace", () => {
       events: [
         {
           schema_version: "1",
+          type: "diagnosis_result",
+          session_id: "sess-live-report",
+          timestamp: "2026-04-08T12:00:07.000Z",
+          data: {},
+        },
+        {
+          schema_version: "1",
           type: "remediation_progress",
           session_id: "sess-live-report",
           timestamp: "2026-04-08T12:00:08.000Z",
@@ -1765,6 +1788,7 @@ describe("DiagnosisModifiedPage split workspace", () => {
     expect(within(reportRail).queryByText(/关联实体:/u)).not.toBeInTheDocument();
     expect(container.querySelector(".diagnosis-modified-report-rail__context-graph")).toBeTruthy();
     expect(container.querySelector(".diagnosis-modified-report-rail__context-lists")).toBeNull();
+    await advance(1500);
     expect(container.querySelectorAll(".diagnosis-modified-report-rail__section").length).toBe(3);
     expect(within(reportRail).getAllByText("RANK #1：Redis connection saturation").length).toBeGreaterThan(0);
     expect(
@@ -2358,6 +2382,101 @@ describe("DiagnosisModifiedPage split workspace", () => {
     expect(within(screen.getByTestId("diagnosis-modified-report-rail")).queryByTestId("diagnosis-modified-report-progress")).not.toBeInTheDocument();
     expect(screen.getByText("0")).toBeInTheDocument();
     expect(screen.getByText("wj-lab-cpt-01")).toBeInTheDocument();
+  });
+
+  it("delays root-cause reveal by 1.5s for realtime live sessions", async () => {
+    vi.stubEnv("VITE_WS_ENABLED", "true");
+    let liveViewSource: ReturnType<typeof diagnosisModifiedModel.buildDiagnosisModifiedLiveView> = {
+      timeline: [],
+      candidates: [
+        {
+          id: "candidate-live-delay",
+          title: "GPU contention",
+          summary: "GPU util remains saturated.",
+          confidence: 0.82,
+          confidenceLabel: "82%",
+          statusLabel: "当前候选",
+          statusTone: "accent",
+          evidenceFor: ["gpu.get_processes indicates saturation"],
+          evidenceAgainst: [],
+          entities: ["node:worker-03"],
+          rank: 1,
+          evidenceSummary: "gpu.get_processes indicates saturation",
+          distinguishingVerification: "verify external process interference",
+          isPrimary: true,
+        },
+      ],
+      summary: undefined,
+      plan: undefined,
+    };
+    mockedBuildLiveView.mockImplementation(() => liveViewSource);
+
+    const liveSessionId = "sess-live-rootcause-delay";
+    const preResultSession = createLiveSession(liveSessionId);
+    preResultSession.diagnosis_result = null;
+
+    resetDiagnosisStore({
+      session: preResultSession,
+      activeSessionId: liveSessionId,
+      bootstrapStatus: "ready",
+      traceStatus: "ready",
+      messages: [],
+      events: [
+        {
+          schema_version: "1",
+          type: "diagnosis_candidates_ready",
+          session_id: liveSessionId,
+          timestamp: "2026-04-08T12:30:00.000Z",
+          data: {
+            ranked_candidates: [],
+          },
+        },
+      ],
+      bootstrapSession: vi.fn().mockResolvedValue(undefined),
+    });
+
+    renderLivePage(`/diagnosis-modified/${liveSessionId}`);
+
+    expect(screen.getByTestId("diagnosis-modified-report-progressive-rootcause")).toHaveAttribute(
+      "data-state",
+      "placeholder",
+    );
+
+    await act(async () => {
+      useDiagnosisStore.setState((state) => ({
+        ...state,
+        session: createDetailedLiveSession(liveSessionId),
+        events: [
+          ...state.events,
+          {
+            schema_version: "1",
+            type: "diagnosis_result",
+            session_id: liveSessionId,
+            timestamp: "2026-04-08T12:30:01.000Z",
+            data: {},
+          },
+        ],
+      }));
+      await Promise.resolve();
+    });
+
+    expect(screen.getByTestId("diagnosis-modified-report-progressive-rootcause")).toHaveAttribute(
+      "data-state",
+      "placeholder",
+    );
+
+    await advance(1490);
+    expect(screen.getByTestId("diagnosis-modified-report-progressive-rootcause")).toHaveAttribute(
+      "data-state",
+      "placeholder",
+    );
+
+    await advance(20);
+    expect(screen.getByTestId("diagnosis-modified-report-progressive-rootcause")).toHaveAttribute(
+      "data-state",
+      "ready",
+    );
+    vi.unstubAllEnvs();
   });
 
   it("keeps diagnosis context graph hover tooltip behavior unchanged", async () => {

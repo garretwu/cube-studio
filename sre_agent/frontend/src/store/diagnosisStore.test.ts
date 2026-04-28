@@ -556,6 +556,54 @@ describe("useDiagnosisStore", () => {
     expect(state.planMissingReason).toBe("证据不足，暂不生成可执行修复计划。");
   });
 
+  it("stages candidates with diagnosis_candidates_ready before final diagnosis_result", () => {
+    useDiagnosisStore.setState({
+      session: {
+        ...diagnosisSession,
+        status: "diagnosing",
+        diagnosis_result: null,
+      },
+      activeSessionId: diagnosisSession.session_id,
+      events: [],
+      messages: [],
+    });
+
+    useDiagnosisStore.getState().applyEvent({
+      schema_version: "1",
+      type: "diagnosis_candidates_ready",
+      session_id: diagnosisSession.session_id,
+      timestamp: "2026-04-28T08:00:00Z",
+      data: {
+        ranked_candidates: diagnosisSession.diagnosis_result?.ranked_candidates ?? [],
+        hypotheses: diagnosisSession.diagnosis_result?.hypotheses ?? [],
+        confidence: diagnosisSession.diagnosis_result?.confidence ?? 0.5,
+        diagnosis_certainty: diagnosisSession.diagnosis_result?.diagnosis_certainty ?? "ambiguous",
+        impact_summary: diagnosisSession.diagnosis_result?.impact_summary ?? "",
+        affected_services: diagnosisSession.diagnosis_result?.affected_services ?? [],
+        triage_priority: diagnosisSession.diagnosis_result?.triage_priority ?? "P2",
+      },
+    });
+
+    const staged = useDiagnosisStore.getState();
+    expect(staged.session?.status).toBe("diagnosed");
+    expect(staged.session?.diagnosis_result).toBeDefined();
+    expect(staged.session?.diagnosis_result?.root_cause ?? "").toBe("");
+    expect(staged.hasPlan).toBe(false);
+
+    useDiagnosisStore.getState().applyEvent({
+      schema_version: "1",
+      type: "diagnosis_result",
+      session_id: diagnosisSession.session_id,
+      timestamp: "2026-04-28T08:00:03Z",
+      data: diagnosisSession.diagnosis_result ?? {},
+    });
+
+    const finalized = useDiagnosisStore.getState();
+    expect(finalized.session?.diagnosis_result?.root_cause).toBe(diagnosisSession.diagnosis_result?.root_cause);
+    expect(finalized.session?.status).toBe("approval_required");
+    expect(finalized.hasPlan).toBe(true);
+  });
+
   it("shows a thinking placeholder immediately on node_started before token deltas arrive", () => {
     useDiagnosisStore.setState({
       session: diagnosisSession,

@@ -1038,4 +1038,93 @@ describe("buildDiagnosisModifiedReportView", () => {
     expect(view.overview.updatedAt).toBeUndefined();
     expect(view.rootCauseReady).toBe(false);
   });
+
+  it("keeps root-cause section loading when only diagnosis_candidates_ready event exists", () => {
+    const session = createSession("diagnosed");
+    const candidates = [
+      {
+        id: "candidate-stage-1",
+        title: "GPU contention",
+        summary: "GPU util remains saturated on worker-03",
+        confidence: 0.86,
+        confidenceLabel: "86%",
+        statusLabel: "当前候选",
+        statusTone: "accent" as const,
+        evidenceFor: ["gpu.get_processes confirmed persistent fi_gpu_burn occupancy"],
+        evidenceAgainst: [],
+        entities: ["node:worker-03", "gpu:0"],
+        rank: 1,
+        evidenceSummary: "persistent fi_gpu_burn occupancy",
+        distinguishingVerification: "verify process interference from external load test",
+        isPrimary: true,
+      },
+    ];
+    const view = buildDiagnosisModifiedReportView({
+      session,
+      timeline: [],
+      candidates,
+      events: [
+        {
+          schema_version: "1",
+          type: "diagnosis_candidates_ready",
+          session_id: "sess-report-model",
+          timestamp: "2026-04-08T10:02:00.000Z",
+          data: {
+            ranked_candidates: session.diagnosis_result?.ranked_candidates ?? [],
+          },
+        },
+      ],
+      localAuditRecords: [],
+    });
+
+    expect(view.hypotheses.state).toBe("ready");
+    expect(view.rootCause.state).toBe("loading");
+    expect(view.rootCauseReady).toBe(false);
+  });
+
+  it("keeps root-cause section loading when allowRootCauseReveal is false", () => {
+    const session = createSession("approval_required");
+    const view = buildDiagnosisModifiedReportView({
+      session,
+      timeline: [],
+      candidates: [],
+      events: [
+        {
+          schema_version: "1",
+          type: "diagnosis_result",
+          session_id: "sess-report-model",
+          timestamp: "2026-04-08T10:03:00.000Z",
+          data: {},
+        },
+      ],
+      localAuditRecords: [],
+      allowRootCauseReveal: false,
+    });
+
+    expect(view.rootCause.state).toBe("loading");
+    expect(view.rootCauseReady).toBe(false);
+  });
+
+  it("reveals root-cause section when allowRootCauseReveal is true", () => {
+    const session = createSession("approval_required");
+    const view = buildDiagnosisModifiedReportView({
+      session,
+      timeline: [],
+      candidates: [],
+      events: [
+        {
+          schema_version: "1",
+          type: "diagnosis_result",
+          session_id: "sess-report-model",
+          timestamp: "2026-04-08T10:04:00.000Z",
+          data: {},
+        },
+      ],
+      localAuditRecords: [],
+      allowRootCauseReveal: true,
+    });
+
+    expect(view.rootCause.state).toBe("ready");
+    expect(view.rootCauseReady).toBe(true);
+  });
 });
