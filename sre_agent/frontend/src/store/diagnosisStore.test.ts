@@ -876,6 +876,73 @@ describe("useDiagnosisStore", () => {
     expect(state.liveThinking?.content).toBe("streaming...");
   });
 
+  it("uses the latest diagnosis_started topology when historical events contain multiple starts", async () => {
+    server.use(
+      http.get("/api/sessions/:sessionId/events", async () =>
+        HttpResponse.json([
+          {
+            schema_version: "1",
+            type: "diagnosis_started",
+            session_id: "sess-latency-001",
+            timestamp: "2026-04-27T03:00:00.000Z",
+            data: {
+              alert: {
+                alert_name: diagnosisSession.alert.alert_name,
+                severity: diagnosisSession.alert.severity,
+                labels: diagnosisSession.alert.labels,
+              },
+              topology: {
+                roots: ["service:old-root"],
+                affected_count: 1,
+                affected_entities: [{ id: "pod:old", type: "k8s_pod", name: "old" }],
+                summary: "old topology",
+              },
+              variables: {},
+            },
+          },
+          {
+            schema_version: "1",
+            type: "thinking_step",
+            session_id: "sess-latency-001",
+            timestamp: "2026-04-27T03:01:00.000Z",
+            data: { step: 1, thought: "collecting evidence" },
+          },
+          {
+            schema_version: "1",
+            type: "diagnosis_started",
+            session_id: "sess-latency-001",
+            timestamp: "2026-04-27T03:02:00.000Z",
+            data: {
+              alert: {
+                alert_name: diagnosisSession.alert.alert_name,
+                severity: diagnosisSession.alert.severity,
+                labels: diagnosisSession.alert.labels,
+              },
+              topology: {
+                roots: ["service:new-root"],
+                affected_count: 2,
+                affected_entities: [
+                  { id: "pod:new-1", type: "k8s_pod", name: "new-1" },
+                  { id: "node:new-node", type: "node", name: "new-node" },
+                ],
+                summary: "new topology",
+              },
+              variables: {},
+            },
+          },
+        ]),
+      ),
+      http.get("/api/chat/history", async () => HttpResponse.json([])),
+    );
+
+    await useDiagnosisStore.getState().bootstrapSession("sess-latency-001");
+
+    const state = useDiagnosisStore.getState();
+    expect(state.topologyContext?.summary).toBe("new topology");
+    expect(state.topologyContext?.roots).toEqual(["service:new-root"]);
+    expect(state.topologyContext?.affected_count).toBe(2);
+  });
+
   it("uses default instruction when revising plan without input", async () => {
     let capturedInstruction = "";
     server.use(

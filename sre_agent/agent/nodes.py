@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import html
 import json
 import logging
 import os
@@ -500,6 +501,20 @@ async def reason_node(
     if not isinstance(response, AIMessage):
         raise RuntimeError(f"expected AIMessage from LLM, got {type(response).__name__}")
 
+    raw_response_text = _extract_text(response.content)
+    provider_tool_calls = list(response.tool_calls or [])
+    if not provider_tool_calls and raw_response_text:
+        provider_tool_calls = _extract_xml_like_tool_calls(raw_response_text)
+        if provider_tool_calls:
+            _llm_logger.info(
+                "Recovered %d XML-like tool_calls from provider text response",
+                len(provider_tool_calls),
+            )
+    provider_tool_calls = _enforce_first_turn_skill_listing_policy(
+        state=state,
+        pending_tool_calls=provider_tool_calls,
+    )
+
     updated_messages = [*messages, response]
     updated_trace = list(state.get("trace_items", []))
     updated_interactions = list(state.get("llm_interactions", []))
@@ -519,7 +534,7 @@ async def reason_node(
         )
     pending_tool_calls = _auto_load_high_score_skill(
         state,
-        list(response.tool_calls or []),
+        provider_tool_calls,
     )
     pending_tool_calls = _auto_run_single_script_skill(
         state,
@@ -546,9 +561,7 @@ async def reason_node(
             for call in pending_tool_calls
             if isinstance(call.get("args"), dict) and len(call.get("args") or {}) > 0
         ]
-    raw_response_text = _extract_text(response.content)
     forced_trace_tool_call_emitted = False
-
     # 记录 LLM 交互到日志文件
     _log_llm_interaction(
         session_id=str(state.get("session_id", "unknown")),
@@ -1323,7 +1336,7 @@ def _find_latest_successful_skill_listing(tool_runs: list[dict[str, Any]]) -> di
     return None
 
 
-_AUTO_LOAD_SKILL_MATCH_THRESHOLD = 0.6
+_AUTO_LOAD_SKILL_MATCH_THRESHOLD = 10.0
 _SKILL_LIST_COOLDOWN_STEPS = 6
 
 
@@ -5051,7 +5064,7 @@ async def act_node(
                 "content": (
                     "已停止重复指标查询，切换下一工具继续取证。"
                     if is_ttft_alert and not ttft_coverage_met
-                    else "已停止重复查询，进入总结阶段。"
+                    else "进入总结阶段"
                 ),
                 "action": (
                     "tool_call"
@@ -5080,7 +5093,7 @@ async def act_node(
                 "content": (
                     f"已停止 {suppressed_in_round} 次重复指标查询，切换下一工具继续取证。"
                     if is_ttft_alert and not ttft_coverage_met
-                    else f"已停止 {suppressed_in_round} 次重复查询，进入总结阶段。"
+                    else "进入总结阶段"
                 ),
                 "action": (
                     "tool_call"
@@ -5119,7 +5132,7 @@ async def act_node(
                     "content": (
                         "已停止重复指标查询，切换下一工具继续取证。"
                         if is_ttft_alert and not suppressed_coverage_met
-                        else "已停止重复查询，进入总结阶段。"
+                        else "进入总结阶段"
                     ),
                     "action": (
                         "tool_call"
@@ -5506,6 +5519,104 @@ def _extract_text(content: Any) -> str:
                 parts.append(str(item.get("text", "")))
         return "\n".join(part.strip() for part in parts if str(part).strip()).strip()
     return str(content or "").strip()
+
+
+def _extract_xml_like_tool_calls(content: str) -> list[dict[str, Any]]:
+    if not isinstance(content, str) or "<invoke" not in content:
+        return []
+
+    tool_calls: list[dict[str, Any]] = []
+    invoke_pattern = re.compile(
+        r"<invoke\b[^>]*\bname\s*=\s*['\"](?P<name>[^'\"]+)['\"][^>]*>(?P<body>.*?)</invoke>",
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    param_pattern = re.compile(
+        r"<parameter\b[^>]*\bname\s*=\s*['\"](?P<name>[^'\"]+)['\"][^>]*>(?P<value>.*?)</parameter>",
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+
+    for index, match in enumerate(invoke_pattern.finditer(content), start=1):
+        tool_name = html.unescape(str(match.group("name") or "").strip())
+        if not tool_name:
+            continue
+        args: dict[str, Any] = {}
+        body = str(match.group("body") or "")
+        for param_match in param_pattern.finditer(body):
+            param_name = html.unescape(str(param_match.group("name") or "").strip())
+            if not param_name:
+                continue
+            args[param_name] = html.unescape(str(param_match.group("value") or "").strip())
+        tool_calls.append(
+            {
+                "name": tool_name,
+                "args": args,
+                "id": f"xml-call-{index}",
+                "type": "tool_call",
+            }
+        )
+    return tool_calls
+
+
+def _build_first_turn_skill_listing_query(state: SREAgentState) -> str:
+    snapshot = state.get("alert_snapshot")
+    alert_name = ""
+    severity = ""
+    summary = ""
+    description = ""
+    if isinstance(snapshot, dict):
+        alert_name = str(snapshot.get("alert_name", "") or "").strip()
+        severity_value = snapshot.get("severity")
+        if isinstance(severity_value, dict):
+            severity = str(severity_value.get("value", "") or "").strip()
+        else:
+            severity = str(severity_value or "").strip()
+        annotations = snapshot.get("annotations")
+        if isinstance(annotations, dict):
+            summary = str(annotations.get("summary", "") or "").strip()
+            description = str(annotations.get("description", "") or "").strip()
+
+    if alert_name or severity or summary or description:
+        parts: list[str] = []
+        if alert_name:
+            if severity:
+                parts.append(f"Diagnose alert '{alert_name}' with severity '{severity}'.")
+            else:
+                parts.append(f"Diagnose alert '{alert_name}'.")
+        if summary:
+            parts.append(f"Summary: {summary}.")
+        if description:
+            parts.append(f"Description: {description}.")
+        parts.append("Use available tools to identify root cause and produce ranked candidates.")
+        merged = " ".join(part for part in parts if part).strip()
+        if merged:
+            return merged
+
+    query = str(state.get("query", "") or "").strip()
+    compact = re.sub(r"\s+", " ", query).strip()
+    return compact[:120] or "alert diagnosis"
+
+
+def _enforce_first_turn_skill_listing_policy(
+    *,
+    state: SREAgentState,
+    pending_tool_calls: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    if state.get("tool_runs"):
+        return pending_tool_calls
+    if _is_ttft_alert_state(state):
+        return pending_tool_calls
+    call_id = ""
+    if pending_tool_calls:
+        call_id = str((pending_tool_calls[0] or {}).get("id", "")).strip()
+    call_id = call_id or "call-first-turn-skill-list"
+    return [
+        {
+            "name": "skills.list_skills",
+            "args": {"query": _build_first_turn_skill_listing_query(state)},
+            "id": call_id,
+            "type": "tool_call",
+        }
+    ]
 
 
 def _parse_reasoning_output(content: str) -> ReasoningEnvelope:

@@ -42,7 +42,7 @@ function SidebarNav({
 
   return (
     <>
-      <div className={cn("shell-brand", collapsed && "shell-brand--collapsed")} aria-label="QinClaw 品牌">
+      <div className={cn("shell-brand", collapsed && "shell-brand--collapsed")} aria-label="ChinClaw 品牌">
         <div className="shell-brand__identity">
           <button
             aria-label="打开设计令牌"
@@ -54,7 +54,7 @@ function SidebarNav({
           </button>
           {!collapsed ? (
             <div className="shell-brand__text">
-              <h1 className="shell-brand__title">QinClaw</h1>
+              <h1 className="shell-brand__title">ChinClaw</h1>
               {brandSubtitle ? <p className="shell-brand__subtitle">{brandSubtitle}</p> : null}
             </div>
           ) : null}
@@ -142,4 +142,3 @@ function SidebarNav({
 }
 
 export default SidebarNav;
-

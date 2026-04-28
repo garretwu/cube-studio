@@ -3100,6 +3100,130 @@ class TestAPIE2E:
         assert payload["data"]["event_id"] == "3"
         assert payload["data"]["fingerprint"] == "a3"
 
+    def test_e2e_session_events_keeps_diagnosis_started_anchor_when_limit_window_is_tail_only(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        monkeypatch.setenv("JWT_SECRET", "secret")
+        settings = resolve_jwt_settings()
+        token = encode_token(CurrentUser(user_id="u1", username="alice", role="operator"), settings)
+        registry, context = _registry()
+        config = SREAgentConfig.model_validate(
+            {
+                "global": {"aidc_id": "test-aidc", "ws_max_events_per_session": 500},
+                "ontology": {"db_path": str(tmp_path / "ontology.db")},
+                "memory": {"db_dir": str(tmp_path / "memory")},
+            }
+        )
+        with TestClient(
+            create_app(
+                config=config,
+                diagnosis_runner=_FakeDiagnosisRunner(),
+                ontology=OntologyGraph(),
+                memory=_FakeMemory(),
+                knowledge=_FakeKnowledge(),
+                tool_registry=registry,
+                execution_context=context,
+            )
+        ) as client:
+            session_id = "sess-anchor-limit"
+            asyncio.run(
+                client.app.state.services.trace_publisher.publish(
+                    WSEvent(
+                        type=EventType.DIAGNOSIS_STARTED,
+                        session_id=session_id,
+                        data={
+                            "event_id": "1",
+                            "topology": {
+                                "roots": ["node:worker-03"],
+                                "affected_count": 2,
+                                "affected_entities": [
+                                    {"id": "service:qwen-main", "type": "inference_service", "name": "qwen-main"},
+                                    {"id": "pod:service:qwen-main-0", "type": "k8s_pod", "name": "qwen-main-0"},
+                                ],
+                                "summary": "anchor topology",
+                            },
+                        },
+                    )
+                )
+            )
+            for idx in range(2, 213):
+                asyncio.run(
+                    client.app.state.services.trace_publisher.publish(
+                        WSEvent(
+                            type=EventType.TOKEN_DELTA,
+                            session_id=session_id,
+                            data={"event_id": str(idx), "content": f"delta-{idx}"},
+                        )
+                    )
+                )
+
+            resp = client.get(f"/api/sessions/{session_id}/events?limit=200", headers=_auth_headers(token))
+            assert resp.status_code == 200
+            payload = resp.json()
+            assert payload["success"] is True
+            events = payload["data"]
+            assert len(events) == 200
+            assert any(item["type"] == EventType.DIAGNOSIS_STARTED.value for item in events)
+            started = next(item for item in events if item["type"] == EventType.DIAGNOSIS_STARTED.value)
+            assert (started.get("data") or {}).get("topology", {}).get("affected_count") == 2
+
+    def test_e2e_trace_retention_prefers_preserving_diagnosis_started_anchor(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        monkeypatch.setenv("JWT_SECRET", "secret")
+        settings = resolve_jwt_settings()
+        token = encode_token(CurrentUser(user_id="u1", username="alice", role="operator"), settings)
+        registry, context = _registry()
+        config = SREAgentConfig.model_validate(
+            {
+                "global": {"aidc_id": "test-aidc", "ws_max_events_per_session": 3},
+                "ontology": {"db_path": str(tmp_path / "ontology.db")},
+                "memory": {"db_dir": str(tmp_path / "memory")},
+            }
+        )
+        with TestClient(
+            create_app(
+                config=config,
+                diagnosis_runner=_FakeDiagnosisRunner(),
+                ontology=OntologyGraph(),
+                memory=_FakeMemory(),
+                knowledge=_FakeKnowledge(),
+                tool_registry=registry,
+                execution_context=context,
+            )
+        ) as client:
+            session_id = "sess-anchor-retention"
+            asyncio.run(
+                client.app.state.services.trace_publisher.publish(
+                    WSEvent(
+                        type=EventType.DIAGNOSIS_STARTED,
+                        session_id=session_id,
+                        data={"event_id": "1", "topology": {"roots": ["node:worker-03"], "affected_count": 1, "affected_entities": [], "summary": "anchor"}},
+                    )
+                )
+            )
+            asyncio.run(
+                client.app.state.services.trace_publisher.publish(
+                    WSEvent(type=EventType.TOKEN_DELTA, session_id=session_id, data={"event_id": "2", "content": "d2"})
+                )
+            )
+            asyncio.run(
+                client.app.state.services.trace_publisher.publish(
+                    WSEvent(type=EventType.TOKEN_DELTA, session_id=session_id, data={"event_id": "3", "content": "d3"})
+                )
+            )
+            asyncio.run(
+                client.app.state.services.trace_publisher.publish(
+                    WSEvent(type=EventType.TOKEN_DELTA, session_id=session_id, data={"event_id": "4", "content": "d4"})
+                )
+            )
+
+            resp = client.get(f"/api/sessions/{session_id}/events?limit=3", headers=_auth_headers(token))
+            assert resp.status_code == 200
+            events = resp.json()["data"]
+            assert len(events) == 3
+            assert any(item["type"] == EventType.DIAGNOSIS_STARTED.value for item in events)
+
     def test_e2e_alert_poller_syncs_alertmanager_alerts_to_snapshot_and_ws(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         monkeypatch.setenv("JWT_SECRET", "secret")
         settings = resolve_jwt_settings()

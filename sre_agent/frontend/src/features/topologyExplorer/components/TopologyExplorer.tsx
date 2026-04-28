@@ -685,6 +685,7 @@ function TopologyExplorer({
             onCollapseAggregate={onCollapseAggregate}
             onCanvasInteraction={() => setNodeActions(null)}
             onHoverNode={onHoverNode}
+            nodeActionOpenMode="click-only"
             onOpenNodeActions={(payload) => {
               onFilterPanelOpenChange(false);
               if (

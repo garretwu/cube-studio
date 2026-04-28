@@ -82,20 +82,20 @@ function getRemediationEntryLabel(status?: string) {
   switch (String(status ?? "").trim().toLowerCase()) {
     case "awaiting_approval":
     case "approval_required":
-      return "\u5ba1\u6279\u4fee\u590d";
+      return "审批修复";
     case "approved":
     case "remediating":
     case "validating":
-      return "\u67e5\u770b\u6267\u884c";
+      return "查看执行";
     case "resolved":
     case "closed":
     case "failed":
     case "timeout":
     case "escalated":
     case "rejected":
-      return "\u67e5\u770b\u4fee\u590d\u8bb0\u5f55";
+      return "查看修复记录";
     default:
-      return "\u67e5\u770b\u4fee\u590d\u6982\u89c8";
+      return "查看修复概览";
   }
 }
 
@@ -394,19 +394,28 @@ function buildDiagnosisStartContextStreamText({
   severity,
   rootCount,
   affectedCount,
+  rawAffectedCount,
+  droppedCount,
   topologySummary,
 }: {
   alertName: string;
   severity: string;
   rootCount: number;
   affectedCount: number;
+  rawAffectedCount: number;
+  droppedCount: number;
   topologySummary: string;
 }) {
+  const filterNote =
+    rawAffectedCount > 0 && rawAffectedCount >= affectedCount
+      ? `原始 ${rawAffectedCount} 个，已裁剪 ${Math.max(droppedCount, rawAffectedCount - affectedCount)} 个`
+      : "";
   const fragments = [
     alertName ? `正在聚合 ${alertName} 的告警上下文` : "正在聚合告警上下文",
     severity ? `严重级别 ${severity}` : "",
     rootCount > 0 ? `关联根节点 ${rootCount} 个` : "",
-    affectedCount > 0 ? `影响实体 ${affectedCount} 个` : "",
+    affectedCount > 0 ? `影响实体 ${affectedCount} 个（已过滤）` : "",
+    filterNote,
     topologySummary ? `拓扑摘要 ${topologySummary}` : "",
   ].filter((item) => item.length > 0);
   return fragments.join("，");
@@ -990,7 +999,7 @@ function RCAReportCard({
       <header className="diagnosis-modified-report-card__header">
         <div>
           <div className="diagnosis-modified-report-card__eyebrow">
-            <ToneBadge tone="neutral">\u6839\u56e0\u8bca\u65ad</ToneBadge>
+            <ToneBadge tone="neutral">根因诊断</ToneBadge>
             {summary.priorityLabel ? <ToneBadge tone="warning">{summary.priorityLabel}</ToneBadge> : null}
             <ToneBadge tone={summary.certaintyTone}>{summary.certaintyLabel}</ToneBadge>
           </div>
@@ -1004,89 +1013,89 @@ function RCAReportCard({
 
       <div className="diagnosis-modified-report-card__grid">
         <div>
-          <span>\u786e\u5b9a\u6027</span>
+          <span>确定性</span>
           <strong>{summary.certaintyLabel}</strong>
         </div>
         <div>
-          <span>\u7f6e\u4fe1\u5ea6</span>
+          <span>置信度</span>
           <strong>{summary.confidenceRawLabel ?? summary.confidenceLabel}</strong>
         </div>
         <div>
-          <span>\u4f18\u5148\u7ea7</span>
+          <span>优先级</span>
           <strong>{summary.priorityLabel ?? "--"}</strong>
         </div>
         <div>
-          <span>\u66f4\u65b0\u65f6\u95f4</span>
+          <span>更新时间</span>
           <strong>{lastTimestamp ? lastParts.time : "--"}</strong>
         </div>
       </div>
 
       <div className="diagnosis-modified-report-card__sections">
         <div>
-          <p className="diagnosis-modified-report-card__section-label">\u5f53\u524d\u7ed3\u8bba</p>
+          <p className="diagnosis-modified-report-card__section-label">当前结论</p>
           <div className="diagnosis-modified-report-card__facts">
             <p>
-              <span>\u6839\u56e0\uff1a</span>
+              <span>根因：</span>
               {summary.rootCause ?? primaryCandidate?.title ?? "--"}
             </p>
             <p>
-              <span>\u5c42\u7ea7\uff1a</span>
+              <span>层级：</span>
               {summary.rootCauseLayerLabel ?? summary.rootCauseLayer ?? primaryCandidate?.layer ?? "--"}
             </p>
             <p>
-              <span>\u5b9e\u4f53\uff1a</span>
+              <span>实体：</span>
               {summary.rootCauseEntities && summary.rootCauseEntities.length > 0
-                ? summary.rootCauseEntities.join("\uff0c")
-                : primaryCandidate?.entities?.join("\uff0c") || "--"}
+                ? summary.rootCauseEntities.join("，")
+                : primaryCandidate?.entities?.join("，") || "--"}
             </p>
             <p>
-              <span>\u5f71\u54cd\uff1a</span>
+              <span>影响：</span>
               {summary.impactSummary}
             </p>
             <p>
-              <span>\u53d7\u5f71\u54cd\u670d\u52a1\uff1a</span>
-              {summary.affectedServices.length > 0 ? summary.affectedServices.join("\uff0c") : "--"}
+              <span>受影响服务：</span>
+              {summary.affectedServices.length > 0 ? summary.affectedServices.join("，") : "--"}
             </p>
           </div>
         </div>
 
         <div>
-          <p className="diagnosis-modified-report-card__section-label">\u5019\u9009\u6839\u56e0\uff08{candidates.length}\uff09</p>
+          <p className="diagnosis-modified-report-card__section-label">候选根因（{candidates.length}）</p>
           <div className="diagnosis-modified-report-card__candidates">
             {candidates.length > 0 ? (
               candidates.map((candidate, index) => (
                 <div key={candidate.id} className="diagnosis-modified-report-card__candidate-item">
                   <p>
-                    #{candidate.rank ?? index + 1} {candidate.title} ({candidate.confidence.toFixed(2)}) \u8bc1\u636e\u6458\u8981\uff1a
+                    #{candidate.rank ?? index + 1} {candidate.title} ({candidate.confidence.toFixed(2)}) 证据摘要：
                     {candidate.evidenceSummary ?? candidate.summary}
                   </p>
-                  {candidate.distinguishingVerification ? <p>\u533a\u5206\u9a8c\u8bc1\uff1a{candidate.distinguishingVerification}</p> : null}
+                  {candidate.distinguishingVerification ? <p>区分验证：{candidate.distinguishingVerification}</p> : null}
                 </div>
               ))
             ) : (
-              <p className="diagnosis-modified-report-card__section-copy">\u6682\u65e0\u5019\u9009\u6839\u56e0\u3002</p>
+              <p className="diagnosis-modified-report-card__section-copy">暂无候选根因。</p>
             )}
           </div>
         </div>
 
         <div>
-          <p className="diagnosis-modified-report-card__section-label">\u5047\u8bbe\u4e0e\u8bc1\u636e</p>
+          <p className="diagnosis-modified-report-card__section-label">假设与证据</p>
           <div className="diagnosis-modified-report-card__hypotheses">
             {hypothesisRows.length > 0 ? (
               hypothesisRows.map((item, index) => (
                 <p key={item.id}>
-                  {String.fromCharCode(65 + index)}. {item.description} [{item.statusLabel}] \u652f\u6301\u8bc1\u636e({item.evidenceForCount}) \u53cd\u8bc1({item.evidenceAgainstCount})
+                  {String.fromCharCode(65 + index)}. {item.description} [{item.statusLabel}] 支持证据({item.evidenceForCount}) 反证({item.evidenceAgainstCount})
                 </p>
               ))
             ) : (
-              <p className="diagnosis-modified-report-card__section-copy">\u6682\u65e0\u5047\u8bbe\u8bc1\u636e\u6570\u636e\u3002</p>
+              <p className="diagnosis-modified-report-card__section-copy">暂无假设证据数据。</p>
             )}
           </div>
         </div>
 
         <div>
           <details className="diagnosis-modified-report-card__propagation">
-            <summary className="diagnosis-modified-report-card__section-label">\u4f20\u64ad\u94fe\u8def\uff08\u6298\u53e0\uff09</summary>
+            <summary className="diagnosis-modified-report-card__section-label">传播链路（折叠）</summary>
             <div className="diagnosis-modified-report-card__propagation-body">
               {chainRows.length > 0 ? (
                 chainRows.map((step) => (
@@ -1095,7 +1104,7 @@ function RCAReportCard({
                   </p>
                 ))
               ) : (
-                <p className="diagnosis-modified-report-card__section-copy">\u6682\u65e0\u4f20\u64ad\u94fe\u8def\u6570\u636e\u3002</p>
+                <p className="diagnosis-modified-report-card__section-copy">暂无传播链路数据。</p>
               )}
             </div>
           </details>
@@ -1109,7 +1118,7 @@ function getApprovalConfidenceMeta(label?: string) {
     return null;
   }
 
-  return /\u7f6e\u4fe1/u.test(label) ? label : `${label} \u7f6e\u4fe1`;
+  return /置信/u.test(label) ? label : `${label} 置信`;
 }
 
 function ApprovalPlanCard({
@@ -1128,7 +1137,7 @@ function ApprovalPlanCard({
   onApprove: () => void;
 }) {
   const statusTone = resolution?.tone ?? (canApprove ? "accent" : "neutral");
-  const statusLabel = resolution?.label ?? (canApprove ? "\u5f85\u5ba1\u6279" : "\u5f85\u5904\u7406");
+  const statusLabel = resolution?.label ?? (canApprove ? "待审批" : "待处理");
   const metaItems = [
     plan.priorityLabel,
     getApprovalConfidenceMeta(plan.confidenceLabel) ?? undefined,
@@ -1148,7 +1157,7 @@ function ApprovalPlanCard({
       <header className="diagnosis-modified-approval-card__header">
         <div>
           <div className="diagnosis-modified-approval-card__eyebrow">
-            <ToneBadge tone="neutral">\u8bca\u65ad\u4fee\u590d\u65b9\u6848</ToneBadge>
+            <ToneBadge tone="neutral">诊断修复方案</ToneBadge>
             <ToneBadge tone={statusTone}>{statusLabel}</ToneBadge>
           </div>
           <h3 className="diagnosis-modified-approval-card__title">{plan.title}</h3>
@@ -1169,7 +1178,7 @@ function ApprovalPlanCard({
 
         {plan.impactSummary ? (
           <section className="diagnosis-workspace-approval-surface__impact">
-            <span className="diagnosis-workspace-approval-surface__section-label">\u98ce\u9669\u5f71\u54cd</span>
+            <span className="diagnosis-workspace-approval-surface__section-label">风险影响</span>
             <p>{plan.impactSummary}</p>
           </section>
         ) : null}
@@ -1196,7 +1205,7 @@ function ApprovalPlanCard({
         ) : null}
 
         {isSubmitting ? (
-          <div className="diagnosis-modified-approval-card__updating">\u6b63\u5728\u63d0\u4ea4\u5ba1\u6279...</div>
+          <div className="diagnosis-modified-approval-card__updating">正在提交审批...</div>
         ) : null}
 
         {resolution ? (
@@ -1212,7 +1221,7 @@ function ApprovalPlanCard({
               onClick={onApprove}
               type="button"
             >
-              {isSubmitting ? "\u6b63\u5728\u63d0\u4ea4..." : "\u540c\u610f\u6267\u884c"}
+              {isSubmitting ? "正在提交..." : "同意执行"}
             </button>
           </div>
         )}
@@ -1338,11 +1347,15 @@ function DiagnosisModifiedPage() {
     const topologySummary = normalizeDiagnosisModifiedDisplayText(topologyContext?.summary ?? "");
     const rootCount = Array.isArray(topologyContext?.roots) ? topologyContext.roots.length : 0;
     const affectedCount = Number(topologyContext?.affected_count ?? 0);
+    const rawAffectedCount = Number(topologyContext?.raw_affected_count ?? 0);
+    const droppedCount = Number(topologyContext?.dropped_count ?? 0);
     const contextText = buildDiagnosisStartContextStreamText({
       alertName: normalizedAlertName,
       severity,
       rootCount,
       affectedCount,
+      rawAffectedCount,
+      droppedCount,
       topologySummary,
     });
     if (!contextText) {
@@ -1375,6 +1388,8 @@ function DiagnosisModifiedPage() {
     session?.alert.starts_at,
     shouldBootstrapLiveSession,
     topologyContext?.affected_count,
+    topologyContext?.raw_affected_count,
+    topologyContext?.dropped_count,
     topologyContext?.roots,
     topologyContext?.summary,
   ]);
@@ -1385,6 +1400,8 @@ function DiagnosisModifiedPage() {
     const topologySummary = normalizeDiagnosisModifiedDisplayText(topologyContext?.summary ?? "");
     const rootCount = Array.isArray(topologyContext?.roots) ? topologyContext.roots.length : 0;
     const affectedCount = Number(topologyContext?.affected_count ?? 0);
+    const rawAffectedCount = Number(topologyContext?.raw_affected_count ?? 0);
+    const droppedCount = Number(topologyContext?.dropped_count ?? 0);
     const contextDetails: string[] = [];
     if (severity) {
       contextDetails.push(`严重级别: ${severity}`);
@@ -1393,7 +1410,10 @@ function DiagnosisModifiedPage() {
       contextDetails.push(`关联根节点: ${rootCount}`);
     }
     if (affectedCount > 0) {
-      contextDetails.push(`影响实体: ${affectedCount}`);
+      contextDetails.push(`影响实体: ${affectedCount}（已过滤）`);
+    }
+    if (rawAffectedCount > 0 && rawAffectedCount >= affectedCount) {
+      contextDetails.push(`原始实体: ${rawAffectedCount}，已裁剪: ${Math.max(droppedCount, rawAffectedCount - affectedCount)}`);
     }
     if (topologySummary) {
       contextDetails.push(`拓扑摘要: ${topologySummary}`);
@@ -1492,6 +1512,8 @@ function DiagnosisModifiedPage() {
     session?.session_id,
     shouldBootstrapLiveSession,
     topologyContext?.affected_count,
+    topologyContext?.raw_affected_count,
+    topologyContext?.dropped_count,
     topologyContext?.roots,
     topologyContext?.summary,
   ]);
@@ -1561,7 +1583,7 @@ function DiagnosisModifiedPage() {
     const approvedAt = Date.now();
 
     setDemoApprovalState("approved");
-    setDemoActionFeedback("\u5df2\u5728\u8bca\u65ad\u9875\u5185\u786e\u8ba4\u8be5\u4fee\u590d\u65b9\u6848\uff0c\u7cfb\u7edf\u5c06\u81ea\u52a8\u8fdb\u5165\u540e\u7eed\u6267\u884c\u4e0e\u9a8c\u8bc1\u94fe\u8def\u3002");
+    setDemoActionFeedback("已在诊断页内确认该修复方案，系统将自动进入后续执行与验证链路。");
     setDemoSession((current) =>
       current
         ? {
@@ -1615,7 +1637,7 @@ function DiagnosisModifiedPage() {
                 }
               : current,
           );
-          setDemoActionFeedback("\u5df2\u5b8c\u6210\u5ba1\u6279\uff0c\u6b63\u5728\u6309 10% \u7070\u5ea6\u7b56\u7565\u6267\u884c\u9996\u8f6e\u9a8c\u8bc1\u3002");
+          setDemoActionFeedback("已完成审批，正在按 10% 灰度策略执行首轮验证。");
           setDemoEvents((current) => [
             ...current,
             createDemoSessionEvent({
@@ -1650,7 +1672,7 @@ function DiagnosisModifiedPage() {
                 }
               : current,
           );
-          setDemoActionFeedback("\u7070\u5ea6\u5df2\u8fdb\u5165\u6307\u6807\u89c2\u5bdf\u9636\u6bb5\uff0c\u6b63\u5728\u7b49\u5f85\u7a33\u5b9a\u6027\u786e\u8ba4\u3002");
+          setDemoActionFeedback("灰度已进入指标观察阶段，正在等待稳定性确认。");
           setDemoEvents((current) => [
             ...current,
             createDemoSessionEvent({
@@ -1687,7 +1709,7 @@ function DiagnosisModifiedPage() {
                 }
               : current,
           );
-          setDemoActionFeedback("\u5173\u952e\u544a\u8b66\u5df2\u6062\u590d\uff0c\u7cfb\u7edf\u6b63\u5728\u5b8c\u6210\u6700\u540e\u7684 session \u6536\u53e3\u3002");
+          setDemoActionFeedback("关键告警已恢复，系统正在完成最后的 session 收口。");
           setDemoEvents((current) => [
             ...current,
             createDemoSessionEvent({
@@ -1720,7 +1742,7 @@ function DiagnosisModifiedPage() {
               }
             : current,
         );
-        setDemoActionFeedback("\u4fee\u590d\u9a8c\u8bc1\u5df2\u5b8c\u6210\uff0csession \u5df2\u5173\u95ed\uff0c\u53ef\u5728\u53f3\u4fa7\u67e5\u770b\u5df2\u538b\u7f29\u7684\u4fee\u590d\u4e8b\u4ef6\u6458\u8981\u3002");
+        setDemoActionFeedback("修复验证已完成，session 已关闭，可在右侧查看已压缩的修复事件摘要。");
         setDemoEvents((current) => [
           ...current,
           createDemoSessionEvent({
@@ -1742,9 +1764,9 @@ function DiagnosisModifiedPage() {
   const handleApproveLivePlan = useCallback(async () => {
     await approvePlan({ approved: true });
     setLiveApprovalResolution({
-      label: "\u5df2\u63d0\u4ea4",
+      label: "已提交",
       tone: "success",
-      description: "\u4fee\u590d\u65b9\u6848\u5df2\u63d0\u4ea4\u5ba1\u6279\u6307\u4ee4\uff0c\u5373\u5c06\u8fdb\u5165\u6267\u884c\u94fe\u8def\u3002",
+      description: "修复方案已提交审批指令，即将进入执行链路。",
     });
   }, [approvePlan]);
 
@@ -2608,11 +2630,11 @@ function DiagnosisModifiedPage() {
       ? liveApprovalResolution
       : demoApprovalState === "approved" && normalizedStatus === "approved"
         ? {
-            label: "\u5df2\u6279\u51c6",
+            label: "已批准",
             tone: "success" as const,
             description:
               demoActionFeedback ??
-              "\u5f53\u524d\u4fee\u590d\u65b9\u6848\u5df2\u5728\u8bca\u65ad\u9875\u5185\u6279\u51c6\u3002",
+              "当前修复方案已在诊断页内批准。",
           }
         : null;
 

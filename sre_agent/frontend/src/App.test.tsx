@@ -19,7 +19,7 @@ describe("App shell", () => {
     );
 
     await waitFor(() => {
-      expect(screen.getByText("QinClaw")).toBeInTheDocument();
+      expect(screen.getByText("ChinClaw")).toBeInTheDocument();
     });
 
     await waitFor(() => {
@@ -28,6 +28,7 @@ describe("App shell", () => {
 
     expect(container.querySelectorAll(".nav-section")).toHaveLength(2);
     expect(container.querySelector("main.shell-content--workspace-page")).toBeTruthy();
+    expect(container.querySelector("main.shell-content--wide")).toBeTruthy();
     expect(container.querySelector("main.shell-content--full-width")).toBeFalsy();
     expect(container.querySelector(".topology-modified-stage--canvas-only")).toBeTruthy();
     expect(screen.getByRole("button", { name: topologyLabel! })).toBeInTheDocument();
@@ -45,7 +46,7 @@ describe("App shell", () => {
 
     await screen.findByTestId("diagnosis-modified-split-workspace");
 
-    expect(screen.getByText("QinClaw")).toBeInTheDocument();
+    expect(screen.getByText("ChinClaw")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: diagnosisLabel! }).className).toContain("nav-item--active");
     expect(document.querySelector(".diagnosis-modified-page")).toBeTruthy();
     expect(document.querySelector("main.shell-content--full-width")).toBeTruthy();
@@ -121,8 +122,8 @@ describe("App shell", () => {
 
     expect(diagnosisChrome.contentWidthMode).toBe("full");
     expect(diagnosisDetailChrome.contentWidthMode).toBe("full");
-    expect(historyDetailChrome.contentWidthMode).toBe("full");
-    expect(topologyChrome.contentWidthMode).toBeUndefined();
+    expect(historyDetailChrome.contentWidthMode).toBe("wide");
+    expect(topologyChrome.contentWidthMode).toBe("wide");
 
     const topologyRoot = render(
       <MemoryRouter initialEntries={["/topology"]}>
@@ -161,6 +162,22 @@ describe("App shell", () => {
     expect(await screen.findByRole("heading", { level: 2, name: knowledgeDetailChrome.title! })).toBeInTheDocument();
     expect(screen.queryByText(knowledgeChrome.subtitle!)).not.toBeInTheDocument();
     knowledgeDetail.unmount();
+  });
+
+  it("applies wide content mode for non-diagnosis workspace routes", () => {
+    expect(resolvePageChrome("/topology").contentWidthMode).toBe("wide");
+    expect(resolvePageChrome("/topology/object/gpu-03").contentWidthMode).toBe("wide");
+    expect(resolvePageChrome("/alerts").contentWidthMode).toBe("wide");
+    expect(resolvePageChrome("/alerts/evt-1").contentWidthMode).toBe("wide");
+    expect(resolvePageChrome("/remediation").contentWidthMode).toBe("wide");
+    expect(resolvePageChrome("/remediation/sess-1").contentWidthMode).toBe("wide");
+    expect(resolvePageChrome("/history").contentWidthMode).toBe("wide");
+    expect(resolvePageChrome("/history/sess-1").contentWidthMode).toBe("wide");
+    expect(resolvePageChrome("/diagnosis/sess-1").contentWidthMode).toBe("full");
+    expect(resolvePageChrome("/knowledge").contentWidthMode).toBe("wide");
+    expect(resolvePageChrome("/knowledge/builtin-kb").contentWidthMode).toBe("wide");
+    expect(resolvePageChrome("/skills").contentWidthMode).toBe("wide");
+    expect(resolvePageChrome("/skills/skill-1").contentWidthMode).toBe("wide");
   });
 
   it("does not expose a standalone chat route anymore", () => {

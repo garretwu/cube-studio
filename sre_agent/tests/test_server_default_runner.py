@@ -7,12 +7,42 @@ from fastapi.testclient import TestClient
 
 from sre_agent.auth.jwt import CurrentUser, encode_token, resolve_jwt_settings
 from sre_agent.config import SREAgentConfig
-from sre_agent.server import create_app
+from sre_agent.models.alert import Alert
+from sre_agent.models.ontology import EntityType, OntologyEdge, OntologyNode, RelationType
+from sre_agent.ontology.graph import OntologyGraph
+from sre_agent.server import _build_alert_blast_radius_context, create_app
 from sre_agent.tools import ToolExecutionContext
 
 
 def _auth_headers(token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
+
+
+def _infer_kind_from_entity_payload(entity: dict[str, object]) -> str:
+    entity_id = str(entity.get("id") or "").strip().lower()
+    entity_type = str(entity.get("type") or "").strip().lower()
+    if entity_type == EntityType.INFERENCE_SERVICE.value or entity_id.startswith("svc:"):
+        return "service"
+    if entity_type == EntityType.K8S_POD.value or entity_id.startswith("pod:"):
+        return "pod"
+    if entity_type == EntityType.NODE.value or entity_id.startswith("node:"):
+        return "node"
+    if entity_type == EntityType.GPU.value or entity_id.startswith("gpu:"):
+        return "gpu"
+    if entity_id.startswith("proc:") or "process" in entity_id:
+        return "process"
+    return "other"
+
+
+def _assert_direct_relations_shape(context: dict[str, object]) -> None:
+    relations = context.get("direct_relations")
+    assert isinstance(relations, list)
+    for item in relations:
+        assert isinstance(item, dict)
+        assert str(item.get("source") or "").strip()
+        assert str(item.get("target") or "").strip()
+        assert str(item.get("relation") or "").strip()
+        assert item.get("direction") in {"in", "out"}
 
 
 def test_create_app_assembles_default_diagnosis_runner_and_serves_diagnose(monkeypatch, tmp_path) -> None:
@@ -223,6 +253,282 @@ inventory:
     assert variables["node"] == "worker-03"
     assert variables["namespace"] == "service"
     assert variables["promql"] == 'probe_icmp_duration_seconds{instance="10.11.0.12"}'
+
+
+def test_build_alert_blast_radius_context_limits_noise_for_large_topology(tmp_path) -> None:
+    db_path = tmp_path / "topology.db"
+    graph = OntologyGraph(str(db_path))
+    asyncio.run(graph.connect())
+    try:
+        now = datetime.now(UTC)
+        asyncio.run(
+            graph.add_nodes(
+                [
+                    OntologyNode(
+                        id="svc:service:qwen-main",
+                        entity_type=EntityType.INFERENCE_SERVICE,
+                        name="qwen-main",
+                        properties={"namespace": "service"},
+                        updated_at=now,
+                    ),
+                    OntologyNode(
+                        id="pod:service:qwen-main-0",
+                        entity_type=EntityType.K8S_POD,
+                        name="qwen-main-0",
+                        properties={"namespace": "service", "node": "worker-03"},
+                        updated_at=now,
+                    ),
+                    OntologyNode(
+                        id="worker-03",
+                        entity_type=EntityType.NODE,
+                        name="worker-03",
+                        properties={"namespace": "service"},
+                        updated_at=now,
+                    ),
+                ]
+                + [
+                    OntologyNode(
+                        id=f"svc:service:related-{idx}",
+                        entity_type=EntityType.INFERENCE_SERVICE,
+                        name=f"related-{idx}",
+                        properties={"namespace": "service", "node": "worker-03"},
+                        updated_at=now,
+                    )
+                    for idx in range(1, 30)
+                ]
+                + [
+                    OntologyNode(
+                        id=f"svc:ceph-csi:noise-{idx}",
+                        entity_type=EntityType.INFERENCE_SERVICE,
+                        name=f"ceph-csi-noise-{idx}",
+                        properties={"namespace": "kube-system", "node": "worker-03"},
+                        updated_at=now,
+                    )
+                    for idx in range(1, 8)
+                ]
+            )
+        )
+        asyncio.run(
+            graph.add_edges(
+                [
+                    OntologyEdge(
+                        source_id="svc:service:qwen-main",
+                        target_id="pod:service:qwen-main-0",
+                        relation=RelationType.SERVES,
+                    ),
+                    OntologyEdge(
+                        source_id="pod:service:qwen-main-0",
+                        target_id="worker-03",
+                        relation=RelationType.HOSTED_ON,
+                    ),
+                    OntologyEdge(
+                        source_id="svc:service:qwen-main",
+                        target_id="worker-03",
+                        relation=RelationType.HOSTED_ON,
+                    ),
+                ]
+                + [
+                    OntologyEdge(
+                        source_id=f"svc:service:related-{idx}",
+                        target_id="worker-03",
+                        relation=RelationType.HOSTED_ON,
+                    )
+                    for idx in range(1, 30)
+                ]
+                + [
+                    OntologyEdge(
+                        source_id=f"svc:ceph-csi:noise-{idx}",
+                        target_id="worker-03",
+                        relation=RelationType.HOSTED_ON,
+                    )
+                    for idx in range(1, 8)
+                ]
+            )
+        )
+
+        alert = Alert(
+            alert_name="AIServiceTTFTP99High",
+            severity="warning",
+            labels={"service": "qwen-main", "namespace": "service"},
+            annotations={"summary": "ttft high"},
+            starts_at=datetime(2026, 4, 24, 12, 0, tzinfo=UTC).isoformat(),
+            fingerprint="fp-topology-noise",
+            source="alertmanager",
+            status="firing",
+        )
+        context = _build_alert_blast_radius_context(graph, alert)
+    finally:
+        asyncio.run(graph.close())
+
+    assert context["filter_policy"] == "direct_l1_plus_scoped_l2_v1"
+    assert context["affected_count"] <= 12
+    assert context["filtered_affected_count"] == context["affected_count"]
+    assert context["raw_affected_count"] >= context["affected_count"]
+    assert context["dropped_count"] >= 1
+    assert all("ceph-csi" not in str(entity.get("id", "")).lower() for entity in context["affected_entities"])
+    assert context["mandatory_kept"]["service"] >= 1
+    assert context["mandatory_kept"]["pod"] >= 1
+    assert context["mandatory_kept"]["node"] >= 1
+    assert "mandatory_kept={" in context["summary"]
+    assert context["dropped_after_mandatory_budget"] == context["dropped_by_policy"]["dropped_after_mandatory_budget"]
+    _assert_direct_relations_shape(context)
+    assert len(context["direct_relations"]) >= 1
+
+
+def test_build_alert_blast_radius_context_keeps_node_gpu_for_temperature_alert(tmp_path) -> None:
+    db_path = tmp_path / "topology-temp.db"
+    graph = OntologyGraph(str(db_path))
+    asyncio.run(graph.connect())
+    try:
+        now = datetime.now(UTC)
+        asyncio.run(
+            graph.add_nodes(
+                [
+                    OntologyNode(
+                        id="svc:monitoring:dcgm-exporter",
+                        entity_type=EntityType.INFERENCE_SERVICE,
+                        name="dcgm-exporter",
+                        properties={"namespace": "monitoring"},
+                        updated_at=now,
+                    ),
+                    OntologyNode(
+                        id="node:worker-07",
+                        entity_type=EntityType.NODE,
+                        name="worker-07",
+                        properties={"namespace": "service", "node": "worker-07"},
+                        updated_at=now,
+                    ),
+                    OntologyNode(
+                        id="gpu:worker-07:0",
+                        entity_type=EntityType.GPU,
+                        name="GPU-0",
+                        properties={"namespace": "service", "node": "worker-07"},
+                        updated_at=now,
+                    ),
+                ]
+            )
+        )
+        asyncio.run(
+            graph.add_edges(
+                [
+                    OntologyEdge(
+                        source_id="svc:monitoring:dcgm-exporter",
+                        target_id="node:worker-07",
+                        relation=RelationType.HOSTED_ON,
+                    ),
+                    OntologyEdge(
+                        source_id="node:worker-07",
+                        target_id="gpu:worker-07:0",
+                        relation=RelationType.HOSTED_ON,
+                    ),
+                ]
+            )
+        )
+        alert = Alert(
+            alert_name="GPUTemperatureHigh",
+            severity="warning",
+            labels={"service": "dcgm-exporter", "namespace": "monitoring"},
+            annotations={"summary": "gpu temperature high"},
+            starts_at=datetime(2026, 4, 24, 12, 0, tzinfo=UTC).isoformat(),
+            fingerprint="fp-topology-temp",
+            source="alertmanager",
+            status="firing",
+        )
+        context = _build_alert_blast_radius_context(graph, alert)
+    finally:
+        asyncio.run(graph.close())
+
+    kinds = {_entity_kind for _entity_kind in (_infer_kind_from_entity_payload(e) for e in context["affected_entities"])}
+    assert "node" in kinds
+    assert "gpu" in kinds
+    _assert_direct_relations_shape(context)
+
+
+def test_build_alert_blast_radius_context_keeps_service_pod_node_for_ttft(tmp_path) -> None:
+    db_path = tmp_path / "topology-ttft.db"
+    graph = OntologyGraph(str(db_path))
+    asyncio.run(graph.connect())
+    try:
+        now = datetime.now(UTC)
+        asyncio.run(
+            graph.add_nodes(
+                [
+                    OntologyNode(
+                        id="svc:service:qwen-main",
+                        entity_type=EntityType.INFERENCE_SERVICE,
+                        name="qwen-main",
+                        properties={"namespace": "service"},
+                        updated_at=now,
+                    ),
+                    OntologyNode(
+                        id="pod:service:qwen-main-0",
+                        entity_type=EntityType.K8S_POD,
+                        name="qwen-main-0",
+                        properties={"namespace": "service", "node": "worker-03"},
+                        updated_at=now,
+                    ),
+                    OntologyNode(
+                        id="node:worker-03",
+                        entity_type=EntityType.NODE,
+                        name="worker-03",
+                        properties={"namespace": "service", "node": "worker-03"},
+                        updated_at=now,
+                    ),
+                    OntologyNode(
+                        id="svc:service:qwen-sidecar",
+                        entity_type=EntityType.INFERENCE_SERVICE,
+                        name="qwen-sidecar",
+                        properties={"namespace": "service"},
+                        updated_at=now,
+                    ),
+                ]
+            )
+        )
+        asyncio.run(
+            graph.add_edges(
+                [
+                    OntologyEdge(
+                        source_id="svc:service:qwen-main",
+                        target_id="pod:service:qwen-main-0",
+                        relation=RelationType.SERVES,
+                    ),
+                    OntologyEdge(
+                        source_id="pod:service:qwen-main-0",
+                        target_id="node:worker-03",
+                        relation=RelationType.HOSTED_ON,
+                    ),
+                    OntologyEdge(
+                        source_id="svc:service:qwen-sidecar",
+                        target_id="pod:service:qwen-main-0",
+                        relation=RelationType.SERVES,
+                    ),
+                ]
+            )
+        )
+        alert = Alert(
+            alert_name="AIServiceTTFTP99High",
+            severity="warning",
+            labels={"service": "qwen-main", "namespace": "service"},
+            annotations={"summary": "ttft p99 high"},
+            starts_at=datetime(2026, 4, 24, 12, 0, tzinfo=UTC).isoformat(),
+            fingerprint="fp-topology-ttft",
+            source="alertmanager",
+            status="firing",
+        )
+        context = _build_alert_blast_radius_context(graph, alert)
+    finally:
+        asyncio.run(graph.close())
+
+    kinds = {_entity_kind for _entity_kind in (_infer_kind_from_entity_payload(e) for e in context["affected_entities"])}
+    assert "service" in kinds
+    assert "pod" in kinds
+    assert "node" in kinds
+    assert context["affected_count"] <= 12
+    assert context["raw_affected_count"] >= context["affected_count"]
+    _assert_direct_relations_shape(context)
+    assert len(context["direct_relations"]) >= 1
+    relation_types = {str(item.get("relation") or "") for item in context["direct_relations"]}
+    assert "serves" in relation_types or "hosted_on" in relation_types
 
 
 def test_default_runner_allows_explicit_transcript_compact_override(monkeypatch, tmp_path) -> None:

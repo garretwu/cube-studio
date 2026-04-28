@@ -285,6 +285,7 @@ const LAYER_LABELS: Record<string, string> = {
 };
 
 const TERMINAL_STATUSES = new Set(["resolved", "closed", "failed", "timeout", "escalated", "rejected"]);
+const DIRECT_ONLY_FALLBACK_MAX_NEIGHBORS = 8;
 
 function normalizeText(value?: string | null) {
   return normalizeDiagnosisModifiedDisplayText(String(value ?? "").replace(/^\[系统\]\s*/u, ""));
@@ -293,6 +294,14 @@ function normalizeText(value?: string | null) {
 type ParsedTopologyContext = {
   roots: string[];
   affected_count?: number;
+  filtered_affected_count?: number;
+  raw_affected_count?: number;
+  raw_affected_total_count?: number;
+  filter_policy?: string;
+  dropped_count?: number;
+  mandatory_kept?: Record<string, number>;
+  dropped_after_mandatory_budget?: number;
+  dropped_by_policy?: Record<string, number>;
   affected_entities?: Array<{ id?: string; name?: string } & Record<string, unknown>>;
   summary?: string;
   direct_relations?: Array<{
@@ -359,7 +368,7 @@ function getEntityLabel(value: string) {
 }
 
 function getContextNodeId(value: string) {
-  return getEntityLabel(value);
+  return normalizeContextEntity(value);
 }
 
 function sanitizeId(value: string) {
@@ -1187,6 +1196,9 @@ function inferEntityKind(entity: string) {
   if (normalized.startsWith("bmc:") || normalized.includes("bmc")) {
     return "bmc";
   }
+  if (normalized.startsWith("proc:") || normalized.includes("process")) {
+    return "process";
+  }
   if (normalized.startsWith("service:") || normalized.includes("service") || normalized.includes("svc")) {
     return "service";
   }
@@ -1323,16 +1335,8 @@ function isGpuTemperatureAlert(alertName: string) {
 
 function shouldKeepDirectNeighbor(alertName: string, subjectKind: string, neighborKind: string) {
   if (isTtftAlert(alertName)) {
-    if (subjectKind === "service") {
-      return neighborKind === "pod" || neighborKind === "node" || neighborKind === "service";
-    }
-    if (subjectKind === "pod") {
-      return neighborKind === "service" || neighborKind === "node";
-    }
-    if (subjectKind === "node") {
-      return neighborKind === "pod" || neighborKind === "service";
-    }
-    return neighborKind === "service" || neighborKind === "pod" || neighborKind === "node";
+    void subjectKind;
+    return true;
   }
   if (isGpuTemperatureAlert(alertName)) {
     if (subjectKind === "gpu") {
@@ -1347,6 +1351,19 @@ function shouldKeepDirectNeighbor(alertName: string, subjectKind: string, neighb
     return neighborKind === "gpu" || neighborKind === "node" || neighborKind === "bmc";
   }
   return true;
+}
+
+function getTtftNeighborPriority(neighborKind: string) {
+  if (neighborKind === "service" || neighborKind === "pod" || neighborKind === "node") {
+    return 0;
+  }
+  if (neighborKind === "gpu") {
+    return 1;
+  }
+  if (neighborKind === "process" || neighborKind === "bmc") {
+    return 2;
+  }
+  return 3;
 }
 
 function getDirectRelationLabel(alertName: string, subjectKind: string, neighborKind: string) {
@@ -1405,6 +1422,51 @@ function translateRelationLabel(relation: string): string {
   }
 }
 
+function buildDirectOnlyFallbackNeighbors({
+  parsedTopology,
+  subjectNode,
+  existingNodeIds,
+}: {
+  parsedTopology: ParsedTopologyContext | null;
+  subjectNode: DiagnosisModifiedContextNodeView;
+  existingNodeIds: Set<string>;
+}): { neighbors: DiagnosisModifiedContextNodeView[]; edges: DiagnosisModifiedContextEdgeView[] } {
+  const neighbors: DiagnosisModifiedContextNodeView[] = [];
+  const edges: DiagnosisModifiedContextEdgeView[] = [];
+  const affectedEntities = parsedTopology?.affected_entities ?? [];
+  for (const entity of affectedEntities) {
+    const id = typeof entity?.id === "string" && entity.id.trim() ? entity.id.trim() : "";
+    const name = typeof entity?.name === "string" && entity.name.trim() ? entity.name.trim() : "";
+    const rawEntity = id || name;
+    if (!rawEntity) {
+      continue;
+    }
+    const normalizedEntity = normalizeContextEntity(rawEntity);
+    const targetId = getContextNodeId(normalizedEntity);
+    if (!targetId || targetId === subjectNode.id || existingNodeIds.has(targetId)) {
+      continue;
+    }
+    existingNodeIds.add(targetId);
+    neighbors.push({
+      id: targetId,
+      label: name || getEntityLabel(normalizedEntity),
+      role: "affected",
+      tone: "warning",
+      detail: normalizedEntity,
+    });
+    edges.push({
+      id: `context-edge-${sanitizeId(subjectNode.id)}-${sanitizeId(targetId)}-fallback`,
+      sourceId: subjectNode.id,
+      targetId,
+      label: "关联",
+    });
+    if (neighbors.length >= DIRECT_ONLY_FALLBACK_MAX_NEIGHBORS) {
+      break;
+    }
+  }
+  return { neighbors, edges };
+}
+
 function buildDirectOnlyContext(input: BuildDiagnosisModifiedReportViewInput): DiagnosisModifiedContextView {
   const parsedTopology = parseTopologyContextCandidate(input.topologyContext);
   const normalizedAlertName = normalizeText(input.session?.alert.alert_name).toLowerCase();
@@ -1454,6 +1516,16 @@ function buildDirectOnlyContext(input: BuildDiagnosisModifiedReportViewInput): D
       });
     }
 
+    if (edges.length === 0 && (parsedTopology?.affected_entities?.length ?? 0) > 0) {
+      const fallback = buildDirectOnlyFallbackNeighbors({
+        parsedTopology,
+        subjectNode,
+        existingNodeIds: seenIds,
+      });
+      neighbors.push(...fallback.neighbors);
+      edges.push(...fallback.edges);
+    }
+
     const hasRelations = edges.length > 0;
     const summary =
       typeof parsedTopology?.summary === "string" && normalizeText(parsedTopology.summary) && hasRelations
@@ -1478,8 +1550,21 @@ function buildDirectOnlyContext(input: BuildDiagnosisModifiedReportViewInput): D
   const directNeighbors: DiagnosisModifiedContextNodeView[] = [];
   const directEdges: DiagnosisModifiedContextEdgeView[] = [];
   const seenNeighborIds = new Set<string>();
+  const candidateEntities = allEntities.filter((entity) => entity && entity !== subjectEntity);
+  if (isTtftAlert(normalizedAlertName)) {
+    candidateEntities.sort((left, right) => {
+      const leftKind = inferEntityKind(left);
+      const rightKind = inferEntityKind(right);
+      const leftPriority = getTtftNeighborPriority(leftKind);
+      const rightPriority = getTtftNeighborPriority(rightKind);
+      if (leftPriority !== rightPriority) {
+        return leftPriority - rightPriority;
+      }
+      return left.localeCompare(right);
+    });
+  }
 
-  allEntities.forEach((entity) => {
+  candidateEntities.forEach((entity) => {
     if (!entity || entity === subjectEntity) {
       return;
     }
@@ -1507,6 +1592,16 @@ function buildDirectOnlyContext(input: BuildDiagnosisModifiedReportViewInput): D
       label,
     });
   });
+
+  if (directEdges.length === 0 && (parsedTopology?.affected_entities?.length ?? 0) > 0) {
+    const fallback = buildDirectOnlyFallbackNeighbors({
+      parsedTopology,
+      subjectNode,
+      existingNodeIds: seenNeighborIds,
+    });
+    directNeighbors.push(...fallback.neighbors);
+    directEdges.push(...fallback.edges);
+  }
 
   const hasDirectRelations = directEdges.length > 0;
   const nodes = [subjectNode, ...directNeighbors];

@@ -75,6 +75,12 @@
   padding-bottom: clamp(var(--space-4), 1.6vw, var(--space-6));
 }
 
+.shell-content--wide {
+  width: min(100%, clamp(1560px, 98vw, 2160px));
+  padding-left: clamp(12px, 1vw, 18px);
+  padding-right: clamp(12px, 1vw, 18px);
+}
+
 .shell-content--full-width {
   width: 100%;
   margin: 0;

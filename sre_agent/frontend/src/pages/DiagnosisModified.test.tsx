@@ -2423,6 +2423,49 @@ describe("DiagnosisModifiedPage split workspace", () => {
     expect(screen.getByText("wj-lab-cpt-01")).toBeInTheDocument();
   });
 
+  it("keeps diagnosis context graph hover tooltip behavior unchanged", async () => {
+    mockedBuildLiveView.mockReturnValue({
+      timeline: [],
+      candidates: [],
+      summary: undefined,
+      plan: undefined,
+    });
+
+    resetDiagnosisStore({
+      session: createLiveSession("sess-live-topology-tooltip"),
+      activeSessionId: "sess-live-topology-tooltip",
+      bootstrapStatus: "ready",
+      traceStatus: "ready",
+      messages: [],
+      topologyContext: {
+        roots: ["gpu:0"],
+        affected_count: 2,
+        affected_entities: [
+          { id: "node:wj-lab-cpt-01", type: "node", name: "wj-lab-cpt-01" },
+          { id: "bmc:wj-lab-cpt-01-bmc", type: "bmc", name: "wj-lab-cpt-01-bmc" },
+        ],
+        summary: "GPU context from diagnosis_started",
+      },
+      bootstrapSession: vi.fn().mockResolvedValue(undefined),
+    });
+
+    const { container } = renderLivePage("/diagnosis-modified/sess-live-topology-tooltip");
+    const reportRail = screen.getByTestId("diagnosis-modified-report-rail");
+    const nodeButton = within(reportRail)
+      .getAllByRole("button")
+      .find((button) => /\|/.test(button.getAttribute("aria-label") ?? ""));
+
+    expect(nodeButton).toBeTruthy();
+    fireEvent.mouseEnter(nodeButton as HTMLButtonElement);
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(container.querySelector(".topology-modified-tooltip")).toBeTruthy();
+    expect(container.querySelector("[data-testid=\"diagnosis-context-node-popover\"]")).toBeNull();
+  });
+
   it("shows alert subject only when no direct topology relation is available", () => {
     mockedBuildLiveView.mockReturnValue({
       timeline: [],

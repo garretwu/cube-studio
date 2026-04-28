@@ -1,4 +1,4 @@
-import { render, waitFor } from "@testing-library/react";
+import { act, render, waitFor } from "@testing-library/react";
 import { createRef, type ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -195,5 +195,81 @@ describe("TopologyCanvas", () => {
 
     expect(() => ref.current?.fitView()).not.toThrow();
     expect(() => ref.current?.recenter()).not.toThrow();
+  });
+
+  it("keeps hover tooltip behavior by default", async () => {
+    const { container } = render(
+      <TopologyCanvas
+        edges={sampleEdges}
+        layoutPreset="layered"
+        matchedNodeIds={[]}
+        neighborDepths={new Map()}
+        nodes={sampleNodes}
+        onHoverNode={() => undefined}
+        onSelectNode={() => undefined}
+      />,
+    );
+
+    const latestProps = reactFlowMock.getLatestProps() as {
+      onNodeMouseEnter?: (event: { clientX: number; clientY: number }, node: unknown) => void;
+    };
+    const testNode = {
+      id: sampleNodes[0]?.id,
+      type: "assetNode",
+      data: { node: sampleNodes[0] },
+    };
+
+    act(() => {
+      latestProps.onNodeMouseEnter?.({ clientX: 120, clientY: 88 }, testNode);
+    });
+
+    await waitFor(() => {
+      expect(container.querySelector(".topology-modified-tooltip")).toBeTruthy();
+    });
+  });
+
+  it("does not open node actions or tooltip on hover in click-only mode", async () => {
+    const onOpenNodeActions = vi.fn();
+    const { container } = render(
+      <TopologyCanvas
+        edges={sampleEdges}
+        layoutPreset="layered"
+        matchedNodeIds={[]}
+        neighborDepths={new Map()}
+        nodeActionOpenMode="click-only"
+        nodes={sampleNodes}
+        onHoverNode={() => undefined}
+        onOpenNodeActions={onOpenNodeActions}
+        onSelectNode={() => undefined}
+      />,
+    );
+
+    const latestProps = reactFlowMock.getLatestProps() as {
+      onNodeMouseEnter?: (event: { clientX: number; clientY: number }, node: unknown) => void;
+      onNodeClick?: (event: { clientX: number; clientY: number }, node: unknown) => void;
+    };
+    const testNode = {
+      id: sampleNodes[0]?.id,
+      type: "assetNode",
+      data: { node: sampleNodes[0] },
+    };
+
+    act(() => {
+      latestProps.onNodeMouseEnter?.({ clientX: 120, clientY: 88 }, testNode);
+    });
+
+    expect(onOpenNodeActions).not.toHaveBeenCalled();
+    expect(container.querySelector(".topology-modified-tooltip")).toBeNull();
+
+    act(() => {
+      latestProps.onNodeClick?.({ clientX: 140, clientY: 96 }, testNode);
+    });
+
+    expect(onOpenNodeActions).toHaveBeenCalledWith(
+      expect.objectContaining({
+        node: sampleNodes[0],
+        trigger: "click",
+      }),
+    );
   });
 });

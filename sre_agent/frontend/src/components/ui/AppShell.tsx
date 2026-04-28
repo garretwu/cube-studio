@@ -16,7 +16,7 @@ type AppShellProps = {
   subtitle?: string;
   contentSpacing?: "default" | "compact";
   contentMode?: "default" | "workspace";
-  contentWidthMode?: "default" | "full";
+  contentWidthMode?: "default" | "wide" | "full";
   brandSubtitle?: string;
   onBrandClick?: () => void;
 };
@@ -73,6 +73,7 @@ function AppShell({
             "shell-content",
             contentSpacing === "compact" && "shell-content--compact-page-chrome",
             contentMode === "workspace" && "shell-content--workspace-page",
+            contentWidthMode === "wide" && "shell-content--wide",
             contentWidthMode === "full" && "shell-content--full-width",
           )}
         >

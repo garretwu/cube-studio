@@ -17,6 +17,21 @@ function renderTopologyRoutes(initialEntry = "/topology") {
   );
 }
 
+async function findAnyTopologyNodeButton() {
+  await waitFor(() => {
+    const stage = screen.getByTestId("topology-explorer-stage");
+    const nodeButtons = within(stage)
+      .getAllByRole("button")
+      .filter((button) => /\|/.test(button.getAttribute("aria-label") ?? ""));
+    expect(nodeButtons.length).toBeGreaterThan(0);
+  });
+
+  const stage = screen.getByTestId("topology-explorer-stage");
+  return within(stage)
+    .getAllByRole("button")
+    .find((button) => /\|/.test(button.getAttribute("aria-label") ?? "")) as HTMLButtonElement;
+}
+
 describe("TopologyPage", () => {
   beforeEach(() => {
     useTopologyExplorerStore.setState(createTopologyExplorerState());
@@ -75,7 +90,7 @@ describe("TopologyPage", () => {
   it("shows a node action popover with Isolate and View topology actions", async () => {
     renderTopologyRoutes();
 
-    const nodeButton = await screen.findByRole("button", { name: /^BMC worker-01 \|/i });
+    const nodeButton = await findAnyTopologyNodeButton();
     fireEvent.click(nodeButton);
 
     const popover = await screen.findByTestId("topology-node-popover");
@@ -83,22 +98,22 @@ describe("TopologyPage", () => {
     expect(within(popover).getByRole("button", { name: "View topology" })).toBeInTheDocument();
   });
 
-  it("shows the same node action popover when hovering a node", async () => {
+  it("does not show the node action popover when hovering a node", async () => {
     renderTopologyRoutes();
 
-    const nodeButton = await screen.findByRole("button", { name: /^BMC worker-01 \|/i });
+    const nodeButton = await findAnyTopologyNodeButton();
     fireEvent.mouseEnter(nodeButton);
 
-    const popover = await screen.findByTestId("topology-node-popover");
-    expect(within(popover).getByRole("button", { name: "Isolate" })).toBeInTheDocument();
-    expect(within(popover).getByRole("button", { name: "View topology" })).toBeInTheDocument();
+    await waitFor(() => {
+      expect(screen.queryByTestId("topology-node-popover")).not.toBeInTheDocument();
+    });
   });
 
   it("navigates to the object topology page from the node action popover", async () => {
     const user = userEvent.setup();
     renderTopologyRoutes();
 
-    const nodeButton = await screen.findByRole("button", { name: /^BMC worker-01 \|/i });
+    const nodeButton = await findAnyTopologyNodeButton();
     fireEvent.click(nodeButton);
     await user.click(await screen.findByRole("button", { name: "View topology" }));
 
