@@ -104,7 +104,7 @@ describe("getRemediationOverallProgressDisplay", () => {
     expect(getRemediationOverallProgressDisplay(overview)).toBe(100);
   });
 
-  it("keeps observation contribution at 0 when observation_result is missing", () => {
+  it("treats execution_succeeded as completed even when observation_result is missing", () => {
     const overview = createOverview({
       status: "execution_succeeded",
       completedSteps: 3,
@@ -114,7 +114,38 @@ describe("getRemediationOverallProgressDisplay", () => {
         remediationEvent("execution_succeeded", {}, "2026-04-21T10:08:00Z"),
       ],
     });
-    expect(getRemediationOverallProgressDisplay(overview)).toBe(80);
+    expect(getRemediationOverallProgressDisplay(overview)).toBe(100);
+  });
+
+  it("keeps 100 when observation_result(pass) is followed by execution_succeeded", () => {
+    const overview = createOverview({
+      status: "resolved",
+      completedSteps: 3,
+      totalSteps: 3,
+      timeline: [
+        remediationEvent("approval_accepted", {}, "2026-04-21T10:00:00Z"),
+        remediationEvent(
+          "observation_result",
+          { alert_cleared: true, metrics_improved: true },
+          "2026-04-21T10:07:00Z",
+        ),
+        remediationEvent("execution_succeeded", {}, "2026-04-21T10:08:00Z"),
+      ],
+    });
+    expect(getRemediationOverallProgressDisplay(overview)).toBe(100);
+  });
+
+  it("keeps failed terminal stages below 100", () => {
+    const overview = createOverview({
+      status: "execution_failed",
+      completedSteps: 1,
+      totalSteps: 3,
+      timeline: [
+        remediationEvent("approval_accepted", {}, "2026-04-21T10:00:00Z"),
+        remediationEvent("execution_failed", {}, "2026-04-21T10:08:00Z"),
+      ],
+    });
+    expect(getRemediationOverallProgressDisplay(overview)).toBeLessThan(100);
   });
 
   it("derives non-zero canary progress from batch events before all batches complete", () => {

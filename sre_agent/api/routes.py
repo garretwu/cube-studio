@@ -58,6 +58,43 @@ LOGGER = logging.getLogger(__name__)
 auth_security = HTTPBearer(auto_error=False)
 
 
+def _inject_diagnosis_started_anchor(
+    all_events: list[Any],
+    sliced_events: list[Any],
+    *,
+    limit: int,
+) -> list[Any]:
+    if limit <= 0 or not all_events:
+        return sliced_events
+
+    def _normalize_event_type(value: Any) -> str:
+        return str(getattr(value, "value", value) or "").strip()
+
+    def _event_type(event: Any) -> str:
+        if hasattr(event, "type"):
+            return _normalize_event_type(getattr(event, "type"))
+        if isinstance(event, dict):
+            return _normalize_event_type(event.get("type"))
+        return ""
+
+    if any(_event_type(item) == EventType.DIAGNOSIS_STARTED.value for item in sliced_events):
+        return sliced_events
+
+    anchor = None
+    for candidate in reversed(all_events):
+        if _event_type(candidate) == EventType.DIAGNOSIS_STARTED.value:
+            anchor = candidate
+            break
+    if anchor is None:
+        return sliced_events
+
+    if len(sliced_events) < limit:
+        return [anchor, *sliced_events]
+    if not sliced_events:
+        return [anchor]
+    return [anchor, *sliced_events[1:]]
+
+
 class ChatMessage(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -2531,7 +2568,11 @@ def build_api_router() -> APIRouter:
         list_events = getattr(services.trace_publisher, "list_events", None)
         if not callable(list_events):
             return SREResponse(success=True, data=[], trace_id=_trace_id(request))
-        events = list_events(session_id, limit=max(1, int(limit)), after=after)
+        safe_limit = max(1, int(limit))
+        events = list_events(session_id, limit=safe_limit, after=after)
+        if after is None:
+            all_events = list_events(session_id, limit=None, after=None)
+            events = _inject_diagnosis_started_anchor(all_events, events, limit=safe_limit)
         payload = [event.model_dump(mode="json") if hasattr(event, "model_dump") else dict(event) for event in events]
         return SREResponse(success=True, data=payload, trace_id=_trace_id(request))
 

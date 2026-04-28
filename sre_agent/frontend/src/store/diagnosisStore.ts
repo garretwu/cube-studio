@@ -1225,7 +1225,7 @@ export const useDiagnosisStore = create<DiagnosisState>((set, get) => ({
       const traceStatus: TraceStatus = (session.trace?.steps ?? []).length > 0 ? "ready" : "empty";
       const approvalState = deriveApprovalState(session, events);
       const localAuditRecords = loadLocalAuditRecords(resolvedSessionId);
-      const startedEvent = events.find((event) => event.type === "diagnosis_started");
+      const startedEvent = [...events].reverse().find((event) => event.type === "diagnosis_started");
       const startedData = startedEvent && isRecord(startedEvent.data) ? startedEvent.data : {};
       const historicalAlert = (startedData.alert as DiagnosisStartedData["alert"]) ?? null;
       const historicalTopology = (startedData.topology as DiagnosisStartedData["topology"]) ?? null;

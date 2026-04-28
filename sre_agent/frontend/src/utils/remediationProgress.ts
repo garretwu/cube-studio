@@ -373,8 +373,13 @@ export function getRemediationOverallProgressDisplay(overview?: RemediationOverv
     return 100;
   }
 
+  const observationPassed = getObservationPassed(overview.timeline ?? []);
+  if (observationPassed === true) {
+    return 100;
+  }
+
   if (currentStage === "execution_succeeded") {
-    return 80;
+    return 100;
   }
 
   if (TERMINAL_REMEDIATION_STATUSES.has(currentStage)) {
@@ -409,11 +414,6 @@ export function getRemediationOverallProgressDisplay(overview?: RemediationOverv
     progress = Math.max(progress, 60);
   } else if (currentStage === "observation_started") {
     progress = Math.max(progress, 85);
-  }
-
-  const observationPassed = getObservationPassed(overview.timeline ?? []);
-  if (observationPassed === true) {
-    progress = 100;
   }
 
   return clamp(Math.round(progress), 0, 100);

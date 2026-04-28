@@ -23,10 +23,18 @@ tags:
 ### wj-lab-cpt-04 环境详情
 
 - **K8s节点名**: wj-lab-cpt-04
+- **物理ip**: 10.11.4.13
 - **SSH访问**: `ssh yuyonghao@10.11.4.13` (需sudo权限)
-- **BMC访问**: `https://10.11.8.13` (用户: admin, TLS验证: 关闭)
+- **BMC访问**: `https://10.11.8.13` (用户: admin, 密码: Admin@9000, TLS验证: 关闭)
 - **Prometheus**: `http://10.11.4.3:31260`
-- **角色**: CPU节点（挂载GPU用于推理/训练）
+
+### wj-lab-cpt-02 环境详情
+
+- **K8s节点名**: wj-lab-cpt-02
+- **物理ip**: 10.11.4.11
+- **SSH访问**: `ssh yuyonghao@10.11.4.11` (需sudo权限)
+- **BMC访问**: `https://10.11.8.11` (用户: admin, 密码: Admin@9000, TLS验证: 关闭)
+- **Prometheus**: `http://10.11.4.3:31260`
 
 ## 前置约束
 
