@@ -3265,6 +3265,134 @@ tags:
         self.assertIsNotNone((diagnosis_result or {}).get("recommended_fix"))
         self.assertEqual(result.get("plan_missing_reason"), None)
 
+    async def test_reason_node_plan_completion_merges_returned_diagnosis_and_remediation(self) -> None:
+        llm = _FakeLLM(
+            [
+                AIMessage(
+                    content=json.dumps(
+                        {
+                            "thought": "初步诊断认为需要补充交换机侧 QoS 证据。",
+                            "diagnosis": {
+                                "root_cause": "RoCE packet sequence errors detected, but switch QoS evidence is still incomplete.",
+                                "root_cause_layer": "network",
+                                "root_cause_entities": ["10.11.4.10", "sw-200g:200GE1/0/1"],
+                                "confidence": 0.6,
+                                "next_action": "需要继续获取交换机侧 QoS 配置。",
+                                "hypotheses": [
+                                    {
+                                        "description": "交换机侧 QoS 误配",
+                                        "status": "testing",
+                                        "evidence_for": ["NIC abnormal_count=227"],
+                                        "evidence_against": ["QoS 证据未完整"],
+                                        "confidence": 0.6,
+                                    }
+                                ],
+                                "impact_summary": "RoCE 网络存在异常。",
+                                "affected_services": ["monitoring"],
+                                "triage_priority": "P1",
+                                "diagnosis_certainty": "ambiguous",
+                            },
+                            "remediation_plan": None,
+                        },
+                        ensure_ascii=False,
+                    )
+                ),
+                AIMessage(
+                    content=json.dumps(
+                        {
+                            "thought": "已结合交换机侧 QoS 证据更新诊断并补全修复方案。",
+                            "diagnosis": {
+                                "root_cause": "交换机 sw-200g 接口 200GE1/0/1 上的 fault_a 入站 QoS 策略导致 RoCE 包序列异常。",
+                                "root_cause_layer": "network",
+                                "root_cause_entities": ["10.11.4.10", "sw-200g", "200GE1/0/1", "fault_a"],
+                                "confidence": 0.85,
+                                "next_action": "已获取完整证据链，建议审批 proposal-only 修复方案移除 fault_a。",
+                                "hypotheses": [
+                                    {
+                                        "description": "交换机入站 QoS 策略 fault_a 配置异常",
+                                        "status": "confirmed",
+                                        "evidence_for": [
+                                            "applied_policies 包含 fault_a:inbound",
+                                            "abnormal_config_lines 包含 qos apply policy fault_a inbound",
+                                        ],
+                                        "evidence_against": [],
+                                        "confidence": 0.85,
+                                    }
+                                ],
+                                "impact_summary": "fault_a 策略影响 RoCE 流量，导致 NIC abnormal_count 升高。",
+                                "affected_services": ["monitoring"],
+                                "triage_priority": "P1",
+                                "diagnosis_certainty": "confirmed",
+                            },
+                            "remediation_plan": {
+                                "plan_id": "proposal-rdma-qos-fix-001",
+                                "root_cause": "交换机 sw-200g 接口 200GE1/0/1 上的 fault_a 入站 QoS 策略异常。",
+                                "description": "移除 fault_a 入站策略并保持 trust dscp。此操作是 proposal-only，尚未执行。",
+                                "steps": [
+                                    {
+                                        "step_id": 1,
+                                        "description": "移除 fault_a 入站 QoS 策略。",
+                                        "tool": "network.repair_switch_qos_config",
+                                        "params": {
+                                            "switch": "sw-200g",
+                                            "interface": "200GE1/0/1",
+                                            "direction": "inbound",
+                                            "policy_name": "fault_a",
+                                            "ensure_trust_dscp": True,
+                                            "save": False,
+                                        },
+                                        "verification": {"method": "wait", "wait_seconds": 30},
+                                        "timeout": 60,
+                                    }
+                                ],
+                                "estimated_impact": "移除后 RoCE 流量应恢复正常。",
+                                "confidence": 0.85,
+                                "priority": "P1",
+                                "safety_level": "high",
+                            },
+                        },
+                        ensure_ascii=False,
+                    )
+                ),
+            ]
+        )
+        state = nodes_module.initialize_state(
+            query="Diagnose RdmaRocePacketsAnomaly with strict RDMA workflow.",
+            variables={"node": "10.11.4.10"},
+            session_id="sess-plan-completion-diagnosis-merge",
+            step_timeout_sec=5.0,
+            total_timeout_sec=30.0,
+            max_steps=6,
+            alert_snapshot={"alert_name": "RdmaRocePacketsAnomaly"},
+        )
+        state["tool_runs"] = [
+            {
+                "tool": "network.get_switch_qos_config",
+                "params": {"switch": "sw-200g", "interface": "200GE1/0/1"},
+                "success": True,
+                "data": {
+                    "switch": "sw-200g",
+                    "interface": "200GE1/0/1",
+                    "applied_policies": [{"name": "fault_a", "direction": "inbound"}],
+                    "trust_dscp": True,
+                    "abnormal_config_lines": ["qos apply policy fault_a inbound"],
+                },
+            }
+        ]
+
+        result = await nodes_module.reason_node(state, llm=llm, registry=build_default_registry())
+        self.assertEqual(result["status"], "diagnosed")
+        diagnosis_result = result.get("diagnosis_result") or {}
+        self.assertEqual(
+            diagnosis_result.get("next_action"),
+            "已获取完整证据链，建议审批 proposal-only 修复方案移除 fault_a。",
+        )
+        hypotheses = diagnosis_result.get("hypotheses") or []
+        self.assertEqual(hypotheses[0].get("status"), "confirmed")
+        self.assertIn("fault_a", str(hypotheses[0].get("description", "")))
+        self.assertIsNotNone(diagnosis_result.get("recommended_fix"))
+        self.assertEqual(result.get("plan_missing_reason"), None)
+
     async def test_reason_node_ttft_external_probe_blocked_can_finalize_without_coverage_gate(self) -> None:
         llm = _FakeLLM(
             [
