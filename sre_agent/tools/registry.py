@@ -509,7 +509,7 @@ def build_default_registry() -> ToolRegistry:
     registry.register(
         ToolDefinition(
             name="network.get_nic_link_state",
-            description="Inspect NIC link and interface state on node.",
+            description="Inspect NIC link and interface state on node. Prefer a reachable node IP for the node parameter.",
             safety_level=SafetyLevel.READ_ONLY,
             params_schema={"type": "object", "required": ["node"]},
             tags=("network", "readonly"),
@@ -519,7 +519,7 @@ def build_default_registry() -> ToolRegistry:
     registry.register(
         ToolDefinition(
             name="network.get_nic_counters",
-            description="Inspect NIC error/drop counters on node.",
+            description="Inspect NIC error/drop counters on node. Prefer a reachable node IP for the node parameter.",
             safety_level=SafetyLevel.READ_ONLY,
             params_schema={"type": "object", "required": ["node"]},
             tags=("network", "readonly"),
@@ -551,7 +551,7 @@ def build_default_registry() -> ToolRegistry:
     registry.register(
         ToolDefinition(
             name="ontology.query",
-            description="Ontology entity query.",
+            description="Ontology entity query. The filters parameter must be a JSON object/dict, or a JSON object string.",
             safety_level=SafetyLevel.READ_ONLY,
             params_schema={
                 "type": "object",
@@ -948,9 +948,42 @@ def build_default_registry() -> ToolRegistry:
     registry.register(
         ToolDefinition(
             name="network.repair_switch_qos_config",
-            description="Repair switch interface QoS/CAR configuration.",
+            description=(
+                "Unapply a QoS policy from a switch interface. "
+                "If policy_name is omitted, the tool auto-discovers the currently applied policy from "
+                "'display this' and unapplies the matching inbound/outbound binding. "
+                "By default it also reapplies 'qos trust dscp'. "
+                "Do not use this tool for PFC, WRED, DSCP trust, CAR, or GTS changes."
+            ),
             safety_level=SafetyLevel.CRITICAL,
-            params_schema={"type": "object", "required": ["switch", "interface"]},
+            params_schema={
+                "type": "object",
+                "required": ["switch", "interface"],
+                "properties": {
+                    "switch": {"type": "string", "description": "Switch inventory id or switch name."},
+                    "interface": {"type": "string", "description": "Real switch interface name, for example 200GE1/0/1."},
+                    "direction": {
+                        "type": "string",
+                        "enum": ["inbound", "outbound", "both"],
+                        "description": "Policy binding direction to remove. Defaults to both.",
+                    },
+                    "policy_name": {
+                        "type": "string",
+                        "description": (
+                            "Optional. If omitted, the tool auto-discovers the currently applied policy from 'display this' "
+                            "and unapplies the matching inbound/outbound binding."
+                        ),
+                    },
+                    "ensure_trust_dscp": {
+                        "type": "boolean",
+                        "description": "Whether to append 'qos trust dscp' after unapplying the policy. Defaults to true.",
+                    },
+                    "save": {
+                        "type": "boolean",
+                        "description": "Whether to append 'save force' after the CLI changes. Defaults to false.",
+                    },
+                },
+            },
             tags=("network", "write", "switch", "qos"),
             needs_approval=True,
             command_template="switch qos repair --switch {switch} --interface {interface}",

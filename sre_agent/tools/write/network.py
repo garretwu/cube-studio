@@ -60,6 +60,27 @@ def _qos_directions(raw: Any) -> list[str]:
     raise ToolValidationError("parameter 'direction' must be inbound, outbound, or both")
 
 
+def _extract_policy_bindings(text: str) -> list[tuple[str, str]]:
+    bindings: list[tuple[str, str]] = []
+    for match in re.finditer(
+        r"\bqos apply policy\s+([A-Za-z0-9._:-]+)\s+(inbound|outbound)\b",
+        str(text or ""),
+        flags=re.IGNORECASE,
+    ):
+        policy_name = str(match.group(1) or "").strip()
+        direction = str(match.group(2) or "").strip().lower()
+        if policy_name and direction:
+            bindings.append((policy_name, direction))
+    return bindings
+
+
+def _read_switch_cli_output(value: Any, *, action: str) -> str:
+    payload = _extract_result(value, action=action)
+    if isinstance(payload, dict):
+        return str(payload.get("output", "") or "")
+    return str(payload or "")
+
+
 def _extract_result(value: Any, *, action: str, unsupported_message: str | None = None) -> Any:
     success = getattr(value, "success", None)
     if success is not None:
@@ -168,29 +189,44 @@ async def repair_switch_qos_config(params: dict[str, Any], context: ToolExecutio
 
     switch_name = _require_safe_cli_token(params, "switch")
     interface = _require_safe_cli_token(params, "interface")
-    mode = str(params.get("mode") or "remove_car").strip().lower()
     directions = _qos_directions(params.get("direction"))
+    ensure_trust_dscp = _optional_bool(params, "ensure_trust_dscp", default=True)
     save = _optional_bool(params, "save", default=False)
 
-    commands = ["system-view", f"interface {interface}"]
-    if mode == "remove_car":
-        commands.extend(f"undo qos car {direction}" for direction in directions)
-    elif mode == "set_car":
-        cir_raw = params.get("cir")
-        try:
-            cir = int(str(cir_raw).strip())
-        except (TypeError, ValueError):
-            raise ToolValidationError("parameter 'cir' must be an integer for mode='set_car'") from None
-        if cir <= 0:
-            raise ToolValidationError("parameter 'cir' must be positive")
-        for direction in directions:
-            commands.append(f"undo qos car {direction}")
-            commands.append(f"qos car {direction} any cir {cir}")
-    elif mode == "unapply_policy":
+    commands = [f"interface {interface}"]
+    raw_policy_name = str(params.get("policy_name", "") or "").strip()
+    if raw_policy_name:
         policy_name = _require_safe_cli_token(params, "policy_name")
         commands.extend(f"undo qos apply policy {policy_name} {direction}" for direction in directions)
     else:
-        raise ToolValidationError("parameter 'mode' must be remove_car, set_car, or unapply_policy")
+        display_commands = [f"interface {interface}", "display this"]
+        if hasattr(switch, "apply_cli_commands"):
+            output_text = _read_switch_cli_output(
+                switch.apply_cli_commands(switch_name, display_commands),
+                action="apply_cli_commands",
+            )
+        elif hasattr(switch, "execute"):
+            result = await switch.execute("apply_cli_commands", {"switch": switch_name, "commands": display_commands})
+            output_text = _read_switch_cli_output(result, action="apply_cli_commands")
+        else:
+            raise ToolValidationError("switch backend does not support CLI configuration")
+
+        desired_directions = set(directions)
+        matched_bindings = [
+            (policy_name, direction)
+            for policy_name, direction in _extract_policy_bindings(output_text)
+            if direction in desired_directions
+        ]
+        if not matched_bindings:
+            expected = ", ".join(directions)
+            raise ToolValidationError(
+                f"no applied qos policy found on {switch_name} {interface} for direction(s): {expected}"
+            )
+        for policy_name, direction in matched_bindings:
+            commands.append(f"undo qos apply policy {policy_name} {direction}")
+
+    if ensure_trust_dscp:
+        commands.append("qos trust dscp")
 
     if save:
         commands.append("save force")

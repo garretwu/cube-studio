@@ -27,6 +27,26 @@ def test_load_unified_inventory_fixture_has_expected_sections() -> None:
     assert isinstance(dynamic_discovery["switch_providers"]["switches"], dict)
 
 
+def test_build_live_inventory_base_nodes_preserves_worker_ip_and_k8s_name() -> None:
+    nodes = discovery._build_live_inventory_base_nodes(
+        [
+            {
+                "name": "worker-01",
+                "k8s_node_name": "wj-lab-cpt-01",
+                "ssh": {"host": "10.11.4.10"},
+            }
+        ]
+    )
+
+    assert len(nodes) == 1
+    node = nodes[0]
+    assert node.entity_type == EntityType.NODE
+    assert node.id == "worker-01"
+    assert node.properties["ip"] == "10.11.4.10"
+    assert node.properties["k8s_node_name"] == "wj-lab-cpt-01"
+    assert node.properties["source"] == "live_inventory"
+
+
 def test_load_unified_inventory_rejects_unknown_relation_endpoint(tmp_path: Path) -> None:
     invalid_path = tmp_path / "ontology.unified.bad.yaml"
     invalid_path.write_text(
@@ -89,6 +109,15 @@ def test_discover_static_snapshot_uses_unified_cluster_relations(tmp_path: Path)
     assert ("cluster:aidc-lab", "sw-200g", "part_of") in edge_keys
     cluster_node = next(node for node in nodes if node.id == "cluster:aidc-lab")
     assert cluster_node.entity_type == EntityType.CLUSTER
+    switch_node = next(node for node in nodes if node.id == "sw-200g")
+    assert switch_node.properties["mgmt_host"] == "10.11.8.52"
+    worker_node = next(node for node in nodes if node.id == "wj-lab-cpt-01")
+    assert worker_node.properties["ip"] == "10.11.4.10"
+    assert worker_node.properties["switch"] == "sw-200g"
+    assert worker_node.properties["port"] == "sw-200g:200GE1/0/1"
+    assert worker_node.properties["switch_ports"][0]["nic"] == "roce200"
+    switch_port_node = next(node for node in nodes if node.id == "sw-200g:200GE1/0/1")
+    assert switch_port_node.properties["nic"] == "roce200"
 
 
 def test_discover_live_snapshot_prefers_unified_dynamic_inputs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

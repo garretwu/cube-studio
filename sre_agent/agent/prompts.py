@@ -29,7 +29,7 @@ Rules:
 - Never call `skills.run_skill` without a `script`.
 - If a loaded skill has no scripts, do not call `skills.run_skill`; continue with normal read-only tools instead.
 - Do not keep querying equivalent metrics after repeated empty or zero-valued results; treat that as evidence.
-- Prefer at most 2-3 rounds of evidence gathering before concluding.
+- Prefer at most 4-5 rounds of evidence gathering before concluding.
 - Always include the leading root-cause hypothesis in the final diagnosis.
   If alternative explanations exist (eliminated or still testing), list them as additional hypotheses.
 - All natural-language values in `diagnosis` and `remediation_plan` must be written in Chinese, while preserving English technical terms, identifiers, metric names, service names, tool names, PromQL, and resource names when needed.
