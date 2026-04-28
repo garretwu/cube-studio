@@ -33,7 +33,7 @@ tags:
 - **K8s节点名**: wj-lab-cpt-02
 - **物理ip**: 10.11.4.11
 - **SSH访问**: `ssh yuyonghao@10.11.4.11` (需sudo权限)
-- **BMC访问**: `https://10.11.8.13` (用户: admin, 密码: Admin@9000, TLS验证: 关闭)
+- **BMC访问**: `https://10.11.8.11` (用户: admin, 密码: Admin@9000, TLS验证: 关闭)
 - **Prometheus**: `http://10.11.4.3:31260`
 
 ## 前置约束
