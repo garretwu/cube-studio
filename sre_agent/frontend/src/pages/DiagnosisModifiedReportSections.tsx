@@ -253,25 +253,25 @@ export const DEFAULT_REPORT_PREVIEW_MODULES: ReportEmptyPreviewModuleView[] = [
   {
     key: "context",
     title: "诊断拓扑信息",
-    lines: 2,
+    lines: 3,
   },
   {
     key: "hypotheses",
     title: "候选假设验证",
-    lines: 2,
+    lines: 3,
   },
   {
     key: "rootCause",
     title: "根因结论和修复方案",
     description: "用于沉淀最终根因判断，并关联后续修复结论。",
-    lines: 2,
+    lines: 3,
   },
 ] as const;
 
 export function ReportEmptyPreviewModule({
   title,
   description,
-  lines = 2,
+  lines = 3,
   index = 0,
   dataTestId = "diagnosis-modified-report-empty-preview-module",
 }: {
@@ -300,10 +300,19 @@ export function ReportEmptyPreviewModule({
         data-testid={`${dataTestId}-progress`}
         aria-hidden="true"
       >
-        <span
-          className="diagnosis-modified-report-rail__loading-progress-line"
-          data-lines={lines}
-        />
+        {[
+          "diagnosis-modified-report-rail__loading-progress-line--primary",
+          "diagnosis-modified-report-rail__loading-progress-line--secondary",
+          "diagnosis-modified-report-rail__loading-progress-line--tertiary",
+        ]
+          .slice(0, Math.max(1, lines))
+          .map((lineClassName) => (
+            <span
+              className={cn("diagnosis-modified-report-rail__loading-progress-line", lineClassName)}
+              data-lines={lines}
+              key={lineClassName}
+            />
+          ))}
       </div>
     </section>
   );

@@ -471,17 +471,22 @@ describe("DiagnosisModifiedPage sequential playback", () => {
       within(reportRail)
         .getByTestId("diagnosis-modified-report-placeholder-context-progress")
         .querySelectorAll(".diagnosis-modified-report-rail__loading-progress-line").length,
-    ).toBe(1);
+    ).toBe(3);
     expect(
       within(reportRail)
         .getByTestId("diagnosis-modified-report-placeholder-hypotheses-progress")
         .querySelectorAll(".diagnosis-modified-report-rail__loading-progress-line").length,
-    ).toBe(1);
+    ).toBe(3);
     expect(
       within(reportRail)
         .getByTestId("diagnosis-modified-report-placeholder-rootcause-progress")
         .querySelectorAll(".diagnosis-modified-report-rail__loading-progress-line").length,
-    ).toBe(1);
+    ).toBe(3);
+    expect(
+      within(reportRail)
+        .getByTestId("diagnosis-modified-report-placeholder-rootcause-progress")
+        .querySelector(".diagnosis-modified-report-rail__loading-progress-line--tertiary"),
+    ).toBeInTheDocument();
     expect(within(reportRail).getByTestId("diagnosis-modified-report-progressive-context")).toHaveAttribute(
       "data-state",
       "placeholder",

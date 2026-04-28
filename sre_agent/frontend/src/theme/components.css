@@ -15955,6 +15955,10 @@
 }
 
 .diagnosis-modified-report-rail__loading-progress-line--secondary {
+  width: min(68%, 360px);
+}
+
+.diagnosis-modified-report-rail__loading-progress-line--tertiary {
   width: min(56%, 280px);
 }
 
