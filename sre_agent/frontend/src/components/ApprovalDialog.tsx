@@ -3,6 +3,7 @@ import { Modal } from "antd";
 import type { RemediationPlan } from "../api/types";
 import { formatWorkflowStatus } from "../utils/display";
 import { formatPercent } from "../utils/format";
+import { formatRemediationPlanText } from "../utils/remediationEventText";
 import { AppButton, StatusChip } from "./ui";
 
 type ApprovalDialogProps = {
@@ -67,7 +68,9 @@ function ApprovalDialog({
         </div>
         {errorMessage ? <p className="data-list__copy remediation-sidebar__error">{errorMessage}</p> : null}
         <div className="approval-dialog__summary">
-          <p className="approval-dialog__summary-title">{plan?.description ?? "当前暂无可审批的修复方案。"}</p>
+          <p className="approval-dialog__summary-title">
+            {formatRemediationPlanText(plan?.description) || "当前暂无可审批的修复方案。"}
+          </p>
           <p className="approval-dialog__summary-copy">根因：{plan?.root_cause ?? "暂无"}</p>
           <p className="approval-dialog__summary-copy">预计影响：{plan?.estimated_impact ?? "暂无"}</p>
         </div>
@@ -92,7 +95,9 @@ function ApprovalDialog({
                     <StatusChip tone="neutral">{`步骤 ${step.step_id}`}</StatusChip>
                     <span style={{ color: "var(--color-text-secondary, #666)" }}>{step.tool}</span>
                   </div>
-                  <p style={{ margin: "0 0 4px", color: "var(--color-text-primary, #333)" }}>{step.description}</p>
+                  <p style={{ margin: "0 0 4px", color: "var(--color-text-primary, #333)" }}>
+                    {formatRemediationPlanText(step.description) || step.description}
+                  </p>
                   <code
                     style={{
                       display: "block",

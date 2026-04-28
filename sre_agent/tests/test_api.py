@@ -1880,7 +1880,9 @@ class TestAPIE2E:
         ]
         assert len(remediation_events) >= 5
         assert remediation_events[0]["data"]["stage"] == "approval_accepted"
+        assert remediation_events[0]["data"]["message"] == "审批已通过"
         assert remediation_events[1]["data"]["stage"] == "execution_started"
+        assert remediation_events[1]["data"]["message"] == "开始执行修复方案"
         assert remediation_events[2]["data"]["stage"] == "pre_remediation_baseline_collected"
         assert remediation_events[2]["data"]["baseline_alert"] is not None
         assert isinstance(remediation_events[2]["data"]["baseline_metrics"], list)
@@ -1888,9 +1890,14 @@ class TestAPIE2E:
         assert "alert_review" in remediation_events[-2]["data"]
         assert "metric_reviews" in remediation_events[-2]["data"]
         assert remediation_events[-1]["data"]["stage"] == "execution_succeeded"
+        assert remediation_events[-1]["data"]["message"] == "修复执行成功"
         assert isinstance(remediation_events[-1]["data"].get("step_results"), list)
         assert remediation_events[-1]["data"]["step_results"]
         assert remediation_events[-1]["data"]["step_results"][0]["command"]
+        assert "remediation status update" not in {
+            str(item["data"].get("message", "")).strip().lower()
+            for item in remediation_events
+        }
 
     def test_e2e_ranked_root_cause_remediation_requires_second_approval(
         self, monkeypatch: pytest.MonkeyPatch

@@ -41,6 +41,7 @@ Rules:
 - If the current alert name matches a catalog entry, prioritize that metric family and threshold semantics before broad generic probing.
 - Always include the leading root-cause hypothesis in the final diagnosis. If alternative explanations exist (eliminated or still testing), list them as additional hypotheses.
 - All natural-language values in `diagnosis` and `diagnosis.root_cause[i].recommended_fix` must be written in Chinese, while preserving English technical terms, identifiers, metric names, service names, tool names, PromQL, and resource names when needed.
+- Remediation step `title`/`description` values must describe the action in Chinese; keep tool names and entity names unchanged, express node placement as `位于节点 <node>`, and do not use `on node <node>`.
 - If you include `diagnosis.root_cause[i].recommended_fix`, every step must use a real tool name from the write-tool schema reference.
 - Every remediation step `params` object must explicitly contain all required fields from that tool's `params_schema`.
 - If the intended action does not match any safe write tool in the schema reference, set that root cause item's `recommended_fix` to null.

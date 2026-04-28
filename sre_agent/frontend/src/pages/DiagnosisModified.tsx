@@ -7,6 +7,7 @@ import { AppIcon } from "../components/ui";
 import { useWebSocket } from "../hooks/useWebSocket";
 import { useDiagnosisStore } from "../store/diagnosisStore";
 import { formatDateTimeParts, formatTimestamp } from "../utils/format";
+import { formatRemediationPlanText } from "../utils/remediationEventText";
 import DiagnosisModifiedReportRail from "./DiagnosisModifiedReportRail";
 import { buildDiagnosisModifiedReportView } from "./diagnosisModifiedReportModel";
 import {
@@ -1161,7 +1162,7 @@ function ApprovalPlanCard({
             <ToneBadge tone={statusTone}>{statusLabel}</ToneBadge>
           </div>
           <h3 className="diagnosis-modified-approval-card__title">{plan.title}</h3>
-          <p className="diagnosis-modified-approval-card__description">{plan.description}</p>
+          <p className="diagnosis-modified-approval-card__description">{formatRemediationPlanText(plan.description) || plan.description}</p>
         </div>
       </header>
 
@@ -1189,8 +1190,8 @@ function ApprovalPlanCard({
               <li key={step.id}>
                 <span>{index + 1}</span>
                 <div>
-                  <strong>{step.title}</strong>
-                  {step.detail ? <p>{step.detail}</p> : null}
+                  <strong>{formatRemediationPlanText(step.title) || step.title}</strong>
+                  {step.detail ? <p>{formatRemediationPlanText(step.detail) || step.detail}</p> : null}
                   {step.paramsSummary ? <code>{step.paramsSummary}</code> : null}
                 </div>
               </li>

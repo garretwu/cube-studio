@@ -467,7 +467,7 @@ describe("buildDiagnosisModifiedReportView", () => {
       topologyContext: {
         roots: ["service:auth-svc"],
         affected_count: 1,
-        affected_entities: [{ id: "mystery-target", name: "mystery-target" }],
+        affected_entities: [{ id: "mystery-target", type: "entity", name: "mystery-target" }],
         summary: "ttft with unknown id",
       },
       timeline: [],
@@ -492,8 +492,8 @@ describe("buildDiagnosisModifiedReportView", () => {
         roots: ["service:shared"],
         affected_count: 2,
         affected_entities: [
-          { id: "pod:service:shared", name: "shared" },
-          { id: "service:shared-sidecar", name: "shared-sidecar" },
+          { id: "pod:service:shared", type: "pod", name: "shared" },
+          { id: "service:shared-sidecar", type: "service", name: "shared-sidecar" },
         ],
         summary: "same label different types",
       },
@@ -520,7 +520,7 @@ describe("buildDiagnosisModifiedReportView", () => {
       topologyContext: {
         roots: ["gpu:0"],
         affected_count: 1,
-        affected_entities: [{ id: "service:auth-svc", name: "auth-svc" }],
+        affected_entities: [{ id: "service:auth-svc", type: "service", name: "auth-svc" }],
         summary: "fallback topology",
       },
       timeline: [],

@@ -1490,6 +1490,57 @@ def build_api_router() -> APIRouter:
         services.session_store.put(updated)
         return updated
 
+    REMEDIATION_STAGE_MESSAGE_LABELS: dict[str, str] = {
+        "approval_accepted": "审批已通过",
+        "approval_required": "等待审批",
+        "approval_rejected": "审批已拒绝",
+        "awaiting_approval": "等待审批",
+        "execution_failed": "修复执行失败",
+        "execution_mocked": "mock 已执行修复计划",
+        "execution_started": "开始执行修复方案",
+        "execution_succeeded": "修复执行成功",
+        "execution_timeout": "修复执行超时",
+        "pre_remediation_baseline_collected": "已采集修复前基线",
+        "canary_batch_started": "灰度批次开始",
+        "canary_batch_completed": "灰度批次完成",
+        "canary_check_passed": "灰度验证通过",
+        "canary_check_failed": "灰度验证失败",
+        "remediating": "正在执行修复步骤",
+        "validating": "正在验证修复结果",
+        "observation_started": "开始观察",
+        "observation_result": "观察结果已采集",
+        "next_plan_approval_required": "下一根因修复待审批",
+        "escalation_required": "需要工程师介入",
+        "rollback_started": "开始回滚",
+        "rollback_succeeded": "回滚成功",
+        "rollback_failed": "回滚失败",
+    }
+
+    def _normalize_remediation_progress_message(stage: str, message: Any) -> str:
+        raw = str(message or "").strip()
+        if not raw or raw.lower() == "remediation status update":
+            return REMEDIATION_STAGE_MESSAGE_LABELS.get(stage, stage or "修复状态更新")
+        target_absent_match = re.fullmatch(
+            r"Target process\s+(.+?)\s+was not found;\s+treating this kill step as successful\.?",
+            raw,
+            flags=re.IGNORECASE,
+        )
+        if target_absent_match:
+            return f"目标进程 {target_absent_match.group(1)} 未找到，视为该 kill_process 步骤成功"
+        timeout_match = re.fullmatch(
+            r"remediation execution timeout\s*\(([^)]+)\)",
+            raw,
+            flags=re.IGNORECASE,
+        )
+        if timeout_match:
+            return f"修复执行超时（{timeout_match.group(1)}）"
+        return raw
+
+    def _normalize_remediation_progress_details(stage: str, details: dict[str, Any] | None) -> dict[str, Any]:
+        payload = dict(details or {})
+        payload["message"] = _normalize_remediation_progress_message(stage, payload.get("message"))
+        return payload
+
     async def _publish_remediation_progress(
         services: Any,
         *,
@@ -1498,8 +1549,7 @@ def build_api_router() -> APIRouter:
         details: dict[str, Any] | None = None,
     ) -> None:
         payload: dict[str, Any] = {"stage": stage}
-        if details:
-            payload.update(details)
+        payload.update(_normalize_remediation_progress_details(stage, details))
         await services.trace_publisher.publish(
             {
                 "type": EventType.REMEDIATION_PROGRESS.value,

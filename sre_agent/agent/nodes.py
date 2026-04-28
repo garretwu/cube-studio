@@ -3769,15 +3769,6 @@ def _extract_evidence_signals(tool_runs: list[dict[str, Any]], variables: dict[s
                             "node": run_node,
                         }
                     )
-            if not suspect_items and any(token in summary for token in ("stress", "benchmark", "load", "simulator")):
-                suspect_items.append(
-                    {
-                        "pid": None,
-                        "process_name": "suspected_load_process",
-                        "memory_mib": None,
-                        "node": run_node,
-                    }
-                )
             if suspect_items:
                 signals["ttft_suspect_process_present"] = True
                 signals["ttft_gpu_process_steps"].append(int(run.get("step", 0) or 0))
@@ -7045,6 +7036,8 @@ def _build_ttft_kill_process_plan_for_root_cause(
         token for token in tokens
         if any(marker in token for marker in ("fi_gpu_burn", "gpu_burn", "gpu_contention", "load_simulator", "stress", "benchmark", "locust", "vegeta", "wrk"))
     }
+    if allowed_family is None and root_factor != "mixed" and not family_tokens:
+        return None
     if not evidence_refs and allowed_family is None and not family_tokens:
         return None
 
@@ -7063,6 +7056,8 @@ def _build_ttft_kill_process_plan_for_root_cause(
             if suspect_evidence_id not in evidence_refs:
                 continue
             if allowed_family is not None and suspect_family != allowed_family:
+                continue
+            if allowed_family is None and family_tokens and not any(token in lowered for token in family_tokens):
                 continue
             matched.append(suspect)
             continue
@@ -7098,6 +7093,8 @@ def _build_ttft_kill_process_plan_for_root_cause(
             continue
         params["entity_id"] = f"proc:{target_token}"
         verify_pattern = _resolve_process_verification_pattern(process_name or target_token)
+        if not isinstance(pid, int) and not verify_pattern:
+            continue
         verification: dict[str, Any] = {"method": "wait", "wait_seconds": 30}
         if verify_pattern:
             verification = {
@@ -7110,7 +7107,7 @@ def _build_ttft_kill_process_plan_for_root_cause(
         steps.append(
             {
                 "step_id": idx,
-                "description": f"Terminate suspect process {target_label} on node {step_node}",
+                "description": f"终止可疑进程 {target_label}，位于节点 {step_node}",
                 "tool": "kill_process",
                 "params": params,
                 "verification": verification,
@@ -7124,7 +7121,7 @@ def _build_ttft_kill_process_plan_for_root_cause(
     return {
         "plan_id": plan_id,
         "root_cause": root_item.title,
-        "description": f"Proposal-only remediation for root cause #{root_cause_index + 1}: {root_item.title}",
+        "description": f"针对 RANK #{root_cause_index + 1} 根因的待审批修复方案：{root_item.title}",
         "steps": steps,
         "estimated_impact": root_item.impact_summary or diagnosis.impact_summary,
         "confidence": _normalize_plan_confidence(max(0.55, float(root_item.confidence))),
@@ -7953,7 +7950,7 @@ def _build_ttft_kill_process_plan_candidate(
         steps.append(
             {
                 "step_id": index,
-                "description": f"在节点 {step_node} 终止可疑负载进程 {target_label}",
+                "description": f"终止可疑进程 {target_label}，位于节点 {step_node}",
                 "tool": "kill_process",
                 "params": step_params,
                 "verification": {

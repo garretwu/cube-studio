@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import tempfile
 import unittest
 from pathlib import Path
@@ -11,7 +12,11 @@ from langchain_core.messages import AIMessage
 
 import sre_agent.agent.graph as graph_module
 import sre_agent.agent.nodes as nodes_module
-from sre_agent.ttft_process_policy import is_ttft_suspect_process
+from sre_agent.ttft_process_policy import (
+    TTFT_STRICT_PROCESS_FIND_PATTERN,
+    extract_ttft_verification_pattern,
+    is_ttft_suspect_process,
+)
 from sre_agent.agent import run_diagnosis, run_diagnosis_stream
 from sre_agent.agent.prompts import build_system_prompt
 from sre_agent.models.diagnosis import DiagnosisResult, ThinkingTrace
@@ -2182,6 +2187,9 @@ tags:
         self.assertEqual(step_two["params"]["entity_id"], "proc:11002")
         self.assertEqual(step_one["params"]["node"], "10.11.4.13")
         self.assertEqual(step_two["params"]["node"], "10.11.4.13")
+        self.assertEqual(step_one["description"], "终止可疑进程 PID 11001，位于节点 10.11.4.13")
+        self.assertEqual(step_two["description"], "终止可疑进程 PID 11002，位于节点 10.11.4.13")
+        self.assertEqual(plan["description"], "识别到可疑压测/模拟负载进程，按进程粒度灰度终止并复核 TTFT 与告警状态。")
         self.assertEqual(step_one["verification"]["tool"], "process.find")
         self.assertEqual(step_two["verification"]["tool"], "process.find")
         self.assertEqual(step_one["verification"]["tool_params"]["pattern"], "11001")
@@ -2393,6 +2401,34 @@ tags:
         self.assertEqual(suspect["node_role_hint"], "serving_gpu_node")
         self.assertEqual(suspect["evidence_id"], "tool:7:process.find")
         self.assertEqual(signals["ttft_evidence_cards"][0]["process_family_hint"], "gpu_contention")
+
+    def test_extract_evidence_signals_does_not_synthesize_load_process_from_false_summary(self) -> None:
+        tool_runs = [
+            {
+                "tool": "gpu.get_processes",
+                "success": True,
+                "step": 2,
+                "params": {"node": "worker-03"},
+                "prompt_summary": (
+                    "process_count=4; suspicious_load_present=false; total_mem=104208MiB; "
+                    "top_processes=VLLM::Worker_TP0,VLLM::Worker_TP1"
+                ),
+                "key_fields": {
+                    "process_count": 4,
+                    "sample_pids": [1150956, 1150958],
+                    "sample_process_names": ["VLLM::Worker_TP0", "VLLM::Worker_TP1"],
+                    "suspicious_load_present": False,
+                    "suspicious_load_processes": [],
+                },
+                "data": {},
+            }
+        ]
+
+        signals = nodes_module._extract_evidence_signals(tool_runs)
+
+        self.assertFalse(signals["ttft_suspect_process_present"])
+        self.assertEqual(signals["ttft_suspect_processes"], [])
+        self.assertEqual(signals["ttft_gpu_process_steps"], [])
 
     def test_extract_evidence_signals_filters_non_whitelisted_process_find_matches(self) -> None:
         tool_runs: list[dict[str, Any]] = [
@@ -2708,8 +2744,73 @@ tags:
         self.assertIn(str(second_step.params.get("node")), {"10.11.4.13", "worker-04"})
         self.assertEqual(first_step.params.get("pid"), 1155497)
         self.assertEqual(second_step.params.get("pid"), 1392199)
+        self.assertEqual(first_step.description, "终止可疑进程 PID 1155497，位于节点 worker-03")
+        self.assertEqual(second_step.description, "终止可疑进程 PID 1392199，位于节点 10.11.4.13")
+        self.assertEqual(
+            root_causes[0].recommended_fix.description,
+            "针对 RANK #1 根因的待审批修复方案：GPU contention caused by fi_gpu_burn process",
+        )
+        self.assertEqual(
+            root_causes[1].recommended_fix.description,
+            "针对 RANK #2 根因的待审批修复方案：External load_simulator continuously sends high request volume",
+        )
         self.assertEqual(len(root_causes[0].recommended_fix.steps), 1)
         self.assertEqual(len(root_causes[1].recommended_fix.steps), 1)
+
+    def test_ttft_kill_process_plan_not_generated_for_cache_pressure_without_process_factor(self) -> None:
+        diagnosis = DiagnosisResult.model_validate(
+            {
+                "root_cause": [
+                    {
+                        "id": "rc-1",
+                        "title": "KV cache pressure or vLLM scheduler bottleneck",
+                        "layer": "service",
+                        "entities": ["worker-03"],
+                        "confidence": 0.6,
+                        "certainty": "probable",
+                        "status": "suspected",
+                        "evidence_summary": "GPU process list has no load process; TTFT remains high",
+                        "factor_type": "cache_pressure",
+                        "evidence_refs": ["tool:2:gpu.get_processes"],
+                        "impact_summary": "TTFT remains elevated",
+                        "distinguishing_verification": "collect vLLM cache and scheduler metrics",
+                        "recommended_fix": None,
+                    }
+                ],
+                "confidence": 0.6,
+                "hypotheses": [],
+                "propagation_chain": [],
+                "impact_summary": "TTFT remains elevated",
+                "affected_services": ["qwen3-32b-fp8-202602261"],
+                "recommended_fix": None,
+                "triage_priority": "P1",
+                "diagnosis_certainty": "probable",
+            }
+        )
+        evidence_signals = {
+            "ttft_suspect_process_present": True,
+            "ttft_suspect_processes": [
+                {
+                    "pid": None,
+                    "process_name": "suspected_load_process",
+                    "node": "worker-03",
+                    "source_tool": "gpu.get_processes",
+                    "evidence_id": "tool:2:gpu.get_processes",
+                    "process_family_hint": "unknown",
+                }
+            ],
+        }
+
+        plan = nodes_module._build_ttft_kill_process_plan_for_root_cause(
+            diagnosis=diagnosis,
+            root_cause_index=0,
+            evidence_signals=evidence_signals,
+            session_id="sess-cache-pressure-no-process-plan",
+            tool_runs=[],
+            variables={},
+        )
+
+        self.assertIsNone(plan)
 
     def test_attach_per_root_cause_recommended_fixes_sanitizes_existing_secondary_plans(self) -> None:
         mixed_secondary_plan = RemediationPlan.model_validate(
@@ -3257,6 +3358,10 @@ tags:
         self.assertFalse(is_ttft_suspect_process("uvicorn app.gateway.app:app --reload"))
         self.assertTrue(is_ttft_suspect_process("python -m load_simulator run --only inference"))
         self.assertTrue(is_ttft_suspect_process("fi_gpu_burn_gpu_contention_ad4cf1ee -m 100% -i 0 3600"))
+        self.assertIsNone(re.search(TTFT_STRICT_PROCESS_FIND_PATTERN, "vfio-irqfd-clean", re.IGNORECASE))
+        self.assertIsNotNone(re.search(TTFT_STRICT_PROCESS_FIND_PATTERN, "fio --filename=/tmp/test", re.IGNORECASE))
+        self.assertIsNone(extract_ttft_verification_pattern("vfio-irqfd-clean"))
+        self.assertEqual(extract_ttft_verification_pattern("fio --filename=/tmp/test"), "fio")
 
     def test_has_probed_ttft_external_node_detects_existing_probe(self) -> None:
         tool_runs: list[dict[str, Any]] = [

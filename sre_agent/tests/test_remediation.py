@@ -801,6 +801,20 @@ class TestRemediationIntegration:
         assert len(batch_started) == 2
         assert batch_started[0]["targets_in_batch"] == ["proc:1"]
         assert batch_started[1]["targets_in_batch"] == ["proc:2", "proc:3", "proc:4"]
+        second_batch_steps = [
+            details
+            for stage, details in progress_events
+            if stage == "remediating" and details.get("steps_total") == 3
+        ]
+        assert [details["step_id"] for details in second_batch_steps] == [2, 3, 4]
+        assert [details["display_step_index"] for details in second_batch_steps] == [1, 2, 3]
+        assert [details["step_index"] for details in second_batch_steps] == [1, 2, 3]
+        assert [details["message"].split(":")[0] for details in second_batch_steps] == [
+            "正在执行步骤 1/3",
+            "正在执行步骤 2/3",
+            "正在执行步骤 3/3",
+        ]
+        assert not any("4/3" in str(details.get("message", "")) for _, details in progress_events)
 
     @pytest.mark.asyncio
     async def test_integration_engine_ttft_stale_pid_precheck_treats_absent_pid_as_completed(self, tmp_path: Path) -> None:
@@ -949,7 +963,7 @@ class TestRemediationIntegration:
         absent_events = [details for stage, details in progress_events if details.get("process_already_absent")]
         assert absent_events
         assert absent_events[-1]["process_not_found_treated_as_success"] is True
-        assert "treating this kill step as successful" in absent_events[-1]["message"]
+        assert absent_events[-1]["message"] == "目标进程 9783 未找到，视为该 kill_process 步骤成功"
 
     @pytest.mark.asyncio
     async def test_integration_engine_ttft_precheck_still_fails_for_non_suspect_pid(self, tmp_path: Path) -> None:

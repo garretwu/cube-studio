@@ -354,7 +354,7 @@ class RemediationEngine:
             steps_to_run = self._filter_steps_by_targets(plan.steps, target_filter)
 
         total_steps = len(steps_to_run)
-        for step in steps_to_run:
+        for display_step_index, step in enumerate(steps_to_run, start=1):
             if step.rollback_tool:
                 self.wal.record(
                     fault_id=f"{plan.plan_id}-step-{step.step_id}",
@@ -368,10 +368,12 @@ class RemediationEngine:
                     stage="remediating",
                     details={
                         "step_id": step.step_id,
+                        "display_step_index": display_step_index,
+                        "step_index": display_step_index,
                         "tool": step.tool,
                         "steps_completed": completed,
                         "steps_total": total_steps,
-                        "message": f"正在执行步骤 {step.step_id}/{total_steps}: {step.description}",
+                        "message": f"正在执行步骤 {display_step_index}/{total_steps}: {step.description}",
                     },
                 )
             precheck_error = await self._precheck_kill_process_target(plan=plan, step=step)
@@ -389,11 +391,13 @@ class RemediationEngine:
                             stage="validating",
                             details={
                                 "step_id": step.step_id,
+                                "display_step_index": display_step_index,
+                                "step_index": display_step_index,
                                 "steps_completed": completed,
                                 "steps_total": total_steps,
                                 "message": (
                                     f"目标进程 PID {precheck_error.get('pid')} 已不存在，"
-                                    "跳过执行并视为完成"
+                                    "跳过执行并视为该 kill_process 步骤成功"
                                 ),
                                 "pid_already_absent": True,
                                 "process_not_found_treated_as_success": True,
@@ -404,6 +408,7 @@ class RemediationEngine:
                     verification_results.append(
                         {
                             "step_id": step.step_id,
+                            "display_step_index": display_step_index,
                             "success": True,
                             "verified": True,
                             "skipped": True,
@@ -442,12 +447,11 @@ class RemediationEngine:
                             stage="validating",
                             details={
                                 "step_id": step.step_id,
+                                "display_step_index": display_step_index,
+                                "step_index": display_step_index,
                                 "steps_completed": completed,
                                 "steps_total": total_steps,
-                                "message": (
-                                    f"Target process {target or '<unknown>'} was not found; "
-                                    "treating this kill step as successful."
-                                ),
+                                "message": f"目标进程 {target or '<unknown>'} 未找到，视为该 kill_process 步骤成功",
                                 "process_already_absent": True,
                                 "process_not_found_treated_as_success": True,
                                 "node": step.params.get("node"),
@@ -459,6 +463,7 @@ class RemediationEngine:
                     verification_results.append(
                         {
                             "step_id": step.step_id,
+                            "display_step_index": display_step_index,
                             "success": True,
                             "verified": True,
                             "skipped": True,
