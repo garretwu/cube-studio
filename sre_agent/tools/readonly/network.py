@@ -40,6 +40,88 @@ def _optional_iface(params: dict[str, Any]) -> str:
     return str(params.get("iface", "") or "").strip()
 
 
+def _require_safe_cli_token(params: dict[str, Any], key: str) -> str:
+    value = _require_str(params, key)
+    if not re.fullmatch(r"[A-Za-z0-9/._:-]+", value):
+        raise ToolValidationError(f"parameter {key!r} contains unsafe CLI characters")
+    return value
+
+
+def _parse_car_cir_lines(text: str) -> list[dict[str, Any]]:
+    entries: list[dict[str, Any]] = []
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line or "car" not in line.casefold() or "cir" not in line.casefold():
+            continue
+        match = re.search(r"\bcar\b.*?\bcir\s+(\d+)", line, flags=re.IGNORECASE)
+        if not match:
+            continue
+        direction_match = re.search(r"\b(inbound|outbound)\b", line, flags=re.IGNORECASE)
+        entries.append(
+            {
+                "line": line,
+                "cir": int(match.group(1)),
+                "direction": direction_match.group(1).lower() if direction_match else None,
+            }
+        )
+    return entries
+
+
+def _extract_policy_bindings(text: str) -> list[dict[str, str]]:
+    bindings: list[dict[str, str]] = []
+    for match in re.finditer(
+        r"\bqos apply policy\s+([A-Za-z0-9._:-]+)\s+(inbound|outbound)\b",
+        str(text or ""),
+        flags=re.IGNORECASE,
+    ):
+        policy_name = str(match.group(1) or "").strip()
+        direction = str(match.group(2) or "").strip().lower()
+        if policy_name and direction:
+            bindings.append({"name": policy_name, "direction": direction})
+    return bindings
+
+
+def _extract_qos_gts_lines(text: str) -> list[dict[str, Any]]:
+    entries: list[dict[str, Any]] = []
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        match = re.search(
+            r"\bqos gts queue\s+(\d+)\s+cir\s+(\d+)(?:\s+cbs\s+(\d+))?\b",
+            line,
+            flags=re.IGNORECASE,
+        )
+        if not match:
+            continue
+        entries.append(
+            {
+                "queue": str(match.group(1) or "").strip(),
+                "cir": int(match.group(2)),
+                "cbs": int(match.group(3)) if match.group(3) else None,
+                "line": line,
+            }
+        )
+    return entries
+
+
+def _extract_abnormal_qos_lines(text: str) -> list[str]:
+    lines: list[str] = []
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        lowered = line.casefold()
+        if (
+            lowered.startswith("qos apply policy ")
+            or lowered.startswith("qos gts ")
+            or lowered.startswith("qos lr ")
+            or lowered.startswith("qos car ")
+        ):
+            lines.append(line)
+    if not re.search(r"\bqos trust dscp\b", text, flags=re.IGNORECASE):
+        lines.append("MISSING: qos trust dscp")
+    return lines
+
+
 async def get_rdma_stats(params: dict[str, Any], context: ToolExecutionContext) -> Any:
     ssh = context.channels.get("ssh")
     if ssh is None:
@@ -192,8 +274,8 @@ async def get_switch_port_counters(params: dict[str, Any], context: ToolExecutio
     if switch_channel is None:
         raise ToolValidationError("required channel is missing: switch")
 
-    switch = _require_str(params, "switch")
-    interface = _require_str(params, "interface")
+    switch = _require_safe_cli_token(params, "switch")
+    interface = _require_safe_cli_token(params, "interface")
 
     if hasattr(switch_channel, "execute"):
         result = await switch_channel.execute(
@@ -208,3 +290,52 @@ async def get_switch_port_counters(params: dict[str, Any], context: ToolExecutio
         return value
     raise ToolValidationError("switch channel does not support interface status read")
 
+
+async def get_switch_qos_config(params: dict[str, Any], context: ToolExecutionContext) -> Any:
+    switch_channel = context.channels.get("switch")
+    if switch_channel is None:
+        raise ToolValidationError("required channel is missing: switch")
+
+    switch = _require_safe_cli_token(params, "switch")
+    interface = _require_safe_cli_token(params, "interface")
+    commands = [f"interface {interface}", "display this"]
+
+    outputs: list[dict[str, Any]] = []
+    combined_output: list[str] = []
+    if hasattr(switch_channel, "apply_cli_commands"):
+        result = switch_channel.apply_cli_commands(switch, commands)
+        payload = _extract_output(result, action="apply_cli_commands")
+        output_text = str(payload.get("output") if isinstance(payload, dict) else payload or "")
+        outputs.append({"command": "\n".join(commands), "output": output_text})
+        combined_output.append(output_text)
+    else:
+        for command in commands:
+            if hasattr(switch_channel, "run_cli_execution"):
+                result = switch_channel.run_cli_execution(switch, command)
+            elif hasattr(switch_channel, "execute"):
+                result = await switch_channel.execute(
+                    "run_cli_execution",
+                    {"switch": switch, "command": command},
+                )
+            else:
+                raise ToolValidationError("switch channel does not support CLI execution")
+
+            payload = _extract_output(result, action="run_cli_execution")
+            output_text = str(payload.get("output") if isinstance(payload, dict) else payload or "")
+            outputs.append({"command": command, "output": output_text})
+            combined_output.append(output_text)
+
+    text = "\n".join(combined_output)
+    car_cir = _parse_car_cir_lines(text)
+    result: dict[str, Any] = {
+        "switch": switch,
+        "interface": interface,
+        "commands": outputs,
+        "car_cir": car_cir,
+        "applied_policies": _extract_policy_bindings(text),
+        "qos_gts": _extract_qos_gts_lines(text),
+        "trust_dscp": bool(re.search(r"\bqos trust dscp\b", text, flags=re.IGNORECASE)),
+        "abnormal_config_lines": _extract_abnormal_qos_lines(text),
+        "source": "H3C CLI display qos/current-configuration",
+    }
+    return result

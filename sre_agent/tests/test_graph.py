@@ -1191,6 +1191,132 @@ tags:
         self.assertIn("active_skill_id: builtin-gpu-thermal-diagnosis", prompt)
         self.assertIn("# GPU Thermal Diagnosis", prompt)
 
+    async def test_ontology_query_prompt_fields_include_switch_mapping(self) -> None:
+        payload = [
+            {
+                "id": "wj-lab-cpt-01",
+                "entity_type": "node",
+                "name": "wj-lab-cpt-01",
+                "properties": {
+                    "ip": "10.11.4.10",
+                    "switch": "sw-200g",
+                    "port": "sw-200g:200GE1/0/1",
+                    "switch_ports": [
+                        {
+                            "switch_id": "sw-200g",
+                            "port_id": "sw-200g:200GE1/0/1",
+                            "nic": "roce200",
+                        }
+                    ],
+                },
+                "status": "online",
+            }
+        ]
+
+        prompt_fields = nodes_module._build_tool_prompt_fields(
+            session_id="sess-ontology",
+            source="tool",
+            step=7,
+            tool="ontology.query",
+            params={"entity_type": "node", "filters": {"ip": "10.11.4.10"}},
+            data=payload,
+            error="",
+            skill_id=None,
+        )
+
+        self.assertIn("switch=sw-200g", prompt_fields["prompt_summary"])
+        self.assertIn("port=sw-200g:200GE1/0/1", prompt_fields["prompt_summary"])
+        self.assertEqual(
+            prompt_fields["key_fields"]["preview"][0]["switch_ports"][0],
+            {
+                "switch_id": "sw-200g",
+                "port_id": "sw-200g:200GE1/0/1",
+                "nic": "roce200",
+            },
+        )
+
+    async def test_switch_port_counter_prompt_fields_include_admin_oper(self) -> None:
+        prompt_fields = nodes_module._build_tool_prompt_fields(
+            session_id="sess-switch",
+            source="tool",
+            step=8,
+            tool="network.get_switch_port_counters",
+            params={"switch": "sw-200g", "interface": "200GE1/0/1"},
+            data={"output": "200GE1/0/1: admin=up, oper=up", "error": ""},
+            error="",
+            skill_id=None,
+        )
+
+        self.assertIn("interface=200GE1/0/1", prompt_fields["prompt_summary"])
+        self.assertIn("admin=up", prompt_fields["prompt_summary"])
+        self.assertIn("oper=up", prompt_fields["prompt_summary"])
+        self.assertEqual(
+            prompt_fields["key_fields"],
+            {"interface": "200GE1/0/1", "admin": "up", "oper": "up"},
+        )
+
+    async def test_switch_qos_prompt_fields_include_qos_signals(self) -> None:
+        prompt_fields = nodes_module._build_tool_prompt_fields(
+            session_id="sess-qos",
+            source="tool",
+            step=9,
+            tool="network.get_switch_qos_config",
+            params={"switch": "sw-200g", "interface": "200GE1/0/1"},
+            data={
+                "switch": "sw-200g",
+                "interface": "200GE1/0/1",
+                "car_cir": [{"direction": "inbound", "cir": 5000000}],
+                "applied_policies": [{"name": "fault_a", "direction": "inbound"}],
+                "qos_gts": [{"queue": "6", "cir": 100000000, "cbs": 16000000}],
+                "trust_dscp": False,
+                "abnormal_config_lines": [
+                    "qos apply policy fault_a inbound",
+                    "qos gts queue 6 cir 100000000 cbs 16000000",
+                    "MISSING: qos trust dscp",
+                ],
+                "commands": [
+                    {
+                        "command": "interface 200GE1/0/1",
+                        "output": (
+                            "qos apply policy fault_a inbound\n"
+                            "qos gts queue 6 cir 100000000 cbs 16000000\n"
+                        ),
+                    }
+                ],
+            },
+            error="",
+            skill_id=None,
+        )
+
+        summary = prompt_fields["prompt_summary"]
+        self.assertIn("switch=sw-200g", summary)
+        self.assertIn("interface=200GE1/0/1", summary)
+        self.assertIn("car_cir=inbound:5000000", summary)
+        self.assertIn("qos_gts=q6:100000000", summary)
+        self.assertIn("policies=", summary)
+        self.assertIn("trust_dscp=false", summary)
+        self.assertIn("missing_trust_dscp=true", summary)
+        self.assertEqual(
+            prompt_fields["key_fields"]["car_cir"][0],
+            {"direction": "inbound", "cir": 5000000},
+        )
+        self.assertEqual(
+            prompt_fields["key_fields"]["qos_gts"][0],
+            {"queue": "6", "cir": 100000000, "cbs": 16000000},
+        )
+        self.assertEqual(
+            prompt_fields["key_fields"]["policies"][0],
+            {"name": "fault_a", "direction": "inbound"},
+        )
+        self.assertEqual(
+            prompt_fields["key_fields"]["abnormal_config_lines"][2],
+            "MISSING: qos trust dscp",
+        )
+        self.assertEqual(
+            prompt_fields["key_fields"]["abnormal_config_lines"][0],
+            "qos apply policy fault_a inbound",
+        )
+
     async def test_tc_evidence_forces_consistent_root_cause_when_initial_conclusion_is_ambiguous(self) -> None:
         llm = _FakeLLM(
             [
@@ -3036,6 +3162,58 @@ tags:
         pending = result.get("pending_tool_calls", [])
         self.assertEqual(len(pending), 1)
         self.assertEqual(str(pending[0].get("name", "")).strip(), "process.find")
+
+    async def test_reason_node_rdma_gate_injects_switch_qos_after_switch_port_success(self) -> None:
+        llm = _FakeLLM(
+            [
+                AIMessage(content="诊断结果已经明确，可以给出最终诊断。"),
+            ]
+        )
+        state = nodes_module.initialize_state(
+            query="Diagnose RdmaRocePacketsAnomaly with strict RDMA workflow.",
+            variables={"node": "10.11.4.10"},
+            session_id="sess-rdma-qos-gate",
+            step_timeout_sec=5.0,
+            total_timeout_sec=30.0,
+            max_steps=6,
+            alert_snapshot={"alert_name": "RdmaRocePacketsAnomaly"},
+        )
+        state["tool_runs"] = [
+            {
+                "tool": "skills.load_skill",
+                "params": {"skill_id": "builtin-rdma-diagnosis"},
+                "success": True,
+                "data": {
+                    "skill_id": "builtin-rdma-diagnosis",
+                    "content": "RDMA diagnosis workflow",
+                },
+            },
+            {
+                "tool": "network.get_switch_port_counters",
+                "params": {"switch": "sw-200g", "interface": "200GE1/0/1"},
+                "success": True,
+                "data": {"output": "200GE1/0/1: admin=up, oper=up", "error": ""},
+                "key_fields": {"interface": "200GE1/0/1", "admin": "up", "oper": "up"},
+                "prompt_summary": "interface=200GE1/0/1; admin=up; oper=up",
+            },
+        ]
+
+        result = await nodes_module.reason_node(state, llm=llm, registry=build_default_registry())
+        self.assertEqual(result["status"], "running")
+        pending = result.get("pending_tool_calls", [])
+        self.assertEqual(len(pending), 1)
+        self.assertEqual(str(pending[0].get("name", "")).strip(), "network.get_switch_qos_config")
+        self.assertEqual(
+            pending[0].get("args", {}),
+            {"switch": "sw-200g", "interface": "200GE1/0/1"},
+        )
+        trace_items = [item for item in result.get("trace_items", []) if isinstance(item, dict)]
+        self.assertTrue(
+            any(
+                str((item.get("meta") or {}).get("reason", "")).strip() == "rdma_switch_qos_gate"
+                for item in trace_items
+            )
+        )
 
     async def test_reason_node_ttft_coverage_met_non_json_still_generates_auto_remediation_plan(self) -> None:
         llm = _FakeLLM(

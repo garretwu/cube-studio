@@ -1,4 +1,4 @@
-"""Purpose: Graph traversal, neighbor, path queries.
+"""Purpose: Graph traversal and path queries.
 
 Primary tools: query_entities, get_path, get_blast_radius.
 Channels used: ontology.
@@ -6,6 +6,7 @@ Channels used: ontology.
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from sre_agent.tools.registry import ToolExecutionContext, ToolValidationError
@@ -29,8 +30,17 @@ async def query_entities(params: dict[str, Any], context: ToolExecutionContext) 
     channel = _require_channel(context, "ontology")
     entity_type = _require_str(params, "entity_type")
     filters = params.get("filters")
-    if not isinstance(filters, dict):
+    if filters is None:
         filters = {}
+    elif isinstance(filters, str):
+        try:
+            filters = json.loads(filters)
+        except json.JSONDecodeError as exc:
+            raise ToolValidationError("parameter 'filters' must be an object/dict or a valid JSON object string") from exc
+        if not isinstance(filters, dict):
+            raise ToolValidationError("parameter 'filters' must be an object/dict or a valid JSON object string")
+    elif not isinstance(filters, dict):
+        raise ToolValidationError("parameter 'filters' must be an object/dict or a valid JSON object string")
     return await channel.query(entity_type, filters=filters)
 
 

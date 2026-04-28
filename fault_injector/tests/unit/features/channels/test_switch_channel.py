@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import pytest
 
-from lib.channels.switch import SwitchChannel
+from lib.channels.switch import SwitchChannel, _repair_utf8_gbk_mojibake
 from fault_injector.tests.fixtures.switch_fixture import (
     MOCK_INTERFACES,
     SAMPLE_INTERFACE_XML,
@@ -46,6 +46,13 @@ class _MockNetconfClient:
 
 
 class TestSwitchChannelUnit:
+    def test_should_repair_common_cli_mojibake(self):
+        garbled = "<璁＄畻缃戜氦鎹㈡満>\nsysname 璁＄畻缃戜氦鎹㈡満"
+
+        repaired = _repair_utf8_gbk_mojibake(garbled)
+
+        assert repaired == "<计算网交换机>\nsysname 计算网交换机"
+
     def test_should_parse_interface_fields_when_xml_is_valid(self):
         channel = SwitchChannel(devices=SWITCH_DEVICES, dry_run=True)
         interfaces = channel._parse_interfaces(SAMPLE_INTERFACE_XML)
@@ -126,6 +133,19 @@ class TestSwitchChannelUnit:
     def test_should_return_true_when_test_connection_in_dry_run(self):
         channel = SwitchChannel(devices=SWITCH_DEVICES, dry_run=True)
         assert channel.test_connection("sw1") is True
+
+    def test_should_extract_cli_payload_with_repaired_chinese_text(self):
+        channel = SwitchChannel(devices=SWITCH_DEVICES, dry_run=True)
+        reply = (
+            '<?xml version="1.0" encoding="UTF-8"?>'
+            '<rpc-reply xmlns="urn:ietf:params:xml:ns:netconf:base:1.0">'
+            "<CLI><Configuration><![CDATA[<璁＄畻缃戜氦鎹㈡満>\nsysname 璁＄畻缃戜氦鎹㈡満\n]]>"
+            "</Configuration></CLI></rpc-reply>"
+        )
+
+        payload = channel._extract_cli_payload(reply, payload_tag="Configuration")
+
+        assert payload == "<计算网交换机>\nsysname 计算网交换机\n"
 
     @pytest.mark.asyncio
     async def test_should_return_failure_when_execute_impl_action_unknown(self):

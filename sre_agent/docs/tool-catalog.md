@@ -32,6 +32,7 @@
 | `k8s.top_oomkilled` | `read_only` | 否 | `k8s` | 统计 OOMKilled Pod 数量 |
 | `network.get_rdma_stats` | `read_only` | 否 | `ssh` | 查看 RDMA 和链路健康信息 |
 | `network.get_switch_port_counters` | `read_only` | 否 | `switch` | 查看交换机端口计数器和状态 |
+| `network.get_switch_qos_config` | `read_only` | 否 | `switch` | 查看交换机接口 QoS/CAR 配置并解析 `car cir` |
 | `check_nic_errors` | `read_only` | 否 | `ssh` | 查看指定网卡接口的错误、丢包和 CRC 计数 |
 | `ontology.query` | `read_only` | 否 | `ontology` | 查询实体或过滤实体 |
 | `ontology.path` | `read_only` | 否 | `ontology` | 查询实体间路径 |
@@ -54,6 +55,7 @@
 | `network.switch_port_enable` | `high` | 是 | `switch` | 启用交换机端口 |
 | `network.switch_port_disable` | `critical` | 是 | `switch` | 禁用交换机端口 |
 | `network.update_route` | `critical` | 是 | `switch` | 更新交换机路由或原始配置 |
+| `network.repair_switch_qos_config` | `critical` | 是 | `switch` | 修复交换机接口 QoS/CAR 限速配置 |
 | `network.set_bmc_vlan` | `critical` | 是 | `redfish` | 修改 BMC VLAN |
 | `network.set_bmc_mtu` | `critical` | 是 | `redfish` | 修改 BMC MTU |
 

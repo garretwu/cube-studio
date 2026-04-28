@@ -261,15 +261,16 @@ def _build_switch_payloads_from_unified(static_topology: dict[str, Any]) -> list
         if not switch_id or not port_id or not port_name:
             continue
         list_ref = ports_by_switch.setdefault(switch_id, [])
-        list_ref.append(
+        port_payload = {k: v for k, v in port.items() if k not in {"connected_node_id"}}
+        port_payload.update(
             {
                 "id": port_id,
                 "name": port_name,
                 "connected_to": str(port.get("connected_node_id", "")).strip() or None,
                 "status": str(port.get("status", "up")),
-                "speed_gbps": port.get("speed_gbps"),
             }
         )
+        list_ref.append(port_payload)
 
     payloads: list[dict[str, Any]] = []
     for switch in switch_items:
@@ -279,23 +280,28 @@ def _build_switch_payloads_from_unified(static_topology: dict[str, Any]) -> list
         switch_name = str(switch.get("name", "")).strip() or switch_id
         if not switch_id:
             continue
-        payloads.append(
+        switch_payload = {k: v for k, v in switch.items() if k not in {"id", "ports"}}
+        switch_payload.update(
             {
                 "id": switch_id,
                 "name": switch_name,
-                "type": switch.get("type"),
                 "status": str(switch.get("status", "online")),
                 "source": switch.get("source", "unified_static"),
                 "ports": ports_by_switch.get(switch_id, []),
             }
         )
+        payloads.append(switch_payload)
     return payloads
 
 
-def _build_lab_seed_records_from_unified(static_topology: dict[str, Any]) -> list[dict[str, Any]]:
+def _build_lab_seed_records_from_unified(
+    static_topology: dict[str, Any],
+    workers: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
     gpus = static_topology.get("gpus", [])
     bmc_endpoints = static_topology.get("bmc_endpoints", [])
     nodes = static_topology.get("nodes", [])
+    worker_ip_by_node: dict[str, str] = {}
     gpus_by_node: dict[str, list[str]] = {}
     for gpu in gpus:
         if not isinstance(gpu, dict):
@@ -315,6 +321,15 @@ def _build_lab_seed_records_from_unified(static_topology: dict[str, Any]) -> lis
         if node_id and ip:
             bmc_ip_by_node[node_id] = ip
 
+    for worker in workers or []:
+        if not isinstance(worker, dict):
+            continue
+        node_id = str(worker.get("name", "")).strip()
+        ssh_cfg = worker.get("ssh", {})
+        ssh_host = str(ssh_cfg.get("host", "")).strip() if isinstance(ssh_cfg, dict) else ""
+        if node_id and ssh_host:
+            worker_ip_by_node[node_id] = ssh_host
+
     records: list[dict[str, Any]] = []
     for node in nodes:
         if not isinstance(node, dict):
@@ -322,6 +337,25 @@ def _build_lab_seed_records_from_unified(static_topology: dict[str, Any]) -> lis
         node_id = str(node.get("id", "")).strip()
         if not node_id:
             continue
+        switch_ports = node.get("switch_ports", [])
+        normalized_switch_ports: list[dict[str, Any]] = []
+        if isinstance(switch_ports, list):
+            for switch_port in switch_ports:
+                if not isinstance(switch_port, dict):
+                    continue
+                switch_id = str(switch_port.get("switch_id", "")).strip()
+                port_id = str(switch_port.get("port_id", "")).strip()
+                nic = str(switch_port.get("nic", "")).strip()
+                if not switch_id and not port_id and not nic:
+                    continue
+                normalized_switch_ports.append(
+                    {
+                        "switch_id": switch_id or None,
+                        "port_id": port_id or None,
+                        "nic": nic or None,
+                    }
+                )
+        primary_switch_port = normalized_switch_ports[0] if normalized_switch_ports else {}
         records.append(
             {
                 "id": node_id,
@@ -329,9 +363,11 @@ def _build_lab_seed_records_from_unified(static_topology: dict[str, Any]) -> lis
                 "role": node.get("role", "unknown"),
                 "source": node.get("source", "unified_static"),
                 "status": str(node.get("status", "online")),
+                "ip": str(node.get("ip", "")).strip() or worker_ip_by_node.get(node_id, ""),
                 "bmc_ip": bmc_ip_by_node.get(node_id, ""),
-                "switch": node.get("switch_id"),
-                "port": node.get("port_id"),
+                "switch": primary_switch_port.get("switch_id"),
+                "port": primary_switch_port.get("port_id"),
+                "switch_ports": normalized_switch_ports,
                 "gpu_ids": sorted(gpus_by_node.get(node_id, [])),
             }
         )
@@ -424,8 +460,10 @@ def lab_seed_topology(records: list[dict[str, Any]]) -> tuple[list[OntologyNode]
                 properties={
                     "role": raw.get("role", "unknown"),
                     "source": raw.get("source", "lab_seed"),
+                    "ip": raw.get("ip"),
                     "switch": raw.get("switch"),
                     "port": raw.get("port"),
+                    "switch_ports": list(raw.get("switch_ports", [])),
                 },
                 status=str(raw.get("status", "online")),
                 updated_at=now,
@@ -490,10 +528,13 @@ async def discover_static_snapshot(
     if unified_path is not None:
         unified_payload = load_unified_inventory(unified_path)
         static_topology = unified_payload["static_topology"]
+        dynamic_discovery = unified_payload.get("dynamic_discovery", {})
+        node_providers = dynamic_discovery.get("node_providers", {}) if isinstance(dynamic_discovery, dict) else {}
+        workers = node_providers.get("workers", []) if isinstance(node_providers, dict) else []
         switch_nodes, switch_edges = await SwitchScanner(channel=None).scan(
             _build_switch_payloads_from_unified(static_topology)
         )
-        lab_nodes, lab_edges = lab_seed_topology(_build_lab_seed_records_from_unified(static_topology))
+        lab_nodes, lab_edges = lab_seed_topology(_build_lab_seed_records_from_unified(static_topology, workers))
         cluster_nodes = _cluster_nodes_from_unified(static_topology)
         relation_edges = _cluster_edges_from_unified(static_topology)
         nodes = _dedupe_nodes([*switch_nodes, *lab_nodes, *cluster_nodes])
@@ -781,6 +822,34 @@ def _resolve_bool(raw: Any, *, default: bool) -> bool:
     return default
 
 
+def _build_live_inventory_base_nodes(workers: list[dict[str, Any]]) -> list[OntologyNode]:
+    now = datetime.now(UTC)
+    nodes: list[OntologyNode] = []
+    for worker in workers:
+        name = str(worker.get("name", "")).strip()
+        if not name:
+            continue
+        ssh_cfg = worker.get("ssh")
+        ssh_host = str(ssh_cfg.get("host", "")).strip() if isinstance(ssh_cfg, dict) else ""
+        k8s_node_name = str(worker.get("k8s_node_name", "")).strip()
+        properties: dict[str, Any] = {"source": "live_inventory"}
+        if ssh_host:
+            properties["ip"] = ssh_host
+        if k8s_node_name:
+            properties["k8s_node_name"] = k8s_node_name
+        nodes.append(
+            OntologyNode(
+                id=name,
+                entity_type=EntityType.NODE,
+                name=name,
+                properties=properties,
+                status="online",
+                updated_at=now,
+            )
+        )
+    return nodes
+
+
 async def scan_live_sources(
     raw_config: dict[str, Any],
     *,
@@ -795,18 +864,7 @@ async def scan_live_sources(
     worker_names = [str(worker["name"]).strip() for worker in workers]
     representative_worker = worker_names[0]
     worker_node_set = set(worker_names)
-
-    base_nodes = [
-        OntologyNode(
-            id=name,
-            entity_type=EntityType.NODE,
-            name=name,
-            properties={"source": "live_inventory"},
-            status="online",
-            updated_at=datetime.now(UTC),
-        )
-        for name in worker_names
-    ]
+    base_nodes = _build_live_inventory_base_nodes(workers)
 
     bmc_payloads: list[dict[str, Any]] = []
     bmc_warnings: list[str] = []

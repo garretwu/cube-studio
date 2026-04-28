@@ -126,6 +126,24 @@ class _FakeSwitchChannel:
         self.calls.append({"action": "apply_raw_config", "switch": switch, "config_xml": config_xml})
         return _FakeChannelResult(output=f"config:{switch}")
 
+    def apply_cli_commands(self, switch: str, commands: list[str]) -> _FakeChannelResult:
+        self.calls.append({"action": "apply_cli_commands", "switch": switch, "commands": commands})
+        if any("display this" in command for command in commands):
+            return _FakeChannelResult(
+                output=(
+                    " qos car inbound any cir 5000000\n"
+                    " qos apply policy fault_a inbound\n"
+                    " qos trust dscp\n"
+                )
+            )
+        return _FakeChannelResult(output="\n".join(commands))
+
+    def run_cli_execution(self, switch: str, command: str) -> _FakeChannelResult:
+        self.calls.append({"action": "run_cli_execution", "switch": switch, "command": command})
+        if "current-configuration" in command:
+            return _FakeChannelResult(output=" qos car inbound any cir 5000000\n")
+        return _FakeChannelResult(output=f"{switch}:{command}")
+
 
 class _FailingSwitchChannel:
     def bringup_port(self, switch: str, interface: str) -> _FakeChannelResult:
@@ -136,6 +154,9 @@ class _FailingSwitchChannel:
 class _FakeOntologyChannel:
     async def query(self, entity_type: str, filters: dict[str, Any] | None = None) -> list[dict[str, Any]]:
         return [{"entity_type": entity_type, "filters": filters or {}}]
+
+    async def get_neighbors(self, entity_id: str, relation: str | None = None) -> list[dict[str, Any]]:
+        return [{"entity_id": entity_id, "relation": relation or "", "neighbor": "switch-1"}]
 
     async def get_path(self, from_id: str, to_id: str) -> list[str]:
         return [from_id, "mid", to_id]
@@ -267,6 +288,9 @@ class _IntegrationLokiBackend:
 class _IntegrationOntologyBackend:
     async def find_entities(self, entity_type: str, filters: dict[str, Any] | None = None) -> list[dict[str, Any]]:
         return [{"entity_type": entity_type, "filters": filters or {}, "id": "svc-1"}]
+
+    async def get_neighbors(self, entity_id: str, relation: str | None = None) -> list[dict[str, Any]]:
+        return [{"entity": {"id": "switch-1"}, "relation": {"relation": relation or "connects"}, "direction": "out"}]
 
     async def get_path(self, from_id: str, to_id: str) -> list[str]:
         return [from_id, "switch-1", to_id]
@@ -518,6 +542,30 @@ class TestToolRegistryUnit(unittest.IsolatedAsyncioTestCase):
         )
         self.assertFalse(missing_command.success)
         self.assertIn("parameter 'command' is required", missing_command.error)
+
+    async def test_unit_ontology_query_accepts_json_object_string_filters(self) -> None:
+        registry = build_default_registry()
+        context = ToolExecutionContext(channels={"ontology": _FakeOntologyChannel()})
+        result = await registry.execute(
+            "ontology.query",
+            {"entity_type": "node", "filters": '{"ip":"10.11.4.10"}'},
+            context,
+        )
+
+        self.assertTrue(result.success)
+        self.assertEqual(result.data[0]["filters"], {"ip": "10.11.4.10"})
+
+    async def test_unit_ontology_query_rejects_non_object_json_string_filters(self) -> None:
+        registry = build_default_registry()
+        context = ToolExecutionContext(channels={"ontology": _FakeOntologyChannel()})
+        result = await registry.execute(
+            "ontology.query",
+            {"entity_type": "node", "filters": '[{"field":"ip","operator":"eq","value":"10.11.4.10"}]'},
+            context,
+        )
+
+        self.assertFalse(result.success)
+        self.assertIn("parameter 'filters' must be an object/dict or a valid JSON object string", result.error)
 
     async def test_unit_file_read_returns_full_content(self) -> None:
         registry = build_default_registry()
@@ -861,12 +909,158 @@ class TestToolRegistryUnit(unittest.IsolatedAsyncioTestCase):
             await registry.execute("gpu.get_metrics", {"node": "gpu-1-1"}, context),
             await registry.execute("kill_process", {"node": "gpu-1-1", "pid": 999}, context),
             await registry.execute("network.get_switch_port_counters", {"switch": "sw-1", "interface": "GE1/0/1"}, context),
+            await registry.execute("network.get_switch_qos_config", {"switch": "sw-1", "interface": "GE1/0/1"}, context),
             await registry.execute("ontology.path", {"from_id": "a", "to_id": "b"}, context),
             await registry.execute("memory.search_patterns", {"query": "gpu timeout"}, context),
             await registry.execute("remediation.execute_plan", {"plan": {"id": "p-1"}}, context),
             await registry.execute("network.switch_port_enable", {"switch": "sw-1", "interface": "GE1/0/1"}, context),
+            await registry.execute("network.repair_switch_qos_config", {"switch": "sw-1", "interface": "GE1/0/1"}, context),
         ]
         self.assertTrue(all(item.success for item in results))
+
+    async def test_unit_switch_qos_read_extracts_abnormal_config_lines(self) -> None:
+        registry = build_default_registry()
+        switch = _FakeSwitchChannel()
+        context = ToolExecutionContext(channels={"switch": switch})
+
+        result = await registry.execute(
+            "network.get_switch_qos_config",
+            {"switch": "sw-1", "interface": "GE1/0/1"},
+            context,
+        )
+
+        self.assertTrue(result.success)
+        self.assertEqual(result.data["car_cir"][0]["cir"], 5000000)
+        self.assertEqual(result.data["car_cir"][0]["direction"], "inbound")
+        self.assertEqual(
+            result.data["applied_policies"][0],
+            {"name": "fault_a", "direction": "inbound"},
+        )
+        self.assertTrue(result.data["trust_dscp"])
+        self.assertEqual(
+            result.data["abnormal_config_lines"],
+            [
+                "qos car inbound any cir 5000000",
+                "qos apply policy fault_a inbound",
+            ],
+        )
+        self.assertEqual(
+            switch.calls[-1],
+            {
+                "action": "apply_cli_commands",
+                "switch": "sw-1",
+                "commands": [
+                    "interface GE1/0/1",
+                    "display this",
+                ],
+            },
+        )
+
+    async def test_unit_switch_qos_read_marks_missing_trust_dscp(self) -> None:
+        registry = build_default_registry()
+        switch = _FakeSwitchChannel()
+        switch.apply_cli_commands = lambda _switch, commands: _FakeChannelResult(  # type: ignore[method-assign]
+            output="\n".join(
+                [
+                    commands[0],
+                    "qos apply policy fault_a inbound",
+                    "qos gts queue 6 cir 100000000 cbs 16000000",
+                ]
+            )
+        )
+        context = ToolExecutionContext(channels={"switch": switch})
+
+        result = await registry.execute(
+            "network.get_switch_qos_config",
+            {"switch": "sw-200g", "interface": "200GE1/0/1"},
+            context,
+        )
+
+        self.assertTrue(result.success)
+        self.assertEqual(result.data["switch"], "sw-200g")
+        self.assertEqual(result.data["interface"], "200GE1/0/1")
+        self.assertFalse(result.data["trust_dscp"])
+        self.assertEqual(result.data["car_cir"], [])
+        self.assertEqual(
+            result.data["applied_policies"][0],
+            {"name": "fault_a", "direction": "inbound"},
+        )
+        self.assertEqual(
+            result.data["qos_gts"][0]["queue"],
+            "6",
+        )
+        self.assertIn("MISSING: qos trust dscp", result.data["abnormal_config_lines"])
+
+    async def test_unit_switch_qos_repair_defaults_to_unapply_current_policy(self) -> None:
+        registry = build_default_registry()
+        switch = _FakeSwitchChannel()
+        context = ToolExecutionContext(channels={"switch": switch}, write_approved=True)
+
+        result = await registry.execute(
+            "network.repair_switch_qos_config",
+            {"switch": "sw-1", "interface": "GE1/0/1"},
+            context,
+        )
+
+        self.assertTrue(result.success)
+        self.assertEqual(
+            switch.calls[-1],
+            {
+                "action": "apply_cli_commands",
+                "switch": "sw-1",
+                "commands": [
+                    "interface GE1/0/1",
+                    "undo qos apply policy fault_a inbound",
+                    "qos trust dscp",
+                ],
+            },
+        )
+
+    async def test_unit_switch_qos_repair_unapplies_current_policy_without_hardcoded_name(self) -> None:
+        registry = build_default_registry()
+        switch = _FakeSwitchChannel()
+        context = ToolExecutionContext(channels={"switch": switch}, write_approved=True)
+
+        result = await registry.execute(
+            "network.repair_switch_qos_config",
+            {"switch": "sw-1", "interface": "GE1/0/1", "direction": "inbound"},
+            context,
+        )
+
+        self.assertTrue(result.success)
+        self.assertEqual(
+            switch.calls[-1],
+            {
+                "action": "apply_cli_commands",
+                "switch": "sw-1",
+                "commands": [
+                    "interface GE1/0/1",
+                    "undo qos apply policy fault_a inbound",
+                    "qos trust dscp",
+                ],
+            },
+        )
+
+    async def test_unit_switch_qos_repair_unapply_policy_errors_when_no_binding_matches(self) -> None:
+        class _NoPolicySwitchChannel(_FakeSwitchChannel):
+            def apply_cli_commands(self, switch: str, commands: list[str]) -> _FakeChannelResult:
+                self.calls.append({"action": "apply_cli_commands", "switch": switch, "commands": commands})
+                if any("display this" in command for command in commands):
+                    return _FakeChannelResult(output=" interface GE1/0/1\n")
+                return _FakeChannelResult(output="\n".join(commands))
+
+        registry = build_default_registry()
+        switch = _NoPolicySwitchChannel()
+        context = ToolExecutionContext(channels={"switch": switch}, write_approved=True)
+
+        result = await registry.execute(
+            "network.repair_switch_qos_config",
+            {"switch": "sw-1", "interface": "GE1/0/1", "direction": "inbound"},
+            context,
+        )
+
+        self.assertFalse(result.success)
+        self.assertIn("no applied qos policy found", result.error)
 
 
 class TestToolRegistryContract(unittest.IsolatedAsyncioTestCase):
@@ -1023,7 +1217,6 @@ class TestToolRegistryIntegration(unittest.IsolatedAsyncioTestCase):
         )
         self.assertTrue(path_result.success)
         self.assertEqual(path_result.data, ["node-a", "switch-1", "node-b"])
-
 
 class TestToolRegistryE2E(unittest.IsolatedAsyncioTestCase):
     async def test_e2e_mocked_incident_workflow(self) -> None:
