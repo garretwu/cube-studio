@@ -9,6 +9,7 @@ import {
 import type {
   Alert,
   ChatMessage,
+  DiagnosisResult,
   DiagnosisLocalAuditRecord,
   DiagnosisSession,
   DiagnosisStartedData,
@@ -616,6 +617,48 @@ function diagnosisResultHasRecommendedPlan(
   return rankedCandidates.some((candidate) => Boolean(candidate?.recommended_fix));
 }
 
+function buildDiagnosisResultFromCandidatesPayload(
+  payload: Record<string, unknown>,
+  previous: DiagnosisSession["diagnosis_result"] | null | undefined,
+): NonNullable<DiagnosisSession["diagnosis_result"]> {
+  const rankedCandidates = Array.isArray(payload.ranked_candidates) ? (payload.ranked_candidates as DiagnosisResult["ranked_candidates"]) : [];
+  const hypotheses = Array.isArray(payload.hypotheses) ? (payload.hypotheses as DiagnosisResult["hypotheses"]) : [];
+  const confidence = typeof payload.confidence === "number" ? payload.confidence : (previous?.confidence ?? 0);
+  const diagnosisCertainty =
+    payload.diagnosis_certainty === "confirmed" ||
+    payload.diagnosis_certainty === "probable" ||
+    payload.diagnosis_certainty === "ambiguous"
+      ? payload.diagnosis_certainty
+      : (previous?.diagnosis_certainty ?? "ambiguous");
+  const triagePriority =
+    payload.triage_priority === "P0" ||
+    payload.triage_priority === "P1" ||
+    payload.triage_priority === "P2" ||
+    payload.triage_priority === "P3"
+      ? payload.triage_priority
+      : (previous?.triage_priority ?? "P2");
+  const affectedServices = Array.isArray(payload.affected_services)
+    ? payload.affected_services.filter((item): item is string => typeof item === "string")
+    : (previous?.affected_services ?? []);
+  const impactSummary = typeof payload.impact_summary === "string" ? payload.impact_summary : (previous?.impact_summary ?? "");
+
+  return {
+    root_cause: previous?.root_cause ?? "",
+    root_cause_layer: previous?.root_cause_layer ?? "platform",
+    root_cause_entities: previous?.root_cause_entities ?? [],
+    confidence,
+    next_action: previous?.next_action ?? null,
+    hypotheses,
+    propagation_chain: previous?.propagation_chain ?? [],
+    impact_summary: impactSummary,
+    affected_services: affectedServices,
+    triage_priority: triagePriority,
+    ranked_candidates: rankedCandidates,
+    diagnosis_certainty: diagnosisCertainty,
+    recommended_fix: previous?.recommended_fix ?? null,
+  };
+}
+
 function getEventDataEventId(event: { data?: Record<string, unknown> }): string | undefined {
   const data = event.data;
   if (!isRecord(data)) {
@@ -768,7 +811,12 @@ function mergeEventMessages(
 }
 
 function shouldTriggerSessionBackfill(event: WSEvent): boolean {
-  if (event.type === "diagnosis_result" || event.type === "approval_required" || event.type === "plan_revised") {
+  if (
+    event.type === "diagnosis_candidates_ready" ||
+    event.type === "diagnosis_result" ||
+    event.type === "approval_required" ||
+    event.type === "plan_revised"
+  ) {
     return true;
   }
   if (event.type !== "remediation_progress") {
@@ -2086,6 +2134,40 @@ export const useDiagnosisStore = create<DiagnosisState>((set, get) => ({
           roundSequenceCounter: nextRoundSequenceCounter,
         };
       }
+      if (event.type === "diagnosis_candidates_ready") {
+        if (nextSession) {
+          const payload = isRecord(event.data) ? event.data : {};
+          nextSession = {
+            ...nextSession,
+            diagnosis_result: buildDiagnosisResultFromCandidatesPayload(payload, nextSession.diagnosis_result),
+            status: nextSession.status === "diagnosing" ? "diagnosed" : nextSession.status,
+          };
+        }
+        const nextEvents = mergeSessionEvents(state.events, [event as SessionEvent]);
+        const approvalState = deriveApprovalState(nextSession, nextEvents);
+        return {
+          session: nextSession,
+          activeSessionId: resolvedSessionId,
+          events: nextEvents,
+          localAuditRecords: state.localAuditRecords,
+          ...approvalState,
+          approvalOverlayOpen:
+            nextSession?.status === "approval_required" ? state.approvalOverlayOpen : false,
+          effectiveReviseInstruction: state.effectiveReviseInstruction,
+          messages: mergeEventMessages(state.messages, [event], resolvedSessionId),
+          alertSnapshot: nextAlertSnapshot,
+          topologyContext: nextTopologyContext,
+          liveFinalAnswer: nextLiveFinalAnswer,
+          ...toStreamingFields(nextLiveThinking, nextActiveStreamingTools),
+          error: state.error,
+          streamingPhase: nextStreamingPhase,
+          roundSequenceCounter: nextRoundSequenceCounter,
+          traceStatus:
+            nextEntries.length > 0
+              ? "ready"
+              : state.traceStatus,
+        };
+      }
       if (event.type === "approval_required" && nextSession) {
         nextSession = {
           ...nextSession,
@@ -2297,6 +2379,7 @@ export const useDiagnosisStore = create<DiagnosisState>((set, get) => ({
                 "node_completed",
                 "tool_started",
                 "tool_completed",
+                "diagnosis_candidates_ready",
                 "diagnosis_result",
                 "approval_required",
                 "plan_revised",

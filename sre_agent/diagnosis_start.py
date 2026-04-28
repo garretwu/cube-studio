@@ -10,6 +10,7 @@ from typing import Any
 
 from sre_agent.models.alert import Alert
 from sre_agent.models.diagnosis import DiagnosisSession
+from sre_agent.models.diagnosis_event_payloads import build_diagnosis_candidates_ready_payload
 from sre_agent.models.events import EventType
 from sre_agent.models.remediation import RemediationPlan
 
@@ -93,15 +94,26 @@ class DiagnosisStartCoordinator:
             if live_event_count == 0:
                 await self._replay_trace_and_diagnosis_events(session=completed)
                 if completed.diagnosis_result is not None:
+                    live_event_types.add(EventType.DIAGNOSIS_CANDIDATES_READY.value)
+                if completed.diagnosis_result is not None:
                     live_event_types.add(EventType.DIAGNOSIS_RESULT.value)
-            elif completed.diagnosis_result is not None and EventType.DIAGNOSIS_RESULT.value not in live_event_types:
-                await self._trace_publisher.publish(
-                    {
-                        "type": EventType.DIAGNOSIS_RESULT.value,
-                        "session_id": completed.session_id,
-                        "data": completed.diagnosis_result.model_dump(mode="json"),
-                    }
-                )
+            elif completed.diagnosis_result is not None:
+                if EventType.DIAGNOSIS_CANDIDATES_READY.value not in live_event_types:
+                    await self._trace_publisher.publish(
+                        {
+                            "type": EventType.DIAGNOSIS_CANDIDATES_READY.value,
+                            "session_id": completed.session_id,
+                            "data": build_diagnosis_candidates_ready_payload(completed.diagnosis_result),
+                        }
+                    )
+                if EventType.DIAGNOSIS_RESULT.value not in live_event_types:
+                    await self._trace_publisher.publish(
+                        {
+                            "type": EventType.DIAGNOSIS_RESULT.value,
+                            "session_id": completed.session_id,
+                            "data": completed.diagnosis_result.model_dump(mode="json"),
+                        }
+                    )
 
             plan = self._extract_recommended_fix(completed)
             if plan is not None:
@@ -175,6 +187,13 @@ class DiagnosisStartCoordinator:
                     }
                 )
         if session.diagnosis_result is not None:
+            await self._trace_publisher.publish(
+                {
+                    "type": EventType.DIAGNOSIS_CANDIDATES_READY.value,
+                    "session_id": session.session_id,
+                    "data": build_diagnosis_candidates_ready_payload(session.diagnosis_result),
+                }
+            )
             await self._trace_publisher.publish(
                 {
                     "type": EventType.DIAGNOSIS_RESULT.value,
