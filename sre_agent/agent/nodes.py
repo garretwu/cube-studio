@@ -894,6 +894,7 @@ async def reason_node(
         plan_completion_response: AIMessage | None = None
         plan_completion_raw_response_text = ""
         plan_completion_error = ""
+        completion_raw_diagnosis: dict[str, Any] | None = None
         completion_raw_plan: dict[str, Any] | None = None
 
         if llm_supports_message_invocation:
@@ -903,6 +904,7 @@ async def reason_node(
                     plan_completion_response = retry_response
                     plan_completion_raw_response_text = _extract_text(retry_response.content)
                     completion_parsed = _parse_reasoning_output(plan_completion_raw_response_text)
+                    completion_raw_diagnosis = completion_parsed.diagnosis
                     completion_raw_plan = completion_parsed.remediation_plan
                 else:
                     plan_completion_raw_response_text = _extract_text(getattr(retry_response, "content", retry_response))
@@ -944,6 +946,10 @@ async def reason_node(
                 "tool_calls": [],
             }
         )
+
+        if completion_raw_diagnosis is not None:
+            diagnosis_payload = _normalize_diagnosis_payload(completion_raw_diagnosis)
+            diagnosis = DiagnosisResult.model_validate(diagnosis_payload)
 
         if completion_raw_plan is not None:
             remediation_plan = _normalize_remediation_plan_payload(
@@ -3847,7 +3853,7 @@ def _build_plan_completion_messages(
         f"tool_evidence={_json_line(tool_runs[-5:]) if tool_runs else 'none'}",
         "",
         "Rules:",
-        "- Keep diagnosis unchanged; only complete remediation_plan.",
+        "- Prefer keeping diagnosis unchanged, but if latest tool_evidence corrects stale wording, update diagnosis to match the evidence.",
         "- Prefer one conservative proposal-only step first.",
         "- Use a real write-tool name from schema and include all required params.",
         "- If no safe executable proposal can be formed, set remediation_plan to null.",
@@ -3857,7 +3863,6 @@ def _build_plan_completion_messages(
         SystemMessage(content=system_prompt),
         HumanMessage(content="\n".join(prompt_lines)),
     ]
-
 
 def _build_tc_fallback_diagnosis_payload(
     *,
