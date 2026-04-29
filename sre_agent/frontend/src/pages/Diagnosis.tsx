@@ -41,7 +41,6 @@ type BadgeTone =
   | "danger"
   | "info";
 const DEMO_TEXT_SPEED_MS = 40;
-const DEMO_THINKING_COLLAPSE_DELAY_MS = 800;
 const DEMO_EVENT_SLOWDOWN = 4.5;
 const DEMO_MIN_TOOL_LOADING_DWELL_MS = 3500;
 const DEMO_APPROVAL_CARD_DELAY_MS = 320;
@@ -1011,7 +1010,7 @@ function ThinkingBlock({
   onStreamComplete?: () => void;
 }) {
   const isThinking = item.status === "thinking";
-  const [isExpanded, setIsExpanded] = useState(true);
+  const [isExpanded, setIsExpanded] = useState(isThinking);
 
   useEffect(() => {
     if (isThinking) {
@@ -1019,11 +1018,7 @@ function ThinkingBlock({
       return;
     }
 
-    const timer = window.setTimeout(
-      () => setIsExpanded(false),
-      DEMO_THINKING_COLLAPSE_DELAY_MS,
-    );
-    return () => window.clearTimeout(timer);
+    setIsExpanded(false);
   }, [isThinking, item.id]);
 
   return (

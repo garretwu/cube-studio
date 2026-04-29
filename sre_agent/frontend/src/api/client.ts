@@ -234,6 +234,65 @@ function unwrapPayload<T>(payload: SREApiEnvelope<T> | T): T {
   return payload.data;
 }
 
+function sanitizePlanKeySegment(value: unknown): string {
+  return String(value ?? "")
+    .trim()
+    .replace(/[^a-zA-Z0-9._:-]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
+function buildRootCausePlanKey(index: number, rootCauseId: unknown): string {
+  const cleaned = sanitizePlanKeySegment(rootCauseId);
+  return cleaned ? `rc:${cleaned}` : `rc:${index + 1}`;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function getEventPlanKey(events: SessionEvent[]): string | undefined {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const data = isRecord(events[index]?.data) ? events[index].data : {};
+    const explicit = typeof data.plan_key === "string" ? data.plan_key.trim() : "";
+    if (explicit) {
+      return explicit;
+    }
+    const planKeys = Array.isArray(data.plan_keys)
+      ? data.plan_keys
+          .map((item) => (typeof item === "string" ? item.trim() : ""))
+          .filter(Boolean)
+      : [];
+    if (planKeys.length > 0) {
+      return planKeys[0];
+    }
+  }
+  return undefined;
+}
+
+function resolveRemediationPlan(session: DiagnosisSession, events: SessionEvent[]): RemediationPlan | undefined {
+  const result = session.diagnosis_result;
+  if (!result) {
+    return undefined;
+  }
+
+  const rootCauses = Array.isArray(result.root_cause) ? result.root_cause : [];
+  const planKey = getEventPlanKey(events);
+  if (planKey) {
+    for (let index = 0; index < rootCauses.length; index += 1) {
+      const rootCause = rootCauses[index];
+      if (buildRootCausePlanKey(index, rootCause?.id) === planKey && rootCause?.recommended_fix) {
+        return rootCause.recommended_fix;
+      }
+    }
+  }
+
+  if (result.recommended_fix) {
+    return result.recommended_fix;
+  }
+
+  return rootCauses.find((item) => item?.recommended_fix)?.recommended_fix ?? undefined;
+}
+
 function normalizeSessionSummaryList(payload: unknown): SessionSummary[] {
   if (Array.isArray(payload)) {
     return payload.filter((item): item is SessionSummary => !!item && typeof item === "object");
@@ -1110,7 +1169,7 @@ export const apiClient = {
         throw new Error("session not found");
       }
       const events = await apiClient.getSessionEvents(resolved);
-      const currentPlan = session.diagnosis_result?.recommended_fix;
+      const currentPlan = resolveRemediationPlan(session, events);
       if (!currentPlan) {
         throw new Error("remediation plan not found");
       }
@@ -1150,6 +1209,25 @@ export const apiClient = {
         const data = event.data as Record<string, unknown> | undefined;
         if (!data) continue;
         const stage = String(data.stage ?? "").trim();
+        const normalizedStage = stage.toLowerCase();
+        const explicitProgress = Number(data.progress);
+        const hasExplicitProgress = Number.isFinite(explicitProgress);
+        if (["canary_started", "canary_progress", "canary_succeeded", "canary_completed"].includes(normalizedStage)) {
+          batchStatusMap.set("金丝雀", {
+            batch: "金丝雀",
+            progress: hasExplicitProgress ? explicitProgress : normalizedStage.includes("succeeded") || normalizedStage.includes("completed") ? 100 : 10,
+            status: stage,
+          });
+          continue;
+        }
+        if (["full_rollout_started", "full_rollout_progress", "full_rollout_succeeded", "full_rollout_completed"].includes(normalizedStage)) {
+          batchStatusMap.set("全量", {
+            batch: "全量",
+            progress: hasExplicitProgress ? explicitProgress : normalizedStage.includes("succeeded") || normalizedStage.includes("completed") ? 100 : 10,
+            status: stage,
+          });
+          continue;
+        }
         const batch = String(data.batch ?? "").trim();
         if (!batch) continue;
         if (stage === "canary_batch_started") {

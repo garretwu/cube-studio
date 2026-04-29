@@ -415,10 +415,18 @@ export type LoopResult = {
   re_diagnosis_context?: Record<string, unknown> | null;
 };
 
+export type VerificationCondition = {
+  field: string;
+  operator: string;
+  value: string | number;
+};
+
 export type VerificationConfig = {
   method: "promql" | "tool_call" | "wait";
   query?: string | null;
   tool?: string | null;
+  tool_params?: Record<string, unknown> | null;
+  condition?: VerificationCondition | null;
   wait_seconds?: number;
 };
 

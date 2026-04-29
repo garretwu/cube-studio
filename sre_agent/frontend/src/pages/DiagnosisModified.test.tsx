@@ -899,7 +899,7 @@ describe("DiagnosisModifiedPage sequential playback", () => {
     expect(screen.queryByText("Agent reasoning in progress")).not.toBeInTheDocument();
   });
 
-  it("shows only the first 200 chars for completed long thinking content and supports expand", async () => {
+  it("shows only the first 200 chars for completed long thinking content by default and supports expand", async () => {
     const longContent = `${"A".repeat(200)}TAIL_SEGMENT`;
     const collapsedPreview = `${"A".repeat(200)}...`;
     mockedBuildDemoScenario.mockReturnValue({
@@ -939,13 +939,13 @@ describe("DiagnosisModifiedPage sequential playback", () => {
     fireEvent.click(screen.getByRole("button", { name: /Start Demo/i }));
     await flushPendingTimers();
 
-    expect(screen.getByText("收起推理")).toBeInTheDocument();
-    expect(screen.queryByText(collapsedPreview)).not.toBeInTheDocument();
-    expect(screen.getByText(longContent)).toBeInTheDocument();
-
-    fireEvent.click(screen.getByRole("button", { name: "收起推理" }));
     expect(screen.getByText("展开全部推理")).toBeInTheDocument();
     expect(screen.getByText(collapsedPreview)).toBeInTheDocument();
+    expect(screen.queryByText(longContent)).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "展开全部推理" }));
+    expect(screen.getByText("收起推理")).toBeInTheDocument();
+    expect(screen.getByText(longContent)).toBeInTheDocument();
   });
 
   it("renders completed short thinking content collapsed with a details toggle", async () => {
@@ -987,8 +987,8 @@ describe("DiagnosisModifiedPage sequential playback", () => {
     await flushPendingTimers();
 
     expect(screen.getByText("short reasoning content")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "收起推理" })).toBeInTheDocument();
-    expect(screen.queryByText("展开全部推理")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "展开全部推理" })).toBeInTheDocument();
+    expect(screen.queryByText("收起推理")).not.toBeInTheDocument();
   });
 
   it("blocks later timeline items while a demo tool is still loading", async () => {
@@ -2204,7 +2204,7 @@ describe("DiagnosisModifiedPage split workspace", () => {
     expect(screen.getByText("新一轮推理中内容")).toBeInTheDocument();
   });
 
-  it("renders completed thinking expanded by default and collapses on demand", () => {
+  it("renders completed thinking collapsed by default and expands on demand", () => {
     const longThinking = "第一段推理。".repeat(80);
     mockedBuildLiveView.mockReturnValue({
       timeline: [
@@ -2235,12 +2235,13 @@ describe("DiagnosisModifiedPage split workspace", () => {
 
     renderLivePage("/diagnosis-modified/sess-live-thinking-collapsed");
 
-    const collapseButton = screen.getByRole("button", { name: "收起推理" });
-    expect(collapseButton).toBeInTheDocument();
-    expect(screen.getByText(longThinking)).toBeInTheDocument();
+    const expandButton = screen.getByRole("button", { name: "展开全部推理" });
+    expect(expandButton).toBeInTheDocument();
+    expect(screen.queryByText(longThinking)).not.toBeInTheDocument();
 
-    fireEvent.click(collapseButton);
-    expect(screen.getByRole("button", { name: "展开全部推理" })).toBeInTheDocument();
+    fireEvent.click(expandButton);
+    expect(screen.getByRole("button", { name: "收起推理" })).toBeInTheDocument();
+    expect(screen.getByText(longThinking)).toBeInTheDocument();
   });
 
   it("uses smart auto-follow and does not force-scroll when user has scrolled away from bottom", async () => {
