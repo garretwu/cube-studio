@@ -253,6 +253,7 @@ export type BuildDiagnosisModifiedReportViewInput = {
   plan?: DiagnosisModifiedPlanView;
   events?: SessionEvent[];
   localAuditRecords?: DiagnosisLocalAuditRecord[];
+  allowRootCauseReveal?: boolean;
 };
 
 type UnifiedRecord = {
@@ -1722,6 +1723,14 @@ function hasRootCauseConclusion(input: BuildDiagnosisModifiedReportViewInput) {
   return String(rootCause ?? "").trim().length > 0;
 }
 
+function hasFinalDiagnosisResultEvent(input: BuildDiagnosisModifiedReportViewInput) {
+  const events = input.events ?? [];
+  if (events.length === 0) {
+    return true;
+  }
+  return events.some((event) => String(event.type ?? "").trim().toLowerCase() === "diagnosis_result");
+}
+
 function isDefaultReportPreview(input: BuildDiagnosisModifiedReportViewInput) {
   const normalizedStatus = String(input.session?.status ?? "").trim().toLowerCase();
   const result = getResult(input);
@@ -2312,7 +2321,17 @@ export function buildDiagnosisModifiedReportView(
   const confidence = buildConfidence(input);
   const remediation = buildRemediation(input);
   const conclusion = buildConclusion(input);
-  const rootCause = buildRootCauseView(input, conclusion, remediation);
+  const rawRootCause = buildRootCauseView(input, conclusion, remediation);
+  const finalDiagnosisReady = hasFinalDiagnosisResultEvent(input);
+  const revealGateOpen = input.allowRootCauseReveal ?? true;
+  const rootCause =
+    rawRootCause.state === "ready" && (!finalDiagnosisReady || !revealGateOpen)
+      ? {
+          state: "loading" as const,
+          summary: "Root cause convergence is in progress.",
+          items: [],
+        }
+      : rawRootCause;
   const rootCauseReady = rootCause.state === "ready";
   const progress = buildProgress({
     context,

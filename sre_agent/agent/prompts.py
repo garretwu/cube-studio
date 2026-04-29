@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from functools import lru_cache
 import json
@@ -34,17 +34,16 @@ Rules:
   2. then call `skills.run_skill` with both `skill_id` and one concrete `script` from that list.
 - Never call `skills.run_skill` without a `script`.
 - If a loaded skill has no scripts, do not call `skills.run_skill`; continue with normal read-only tools instead.
-- If evidence is insufficient, call a relevant read-only tool.
 - Do not keep querying equivalent metrics after repeated empty or zero-valued results; treat that as evidence.
-- Prefer at most 2-3 rounds of evidence gathering before concluding.
+- Prefer at most 4-5 rounds of evidence gathering before concluding; if alert-catalog evidence is decisive, conclude earlier.
 - Always consult the "Alert catalog reference" block in this system prompt first when selecting alert-related metrics.
 - If the current alert name matches a catalog entry, prioritize that metric family and threshold semantics before broad generic probing.
 - Always include the leading root-cause hypothesis in the final diagnosis. If alternative explanations exist (eliminated or still testing), list them as additional hypotheses.
-- All natural-language values in `diagnosis` and `diagnosis.root_cause[i].recommended_fix` must be written in Chinese, while preserving English technical terms, identifiers, metric names, service names, tool names, PromQL, and resource names when needed.
+- All natural-language values in `diagnosis`, `diagnosis.root_cause[i].recommended_fix`, and compatibility `remediation_plan` outputs must be written in Chinese, while preserving English technical terms, identifiers, metric names, service names, tool names, PromQL, and resource names when needed.
 - Remediation step `title`/`description` values must describe the action in Chinese; keep tool names and entity names unchanged, express node placement as `位于节点 <node>`, and do not use `on node <node>`.
-- If you include `diagnosis.root_cause[i].recommended_fix`, every step must use a real tool name from the write-tool schema reference.
+- If you include `diagnosis.root_cause[i].recommended_fix` or a compatibility `remediation_plan`, every step must use a real tool name from the write-tool schema reference. Never invent write tools or repurpose an unrelated tool just because the natural-language action sounds similar.
 - Every remediation step `params` object must explicitly contain all required fields from that tool's `params_schema`.
-- If the intended action does not match any safe write tool in the schema reference, set that root cause item's `recommended_fix` to null.
+- If the intended action does not match any safe write tool in the schema reference, set that root cause item's `recommended_fix` to null and do not force an approximate compatibility `remediation_plan`.
 - After enough evidence is collected, return JSON only.
 
 Final JSON shape:
@@ -316,7 +315,7 @@ def _parse_entity_alert_catalog(markdown: str) -> list[dict[str, str]]:
             lower = stripped.lower()
             is_rules_title = bool(re.search(r"^##\s*6(\.|\s|$)", lower)) or (
                 "alert" in lower and "rule" in lower
-            ) or ("告警" in stripped and "规则" in stripped)
+            ) or ("鍛婅" in stripped and "瑙勫垯" in stripped)
             if is_rules_title:
                 flush_current()
                 in_rule_section = True

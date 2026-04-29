@@ -121,6 +121,22 @@ class H3CNetconfClient:
         return str(self._manager.dispatch(node))
 
 
+def _repair_utf8_gbk_mojibake(text: str) -> str:
+    """Repair common H3C CLI mojibake where UTF-8 text was decoded as GBK/GB18030."""
+    value = str(text or "")
+    if not value:
+        return value
+    try:
+        repaired = value.encode("gb18030").decode("utf-8")
+    except UnicodeError:
+        return value
+    try:
+        roundtrip = repaired.encode("utf-8").decode("gb18030")
+    except UnicodeError:
+        return value
+    return repaired if roundtrip == value else value
+
+
 class SwitchChannel(BaseChannel):
     """Switch channel backed by H3C NETCONF."""
 
@@ -349,7 +365,10 @@ class SwitchChannel(BaseChannel):
                 return ChannelResult(success=False, error=output.strip())
             return ChannelResult(success=True, output=output)
         except Exception as exc:
-            return ChannelResult(success=False, error=f"NETCONF CLI dispatch failed: {exc}")
+            return ChannelResult(
+                success=False,
+                error=f"NETCONF CLI dispatch failed: {_repair_utf8_gbk_mojibake(str(exc))}",
+            )
 
     def run_cli_execution(self, switch: str, command: str) -> ChannelResult:
         """Run show/exec CLI command via H3C private-rpc CLI/Execution."""
@@ -371,7 +390,10 @@ class SwitchChannel(BaseChannel):
                 return ChannelResult(success=False, error=output.strip())
             return ChannelResult(success=True, output=output)
         except Exception as exc:
-            return ChannelResult(success=False, error=f"NETCONF CLI dispatch failed: {exc}")
+            return ChannelResult(
+                success=False,
+                error=f"NETCONF CLI dispatch failed: {_repair_utf8_gbk_mojibake(str(exc))}",
+            )
 
     @staticmethod
     def _extract_cli_payload(reply_xml: str, payload_tag: str) -> str:
@@ -379,7 +401,7 @@ class SwitchChannel(BaseChannel):
             root = ET.fromstring(reply_xml)
             for elem in root.iter():
                 if elem.tag.split("}")[-1] == payload_tag:
-                    return (elem.text or "")
+                    return _repair_utf8_gbk_mojibake(elem.text or "")
         except ET.ParseError:
             return ""
         return ""
@@ -603,6 +625,8 @@ class SwitchChannel(BaseChannel):
             return self.apply_raw_config(params["switch"], params["config_xml"])
         if action == "apply_cli_commands":
             return self.apply_cli_commands(params["switch"], params["commands"])
+        if action == "run_cli_execution":
+            return self.run_cli_execution(params["switch"], params["command"])
         return ChannelResult(success=False, error=f"Unknown action: {action}")
 
     def _check_safety(self, action: str, params: dict[str, Any]) -> None:

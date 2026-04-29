@@ -9,6 +9,7 @@ import {
 import type {
   Alert,
   ChatMessage,
+  DiagnosisResult,
   DiagnosisLocalAuditRecord,
   DiagnosisSession,
   DiagnosisStartedData,
@@ -629,14 +630,129 @@ function diagnosisResultHasRecommendedPlan(
    * - input: optional diagnosis result payload;
    * - output: boolean.
    * Compatibility rationale:
-   * - checks top-level and primary root-cause plan only.
+   * - checks the currently effective default/primary plan; later approval events can target another
+   *   root-cause plan via explicit plan_key.
    * Why:
-   * - aligns with current first-root-cause-only remediation policy.
+   * - the store only needs a boolean gate here, while plan_key-specific lookup happens separately.
    */
   if (!diagnosisResult) {
     return false;
   }
   return Boolean(getPrimaryPlan(diagnosisResult) ?? getPrimaryRootCause(diagnosisResult)?.recommended_fix);
+}
+
+function buildRootCauseFromRankedCandidate(
+  candidate: Record<string, unknown>,
+  index: number,
+  fallback: Pick<DiagnosisResult, "confidence" | "diagnosis_certainty" | "impact_summary">,
+): DiagnosisResult["root_cause"][number] {
+  const title = normalizeNonEmptyString(candidate.root_cause) ?? normalizeNonEmptyString(candidate.title) ?? `候选根因 ${index + 1}`;
+  const layer = candidate.root_cause_layer === "hardware" ||
+    candidate.root_cause_layer === "network" ||
+    candidate.root_cause_layer === "os" ||
+    candidate.root_cause_layer === "platform" ||
+    candidate.root_cause_layer === "service"
+    ? candidate.root_cause_layer
+    : "platform";
+  const entities = Array.isArray(candidate.root_cause_entities)
+    ? candidate.root_cause_entities.filter((item): item is string => typeof item === "string")
+    : [];
+  const confidence = typeof candidate.confidence === "number" ? candidate.confidence : fallback.confidence;
+  const evidenceSummary =
+    normalizeNonEmptyString(candidate.evidence_summary) ??
+    normalizeNonEmptyString(candidate.summary) ??
+    fallback.impact_summary ??
+    title;
+  const impactSummary = normalizeNonEmptyString(candidate.impact_summary) ?? fallback.impact_summary ?? evidenceSummary;
+
+  return {
+    id: normalizeNonEmptyString(candidate.id) ?? `rc-${index + 1}`,
+    title,
+    layer,
+    entities,
+    confidence,
+    certainty: fallback.diagnosis_certainty,
+    status: index === 0 ? "suspected" : "contributing",
+    evidence_summary: evidenceSummary,
+    impact_summary: impactSummary,
+    distinguishing_verification: null,
+    factor_type: null,
+    evidence_refs: [],
+    evidence_interpretation: null,
+    recommended_fix: null,
+  };
+}
+
+function buildRootCausesFromCandidatesPayload(
+  payload: Record<string, unknown>,
+  previous: DiagnosisSession["diagnosis_result"] | null | undefined,
+  fallback: Pick<DiagnosisResult, "confidence" | "diagnosis_certainty" | "impact_summary">,
+): DiagnosisResult["root_cause"] {
+  if (Array.isArray(payload.root_cause)) {
+    const rootCauses = payload.root_cause.filter(isRecord).map((item) => ({
+      ...item,
+      recommended_fix: null,
+    })) as DiagnosisResult["root_cause"];
+    if (rootCauses.length > 0) {
+      return rootCauses;
+    }
+  }
+  if (Array.isArray(payload.ranked_candidates)) {
+    const rootCauses = payload.ranked_candidates
+      .filter(isRecord)
+      .map((candidate, index) => buildRootCauseFromRankedCandidate(candidate, index, fallback));
+    if (rootCauses.length > 0) {
+      return rootCauses;
+    }
+  }
+  return previous?.root_cause ?? [];
+}
+
+function buildDiagnosisResultFromCandidatesPayload(
+  payload: Record<string, unknown>,
+  previous: DiagnosisSession["diagnosis_result"] | null | undefined,
+): NonNullable<DiagnosisSession["diagnosis_result"]> {
+  const hypotheses = Array.isArray(payload.hypotheses) ? (payload.hypotheses as DiagnosisResult["hypotheses"]) : [];
+  const confidence = typeof payload.confidence === "number" ? payload.confidence : (previous?.confidence ?? 0);
+  const diagnosisCertainty =
+    payload.diagnosis_certainty === "confirmed" ||
+    payload.diagnosis_certainty === "probable" ||
+    payload.diagnosis_certainty === "ambiguous"
+      ? payload.diagnosis_certainty
+      : (previous?.diagnosis_certainty ?? "ambiguous");
+  const triagePriority =
+    payload.triage_priority === "P0" ||
+    payload.triage_priority === "P1" ||
+    payload.triage_priority === "P2" ||
+    payload.triage_priority === "P3"
+      ? payload.triage_priority
+      : (previous?.triage_priority ?? "P2");
+  const affectedServices = Array.isArray(payload.affected_services)
+    ? payload.affected_services.filter((item): item is string => typeof item === "string")
+    : (previous?.affected_services ?? []);
+  const impactSummary = typeof payload.impact_summary === "string" ? payload.impact_summary : (previous?.impact_summary ?? "");
+  const rootCauses = buildRootCausesFromCandidatesPayload(
+    payload,
+    previous,
+    {
+      confidence,
+      diagnosis_certainty: diagnosisCertainty,
+      impact_summary: impactSummary,
+    },
+  );
+
+  return {
+    root_cause: rootCauses,
+    confidence,
+    next_action: previous?.next_action ?? null,
+    hypotheses,
+    propagation_chain: previous?.propagation_chain ?? [],
+    impact_summary: impactSummary,
+    affected_services: affectedServices,
+    triage_priority: triagePriority,
+    diagnosis_certainty: diagnosisCertainty,
+    recommended_fix: previous?.recommended_fix ?? null,
+  };
 }
 
 function getEventDataEventId(event: { data?: Record<string, unknown> }): string | undefined {
@@ -794,7 +910,12 @@ function mergeEventMessages(
 }
 
 function shouldTriggerSessionBackfill(event: WSEvent): boolean {
-  if (event.type === "diagnosis_result" || event.type === "approval_required" || event.type === "plan_revised") {
+  if (
+    event.type === "diagnosis_candidates_ready" ||
+    event.type === "diagnosis_result" ||
+    event.type === "approval_required" ||
+    event.type === "plan_revised"
+  ) {
     return true;
   }
   if (event.type !== "remediation_progress") {
@@ -2121,6 +2242,40 @@ export const useDiagnosisStore = create<DiagnosisState>((set, get) => ({
           roundSequenceCounter: nextRoundSequenceCounter,
         };
       }
+      if (event.type === "diagnosis_candidates_ready") {
+        if (nextSession) {
+          const payload = isRecord(event.data) ? event.data : {};
+          nextSession = {
+            ...nextSession,
+            diagnosis_result: buildDiagnosisResultFromCandidatesPayload(payload, nextSession.diagnosis_result),
+            status: nextSession.status === "diagnosing" ? "diagnosed" : nextSession.status,
+          };
+        }
+        const nextEvents = mergeSessionEvents(state.events, [event as SessionEvent]);
+        const approvalState = deriveApprovalState(nextSession, nextEvents);
+        return {
+          session: nextSession,
+          activeSessionId: resolvedSessionId,
+          events: nextEvents,
+          localAuditRecords: state.localAuditRecords,
+          ...approvalState,
+          approvalOverlayOpen:
+            nextSession?.status === "approval_required" ? state.approvalOverlayOpen : false,
+          effectiveReviseInstruction: state.effectiveReviseInstruction,
+          messages: mergeEventMessages(state.messages, [event], resolvedSessionId),
+          alertSnapshot: nextAlertSnapshot,
+          topologyContext: nextTopologyContext,
+          liveFinalAnswer: nextLiveFinalAnswer,
+          ...toStreamingFields(nextLiveThinking, nextActiveStreamingTools),
+          error: state.error,
+          streamingPhase: nextStreamingPhase,
+          roundSequenceCounter: nextRoundSequenceCounter,
+          traceStatus:
+            nextEntries.length > 0
+              ? "ready"
+              : state.traceStatus,
+        };
+      }
       if (event.type === "approval_required" && nextSession) {
         nextSession = {
           ...nextSession,
@@ -2338,6 +2493,7 @@ export const useDiagnosisStore = create<DiagnosisState>((set, get) => ({
                 "node_completed",
                 "tool_started",
                 "tool_completed",
+                "diagnosis_candidates_ready",
                 "diagnosis_result",
                 "approval_required",
                 "plan_revised",

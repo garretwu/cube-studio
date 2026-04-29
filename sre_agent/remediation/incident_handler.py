@@ -12,6 +12,7 @@ from sre_agent.concurrency.resource_lock import ResourceLock
 from sre_agent.alerts_identity import build_incident_identity
 from sre_agent.models.alert import Alert
 from sre_agent.models.common import ErrorCode, SREError, SREResponse
+from sre_agent.models.diagnosis_event_payloads import build_diagnosis_candidates_ready_payload
 from sre_agent.models.events import EventType
 from sre_agent.models.diagnosis import DiagnosisSession
 from sre_agent.models.remediation import LoopResult
@@ -164,6 +165,13 @@ class IncidentHandler:
                     )
         if include_diagnosis_replay and session.diagnosis_result is not None:
             diagnosis_payload = session.diagnosis_result.model_dump(mode="json")
+            await self.trace_publisher.publish(
+                {
+                    "type": EventType.DIAGNOSIS_CANDIDATES_READY.value,
+                    "session_id": session.session_id,
+                    "data": build_diagnosis_candidates_ready_payload(session.diagnosis_result),
+                }
+            )
             await self.trace_publisher.publish(
                 {
                     "type": EventType.DIAGNOSIS_RESULT.value,

@@ -43,6 +43,7 @@ class ApprovalGate:
         "k8s.drain_node",
         "network.switch_port_disable",
         "network.update_route",
+        "network.repair_switch_qos_config",
         "network.set_bmc_vlan",
         "network.set_bmc_mtu",
         "remediation.execute_plan",

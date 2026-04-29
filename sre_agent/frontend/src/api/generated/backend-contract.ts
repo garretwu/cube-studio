@@ -64,6 +64,7 @@ export const WS_EVENT_TYPES = [
   "thinking_step",
   "tool_call",
   "tool_result",
+  "diagnosis_candidates_ready",
   "diagnosis_result",
   "approval_required",
   "loop_start",

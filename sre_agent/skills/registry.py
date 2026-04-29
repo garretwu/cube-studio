@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import re
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -32,6 +33,7 @@ class SkillDescriptor:
     tags: list[str] = field(default_factory=list)
     match_score: float = 0.0
     scripts: list[str] = field(default_factory=list)
+    script_descriptions: dict[str, str] = field(default_factory=dict)
     references: list[str] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
     version: str | None = None
@@ -159,6 +161,7 @@ class SkillRegistry:
         permissions = self._resolve_text_list(frontmatter, metadata, key="permissions")
         tags = self._resolve_text_list(frontmatter, metadata, key="tags")
         scripts, script_paths = self._collect_scripts(path.parent)
+        script_descriptions = self._extract_script_descriptions(body, scripts)
         references, reference_paths = self._collect_references(path.parent)
         version = self._resolve_optional_text(frontmatter, metadata, key="version")
 
@@ -175,6 +178,7 @@ class SkillRegistry:
             permissions=permissions,
             tags=tags,
             scripts=scripts,
+            script_descriptions=script_descriptions,
             references=references,
             metadata={"frontmatter": frontmatter, "runtime_metadata": metadata},
             version=version or None,
@@ -324,6 +328,80 @@ class SkillRegistry:
                     continue
                 script_map[item.name] = item
         return sorted(script_map), script_map
+
+    @staticmethod
+    def _extract_script_descriptions(body: str, scripts: list[str]) -> dict[str, str]:
+        """Best-effort extraction of script intent from SKILL.md.
+
+        Skills commonly document scripts as a bullet containing the script name
+        followed by nested bullets. Keep this parser deliberately permissive so
+        it also works for English/Chinese prose and inline code blocks.
+        """
+        if not scripts:
+            return {}
+
+        lines = body.splitlines()
+        script_set = set(scripts)
+        descriptions: dict[str, str] = {}
+        active_script: str | None = None
+        active_parts: list[str] = []
+
+        def flush() -> None:
+            nonlocal active_script, active_parts
+            if active_script is None:
+                return
+            text = " ".join(part.strip() for part in active_parts if part.strip())
+            if text and active_script not in descriptions:
+                descriptions[active_script] = " ".join(text.split())
+            active_script = None
+            active_parts = []
+
+        def script_on_line(line: str) -> str | None:
+            for snippet in re.findall(r"`([^`]+)`", line):
+                candidate = PurePosixPath(str(snippet).replace("\\", "/")).name
+                if candidate in script_set:
+                    return candidate
+                if str(snippet).strip() in script_set:
+                    return str(snippet).strip()
+            for script in scripts:
+                if script in line:
+                    return script
+                if PurePosixPath(script).name in line:
+                    return script
+            return None
+
+        for raw_line in lines:
+            line = raw_line.strip()
+            if not line:
+                continue
+            if line.startswith("```"):
+                continue
+            matched_script = script_on_line(line)
+            if matched_script is not None:
+                flush()
+                active_script = matched_script
+                remainder = line
+                for marker in (f"`{matched_script}`", matched_script, PurePosixPath(matched_script).name):
+                    remainder = remainder.replace(marker, " ")
+                remainder = remainder.lstrip("-*0123456789. ):\t").strip()
+                if remainder:
+                    active_parts.append(remainder)
+                continue
+            if active_script is None:
+                continue
+            if line.startswith("#"):
+                flush()
+                continue
+            if re.match(r"^[-*]\s+`?[\w./-]+\.(?:sh|bash|py)`?\b", line):
+                flush()
+                continue
+            if line.startswith(("-", "*")) or raw_line.startswith((" ", "\t")):
+                active_parts.append(line.lstrip("-* \t"))
+                continue
+            flush()
+
+        flush()
+        return descriptions
 
     @staticmethod
     def _collect_references(skill_dir: Path) -> tuple[list[str], dict[str, Path]]:

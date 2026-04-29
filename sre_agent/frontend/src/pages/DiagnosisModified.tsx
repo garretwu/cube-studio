@@ -35,6 +35,7 @@ type ApprovalPlanResolution = {
 const DEMO_TEXT_SPEED_MS = 40;
 const DEMO_EVENT_SLOWDOWN = 4.5;
 const DEMO_MIN_TOOL_LOADING_DWELL_MS = 3500;
+const ROOT_CAUSE_REVEAL_DELAY_MS = 1500;
 const TOOL_RESULT_TIMEOUT_MS = 15_000;
 const STREAM_COMPLETION_BUFFER_MS = 640;
 const LIVE_SESSION_RECONCILE_INTERVAL_MS = 2_000;
@@ -1269,6 +1270,12 @@ function DiagnosisModifiedPage() {
   const thinkingStreamFallbackTimersRef = useRef<Map<string, number>>(new Map());
   const demoThinkingStartedAtRef = useRef<Map<string, number>>(new Map());
   const demoToolLoadingStartedAtRef = useRef<Map<string, number>>(new Map());
+  const rootCauseRevealTimerRef = useRef<number | null>(null);
+  const processedDiagnosisResultEventKeysRef = useRef<Set<string>>(new Set());
+  const revealSessionIdRef = useRef<string | null>(null);
+
+  const [rootCauseRevealAt, setRootCauseRevealAt] = useState<number | null>(null);
+  const [rootCauseRevealReady, setRootCauseRevealReady] = useState(false);
 
   const liveToolWaiterResolversRef = useRef<Map<string, () => void>>(new Map());
   const liveToolTimeoutTimersRef = useRef<Map<string, number>>(new Map());
@@ -1520,6 +1527,20 @@ function DiagnosisModifiedPage() {
   ]);
   const hasLiveSession =
     shouldBootstrapLiveSession && bootstrapStatus === "ready" && Boolean(session) && Boolean(activeSessionId);
+  const websocketEnabled =
+    shouldBootstrapLiveSession &&
+    import.meta.env.VITE_WS_ENABLED === "true" &&
+    Boolean(activeSessionId) &&
+    !isTerminalLiveSession;
+
+  useEffect(() => {
+    return () => {
+      if (rootCauseRevealTimerRef.current !== null) {
+        window.clearTimeout(rootCauseRevealTimerRef.current);
+        rootCauseRevealTimerRef.current = null;
+      }
+    };
+  }, []);
 
   const handleTimelineScroll = useCallback(() => {
     const container = timelineScrollRef.current;
@@ -1538,6 +1559,73 @@ function DiagnosisModifiedPage() {
     timelineAutoFollowRef.current = true;
     forceTimelineAutoFollowRef.current = true;
   }, [activeSessionId, routeSessionId, session?.session_id]);
+
+  useEffect(() => {
+    const currentSessionId = activeSessionId ?? session?.session_id ?? null;
+    if (revealSessionIdRef.current === currentSessionId) {
+      return;
+    }
+    revealSessionIdRef.current = currentSessionId;
+    processedDiagnosisResultEventKeysRef.current = new Set();
+    if (rootCauseRevealTimerRef.current !== null) {
+      window.clearTimeout(rootCauseRevealTimerRef.current);
+      rootCauseRevealTimerRef.current = null;
+    }
+    setRootCauseRevealAt(null);
+    setRootCauseRevealReady(false);
+  }, [activeSessionId, session?.session_id]);
+
+  useEffect(() => {
+    if (!hasLiveSession) {
+      if (rootCauseRevealTimerRef.current !== null) {
+        window.clearTimeout(rootCauseRevealTimerRef.current);
+        rootCauseRevealTimerRef.current = null;
+      }
+      processedDiagnosisResultEventKeysRef.current = new Set();
+      setRootCauseRevealAt(null);
+      setRootCauseRevealReady(true);
+      return;
+    }
+
+    const diagnosisResultEvent = [...events]
+      .reverse()
+      .find((event) => String(event.type ?? "").trim().toLowerCase() === "diagnosis_result");
+    if (!diagnosisResultEvent) {
+      setRootCauseRevealAt(null);
+      setRootCauseRevealReady(false);
+      return;
+    }
+
+    const eventData = diagnosisResultEvent.data ?? {};
+    const eventId = typeof eventData.event_id === "string" ? eventData.event_id.trim() : "";
+    const eventKey =
+      eventId.length > 0
+        ? `id:${eventId}`
+        : `${diagnosisResultEvent.type}:${diagnosisResultEvent.timestamp}`;
+    if (processedDiagnosisResultEventKeysRef.current.has(eventKey)) {
+      return;
+    }
+    processedDiagnosisResultEventKeysRef.current.add(eventKey);
+
+    // Use websocket-enabled live sessions as realtime indicator; historical sessions reveal immediately.
+    const shouldDelayReveal = websocketEnabled;
+    if (!shouldDelayReveal) {
+      setRootCauseRevealAt(Date.now());
+      setRootCauseRevealReady(true);
+      return;
+    }
+
+    const revealAt = Date.now() + ROOT_CAUSE_REVEAL_DELAY_MS;
+    setRootCauseRevealAt(revealAt);
+    setRootCauseRevealReady(false);
+    if (rootCauseRevealTimerRef.current !== null) {
+      window.clearTimeout(rootCauseRevealTimerRef.current);
+    }
+    rootCauseRevealTimerRef.current = window.setTimeout(() => {
+      setRootCauseRevealReady(true);
+      rootCauseRevealTimerRef.current = null;
+    }, ROOT_CAUSE_REVEAL_DELAY_MS);
+  }, [events, hasLiveSession, websocketEnabled]);
 
   useEffect(() => {
     if (!shouldBootstrapLiveSession) {
@@ -2498,11 +2586,6 @@ function DiagnosisModifiedPage() {
     [applyEvent],
   );
 
-  const websocketEnabled =
-    shouldBootstrapLiveSession &&
-    import.meta.env.VITE_WS_ENABLED === "true" &&
-    Boolean(activeSessionId) &&
-    !isTerminalLiveSession;
   const websocketUrl = useMemo(
     () =>
       buildBackendWsUrl(`/ws/thinking-trace/${activeSessionId ?? "pending"}`, {
@@ -2589,6 +2672,7 @@ function DiagnosisModifiedPage() {
         localAuditRecords: activeLocalAuditRecords,
         topologyContext: activeTopologyContext,
         relationScope: "direct_only",
+        allowRootCauseReveal: hasLiveSession ? rootCauseRevealReady : true,
       }),
     [
       activeCandidates,
@@ -2600,6 +2684,8 @@ function DiagnosisModifiedPage() {
       activeSummary,
       activeTimeline,
       activeTopologyContext,
+      hasLiveSession,
+      rootCauseRevealReady,
     ],
   );
 

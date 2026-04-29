@@ -26,7 +26,9 @@ from sre_agent.agent.nodes import (
 )
 from sre_agent.agent.state import SREAgentState
 from sre_agent.config import resolve_llm_runtime_settings
+from sre_agent.models.diagnosis import DiagnosisResult
 from sre_agent.models.events import EventType
+from sre_agent.models.diagnosis_event_payloads import build_diagnosis_candidates_ready_payload
 from sre_agent.skills import SkillExecutor, SkillPolicy, SkillRegistry
 from sre_agent.tools import ToolExecutionContext, ToolRegistry, build_default_registry
 
@@ -454,12 +456,21 @@ async def _emit_incremental_trace_events(
         await _safe_emit(trace_callback, normalized)
 
     if previous_state.get("diagnosis_result") is None and next_state.get("diagnosis_result") is not None:
+        diagnosis_result = _to_dict(next_state.get("diagnosis_result"))
+        await _safe_emit(
+            trace_callback,
+            {
+                "type": EventType.DIAGNOSIS_CANDIDATES_READY.value,
+                "session_id": session_id,
+                "data": build_diagnosis_candidates_ready_payload(DiagnosisResult.model_validate(diagnosis_result)),
+            },
+        )
         await _safe_emit(
             trace_callback,
             {
                 "type": EventType.DIAGNOSIS_RESULT.value,
                 "session_id": session_id,
-                "data": _to_dict(next_state.get("diagnosis_result")),
+                "data": diagnosis_result,
             },
         )
 

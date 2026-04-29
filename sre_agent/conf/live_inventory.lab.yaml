@@ -101,8 +101,8 @@ switches:
   sw-200g:
     host: 10.11.8.52
     port: 830
-    username: apitest
-    password: REPLACE_ME
+    username: admin
+    password: qinghuai@2026
     timeout: 30
     type: H3C S9855-24B8D
     description: 200G Data Network Switch

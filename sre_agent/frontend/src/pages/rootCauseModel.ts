@@ -179,7 +179,7 @@ export function getPlanByPlanKey(
 }
 
 /**
- * Resolve the single remediation plan used in current first-root-cause-first execution flow.
+ * Resolve the default remediation plan used by summary and initial approval UI.
  *
  * Purpose:
  * - keep plan extraction logic consistent between pages and store.
@@ -187,9 +187,9 @@ export function getPlanByPlanKey(
  * - input: optional DiagnosisResult;
  * - output: remediation plan or undefined.
  * Compatibility rationale:
- * - only top-level and primary-root-cause plan are considered; no legacy candidate plan lookup.
+ * - top-level plan is a deprecated compatibility mirror; canonical plans live on root_cause[].
  * Why:
- * - this migration intentionally does not introduce multi-plan approval/execution in the same release.
+ * - explicit plan_key lookup handles non-primary root-cause plans when backend asks for them.
  */
 export function getPrimaryPlan(result?: DiagnosisResult | null): RemediationPlan | undefined {
   if (!result) {

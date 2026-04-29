@@ -722,6 +722,30 @@ async def reason_node(
                 )
                 forced_trace_tool_call_emitted = True
 
+    if not pending_tool_calls:
+        rdma_forced_call = _build_rdma_forced_qos_call(
+            active_skill_id=active_skill_id,
+            tool_runs=list(state.get("tool_runs", []) or []),
+            step_index=step_index,
+        )
+        if rdma_forced_call is not None:
+            pending_tool_calls = [rdma_forced_call]
+            updated_trace.append(
+                {
+                    "type": "thought",
+                    "step": step_index,
+                    "content": "RDMA 交换机侧 QoS 关键取证未完成，拦截 finalize 并自动补齐 network.get_switch_qos_config。",
+                    "action": "tool_call",
+                    "tool_name": rdma_forced_call["name"],
+                    "tool_params": rdma_forced_call.get("args", {}),
+                    "confidence": None,
+                    "meta": {
+                        "reason": "rdma_switch_qos_gate",
+                        "forced_calls": [rdma_forced_call["name"]],
+                    },
+                }
+            )
+
     if pending_tool_calls:
         if not forced_trace_tool_call_emitted:
             updated_trace.append(
@@ -979,6 +1003,7 @@ async def reason_node(
         plan_completion_response: AIMessage | None = None
         plan_completion_raw_response_text = ""
         plan_completion_error = ""
+        completion_raw_diagnosis: dict[str, Any] | None = None
         completion_raw_plan: dict[str, Any] | None = None
 
         if llm_supports_message_invocation:
@@ -988,6 +1013,7 @@ async def reason_node(
                     plan_completion_response = retry_response
                     plan_completion_raw_response_text = _extract_text(retry_response.content)
                     completion_parsed = _parse_reasoning_output(plan_completion_raw_response_text)
+                    completion_raw_diagnosis = completion_parsed.diagnosis
                     completion_raw_plan = completion_parsed.remediation_plan
                 else:
                     plan_completion_raw_response_text = _extract_text(getattr(retry_response, "content", retry_response))
@@ -1029,6 +1055,10 @@ async def reason_node(
                 "tool_calls": [],
             }
         )
+
+        if completion_raw_diagnosis is not None:
+            diagnosis_payload = _normalize_diagnosis_payload(completion_raw_diagnosis)
+            diagnosis = DiagnosisResult.model_validate(diagnosis_payload)
 
         if completion_raw_plan is not None:
             remediation_plan = _normalize_remediation_plan_payload(
@@ -1445,6 +1475,44 @@ def _extract_active_skill_guidance(tool_runs: list[dict[str, Any]]) -> tuple[str
     return "", ""
 
 
+def _build_rdma_forced_qos_call(
+    *,
+    active_skill_id: str,
+    tool_runs: list[dict[str, Any]],
+    step_index: int,
+) -> dict[str, Any] | None:
+    if str(active_skill_id or "").strip() != "builtin-rdma-diagnosis":
+        return None
+    latest_qos_run = _find_latest_successful_tool_run(
+        tool_runs,
+        tool_name="network.get_switch_qos_config",
+    )
+    if latest_qos_run is not None:
+        return None
+
+    latest_switch_port_run = _find_latest_successful_tool_run(
+        tool_runs,
+        tool_name="network.get_switch_port_counters",
+    )
+    if latest_switch_port_run is None:
+        return None
+
+    params = latest_switch_port_run.get("params")
+    if not isinstance(params, dict):
+        params = {}
+    switch = str(params.get("switch", "") or "").strip()
+    interface = str(params.get("interface", "") or "").strip()
+    if not switch or not interface:
+        return None
+
+    return {
+        "id": f"call-rdma-switch-qos-{step_index}",
+        "name": "network.get_switch_qos_config",
+        "args": {"switch": switch, "interface": interface},
+        "type": "tool_call",
+    }
+
+
 def _choose_skill_script_to_run(load_run: dict[str, Any], tool_runs: list[dict[str, Any]]) -> tuple[str, str]:
     data = load_run.get("data")
     if not isinstance(data, dict):
@@ -1583,6 +1651,14 @@ def _choose_recommended_tool_call_from_skill_load(
         if not content:
             return None
         candidates = _extract_recommended_tool_calls_from_skill_content(content)
+        if candidates:
+            candidates = [
+                {
+                    "name": str(item.get("name", "")).strip(),
+                    "args": _interpolate_params(item.get("args") or {}, variables),
+                }
+                for item in candidates
+            ]
 
     for candidate in candidates:
         tool_name = str(candidate.get("name", "")).strip()
@@ -2094,6 +2170,25 @@ def _summarize_prometheus_result(data: Any) -> tuple[str, dict[str, Any] | None]
     return f"value={text or 'none'}", {"result_shape": _detect_data_kind(data)}
 
 
+def _summarize_ssh_run_command(params: dict[str, Any], data: Any) -> tuple[str, dict[str, Any] | None]:
+    command = str(params.get("command", "") or "").strip()
+    output = _extract_output_blob(data)
+    if not output:
+        return "output=empty", None
+
+    lines = [line.strip() for line in output.splitlines() if line.strip()]
+    full_output = "\n".join(lines) if lines else output
+    return (
+        f"output_lines={len(lines)}; output={full_output}",
+        {
+            "command": command,
+            "line_count": len(lines),
+            "output": full_output,
+            "lines": lines,
+        },
+    )
+
+
 def _summarize_k8s_pods(data: Any) -> tuple[str, int | None, dict[str, Any] | None]:
     if not isinstance(data, list):
         return f"unexpected_shape={_detect_data_kind(data)}", _estimate_item_count(data), None
@@ -2408,6 +2503,192 @@ def _summarize_counter_text(data: Any, *, label: str) -> tuple[str, dict[str, An
     return f"{label}_hotspots=none", {"hotspots": [], "abnormal_count": 0}
 
 
+def _summarize_switch_port_counters(data: Any) -> tuple[str, dict[str, Any] | None]:
+    text = _extract_output_blob(data)
+    match = re.search(
+        r"^\s*([A-Za-z0-9/._:-]+)\s*:\s*admin=([A-Za-z0-9_-]+),\s*oper=([A-Za-z0-9_-]+)",
+        text,
+        flags=re.IGNORECASE | re.MULTILINE,
+    )
+    if not match:
+        return _summarize_generic_data(data)[0], _summarize_generic_data(data)[2]
+
+    interface = str(match.group(1) or "").strip()
+    admin = str(match.group(2) or "").strip().lower()
+    oper = str(match.group(3) or "").strip().lower()
+    summary = f"interface={interface}; admin={admin}; oper={oper}"
+    return summary, {"interface": interface, "admin": admin, "oper": oper}
+
+
+def _summarize_switch_qos_config(data: Any) -> tuple[str, dict[str, Any] | None]:
+    if not isinstance(data, dict):
+        summary, _, fields = _summarize_generic_data(data)
+        return summary, fields
+
+    interface = str(data.get("interface", "") or "").strip()
+    switch = str(data.get("switch", "") or "").strip()
+    car_entries = data.get("car_cir")
+    normalized_car_entries = car_entries if isinstance(car_entries, list) else []
+    applied_policies = data.get("applied_policies")
+    normalized_applied_policies = applied_policies if isinstance(applied_policies, list) else []
+    qos_gts_entries = data.get("qos_gts")
+    normalized_qos_gts_entries = qos_gts_entries if isinstance(qos_gts_entries, list) else []
+    abnormal_lines = data.get("abnormal_config_lines")
+    normalized_abnormal_lines = [
+        _truncate_prompt_note(str(item).strip(), max_chars=96)
+        for item in abnormal_lines
+        if str(item).strip()
+    ] if isinstance(abnormal_lines, list) else []
+
+    text_parts: list[str] = []
+    commands = data.get("commands")
+    if isinstance(commands, list):
+        for item in commands:
+            if not isinstance(item, dict):
+                continue
+            output = str(item.get("output", "") or "").strip()
+            if output:
+                text_parts.append(output)
+    if not text_parts:
+        output = str(data.get("output", "") or "").strip()
+        if output:
+            text_parts.append(output)
+    text = "\n".join(text_parts)
+
+    policy_matches = normalized_applied_policies
+    gts_matches = normalized_qos_gts_entries
+    trust_dscp = bool(data.get("trust_dscp")) or bool(
+        re.search(r"\bqos trust dscp\b", text, flags=re.IGNORECASE)
+    )
+
+    summary_parts: list[str] = []
+    if switch:
+        summary_parts.append(f"switch={switch}")
+    if interface:
+        summary_parts.append(f"interface={interface}")
+    if normalized_car_entries:
+        car_preview = []
+        for entry in normalized_car_entries[:3]:
+            if not isinstance(entry, dict):
+                continue
+            direction = str(entry.get("direction", "") or "").strip() or "unknown"
+            cir = entry.get("cir")
+            car_preview.append(f"{direction}:{cir}")
+        if car_preview:
+            summary_parts.append(f"car_cir={','.join(car_preview)}")
+    if gts_matches:
+        gts_preview = []
+        for entry in gts_matches[:3]:
+            if not isinstance(entry, dict):
+                continue
+            queue = str(entry.get("queue", "") or "").strip()
+            cir = entry.get("cir")
+            if queue and cir is not None:
+                gts_preview.append(f"q{queue}:{cir}")
+        if gts_preview:
+            summary_parts.append(f"qos_gts={','.join(gts_preview)}")
+    if policy_matches:
+        policy_preview = []
+        for entry in policy_matches[:3]:
+            if not isinstance(entry, dict):
+                continue
+            name = str(entry.get("name", "") or "").strip()
+            direction = str(entry.get("direction", "") or "").strip().lower()
+            if name and direction:
+                policy_preview.append(f"{name}:{direction}")
+        if policy_preview:
+            summary_parts.append(f"policies={','.join(policy_preview)}")
+    if normalized_abnormal_lines:
+        summary_parts.append(f"abnormal={','.join(normalized_abnormal_lines[:3])}")
+    summary_parts.append(f"trust_dscp={str(trust_dscp).lower()}")
+    if not trust_dscp:
+        summary_parts.append("missing_trust_dscp=true")
+
+    key_fields = {
+        "switch": switch or None,
+        "interface": interface or None,
+        "car_cir": [
+            {
+                "direction": str(entry.get("direction", "") or "").strip() or None,
+                "cir": entry.get("cir"),
+            }
+            for entry in normalized_car_entries[:6]
+            if isinstance(entry, dict)
+        ],
+        "qos_gts": [
+            {
+                "queue": str(entry.get("queue", "") or "").strip() or None,
+                "cir": entry.get("cir"),
+                "cbs": entry.get("cbs"),
+            }
+            for entry in gts_matches[:6]
+            if isinstance(entry, dict)
+        ],
+        "policies": [
+            {
+                "name": str(entry.get("name", "") or "").strip() or None,
+                "direction": str(entry.get("direction", "") or "").strip().lower() or None,
+            }
+            for entry in policy_matches[:6]
+            if isinstance(entry, dict)
+        ],
+        "trust_dscp": trust_dscp,
+        "abnormal_config_lines": normalized_abnormal_lines[:8],
+    }
+    return "; ".join(summary_parts), key_fields
+
+
+def _summarize_ontology_query(data: Any) -> tuple[str, int | None, dict[str, Any] | None]:
+    if not isinstance(data, list):
+        return _summarize_generic_data(data)
+
+    preview: list[dict[str, Any]] = []
+    for item in data[:3]:
+        if not isinstance(item, dict):
+            continue
+        properties = item.get("properties")
+        props = properties if isinstance(properties, dict) else {}
+        switch_ports = props.get("switch_ports")
+        normalized_switch_ports: list[dict[str, Any]] = []
+        if isinstance(switch_ports, list):
+            for switch_port in switch_ports[:3]:
+                if not isinstance(switch_port, dict):
+                    continue
+                normalized_switch_ports.append(
+                    {
+                        "switch_id": str(switch_port.get("switch_id", "") or "").strip() or None,
+                        "port_id": str(switch_port.get("port_id", "") or "").strip() or None,
+                        "nic": str(switch_port.get("nic", "") or "").strip() or None,
+                    }
+                )
+        preview.append(
+            {
+                "id": str(item.get("id", "") or "").strip() or None,
+                "entity_type": str(item.get("entity_type", "") or "").strip() or None,
+                "name": str(item.get("name", "") or "").strip() or None,
+                "ip": str(props.get("ip", "") or "").strip() or None,
+                "switch": str(props.get("switch", "") or "").strip() or None,
+                "port": str(props.get("port", "") or "").strip() or None,
+                "switch_ports": normalized_switch_ports,
+            }
+        )
+
+    summary_parts = [f"kind=list", f"items={len(data)}"]
+    first = preview[0] if preview else {}
+    first_ip = str(first.get("ip", "") or "").strip()
+    first_switch = str(first.get("switch", "") or "").strip()
+    first_port = str(first.get("port", "") or "").strip()
+    if first_ip:
+        summary_parts.append(f"ip={first_ip}")
+    if first_switch:
+        summary_parts.append(f"switch={first_switch}")
+    if first_port:
+        summary_parts.append(f"port={first_port}")
+    if first.get("switch_ports"):
+        summary_parts.append(f"switch_port_candidates={len(first.get('switch_ports') or [])}")
+    return "; ".join(summary_parts), len(data), {"preview": preview}
+
+
 def _summarize_generic_data(data: Any) -> tuple[str, int | None, dict[str, Any] | None]:
     kind = _detect_data_kind(data)
     count = _estimate_item_count(data)
@@ -2415,7 +2696,7 @@ def _summarize_generic_data(data: Any) -> tuple[str, int | None, dict[str, Any] 
         keys = sorted(str(key) for key in list(data.keys())[:8])
         return f"kind=object; keys={','.join(keys) if keys else 'none'}", count, {"keys": keys}
     if isinstance(data, list):
-        preview = [_compact_prompt_value(item, max_items=2, max_keys=4, max_string=60) for item in data[:2]]
+        preview = [_compact_prompt_value(item, max_items=2, max_keys=10, max_string=60) for item in data[:2]]
         return f"kind=list; items={len(data)}; preview={preview}", len(data), {"preview": preview}
     if isinstance(data, str):
         lines = [line.strip() for line in data.splitlines() if line.strip()]
@@ -2453,6 +2734,10 @@ def _build_tool_prompt_fields(
         prompt_summary, key_fields = _summarize_counter_text(data, label="nic")
     elif tool == "network.get_rdma_stats":
         prompt_summary, key_fields = _summarize_counter_text(data, label="rdma")
+    elif tool == "network.get_switch_port_counters":
+        prompt_summary, key_fields = _summarize_switch_port_counters(data)
+    elif tool == "network.get_switch_qos_config":
+        prompt_summary, key_fields = _summarize_switch_qos_config(data)
     elif tool == "network.find_process":
         prompt_summary, key_fields = _summarize_find_process(data)
     elif tool == "process.find":
@@ -2469,8 +2754,12 @@ def _build_tool_prompt_fields(
         )
     elif tool == "gpu.get_processes":
         prompt_summary, key_fields = _summarize_gpu_processes(data)
+    elif tool == "ssh.run_command":
+        prompt_summary, key_fields = _summarize_ssh_run_command(params, data)
     elif tool == "skills.load_skill":
         prompt_summary, key_fields = _summarize_skill_load(data)
+    elif tool == "ontology.query":
+        prompt_summary, item_count, key_fields = _summarize_ontology_query(data)
     else:
         prompt_summary, item_count, key_fields = _summarize_generic_data(data)
     if item_count is None:
@@ -2625,6 +2914,8 @@ def _render_tool_run_for_prompt(item: dict[str, Any]) -> dict[str, Any]:
         # For BMC/GPU tools, include full key_fields as output_summary (no compression)
         elif tool.startswith("bmc.") or tool.startswith("gpu."):
             rendered["output_summary"] = key_fields  # Pass full content, no truncation
+        elif tool == "ssh.run_command":
+            rendered["output_summary"] = key_fields
         else:
             rendered["key_fields"] = _compact_prompt_value(key_fields, max_items=4, max_keys=6, max_string=96)
     return rendered
@@ -3950,7 +4241,7 @@ def _build_tc_consistency_retry_messages(
 
 
 def _select_primary_root_cause_item(diagnosis_payload: dict[str, Any]) -> dict[str, Any]:
-    """Select primary root cause item from payload for first-root-cause remediation flow.
+    """Select the leading root-cause item from raw diagnosis payload.
 
     Purpose:
     - return the root-cause item used by plan-completion and remediation prompts.
@@ -3960,7 +4251,8 @@ def _select_primary_root_cause_item(diagnosis_payload: dict[str, Any]) -> dict[s
     Compatibility rationale:
     - keeps temporary parser tolerance for old payloads while enforcing new first-item semantics.
     Why:
-    - current remediation workflow intentionally uses a single plan driven by `root_cause[0]`.
+    - plan-completion retry and LLM logging still need one concise leading-cause summary even when
+      the final diagnosis carries multiple root-cause items.
     """
     raw_root_cause = diagnosis_payload.get("root_cause")
     if isinstance(raw_root_cause, list):
@@ -4007,7 +4299,7 @@ def _build_plan_completion_messages(
         f"tool_evidence={_json_line(tool_runs[-5:]) if tool_runs else 'none'}",
         "",
         "Rules:",
-        "- Keep diagnosis unchanged; only complete remediation_plan.",
+        "- Prefer keeping diagnosis unchanged, but if latest tool_evidence corrects stale wording, update diagnosis to match the evidence.",
         "- Prefer one conservative proposal-only step first.",
         "- Use a real write-tool name from schema and include all required params.",
         "- If no safe executable proposal can be formed, set remediation_plan to null.",
@@ -4017,7 +4309,6 @@ def _build_plan_completion_messages(
         SystemMessage(content=system_prompt),
         HumanMessage(content="\n".join(prompt_lines)),
     ]
-
 
 def _build_tc_fallback_diagnosis_payload_legacy(
     *,
@@ -5943,9 +6234,10 @@ def _sync_primary_recommended_fix_from_root_cause(payload: dict[str, Any]) -> No
     - input: diagnosis payload dict with normalized `root_cause[]`;
     - output: no return; payload is updated in place.
     Compatibility rationale:
-    - current remediation flow remains single-plan and reads top-level `recommended_fix`.
+    - top-level `recommended_fix` is deprecated but still accepted by older prompt/completion paths.
     Why:
-    - we intentionally keep first-root-cause-first remediation behavior for this migration phase.
+    - the canonical multi-root-cause structure remains `root_cause[i].recommended_fix`, while the
+      top-level field is only a compatibility mirror for the leading root cause.
     """
     root_causes = payload.get("root_cause")
     if not isinstance(root_causes, list) or not root_causes:
@@ -6664,7 +6956,7 @@ def _normalize_remediation_plan_payload(
     alert_name: str | None = None,
     force_canary_override: bool | None = None,
 ) -> RemediationPlan | None:
-    """Normalize remediation plan payload while enforcing first-root-cause-first behavior.
+    """Normalize one remediation plan payload against a scoped primary root cause.
 
     Purpose:
     - validate/repair LLM remediation plan into executable `RemediationPlan`.
@@ -6672,9 +6964,11 @@ def _normalize_remediation_plan_payload(
     - input: raw plan payload plus validated diagnosis context and tool metadata;
     - output: validated `RemediationPlan` or `None` when plan is unsafe/invalid.
     Compatibility rationale:
-    - this phase intentionally keeps a single plan path and binds it to `root_cause[0]`.
+    - callers can pass a temporary diagnosis view where the target root cause is placed at
+      `root_cause[0]`, allowing one sanitizer to validate every per-root-cause plan.
     Why:
-    - avoids introducing multi-plan approval flow while diagnosis migrates to multi-root-cause.
+    - write-tool validation, node inference, canary normalization, and fallback descriptions all
+      need one active root-cause context per plan.
     """
     if raw_plan is None:
         return None
@@ -7874,7 +8168,7 @@ def _build_ttft_kill_process_plan_candidate(
     tool_runs: list[dict[str, Any]] | None = None,
     variables: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
-    """Build TTFT-focused kill-process plan candidate driven by the primary root cause.
+    """Build a TTFT-focused kill-process plan candidate for the scoped primary root cause.
 
     Purpose:
     - generate a safe plan candidate from detected suspect processes in TTFT scenarios.
@@ -7882,9 +8176,10 @@ def _build_ttft_kill_process_plan_candidate(
     - input: diagnosis context, evidence signals, and optional runtime probes;
     - output: remediation plan dict or None when candidate cannot be safely formed.
     Compatibility rationale:
-    - still returns a single plan because this migration intentionally keeps first-root-cause execution.
+    - the per-root-cause attachment loop reorders diagnosis context before calling this builder, so
+      "primary" means "the root cause currently being planned".
     Why:
-    - avoids introducing multi-root-cause multi-plan orchestration in the same release.
+    - this keeps TTFT process remediation reusable for both the leading and contributing root causes.
     """
     primary_root = _diagnosis_primary_root_cause(diagnosis)
     primary_root_title = str(primary_root.get("title") or "").strip() or "主根因"
@@ -8296,7 +8591,7 @@ def _step_text(step: dict[str, Any]) -> str:
 
 
 def _infer_step_node(*, step: dict[str, Any], diagnosis: DiagnosisResult) -> tuple[str | None, bool]:
-    """Infer target node from step text plus primary root-cause entities.
+    """Infer target node from step text plus the scoped primary root-cause entities.
 
     Purpose:
     - resolve a unique node candidate for tooling commands that require node scope.
@@ -8304,9 +8599,10 @@ def _infer_step_node(*, step: dict[str, Any], diagnosis: DiagnosisResult) -> tup
     - input: plan step dict and validated diagnosis result;
     - output: tuple(node_name_or_none, ambiguous_flag).
     Compatibility rationale:
-    - reads entities from `root_cause[0]` because the old top-level entity fields are removed.
+    - reads entities from `root_cause[0]`; per-root-cause planning passes a reordered diagnosis view
+      when validating a non-leading root cause.
     Why:
-    - remediation remains first-root-cause-driven in the current migration stage.
+    - node-scoped write tools need exactly one unambiguous target for the current plan.
     """
     inventory_names, host_to_name = _load_inventory_node_mapping()
     node_candidates: set[str] = set()

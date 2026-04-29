@@ -17,6 +17,7 @@ class EventType(str, Enum):
     THINKING_STEP = "thinking_step"
     TOOL_CALL = "tool_call"
     TOOL_RESULT = "tool_result"
+    DIAGNOSIS_CANDIDATES_READY = "diagnosis_candidates_ready"
     DIAGNOSIS_RESULT = "diagnosis_result"
     APPROVAL_REQUIRED = "approval_required"
     LOOP_START = "loop_start"
@@ -64,4 +65,3 @@ __all__ = [
     "EventType",
     "WSEvent",
 ]
-
