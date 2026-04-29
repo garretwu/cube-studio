@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 
 import type { DiagnosisSessionSummary, RemediationOverview, SessionEvent } from "../api/types";
 import { formatDateTime, formatDurationSeconds, formatPercent } from "../utils/format";
+import { formatRemediationPlanText, getRemediationStageLabel } from "../utils/remediationEventText";
 import { deriveRemediationExecutionView } from "../utils/remediationProgress";
 import { AppIcon } from "./ui";
 import RemediationTimeline from "./RemediationTimeline";
@@ -79,7 +80,7 @@ function getEventStage(event: SessionEvent): string {
 
 function getStatusLabel(value?: string | null, fallback = "未知"): string {
   if (!value) return fallback;
-  return STATUS_LABELS[value] ?? value;
+  return STATUS_LABELS[value] ?? getRemediationStageLabel(value, fallback);
 }
 
 function getStatusTone(value?: string | null): "neutral" | "accent" | "success" | "warning" | "danger" | "info" {
@@ -225,7 +226,7 @@ export default function RemediationDetailDrawer({
   const drawerApprover = getApprover(drawerEvents);
   const drawerRootCause = drawerOverview?.plan.root_cause ?? record?.summary.root_cause ?? "待补充";
   const drawerImpact = drawerOverview?.plan.estimated_impact ?? "待补充";
-  const drawerSummary = drawerOverview?.plan.description ?? record?.summary.summary ?? "";
+  const drawerSummary = formatRemediationPlanText(drawerOverview?.plan.description) || record?.summary.summary || "";
   const drawerTitle = summary
     ? summary.title.replace(/\s*[·•]\s*(CRITICAL|WARNING|INFO)$/i, "").trim() || summary.title
     : "";
@@ -387,7 +388,7 @@ export default function RemediationDetailDrawer({
                       {detailSteps.map((step) => (
                         <div key={step.step_id} className="remediation-panel-step">
                           <p className="remediation-panel-step__title">{`步骤 ${step.step_id}`}</p>
-                          <p className="remediation-panel-step__desc">{step.description}</p>
+                          <p className="remediation-panel-step__desc">{formatRemediationPlanText(step.description) || step.description}</p>
                           <p className="remediation-panel-step__meta">
                             {`工具：${step.tool} · 验证：${formatStepVerificationSummary(step)} · 超时：${step.timeout}s`}
                           </p>

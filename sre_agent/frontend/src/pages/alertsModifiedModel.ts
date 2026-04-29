@@ -1,6 +1,7 @@
 ﻿import type { Alert, AlertCluster, DiagnosisSession, DiagnosisSessionSummary } from "../api/types";
 import { buildAlertIncidentKey } from "../utils/alerts";
 import { formatWorkflowStatus } from "../utils/display";
+import { getPrimaryRootCause } from "./rootCauseModel";
 
 export type ChipTone = "neutral" | "accent" | "success" | "warning" | "danger" | "info";
 
@@ -169,7 +170,20 @@ function buildSummary(cluster: AlertCluster | undefined, alerts: Alert[]) {
 }
 
 function buildRootEntity(alerts: Alert[], session?: DiagnosisSession) {
-  const rootCauseEntities = session?.diagnosis_result?.root_cause_entities?.filter(Boolean) ?? [];
+  /**
+   * Build root-entity summary using primary root-cause entities.
+   *
+   * Purpose:
+   * - provide concise "主要对象" text in alert overview cards.
+   * Input/Output:
+   * - input: related alerts and optional diagnosis session;
+   * - output: root entity label string.
+   * Compatibility rationale:
+   * - reads entities from `root_cause[0]` and does not depend on removed legacy fields.
+   * Why:
+   * - keeps alert overview stable with new diagnosis schema.
+   */
+  const rootCauseEntities = getPrimaryRootCause(session?.diagnosis_result)?.entities?.filter(Boolean) ?? [];
   if (rootCauseEntities.length > 0) {
     return rootCauseEntities.length > 1
       ? `${rootCauseEntities[0]} 等 ${rootCauseEntities.length} 个对象`
@@ -180,6 +194,19 @@ function buildRootEntity(alerts: Alert[], session?: DiagnosisSession) {
 }
 
 function buildImpactScope(alerts: Alert[], session?: DiagnosisSession) {
+  /**
+   * Build impact scope summary combining services and primary root-cause entities.
+   *
+   * Purpose:
+   * - generate compact impact sentence for list/card surfaces.
+   * Input/Output:
+   * - input: related alerts and optional diagnosis session;
+   * - output: impact scope string.
+   * Compatibility rationale:
+   * - reads entities from primary root cause and keeps service logic unchanged.
+   * Why:
+   * - avoids relying on removed top-level root-cause entity fields.
+   */
   const impactSummary = session?.diagnosis_result?.impact_summary?.trim();
   if (impactSummary) {
     return impactSummary;
@@ -190,7 +217,7 @@ function buildImpactScope(alerts: Alert[], session?: DiagnosisSession) {
     ...alerts.map((alert) => alert.labels.service),
   ]);
   const entities = unique([
-    ...(session?.diagnosis_result?.root_cause_entities ?? []),
+    ...(getPrimaryRootCause(session?.diagnosis_result)?.entities ?? []),
     ...alerts.map((alert) => getAlertEntity(alert)),
   ]);
   const parts: string[] = [];
@@ -391,7 +418,7 @@ export function buildAlertDashboardView(
     const action = buildAction(matchedSummary, descriptor);
     const alertNames = unique(group.alerts.map((alert) => alert.alert_name));
     const latestStartsAt = getLatestStartsAt(group.alerts);
-    const analysisSummary = matchedSession?.diagnosis_result?.root_cause ?? null;
+    const analysisSummary = getPrimaryRootCause(matchedSession?.diagnosis_result)?.title ?? null;
     const planSummary = matchedSession?.diagnosis_result?.recommended_fix?.description ?? null;
 
     return {

@@ -1046,13 +1046,22 @@ export const apiClient = {
     return loop;
   },
 
-  approveRemediation: async (sessionId: string, approved: boolean, user = "ui-operator", planVersion?: number) => {
+  approveRemediation: async (
+    sessionId: string,
+    approved: boolean,
+    user = "ui-operator",
+    planVersion?: number,
+    planKey?: string,
+    approveAll?: boolean,
+  ) => {
     const response = await api.post<SREApiEnvelope<RemediationResult> | RemediationResult>(
       `/api/remediate/${sessionId}/approve`,
       {
         approved,
         user,
         plan_version: planVersion,
+        plan_key: planKey,
+        approve_all: approveAll,
       },
       {
         timeout: APPROVE_REMEDIATION_TIMEOUT_MS,
@@ -1061,7 +1070,12 @@ export const apiClient = {
     return unwrapPayload(response.data);
   },
 
-  reviseRemediationPlan: async (sessionId: string, instruction: string, basePlanVersion?: number) => {
+  reviseRemediationPlan: async (
+    sessionId: string,
+    instruction: string,
+    basePlanVersion?: number,
+    planKey?: string,
+  ) => {
     const response = await api.post<
       SREApiEnvelope<{
         session_id: string;
@@ -1072,6 +1086,7 @@ export const apiClient = {
     >(`/api/remediate/${sessionId}/plan/revise`, {
       instruction,
       base_plan_version: basePlanVersion,
+      plan_key: planKey,
     });
     return unwrapPayload(response.data);
   },
@@ -1106,14 +1121,29 @@ export const apiClient = {
       const remediationEvents = events.filter((event) => event.type === "remediation_progress");
       const latestRemediationEvent = remediationEvents.at(-1);
       const latestStage = String(latestRemediationEvent?.data?.["stage"] ?? "").trim().toLowerCase();
+      const normalizedSessionStatus = String(session.status ?? "").trim().toLowerCase();
+      const terminalStageStatusMap: Record<string, string> = {
+        execution_succeeded: "resolved",
+        resolved: "resolved",
+        execution_failed: "failed",
+        execution_timeout: "timeout",
+        escalation_required: "escalated",
+        rollback_failed: "failed",
+      };
+      const latestStageStatus =
+        terminalStageStatusMap[latestStage] ??
+        (latestStage === "next_plan_approval_required" ? "approval_required" : "");
+      const progressStatus = latestStageStatus || normalizedSessionStatus || latestStage || "pending";
       const latestSucceededEvent = [...remediationEvents]
         .reverse()
         .find((event) => String(event.data?.["stage"] ?? "").trim().toLowerCase() === "execution_succeeded");
+      const isSucceeded = progressStatus === "resolved" || latestStage === "execution_succeeded";
       const completedSteps = Number(
-        latestSucceededEvent?.data?.["steps_completed"] ??
-          (String(session.status ?? "").trim().toLowerCase() === "resolved" ? currentPlan.steps.length : 0),
+        isSucceeded
+          ? currentPlan.steps.length
+          : latestSucceededEvent?.data?.["steps_completed"] ??
+              (normalizedSessionStatus === "resolved" ? currentPlan.steps.length : 0),
       );
-      const progressStatus = String(session.status || "").trim() || latestStage || "pending";
       // Extract canary batch status from remediation_progress events
       const batchStatusMap = new Map<string, { batch: string; progress: number; status: string }>();
       for (const event of remediationEvents) {
@@ -1191,7 +1221,7 @@ export const apiClient = {
         session_id: loop.session_id,
         plan: {
           plan_id: loop.session_id,
-          root_cause: loop.winning_candidate?.root_cause ?? "pending",
+          root_cause: loop.winning_candidate?.title ?? "pending",
           description: "Derived from loop result",
           steps: [],
           estimated_impact: "unknown",

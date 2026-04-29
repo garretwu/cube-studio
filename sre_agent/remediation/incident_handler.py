@@ -179,14 +179,34 @@ class IncidentHandler:
                     "data": diagnosis_payload,
                 }
             )
-        if session.diagnosis_result is not None and session.diagnosis_result.recommended_fix is not None:
-            await self.trace_publisher.publish(
-                {
-                    "type": EventType.APPROVAL_REQUIRED.value,
-                    "session_id": session.session_id,
-                    "data": {"plan_id": session.diagnosis_result.recommended_fix.plan_id},
-                }
-            )
+        if session.diagnosis_result is not None:
+            plan_summaries: list[dict[str, Any]] = []
+            for index, root in enumerate(session.diagnosis_result.root_cause):
+                if root.recommended_fix is None:
+                    continue
+                plan_summaries.append(
+                    {
+                        "rank": index + 1,
+                        "plan_key": f"rc:{root.id}" if str(root.id).strip() else f"rc:{index + 1}",
+                        "plan_id": root.recommended_fix.plan_id,
+                        "root_cause_id": root.id,
+                        "root_cause_title": root.title,
+                    }
+                )
+            if plan_summaries:
+                primary = plan_summaries[0]
+                await self.trace_publisher.publish(
+                    {
+                        "type": EventType.APPROVAL_REQUIRED.value,
+                        "session_id": session.session_id,
+                        "data": {
+                            "plan_count": len(plan_summaries),
+                            "plans": plan_summaries,
+                            "plan_key": primary["plan_key"],
+                            "plan_id": primary["plan_id"],
+                        },
+                    }
+                )
 
     async def _publish_completion_event(self, result: LoopResult) -> None:
         if self.trace_publisher is None:

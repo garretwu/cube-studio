@@ -10,6 +10,7 @@ import { AppIcon, AppInput, MetricTile, StatusChip, SurfaceCard } from "../compo
 import { useWebSocket } from "../hooks/useWebSocket";
 import { useRemediationStore } from "../store/remediationStore";
 import { formatPercent, formatTimestamp } from "../utils/format";
+import { formatRemediationPlanText } from "../utils/remediationEventText";
 import { deriveRemediationExecutionView } from "../utils/remediationProgress";
 
 type RemediationRecord = {
@@ -131,7 +132,7 @@ function buildSearchText(record: RemediationRecord): string {
     record.summary.root_cause,
     record.summary.summary,
     record.overview?.plan.root_cause,
-    record.overview?.plan.description,
+    formatRemediationPlanText(record.overview?.plan.description),
     getApprover(record.overview?.timeline),
   ]
     .filter(Boolean)
@@ -451,8 +452,11 @@ function RemediationPage() {
                               </div>
                             </td>
                             <td className="remediation-record-table__cell remediation-record-table__cell--description">
-                              <div className="remediation-record-table__description" title={recordOverview?.plan.description ?? record.summary.root_cause ?? record.summary.summary}>
-                                {recordOverview?.plan.description ?? record.summary.root_cause ?? record.summary.summary}
+                              <div
+                                className="remediation-record-table__description"
+                                title={formatRemediationPlanText(recordOverview?.plan.description) || record.summary.root_cause || record.summary.summary}
+                              >
+                                {formatRemediationPlanText(recordOverview?.plan.description) || record.summary.root_cause || record.summary.summary}
                               </div>
                             </td>
                             <td className="remediation-record-table__cell">{approver}</td>

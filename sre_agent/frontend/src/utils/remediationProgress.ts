@@ -369,16 +369,12 @@ export function getRemediationOverallProgressDisplay(overview?: RemediationOverv
     ]),
   );
 
-  if (currentStage === "resolved") {
+  if (currentStage === "resolved" || currentStage === "execution_succeeded") {
     return 100;
   }
 
   const observationPassed = getObservationPassed(overview.timeline ?? []);
   if (observationPassed === true) {
-    return 100;
-  }
-
-  if (currentStage === "execution_succeeded") {
     return 100;
   }
 

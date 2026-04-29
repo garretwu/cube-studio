@@ -15,7 +15,14 @@ from sre_agent.models.remediation import (
     VerificationConfig,
 )
 from sre_agent.remediation import ApprovalGate, ApprovalInput, PlanValidationError, PlanValidator, RemediationEngine, RollbackJournal
-from sre_agent.tools import SafetyLevel, ToolDefinition, ToolExecutionContext, ToolRegistry, build_default_registry
+from sre_agent.tools import (
+    SafetyLevel,
+    ToolDefinition,
+    ToolExecutionContext,
+    ToolRegistry,
+    ToolValidationError,
+    build_default_registry,
+)
 
 
 def _make_registry() -> ToolRegistry:
@@ -356,6 +363,203 @@ class TestRemediationIntegration:
         assert result.error == "verification failed"
 
     @pytest.mark.asyncio
+    async def test_integration_engine_defers_duplicate_verification_until_plan_end(self, tmp_path: Path) -> None:
+        registry = ToolRegistry()
+        action_calls: list[dict[str, Any]] = []
+        verify_calls: list[dict[str, Any]] = []
+
+        async def _terminate(params: dict[str, Any], context: ToolExecutionContext) -> dict[str, Any]:
+            _ = context
+            action_calls.append(dict(params))
+            return {"ok": True}
+
+        async def _find_remaining(params: dict[str, Any], context: ToolExecutionContext) -> dict[str, Any]:
+            _ = context
+            verify_calls.append(dict(params))
+            return {"count": 0 if len(action_calls) == 2 else 1}
+
+        registry.register(
+            ToolDefinition(
+                name="test.terminate",
+                description="terminate one synthetic target",
+                safety_level=SafetyLevel.HIGH,
+                params_schema={"type": "object", "required": ["target"]},
+                needs_approval=True,
+            ),
+            _terminate,
+        )
+        registry.register(
+            ToolDefinition(
+                name="process.find",
+                description="find remaining synthetic targets",
+                safety_level=SafetyLevel.READ_ONLY,
+                params_schema={"type": "object", "required": ["pattern"]},
+            ),
+            _find_remaining,
+        )
+        verification = VerificationConfig(
+            method="tool_call",
+            tool="process.find",
+            tool_params={"pattern": "synthetic_load"},
+            condition=VerificationCondition(field="count", operator="==", value=0),
+            wait_seconds=1,
+        )
+        plan = RemediationPlan(
+            plan_id="plan-final-verify",
+            root_cause="synthetic load",
+            description="terminate all synthetic targets before final verification",
+            estimated_impact="ttft recovers",
+            confidence=0.8,
+            priority="P1",
+            steps=[
+                RemediationStep(
+                    step_id=1,
+                    description="terminate target A",
+                    tool="test.terminate",
+                    params={"target": "a"},
+                    verification=verification,
+                ),
+                RemediationStep(
+                    step_id=2,
+                    description="terminate target B",
+                    tool="test.terminate",
+                    params={"target": "b"},
+                    verification=verification,
+                ),
+            ],
+        )
+        engine = RemediationEngine(
+            registry,
+            ApprovalGate(default_policy="auto_approve"),
+            RollbackJournal(tmp_path / "wal.jsonl"),
+            execution_context=ToolExecutionContext(),
+        )
+
+        result = await engine.execute(plan)
+
+        assert result.success is True
+        assert len(action_calls) == 2
+        assert len(verify_calls) == 1
+        assert result.verification_results == [
+            {
+                "step_id": 2,
+                "verification_index": 1,
+                "verification_scope": "plan_final",
+                "verified": True,
+            }
+        ]
+
+    @pytest.mark.asyncio
+    async def test_integration_engine_canary_runs_global_verification_only_after_all_batches(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        async def _fast_sleep(delay: float) -> None:
+            _ = delay
+
+        monkeypatch.setattr(asyncio, "sleep", _fast_sleep)
+        registry = ToolRegistry()
+        action_calls: list[dict[str, Any]] = []
+        verify_calls: list[dict[str, Any]] = []
+
+        async def _kill_process(params: dict[str, Any], context: ToolExecutionContext) -> dict[str, Any]:
+            _ = context
+            action_calls.append(dict(params))
+            return {"ok": True}
+
+        async def _find_remaining(params: dict[str, Any], context: ToolExecutionContext) -> dict[str, Any]:
+            _ = context
+            verify_calls.append(dict(params))
+            return {"count": 0 if len(action_calls) == 4 else 3}
+
+        registry.register(
+            ToolDefinition(
+                name="kill_process",
+                description="terminate process",
+                safety_level=SafetyLevel.HIGH,
+                params_schema={"type": "object", "required": ["node"]},
+                needs_approval=True,
+            ),
+            _kill_process,
+        )
+        registry.register(
+            ToolDefinition(
+                name="process.find",
+                description="find remaining processes",
+                safety_level=SafetyLevel.READ_ONLY,
+                params_schema={"type": "object", "required": ["pattern"]},
+            ),
+            _find_remaining,
+        )
+        verification = VerificationConfig(
+            method="tool_call",
+            tool="process.find",
+            tool_params={"pattern": "fi_gpu_burn_gpu_contention", "node": "worker-03"},
+            condition=VerificationCondition(field="count", operator="==", value=0),
+            wait_seconds=1,
+        )
+        plan = RemediationPlan(
+            plan_id="proposal-ttft-canary-final-verify",
+            root_cause="gpu burn contention",
+            description="terminate all burn processes before global verification",
+            estimated_impact="ttft recovers",
+            confidence=0.9,
+            priority="P1",
+            canary=CanaryConfig(
+                enabled=True,
+                target_percentage=0.25,
+                monitor_duration=1,
+                success_criteria=[],
+                criteria_mode="all",
+                max_batches=2,
+                progressive=False,
+            ),
+            steps=[
+                RemediationStep(
+                    step_id=index,
+                    description=f"kill process {index}",
+                    tool="kill_process",
+                    params={"node": "worker-03", "pid": 2141570 + index, "entity_id": f"proc:{index}", "signal": "TERM"},
+                    verification=verification,
+                )
+                for index in range(1, 5)
+            ],
+        )
+        engine = RemediationEngine(
+            registry,
+            ApprovalGate(default_policy="auto_approve"),
+            RollbackJournal(tmp_path / "wal.jsonl"),
+            execution_context=ToolExecutionContext(),
+        )
+        progress_events: list[tuple[str, dict[str, Any]]] = []
+
+        async def _on_progress(*, stage: str, details: dict[str, Any] | None = None) -> None:
+            progress_events.append((stage, dict(details or {})))
+
+        result = await engine.execute(
+            plan,
+            session_id="session-ttft-canary-final-verify",
+            progress_callback=_on_progress,
+        )
+
+        assert result.success is True
+        assert len(action_calls) == 4
+        assert len(verify_calls) == 1
+        assert verify_calls[0] == {"pattern": "fi_gpu_burn_gpu_contention", "node": "worker-03"}
+        assert result.verification_results == [
+            {
+                "step_id": 4,
+                "verification_index": 1,
+                "verification_scope": "plan_final",
+                "verified": True,
+            }
+        ]
+        batch_started = [details for stage, details in progress_events if stage == "canary_batch_started"]
+        assert batch_started[0]["targets_in_batch"] == ["proc:1"]
+        assert batch_started[1]["targets_in_batch"] == ["proc:2", "proc:3", "proc:4"]
+
+    @pytest.mark.asyncio
     async def test_integration_engine_canary_batches_process_targets_on_same_node(self, tmp_path: Path) -> None:
         registry = _make_registry()
         gate = ApprovalGate(default_policy="auto_approve")
@@ -597,6 +801,20 @@ class TestRemediationIntegration:
         assert len(batch_started) == 2
         assert batch_started[0]["targets_in_batch"] == ["proc:1"]
         assert batch_started[1]["targets_in_batch"] == ["proc:2", "proc:3", "proc:4"]
+        second_batch_steps = [
+            details
+            for stage, details in progress_events
+            if stage == "remediating" and details.get("steps_total") == 3
+        ]
+        assert [details["step_id"] for details in second_batch_steps] == [2, 3, 4]
+        assert [details["display_step_index"] for details in second_batch_steps] == [1, 2, 3]
+        assert [details["step_index"] for details in second_batch_steps] == [1, 2, 3]
+        assert [details["message"].split(":")[0] for details in second_batch_steps] == [
+            "正在执行步骤 1/3",
+            "正在执行步骤 2/3",
+            "正在执行步骤 3/3",
+        ]
+        assert not any("4/3" in str(details.get("message", "")) for _, details in progress_events)
 
     @pytest.mark.asyncio
     async def test_integration_engine_ttft_stale_pid_precheck_treats_absent_pid_as_completed(self, tmp_path: Path) -> None:
@@ -653,12 +871,99 @@ class TestRemediationIntegration:
         assert result.steps_completed == 1
         assert result.error_code is None
         assert result.verification_results
+        assert result.verification_results[0]["success"] is True
         assert result.verification_results[0]["verified"] is True
         assert result.verification_results[0]["skipped"] is True
-        assert result.verification_results[0]["reason"] == "pid_already_absent"
+        assert result.verification_results[0]["reason"] == "process_not_found_treated_as_success"
+        assert result.verification_results[0]["process_not_found_treated_as_success"] is True
         # only precheck command should run; kill is skipped because pid already absent
         assert len(ssh.calls) == 1
         assert "ps -eo pid=,comm=,args=" in ssh.calls[0]["command"]
+
+    @pytest.mark.asyncio
+    async def test_integration_engine_continues_when_kill_process_target_disappears(self, tmp_path: Path) -> None:
+        registry = ToolRegistry()
+        calls: list[str] = []
+
+        async def _kill_process(params: dict[str, Any], context: ToolExecutionContext) -> dict[str, Any]:
+            _ = (params, context)
+            calls.append("kill_process")
+            raise ToolValidationError("kill: (9783) - No such process")
+
+        async def _delete_pod(params: dict[str, Any], context: ToolExecutionContext) -> dict[str, Any]:
+            _ = context
+            calls.append("k8s.delete_pod")
+            return {"deleted": params["pod_name"]}
+
+        registry.register(
+            ToolDefinition(
+                name="kill_process",
+                description="terminate process",
+                safety_level=SafetyLevel.HIGH,
+                params_schema={"type": "object", "required": ["node"]},
+                needs_approval=True,
+            ),
+            _kill_process,
+        )
+        registry.register(
+            ToolDefinition(
+                name="k8s.delete_pod",
+                description="delete pod",
+                safety_level=SafetyLevel.HIGH,
+                params_schema={"type": "object", "required": ["namespace", "pod_name"]},
+                needs_approval=True,
+            ),
+            _delete_pod,
+        )
+        engine = RemediationEngine(
+            registry,
+            ApprovalGate(default_policy="auto_approve"),
+            RollbackJournal(tmp_path / "wal.jsonl"),
+            execution_context=ToolExecutionContext(),
+        )
+        progress_events: list[tuple[str, dict[str, Any]]] = []
+        plan = RemediationPlan(
+            plan_id="plan-process-disappears",
+            root_cause="synthetic load process",
+            description="kill process and continue with follow-up action",
+            estimated_impact="ttft recovers",
+            confidence=0.9,
+            priority="P1",
+            steps=[
+                RemediationStep(
+                    step_id=1,
+                    description="kill process A",
+                    tool="kill_process",
+                    params={"node": "worker-03", "pid": 9783, "signal": "TERM"},
+                    verification=VerificationConfig(method="wait", wait_seconds=1),
+                ),
+                RemediationStep(
+                    step_id=2,
+                    description="delete canary pod",
+                    tool="k8s.delete_pod",
+                    params={"namespace": "infer", "pod_name": "vllm-canary-0"},
+                    verification=VerificationConfig(method="wait", wait_seconds=1),
+                ),
+            ],
+        )
+
+        async def _progress_callback(*, stage: str, details: dict[str, Any] | None = None) -> None:
+            progress_events.append((stage, details or {}))
+
+        result = await engine.execute(plan, session_id="session-process-disappears", progress_callback=_progress_callback)
+
+        assert result.success is True
+        assert result.steps_completed == 2
+        assert result.verification_results[0]["success"] is True
+        assert result.verification_results[0]["verified"] is True
+        assert result.verification_results[0]["skipped"] is True
+        assert result.verification_results[0]["reason"] == "process_not_found_treated_as_success"
+        assert result.verification_results[0]["process_not_found_treated_as_success"] is True
+        assert calls == ["kill_process", "k8s.delete_pod"]
+        absent_events = [details for stage, details in progress_events if details.get("process_already_absent")]
+        assert absent_events
+        assert absent_events[-1]["process_not_found_treated_as_success"] is True
+        assert absent_events[-1]["message"] == "目标进程 9783 未找到，视为该 kill_process 步骤成功"
 
     @pytest.mark.asyncio
     async def test_integration_engine_ttft_precheck_still_fails_for_non_suspect_pid(self, tmp_path: Path) -> None:

@@ -7,6 +7,7 @@ import { AppIcon } from "../components/ui";
 import { useWebSocket } from "../hooks/useWebSocket";
 import { useDiagnosisStore } from "../store/diagnosisStore";
 import { formatDateTimeParts, formatTimestamp } from "../utils/format";
+import { formatRemediationPlanText } from "../utils/remediationEventText";
 import DiagnosisModifiedReportRail from "./DiagnosisModifiedReportRail";
 import { buildDiagnosisModifiedReportView } from "./diagnosisModifiedReportModel";
 import {
@@ -37,6 +38,7 @@ const DEMO_MIN_TOOL_LOADING_DWELL_MS = 3500;
 const ROOT_CAUSE_REVEAL_DELAY_MS = 1500;
 const TOOL_RESULT_TIMEOUT_MS = 15_000;
 const STREAM_COMPLETION_BUFFER_MS = 640;
+const LIVE_SESSION_RECONCILE_INTERVAL_MS = 2_000;
 const DEMO_DEFAULT_PROMPT = "Analyze auth-svc latency and error-rate spike in the past hour";
 const THINKING_PREVIEW_CHAR_LIMIT = 200;
 const DEMO_POST_APPROVAL_AUTO_FLOW = [
@@ -745,7 +747,7 @@ function ThinkingBlock({
   onStreamComplete?: () => void;
 }) {
   const isThinking = item.status === "thinking";
-  const [isExpanded, setIsExpanded] = useState(false);
+  const [isExpanded, setIsExpanded] = useState(true);
   const latestSummaryLine = item.summaryLine?.trim() || extractLatestThinkingSummary(item.content);
   const streamingPreviewText = buildStreamingThinkingPreview(latestSummaryLine || item.content);
   const hasCompletedContent = !isThinking && item.content.trim().length > 0;
@@ -753,10 +755,10 @@ function ThinkingBlock({
 
   useEffect(() => {
     if (isThinking) {
-      setIsExpanded(false);
+      setIsExpanded(true);
       return;
     }
-    setIsExpanded(false);
+    setIsExpanded(true);
   }, [isThinking, item.content, item.id]);
 
   const durationLabel = formatThoughtDurationLabel(item.thoughtDurationSec);
@@ -1161,7 +1163,7 @@ function ApprovalPlanCard({
             <ToneBadge tone={statusTone}>{statusLabel}</ToneBadge>
           </div>
           <h3 className="diagnosis-modified-approval-card__title">{plan.title}</h3>
-          <p className="diagnosis-modified-approval-card__description">{plan.description}</p>
+          <p className="diagnosis-modified-approval-card__description">{formatRemediationPlanText(plan.description) || plan.description}</p>
         </div>
       </header>
 
@@ -1189,8 +1191,8 @@ function ApprovalPlanCard({
               <li key={step.id}>
                 <span>{index + 1}</span>
                 <div>
-                  <strong>{step.title}</strong>
-                  {step.detail ? <p>{step.detail}</p> : null}
+                  <strong>{formatRemediationPlanText(step.title) || step.title}</strong>
+                  {step.detail ? <p>{formatRemediationPlanText(step.detail) || step.detail}</p> : null}
                   {step.paramsSummary ? <code>{step.paramsSummary}</code> : null}
                 </div>
               </li>
@@ -1306,11 +1308,12 @@ function DiagnosisModifiedPage() {
     currentPlanVersion,
     approvePlan,
     bootstrapSession,
+    reconcileSession,
     applyEvent,
     setConnectionState,
   } = useDiagnosisStore();
 
-  const liveView = useMemo(() => buildDiagnosisModifiedLiveView(session, messages), [messages, session]);
+  const liveView = useMemo(() => buildDiagnosisModifiedLiveView(session, messages, events), [events, messages, session]);
   const isTerminalLiveSession = TERMINAL_SESSION_STATUSES.has(
     String(session?.status ?? "").trim().toLowerCase(),
   );
@@ -1630,6 +1633,31 @@ function DiagnosisModifiedPage() {
     }
     void bootstrapSession(routeSessionId);
   }, [bootstrapSession, routeSessionId, shouldBootstrapLiveSession]);
+
+  useEffect(() => {
+    if (!shouldBootstrapLiveSession || bootstrapStatus !== "ready" || !activeSessionId || !session?.session_id) {
+      return undefined;
+    }
+    if (isTerminalLiveSession) {
+      return undefined;
+    }
+
+    void reconcileSession(activeSessionId);
+    const timer = window.setInterval(() => {
+      void reconcileSession(activeSessionId);
+    }, LIVE_SESSION_RECONCILE_INTERVAL_MS);
+
+    return () => {
+      window.clearInterval(timer);
+    };
+  }, [
+    activeSessionId,
+    bootstrapStatus,
+    isTerminalLiveSession,
+    reconcileSession,
+    session?.session_id,
+    shouldBootstrapLiveSession,
+  ]);
 
   useEffect(() => {
     setLiveApprovalResolution(null);

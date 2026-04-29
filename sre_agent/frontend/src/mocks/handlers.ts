@@ -76,7 +76,7 @@ const loopPayload = {
   session_id: diagnosisSession.session_id,
   outcome: "re_diagnosed" as const,
   winning_candidate: {
-    root_cause: diagnosisSession.diagnosis_result?.root_cause ?? "pending",
+    title: diagnosisSession.diagnosis_result?.root_cause?.[0]?.title ?? "pending",
     confidence: diagnosisSession.diagnosis_result?.confidence ?? 0.5,
   },
   attempts: [],
@@ -351,7 +351,7 @@ export const handlers = [
       plan_version: 2,
       plan: {
         plan_id: "plan-2",
-        root_cause: diagnosisSession.diagnosis_result?.root_cause ?? "unknown",
+        root_cause: diagnosisSession.diagnosis_result?.root_cause?.[0]?.title ?? "unknown",
         description: body.instruction ?? "revised",
         steps: [],
         estimated_impact: "low",

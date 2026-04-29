@@ -135,5 +135,6 @@ def test_load_config_applies_remediation_observation_polling_defaults(tmp_path: 
 
     config = load_config(config_path)
     assert config.remediation.observation_seconds == 600
+    assert config.remediation.ranked_intermediate_observation_seconds == 30
     assert config.remediation.observation_poll_seconds == 10
     assert config.remediation.execution_timeout_seconds == 900

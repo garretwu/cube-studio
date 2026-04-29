@@ -43,6 +43,7 @@ memory:
 
 remediation:
   observation_seconds: 600
+  ranked_intermediate_observation_seconds: 30
   observation_poll_seconds: 10
 
 ontology:

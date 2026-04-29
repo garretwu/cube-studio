@@ -9,6 +9,7 @@ vi.mock("../api/client", () => ({
     getRemediationOverview: vi.fn(),
     getSessionEvents: vi.fn(),
     getSessionLoop: vi.fn(),
+    getDiagnosisSession: vi.fn(),
     approveRemediation: vi.fn(),
   },
 }));
@@ -47,7 +48,7 @@ const remediationOverviewFixture: RemediationOverview = {
       type: "remediation_progress",
       session_id: "sess-1",
       timestamp: "2026-04-03T10:00:00Z",
-      data: { event_id: "1", stage: "execution_succeeded", steps_completed: 1 },
+      data: { event_id: "1", stage: "execution_succeeded", steps_completed: 1, plan_key: "rc:rc-1" },
     },
   ],
 };
@@ -105,6 +106,37 @@ describe("remediationStore", () => {
     expect(state.lastEventId).toBe("2");
   });
 
+  it("marks overview resolved when realtime execution succeeds", () => {
+    const runningOverview: RemediationOverview = {
+      ...remediationOverviewFixture,
+      progress: {
+        ...remediationOverviewFixture.progress,
+        status: "remediating",
+        completed_steps: 0,
+        total_steps: 1,
+      },
+      timeline: [],
+    };
+    useRemediationStore.setState({
+      sessionId: "sess-1",
+      overview: runningOverview,
+      events: [],
+    });
+
+    useRemediationStore.getState().applyRealtimeEvent({
+      schema_version: "1.0",
+      type: "remediation_progress",
+      session_id: "sess-1",
+      timestamp: "2026-04-03T10:00:03Z",
+      data: { event_id: "3", stage: "execution_succeeded", steps_completed: 1 },
+    });
+
+    const state = useRemediationStore.getState();
+    expect(state.overview?.progress.status).toBe("resolved");
+    expect(state.overview?.progress.completed_steps).toBe(1);
+    expect(state.overview?.approval_required).toBe(false);
+  });
+
   it("reconciles events incrementally by last_event_id", async () => {
     useRemediationStore.setState({
       sessionId: "sess-1",
@@ -151,7 +183,7 @@ describe("remediationStore", () => {
     await expect(useRemediationStore.getState().submitApproval(true)).resolves.toBeUndefined();
 
     const state = useRemediationStore.getState();
-    expect(apiClient.approveRemediation).toHaveBeenCalledWith("sess-1", true, "ui-operator", 2);
+    expect(apiClient.approveRemediation).toHaveBeenCalledWith("sess-1", true, "ui-operator", 2, "rc:rc-1");
     expect(apiClient.getSessionLoop).toHaveBeenCalledWith("sess-1");
     expect(state.overview?.session_id).toBe("sess-1");
     expect(state.events).toHaveLength(1);

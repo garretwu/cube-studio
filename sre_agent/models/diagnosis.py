@@ -223,46 +223,68 @@ class PropagationStep(StrictFrozenModel):
     description: str = Field(min_length=1)
 
 
-class RankedRootCause(StrictFrozenModel):
-    """Ranked candidate root cause."""
+class DiagnosedRootCause(StrictFrozenModel):
+    """Formal multi-root-cause diagnosis item used as the primary API structure."""
 
-    rank: int = Field(ge=1)
-    root_cause: str = Field(min_length=1)
-    root_cause_layer: RootCauseLayer
-    root_cause_entities: list[str] = Field(default_factory=list)
+    id: str = Field(default_factory=lambda: uuid4().hex, min_length=1)
+    title: str = Field(min_length=1, validation_alias=AliasChoices("title", "root_cause"))
+    layer: RootCauseLayer = Field(validation_alias=AliasChoices("layer", "root_cause_layer"))
+    entities: list[str] = Field(default_factory=list, validation_alias=AliasChoices("entities", "root_cause_entities"))
     confidence: float = Field(ge=0.0, le=1.0)
+    certainty: DiagnosisCertainty = "probable"
+    status: Literal["confirmed", "contributing", "suspected", "monitoring"] = "suspected"
     evidence_summary: str = Field(min_length=1)
-    recommended_fix: RemediationPlan | None = None
+    impact_summary: str = Field(min_length=1)
     distinguishing_verification: str | None = None
+    factor_type: Literal["gpu_contention", "external_load", "cache_pressure", "scheduler", "mixed", "unknown"] | None = None
+    evidence_refs: list[str] = Field(default_factory=list)
+    evidence_interpretation: str | None = None
+    recommended_fix: RemediationPlan | None = None
 
 
 class DiagnosisResult(StrictFrozenModel):
-    """Diagnosis result supporting both single and ranked-candidate modes."""
+    """Diagnosis result with root_cause[] as the single source of truth."""
 
-    root_cause: str = Field(min_length=1)
-    root_cause_layer: RootCauseLayer
-    root_cause_entities: list[str] = Field(default_factory=list)
+    root_cause: list[DiagnosedRootCause] = Field(min_length=1)
     confidence: float = Field(ge=0.0, le=1.0)
     next_action: str | None = None
     hypotheses: list[Hypothesis] = Field(default_factory=list)
     propagation_chain: list[PropagationStep] = Field(default_factory=list)
     impact_summary: str = Field(min_length=1)
     affected_services: list[str] = Field(default_factory=list)
-    recommended_fix: RemediationPlan | None = None
+    # Deprecated compatibility field. External payloads should use root_cause[i].recommended_fix only.
+    recommended_fix: RemediationPlan | None = Field(default=None, exclude=True)
     triage_priority: TriagePriority
-    ranked_candidates: list[RankedRootCause] = Field(default_factory=list)
     diagnosis_certainty: DiagnosisCertainty
 
     @model_validator(mode="after")
     def _validate_consistency(self) -> DiagnosisResult:
-        if self.ranked_candidates:
-            if self.ranked_candidates[0].root_cause != self.root_cause:
-                raise ValueError("ranked_candidates[0] must match root_cause")
-            ranks = [candidate.rank for candidate in self.ranked_candidates]
-            if ranks != sorted(ranks):
-                raise ValueError("ranked_candidates must be ordered by rank")
+        """Validate root-cause primary structure and normalize legacy top-level plan input.
+
+        Purpose:
+        - enforce the contract where `root_cause[]` is mandatory and primary;
+        - absorb deprecated top-level `recommended_fix` into `root_cause[0].recommended_fix` when needed.
+        Input/Output:
+        - input: parsed DiagnosisResult fields from model validation;
+        - output: validated DiagnosisResult with plan data normalized onto `root_cause[]`.
+        Compatibility rationale:
+        - this validator intentionally avoids old `ranked_candidates`/single-string semantics because
+          the migration has switched to an array-based primary structure.
+        Why:
+        - avoids exposing or relying on top-level plan while keeping old payload compatibility.
+        """
+        if not self.root_cause:
+            raise ValueError("root_cause must contain at least one item")
+        primary = self.root_cause[0]
+        if not primary.title.strip():
+            raise ValueError("root_cause[0].title must not be blank")
         if self.diagnosis_certainty == "confirmed" and self.confidence < 0.85:
             raise ValueError("confirmed diagnosis requires confidence >= 0.85")
+        if self.recommended_fix is not None:
+            synchronized_root_causes = list(self.root_cause)
+            if primary.recommended_fix is None:
+                synchronized_root_causes[0] = primary.model_copy(update={"recommended_fix": self.recommended_fix})
+            return self.model_copy(update={"root_cause": synchronized_root_causes, "recommended_fix": None})
         return self
 
 
@@ -320,7 +342,10 @@ class DiagnosisSession(StrictFrozenModel):
         """Compatibility alias for older snippets that access `session.proposed_plan`."""
         if self.diagnosis_result is None:
             return None
-        return self.diagnosis_result.recommended_fix
+        for item in self.diagnosis_result.root_cause:
+            if item.recommended_fix is not None:
+                return item.recommended_fix
+        return None
 
 
 __all__ = [
@@ -329,7 +354,7 @@ __all__ = [
     "ThinkingTrace",
     "Hypothesis",
     "PropagationStep",
-    "RankedRootCause",
+    "DiagnosedRootCause",
     "DiagnosisResult",
     "DiagnosisSession",
     "RemediationAlertSnapshot",

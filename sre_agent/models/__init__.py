@@ -3,12 +3,12 @@
 from sre_agent.models.alert import Alert, AlertSeverity, AlertStatus
 from sre_agent.models.common import ErrorCode, SREError, SREResponse, SafetyLevel, StrictFrozenModel
 from sre_agent.models.diagnosis import (
+    DiagnosedRootCause,
     DiagnosisResult,
     DiagnosisSession,
     Hypothesis,
     Observation,
     PropagationStep,
-    RankedRootCause,
     ThinkingStep,
     ThinkingTrace,
 )
@@ -30,7 +30,7 @@ from sre_agent.models.remediation import (
 )
 
 # Resolve cross-module forward refs after both diagnosis/remediation symbols are imported.
-rebuild_remediation_models(RankedRootCause)
+rebuild_remediation_models(DiagnosedRootCause)
 
 __all__ = [
     "StrictFrozenModel",
@@ -46,7 +46,7 @@ __all__ = [
     "ThinkingTrace",
     "Hypothesis",
     "PropagationStep",
-    "RankedRootCause",
+    "DiagnosedRootCause",
     "DiagnosisResult",
     "DiagnosisSession",
     "VerificationCondition",

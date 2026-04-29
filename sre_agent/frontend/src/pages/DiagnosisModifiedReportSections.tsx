@@ -785,6 +785,10 @@ function HypothesisSection({
     return <SectionLoading copy="Waiting for report data." variant="list" />;
   }
 
+  if (hypotheses.items.length === 0) {
+    return <p className="diagnosis-modified-report-rail__section-copy">{hypotheses.summary || "暂无候选假设验证数据。"}</p>;
+  }
+
   function openDetails(itemId: string) {
     setDetailVisibilityOverrides((previous) => {
       if (previous[itemId] === true) {

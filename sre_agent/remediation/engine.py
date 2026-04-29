@@ -9,7 +9,7 @@ import re
 import time
 from dataclasses import replace
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Iterable
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -54,41 +54,110 @@ class RemediationEngine:
         self.canary = CanaryExecutor(wal=wal, prometheus=prometheus)
         self._plans_by_session: dict[str, RemediationPlan] = {}
         self._plan_versions_by_session: dict[str, list[RemediationPlan]] = {}
+        self._plans_by_session_key: dict[str, dict[str, RemediationPlan]] = {}
+        self._plan_versions_by_session_key: dict[str, dict[str, list[RemediationPlan]]] = {}
+        self._default_plan_key_by_session: dict[str, str] = {}
         mode = str(execution_mode or "real").strip().lower()
         self.execution_mode = mode if mode in {"mock", "real"} else "real"
 
-    def register_plan(self, session_id: str, plan: RemediationPlan) -> None:
-        self._plans_by_session[session_id] = plan
-        versions = self._plan_versions_by_session.setdefault(session_id, [])
+    def register_plan(
+        self,
+        session_id: str,
+        plan: RemediationPlan,
+        *,
+        plan_key: str | None = None,
+        set_default: bool = True,
+    ) -> None:
+        resolved_key = self._normalize_plan_key(plan_key)
+        session_plans = self._plans_by_session_key.setdefault(session_id, {})
+        session_versions = self._plan_versions_by_session_key.setdefault(session_id, {})
+        session_plans[resolved_key] = plan
+        versions = session_versions.setdefault(resolved_key, [])
         if not versions:
             versions.append(plan)
-            return
-        latest = versions[-1]
-        if latest.model_dump(mode="json") != plan.model_dump(mode="json"):
-            versions.append(plan)
+        else:
+            latest = versions[-1]
+            if latest.model_dump(mode="json") != plan.model_dump(mode="json"):
+                versions.append(plan)
+        if set_default or session_id not in self._default_plan_key_by_session:
+            self._default_plan_key_by_session[session_id] = resolved_key
+        self._sync_legacy_session_views(session_id)
+
+    def register_plans(
+        self,
+        session_id: str,
+        plans: Iterable[tuple[str, RemediationPlan]],
+        *,
+        clear_existing: bool = True,
+    ) -> list[str]:
+        if clear_existing:
+            self.clear_session_plans(session_id)
+        registered_keys: list[str] = []
+        for index, (plan_key, plan) in enumerate(plans):
+            self.register_plan(
+                session_id,
+                plan,
+                plan_key=plan_key,
+                set_default=index == 0,
+            )
+            registered_keys.append(self._normalize_plan_key(plan_key))
+        self._sync_legacy_session_views(session_id)
+        return registered_keys
 
     async def approve_and_execute(
         self,
         session_id: str,
         approval: ApprovalInput,
         *,
+        plan_key: str | None = None,
         progress_callback: Any | None = None,
     ) -> RemediationResult:
-        plan = self._plans_by_session[session_id]
+        plan = self.get_plan(session_id, plan_key=plan_key)
+        if plan is None:
+            raise KeyError(session_id if plan_key is None else f"{session_id}:{plan_key}")
         await self.approval.submit_decision(session_id, approval)
-        return await self.execute(plan, session_id=session_id, progress_callback=progress_callback)
+        return await self.execute(
+            plan,
+            session_id=session_id,
+            plan_key=plan_key,
+            progress_callback=progress_callback,
+        )
 
-    def get_plan(self, session_id: str) -> RemediationPlan | None:
-        return self._plans_by_session.get(session_id)
+    def get_plan(self, session_id: str, *, plan_key: str | None = None) -> RemediationPlan | None:
+        if plan_key is None:
+            return self._plans_by_session.get(session_id)
+        resolved_key = self._normalize_plan_key(plan_key)
+        return self._plans_by_session_key.get(session_id, {}).get(resolved_key)
 
-    def get_plan_history(self, session_id: str) -> list[RemediationPlan]:
-        return list(self._plan_versions_by_session.get(session_id, []))
+    def get_plan_history(self, session_id: str, *, plan_key: str | None = None) -> list[RemediationPlan]:
+        if plan_key is None:
+            return list(self._plan_versions_by_session.get(session_id, []))
+        resolved_key = self._normalize_plan_key(plan_key)
+        return list(self._plan_versions_by_session_key.get(session_id, {}).get(resolved_key, []))
 
-    def get_latest_plan_version(self, session_id: str) -> int:
-        versions = self._plan_versions_by_session.get(session_id) or []
+    def get_latest_plan_version(self, session_id: str, *, plan_key: str | None = None) -> int:
+        if plan_key is None:
+            versions = self._plan_versions_by_session.get(session_id) or []
+        else:
+            resolved_key = self._normalize_plan_key(plan_key)
+            versions = self._plan_versions_by_session_key.get(session_id, {}).get(resolved_key) or []
         if not versions:
             return 0
         return len(versions)
+
+    def list_plan_keys(self, session_id: str) -> list[str]:
+        session_plans = self._plans_by_session_key.get(session_id, {})
+        default_key = self._default_plan_key_by_session.get(session_id)
+        ordered = sorted(session_plans.keys())
+        if default_key is not None and default_key in ordered:
+            ordered.remove(default_key)
+            ordered.insert(0, default_key)
+        return ordered
+
+    def get_all_plans(self, session_id: str) -> list[tuple[str, RemediationPlan]]:
+        session_plans = self._plans_by_session_key.get(session_id, {})
+        keys = self.list_plan_keys(session_id)
+        return [(key, session_plans[key]) for key in keys if key in session_plans]
 
     def revise_plan(
         self,
@@ -96,8 +165,12 @@ class RemediationEngine:
         session_id: str,
         instruction: str,
         base_plan_version: int | None = None,
+        plan_key: str | None = None,
     ) -> tuple[int, RemediationPlan]:
-        versions = self._plan_versions_by_session.get(session_id) or []
+        resolved_key = self._resolve_plan_key_or_default(session_id, plan_key)
+        if resolved_key is None:
+            raise KeyError(session_id)
+        versions = self._plan_versions_by_session_key.get(session_id, {}).get(resolved_key) or []
         if not versions:
             raise KeyError(session_id)
 
@@ -118,8 +191,11 @@ class RemediationEngine:
         plan_data["estimated_impact"] = f"{base_plan.estimated_impact} | Revision note: {revised_note}"
         revised_plan = RemediationPlan.model_validate(plan_data)
         versions.append(revised_plan)
-        self._plans_by_session[session_id] = revised_plan
-        self._plan_versions_by_session[session_id] = versions
+        session_plans = self._plans_by_session_key.setdefault(session_id, {})
+        session_versions = self._plan_versions_by_session_key.setdefault(session_id, {})
+        session_plans[resolved_key] = revised_plan
+        session_versions[resolved_key] = versions
+        self._sync_legacy_session_views(session_id)
         return next_version, revised_plan
 
     async def rollback(self, session_id: str) -> RollbackResult:
@@ -134,6 +210,7 @@ class RemediationEngine:
         plan: RemediationPlan,
         session_id: str | None = None,
         *,
+        plan_key: str | None = None,
         progress_callback: Any | None = None,
     ) -> RemediationResult:
         errors = self.validator.validate(plan)
@@ -141,7 +218,7 @@ class RemediationEngine:
             raise PlanValidationError(errors)
 
         if session_id:
-            self.register_plan(session_id, plan)
+            self.register_plan(session_id, plan, plan_key=plan_key)
         approval = await self.approval.request_approval(plan, session_id=session_id)
         if not approval.approved:
             return RemediationResult(
@@ -185,16 +262,39 @@ class RemediationEngine:
                         steps_total=len(plan.steps),
                         error="process canary target mismatch; manual approval required",
                     )
-                return await self.canary.execute_with_canary(
+                result = await self.canary.execute_with_canary(
                     plan,
                     targets,
                     lambda batch_targets: self._execute_steps(
                         plan,
                         progress_callback=progress_callback,
                         target_filter=set(batch_targets) if batch_targets else None,
+                        verify_final=False,
                     ),
                     progress_callback=progress_callback,
                     session_id=session_id,
+                )
+                if not result.success:
+                    duration = int(time.monotonic() - start)
+                    return result.model_copy(update={"duration_seconds": duration})
+                verification_results = list(result.verification_results or [])
+                final_failure = await self._run_final_verifications(
+                    plan=plan,
+                    steps_to_verify=plan.steps,
+                    completed=result.steps_completed,
+                    total_steps=len(plan.steps),
+                    verification_results=verification_results,
+                    progress_callback=progress_callback,
+                )
+                if final_failure is not None:
+                    duration = int(time.monotonic() - start)
+                    return final_failure.model_copy(update={"duration_seconds": duration})
+                duration = int(time.monotonic() - start)
+                return result.model_copy(
+                    update={
+                        "duration_seconds": duration,
+                        "verification_results": verification_results,
+                    }
                 )
             result = await self._execute_steps(plan, progress_callback=progress_callback)
             duration = int(time.monotonic() - start)
@@ -243,6 +343,7 @@ class RemediationEngine:
         *,
         progress_callback: Any | None = None,
         target_filter: set[str] | None = None,
+        verify_final: bool = True,
     ) -> RemediationResult:
         completed = 0
         verification_results: list[dict[str, Any]] = []
@@ -253,7 +354,7 @@ class RemediationEngine:
             steps_to_run = self._filter_steps_by_targets(plan.steps, target_filter)
 
         total_steps = len(steps_to_run)
-        for step in steps_to_run:
+        for display_step_index, step in enumerate(steps_to_run, start=1):
             if step.rollback_tool:
                 self.wal.record(
                     fault_id=f"{plan.plan_id}-step-{step.step_id}",
@@ -267,10 +368,12 @@ class RemediationEngine:
                     stage="remediating",
                     details={
                         "step_id": step.step_id,
+                        "display_step_index": display_step_index,
+                        "step_index": display_step_index,
                         "tool": step.tool,
                         "steps_completed": completed,
                         "steps_total": total_steps,
-                        "message": f"正在执行步骤 {step.step_id}/{total_steps}: {step.description}",
+                        "message": f"正在执行步骤 {display_step_index}/{total_steps}: {step.description}",
                     },
                 )
             precheck_error = await self._precheck_kill_process_target(plan=plan, step=step)
@@ -288,13 +391,16 @@ class RemediationEngine:
                             stage="validating",
                             details={
                                 "step_id": step.step_id,
+                                "display_step_index": display_step_index,
+                                "step_index": display_step_index,
                                 "steps_completed": completed,
                                 "steps_total": total_steps,
                                 "message": (
                                     f"目标进程 PID {precheck_error.get('pid')} 已不存在，"
-                                    "跳过执行并视为完成"
+                                    "跳过执行并视为该 kill_process 步骤成功"
                                 ),
                                 "pid_already_absent": True,
+                                "process_not_found_treated_as_success": True,
                                 "node": precheck_error.get("node"),
                                 "pid": precheck_error.get("pid"),
                             },
@@ -302,9 +408,12 @@ class RemediationEngine:
                     verification_results.append(
                         {
                             "step_id": step.step_id,
+                            "display_step_index": display_step_index,
+                            "success": True,
                             "verified": True,
                             "skipped": True,
-                            "reason": "pid_already_absent",
+                            "reason": "process_not_found_treated_as_success",
+                            "process_not_found_treated_as_success": True,
                             "pid": precheck_error.get("pid"),
                             "node": precheck_error.get("node"),
                         }
@@ -330,6 +439,44 @@ class RemediationEngine:
                 replace(self.execution_context, write_approved=True),
             )
             if not result.success:
+                if self._is_absent_process_kill_result(step=step, error=result.error):
+                    target_pid = self._extract_target_pid(step.params)
+                    target = target_pid if target_pid is not None else step.params.get("pid_or_name") or step.params.get("process_name")
+                    if progress_callback is not None:
+                        await progress_callback(
+                            stage="validating",
+                            details={
+                                "step_id": step.step_id,
+                                "display_step_index": display_step_index,
+                                "step_index": display_step_index,
+                                "steps_completed": completed,
+                                "steps_total": total_steps,
+                                "message": f"目标进程 {target or '<unknown>'} 未找到，视为该 kill_process 步骤成功",
+                                "process_already_absent": True,
+                                "process_not_found_treated_as_success": True,
+                                "node": step.params.get("node"),
+                                "pid": target_pid,
+                                "target": target,
+                                "error": result.error,
+                            },
+                        )
+                    verification_results.append(
+                        {
+                            "step_id": step.step_id,
+                            "display_step_index": display_step_index,
+                            "success": True,
+                            "verified": True,
+                            "skipped": True,
+                            "reason": "process_not_found_treated_as_success",
+                            "process_not_found_treated_as_success": True,
+                            "pid": target_pid,
+                            "target": target,
+                            "node": step.params.get("node"),
+                            "error": result.error,
+                        }
+                    )
+                    completed += 1
+                    continue
                 failed_step = step
                 await self.wal.recover_all()
                 return RemediationResult(
@@ -341,32 +488,54 @@ class RemediationEngine:
                     rolled_back=True,
                     error=result.error,
                 )
+            completed += 1
+
+        if not verify_final:
+            return RemediationResult(
+                plan_id=plan.plan_id,
+                success=True,
+                steps_completed=completed,
+                steps_total=total_steps,
+                verification_results=verification_results,
+            )
+
+        final_verifications = self._final_verification_configs(steps_to_run)
+        if final_verifications:
             if progress_callback is not None:
                 await progress_callback(
                     stage="validating",
                     details={
-                        "step_id": step.step_id,
+                        "step_id": steps_to_run[-1].step_id if steps_to_run else None,
                         "steps_completed": completed,
                         "steps_total": total_steps,
-                        "message": f"验证步骤 {step.step_id} 执行结果",
+                        "verification_scope": "plan_final",
+                        "verification_count": len(final_verifications),
+                        "message": "验证修复计划最终结果",
                     },
                 )
-            verified = await self._verify(step.verification)
-            verification_results.append({"step_id": step.step_id, "verified": verified})
-            if not verified:
-                failed_step = step
-                await self.wal.recover_all()
-                return RemediationResult(
-                    plan_id=plan.plan_id,
-                    success=False,
-                    steps_completed=completed,
-                    steps_total=total_steps,
-                    failed_step=failed_step,
-                    rolled_back=True,
-                    verification_results=verification_results,
-                    error="verification failed",
+            for verification_index, verification in enumerate(final_verifications, start=1):
+                verified = await self._verify(verification)
+                verification_results.append(
+                    {
+                        "step_id": steps_to_run[-1].step_id if steps_to_run else None,
+                        "verification_index": verification_index,
+                        "verification_scope": "plan_final",
+                        "verified": verified,
+                    }
                 )
-            completed += 1
+                if not verified:
+                    failed_step = steps_to_run[-1] if steps_to_run else None
+                    await self.wal.recover_all()
+                    return RemediationResult(
+                        plan_id=plan.plan_id,
+                        success=False,
+                        steps_completed=completed,
+                        steps_total=total_steps,
+                        failed_step=failed_step,
+                        rolled_back=True,
+                        verification_results=verification_results,
+                        error="verification failed",
+                    )
 
         return RemediationResult(
             plan_id=plan.plan_id,
@@ -375,6 +544,81 @@ class RemediationEngine:
             steps_total=total_steps,
             verification_results=verification_results,
         )
+
+    async def _run_final_verifications(
+        self,
+        *,
+        plan: RemediationPlan,
+        steps_to_verify: list[Any],
+        completed: int,
+        total_steps: int,
+        verification_results: list[dict[str, Any]],
+        progress_callback: Any | None = None,
+    ) -> RemediationResult | None:
+        final_verifications = self._final_verification_configs(steps_to_verify)
+        if not final_verifications:
+            return None
+
+        if progress_callback is not None:
+            await progress_callback(
+                stage="validating",
+                details={
+                    "step_id": steps_to_verify[-1].step_id if steps_to_verify else None,
+                    "steps_completed": completed,
+                    "steps_total": total_steps,
+                    "verification_scope": "plan_final",
+                    "verification_count": len(final_verifications),
+                    "message": "验证修复计划最终结果",
+                },
+            )
+        for verification_index, verification in enumerate(final_verifications, start=1):
+            verified = await self._verify(verification)
+            verification_results.append(
+                {
+                    "step_id": steps_to_verify[-1].step_id if steps_to_verify else None,
+                    "verification_index": verification_index,
+                    "verification_scope": "plan_final",
+                    "verified": verified,
+                }
+            )
+            if not verified:
+                await self.wal.recover_all()
+                return RemediationResult(
+                    plan_id=plan.plan_id,
+                    success=False,
+                    steps_completed=completed,
+                    steps_total=total_steps,
+                    failed_step=steps_to_verify[-1] if steps_to_verify else None,
+                    rolled_back=True,
+                    verification_results=verification_results,
+                    error="verification failed",
+                )
+        return None
+
+    @staticmethod
+    def _final_verification_configs(steps: Iterable[Any]) -> list[VerificationConfig]:
+        """Return deduplicated plan-final verification configs.
+
+        Step-level verification is intentionally deferred until all actions in the
+        current plan/root-cause have run. Repeated generated plans often attach the
+        same global verification to every step; keeping one final check avoids
+        false failures after the first partial action.
+        """
+        step_list = list(steps)
+        if not step_list:
+            return []
+        candidates = [step.verification for step in step_list if getattr(step, "verification", None) is not None]
+        non_wait_candidates = [item for item in candidates if item.method != "wait"]
+        selected = non_wait_candidates or candidates[-1:]
+        deduped_reversed: list[VerificationConfig] = []
+        seen: set[str] = set()
+        for config in reversed(selected):
+            key = json.dumps(config.model_dump(mode="json"), sort_keys=True, default=str)
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped_reversed.append(config)
+        return list(reversed(deduped_reversed))
 
     async def _precheck_kill_process_target(
         self,
@@ -467,6 +711,26 @@ class RemediationEngine:
                 "pid_commandline_sample": commandline_sample,
             }
         return None
+
+    @staticmethod
+    def _is_absent_process_kill_result(*, step: Any, error: str | None) -> bool:
+        if str(getattr(step, "tool", "") or "").strip() != "kill_process":
+            return False
+        text = str(error or "").strip().casefold()
+        if not text:
+            return False
+        absent_markers = (
+            "no such process",
+            "no matching process",
+            "no matching processes",
+            "process not found",
+            "pid not found",
+            "target process not found",
+            "process already exited",
+            "already absent",
+            "not running",
+        )
+        return any(marker in text for marker in absent_markers)
 
     @staticmethod
     def _extract_target_pid(params: dict[str, Any]) -> int | None:
@@ -595,6 +859,48 @@ class RemediationEngine:
     def _base_plan_id(plan_id: str) -> str:
         normalized = re.sub(r"-v\d+$", "", str(plan_id or "").strip())
         return normalized or "plan"
+
+    def clear_session_plans(self, session_id: str) -> None:
+        self._plans_by_session_key.pop(session_id, None)
+        self._plan_versions_by_session_key.pop(session_id, None)
+        self._default_plan_key_by_session.pop(session_id, None)
+        self._plans_by_session.pop(session_id, None)
+        self._plan_versions_by_session.pop(session_id, None)
+
+    @staticmethod
+    def _normalize_plan_key(plan_key: str | None) -> str:
+        value = str(plan_key or "").strip()
+        return value or "default"
+
+    def _resolve_plan_key_or_default(self, session_id: str, plan_key: str | None) -> str | None:
+        if plan_key is not None and str(plan_key).strip():
+            resolved = self._normalize_plan_key(plan_key)
+            if resolved in self._plans_by_session_key.get(session_id, {}):
+                return resolved
+            return None
+        default_key = self._default_plan_key_by_session.get(session_id)
+        if default_key is not None:
+            return default_key
+        keys = sorted(self._plans_by_session_key.get(session_id, {}).keys())
+        if keys:
+            return keys[0]
+        if session_id in self._plans_by_session:
+            return "default"
+        return None
+
+    def _sync_legacy_session_views(self, session_id: str) -> None:
+        default_key = self._resolve_plan_key_or_default(session_id, None)
+        if default_key is None:
+            self._plans_by_session.pop(session_id, None)
+            self._plan_versions_by_session.pop(session_id, None)
+            return
+        session_plans = self._plans_by_session_key.get(session_id, {})
+        session_versions = self._plan_versions_by_session_key.get(session_id, {})
+        plan = session_plans.get(default_key)
+        versions = session_versions.get(default_key, [])
+        if plan is not None:
+            self._plans_by_session[session_id] = plan
+            self._plan_versions_by_session[session_id] = list(versions)
 
     def _revise_steps(self, raw_steps: list[dict[str, Any]], instruction: str) -> list[dict[str, Any]]:
         steps = [dict(item) for item in raw_steps if isinstance(item, dict)]

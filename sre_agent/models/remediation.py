@@ -9,7 +9,7 @@ from pydantic import AliasChoices, Field, model_validator
 from sre_agent.models.common import SafetyLevel, StrictFrozenModel
 
 if TYPE_CHECKING:
-    from sre_agent.models.diagnosis import RankedRootCause
+    from sre_agent.models.diagnosis import DiagnosedRootCause
 
 Operator = Literal["<", "<=", ">", ">=", "==", "!="]
 VerificationMethod = Literal["promql", "tool_call", "wait"]
@@ -155,7 +155,7 @@ class RemediationResult(StrictFrozenModel):
 class CandidateAttempt(StrictFrozenModel):
     """Single candidate root-cause remediation attempt in loop orchestration."""
 
-    candidate: RankedRootCause
+    candidate: DiagnosedRootCause
     remediation_result: RemediationResult
     verification_passed: bool
     rolled_back: bool
@@ -168,7 +168,7 @@ class LoopResult(StrictFrozenModel):
 
     session_id: str = Field(min_length=1)
     outcome: LoopOutcome
-    winning_candidate: RankedRootCause | None = None
+    winning_candidate: DiagnosedRootCause | None = None
     attempts: list[CandidateAttempt] = Field(default_factory=list)
     total_duration_seconds: int = Field(default=0, ge=0)
     re_diagnosis_context: dict[str, Any] | None = Field(
@@ -185,9 +185,20 @@ class LoopResult(StrictFrozenModel):
         return self
 
 
-def rebuild_remediation_models(ranked_root_cause_type: type[Any]) -> None:
-    """Resolve forward refs for RankedRootCause without introducing import cycles."""
-    namespace = {"RankedRootCause": ranked_root_cause_type}
+def rebuild_remediation_models(diagnosed_root_cause_type: type[Any]) -> None:
+    """Resolve forward refs for DiagnosedRootCause without introducing import cycles.
+
+    Purpose:
+    - complete delayed type binding between remediation loop models and diagnosis root-cause model.
+    Input/Output:
+    - input: the concrete `DiagnosedRootCause` class from diagnosis models;
+    - output: in-place Pydantic model rebuild for CandidateAttempt and LoopResult.
+    Compatibility rationale:
+    - this function no longer accepts RankedRootCause because root_cause[] is the only formal structure.
+    Why:
+    - keeping a single canonical candidate type avoids split semantics across diagnosis/remediation boundaries.
+    """
+    namespace = {"DiagnosedRootCause": diagnosed_root_cause_type}
     CandidateAttempt.model_rebuild(_types_namespace=namespace, force=True)
     LoopResult.model_rebuild(_types_namespace=namespace, force=True)
 

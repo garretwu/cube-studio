@@ -192,6 +192,7 @@ class RemediationConfig(BaseModel):
     max_concurrent_remediations: int = 2
     execution_mode: str = "real"
     observation_seconds: int = 600
+    ranked_intermediate_observation_seconds: int = 30
     observation_poll_seconds: int = 10
     execution_timeout_seconds: int = 900
 

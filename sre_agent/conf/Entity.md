@@ -172,10 +172,10 @@
 
 - **严重级别:** critical
 - **关联指标:** `DCGM_FI_DEV_GPU_TEMP`
-- **触发条件:** GPU 核心温度 > 85°C
+- **触发条件:** GPU 核心温度 > 75°C
 - **表达式:**
   ```promql
-  DCGM_FI_DEV_GPU_TEMP > 85
+  DCGM_FI_DEV_GPU_TEMP > 75
   ```
 
 ### GPUTemperatureHighWjLabCpt04

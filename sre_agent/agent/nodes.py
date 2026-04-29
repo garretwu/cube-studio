@@ -561,6 +561,7 @@ async def reason_node(
             for call in pending_tool_calls
             if isinstance(call.get("args"), dict) and len(call.get("args") or {}) > 0
         ]
+    forced_trace_tool_call_emitted = False
     # 记录 LLM 交互到日志文件
     _log_llm_interaction(
         session_id=str(state.get("session_id", "unknown")),
@@ -634,11 +635,20 @@ async def reason_node(
 
     # 如果检测到诊断完成信号，忽略 tool_calls，直接进入 finalize
     if diagnosis_complete_detected and pending_tool_calls:
-        _llm_logger.info(
-            "Diagnosis complete signal detected, ignoring %d tool_calls",
-            len(pending_tool_calls),
-        )
-        pending_tool_calls = []
+        # TTFT sessions often include a "final verification" tool call (for example
+        # prometheus.query_instant). Do not drop those calls just because the model
+        # used a completion-like phrase in natural language.
+        if _is_ttft_alert_state(state):
+            _llm_logger.info(
+                "Diagnosis complete signal detected but TTFT tool calls are preserved: %d",
+                len(pending_tool_calls),
+            )
+        else:
+            _llm_logger.info(
+                "Diagnosis complete signal detected, ignoring %d tool_calls",
+                len(pending_tool_calls),
+            )
+            pending_tool_calls = []
 
     if pending_tool_calls and _is_ttft_alert_state(state):
         tool_runs = list(state.get("tool_runs", []) or [])
@@ -662,7 +672,11 @@ async def reason_node(
                         "content": "TTFT 覆盖未完成，优先执行 GPU 进程与外部负载取证。",
                         "action": "tool_call",
                         "tool_name": pending_tool_calls[0]["name"],
-                        "tool_params": pending_tool_calls[0].get("args", {}),
+                        "tool_params": _render_trace_tool_params(
+                            state=state,
+                            tool_name=str(pending_tool_calls[0].get("name", "") or "").strip(),
+                            tool_args=pending_tool_calls[0].get("args", {}),
+                        ),
                         "confidence": None,
                         "meta": {
                             "reason": "ttft_coverage_gate",
@@ -672,6 +686,7 @@ async def reason_node(
                         },
                     }
                 )
+                forced_trace_tool_call_emitted = True
 
     if not pending_tool_calls and _is_ttft_alert_state(state):
         tool_runs = list(state.get("tool_runs", []) or [])
@@ -705,6 +720,7 @@ async def reason_node(
                         },
                     }
                 )
+                forced_trace_tool_call_emitted = True
 
     if not pending_tool_calls:
         rdma_forced_call = _build_rdma_forced_qos_call(
@@ -731,17 +747,22 @@ async def reason_node(
             )
 
     if pending_tool_calls:
-        updated_trace.append(
+        if not forced_trace_tool_call_emitted:
+            updated_trace.append(
             {
                 "type": "thought",
                 "step": step_index,
                 "content": raw_response_text or "正在调用只读工具补充诊断证据。",
                 "action": "tool_call",
                 "tool_name": pending_tool_calls[0]["name"],
-                "tool_params": pending_tool_calls[0].get("args", {}),
+                "tool_params": _render_trace_tool_params(
+                    state=state,
+                    tool_name=str(pending_tool_calls[0].get("name", "") or "").strip(),
+                    tool_args=pending_tool_calls[0].get("args", {}),
+                ),
                 "confidence": None,
             }
-        )
+            )
         updated = {
             **state,
             "messages": updated_messages,
@@ -782,8 +803,96 @@ async def reason_node(
                 )
     final_thought = parsed.thought
     raw_remediation_plan = parsed.remediation_plan
-    evidence_signals = _extract_evidence_signals(list(state.get("tool_runs", []) or []))
+    evidence_signals = _extract_evidence_signals(
+        list(state.get("tool_runs", []) or []),
+        variables=dict(state.get("variables", {}) or {}),
+    )
     diagnosis_payload = _normalize_diagnosis_payload(parsed.diagnosis)
+    if _is_ttft_alert_state(state):
+        _enrich_ttft_root_causes_from_evidence(diagnosis_payload, evidence_signals)
+        ttft_evidence_cards = list(evidence_signals.get("ttft_evidence_cards") or [])
+        consistency_findings = _validate_ttft_root_cause_consistency(diagnosis_payload, ttft_evidence_cards)
+        if consistency_findings:
+            repair_messages = _build_ttft_consistency_retry_messages(
+                system_prompt=system_prompt,
+                query=str(state.get("query", "") or "").strip(),
+                diagnosis_payload=diagnosis_payload,
+                evidence_cards=ttft_evidence_cards,
+                findings=consistency_findings,
+            )
+            repair_stats = _build_prompt_message_stats(repair_messages)
+            repair_response: AIMessage | None = None
+            repair_raw_response_text = ""
+            repair_error = ""
+            repaired_payload: dict[str, Any] | None = None
+            repaired_thought = ""
+            if llm_supports_message_invocation:
+                try:
+                    retry_response = await _invoke_llm_message(llm, repair_messages, timeout=state["step_timeout_sec"])
+                    if isinstance(retry_response, AIMessage):
+                        repair_response = retry_response
+                        repair_raw_response_text = _extract_text(retry_response.content)
+                        repair_parsed = _parse_reasoning_output(repair_raw_response_text)
+                        if repair_parsed.diagnosis is not None:
+                            repaired_payload = _normalize_diagnosis_payload(repair_parsed.diagnosis)
+                            _enrich_ttft_root_causes_from_evidence(repaired_payload, evidence_signals)
+                        repaired_thought = repair_parsed.thought
+                    else:
+                        repair_raw_response_text = _extract_text(getattr(retry_response, "content", retry_response))
+                except Exception as exc:  # noqa: BLE001
+                    repair_error = _normalized_exception_message(exc)
+
+            _log_llm_interaction(
+                session_id=str(state.get("session_id", "unknown")),
+                step=step_index,
+                prompt_messages=repair_messages,
+                response=repair_response,
+                mode="ttft_consistency_retry",
+                tool_choice="none",
+                tool_calls=[],
+                prompt_message_stats=repair_stats,
+                prompt_fallback_used=False,
+                prompt_metadata={
+                    "ttft_evidence_cards": _safe_jsonable(ttft_evidence_cards),
+                    "validator_findings": _safe_jsonable(consistency_findings),
+                    "repair_error": repair_error or None,
+                    "provider_invocation_skipped": not llm_supports_message_invocation,
+                },
+            )
+            updated_interactions.append(
+                {
+                    "step": step_index,
+                    "mode": "ttft_consistency_retry",
+                    "tool_choice": "none",
+                    "bound_tool_names": [],
+                    "prompt_messages": messages_to_dict(repair_messages),
+                    "prompt_message_stats": repair_stats,
+                    "prompt_fallback_used": False,
+                    "prompt_metadata": {
+                        "ttft_evidence_cards": _safe_jsonable(ttft_evidence_cards),
+                        "validator_findings": _safe_jsonable(consistency_findings),
+                        "repair_error": repair_error or None,
+                        "provider_invocation_skipped": not llm_supports_message_invocation,
+                    },
+                    "response_message": messages_to_dict([repair_response])[0] if repair_response is not None else None,
+                    "raw_response_text": repair_raw_response_text,
+                    "tool_calls": [],
+                }
+            )
+
+            if repaired_payload is not None:
+                repaired_findings = _validate_ttft_root_cause_consistency(repaired_payload, ttft_evidence_cards)
+                if not repaired_findings:
+                    diagnosis_payload = repaired_payload
+                    if repaired_thought:
+                        final_thought = repaired_thought
+                else:
+                    diagnosis_payload = _apply_ttft_consistency_fallback(repaired_payload, repaired_findings)
+            else:
+                diagnosis_payload = _apply_ttft_consistency_fallback(diagnosis_payload, consistency_findings)
+        _augment_ttft_hardware_hypotheses_from_evidence(diagnosis_payload, evidence_signals)
+        _dedupe_ttft_root_causes(diagnosis_payload)
+        _normalize_ttft_root_cause_certainty_from_confidence(diagnosis_payload)
 
     tc_strong_evidence = bool(
         evidence_signals.get("tc_netem_present", False) or evidence_signals.get("tc_process_present", False)
@@ -922,7 +1031,7 @@ async def reason_node(
             prompt_message_stats=plan_completion_stats,
             prompt_fallback_used=False,
             prompt_metadata={
-                "top_candidate": _safe_jsonable(_select_top_ranked_candidate(diagnosis_payload) or {}),
+                "top_candidate": _safe_jsonable(_select_primary_root_cause_item(diagnosis_payload) or {}),
                 "provider_invocation_skipped": not llm_supports_message_invocation,
                 "plan_completion_error": plan_completion_error or None,
             },
@@ -937,7 +1046,7 @@ async def reason_node(
                 "prompt_message_stats": plan_completion_stats,
                 "prompt_fallback_used": False,
                 "prompt_metadata": {
-                    "top_candidate": _safe_jsonable(_select_top_ranked_candidate(diagnosis_payload) or {}),
+                    "top_candidate": _safe_jsonable(_select_primary_root_cause_item(diagnosis_payload) or {}),
                     "provider_invocation_skipped": not llm_supports_message_invocation,
                     "plan_completion_error": plan_completion_error or None,
                 },
@@ -1004,6 +1113,17 @@ async def reason_node(
     # ── TTFT forced external node probe (fail-safe) ──
     # 只要 TTFT 最小取证覆盖未满足（尤其 external process.find 缺失），
     # 即注入 process.find 并继续诊断，不依赖 remediation_plan 是否已生成。
+    if _is_ttft_alert_state(state):
+        diagnosis, remediation_plan = _attach_per_root_cause_recommended_fixes(
+            diagnosis=diagnosis,
+            primary_plan=remediation_plan,
+            evidence_signals=evidence_signals,
+            session_id=str(state.get("session_id", "")),
+            registry=registry,
+            tool_runs=list(state.get("tool_runs", []) or []),
+            variables=dict(state.get("variables", {}) or {}),
+            alert_name=_get_alert_name_from_state(state),
+        )
     if _is_ttft_alert_state(state) and not state.get("_ttft_external_probe_injected"):
         _tool_runs = list(state.get("tool_runs", []) or [])
         probe_blocked = _is_ttft_external_probe_blocked(state=state, tool_runs=_tool_runs)
@@ -1099,6 +1219,28 @@ async def reason_node(
                     "diagnosis_certainty": "ambiguous",
                 }
             )
+            # Force canonical output contract for this fallback branch:
+            # even if prompt text above used transitional keys, we converge to root_cause[] here.
+            diagnosis_payload["root_cause"] = [
+                {
+                    "id": "rc-ttft-external-ssh-auth",
+                    "title": (
+                        f"External probe node {external_node or 'unknown'} failed SSH authentication, "
+                        "so process evidence collection is blocked."
+                    ),
+                    "layer": "platform",
+                    "entities": [external_node] if external_node else [],
+                    "confidence": 0.45,
+                    "certainty": "ambiguous",
+                    "status": "suspected",
+                    "evidence_summary": reason_text,
+                    "impact_summary": str(diagnosis_payload.get("impact_summary") or "").strip(),
+                    "distinguishing_verification": "Restore SSH access and rerun process.find evidence collection.",
+                    "recommended_fix": None,
+                }
+            ]
+            diagnosis_payload.pop("root_cause_layer", None)
+            diagnosis_payload.pop("root_cause_entities", None)
             diagnosis = DiagnosisResult.model_validate(diagnosis_payload)
             remediation_plan = None
             plan_missing_reason = f"TTFT external probe blocked by SSH authentication failure: {reason_text}"
@@ -1184,6 +1326,9 @@ def _select_bound_tool_names_for_turn(state: SREAgentState) -> list[str] | None:
     if allowed_tool_names:
         names = [str(name).strip() for name in allowed_tool_names if str(name).strip()]
         if names:
+            skill_names = [name for name in names if name.startswith("skills.")]
+            if skill_names and not state.get("tool_runs"):
+                return skill_names
             return names
 
     # 2) First turn (no tool_runs yet) — allow pending tool calls if present.
@@ -2164,13 +2309,13 @@ def _summarize_process_find(data: Any) -> tuple[str, dict[str, Any] | None]:
     filtered_count = 0
     filtered_preview: list[str] = []
 
-    for item in normalized_matches[:12]:
+    for item in normalized_matches:
         if not isinstance(item, dict):
             continue
         process = str(item.get("process", "") or "").strip()
         command = str(item.get("command", "") or "").strip()
         candidate_name = command or process
-        if process and process not in process_names:
+        if process and process not in process_names and len(process_names) < 6:
             process_names.append(process)
         pid = item.get("pid")
         parsed_pid: int | None = None
@@ -2178,7 +2323,7 @@ def _summarize_process_find(data: Any) -> tuple[str, dict[str, Any] | None]:
             parsed_pid = int(pid)
         except Exception:  # noqa: BLE001
             parsed_pid = None
-        if parsed_pid is not None and parsed_pid not in sample_pids:
+        if parsed_pid is not None and parsed_pid not in sample_pids and len(sample_pids) < 6:
             sample_pids.append(parsed_pid)
 
         merged_for_filter = f"{process} {command}".strip()
@@ -2192,14 +2337,15 @@ def _summarize_process_find(data: Any) -> tuple[str, dict[str, Any] | None]:
         if parsed_pid in seen_pid:
             continue
         seen_pid.add(parsed_pid)
-        suspicious_processes.append(
-            {
-                "pid": parsed_pid,
-                "process_name": candidate_name,
-                "memory_mib": None,
-                "node": node,
-            }
-        )
+        if len(suspicious_processes) < 6:
+            suspicious_processes.append(
+                {
+                    "pid": parsed_pid,
+                    "process_name": candidate_name,
+                    "memory_mib": None,
+                    "node": node,
+                }
+            )
 
     suspicious_present = bool(suspicious_processes)
     summary = (
@@ -2282,9 +2428,11 @@ def _summarize_gpu_processes(data: Any) -> tuple[str, dict[str, Any] | None]:
         for item in sorted_rows[:4]
         if str(item.get("process_name", "")).strip()
     ]
+    total_mem = sum(float(item.get("memory_mib") or 0.0) for item in sorted_rows)
     summary_parts = [
         f"process_count={len(sorted_rows)}",
         f"suspicious_load_present={str(bool(suspicious_rows)).lower()}",
+        f"total_mem={int(total_mem)}MiB",
     ]
     if sample_names:
         summary_parts.append(f"top_processes={','.join(sample_names)}")
@@ -2298,6 +2446,20 @@ def _summarize_gpu_processes(data: Any) -> tuple[str, dict[str, Any] | None]:
         "; ".join(summary_parts),
         {
             "process_count": len(sorted_rows),
+            "process_names": [
+                str(item.get("process_name", "")).strip()
+                for item in sorted_rows[:8]
+                if str(item.get("process_name", "")).strip()
+            ],
+            "total_mem": int(total_mem),
+            "processes": [
+                {
+                    "pid": int(item.get("pid", 0) or 0),
+                    "name": str(item.get("process_name", "")).strip(),
+                    "mem": item.get("memory_mib"),
+                }
+                for item in sorted_rows[:8]
+            ],
             "sample_pids": [int(item.get("pid", 0) or 0) for item in sorted_rows[:8]],
             "sample_process_names": [
                 str(item.get("process_name", "")).strip()
@@ -2581,9 +2743,15 @@ def _build_tool_prompt_fields(
     elif tool == "process.find":
         prompt_summary, key_fields = _summarize_process_find(data)
     elif tool == "bmc.get_fan_status":
-        prompt_summary, key_fields = _summarize_bmc_fan_status(data)
+        prompt_summary, key_fields = _summarize_bmc_fan_status(
+            data,
+            node_hint=str(params.get("node", "") or "").strip(),
+        )
     elif tool == "gpu.get_metrics":
-        prompt_summary, key_fields = _summarize_gpu_metrics(data)
+        prompt_summary, key_fields = _summarize_gpu_metrics(
+            data,
+            node_hint=str(params.get("node", "") or "").strip(),
+        )
     elif tool == "gpu.get_processes":
         prompt_summary, key_fields = _summarize_gpu_processes(data)
     elif tool == "ssh.run_command":
@@ -2607,7 +2775,7 @@ def _build_tool_prompt_fields(
     }
 
 
-def _summarize_bmc_fan_status(data: Any) -> tuple[str, dict[str, Any]]:
+def _summarize_bmc_fan_status(data: Any, *, node_hint: str = "") -> tuple[str, dict[str, Any]]:
     """Summarize BMC fan status for prompt."""
     if not isinstance(data, dict):
         return "kind=unknown", None
@@ -2619,8 +2787,10 @@ def _summarize_bmc_fan_status(data: Any) -> tuple[str, dict[str, Any]]:
     pwm_values = summary.get("unique_pwm_values", [])
     fan_count = summary.get("fan_count", 0)
     bmc_host = str(data.get("bmc_host", "") or "").strip()
+    node = str(data.get("node", "") or "").strip() or node_hint
 
     key_fields = {
+        "node": node or None,
         "mode": mode_name,
         "is_manual": is_manual,
         "is_fixed_pwm": is_fixed_pwm,
@@ -2629,15 +2799,21 @@ def _summarize_bmc_fan_status(data: Any) -> tuple[str, dict[str, Any]]:
         "fan_count": fan_count,
         "bmc_host": bmc_host,
     }
-    prompt_summary = f"mode={mode_name}; manual={is_manual}; fixed_pwm={is_fixed_pwm}; pwm={fixed_pwm or pwm_values}; fans={fan_count}"
+    prompt_summary = (
+        f"node={node or 'unknown'}; mode={mode_name}; manual={is_manual}; "
+        f"fixed_pwm={is_fixed_pwm}; pwm={fixed_pwm or pwm_values}; fans={fan_count}"
+    )
     return prompt_summary, key_fields
 
 
-def _summarize_gpu_metrics(data: Any) -> tuple[str, dict[str, Any]]:
+def _summarize_gpu_metrics(data: Any, *, node_hint: str = "") -> tuple[str, dict[str, Any]]:
     """Summarize GPU metrics (nvidia-smi output) for prompt."""
     output = _extract_output_blob(data)
     if not output:
         return "output=empty", None
+    node = node_hint
+    if isinstance(data, dict):
+        node = str(data.get("node", "") or "").strip() or node_hint
     # Parse CSV output: index, name, util, mem_used, mem_total, temp
     lines = [line.strip() for line in output.splitlines() if line.strip()]
     gpu_info: list[dict[str, Any]] = []
@@ -2661,38 +2837,18 @@ def _summarize_gpu_metrics(data: Any) -> tuple[str, dict[str, Any]]:
     if not gpu_info:
         return f"lines={len(lines)}; parse_failed", None
     temps = [g["temp"] for g in gpu_info]
-    prompt_summary = f"gpu_count={len(gpu_info)}; temps={temps}; max_temp={max_temp}C; max_util={max_util}%"
-    key_fields = {"gpu_count": len(gpu_info), "temps": temps, "max_temp": max_temp, "max_util": max_util, "gpu_info": gpu_info[:4]}
-    return prompt_summary, key_fields
-
-
-def _summarize_gpu_processes(data: Any) -> tuple[str, dict[str, Any]]:
-    """Summarize GPU processes for prompt."""
-    output = _extract_output_blob(data)
-    if not output:
-        return "output=empty", None
-    # Parse CSV output: pid, process_name, gpu_uuid, mem_used
-    lines = [line.strip() for line in output.splitlines() if line.strip()]
-    processes: list[dict[str, Any]] = []
-    process_names: set[str] = set()
-    total_mem = 0
-    for line in lines:
-        parts = [p.strip() for p in line.split(",")]
-        if len(parts) >= 4:
-            try:
-                pid = int(parts[0])
-                name = parts[1][:20]  # truncate process name
-                gpu_uuid = parts[2][:20]
-                mem = int(parts[3])
-                processes.append({"pid": pid, "name": name, "mem": mem})
-                process_names.add(name)
-                total_mem += mem
-            except (ValueError, IndexError):
-                continue
-    if not processes:
-        return f"lines={len(lines)}; no_processes", None
-    prompt_summary = f"process_count={len(processes)}; names={list(process_names)}; total_mem={total_mem}MiB"
-    key_fields = {"process_count": len(processes), "process_names": list(process_names)[:3], "total_mem": total_mem, "processes": processes[:4]}
+    prompt_summary = (
+        f"node={node or 'unknown'}; gpu_count={len(gpu_info)}; temps={temps}; "
+        f"max_temp={max_temp}C; max_util={max_util}%"
+    )
+    key_fields = {
+        "node": node or None,
+        "gpu_count": len(gpu_info),
+        "temps": temps,
+        "max_temp": max_temp,
+        "max_util": max_util,
+        "gpu_info": gpu_info[:4],
+    }
     return prompt_summary, key_fields
 
 
@@ -2843,6 +2999,42 @@ def _build_state_rebuilt_evidence_metadata(
     }
 
 
+def _build_ttft_evidence_status_text(state: SREAgentState, tool_runs: list[dict[str, Any]]) -> str:
+    if not _is_ttft_alert_state(state):
+        return "not_applicable"
+
+    lines: list[str] = []
+    gpu_run = _find_latest_successful_tool_run(tool_runs, tool_name="gpu.get_processes")
+    if gpu_run is not None:
+        params = gpu_run.get("params")
+        node = str((params or {}).get("node", "") if isinstance(params, dict) else "").strip()
+        step = int(gpu_run.get("step", 0) or 0)
+        lines.append(
+            f"- gpu.get_processes({node or 'unknown-node'}): satisfied at step {step}; "
+            "reuse this evidence and do not call gpu.get_processes again with the same node before remediation."
+        )
+    else:
+        lines.append("- gpu.get_processes: missing; collect it once for the affected GPU node.")
+
+    external_node = _get_ttft_external_node(state)
+    external_done = _has_probed_ttft_external_node(tool_runs, external_node) if external_node else _count_tool_runs(tool_runs, "process.find") > 0
+    if external_done:
+        lines.append(
+            f"- process.find({external_node or 'external-node'}): satisfied; "
+            "reuse this external-load evidence unless a different node or pattern is required."
+        )
+    else:
+        lines.append(
+            f"- process.find({external_node or 'external-node'}): missing; collect external-load evidence before final diagnosis."
+        )
+
+    coverage_met, missing = _evaluate_ttft_min_coverage(state=state, tool_runs=tool_runs)
+    lines.append(f"- minimum_ttft_coverage_met={str(coverage_met).lower()}; missing={missing}")
+    if coverage_met:
+        lines.append("- If the next tool call would repeat a satisfied tool with identical params, return final JSON instead.")
+    return "\n".join(lines)
+
+
 def _build_state_rebuilt_sections(
     state: SREAgentState,
     *,
@@ -2865,6 +3057,11 @@ def _build_state_rebuilt_sections(
     rendered_tool_runs = [_render_tool_run_for_prompt(item) for item in tool_runs if isinstance(item, dict)]
     skill_history_text = _json_line(rendered_skill_runs) if rendered_skill_runs else "none"
     tool_ledger_text = _json_line(rendered_tool_runs) if rendered_tool_runs else "none"
+    ttft_evidence_status_text = _build_ttft_evidence_status_text(state, tool_runs)
+    ttft_evidence_cards: list[dict[str, Any]] = []
+    if _is_ttft_alert_state(state):
+        current_ttft_signals = _extract_evidence_signals(tool_runs, variables=variables)
+        ttft_evidence_cards = list(current_ttft_signals.get("ttft_evidence_cards") or [])
 
     instruction = (
         "Use the canonical evidence above and return the final JSON now. "
@@ -2914,6 +3111,16 @@ def _build_state_rebuilt_sections(
             "tool_ledger",
             "Tool evidence ledger:\n"
             f"{tool_ledger_text}",
+        ),
+        (
+            "evidence_status",
+            "Evidence status and tool budget:\n"
+            f"{ttft_evidence_status_text}",
+        ),
+        (
+            "ttft_evidence_cards",
+            "TTFT structured evidence cards (hints, not conclusions; cite evidence_id in root_cause[].evidence_refs):\n"
+            f"{_json_line(ttft_evidence_cards) if ttft_evidence_cards else 'none'}",
         ),
         (
             "conversation_note",
@@ -2993,6 +3200,12 @@ def _build_transcript_compact_reason_messages(
         default=6,
         minimum=1,
     )
+    ttft_evidence_cards_text = "none"
+    if _is_ttft_alert_state(state):
+        variables = dict(state.get("variables", {}) or {})
+        cards = _extract_evidence_signals(list(state.get("tool_runs", []) or []), variables=variables).get("ttft_evidence_cards")
+        if cards:
+            ttft_evidence_cards_text = _json_line(cards)
 
     if final_turn:
         compact_messages = _apply_context_window_budget(
@@ -3000,6 +3213,7 @@ def _build_transcript_compact_reason_messages(
                 SystemMessage(content=system_prompt),
                 HumanMessage(content=f"Original query: {state['query']}"),
                 HumanMessage(content=f"Collected evidence:\n{_summarize_tool_runs(state.get('tool_runs', []))}"),
+                HumanMessage(content=f"TTFT structured evidence cards:\n{ttft_evidence_cards_text}"),
                 HumanMessage(
                     content=(
                         "Use the evidence already collected and return the final JSON now. "
@@ -3016,6 +3230,7 @@ def _build_transcript_compact_reason_messages(
                 SystemMessage(content=system_prompt),
                 HumanMessage(content=f"Original query: {state['query']}"),
                 HumanMessage(content=f"Collected evidence:\n{_summarize_tool_runs(state.get('tool_runs', []))}"),
+                HumanMessage(content=f"TTFT structured evidence cards:\n{ttft_evidence_cards_text}"),
                 HumanMessage(
                     content=(
                         "Tool-binding is unavailable for the current LLM provider. "
@@ -3281,6 +3496,8 @@ def _normalize_loop_guard_state(raw: Any, *, threshold_default: int = 2) -> dict
     repeat_count = _normalize_positive_int(payload.get("repeat_count"), default=0, minimum=0)
     family_threshold = _normalize_positive_int(payload.get("family_threshold"), default=threshold_default, minimum=1)
     family_repeat_count = _normalize_positive_int(payload.get("family_repeat_count"), default=0, minimum=0)
+    duplicate_threshold = _normalize_positive_int(payload.get("duplicate_threshold"), default=threshold, minimum=1)
+    duplicate_repeat_count = _normalize_positive_int(payload.get("duplicate_repeat_count"), default=0, minimum=0)
     return {
         "recent_fingerprint": str(payload.get("recent_fingerprint", "") or "").strip() or None,
         "repeat_count": repeat_count,
@@ -3288,6 +3505,9 @@ def _normalize_loop_guard_state(raw: Any, *, threshold_default: int = 2) -> dict
         "recent_family_fingerprint": str(payload.get("recent_family_fingerprint", "") or "").strip() or None,
         "family_repeat_count": family_repeat_count,
         "family_threshold": family_threshold,
+        "recent_duplicate_fingerprint": str(payload.get("recent_duplicate_fingerprint", "") or "").strip() or None,
+        "duplicate_repeat_count": duplicate_repeat_count,
+        "duplicate_threshold": duplicate_threshold,
         "triggered": bool(payload.get("triggered", False)),
         "trigger_step": payload.get("trigger_step"),
     }
@@ -3375,6 +3595,27 @@ def _get_alert_name_from_state(state: SREAgentState) -> str:
     if isinstance(snapshot, dict):
         return str(snapshot.get("alert_name", "") or "").strip()
     return ""
+
+
+def _render_trace_tool_params(
+    *,
+    state: SREAgentState,
+    tool_name: str,
+    tool_args: Any,
+) -> dict[str, Any]:
+    """Render display-friendly params for trace visualization only."""
+    rendered = dict(tool_args) if isinstance(tool_args, dict) else {}
+    nested_kwargs = rendered.pop("kwargs", None)
+    if isinstance(nested_kwargs, dict):
+        for key, value in nested_kwargs.items():
+            rendered.setdefault(str(key), value)
+    if tool_name == "process.find":
+        node = str(rendered.get("node", "") or "").strip()
+        if not node:
+            ext_node = _get_ttft_external_node(state)
+            if ext_node:
+                rendered["node"] = ext_node
+    return rendered
 
 
 def _get_ttft_external_node(state: SREAgentState) -> str:
@@ -3602,7 +3843,99 @@ def _find_latest_tool_run_by_dedupe_key(
     return None
 
 
-def _extract_evidence_signals(tool_runs: list[dict[str, Any]]) -> dict[str, Any]:
+def _ttft_process_family(process_text: Any) -> str:
+    text = str(process_text or "").strip()
+    if not text:
+        return "unknown"
+    if _is_gpu_contention_suspect_process(text):
+        return "gpu_contention"
+    if is_ttft_suspect_process(text):
+        return "external_load"
+    if "vllm::worker" in text.lower() or "vllm" in text.lower():
+        return "service_worker"
+    return "unknown"
+
+
+def _ttft_node_role_hint(*, tool: str, node: str, process_family: str, external_node: str = "") -> str:
+    normalized_node = str(node or "").strip().lower()
+    normalized_external = str(external_node or "").strip().lower()
+    if process_family == "gpu_contention":
+        return "serving_gpu_node"
+    if tool == "gpu.get_processes":
+        return "serving_gpu_node"
+    if process_family == "external_load":
+        if normalized_external and normalized_node == normalized_external:
+            return "external_load_node"
+        if tool == "process.find":
+            return "external_load_node"
+    return "unknown"
+
+
+def _ttft_evidence_id(run: dict[str, Any], tool: str) -> str:
+    step = int(run.get("step", 0) or 0)
+    return f"tool:{step}:{tool}"
+
+
+def _append_ttft_evidence_card(
+    signals: dict[str, Any],
+    *,
+    evidence_id: str,
+    source_tool: str,
+    source_node: str,
+    node_role_hint: str,
+    process_family_hint: str,
+    summary: str,
+    processes: list[dict[str, Any]],
+) -> None:
+    if not processes:
+        return
+    cards = signals.get("ttft_evidence_cards")
+    if not isinstance(cards, list):
+        cards = []
+        signals["ttft_evidence_cards"] = cards
+    if any(isinstance(item, dict) and item.get("evidence_id") == evidence_id for item in cards):
+        return
+    cards.append(
+        {
+            "evidence_id": evidence_id,
+            "source_tool": source_tool,
+            "source_node": source_node,
+            "node_role_hint": node_role_hint,
+            "process_family_hint": process_family_hint,
+            "evidence_role_hint": "root_cause_evidence",
+            "summary": summary,
+            "processes": processes,
+        }
+    )
+
+
+def _decorate_ttft_suspect(
+    *,
+    suspect: dict[str, Any],
+    run: dict[str, Any],
+    tool: str,
+    node: str,
+    external_node: str,
+) -> dict[str, Any]:
+    process_name = str(suspect.get("process_name", "") or "").strip()
+    family = _ttft_process_family(process_name)
+    role = _ttft_node_role_hint(tool=tool, node=node, process_family=family, external_node=external_node)
+    return {
+        **suspect,
+        "node": str(suspect.get("node", "") or "").strip() or node,
+        "source_tool": tool,
+        "source_step": int(run.get("step", 0) or 0),
+        "source_node": node,
+        "evidence_id": _ttft_evidence_id(run, tool),
+        "node_role_hint": role,
+        "process_family_hint": family,
+        "evidence_kind": "gpu_process" if family == "gpu_contention" else "external_process" if family == "external_load" else "process",
+    }
+
+
+def _extract_evidence_signals(tool_runs: list[dict[str, Any]], variables: dict[str, Any] | None = None) -> dict[str, Any]:
+    variables = dict(variables or {})
+    external_node = str(variables.get("ttft_external_process_default_node", "") or "").strip()
     signals: dict[str, Any] = {
         "tc_netem_present": False,
         "tc_process_present": False,
@@ -3614,7 +3947,19 @@ def _extract_evidence_signals(tool_runs: list[dict[str, Any]]) -> dict[str, Any]
         "process_evidence_steps": [],
         "ttft_suspect_process_present": False,
         "ttft_suspect_processes": [],
+        "ttft_evidence_cards": [],
         "ttft_gpu_process_steps": [],
+        "ttft_gpu_metrics_steps": [],
+        "gpu_temperature_steps": [],
+        "gpu_temps": [],
+        "gpu_max_temp": None,
+        "gpu_max_util": None,
+        "gpu_thermal_normal": None,
+        "bmc_fan_status_steps": [],
+        "bmc_fan_mode": None,
+        "bmc_fan_fixed_pwm": None,
+        "bmc_fan_is_manual": None,
+        "bmc_fan_count": None,
     }
     for run in tool_runs:
         if not isinstance(run, dict) or not bool(run.get("success", False)):
@@ -3657,6 +4002,23 @@ def _extract_evidence_signals(tool_runs: list[dict[str, Any]]) -> dict[str, Any]
             if tc_process_present:
                 signals["tc_process_present"] = True
                 signals["process_evidence_steps"].append(int(run.get("step", 0) or 0))
+        elif tool == "gpu.get_metrics":
+            step = int(run.get("step", 0) or 0)
+            signals["ttft_gpu_metrics_steps"].append(step)
+            temps = fields.get("temps")
+            if isinstance(temps, list):
+                signals["gpu_temps"] = temps
+            max_temp = fields.get("max_temp")
+            if max_temp is not None:
+                signals["gpu_max_temp"] = max_temp
+                signals["gpu_temperature_steps"].append(step)
+                try:
+                    signals["gpu_thermal_normal"] = float(max_temp) < 75.0
+                except Exception:  # noqa: BLE001
+                    signals["gpu_thermal_normal"] = None
+            max_util = fields.get("max_util")
+            if max_util is not None:
+                signals["gpu_max_util"] = max_util
         elif tool == "gpu.get_processes":
             suspect_items: list[dict[str, Any]] = []
             run_params = run.get("params")
@@ -3686,7 +4048,9 @@ def _extract_evidence_signals(tool_runs: list[dict[str, Any]]) -> dict[str, Any]
                 pids = sample_pids if isinstance(sample_pids, list) else []
                 for idx, raw_name in enumerate(names[:6]):
                     name = str(raw_name or "").strip()
-                    if not name or not is_ttft_suspect_process(name):
+                    if not name:
+                        continue
+                    if not (is_ttft_suspect_process(name) or _is_gpu_contention_suspect_process(name)):
                         continue
                     suspect_items.append(
                         {
@@ -3696,15 +4060,6 @@ def _extract_evidence_signals(tool_runs: list[dict[str, Any]]) -> dict[str, Any]
                             "node": run_node,
                         }
                     )
-            if not suspect_items and any(token in summary for token in ("stress", "benchmark", "load", "simulator")):
-                suspect_items.append(
-                    {
-                        "pid": None,
-                        "process_name": "suspected_load_process",
-                        "memory_mib": None,
-                        "node": run_node,
-                    }
-                )
             if suspect_items:
                 signals["ttft_suspect_process_present"] = True
                 signals["ttft_gpu_process_steps"].append(int(run.get("step", 0) or 0))
@@ -3712,9 +4067,41 @@ def _extract_evidence_signals(tool_runs: list[dict[str, Any]]) -> dict[str, Any]
                 if not isinstance(target, list):
                     target = []
                     signals["ttft_suspect_processes"] = target
-                for item in suspect_items:
+                decorated_items = [
+                    _decorate_ttft_suspect(
+                        suspect=item,
+                        run=run,
+                        tool=tool,
+                        node=run_node,
+                        external_node=external_node,
+                    )
+                    for item in suspect_items
+                ]
+                for item in decorated_items:
                     if item not in target:
                         target.append(item)
+                family = "gpu_contention" if any(item.get("process_family_hint") == "gpu_contention" for item in decorated_items) else "unknown"
+                summary_process = str(decorated_items[0].get("process_name") or "suspect process") if decorated_items else "suspect process"
+                _append_ttft_evidence_card(
+                    signals,
+                    evidence_id=_ttft_evidence_id(run, tool),
+                    source_tool=tool,
+                    source_node=run_node,
+                    node_role_hint="serving_gpu_node",
+                    process_family_hint=family,
+                    summary=f"{run_node or 'unknown-node'} gpu.get_processes found {summary_process}",
+                    processes=decorated_items,
+                )
+        elif tool == "bmc.get_fan_status":
+            signals["bmc_fan_status_steps"].append(int(run.get("step", 0) or 0))
+            if fields.get("mode") is not None:
+                signals["bmc_fan_mode"] = fields.get("mode")
+            if fields.get("is_manual") is not None:
+                signals["bmc_fan_is_manual"] = fields.get("is_manual")
+            if fields.get("is_fixed_pwm") is not None:
+                signals["bmc_fan_fixed_pwm"] = fields.get("is_fixed_pwm")
+            if fields.get("fan_count") is not None:
+                signals["bmc_fan_count"] = fields.get("fan_count")
         elif tool == "process.find":
             suspect_items = []
             run_params = run.get("params")
@@ -3775,15 +4162,47 @@ def _extract_evidence_signals(tool_runs: list[dict[str, Any]]) -> dict[str, Any]
                 if not isinstance(target, list):
                     target = []
                     signals["ttft_suspect_processes"] = target
-                for item in suspect_items:
+                decorated_items = [
+                    _decorate_ttft_suspect(
+                        suspect=item,
+                        run=run,
+                        tool=tool,
+                        node=str(item.get("node", "") or "").strip() or run_node,
+                        external_node=external_node,
+                    )
+                    for item in suspect_items
+                ]
+                for item in decorated_items:
                     if item not in target:
                         target.append(item)
+                family = "external_load" if any(item.get("process_family_hint") == "external_load" for item in decorated_items) else (
+                    "gpu_contention" if any(item.get("process_family_hint") == "gpu_contention" for item in decorated_items) else "unknown"
+                )
+                role = _ttft_node_role_hint(tool=tool, node=run_node, process_family=family, external_node=external_node)
+                summary_process = str(decorated_items[0].get("process_name") or "suspect process") if decorated_items else "suspect process"
+                _append_ttft_evidence_card(
+                    signals,
+                    evidence_id=_ttft_evidence_id(run, tool),
+                    source_tool=tool,
+                    source_node=run_node,
+                    node_role_hint=role,
+                    process_family_hint=family,
+                    summary=f"{run_node or 'unknown-node'} process.find found {summary_process}",
+                    processes=decorated_items,
+                )
     return signals
 
 
 def _diagnosis_mentions_tc_evidence(payload: dict[str, Any]) -> bool:
+    """Detect tc/netem evidence mentions from diagnosis payload text fields."""
     texts: list[str] = []
-    texts.append(str(payload.get("root_cause", "") or ""))
+    root_cause_payload = payload.get("root_cause")
+    if isinstance(root_cause_payload, list):
+        for item in root_cause_payload:
+            if isinstance(item, dict):
+                texts.append(str(item.get("title", "") or ""))
+    elif isinstance(root_cause_payload, str):
+        texts.append(root_cause_payload)
     texts.append(str(payload.get("impact_summary", "") or ""))
     hypotheses = payload.get("hypotheses")
     if isinstance(hypotheses, list):
@@ -3821,15 +4240,41 @@ def _build_tc_consistency_retry_messages(
     ]
 
 
-def _select_top_ranked_candidate(diagnosis_payload: dict[str, Any]) -> dict[str, Any] | None:
-    raw_candidates = diagnosis_payload.get("ranked_candidates")
-    if not isinstance(raw_candidates, list):
-        return None
-    candidates = [item for item in raw_candidates if isinstance(item, dict)]
-    if not candidates:
-        return None
-    candidates.sort(key=lambda item: int(item.get("rank", 9999) or 9999))
-    return candidates[0]
+def _select_primary_root_cause_item(diagnosis_payload: dict[str, Any]) -> dict[str, Any]:
+    """Select the leading root-cause item from raw diagnosis payload.
+
+    Purpose:
+    - return the root-cause item used by plan-completion and remediation prompts.
+    Input/Output:
+    - input: diagnosis payload that may contain normalized or malformed root-cause data;
+    - output: a dict-like primary root-cause item with at least `title`, `layer`, and `confidence`.
+    Compatibility rationale:
+    - keeps temporary parser tolerance for old payloads while enforcing new first-item semantics.
+    Why:
+    - plan-completion retry and LLM logging still need one concise leading-cause summary even when
+      the final diagnosis carries multiple root-cause items.
+    """
+    raw_root_cause = diagnosis_payload.get("root_cause")
+    if isinstance(raw_root_cause, list):
+        for item in raw_root_cause:
+            if isinstance(item, dict):
+                return {
+                    "title": str(item.get("title") or item.get("root_cause") or "").strip(),
+                    "layer": str(item.get("layer") or item.get("root_cause_layer") or "platform").strip(),
+                    "confidence": item.get("confidence", diagnosis_payload.get("confidence")),
+                }
+    if isinstance(raw_root_cause, str) and raw_root_cause.strip():
+        # Model-output tolerance: accept legacy string root cause as a temporary parse fallback.
+        return {
+            "title": raw_root_cause.strip(),
+            "layer": "platform",
+            "confidence": diagnosis_payload.get("confidence"),
+        }
+    return {
+        "title": "",
+        "layer": "platform",
+        "confidence": diagnosis_payload.get("confidence"),
+    }
 
 
 def _build_plan_completion_messages(
@@ -3839,10 +4284,11 @@ def _build_plan_completion_messages(
     diagnosis_payload: dict[str, Any],
     tool_runs: list[dict[str, Any]],
 ) -> list[Any]:
-    top_candidate = _select_top_ranked_candidate(diagnosis_payload) or {}
-    root_cause = str(top_candidate.get("root_cause") or diagnosis_payload.get("root_cause") or "").strip()
-    root_layer = str(top_candidate.get("root_cause_layer") or diagnosis_payload.get("root_cause_layer") or "").strip()
-    confidence = top_candidate.get("confidence", diagnosis_payload.get("confidence"))
+    """Build focused remediation-plan completion prompt using the primary root cause only."""
+    primary = _select_primary_root_cause_item(diagnosis_payload)
+    root_cause = str(primary.get("title") or "").strip()
+    root_layer = str(primary.get("layer") or "").strip()
+    confidence = primary.get("confidence", diagnosis_payload.get("confidence"))
     prompt_lines = [
         "Plan completion request:",
         f"query={query or '<empty>'}",
@@ -3864,12 +4310,63 @@ def _build_plan_completion_messages(
         HumanMessage(content="\n".join(prompt_lines)),
     ]
 
-def _build_tc_fallback_diagnosis_payload(
+def _build_tc_fallback_diagnosis_payload_legacy(
     *,
     original: dict[str, Any],
     evidence_signals: dict[str, Any],
     tool_runs: list[dict[str, Any]],
 ) -> dict[str, Any]:
+    """Legacy snapshot kept for diff/reference only.
+
+    Purpose:
+    - preserve historical implementation for audit comparison during migration.
+    Input/Output:
+    - same signature as active function; output should not be used by current runtime.
+    Compatibility logic:
+    - this function is intentionally unreferenced after the strict `root_cause[]` migration.
+    Why:
+    - keeping the snapshot reduces risk while the migration stabilizes, then it can be removed.
+    """
+    fallback = dict(original)
+    delay_value = evidence_signals.get("tc_delay_value")
+    delay_text = f"{delay_value}ms" if delay_value is not None else "unknown"
+    entities: list[str] = []
+    for run in tool_runs:
+        if not isinstance(run, dict):
+            continue
+        params = run.get("params")
+        if not isinstance(params, dict):
+            continue
+        node = str(params.get("node", "") or "").strip()
+        if node and node not in entities:
+            entities.append(node)
+
+    fallback["confidence"] = max(_clamp_confidence(fallback.get("confidence"), default=0.6), 0.72)
+    fallback["diagnosis_certainty"] = "probable"
+    fallback["impact_summary"] = f"已命中 tc/netem 强证据（delay≈{delay_text}），当前时延异常与 tc qdisc 注入/残留高度相关。"
+    fallback["root_cause"] = [
+        {
+            "id": "rc-1",
+            "title": "检测到 tc/netem 注入或残留规则导致网络时延抖动",
+            "layer": "network",
+            "entities": entities,
+            "confidence": fallback["confidence"],
+            "certainty": "probable",
+            "status": "suspected",
+            "evidence_summary": f"命中 tc/netem 强证据（delay≈{delay_text}）",
+            "impact_summary": fallback["impact_summary"],
+            "distinguishing_verification": "检查 qdisc 规则是否存在注入残留并重新验证时延",
+            "recommended_fix": None,
+        }
+    ]
+    # Transitional cleanup: remove legacy keys to ensure all paths converge to root_cause[].
+    fallback.pop("ranked_candidates", None)
+    fallback.pop("root_cause_layer", None)
+    fallback.pop("root_cause_entities", None)
+    priority = str(fallback.get("triage_priority") or "P1").strip().upper()
+    fallback["triage_priority"] = priority if priority in {"P0", "P1", "P2", "P3"} else "P1"
+    return fallback
+
     fallback = dict(original)
     delay_value = evidence_signals.get("tc_delay_value")
     delay_text = f"{delay_value}ms" if delay_value is not None else "鏈煡"
@@ -3893,6 +4390,74 @@ def _build_tc_fallback_diagnosis_payload(
     fallback["impact_summary"] = (
         f"已命中 tc/netem 强证据（delay≈{delay_text}），当前时延异常与 tc qdisc 注入/残留高度相关。"
     )
+    priority = str(fallback.get("triage_priority") or "P1").strip().upper()
+    fallback["triage_priority"] = priority if priority in {"P0", "P1", "P2", "P3"} else "P1"
+    return fallback
+
+
+def _build_tc_fallback_diagnosis_payload(
+    *,
+    original: dict[str, Any],
+    evidence_signals: dict[str, Any],
+    tool_runs: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Build tc/netem fallback diagnosis in the canonical `root_cause[]` contract.
+
+    Purpose:
+    - produce a deterministic fallback diagnosis when tc/netem strong evidence is detected.
+    Input/Output:
+    - input: original diagnosis payload, evidence signals, and recent tool-run records.
+    - output: normalized diagnosis payload with one primary root-cause object.
+    Compatibility logic:
+    - strips removed legacy keys from the final payload.
+    Why:
+    - all diagnosis consumers now read only from `root_cause[]`.
+    """
+    fallback = dict(original)
+    delay_value = evidence_signals.get("tc_delay_value")
+    delay_text = f"{delay_value}ms" if delay_value is not None else "unknown"
+    entities: list[str] = []
+    for run in tool_runs:
+        if not isinstance(run, dict):
+            continue
+        params = run.get("params")
+        if not isinstance(params, dict):
+            continue
+        node = str(params.get("node", "") or "").strip()
+        if node and node not in entities:
+            entities.append(node)
+
+    confidence = max(_clamp_confidence(fallback.get("confidence"), default=0.6), 0.72)
+    impact_summary = (
+        f"Strong tc/netem evidence detected (delay >= {delay_text}); the latency anomaly is "
+        "highly correlated with qdisc injection or residual shaping rules."
+    )
+
+    fallback["confidence"] = confidence
+    fallback["diagnosis_certainty"] = "probable"
+    fallback["impact_summary"] = impact_summary
+    fallback["root_cause"] = [
+        {
+            "id": "rc-tc-netem-injection",
+            "title": "tc/netem injection or residual qdisc rule causes network latency jitter",
+            "layer": "network",
+            "entities": entities,
+            "confidence": confidence,
+            "certainty": "probable",
+            "status": "suspected",
+            "evidence_summary": f"Matched tc/netem strong evidence (delay >= {delay_text}).",
+            "impact_summary": impact_summary,
+            "distinguishing_verification": (
+                "Inspect qdisc state for injected or residual rules and re-check latency."
+            ),
+            "recommended_fix": None,
+        }
+    ]
+
+    # Transitional cleanup: tolerate legacy input fields but never expose them in final output.
+    fallback.pop("ranked_candidates", None)
+    fallback.pop("root_cause_layer", None)
+    fallback.pop("root_cause_entities", None)
     priority = str(fallback.get("triage_priority") or "P1").strip().upper()
     fallback["triage_priority"] = priority if priority in {"P0", "P1", "P2", "P3"} else "P1"
     return fallback
@@ -4153,7 +4718,18 @@ def _is_missing_required_skill_variable_error(summary: str) -> bool:
     return "missing required variable:" in lowered
 
 
-def _build_fallback_final_output(*, query: str, content: str) -> FinalDiagnosisEnvelope:
+def _build_fallback_final_output_legacy(*, query: str, content: str) -> FinalDiagnosisEnvelope:
+    """Legacy snapshot kept for migration traceability and rollback diffing.
+
+    Purpose:
+    - retain the pre-migration fallback behavior as a historical reference.
+    Input/Output:
+    - same as active fallback builder, but not used by the current execution path.
+    Compatibility logic:
+    - active runtime uses the non-legacy `_build_fallback_final_output`.
+    Why:
+    - avoids accidental behavior drift during staged cleanup of legacy branches.
+    """
     summary = (content or "").strip()
     if not summary:
         summary = "LLM 在生成诊断结论时返回了空响应。"
@@ -4191,6 +4767,84 @@ def _build_fallback_final_output(*, query: str, content: str) -> FinalDiagnosisE
                     },
                     {
                         "description": "告警也可能是瞬时波动，或当前上下文仍不完整",
+                        "status": "testing",
+                        "evidence_for": [f"query={query}"] if query else [],
+                        "evidence_against": [],
+                        "confidence": 0.25,
+                    },
+                ],
+            },
+            "remediation_plan": None,
+        }
+    )
+
+
+def _build_fallback_final_output(*, query: str, content: str) -> FinalDiagnosisEnvelope:
+    """Build a contract-safe fallback envelope when model output is malformed.
+
+    Purpose:
+    - guarantee a parseable diagnosis result even if the model returned non-JSON text.
+    Input/Output:
+    - input: original user query and raw model text content.
+    - output: `FinalDiagnosisEnvelope` with normalized `diagnosis.root_cause[]`.
+    Compatibility logic:
+    - does not emit removed legacy diagnosis fields.
+    Why:
+    - downstream validators and UI rely on strict `root_cause[]` semantics.
+    """
+    summary = (content or "").strip()
+    if not summary:
+        summary = "Model returned empty content while generating diagnosis."
+    if len(summary) > 300:
+        summary = summary[:297] + "..."
+
+    title = summary.splitlines()[0].strip() if summary else "Insufficient evidence for a confirmed root cause"
+    if len(title) > 140:
+        title = title[:137] + "..."
+
+    return FinalDiagnosisEnvelope.model_validate(
+        {
+            "thought": "Converted non-JSON model output into a low-confidence structured diagnosis.",
+            "diagnosis": {
+                "root_cause": [
+                    {
+                        "id": "rc-fallback-non-json",
+                        "title": title or "Insufficient evidence for a confirmed root cause",
+                        "layer": "platform",
+                        "entities": [],
+                        "confidence": 0.35,
+                        "certainty": "ambiguous",
+                        "status": "suspected",
+                        "evidence_summary": summary,
+                        "impact_summary": summary,
+                        "distinguishing_verification": (
+                            "Collect additional metrics and tool evidence to refine diagnosis."
+                        ),
+                        "recommended_fix": None,
+                    }
+                ],
+                "confidence": 0.35,
+                "impact_summary": summary,
+                "affected_services": [],
+                "triage_priority": "P2",
+                "diagnosis_certainty": "ambiguous",
+                "hypotheses": [
+                    {
+                        "description": title or "Fallback primary hypothesis from malformed model output",
+                        "status": "testing",
+                        "evidence_for": [summary] if summary else [],
+                        "evidence_against": [],
+                        "confidence": 0.35,
+                    },
+                    {
+                        "description": "Tool evidence may be incomplete or unavailable in current context",
+                        "status": "testing",
+                        "evidence_for": ["Fallback path triggered for non-JSON response"],
+                        "evidence_against": [],
+                        "confidence": 0.3,
+                    },
+                    {
+                        "description": "Alert may be transient or context may still be incomplete",
                         "status": "testing",
                         "evidence_for": [f"query={query}"] if query else [],
                         "evidence_against": [],
@@ -4381,16 +5035,38 @@ async def act_node(
                 )
                 serialized_source = "duplicate_suppressed"
                 coverage_met, coverage_missing = _ttft_coverage_state(tool_runs)
+                duplicate_fingerprint = _build_tool_call_fingerprint(latest_same_call)
+                duplicate_threshold = int(loop_guard.get("duplicate_threshold", loop_guard.get("threshold", 2)) or 2)
+                duplicate_repeat_count = int(loop_guard.get("duplicate_repeat_count", 0) or 0)
+                duplicate_force_final = False
                 if coverage_met:
-                    force_final_turn = True
+                    if is_ttft_alert:
+                        if duplicate_fingerprint and duplicate_fingerprint == loop_guard.get("recent_duplicate_fingerprint"):
+                            duplicate_repeat_count += 1
+                        else:
+                            loop_guard["recent_duplicate_fingerprint"] = duplicate_fingerprint
+                            duplicate_repeat_count = 1
+                        loop_guard["duplicate_repeat_count"] = duplicate_repeat_count
+                        if duplicate_repeat_count > duplicate_threshold:
+                            duplicate_force_final = True
+                            if not bool(loop_guard.get("triggered", False)):
+                                loop_guard["triggered"] = True
+                                loop_guard["trigger_step"] = len(tool_runs) + 1
+                            force_final_turn = True
+                    else:
+                        duplicate_force_final = True
+                        force_final_turn = True
                 suppressed_reasons.append(
                     {
                         "reason": "cross_round_duplicate",
                         "tool": tool_name,
                         "dedupe_key": merged_call_key,
-                        "fingerprint": _build_tool_call_fingerprint(latest_same_call),
+                        "fingerprint": duplicate_fingerprint,
                         "reused_from_step": reused_step,
                         "reused": True,
+                        "force_final_turn": duplicate_force_final,
+                        "duplicate_repeat_count": duplicate_repeat_count,
+                        "duplicate_threshold": duplicate_threshold,
                         "ttft_coverage_met": coverage_met,
                         "coverage_missing": coverage_missing,
                     }
@@ -4548,6 +5224,10 @@ async def act_node(
                 "ttft_family_cache_reuse",
                 "ttft_total_cache_reuse",
             }
+            if counts_for_loop_guard and is_ttft_alert:
+                coverage_met_after_run, _ = _ttft_coverage_state(tool_runs)
+                if not coverage_met_after_run:
+                    counts_for_loop_guard = False
             if counts_for_loop_guard:
                 fingerprint = _build_tool_call_fingerprint(serialized)
                 if fingerprint and fingerprint == loop_guard.get("recent_fingerprint"):
@@ -4609,11 +5289,16 @@ async def act_node(
         )
         # Always append one observation so frontend can close the "tool loading" state,
         # including duplicate-suppressed calls that intentionally do not enter tool_runs.
+        observation_params = dict(tool_args) if isinstance(tool_args, dict) else {}
+        if tool_name == "process.find" and "node" not in observation_params and isinstance(result.data, dict):
+            resolved_node = str(result.data.get("node", "") or "").strip()
+            if resolved_node:
+                observation_params["node"] = resolved_node
         observation_entries.append(
             {
                 "type": "observation",
                 "tool": tool_name,
-                "params": tool_args,
+                "params": observation_params,
                 "result": {
                     "success": result.success,
                     "data": _safe_jsonable(result.data),
@@ -4712,6 +5397,16 @@ async def act_node(
         if reason == "cross_round_duplicate":
             suppressed_coverage_met = bool(suppressed.get("ttft_coverage_met", True))
             suppressed_coverage_missing = suppressed.get("coverage_missing", [])
+            suppressed_force_final = bool(suppressed.get("force_final_turn", True))
+            if is_ttft_alert and not suppressed_coverage_met:
+                duplicate_content = "已复用重复工具结果；TTFT 覆盖未完成，继续补齐缺失证据。"
+                duplicate_action = "tool_call"
+            elif is_ttft_alert and not suppressed_force_final:
+                duplicate_content = "已复用重复工具结果，继续基于现有证据判断是否需要换角度取证或总结。"
+                duplicate_action = "observe"
+            else:
+                duplicate_content = "已停止重复查询，进入总结阶段。"
+                duplicate_action = "conclude"
             updated_trace_items.append(
                 {
                     "type": "thought",
@@ -4741,6 +5436,15 @@ async def act_node(
                     },
                 }
             )
+            latest_trace_item = updated_trace_items[-1] if updated_trace_items else None
+            if isinstance(latest_trace_item, dict):
+                latest_trace_item["content"] = duplicate_content
+                latest_trace_item["action"] = duplicate_action
+                duplicate_params = latest_trace_item.get("tool_params")
+                if isinstance(duplicate_params, dict):
+                    duplicate_params["force_final_turn"] = suppressed_force_final
+                    duplicate_params["duplicate_repeat_count"] = suppressed.get("duplicate_repeat_count")
+                    duplicate_params["duplicate_threshold"] = suppressed.get("duplicate_threshold")
             continue
         suppressed_coverage_met = bool(suppressed.get("ttft_coverage_met", True))
         suppressed_coverage_missing = suppressed.get("coverage_missing", [])
@@ -4785,7 +5489,7 @@ async def act_node(
         "status": "running",
         "summary": state.get("summary"),
         "error": None,
-        "evidence_signals": _extract_evidence_signals(tool_runs),
+        "evidence_signals": _extract_evidence_signals(tool_runs, variables=variables),
         "loop_guard": loop_guard,
         "force_final_turn": force_final_turn,
     }
@@ -4895,9 +5599,21 @@ def finalize_node(state: SREAgentState) -> SREAgentState:
         evidence_summary = _build_step_timeout_evidence_summary(tool_runs)
         summary_preview = _truncate_prompt_note(evidence_summary, max_chars=220)
         partial_diagnosis = {
-            "root_cause": "Diagnosis timed out during analysis; partial evidence collected",
-            "root_cause_layer": "service",
-            "root_cause_entities": [],
+            "root_cause": [
+                {
+                    "id": "rc-1",
+                    "title": "Diagnosis timed out during analysis; partial evidence collected",
+                    "layer": "service",
+                    "entities": [],
+                    "confidence": 0.45,
+                    "certainty": "ambiguous",
+                    "status": "suspected",
+                    "evidence_summary": evidence_summary or "Diagnosis interrupted by timeout",
+                    "impact_summary": f"Diagnosis incomplete due to timeout. Evidence: {evidence_summary}",
+                    "distinguishing_verification": "Retry diagnosis with additional runtime budget",
+                    "recommended_fix": None,
+                }
+            ],
             "confidence": 0.45,
             "impact_summary": f"Diagnosis incomplete due to timeout. Evidence: {evidence_summary}",
             "affected_services": [],
@@ -4944,34 +5660,90 @@ def _merge_tool_args(
     tool_args: dict[str, Any],
     variables: dict[str, Any],
 ) -> dict[str, Any]:
+    """Merge model tool args with runtime defaults and TTFT pattern normalization.
+
+    This keeps non-TTFT behavior unchanged while tightening TTFT process probes:
+    broad exact alternatives like `load`/`simulator` are rewritten to
+    `load_simulator` to reduce noisy false matches (for example `--reload`).
+    """
     merged = dict(tool_args)
     nested_kwargs = merged.pop("kwargs", None)
     if isinstance(nested_kwargs, dict):
         for key, value in nested_kwargs.items():
             merged.setdefault(str(key), value)
     if not variables:
-        _normalize_runtime_defaults(merged, variables, tool_name=tool_name)
+        _prune_unsupported_tool_params(tool_name, merged)
         return merged
     try:
         tool_def = registry.get_tool(tool_name)
     except Exception:  # noqa: BLE001
         tool_def = None
 
-    required: list[str] = []
+    required: set[str] = set()
     if tool_def is not None:
         schema = tool_def.params_schema or {}
         raw_required = schema.get("required", [])
         if isinstance(raw_required, list):
-            required = [str(item).strip() for item in raw_required if str(item).strip()]
+            required = {str(item).strip() for item in raw_required if str(item).strip()}
 
     for key, value in variables.items():
-        if key not in merged and (not required or key in required):
+        if key not in merged and key in required:
             merged[key] = value
-    _normalize_runtime_defaults(merged, variables, tool_name=tool_name)
+    if tool_name == "process.find":
+        alert_name = str(variables.get("alert_name", "") or "").strip()
+        if _is_force_canary_alert_name(alert_name):
+            merged["pattern"] = _normalize_ttft_process_find_pattern(merged.get("pattern"))
+    _normalize_runtime_defaults(
+        merged,
+        variables,
+        tool_name=tool_name,
+        runtime_default_keys=required,
+    )
+    _prune_unsupported_tool_params(tool_name, merged)
     return merged
 
 
 _NODE_SELF_RESOLVING_TOOLS: frozenset[str] = frozenset({"process.find"})
+_TOOL_PARAM_ALLOWLISTS: dict[str, frozenset[str]] = {
+    "prometheus.query_instant": frozenset({"promql"}),
+    "prometheus.query_range": frozenset({"promql", "start", "end", "step"}),
+}
+
+
+def _normalize_ttft_process_find_pattern(raw_pattern: Any) -> str:
+    """Normalize TTFT process.find regex alternatives for high-signal matching."""
+    raw = str(raw_pattern or "").strip()
+    if not raw:
+        return TTFT_STRICT_PROCESS_FIND_PATTERN
+
+    parts = [segment.strip() for segment in raw.split("|") if str(segment).strip()]
+    if not parts:
+        return TTFT_STRICT_PROCESS_FIND_PATTERN
+
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for part in parts:
+        lowered = part.lower()
+        if lowered in {"load", "simulator"}:
+            part = "load_simulator"
+            lowered = part
+        if lowered in seen:
+            continue
+        seen.add(lowered)
+        normalized.append(part)
+
+    if not normalized:
+        return TTFT_STRICT_PROCESS_FIND_PATTERN
+    return "|".join(normalized)
+
+
+def _prune_unsupported_tool_params(tool_name: str, params: dict[str, Any]) -> None:
+    allowed = _TOOL_PARAM_ALLOWLISTS.get(str(tool_name or "").strip())
+    if not allowed:
+        return
+    for key in list(params.keys()):
+        if str(key) not in allowed:
+            params.pop(key, None)
 
 
 def _normalize_runtime_defaults(
@@ -4979,10 +5751,17 @@ def _normalize_runtime_defaults(
     variables: dict[str, Any],
     *,
     tool_name: str = "",
+    runtime_default_keys: set[str] | None = None,
 ) -> None:
-    if "node" in variables and tool_name not in _NODE_SELF_RESOLVING_TOOLS:
+    default_keys = set(runtime_default_keys or set())
+    if (
+        "node" in variables
+        and "node" in default_keys
+        and _is_blank_param(params.get("node"))
+        and tool_name not in _NODE_SELF_RESOLVING_TOOLS
+    ):
         params["node"] = variables["node"]
-    if "namespace" in variables:
+    if "namespace" in variables and "namespace" in default_keys and _is_blank_param(params.get("namespace")):
         params["namespace"] = variables["namespace"]
 
 
@@ -5180,7 +5959,343 @@ def _safe_jsonable(value: Any) -> Any:
     return str(value)
 
 
+def _sanitize_inline_canary_payload(raw_canary: Any, *, step_count: int) -> dict[str, Any] | None:
+    """Sanitize embedded canary payload so schema validation never receives non-positive percentages."""
+    if not isinstance(raw_canary, dict):
+        return None
+    allowed_keys = {
+        "enabled",
+        "target_percentage",
+        "monitor_duration",
+        "success_criteria",
+        "criteria_mode",
+        "max_batches",
+        "auto_rollback_on_regression",
+        "progressive",
+    }
+    canary = {k: v for k, v in raw_canary.items() if k in allowed_keys}
+    canary.setdefault("enabled", True)
+    canary.setdefault("progressive", True)
+    canary.setdefault("success_criteria", [])
+    if not isinstance(canary.get("success_criteria"), list):
+        canary["success_criteria"] = []
+
+    criteria_mode = str(canary.get("criteria_mode") or "all").strip().lower()
+    canary["criteria_mode"] = criteria_mode if criteria_mode in {"all", "any"} else "all"
+
+    try:
+        monitor_duration = int(canary.get("monitor_duration") or 0)
+    except Exception:  # noqa: BLE001
+        monitor_duration = 0
+    canary["monitor_duration"] = monitor_duration if monitor_duration > 0 else 60
+
+    try:
+        max_batches = int(canary.get("max_batches") or 0)
+    except Exception:  # noqa: BLE001
+        max_batches = 0
+    if max_batches <= 0:
+        max_batches = step_count if step_count > 0 else 1
+    canary["max_batches"] = max_batches
+
+    try:
+        target_percentage = float(canary.get("target_percentage"))
+    except Exception:  # noqa: BLE001
+        target_percentage = 0.0
+    if target_percentage <= 0.0:
+        if step_count > 0:
+            target_percentage = round(1.0 / float(step_count), 4)
+        else:
+            target_percentage = 0.1
+    canary["target_percentage"] = max(0.0001, min(1.0, target_percentage))
+
+    if "auto_rollback_on_regression" not in canary:
+        canary["auto_rollback_on_regression"] = bool(canary["max_batches"] >= 2)
+    else:
+        canary["auto_rollback_on_regression"] = bool(canary.get("auto_rollback_on_regression"))
+    return canary
+
+
+def _normalize_inline_recommended_fix_payload(raw_plan: Any) -> dict[str, Any] | None:
+    """Normalize inline recommended_fix payload for diagnosis schema safety.
+
+    This runs before `DiagnosisResult.model_validate`, so we keep the logic defensive:
+    - repair canary values that violate strict constraints (for example `target_percentage=0`);
+    - drop the inline plan when the shape is still invalid after sanitation.
+    """
+    if not isinstance(raw_plan, dict):
+        return None
+    candidate = dict(raw_plan)
+    steps_payload = candidate.get("steps")
+    if steps_payload is None and isinstance(candidate.get("actions"), list):
+        candidate["steps"] = list(candidate.get("actions") or [])
+        candidate.pop("actions", None)
+        steps_payload = candidate.get("steps")
+    step_count = len(steps_payload) if isinstance(steps_payload, list) else 0
+
+    if "canary" in candidate:
+        sanitized_canary = _sanitize_inline_canary_payload(candidate.get("canary"), step_count=step_count)
+        candidate["canary"] = sanitized_canary
+
+    try:
+        normalized_plan = RemediationPlan.model_validate(candidate)
+    except Exception as exc:  # noqa: BLE001
+        _llm_logger.info("dropping invalid inline recommended_fix payload: %s", exc)
+        return None
+    return normalized_plan.model_dump(mode="json")
+
+
+def _normalize_root_cause_item_payload(
+    raw_item: Any,
+    *,
+    index: int,
+    default_confidence: float,
+    default_certainty: str,
+    default_impact_summary: str,
+    default_layer: str = "platform",
+) -> dict[str, Any] | None:
+    """Normalize one root-cause item into the formal array object shape.
+
+    Purpose:
+    - coerce loose LLM payloads into one valid `root_cause[]` item.
+    Input/Output:
+    - input: arbitrary raw item plus default values from diagnosis payload;
+    - output: normalized root-cause dict or None when content is empty.
+    Compatibility rationale:
+    - supports tolerant parsing for malformed model output, but still emits only the new structure.
+    Why:
+    - centralizing item normalization avoids field drift across retry/fallback branches.
+    """
+    if isinstance(raw_item, str):
+        title = raw_item.strip()
+        if not title:
+            return None
+        return {
+            "id": f"rc-{index}",
+            "title": title,
+            "layer": default_layer,
+            "entities": [],
+            "confidence": default_confidence,
+            "certainty": default_certainty,
+            "status": "suspected",
+            "evidence_summary": default_impact_summary or title,
+            "impact_summary": default_impact_summary or title,
+            "distinguishing_verification": None,
+            "recommended_fix": None,
+        }
+    if not isinstance(raw_item, dict):
+        return None
+    title = str(raw_item.get("title") or raw_item.get("root_cause") or "").strip()
+    if not title:
+        return None
+    layer = str(raw_item.get("layer") or raw_item.get("root_cause_layer") or default_layer).strip()
+    entities = raw_item.get("entities")
+    if not isinstance(entities, list):
+        entities = raw_item.get("root_cause_entities")
+    normalized_entities = [str(item).strip() for item in (entities or []) if str(item).strip()]
+    confidence = _clamp_confidence(raw_item.get("confidence"), default=default_confidence)
+    certainty = str(raw_item.get("certainty") or default_certainty).strip().lower()
+    if certainty not in {"confirmed", "probable", "ambiguous"}:
+        certainty = default_certainty
+    status = str(raw_item.get("status") or "suspected").strip().lower()
+    if status not in {"confirmed", "contributing", "suspected", "monitoring"}:
+        status = "suspected"
+    evidence_summary = str(raw_item.get("evidence_summary") or default_impact_summary or title).strip()
+    impact_summary = str(raw_item.get("impact_summary") or default_impact_summary or evidence_summary).strip()
+    recommended_fix = _normalize_inline_recommended_fix_payload(raw_item.get("recommended_fix"))
+    factor_type = str(raw_item.get("factor_type") or "").strip().lower()
+    if factor_type not in {"gpu_contention", "external_load", "cache_pressure", "scheduler", "mixed", "unknown"}:
+        factor_type = ""
+    raw_evidence_refs = raw_item.get("evidence_refs")
+    evidence_refs = [str(item).strip() for item in raw_evidence_refs if str(item).strip()] if isinstance(raw_evidence_refs, list) else []
+    evidence_interpretation = (
+        str(raw_item.get("evidence_interpretation")).strip()
+        if raw_item.get("evidence_interpretation") is not None
+        else None
+    )
+    return {
+        "id": str(raw_item.get("id") or f"rc-{index}").strip() or f"rc-{index}",
+        "title": title,
+        "layer": layer if layer in {"hardware", "network", "os", "platform", "service"} else default_layer,
+        "entities": normalized_entities,
+        "confidence": confidence,
+        "certainty": certainty,
+        "status": status,
+        "factor_type": factor_type or None,
+        "evidence_refs": evidence_refs,
+        "evidence_interpretation": evidence_interpretation,
+        "evidence_summary": evidence_summary or title,
+        "impact_summary": impact_summary or evidence_summary or title,
+        "distinguishing_verification": (
+            str(raw_item.get("distinguishing_verification")).strip()
+            if raw_item.get("distinguishing_verification") is not None
+            else None
+        ),
+        "recommended_fix": recommended_fix,
+    }
+
+
+def _normalize_root_cause_array_payload(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    """Normalize diagnosis payload into the formal `root_cause[]` array contract.
+
+    Purpose:
+    - enforce root-cause array output regardless of model response variants.
+    Input/Output:
+    - input: diagnosis payload dict emitted by LLM/fallback code;
+    - output: normalized non-empty list of root-cause item dicts.
+    Compatibility rationale:
+    - accepts legacy shapes only as parser tolerance, not as public API compatibility.
+    Why:
+    - all downstream backend/frontend logic is now standardized on `root_cause[]`.
+    """
+    default_confidence = _clamp_confidence(payload.get("confidence"), default=0.5)
+    default_certainty = str(payload.get("diagnosis_certainty") or "probable").strip().lower()
+    if default_certainty not in {"confirmed", "probable", "ambiguous"}:
+        default_certainty = "probable"
+    default_impact_summary = str(payload.get("impact_summary") or "").strip()
+    normalized_items: list[dict[str, Any]] = []
+
+    raw_root_cause = payload.get("root_cause")
+    if isinstance(raw_root_cause, list):
+        for index, raw_item in enumerate(raw_root_cause, start=1):
+            normalized_item = _normalize_root_cause_item_payload(
+                raw_item,
+                index=index,
+                default_confidence=default_confidence,
+                default_certainty=default_certainty,
+                default_impact_summary=default_impact_summary,
+            )
+            if normalized_item is not None:
+                normalized_items.append(normalized_item)
+    elif isinstance(raw_root_cause, dict):
+        normalized_item = _normalize_root_cause_item_payload(
+            raw_root_cause,
+            index=1,
+            default_confidence=default_confidence,
+            default_certainty=default_certainty,
+            default_impact_summary=default_impact_summary,
+        )
+        if normalized_item is not None:
+            normalized_items.append(normalized_item)
+    elif isinstance(raw_root_cause, str) and raw_root_cause.strip():
+        # Model-output tolerance: if model returns a legacy single-string root cause, wrap it into one-item array.
+        # This branch is parsing robustness only and is not a formal compatibility commitment.
+        normalized_item = _normalize_root_cause_item_payload(
+            raw_root_cause,
+            index=1,
+            default_confidence=default_confidence,
+            default_certainty=default_certainty,
+            default_impact_summary=default_impact_summary,
+        )
+        if normalized_item is not None:
+            normalized_items.append(normalized_item)
+
+    if not normalized_items:
+        raw_candidates = payload.get("ranked_candidates")
+        if isinstance(raw_candidates, list):
+            # Transitional parser tolerance: convert legacy ranked candidates only when root_cause[] is missing.
+            # This conversion is temporary fault tolerance and does not define official API semantics.
+            for index, raw_item in enumerate(raw_candidates, start=1):
+                normalized_item = _normalize_root_cause_item_payload(
+                    raw_item,
+                    index=index,
+                    default_confidence=default_confidence,
+                    default_certainty=default_certainty,
+                    default_impact_summary=default_impact_summary,
+                )
+                if normalized_item is not None:
+                    normalized_items.append(normalized_item)
+
+    if not normalized_items:
+        fallback_title = default_impact_summary or "证据不足，暂无法确认根因"
+        normalized_items.append(
+            {
+                "id": "rc-1",
+                "title": fallback_title,
+                "layer": "platform",
+                "entities": [],
+                "confidence": default_confidence,
+                "certainty": default_certainty,
+                "status": "suspected",
+                "evidence_summary": fallback_title,
+                "impact_summary": default_impact_summary or fallback_title,
+                "distinguishing_verification": None,
+                "recommended_fix": None,
+            }
+        )
+    return normalized_items
+
+
+def _sync_primary_recommended_fix_from_root_cause(payload: dict[str, Any]) -> None:
+    """Synchronize top-level recommended_fix with root_cause[0].recommended_fix in-place.
+
+    Purpose:
+    - keep one canonical remediation plan source while preserving current top-level consumers.
+    Input/Output:
+    - input: diagnosis payload dict with normalized `root_cause[]`;
+    - output: no return; payload is updated in place.
+    Compatibility rationale:
+    - top-level `recommended_fix` is deprecated but still accepted by older prompt/completion paths.
+    Why:
+    - the canonical multi-root-cause structure remains `root_cause[i].recommended_fix`, while the
+      top-level field is only a compatibility mirror for the leading root cause.
+    """
+    root_causes = payload.get("root_cause")
+    if not isinstance(root_causes, list) or not root_causes:
+        payload["recommended_fix"] = None
+        return
+    primary = root_causes[0]
+    if not isinstance(primary, dict):
+        payload["recommended_fix"] = None
+        return
+    top_level_plan = _normalize_inline_recommended_fix_payload(payload.get("recommended_fix"))
+    primary_plan = _normalize_inline_recommended_fix_payload(primary.get("recommended_fix"))
+    payload["recommended_fix"] = top_level_plan
+    primary["recommended_fix"] = primary_plan
+
+    if isinstance(top_level_plan, dict) and not isinstance(primary_plan, dict):
+        primary["recommended_fix"] = top_level_plan
+        payload["recommended_fix"] = top_level_plan
+        return
+    if not isinstance(top_level_plan, dict) and isinstance(primary_plan, dict):
+        payload["recommended_fix"] = primary_plan
+        return
+    if not isinstance(top_level_plan, dict) and not isinstance(primary_plan, dict):
+        payload["recommended_fix"] = None
+        return
+    if (
+        isinstance(top_level_plan, dict)
+        and isinstance(primary_plan, dict)
+        and str(top_level_plan.get("plan_id") or "").strip() != str(primary_plan.get("plan_id") or "").strip()
+    ):
+        payload["recommended_fix"] = primary_plan
+
+
+def _diagnosis_primary_root_cause(diagnosis: DiagnosisResult) -> dict[str, Any]:
+    """Extract the primary root cause from a validated DiagnosisResult."""
+    if diagnosis.root_cause:
+        primary = diagnosis.root_cause[0]
+        return {
+            "title": primary.title,
+            "layer": primary.layer,
+            "entities": list(primary.entities),
+            "confidence": primary.confidence,
+        }
+    return {"title": "", "layer": "platform", "entities": [], "confidence": diagnosis.confidence}
+
+
 def _normalize_diagnosis_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Normalize diagnosis payload to the new root_cause[]-first contract.
+
+    Purpose:
+    - clean model output and enforce canonical fields for `DiagnosisResult` validation.
+    Input/Output:
+    - input: raw diagnosis dict from model/fallback/retry branches;
+    - output: normalized dict ready for `DiagnosisResult.model_validate`.
+    Compatibility rationale:
+    - keeps tolerant parsing for malformed legacy model output but removes legacy fields from final payload.
+    Why:
+    - all backend and frontend consumers are migrated to read from `root_cause[]`.
+    """
     normalized = dict(payload)
     confidence = normalized.get("confidence")
     certainty = str(normalized.get("diagnosis_certainty", "")).strip().lower()
@@ -5191,11 +6306,109 @@ def _normalize_diagnosis_payload(payload: dict[str, Any]) -> dict[str, Any]:
         normalized["next_action"] = next_action
     else:
         normalized.pop("next_action", None)
+    normalized["root_cause"] = _normalize_root_cause_array_payload(normalized)
     normalized["hypotheses"] = _normalize_hypotheses_payload(normalized)
+    _promote_confirmed_hypotheses_to_root_causes(normalized)
+    _decouple_root_cause_evidence_summaries(normalized)
+    _sync_primary_recommended_fix_from_root_cause(normalized)
+    normalized.pop("ranked_candidates", None)
+    normalized.pop("root_cause_layer", None)
+    normalized.pop("root_cause_entities", None)
     return normalized
 
 
-def _normalize_hypotheses_payload(payload: dict[str, Any]) -> list[dict[str, Any]]:
+def _normalize_hypotheses_payload_legacy(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    """Normalize hypotheses with primary root-cause context from `root_cause[]`.
+
+    Purpose:
+    - keep hypothesis output consistent when diagnosis migrated from single root cause to array form.
+    Input/Output:
+    - input: diagnosis payload that already passed root-cause normalization;
+    - output: normalized hypothesis list with at least one default entry.
+    Compatibility rationale:
+    - legacy branches remain below as dead fallback, but active path only reads `root_cause[]`.
+    Why:
+    - we need deterministic hypotheses for UI rendering and plan guardrails.
+    """
+    raw_hypotheses = payload.get("hypotheses")
+    root_causes = payload.get("root_cause")
+    primary_root_cause = ""
+    primary_layer = "platform"
+    if isinstance(root_causes, list):
+        for item in root_causes:
+            if isinstance(item, dict):
+                primary_root_cause = str(item.get("title") or item.get("root_cause") or "").strip()
+                primary_layer = str(item.get("layer") or item.get("root_cause_layer") or "platform").strip()
+                break
+    impact_summary = str(payload.get("impact_summary") or "").strip()
+    confidence = float(payload.get("confidence") or 0.5)
+    certainty = str(payload.get("diagnosis_certainty") or "probable").strip().lower()
+
+    normalized: list[dict[str, Any]] = []
+    seen_descriptions: set[str] = set()
+    if isinstance(raw_hypotheses, list):
+        for item in raw_hypotheses:
+            if not isinstance(item, dict):
+                continue
+            description = str(item.get("description") or "").strip()
+            if not description:
+                continue
+            status = str(item.get("status") or "testing").strip().lower()
+            if status not in {"testing", "confirmed", "eliminated"}:
+                status = "testing"
+            evidence_for = item.get("evidence_for")
+            evidence_against = item.get("evidence_against")
+            hypothesis = {
+                "description": description,
+                "status": status,
+                "evidence_for": [str(v) for v in evidence_for] if isinstance(evidence_for, list) else [],
+                "evidence_against": [str(v) for v in evidence_against] if isinstance(evidence_against, list) else [],
+                "confidence": _clamp_confidence(item.get("confidence"), default=confidence),
+            }
+            normalized.append(hypothesis)
+            seen_descriptions.add(description.lower())
+
+    primary_status = "confirmed" if certainty == "confirmed" else "testing"
+    defaults: list[dict[str, Any]] = [
+        {
+            "description": primary_root_cause or "主要根因假设",
+            "status": primary_status,
+            "evidence_for": [impact_summary] if impact_summary else [],
+            "evidence_against": [],
+            "confidence": _clamp_confidence(confidence, default=0.9),
+        },
+        {
+            "description": "网络或 RDMA 退化导致时延抬升",
+            "status": "eliminated" if primary_layer != "network" else "testing",
+            "evidence_for": [],
+            "evidence_against": [impact_summary] if impact_summary and primary_layer != "network" else [],
+            "confidence": _clamp_confidence(min(confidence, 0.45), default=0.35),
+        },
+        {
+            "description": "业务侧负载突增导致服务排队",
+            "status": "testing" if primary_layer != "service" else primary_status,
+            "evidence_for": [],
+            "evidence_against": [impact_summary] if impact_summary and primary_layer != "service" else [],
+            "confidence": _clamp_confidence(min(confidence, 0.55), default=0.4),
+        },
+        {
+            "description": "硬件热降频或硬件不稳定",
+            "status": "testing" if primary_layer == "hardware" else "eliminated",
+            "evidence_for": [],
+            "evidence_against": [impact_summary] if impact_summary and primary_layer != "hardware" else [],
+            "confidence": _clamp_confidence(min(confidence, 0.4), default=0.3),
+        },
+    ]
+    for item in defaults:
+        key = item["description"].lower()
+        if key in seen_descriptions:
+            continue
+        normalized.append(item)
+        seen_descriptions.add(key)
+        if len(normalized) >= 1:
+            break
+    return normalized
+
     raw_hypotheses = payload.get("hypotheses")
     root_cause = str(payload.get("root_cause") or "主要根因假设").strip()
     root_cause_layer = str(payload.get("root_cause_layer") or "platform").strip()
@@ -5269,6 +6482,336 @@ def _normalize_hypotheses_payload(payload: dict[str, Any]) -> list[dict[str, Any
             break
 
     return normalized
+
+
+def _normalize_hypotheses_payload(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    """Normalize hypotheses using primary context from canonical `root_cause[]`.
+
+    Purpose:
+    - ensure hypothesis output remains stable after migrating to multi-root-cause diagnosis.
+    Input/Output:
+    - input: diagnosis payload that already normalized root-cause data.
+    - output: normalized hypotheses list with one guaranteed primary hypothesis.
+    Compatibility logic:
+    - tolerates malformed hypothesis entries but does not depend on removed legacy root-cause fields.
+    Why:
+    - report rendering and guardrail checks require deterministic hypothesis structure.
+    """
+    raw_hypotheses = payload.get("hypotheses")
+    root_causes = payload.get("root_cause")
+    primary_title = ""
+    primary_layer = "platform"
+    if isinstance(root_causes, list):
+        for item in root_causes:
+            if not isinstance(item, dict):
+                continue
+            primary_title = str(item.get("title") or "").strip()
+            primary_layer = str(item.get("layer") or "platform").strip()
+            break
+
+    impact_summary = str(payload.get("impact_summary") or "").strip()
+    confidence = _clamp_confidence(payload.get("confidence"), default=0.5)
+    certainty = str(payload.get("diagnosis_certainty") or "probable").strip().lower()
+
+    normalized: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    if isinstance(raw_hypotheses, list):
+        for item in raw_hypotheses:
+            if not isinstance(item, dict):
+                continue
+            description = str(item.get("description") or "").strip()
+            if not description:
+                continue
+            status = str(item.get("status") or "testing").strip().lower()
+            if status not in {"testing", "confirmed", "eliminated"}:
+                status = "testing"
+            evidence_for = item.get("evidence_for")
+            evidence_against = item.get("evidence_against")
+            normalized.append(
+                {
+                    "description": description,
+                    "status": status,
+                    "evidence_for": [str(v) for v in evidence_for] if isinstance(evidence_for, list) else [],
+                    "evidence_against": [str(v) for v in evidence_against] if isinstance(evidence_against, list) else [],
+                    "confidence": _clamp_confidence(item.get("confidence"), default=confidence),
+                }
+            )
+            seen.add(description.lower())
+
+    default_status = "confirmed" if certainty == "confirmed" else "testing"
+    defaults = [
+        {
+            "description": primary_title or "Primary root-cause hypothesis",
+            "status": default_status,
+            "evidence_for": [impact_summary] if impact_summary else [],
+            "evidence_against": [],
+            "confidence": _clamp_confidence(confidence, default=0.9),
+        },
+        {
+            "description": "Network or RDMA degradation contributes to latency symptoms",
+            "status": "eliminated" if primary_layer != "network" else "testing",
+            "evidence_for": [],
+            "evidence_against": [impact_summary] if impact_summary and primary_layer != "network" else [],
+            "confidence": _clamp_confidence(min(confidence, 0.45), default=0.35),
+        },
+        {
+            "description": "Service-side load surge causes queuing and response slowdown",
+            "status": "testing" if primary_layer != "service" else default_status,
+            "evidence_for": [],
+            "evidence_against": [impact_summary] if impact_summary and primary_layer != "service" else [],
+            "confidence": _clamp_confidence(min(confidence, 0.55), default=0.4),
+        },
+        {
+            "description": "Hardware thermal or stability issue amplifies performance variance",
+            "status": "testing" if primary_layer == "hardware" else "eliminated",
+            "evidence_for": [],
+            "evidence_against": [impact_summary] if impact_summary and primary_layer != "hardware" else [],
+            "confidence": _clamp_confidence(min(confidence, 0.4), default=0.3),
+        },
+    ]
+    for item in defaults:
+        key = item["description"].lower()
+        if key in seen:
+            continue
+        normalized.append(item)
+        seen.add(key)
+        if len(normalized) >= 1:
+            break
+
+    return normalized
+
+
+_ROOT_CAUSE_HYPOTHESIS_PROMOTION_CONFIDENCE = 0.8
+_CAUSAL_SIGNAL_TOKEN_RE = re.compile(r"[a-z0-9_.:/-]{3,}")
+_NETWORK_LAYER_HINTS = ("network", "rdma", "switch", "tc", "netem", "packet", "mtu")
+_HARDWARE_LAYER_HINTS = ("temperature", "fan", "thermal", "ecc", "power", "throttle")
+_PLATFORM_LAYER_HINTS = ("kubernetes", "k8s", "pod", "node", "scheduler")
+
+
+def _canonical_cause_text(value: Any) -> str:
+    text = str(value or "").strip().lower()
+    if not text:
+        return ""
+    return re.sub(r"\s+", "", text)
+
+
+def _extract_causal_signal_tokens(*segments: Any) -> set[str]:
+    tokens: set[str] = set()
+    for segment in segments:
+        text = str(segment or "").lower()
+        if not text:
+            continue
+        for token in _CAUSAL_SIGNAL_TOKEN_RE.findall(text):
+            normalized = token.strip("._-:/")
+            if len(normalized) < 3:
+                continue
+            tokens.add(normalized)
+    return tokens
+
+
+def _is_duplicate_root_cause_candidate(
+    *,
+    description: str,
+    evidence_for: list[str],
+    existing_root_causes: list[dict[str, Any]],
+) -> bool:
+    candidate_text = _canonical_cause_text(description)
+    candidate_tokens = _extract_causal_signal_tokens(description, *evidence_for)
+    for root_item in existing_root_causes:
+        if not isinstance(root_item, dict):
+            continue
+        existing_title = str(root_item.get("title") or root_item.get("root_cause") or "").strip()
+        existing_evidence = str(root_item.get("evidence_summary") or "").strip()
+        existing_text = _canonical_cause_text(existing_title)
+        if candidate_text and existing_text:
+            if candidate_text == existing_text:
+                return True
+            if len(candidate_text) >= 10 and (candidate_text in existing_text or existing_text in candidate_text):
+                return True
+        existing_tokens = _extract_causal_signal_tokens(existing_title, existing_evidence)
+        if candidate_tokens and existing_tokens:
+            overlap = candidate_tokens & existing_tokens
+            if overlap:
+                overlap_ratio_candidate = len(overlap) / max(1, len(candidate_tokens))
+                overlap_ratio_existing = len(overlap) / max(1, len(existing_tokens))
+                strong_overlap = overlap_ratio_candidate >= 0.7 or overlap_ratio_existing >= 0.7
+                has_specific_signal = any(
+                    ("_" in token) or any(ch.isdigit() for ch in token) or len(token) >= 8
+                    for token in overlap
+                )
+                if strong_overlap and has_specific_signal:
+                    return True
+    return False
+
+
+def _infer_root_cause_layer_from_hypothesis(
+    *,
+    description: str,
+    evidence_for: list[str],
+    default_layer: str,
+) -> str:
+    merged = " ".join([description, *evidence_for]).lower()
+    if any(keyword in merged for keyword in _NETWORK_LAYER_HINTS):
+        return "network"
+    if any(keyword in merged for keyword in _HARDWARE_LAYER_HINTS):
+        return "hardware"
+    if any(keyword in merged for keyword in _PLATFORM_LAYER_HINTS):
+        return "platform"
+    return default_layer or "service"
+
+
+def _promote_confirmed_hypotheses_to_root_causes(payload: dict[str, Any]) -> None:
+    """Promote strong confirmed hypotheses into additional root-cause candidates.
+
+    Purpose:
+    - keep diagnosis output consistent when the model confirms multiple abnormal factors
+      but emits only one root-cause item.
+    Input/Output:
+    - input: normalized diagnosis payload containing `root_cause[]` and `hypotheses[]`;
+    - output: no return; payload is updated in-place by appending extra root causes.
+    Compatibility rationale:
+    - preserves current first-root-cause remediation behavior while enriching root-cause coverage.
+    Why:
+    - `hypotheses[].confidence` is not a promotion trigger by default, which can hide
+      independently actionable contributing factors.
+    """
+    root_causes = payload.get("root_cause")
+    hypotheses = payload.get("hypotheses")
+    if not isinstance(root_causes, list) or not isinstance(hypotheses, list):
+        return
+
+    default_confidence = _clamp_confidence(payload.get("confidence"), default=0.5)
+    default_impact_summary = str(payload.get("impact_summary") or "").strip()
+    default_layer = "service"
+    for item in root_causes:
+        if isinstance(item, dict):
+            candidate_layer = str(item.get("layer") or "").strip().lower()
+            if candidate_layer in {"hardware", "network", "os", "platform", "service"}:
+                default_layer = candidate_layer
+                break
+
+    next_index = len(root_causes) + 1
+    for hypothesis in hypotheses:
+        if not isinstance(hypothesis, dict):
+            continue
+        status = str(hypothesis.get("status") or "").strip().lower()
+        if status != "confirmed":
+            continue
+        description = str(hypothesis.get("description") or "").strip()
+        if not description:
+            continue
+        evidence_for_raw = hypothesis.get("evidence_for")
+        evidence_for = [str(item).strip() for item in evidence_for_raw] if isinstance(evidence_for_raw, list) else []
+        evidence_for = [item for item in evidence_for if item]
+        if not evidence_for:
+            continue
+        confidence = _clamp_confidence(hypothesis.get("confidence"), default=default_confidence)
+        if confidence < _ROOT_CAUSE_HYPOTHESIS_PROMOTION_CONFIDENCE:
+            continue
+        if _is_duplicate_root_cause_candidate(
+            description=description,
+            evidence_for=evidence_for,
+            existing_root_causes=root_causes,
+        ):
+            continue
+        root_causes.append(
+            {
+                "id": f"rc-{next_index}",
+                "title": description,
+                "layer": _infer_root_cause_layer_from_hypothesis(
+                    description=description,
+                    evidence_for=evidence_for,
+                    default_layer=default_layer,
+                ),
+                "entities": [],
+                "confidence": confidence,
+                "certainty": "confirmed" if confidence >= 0.85 else "probable",
+                "status": "contributing",
+                "evidence_summary": "；".join(evidence_for[:3]),
+                "impact_summary": default_impact_summary or description,
+                "distinguishing_verification": "可单独对该因素执行修复并观测指标回落，验证其独立贡献。",
+                "recommended_fix": None,
+            }
+        )
+        next_index += 1
+
+
+def _best_matching_hypothesis_for_root_cause(
+    *,
+    root_title: str,
+    hypotheses: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    root_tokens = _extract_causal_signal_tokens(root_title)
+    if not root_tokens:
+        return None
+    best: dict[str, Any] | None = None
+    best_score = 0.0
+    for hypothesis in hypotheses:
+        if not isinstance(hypothesis, dict):
+            continue
+        description = str(hypothesis.get("description") or "").strip()
+        if not description:
+            continue
+        status = str(hypothesis.get("status") or "").strip().lower()
+        if status not in {"confirmed", "testing"}:
+            continue
+        hyp_tokens = _extract_causal_signal_tokens(description)
+        if not hyp_tokens:
+            continue
+        overlap = root_tokens & hyp_tokens
+        if not overlap:
+            continue
+        overlap_ratio = len(overlap) / max(1, len(root_tokens))
+        confidence = _clamp_confidence(hypothesis.get("confidence"), default=0.5)
+        score = overlap_ratio + 0.1 * confidence
+        if score > best_score:
+            best_score = score
+            best = hypothesis
+    if best_score < 0.35:
+        return None
+    return best
+
+
+def _decouple_root_cause_evidence_summaries(payload: dict[str, Any]) -> None:
+    """Align each root-cause evidence summary to its own hypothesis evidence.
+
+    Purpose:
+    - prevent mixed multi-factor evidence text from appearing under a single root-cause item.
+    Input/Output:
+    - input: normalized diagnosis payload with `root_cause[]` and `hypotheses[]`;
+    - output: no return; updates `root_cause[].evidence_summary` in-place when safe.
+    Compatibility rationale:
+    - only applies in multi-root-cause scenarios and preserves existing summaries when
+      no confident hypothesis mapping can be found.
+    Why:
+    - improves explanation clarity after introducing root-cause promotion from hypotheses.
+    """
+    root_causes = payload.get("root_cause")
+    hypotheses = payload.get("hypotheses")
+    if not isinstance(root_causes, list) or not isinstance(hypotheses, list):
+        return
+    if len(root_causes) < 2:
+        return
+
+    mapped_hypotheses: list[dict[str, Any]] = [item for item in hypotheses if isinstance(item, dict)]
+    for root_item in root_causes:
+        if not isinstance(root_item, dict):
+            continue
+        root_title = str(root_item.get("title") or "").strip()
+        if not root_title:
+            continue
+        matched = _best_matching_hypothesis_for_root_cause(
+            root_title=root_title,
+            hypotheses=mapped_hypotheses,
+        )
+        if matched is None:
+            continue
+        evidence_for_raw = matched.get("evidence_for")
+        evidence_for = [str(item).strip() for item in evidence_for_raw] if isinstance(evidence_for_raw, list) else []
+        evidence_for = [item for item in evidence_for if item]
+        if not evidence_for:
+            continue
+        root_item["evidence_summary"] = "；".join(evidence_for[:3])
 
 
 def _clamp_confidence(value: Any, *, default: float) -> float:
@@ -5359,7 +6902,8 @@ def _normalize_canary_config(
             canary["auto_rollback_on_regression"] = process_count >= 2
             canary.setdefault("success_criteria", [])
             canary.setdefault("criteria_mode", "all")
-        return canary
+        sanitized = _sanitize_inline_canary_payload(canary, step_count=max(1, len(normalized_steps)))
+        return sanitized if sanitized is not None else canary
 
     if force_canary:
         process_count = len(process_targets) or len(targets)
@@ -5371,7 +6915,7 @@ def _normalize_canary_config(
             process_count = 6
         if process_count >= 1:
             forced_batch_total = 1 if process_count <= 1 else 2
-            return {
+            forced_canary = {
                 "enabled": True,
                 "target_percentage": round(1.0 / process_count, 4),
                 "monitor_duration": 60,
@@ -5381,9 +6925,11 @@ def _normalize_canary_config(
                 "auto_rollback_on_regression": process_count >= 2,
                 "progressive": False,
             }
+            sanitized = _sanitize_inline_canary_payload(forced_canary, step_count=max(1, process_count))
+            return sanitized if sanitized is not None else forced_canary
 
     if len(targets) >= 2:
-        return {
+        default_canary = {
             "enabled": True,
             "target_percentage": 0.1,
             "monitor_duration": 120,
@@ -5393,6 +6939,8 @@ def _normalize_canary_config(
             "auto_rollback_on_regression": True,
             "progressive": True,
         }
+        sanitized = _sanitize_inline_canary_payload(default_canary, step_count=max(1, len(normalized_steps)))
+        return sanitized if sanitized is not None else default_canary
 
     return None
 
@@ -5408,12 +6956,29 @@ def _normalize_remediation_plan_payload(
     alert_name: str | None = None,
     force_canary_override: bool | None = None,
 ) -> RemediationPlan | None:
+    """Normalize one remediation plan payload against a scoped primary root cause.
+
+    Purpose:
+    - validate/repair LLM remediation plan into executable `RemediationPlan`.
+    Input/Output:
+    - input: raw plan payload plus validated diagnosis context and tool metadata;
+    - output: validated `RemediationPlan` or `None` when plan is unsafe/invalid.
+    Compatibility rationale:
+    - callers can pass a temporary diagnosis view where the target root cause is placed at
+      `root_cause[0]`, allowing one sanitizer to validate every per-root-cause plan.
+    Why:
+    - write-tool validation, node inference, canary normalization, and fallback descriptions all
+      need one active root-cause context per plan.
+    """
     if raw_plan is None:
         return None
     if not isinstance(raw_plan, dict):
         return None
 
     candidate = dict(raw_plan)
+    primary_root_cause = _diagnosis_primary_root_cause(diagnosis)
+    primary_root_title = str(primary_root_cause.get("title") or "").strip()
+    primary_root_entities = [str(item).strip() for item in (primary_root_cause.get("entities") or []) if str(item).strip()]
     steps = candidate.get("steps")
     if steps is None:
         steps = candidate.get("actions")
@@ -5434,12 +6999,17 @@ def _normalize_remediation_plan_payload(
                         )
                         continue
                 except Exception:  # noqa: BLE001
-                    pass
+                    _llm_logger.debug(
+                        "skipping unknown tool %r in remediation plan for session %s",
+                        step_tool_name,
+                        session_id,
+                    )
+                    continue
             normalized_step = dict(step)
             normalized_step.setdefault("step_id", index)
             normalized_step.setdefault(
                 "description",
-                f"针对 {diagnosis.root_cause} 的候选修复步骤 {index}",
+                f"针对 {primary_root_title or '主根因'} 的候选修复步骤 {index}",
             )
             normalized_step.setdefault("params", {})
             invalid_reason = _normalize_step_params_in_place(
@@ -5488,7 +7058,7 @@ def _normalize_remediation_plan_payload(
         "plan_id",
         f"proposal-{(session_id or 'session')[:8]}",
     )
-    candidate.setdefault("root_cause", diagnosis.root_cause)
+    candidate.setdefault("root_cause", primary_root_title or "主根因")
     candidate.setdefault(
         "description",
         "基于现有诊断证据生成的 proposal-only 修复方案，当前尚未执行任何写入动作。",
@@ -5507,10 +7077,14 @@ def _normalize_remediation_plan_payload(
     # ── Canary normalization ───────────────────────────────────────────
     candidate["canary"] = _normalize_canary_config(
         raw_canary=candidate.get("canary"),
-        root_cause_entities=list(diagnosis.root_cause_entities),
+        root_cause_entities=primary_root_entities,
         normalized_steps=normalized_steps,
         force_canary=force_canary,
     )
+    if isinstance(candidate.get("canary"), dict):
+        sanitized_canary = _sanitize_inline_canary_payload(candidate.get("canary"), step_count=max(1, len(normalized_steps)))
+        if sanitized_canary is not None:
+            candidate["canary"] = sanitized_canary
     # If canary validation fails (e.g. missing criteria), drop it silently.
     if candidate["canary"] is not None:
         try:
@@ -5613,6 +7187,926 @@ def _resolve_kill_process_entity_id(params: dict[str, Any]) -> str | None:
     return None
 
 
+def _is_gpu_contention_suspect_process(process_text: str) -> bool:
+    """Detect GPU-burn style contention processes for TTFT GPU root-cause planning.
+
+    Purpose:
+    - identify non-serving processes that frequently occupy GPU resources and should
+      be considered as independent remediation targets.
+    Input/Output:
+    - input: raw process text from gpu.get_processes rows;
+    - output: boolean indicating whether the process is a GPU contention suspect.
+    Compatibility rationale:
+    - complements existing TTFT load-generator policy without changing its allowlist semantics.
+    Why:
+    - GPU burn workloads (for example `fi_gpu_burn_*`) are independent of external load generators
+      and need their own candidate remediation plan.
+    """
+    lowered = str(process_text or "").strip().lower()
+    if not lowered:
+        return False
+    deny_tokens = (
+        "vllm::worker",
+        "vllm worker",
+        "cuda_mps",
+    )
+    if any(token in lowered for token in deny_tokens):
+        return False
+    allow_tokens = (
+        "fi_gpu_burn",
+        "gpu_burn",
+        "burn_gpu",
+        "gpu_contention",
+    )
+    return any(token in lowered for token in allow_tokens)
+
+
+def _resolve_process_verification_pattern(process_text: str) -> str | None:
+    """Resolve a process.find verification pattern for kill-process steps."""
+    allowed = extract_ttft_verification_pattern(process_text)
+    if allowed:
+        return allowed
+    lowered = str(process_text or "").strip().lower()
+    if "fi_gpu_burn" in lowered:
+        return "fi_gpu_burn"
+    if "gpu_burn" in lowered:
+        return "gpu_burn"
+    if "gpu_contention" in lowered:
+        return "gpu_contention"
+    return None
+
+
+def _root_cause_process_tokens(root_cause: Any) -> set[str]:
+    """Extract process-level matching tokens from one root-cause item."""
+    if not isinstance(root_cause, dict):
+        return set()
+    raw_segments: list[str] = []
+    raw_segments.append(str(root_cause.get("title") or ""))
+    raw_segments.append(str(root_cause.get("evidence_summary") or ""))
+    entities = root_cause.get("entities")
+    if isinstance(entities, list):
+        for entity in entities:
+            raw_segments.append(str(entity or ""))
+    token_re = re.compile(r"[a-z0-9_.-]{4,}")
+    ignored = {
+        "worker",
+        "service",
+        "request",
+        "process",
+        "gpu",
+        "ttft",
+        "token",
+        "python",
+        "vllm",
+    }
+    tokens: set[str] = set()
+    for segment in raw_segments:
+        lowered = str(segment or "").strip().lower()
+        if not lowered:
+            continue
+        for token in token_re.findall(lowered):
+            normalized = token.strip("._-")
+            if len(normalized) < 4:
+                continue
+            if normalized in ignored:
+                continue
+            if re.fullmatch(r"\d+(?:\.\d+)+", normalized):
+                continue
+            tokens.add(normalized)
+    return tokens
+
+
+def _build_ttft_kill_process_plan_for_root_cause(
+    *,
+    diagnosis: DiagnosisResult,
+    root_cause_index: int,
+    evidence_signals: dict[str, Any],
+    session_id: str,
+    tool_runs: list[dict[str, Any]] | None = None,
+    variables: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    """Build one process-level remediation plan candidate for a specific root-cause item.
+
+    Purpose:
+    - generate independent remediation candidates in multi-root-cause TTFT scenarios.
+    Input/Output:
+    - input: diagnosis, root-cause index, evidence signals, and runtime context;
+    - output: raw remediation plan dict or None.
+    Compatibility rationale:
+    - keeps current approval flow unchanged by producing per-root-cause candidate plans
+      while top-level execution still uses primary plan.
+    Why:
+    - factors like `fi_gpu_burn` and `load_simulator` can be independently remediated and
+      should not be merged into a single fix.
+    """
+    if root_cause_index < 0 or root_cause_index >= len(diagnosis.root_cause):
+        return None
+    suspects = _collect_ttft_suspect_processes(evidence_signals.get("ttft_suspect_processes"), max_items=12)
+    if not suspects:
+        return None
+    root_item = diagnosis.root_cause[root_cause_index]
+    root_payload = root_item.model_dump(mode="json")
+    if "consistency_validation_failed" in str(root_payload.get("evidence_interpretation") or ""):
+        return None
+    root_factor = _ttft_factor_for_root_item(root_payload)
+    evidence_refs = {str(ref).strip() for ref in (root_payload.get("evidence_refs") or []) if str(ref).strip()}
+    tokens = _root_cause_process_tokens(root_payload)
+    if not tokens:
+        if not evidence_refs and root_factor == "unknown":
+            return None
+        tokens = set()
+
+    allowed_family: str | None = None
+    if root_factor == "gpu_contention":
+        allowed_family = "gpu_contention"
+    elif root_factor == "external_load":
+        allowed_family = "external_load"
+    if root_factor == "mixed":
+        explicit_mixed = str(root_payload.get("evidence_interpretation") or "").lower()
+        if "inseparable" not in explicit_mixed and "不可分割" not in explicit_mixed:
+            return None
+
+    family_tokens = {
+        token for token in tokens
+        if any(marker in token for marker in ("fi_gpu_burn", "gpu_burn", "gpu_contention", "load_simulator", "stress", "benchmark", "locust", "vegeta", "wrk"))
+    }
+    if allowed_family is None and root_factor != "mixed" and not family_tokens:
+        return None
+    if not evidence_refs and allowed_family is None and not family_tokens:
+        return None
+
+    default_node = _resolve_ttft_target_node(tool_runs=tool_runs, variables=variables)
+    matched: list[dict[str, Any]] = []
+    for suspect in suspects:
+        if not isinstance(suspect, dict):
+            continue
+        process_name = str(suspect.get("process_name", "") or "").strip()
+        lowered = process_name.lower()
+        if not lowered:
+            continue
+        suspect_family = str(suspect.get("process_family_hint") or _ttft_process_family(process_name)).strip()
+        suspect_evidence_id = str(suspect.get("evidence_id") or "").strip()
+        if evidence_refs:
+            if suspect_evidence_id not in evidence_refs:
+                continue
+            if allowed_family is not None and suspect_family != allowed_family:
+                continue
+            if allowed_family is None and family_tokens and not any(token in lowered for token in family_tokens):
+                continue
+            matched.append(suspect)
+            continue
+        if allowed_family is not None:
+            if suspect_family == allowed_family:
+                matched.append(suspect)
+            continue
+        if family_tokens and any(token in lowered for token in family_tokens):
+            matched.append(suspect)
+
+    if not matched:
+        return None
+
+    steps: list[dict[str, Any]] = []
+    for idx, suspect in enumerate(matched[:6], start=1):
+        step_node = str(suspect.get("node", "") or "").strip() or default_node
+        if not step_node:
+            continue
+        process_name = str(suspect.get("process_name", "") or "").strip()
+        pid = suspect.get("pid")
+        params: dict[str, Any] = {"node": step_node, "signal": "TERM"}
+        target_label = ""
+        target_token = ""
+        if isinstance(pid, int) and pid > 0:
+            params["pid"] = pid
+            target_label = f"PID {pid}"
+            target_token = str(pid)
+        elif process_name:
+            params["pid_or_name"] = process_name
+            target_label = process_name
+            target_token = process_name
+        else:
+            continue
+        params["entity_id"] = f"proc:{target_token}"
+        verify_pattern = _resolve_process_verification_pattern(process_name or target_token)
+        if not isinstance(pid, int) and not verify_pattern:
+            continue
+        verification: dict[str, Any] = {"method": "wait", "wait_seconds": 30}
+        if verify_pattern:
+            verification = {
+                "method": "tool_call",
+                "tool": "process.find",
+                "tool_params": {"pattern": verify_pattern, "node": step_node},
+                "condition": {"field": "count", "operator": "==", "value": 0},
+                "wait_seconds": 30,
+            }
+        steps.append(
+            {
+                "step_id": idx,
+                "description": f"终止可疑进程 {target_label}，位于节点 {step_node}",
+                "tool": "kill_process",
+                "params": params,
+                "verification": verification,
+                "timeout": 60,
+            }
+        )
+    if not steps:
+        return None
+
+    plan_id = f"proposal-{(session_id or 'session')[:8]}-rc{root_cause_index + 1}-kill"
+    return {
+        "plan_id": plan_id,
+        "root_cause": root_item.title,
+        "description": f"针对 RANK #{root_cause_index + 1} 根因的待审批修复方案：{root_item.title}",
+        "steps": steps,
+        "estimated_impact": root_item.impact_summary or diagnosis.impact_summary,
+        "confidence": _normalize_plan_confidence(max(0.55, float(root_item.confidence))),
+        "priority": _normalize_plan_priority(diagnosis.triage_priority),
+        "safety_level": "high",
+        "canary": {
+            "enabled": True,
+            "target_percentage": round(1.0 / len(steps), 4),
+            "monitor_duration": 60,
+            "success_criteria": [],
+            "criteria_mode": "all",
+            "max_batches": len(steps),
+            "auto_rollback_on_regression": len(steps) >= 2,
+            "progressive": False,
+        },
+    }
+
+
+def _enrich_ttft_root_causes_from_evidence(
+    payload: dict[str, Any],
+    evidence_signals: dict[str, Any],
+) -> None:
+    """Ensure independent TTFT factors are represented as independent root-cause items.
+
+    When both GPU contention suspects (for example `fi_gpu_burn_*`) and external
+    load-generator suspects (for example `load_simulator`) are present, keep them as
+    separate candidates if they are independently remediable.
+    """
+    root_causes = payload.get("root_cause")
+    if not isinstance(root_causes, list) or not root_causes:
+        return
+    suspects = _collect_ttft_suspect_processes(evidence_signals.get("ttft_suspect_processes"), max_items=12)
+    if not suspects:
+        return
+
+    gpu_suspects: list[dict[str, Any]] = []
+    load_suspects: list[dict[str, Any]] = []
+    for suspect in suspects:
+        if not isinstance(suspect, dict):
+            continue
+        process_name = str(suspect.get("process_name", "") or "").strip()
+        if not process_name:
+            continue
+        lowered = process_name.lower()
+        if _is_gpu_contention_suspect_process(lowered):
+            gpu_suspects.append(suspect)
+            continue
+        if is_ttft_suspect_process(process_name):
+            load_suspects.append(suspect)
+
+    if not gpu_suspects or not load_suspects:
+        return
+
+    def _contains_gpu_factor(item: dict[str, Any]) -> bool:
+        text = " ".join(
+            [
+                str(item.get("title") or ""),
+                str(item.get("evidence_summary") or ""),
+                " ".join(str(v) for v in (item.get("entities") or []) if isinstance(v, str)),
+            ]
+        ).lower()
+        return any(token in text for token in ("fi_gpu_burn", "gpu_burn", "gpu contention", "gpu_contention"))
+
+    def _contains_load_factor(item: dict[str, Any]) -> bool:
+        text = " ".join(
+            [
+                str(item.get("title") or ""),
+                str(item.get("evidence_summary") or ""),
+                " ".join(str(v) for v in (item.get("entities") or []) if isinstance(v, str)),
+            ]
+        ).lower()
+        return ("load_simulator" in text) or ("python -m" in text and "load" in text) or ("external load" in text)
+
+    existing_gpu = any(_contains_gpu_factor(item) for item in root_causes if isinstance(item, dict))
+    existing_load = any(_contains_load_factor(item) for item in root_causes if isinstance(item, dict))
+    if existing_gpu and existing_load:
+        return
+
+    base_conf = _clamp_confidence(payload.get("confidence"), default=0.6)
+    gpu_conf = _clamp_confidence(max(0.85, base_conf), default=0.85)
+    load_conf = _clamp_confidence(max(0.8, base_conf - 0.05), default=0.8)
+
+    first_gpu = gpu_suspects[0]
+    first_load = load_suspects[0]
+    gpu_node = str(first_gpu.get("node", "") or "").strip()
+    load_node = str(first_load.get("node", "") or "").strip()
+    gpu_process = str(first_gpu.get("process_name", "") or "").strip() or "fi_gpu_burn"
+    load_process = str(first_load.get("process_name", "") or "").strip() or "load_simulator"
+
+    gpu_item: dict[str, Any] = {
+        "id": "rc-gpu-contention",
+        "title": "GPU contention caused by gpu_burn process",
+        "layer": "service",
+        "entities": [v for v in [gpu_node, gpu_process] if v],
+        "confidence": gpu_conf,
+        "certainty": "confirmed" if gpu_conf >= 0.85 else "probable",
+        "status": "contributing",
+        "evidence_summary": (
+            f"gpu.get_processes detected suspect process {gpu_process}" + (f" on {gpu_node}" if gpu_node else "")
+        ),
+        "impact_summary": "GPU contention consumes compute resources and elevates TTFT latency.",
+        "distinguishing_verification": "Terminate gpu_burn process and observe TTFT drop independently.",
+        "recommended_fix": None,
+    }
+    load_item: dict[str, Any] = {
+        "id": "rc-external-load",
+        "title": "External load_simulator process continuously injects requests",
+        "layer": "service",
+        "entities": [v for v in [load_node, "load_simulator"] if v],
+        "confidence": load_conf,
+        "certainty": "confirmed" if load_conf >= 0.85 else "probable",
+        "status": "contributing",
+        "evidence_summary": (
+            f"process.find detected external load process {load_process}" + (f" on {load_node}" if load_node else "")
+        ),
+        "impact_summary": "External request pressure amplifies service queuing and TTFT degradation.",
+        "distinguishing_verification": "Stop load_simulator and observe TTFT change independently.",
+        "recommended_fix": None,
+    }
+
+    primary = root_causes[0] if isinstance(root_causes[0], dict) else {}
+    primary_id = str(primary.get("id", "") or "").strip().lower()
+    primary_conf = _clamp_confidence(primary.get("confidence"), default=base_conf)
+    primary_status = str(primary.get("status", "") or "").strip().lower()
+    primary_generic_fallback = (
+        len(root_causes) == 1
+        and (
+            primary_id.startswith("rc-fallback")
+            or (primary_conf <= 0.45 and primary_status in {"suspected", "monitoring"})
+        )
+    )
+
+    if primary_generic_fallback:
+        top_level_plan = payload.get("recommended_fix")
+        plan_text = ""
+        if isinstance(top_level_plan, dict):
+            try:
+                plan_text = json.dumps(top_level_plan, ensure_ascii=False).lower()
+            except Exception:  # noqa: BLE001
+                plan_text = str(top_level_plan).lower()
+        prefer_load_primary = "load_simulator" in plan_text
+        prefer_gpu_primary = any(token in plan_text for token in ("fi_gpu_burn", "gpu_burn", "gpu_contention"))
+        if prefer_load_primary and not prefer_gpu_primary:
+            payload["root_cause"] = [load_item, gpu_item]
+        else:
+            payload["root_cause"] = [gpu_item, load_item]
+        if isinstance(top_level_plan, dict):
+            payload["root_cause"][0]["recommended_fix"] = top_level_plan
+        _sync_primary_recommended_fix_from_root_cause(payload)
+        return
+
+    def _next_id() -> str:
+        return f"rc-{len(root_causes) + 1}"
+
+    if not existing_gpu:
+        candidate = dict(gpu_item)
+        candidate["id"] = _next_id()
+        root_causes.append(candidate)
+
+    if not existing_load:
+        candidate = dict(load_item)
+        candidate["id"] = _next_id()
+        root_causes.append(candidate)
+
+    _sync_primary_recommended_fix_from_root_cause(payload)
+
+
+def _ttft_factor_hints_from_text(*segments: Any) -> set[str]:
+    text = " ".join(str(segment or "") for segment in segments).lower()
+    factors: set[str] = set()
+    gpu_tokens = (
+        "gpu.get_processes",
+        "fi_gpu_burn",
+        "gpu_burn",
+        "gpu_contention",
+        "gpu contention",
+        "gpu资源",
+        "gpu竞争",
+        "gpu占用",
+        "非服务进程",
+    )
+    external_tokens = (
+        "process.find",
+        "load_simulator",
+        "external load",
+        "load generator",
+        "stress",
+        "benchmark",
+        "wrk",
+        "locust",
+        "vegeta",
+        "外部负载",
+        "压测",
+        "负载生成器",
+        "请求激增",
+    )
+    if any(token in text for token in gpu_tokens):
+        factors.add("gpu_contention")
+    if any(token in text for token in external_tokens):
+        factors.add("external_load")
+    return factors
+
+
+def _ttft_factor_for_root_item(item: dict[str, Any]) -> str:
+    explicit = str(item.get("factor_type") or "").strip().lower()
+    if explicit in {"gpu_contention", "external_load", "cache_pressure", "scheduler", "mixed", "unknown"}:
+        return explicit
+    label_factors = _ttft_factor_hints_from_text(
+        item.get("title"),
+        " ".join(str(v) for v in (item.get("entities") or []) if isinstance(v, str)),
+    )
+    evidence_factors = _ttft_factor_hints_from_text(
+        item.get("evidence_summary"),
+        item.get("distinguishing_verification"),
+        item.get("evidence_interpretation"),
+    )
+    factors = label_factors | evidence_factors
+    if len(factors) >= 2:
+        return "mixed"
+    if factors:
+        return next(iter(factors))
+    return "unknown"
+
+
+def _ttft_root_cause_has_consistency_failure(item: dict[str, Any]) -> bool:
+    return "consistency_validation_failed" in str(item.get("evidence_interpretation") or "")
+
+
+def _ttft_tool_ref_tokens(*segments: Any) -> set[str]:
+    text = " ".join(str(segment or "") for segment in segments)
+    return {match.group(0).strip() for match in re.finditer(r"tool:\d+:[A-Za-z0-9_.-]+", text)}
+
+
+def _ttft_root_cause_dedupe_key(item: dict[str, Any]) -> str:
+    factor = _ttft_factor_for_root_item(item)
+    refs = sorted(str(ref).strip() for ref in (item.get("evidence_refs") or []) if str(ref).strip())
+    if refs:
+        return f"{factor}|evidence:{','.join(refs)}"
+    tool_refs = sorted(
+        _ttft_tool_ref_tokens(
+            item.get("title"),
+            item.get("evidence_summary"),
+            item.get("evidence_interpretation"),
+            item.get("distinguishing_verification"),
+        )
+    )
+    if tool_refs:
+        return f"{factor}|evidence:{','.join(tool_refs)}"
+    tokens = sorted(
+        token
+        for token in _extract_causal_signal_tokens(
+            item.get("title"),
+            item.get("evidence_summary"),
+            item.get("evidence_interpretation"),
+        )
+        if token in {"fi_gpu_burn", "gpu_burn", "gpu_contention", "load_simulator", "stress", "benchmark", "locust", "vegeta", "wrk"}
+        or token.startswith("fi_gpu_burn")
+    )
+    if tokens:
+        return f"{factor}|tokens:{','.join(tokens[:4])}"
+    return ""
+
+
+def _ttft_root_cause_quality(item: dict[str, Any]) -> tuple[float, int, int, int, int]:
+    certainty_rank = {"confirmed": 3, "probable": 2, "ambiguous": 1}
+    status_rank = {"confirmed": 3, "contributing": 2, "suspected": 1, "monitoring": 1}
+    confidence = _clamp_confidence(item.get("confidence"), default=0.0)
+    has_refs = 1 if any(str(ref).strip() for ref in (item.get("evidence_refs") or [])) else 0
+    has_factor = 1 if str(item.get("factor_type") or "").strip() else 0
+    has_fix = 1 if isinstance(item.get("recommended_fix"), dict) else 0
+    return (
+        confidence,
+        certainty_rank.get(str(item.get("certainty") or "").strip().lower(), 0),
+        status_rank.get(str(item.get("status") or "").strip().lower(), 0),
+        has_refs + has_factor,
+        has_fix,
+    )
+
+
+def _merge_ttft_duplicate_root_cause(current: dict[str, Any], incoming: dict[str, Any]) -> dict[str, Any]:
+    keep_current = _ttft_root_cause_quality(current) >= _ttft_root_cause_quality(incoming)
+    winner = dict(current if keep_current else incoming)
+    loser = incoming if keep_current else current
+    refs: list[str] = []
+    for ref in list(current.get("evidence_refs") or []) + list(incoming.get("evidence_refs") or []):
+        ref_text = str(ref).strip()
+        if ref_text and ref_text not in refs:
+            refs.append(ref_text)
+    if refs:
+        winner["evidence_refs"] = refs
+    if not winner.get("factor_type") and loser.get("factor_type"):
+        winner["factor_type"] = loser.get("factor_type")
+    if not winner.get("recommended_fix") and loser.get("recommended_fix"):
+        winner["recommended_fix"] = loser.get("recommended_fix")
+    if not winner.get("evidence_interpretation") and loser.get("evidence_interpretation"):
+        winner["evidence_interpretation"] = loser.get("evidence_interpretation")
+    return winner
+
+
+def _ttft_root_cause_duplicate_index(item: dict[str, Any], existing_items: list[dict[str, Any]]) -> int | None:
+    factor = _ttft_factor_for_root_item(item)
+    tokens = _extract_causal_signal_tokens(
+        item.get("title"),
+        item.get("evidence_summary"),
+        item.get("evidence_interpretation"),
+        " ".join(str(v) for v in (item.get("entities") or []) if isinstance(v, str)),
+    )
+    specific_tokens = {
+        token
+        for token in tokens
+        if token in {"fi_gpu_burn", "gpu_burn", "gpu_contention", "load_simulator", "process.find", "gpu.get_processes"}
+        or token.startswith("fi_gpu_burn")
+        or token.startswith("tool:")
+    }
+    if not specific_tokens:
+        return None
+    for index, existing in enumerate(existing_items):
+        if _ttft_factor_for_root_item(existing) != factor:
+            continue
+        existing_tokens = _extract_causal_signal_tokens(
+            existing.get("title"),
+            existing.get("evidence_summary"),
+            existing.get("evidence_interpretation"),
+            " ".join(str(v) for v in (existing.get("entities") or []) if isinstance(v, str)),
+        )
+        if specific_tokens & existing_tokens:
+            return index
+    return None
+
+
+def _dedupe_ttft_root_causes(payload: dict[str, Any]) -> None:
+    root_causes = payload.get("root_cause")
+    if not isinstance(root_causes, list) or len(root_causes) < 2:
+        return
+    deduped: list[dict[str, Any]] = []
+    key_to_index: dict[str, int] = {}
+    for item in root_causes:
+        if not isinstance(item, dict):
+            continue
+        key = _ttft_root_cause_dedupe_key(item)
+        if key and key in key_to_index:
+            existing_index = key_to_index[key]
+            deduped[existing_index] = _merge_ttft_duplicate_root_cause(deduped[existing_index], item)
+            continue
+        duplicate_index = _ttft_root_cause_duplicate_index(item, deduped)
+        if duplicate_index is not None:
+            deduped[duplicate_index] = _merge_ttft_duplicate_root_cause(deduped[duplicate_index], item)
+            continue
+        if key:
+            key_to_index[key] = len(deduped)
+        deduped.append(item)
+    payload["root_cause"] = deduped
+    _sync_primary_recommended_fix_from_root_cause(payload)
+
+
+def _normalize_ttft_root_cause_certainty_from_confidence(payload: dict[str, Any]) -> None:
+    root_causes = payload.get("root_cause")
+    if not isinstance(root_causes, list):
+        return
+    for item in root_causes:
+        if not isinstance(item, dict):
+            continue
+        if _ttft_root_cause_has_consistency_failure(item):
+            continue
+        certainty = str(item.get("certainty") or "").strip().lower()
+        confidence = _clamp_confidence(item.get("confidence"), default=0.0)
+        if certainty == "ambiguous" and confidence >= 0.85:
+            item["certainty"] = "confirmed"
+        elif certainty == "ambiguous" and confidence >= 0.7:
+            item["certainty"] = "probable"
+
+
+def _append_diagnosis_hypothesis_once(
+    payload: dict[str, Any],
+    *,
+    description: str,
+    status: str,
+    confidence: float,
+    evidence_for: list[str] | None = None,
+    evidence_against: list[str] | None = None,
+) -> None:
+    hypotheses = payload.get("hypotheses")
+    if not isinstance(hypotheses, list):
+        hypotheses = []
+        payload["hypotheses"] = hypotheses
+    candidate_key = _canonical_cause_text(description)
+    for item in hypotheses:
+        if not isinstance(item, dict):
+            continue
+        existing_key = _canonical_cause_text(item.get("description"))
+        if existing_key and candidate_key and (existing_key == candidate_key or existing_key in candidate_key or candidate_key in existing_key):
+            return
+    hypotheses.append(
+        {
+            "description": description,
+            "status": status if status in {"testing", "confirmed", "eliminated"} else "testing",
+            "evidence_for": list(evidence_for or []),
+            "evidence_against": list(evidence_against or []),
+            "confidence": _clamp_confidence(confidence, default=0.3),
+        }
+    )
+
+
+def _augment_ttft_hardware_hypotheses_from_evidence(
+    payload: dict[str, Any],
+    evidence_signals: dict[str, Any],
+) -> None:
+    """Add temperature/fan alternatives when those tools have been observed.
+
+    These are hypotheses, not backend-decided root causes. Confirmed root-cause
+    promotion still requires the normal hypothesis promotion threshold/status.
+    """
+    temp_steps = evidence_signals.get("gpu_temperature_steps")
+    if isinstance(temp_steps, list) and temp_steps:
+        max_temp = evidence_signals.get("gpu_max_temp")
+        thermal_normal = evidence_signals.get("gpu_thermal_normal")
+        if thermal_normal is True:
+            _append_diagnosis_hypothesis_once(
+                payload,
+                description="GPU thermal throttling contributes to TTFT latency",
+                status="eliminated",
+                confidence=0.2,
+                evidence_against=[f"gpu.get_metrics max_temp={max_temp}C is below the thermal concern threshold."],
+            )
+        elif thermal_normal is False:
+            _append_diagnosis_hypothesis_once(
+                payload,
+                description="GPU thermal throttling contributes to TTFT latency",
+                status="testing",
+                confidence=0.65,
+                evidence_for=[f"gpu.get_metrics observed max_temp={max_temp}C; verify clocks/throttle counters before treating it as a root cause."],
+            )
+
+    fan_steps = evidence_signals.get("bmc_fan_status_steps")
+    if isinstance(fan_steps, list) and fan_steps:
+        mode = str(evidence_signals.get("bmc_fan_mode") or "").strip() or "unknown"
+        is_manual = bool(evidence_signals.get("bmc_fan_is_manual"))
+        fixed_pwm = bool(evidence_signals.get("bmc_fan_fixed_pwm"))
+        fan_count = evidence_signals.get("bmc_fan_count")
+        if is_manual or fixed_pwm:
+            _append_diagnosis_hypothesis_once(
+                payload,
+                description="Fan control policy limits GPU cooling and worsens latency",
+                status="testing",
+                confidence=0.55,
+                evidence_for=[f"bmc.get_fan_status mode={mode}, manual={is_manual}, fixed_pwm={fixed_pwm}, fan_count={fan_count}."],
+            )
+        else:
+            _append_diagnosis_hypothesis_once(
+                payload,
+                description="Fan control policy limits GPU cooling and worsens latency",
+                status="eliminated",
+                confidence=0.2,
+                evidence_against=[f"bmc.get_fan_status mode={mode}, manual={is_manual}, fixed_pwm={fixed_pwm}, fan_count={fan_count}."],
+            )
+
+
+def _ttft_cards_by_id(evidence_cards: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    return {
+        str(card.get("evidence_id") or "").strip(): card
+        for card in evidence_cards
+        if isinstance(card, dict) and str(card.get("evidence_id") or "").strip()
+    }
+
+
+def _validate_ttft_root_cause_consistency(
+    payload: dict[str, Any],
+    evidence_cards: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    root_causes = payload.get("root_cause")
+    if not isinstance(root_causes, list):
+        return []
+    cards_by_id = _ttft_cards_by_id(evidence_cards)
+    findings: list[dict[str, Any]] = []
+    for index, item in enumerate(root_causes):
+        if not isinstance(item, dict):
+            continue
+        refs = [str(ref).strip() for ref in (item.get("evidence_refs") or []) if str(ref).strip()]
+        factor = _ttft_factor_for_root_item(item)
+        ref_cards = [cards_by_id[ref] for ref in refs if ref in cards_by_id]
+        ref_families = {
+            str(card.get("process_family_hint") or "").strip()
+            for card in ref_cards
+            if str(card.get("process_family_hint") or "").strip()
+        }
+        text_factors = _ttft_factor_hints_from_text(
+            item.get("title"),
+            item.get("evidence_summary"),
+            item.get("distinguishing_verification"),
+            item.get("evidence_interpretation"),
+            " ".join(str(v) for v in (item.get("entities") or []) if isinstance(v, str)),
+        )
+        if refs and ref_cards:
+            if factor == "external_load" and ref_families and ref_families <= {"gpu_contention"}:
+                findings.append({"index": index, "type": "evidence_mismatch", "factor": factor, "evidence_refs": refs})
+                continue
+            if factor == "gpu_contention" and ref_families and ref_families <= {"external_load"}:
+                findings.append({"index": index, "type": "evidence_mismatch", "factor": factor, "evidence_refs": refs})
+                continue
+        elif not refs:
+            if not text_factors:
+                findings.append({"index": index, "type": "missing_evidence_ref", "factor": factor, "evidence_refs": []})
+                continue
+            label_factors = _ttft_factor_hints_from_text(
+                item.get("title"),
+                " ".join(str(v) for v in (item.get("entities") or []) if isinstance(v, str)),
+            )
+            evidence_factors = _ttft_factor_hints_from_text(
+                item.get("evidence_summary"),
+                item.get("distinguishing_verification"),
+                item.get("evidence_interpretation"),
+            )
+            if label_factors == {"external_load"} and evidence_factors == {"gpu_contention"}:
+                findings.append({"index": index, "type": "evidence_mismatch", "factor": "external_load", "evidence_refs": []})
+                continue
+            if label_factors == {"gpu_contention"} and evidence_factors == {"external_load"}:
+                findings.append({"index": index, "type": "evidence_mismatch", "factor": "gpu_contention", "evidence_refs": []})
+    return findings
+
+
+def _apply_ttft_consistency_fallback(
+    payload: dict[str, Any],
+    findings: list[dict[str, Any]],
+) -> dict[str, Any]:
+    if not findings:
+        return payload
+    fixed = dict(payload)
+    root_causes = list(fixed.get("root_cause") or [])
+    for finding in findings:
+        index = int(finding.get("index", -1))
+        if index < 0 or index >= len(root_causes) or not isinstance(root_causes[index], dict):
+            continue
+        item = dict(root_causes[index])
+        item["certainty"] = "ambiguous"
+        item["status"] = "suspected"
+        item["recommended_fix"] = None
+        item["factor_type"] = item.get("factor_type") or "unknown"
+        reason = f"consistency_validation_failed:{finding.get('type')}"
+        interpretation = str(item.get("evidence_interpretation") or "").strip()
+        item["evidence_interpretation"] = f"{interpretation}; {reason}" if interpretation else reason
+        root_causes[index] = item
+    fixed["root_cause"] = root_causes
+    _sync_primary_recommended_fix_from_root_cause(fixed)
+    return fixed
+
+
+def _build_ttft_consistency_retry_messages(
+    *,
+    system_prompt: str,
+    query: str,
+    diagnosis_payload: dict[str, Any],
+    evidence_cards: list[dict[str, Any]],
+    findings: list[dict[str, Any]],
+) -> list[Any]:
+    repair_instruction = (
+        "The TTFT root_cause[] payload has evidence-consistency findings. "
+        "Return JSON only with keys thought and diagnosis. Preserve all valid evidence, but repair root_cause[] so "
+        "each item cites evidence_cards via evidence_refs and the title/factor_type match the cited evidence. "
+        "Do not invent new tools or execute remediation. If a candidate is unsupported, mark it suspected/ambiguous "
+        "and set recommended_fix to null."
+    )
+    user_content = (
+        f"Original query:\n{query}\n\n"
+        f"evidence_cards={_json_line(evidence_cards)}\n\n"
+        f"validator_findings={_json_line(findings)}\n\n"
+        f"diagnosis_payload={_json_line(diagnosis_payload)}\n\n"
+        f"{repair_instruction}"
+    )
+    return [SystemMessage(content=system_prompt), HumanMessage(content=user_content)]
+
+
+def _diagnosis_view_with_primary_index(diagnosis: DiagnosisResult, index: int) -> DiagnosisResult:
+    """Build a temporary diagnosis view whose primary root cause is the selected index."""
+    if index <= 0 or index >= len(diagnosis.root_cause):
+        return diagnosis
+    reordered = [diagnosis.root_cause[index], *diagnosis.root_cause[:index], *diagnosis.root_cause[index + 1 :]]
+    return diagnosis.model_copy(update={"root_cause": reordered, "recommended_fix": reordered[0].recommended_fix})
+
+
+def _sanitize_existing_root_cause_plan(
+    *,
+    plan: RemediationPlan | None,
+    diagnosis: DiagnosisResult,
+    root_cause_index: int,
+    session_id: str,
+    registry: ToolRegistry | None,
+    tool_runs: list[dict[str, Any]] | None,
+    variables: dict[str, Any] | None,
+    alert_name: str | None,
+) -> RemediationPlan | None:
+    """Run an already parsed root-cause plan through the executable-plan sanitizer."""
+    if plan is None:
+        return None
+    scoped_diagnosis = _diagnosis_view_with_primary_index(diagnosis, root_cause_index)
+    return _normalize_remediation_plan_payload(
+        raw_plan=plan.model_dump(mode="json"),
+        diagnosis=scoped_diagnosis,
+        session_id=session_id,
+        registry=registry,
+        tool_runs=tool_runs,
+        variables=variables,
+        alert_name=alert_name,
+    )
+
+
+def _attach_per_root_cause_recommended_fixes(
+    *,
+    diagnosis: DiagnosisResult,
+    primary_plan: RemediationPlan | None,
+    evidence_signals: dict[str, Any],
+    session_id: str,
+    registry: ToolRegistry | None,
+    tool_runs: list[dict[str, Any]] | None,
+    variables: dict[str, Any] | None,
+    alert_name: str | None,
+) -> tuple[DiagnosisResult, RemediationPlan | None]:
+    """Attach independent remediation plan candidates to each root cause when possible.
+
+    Purpose:
+    - produce sanitized multi-root-cause remediation candidates.
+    Input/Output:
+    - input: diagnosis result, current primary plan, evidence signals, and runtime metadata;
+    - output: updated diagnosis plus selected primary plan for legacy compatibility.
+    Why:
+    - every root-cause-level plan is an independent executable proposal and must pass the same
+      write-tool sanitation, regardless of whether it came from LLM inline output or a generator.
+    """
+    if not diagnosis.root_cause:
+        return diagnosis, primary_plan
+    updated_root_causes = list(diagnosis.root_cause)
+    selected_primary_plan = _sanitize_existing_root_cause_plan(
+        plan=primary_plan,
+        diagnosis=diagnosis,
+        root_cause_index=0,
+        session_id=session_id,
+        registry=registry,
+        tool_runs=tool_runs,
+        variables=variables,
+        alert_name=alert_name,
+    )
+
+    for index, root_item in enumerate(updated_root_causes):
+        sanitized_existing_plan = _sanitize_existing_root_cause_plan(
+            plan=root_item.recommended_fix,
+            diagnosis=diagnosis,
+            root_cause_index=index,
+            session_id=session_id,
+            registry=registry,
+            tool_runs=tool_runs,
+            variables=variables,
+            alert_name=alert_name,
+        )
+        # For primary root cause, always try to build a root-cause-specific plan first.
+        # This avoids reusing a generic plan that may target a different contributing factor.
+        if sanitized_existing_plan is not None and index == 0 and selected_primary_plan is None:
+            selected_primary_plan = sanitized_existing_plan
+        raw_candidate = _build_ttft_kill_process_plan_for_root_cause(
+            diagnosis=diagnosis,
+            root_cause_index=index,
+            evidence_signals=evidence_signals,
+            session_id=session_id,
+            tool_runs=tool_runs,
+            variables=variables,
+        )
+        if raw_candidate is None:
+            plan_for_root = selected_primary_plan if index == 0 and sanitized_existing_plan is None else sanitized_existing_plan
+            updated_root_causes[index] = root_item.model_copy(update={"recommended_fix": plan_for_root})
+            continue
+        scoped_diagnosis = _diagnosis_view_with_primary_index(diagnosis, index)
+        normalized_candidate = _normalize_remediation_plan_payload(
+            raw_plan=raw_candidate,
+            diagnosis=scoped_diagnosis,
+            session_id=session_id,
+            registry=registry,
+            tool_runs=tool_runs,
+            variables=variables,
+            alert_name=alert_name,
+        )
+        if normalized_candidate is None:
+            plan_for_root = selected_primary_plan if index == 0 and sanitized_existing_plan is None else sanitized_existing_plan
+            updated_root_causes[index] = root_item.model_copy(update={"recommended_fix": plan_for_root})
+            continue
+        updated_root_causes[index] = root_item.model_copy(update={"recommended_fix": normalized_candidate})
+        if index == 0:
+            selected_primary_plan = normalized_candidate
+
+    updated_diagnosis = diagnosis.model_copy(update={"root_cause": updated_root_causes})
+    updated_diagnosis = updated_diagnosis.model_copy(update={"recommended_fix": selected_primary_plan})
+    return updated_diagnosis, selected_primary_plan
+
+
 def _collect_ttft_suspect_processes(raw_items: Any, *, max_items: int = 6) -> list[dict[str, Any]]:
     if not isinstance(raw_items, list):
         return []
@@ -5649,6 +8143,17 @@ def _collect_ttft_suspect_processes(raw_items: Any, *, max_items: int = 6) -> li
         }
         if node:
             entry["node"] = node
+        for key in (
+            "source_tool",
+            "source_step",
+            "source_node",
+            "evidence_id",
+            "node_role_hint",
+            "process_family_hint",
+            "evidence_kind",
+        ):
+            if item.get(key) is not None:
+                entry[key] = item.get(key)
         normalized.append(entry)
         if len(normalized) >= max_items:
             break
@@ -5663,6 +8168,21 @@ def _build_ttft_kill_process_plan_candidate(
     tool_runs: list[dict[str, Any]] | None = None,
     variables: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
+    """Build a TTFT-focused kill-process plan candidate for the scoped primary root cause.
+
+    Purpose:
+    - generate a safe plan candidate from detected suspect processes in TTFT scenarios.
+    Input/Output:
+    - input: diagnosis context, evidence signals, and optional runtime probes;
+    - output: remediation plan dict or None when candidate cannot be safely formed.
+    Compatibility rationale:
+    - the per-root-cause attachment loop reorders diagnosis context before calling this builder, so
+      "primary" means "the root cause currently being planned".
+    Why:
+    - this keeps TTFT process remediation reusable for both the leading and contributing root causes.
+    """
+    primary_root = _diagnosis_primary_root_cause(diagnosis)
+    primary_root_title = str(primary_root.get("title") or "").strip() or "主根因"
     suspect_present = bool(evidence_signals.get("ttft_suspect_process_present"))
     suspect_processes = _collect_ttft_suspect_processes(evidence_signals.get("ttft_suspect_processes"))
     if not suspect_present or not suspect_processes:
@@ -5725,7 +8245,7 @@ def _build_ttft_kill_process_plan_candidate(
         steps.append(
             {
                 "step_id": index,
-                "description": f"在节点 {step_node} 终止可疑负载进程 {target_label}",
+                "description": f"终止可疑进程 {target_label}，位于节点 {step_node}",
                 "tool": "kill_process",
                 "params": step_params,
                 "verification": {
@@ -5762,7 +8282,7 @@ def _build_ttft_kill_process_plan_candidate(
 
     payload: dict[str, Any] = {
         "plan_id": f"proposal-{(session_id or 'session')[:8]}-ttft-kill",
-        "root_cause": diagnosis.root_cause,
+        "root_cause": primary_root_title,
         "description": "识别到可疑压测/模拟负载进程，按进程粒度灰度终止并复核 TTFT 与告警状态。",
         "steps": steps,
         "estimated_impact": "释放异常争用，预期 TTFT 回落并推动告警恢复。",
@@ -5786,6 +8306,7 @@ def _normalize_step_params_in_place(
     params = step.get("params")
     if not isinstance(params, dict):
         return "missing_required_params: params must be an object"
+    original_node = str(params.get("node") or "").strip()
     node_param_error = _normalize_node_param_in_place(params)
     if node_param_error:
         return node_param_error
@@ -5836,6 +8357,17 @@ def _normalize_step_params_in_place(
         process_entity_id = _resolve_kill_process_entity_id(params)
         if process_entity_id:
             params["entity_id"] = process_entity_id
+        verification = step.get("verification")
+        if isinstance(verification, dict):
+            tool_params = verification.get("tool_params")
+            if isinstance(tool_params, dict):
+                verification_node = str(tool_params.get("node") or "").strip()
+                if verification_node:
+                    _normalize_node_param_in_place(tool_params)
+                elif params.get("node"):
+                    tool_params["node"] = params.get("node")
+                elif original_node:
+                    tool_params["node"] = original_node
 
     if registry is None or not tool_name:
         return None
@@ -6059,11 +8591,25 @@ def _step_text(step: dict[str, Any]) -> str:
 
 
 def _infer_step_node(*, step: dict[str, Any], diagnosis: DiagnosisResult) -> tuple[str | None, bool]:
+    """Infer target node from step text plus the scoped primary root-cause entities.
+
+    Purpose:
+    - resolve a unique node candidate for tooling commands that require node scope.
+    Input/Output:
+    - input: plan step dict and validated diagnosis result;
+    - output: tuple(node_name_or_none, ambiguous_flag).
+    Compatibility rationale:
+    - reads entities from `root_cause[0]`; per-root-cause planning passes a reordered diagnosis view
+      when validating a non-leading root cause.
+    Why:
+    - node-scoped write tools need exactly one unambiguous target for the current plan.
+    """
     inventory_names, host_to_name = _load_inventory_node_mapping()
     node_candidates: set[str] = set()
     ip_candidates: set[str] = set()
 
-    for raw in diagnosis.root_cause_entities:
+    primary = _diagnosis_primary_root_cause(diagnosis)
+    for raw in (primary.get("entities") or []):
         _collect_node_candidates(str(raw or ""), inventory_names, node_candidates, ip_candidates)
 
     text = _step_text(step)

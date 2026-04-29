@@ -4,6 +4,11 @@ import type { DiagnosisLocalAuditRecord, DiagnosisSession, SessionEvent } from "
 import type { DiagnosisModifiedCandidateView } from "./diagnosisModifiedModel";
 import { buildDiagnosisModifiedReportView, mapDiagnosisModifiedStage } from "./diagnosisModifiedReportModel";
 
+/**
+ * Build a reusable report-model session fixture with the formal multi-root-cause diagnosis contract.
+ * Input: target session status; Output: diagnosis session suitable for report projection tests.
+ * Why: guarantee report tests no longer depend on removed legacy root-cause fields.
+ */
 function createSession(status = "approval_required"): DiagnosisSession {
   return {
     session_id: "sess-report-model",
@@ -21,9 +26,56 @@ function createSession(status = "approval_required"): DiagnosisSession {
     duration_seconds: 420,
     outcome: status === "resolved" ? "resolved" : undefined,
     diagnosis_result: {
-      root_cause: "Redis connection saturation",
-      root_cause_layer: "service",
-      root_cause_entities: ["redis-primary", "auth-svc"],
+      root_cause: [
+        {
+          id: "rc-redis-saturation",
+          title: "Redis connection saturation",
+          layer: "service",
+          entities: ["redis-primary", "auth-svc"],
+          confidence: 0.86,
+          certainty: "confirmed",
+          status: "confirmed",
+          evidence_summary: "Redis timeout aligns with alert window.",
+          impact_summary: "Auth login latency spikes and partial failures.",
+          distinguishing_verification: "Check Redis saturation before scaling rollout.",
+        },
+        {
+          id: "rc-db-queue",
+          title: "Downstream database wait queue",
+          layer: "service",
+          entities: ["orders-db"],
+          confidence: 0.54,
+          certainty: "probable",
+          status: "contributing",
+          evidence_summary: "Database wait queue increased after retries.",
+          impact_summary: "Auth login latency spikes and partial failures.",
+          distinguishing_verification: "Check queue depth after Redis recovers.",
+        },
+        {
+          id: "rc-ingress-throttle",
+          title: "Ingress throttling",
+          layer: "network",
+          entities: ["edge-gateway"],
+          confidence: 0.32,
+          certainty: "ambiguous",
+          status: "suspected",
+          evidence_summary: "Ingress latency rose later in the incident.",
+          impact_summary: "Auth login latency spikes and partial failures.",
+          distinguishing_verification: "Validate queue pressure on edge gateway.",
+        },
+        {
+          id: "rc-node-pressure",
+          title: "Node pressure",
+          layer: "hardware",
+          entities: ["node-17"],
+          confidence: 0.18,
+          certainty: "ambiguous",
+          status: "monitoring",
+          evidence_summary: "Node pressure is lower-confidence background noise.",
+          impact_summary: "Auth login latency spikes and partial failures.",
+          distinguishing_verification: "Re-check host pressure after primary mitigation.",
+        },
+      ],
       confidence: 0.86,
       hypotheses: [
         {
@@ -38,40 +90,6 @@ function createSession(status = "approval_required"): DiagnosisSession {
       affected_services: ["auth-svc", "login-api"],
       triage_priority: "P1",
       diagnosis_certainty: "confirmed",
-      ranked_candidates: [
-        {
-          rank: 1,
-          root_cause: "Redis connection saturation",
-          root_cause_layer: "service",
-          root_cause_entities: ["redis-primary", "auth-svc"],
-          confidence: 0.86,
-          evidence_summary: "Redis timeout aligns with alert window.",
-        },
-        {
-          rank: 2,
-          root_cause: "Downstream database wait queue",
-          root_cause_layer: "service",
-          root_cause_entities: ["orders-db"],
-          confidence: 0.54,
-          evidence_summary: "Database wait queue increased after retries.",
-        },
-        {
-          rank: 3,
-          root_cause: "Ingress throttling",
-          root_cause_layer: "network",
-          root_cause_entities: ["edge-gateway"],
-          confidence: 0.32,
-          evidence_summary: "Ingress latency rose later in the incident.",
-        },
-        {
-          rank: 4,
-          root_cause: "Node pressure",
-          root_cause_layer: "hardware",
-          root_cause_entities: ["node-17"],
-          confidence: 0.18,
-          evidence_summary: "Node pressure is lower-confidence background noise.",
-        },
-      ],
       recommended_fix: {
         plan_id: "plan-auth-redis-v2",
         root_cause: "Redis connection saturation",
@@ -449,7 +467,7 @@ describe("buildDiagnosisModifiedReportView", () => {
       topologyContext: {
         roots: ["service:auth-svc"],
         affected_count: 1,
-        affected_entities: [{ id: "mystery-target", name: "mystery-target" }],
+        affected_entities: [{ id: "mystery-target", type: "entity", name: "mystery-target" }],
         summary: "ttft with unknown id",
       },
       timeline: [],
@@ -474,8 +492,8 @@ describe("buildDiagnosisModifiedReportView", () => {
         roots: ["service:shared"],
         affected_count: 2,
         affected_entities: [
-          { id: "pod:service:shared", name: "shared" },
-          { id: "service:shared-sidecar", name: "shared-sidecar" },
+          { id: "pod:service:shared", type: "pod", name: "shared" },
+          { id: "service:shared-sidecar", type: "service", name: "shared-sidecar" },
         ],
         summary: "same label different types",
       },
@@ -502,7 +520,7 @@ describe("buildDiagnosisModifiedReportView", () => {
       topologyContext: {
         roots: ["gpu:0"],
         affected_count: 1,
-        affected_entities: [{ id: "service:auth-svc", name: "auth-svc" }],
+        affected_entities: [{ id: "service:auth-svc", type: "service", name: "auth-svc" }],
         summary: "fallback topology",
       },
       timeline: [],
@@ -546,8 +564,10 @@ describe("buildDiagnosisModifiedReportView", () => {
     if (!session.diagnosis_result) {
       throw new Error("expected diagnosis result");
     }
-    session.diagnosis_result.root_cause =
-      '[TOOL_CALL] {tool => "ssh.run_command"} [/TOOL_CALL] GPU 温度异常来自风扇策略偏移';
+    session.diagnosis_result.root_cause[0] = {
+      ...session.diagnosis_result.root_cause[0],
+      title: '[TOOL_CALL] {tool => "ssh.run_command"} [/TOOL_CALL] GPU 温度异常来自风扇策略偏移',
+    };
 
     const view = buildDiagnosisModifiedReportView({
       session,
@@ -561,9 +581,42 @@ describe("buildDiagnosisModifiedReportView", () => {
     expect(view.overview.title).not.toContain("[TOOL_CALL]");
   });
 
-  it("prefers ranked candidates from the contract and caps them at three", () => {
+  it("shows only confirmed or contributing root causes that have their own remediation plan", () => {
+    const session = createSession();
+    if (!session.diagnosis_result) {
+      throw new Error("expected diagnosis result");
+    }
+    const basePlan = session.diagnosis_result.recommended_fix;
+    if (!basePlan) {
+      throw new Error("expected remediation plan");
+    }
+    session.diagnosis_result.root_cause[0] = {
+      ...session.diagnosis_result.root_cause[0],
+      recommended_fix: {
+        ...basePlan,
+        plan_id: "plan-redis-specific",
+        root_cause: "Redis connection saturation",
+      },
+    };
+    session.diagnosis_result.root_cause[1] = {
+      ...session.diagnosis_result.root_cause[1],
+      recommended_fix: {
+        ...basePlan,
+        plan_id: "plan-db-specific",
+        root_cause: "Downstream database wait queue",
+      },
+    };
+    session.diagnosis_result.root_cause[2] = {
+      ...session.diagnosis_result.root_cause[2],
+      recommended_fix: {
+        ...basePlan,
+        plan_id: "plan-suspected-should-not-render",
+        root_cause: "Ingress throttling",
+      },
+    };
+
     const view = buildDiagnosisModifiedReportView({
-      session: createSession(),
+      session,
       timeline: [],
       candidates: [],
       events: [],
@@ -576,6 +629,10 @@ describe("buildDiagnosisModifiedReportView", () => {
     expect(view.candidateChanges[2]?.title).toBe("Ingress throttling");
     expect(view.rootCauseReady).toBe(true);
     expect(view.rootCause.state).toBe("ready");
+    expect(view.rootCause.items.map((item) => item.title)).toEqual([
+      "Redis connection saturation",
+      "Downstream database wait queue",
+    ]);
   });
 
   it("compresses execution and feedback from existing event and audit sources", () => {
@@ -631,6 +688,31 @@ describe("buildDiagnosisModifiedReportView", () => {
     expect(view.nextAction.mode).toBe("executing");
     expect(view.remediation.state).toBe("ready");
     expect(view.remediation.steps).toHaveLength(2);
+  });
+
+  it("shows the next ranked remediation approval event in feedback", () => {
+    const view = buildDiagnosisModifiedReportView({
+      session: createSession("approval_required"),
+      timeline: [],
+      candidates: [],
+      events: [
+        {
+          schema_version: "1",
+          type: "remediation_progress",
+          session_id: "sess-report-model",
+          timestamp: "2026-04-08T10:08:00.000Z",
+          data: {
+            stage: "next_plan_approval_required",
+            message: "上一个修复未恢复，建议继续审批 RANK #2 修复方案：External load",
+            plan_key: "rc:rc-2",
+          },
+        },
+      ],
+      localAuditRecords: [],
+    });
+
+    expect(view.feedback[0]?.label).toBe("下一根因修复待审批");
+    expect(view.feedback[0]?.summary).toContain("RANK #2");
   });
 
   it("keeps the full post-approval session feedback chain visible through closure", () => {
@@ -702,8 +784,8 @@ describe("buildDiagnosisModifiedReportView", () => {
 
   it("prefers the remediation plan attached to the confirmed ranked candidate", () => {
     const session = createSession("approval_required");
-    if (!session.diagnosis_result?.ranked_candidates?.[0]) {
-      throw new Error("expected ranked candidate");
+    if (!session.diagnosis_result?.root_cause?.[0]) {
+      throw new Error("expected root cause");
     }
 
     session.diagnosis_result.recommended_fix = {
@@ -726,7 +808,7 @@ describe("buildDiagnosisModifiedReportView", () => {
       safety_level: "fallback",
     };
 
-    session.diagnosis_result.ranked_candidates[0].recommended_fix = {
+    session.diagnosis_result.root_cause[0].recommended_fix = {
       plan_id: "plan-ranked-redis",
       root_cause: "Redis connection saturation",
       description: "Candidate-specific Redis mitigation should be bound to the confirmed root cause.",
@@ -952,7 +1034,7 @@ describe("buildDiagnosisModifiedReportView", () => {
     expect(new Set(supportTones)).toEqual(new Set(["success"]));
   });
 
-  it("collapses hypothesis-level validation details once the root cause is settled", () => {
+  it("uses backend hypotheses after settlement and keeps their details collapsed", () => {
     const candidateSnapshots = createCandidateSnapshots();
 
     const view = buildDiagnosisModifiedReportView({
@@ -965,9 +1047,54 @@ describe("buildDiagnosisModifiedReportView", () => {
     });
 
     expect(view.hypotheses.detailMode).toBe("collapsed");
-    expect(view.hypotheses.description).toContain("默认折叠细节");
+    expect(view.hypotheses.description).toContain("默认折叠证据链");
     expect(view.hypotheses.items[0]?.evidenceItems.length).toBeGreaterThan(0);
-    expect(view.hypotheses.items[0]?.confidenceUpdates.length).toBeGreaterThan(0);
+    expect(view.hypotheses.items[0]?.title).toBe("Redis timeout amplifies auth retry pressure");
+    expect(view.hypotheses.items[0]?.confidenceUpdates).toHaveLength(0);
+  });
+
+  it("sorts backend hypotheses with confirmed items first", () => {
+    const session = createSession("approval_required");
+    if (!session.diagnosis_result) {
+      throw new Error("expected diagnosis result");
+    }
+    session.diagnosis_result.hypotheses = [
+      {
+        description: "KV cache pressure remains possible",
+        status: "testing",
+        confidence: 0.3,
+        evidence_for: ["GPU utilization is high"],
+        evidence_against: [],
+      },
+      {
+        description: "Thermal throttling explains TTFT",
+        status: "eliminated",
+        confidence: 0.2,
+        evidence_for: [],
+        evidence_against: ["Temperature is normal"],
+      },
+      {
+        description: "GPU contention explains TTFT",
+        status: "confirmed",
+        confidence: 0.92,
+        evidence_for: ["fi_gpu_burn process is present"],
+        evidence_against: [],
+      },
+    ];
+
+    const view = buildDiagnosisModifiedReportView({
+      session,
+      timeline: [],
+      candidates: [],
+      events: [],
+      localAuditRecords: [],
+    });
+
+    expect(view.hypotheses.items.map((item) => item.title)).toEqual([
+      "GPU contention explains TTFT",
+      "KV cache pressure remains possible",
+      "Thermal throttling explains TTFT",
+    ]);
   });
 
   it("keeps confidence loading when only an initial candidate snapshot exists", () => {
@@ -1070,7 +1197,10 @@ describe("buildDiagnosisModifiedReportView", () => {
           session_id: "sess-report-model",
           timestamp: "2026-04-08T10:02:00.000Z",
           data: {
-            ranked_candidates: session.diagnosis_result?.ranked_candidates ?? [],
+            root_cause: session.diagnosis_result?.root_cause.map((rootCause) => ({
+              ...rootCause,
+              recommended_fix: null,
+            })) ?? [],
           },
         },
       ],

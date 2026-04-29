@@ -123,7 +123,7 @@ describe("RemediationPage", () => {
 
     const firstRow = container.querySelector<HTMLElement>(".remediation-record-table__row");
     expect(firstRow).toBeTruthy();
-    expect(within(firstRow!).getByText("57%")).toBeInTheDocument();
+    expect(within(firstRow!).getByText("100%")).toBeInTheDocument();
 
     await user.click(firstRow!);
 
@@ -133,12 +133,15 @@ describe("RemediationPage", () => {
       return panel;
     });
 
-    expect(within(drawer!).getByText("总体 57%")).toBeInTheDocument();
+    expect(within(drawer!).getByText("总体 100%")).toBeInTheDocument();
   });
 
   it("falls back to 10s polling when realtime channel is unavailable", async () => {
     const setIntervalSpy = vi.spyOn(window, "setInterval");
     let releasePollingEvent = false;
+    const activeRemediationTimeline = remediationTimeline.filter(
+      (event) => event.type !== "remediation_progress" || event.data?.stage !== "execution_succeeded",
+    );
     server.use(
       http.get("/api/sessions/:sessionId/events", ({ params }) => {
         const sessionId = String(params.sessionId ?? "");
@@ -147,7 +150,7 @@ describe("RemediationPage", () => {
         }
         if (releasePollingEvent) {
           return HttpResponse.json([
-            ...remediationTimeline,
+            ...activeRemediationTimeline,
             {
               schema_version: "1.0",
               type: "remediation_progress",
@@ -161,7 +164,7 @@ describe("RemediationPage", () => {
             },
           ]);
         }
-        return HttpResponse.json(remediationTimeline);
+        return HttpResponse.json(activeRemediationTimeline);
       }),
     );
 

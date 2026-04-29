@@ -49,11 +49,23 @@ class LoopOrchestrator:
         self.trace_publisher = trace_publisher
 
     async def execute(self, session: DiagnosisSession) -> LoopResult:
+        """Execute remediation loop using root_cause[] candidates.
+
+        Purpose:
+        - run remediation attempts for diagnosed root causes while preserving loop telemetry.
+        Input/Output:
+        - input: diagnosed session with `diagnosis_result`;
+        - output: `LoopResult` summarizing attempts and final outcome.
+        Compatibility rationale:
+        - candidate ordering remains root-cause order, capped by `max_candidates`.
+        Why:
+        - multi-root-cause diagnosis should support independent remediation attempts.
+        """
         diagnosis = session.diagnosis_result
         assert diagnosis is not None
         attempts: list[CandidateAttempt] = []
         started = datetime.now(UTC)
-        candidates = diagnosis.ranked_candidates[: self.config.max_candidates] or []
+        candidates = diagnosis.root_cause[: self.config.max_candidates] if diagnosis.root_cause else []
 
         if self.trace_publisher is not None:
             await self.trace_publisher.publish(
@@ -73,7 +85,7 @@ class LoopOrchestrator:
                 await asyncio.sleep(0)
             if self.trace_publisher is not None:
                 await self.trace_publisher.publish(
-                    {"type": "loop_progress", "session_id": session.session_id, "data": {"rank": candidate.rank}}
+                    {"type": "loop_progress", "session_id": session.session_id, "data": {"rank": index + 1}}
                 )
 
             if candidate.recommended_fix is None:
@@ -150,7 +162,8 @@ class LoopOrchestrator:
 
     @staticmethod
     def _build_re_diagnosis_context(attempts: list[CandidateAttempt]) -> dict[str, Any]:
+        """Build re-diagnosis context from failed primary-root-cause attempts."""
         return {
-            "failed_candidates": [attempt.candidate.root_cause for attempt in attempts if not attempt.verification_passed],
+            "failed_candidates": [attempt.candidate.title for attempt in attempts if not attempt.verification_passed],
             "attempt_count": len(attempts),
         }

@@ -1,4 +1,5 @@
 import type {
+  Hypothesis,
   DiagnosisLocalAuditRecord,
   DiagnosisSession,
   DiagnosisStartedData,
@@ -9,6 +10,13 @@ import {
   normalizeDiagnosisModifiedDisplayText,
   sanitizeHypothesisSummaryForDisplay,
 } from "./diagnosisModifiedModel";
+import {
+  getNormalizedRootCauses,
+  getPendingApprovalPlanKey,
+  getPlanByPlanKey,
+  getPrimaryPlan,
+  getPrimaryRootCause,
+} from "./rootCauseModel";
 import type {
   DiagnosisModifiedCandidateView,
   DiagnosisModifiedPlanView,
@@ -407,7 +415,14 @@ export function mapDiagnosisModifiedStage(status?: string | null): DiagnosisModi
 }
 
 function buildFallbackCandidates(session?: DiagnosisSession) {
-  return (session?.diagnosis_result?.ranked_candidates ?? []).map((candidate) => ({
+  const result = session?.diagnosis_result;
+  const candidates = getNormalizedRootCauses(result).map((item, index) => ({
+    rank: index + 1,
+    root_cause: item.title,
+    evidence_summary: item.evidence_summary,
+    confidence: item.confidence,
+  }));
+  return candidates.map((candidate) => ({
     id: `ranked-${candidate.rank}-${candidate.root_cause}`,
     title: normalizeText(candidate.root_cause),
     summary: normalizeText(candidate.evidence_summary),
@@ -418,7 +433,9 @@ function buildFallbackCandidates(session?: DiagnosisSession) {
 }
 
 function buildCandidateChanges(input: BuildDiagnosisModifiedReportViewInput) {
-  const primaryRootCause = normalizeText(input.summary?.rootCause ?? input.session?.diagnosis_result?.root_cause ?? "");
+  const primaryRootCause = normalizeText(
+    input.summary?.rootCause ?? getPrimaryRootCause(input.session?.diagnosis_result)?.title ?? "",
+  );
   const explicitCandidates = (input.candidates ?? []).map((candidate, index) => ({
     id: candidate.id,
     title: normalizeText(candidate.title),
@@ -488,7 +505,113 @@ function getHypothesisTone(candidate: DiagnosisModifiedCandidateView): ReportTon
   return "neutral";
 }
 
+function getBackendHypothesisStatusOrder(status: Hypothesis["status"]) {
+  switch (status) {
+    case "confirmed":
+      return 0;
+    case "testing":
+      return 1;
+    case "eliminated":
+      return 2;
+    default:
+      return 3;
+  }
+}
+
+function getBackendHypothesisStatusLabel(status: Hypothesis["status"]) {
+  switch (status) {
+    case "confirmed":
+      return "已确认";
+    case "testing":
+      return "验证中";
+    case "eliminated":
+      return "已排除";
+    default:
+      return status;
+  }
+}
+
+function getBackendHypothesisTone(status: Hypothesis["status"]): ReportTone {
+  switch (status) {
+    case "confirmed":
+      return "success";
+    case "testing":
+      return "info";
+    case "eliminated":
+      return "warning";
+    default:
+      return "neutral";
+  }
+}
+
+function sortBackendHypotheses(hypotheses: Hypothesis[]) {
+  return [...hypotheses].sort((left, right) => {
+    const statusDelta = getBackendHypothesisStatusOrder(left.status) - getBackendHypothesisStatusOrder(right.status);
+    if (statusDelta !== 0) {
+      return statusDelta;
+    }
+    return (right.confidence ?? 0) - (left.confidence ?? 0);
+  });
+}
+
+function buildBackendHypothesisEvidenceItems(
+  item: Hypothesis,
+  id: string,
+): DiagnosisModifiedHypothesisEvidenceItemView[] {
+  const supportItems = (item.evidence_for ?? [])
+    .map((summary, index) => ({
+      id: `${id}-support-${index + 1}`,
+      kind: "support" as const,
+      summary: sanitizeHypothesisSummaryForDisplay(summary),
+      tone: "success" as const,
+    }))
+    .filter((entry) => entry.summary.length > 0);
+
+  const againstItems = (item.evidence_against ?? [])
+    .map((summary, index) => ({
+      id: `${id}-against-${index + 1}`,
+      kind: "against" as const,
+      summary: sanitizeHypothesisSummaryForDisplay(summary),
+      tone: "warning" as const,
+    }))
+    .filter((entry) => entry.summary.length > 0);
+
+  return [...supportItems, ...againstItems];
+}
+
 function buildHypotheses(input: BuildDiagnosisModifiedReportViewInput): DiagnosisModifiedHypothesesView {
+  const backendHypotheses = input.session?.diagnosis_result?.hypotheses;
+  if (backendHypotheses) {
+    const detailMode = hasRootCauseConclusion(input) ? "collapsed" : "expanded";
+    const sortedHypotheses = sortBackendHypotheses(backendHypotheses);
+    const items = sortedHypotheses.map((item, index) => {
+      const id = `hypothesis-${index + 1}-${sanitizeId(item.description || item.status)}`;
+      const statusLabel = getBackendHypothesisStatusLabel(item.status);
+      return {
+        id,
+        title: normalizeText(item.description || `候选假设 ${index + 1}`),
+        summary: sanitizeHypothesisSummaryForDisplay(item.description),
+        description: `状态: ${statusLabel} | 置信度: ${formatConfidence(item.confidence)}`,
+        confidenceLabel: formatConfidence(item.confidence),
+        statusLabel,
+        tone: getBackendHypothesisTone(item.status),
+        evidenceItems: buildBackendHypothesisEvidenceItems(item, id),
+        confidenceUpdates: [],
+      } satisfies DiagnosisModifiedHypothesisItemView;
+    });
+
+    return {
+      state: "ready",
+      summary: items.length > 0 ? `已验证 ${items.length} 个候选假设。` : "暂无候选假设验证数据。",
+      description:
+        detailMode === "collapsed"
+          ? "候选假设验证直接来自 diagnosis_result.hypotheses；结论已稳定，默认折叠证据链。"
+          : "候选假设验证直接来自 diagnosis_result.hypotheses；推理过程中默认展开证据链。",
+      detailMode,
+      items,
+    };
+  }
+
   const snapshots = getCandidateSnapshots(input);
   const latestSnapshot = snapshots.at(-1);
   const detailMode = hasRootCauseConclusion(input) ? "collapsed" : "expanded";
@@ -1180,7 +1303,7 @@ function extractAlertSubjectEntity(
       return normalized;
     }
   }
-  const resultEntities = input.summary?.rootCauseEntities ?? getResult(input)?.root_cause_entities ?? [];
+  const resultEntities = input.summary?.rootCauseEntities ?? getPrimaryRootCause(getResult(input))?.entities ?? [];
   const firstResultEntity = resultEntities.find((item) => normalizeContextEntity(item));
   if (firstResultEntity) {
     return normalizeContextEntity(firstResultEntity);
@@ -1538,6 +1661,48 @@ function getResult(input: BuildDiagnosisModifiedReportViewInput) {
   return input.session?.diagnosis_result;
 }
 
+type ReportRootCauseCandidate = {
+  rank: number;
+  root_cause: string;
+  root_cause_layer: string;
+  root_cause_entities: string[];
+  confidence: number;
+  evidence_summary: string;
+  recommended_fix?: RemediationPlan | null;
+  distinguishing_verification?: string | null;
+};
+
+/**
+ * Convert formal root-cause array to report-candidate rows consumed by legacy report layout.
+ *
+ * Purpose:
+ * - keep report rendering stable while diagnosis schema migrated to `root_cause[]`.
+ * Input/Output:
+ * - input: report-view input carrying current session summary/result;
+ * - output: sorted candidate rows with rank semantics.
+ * Compatibility rationale:
+ * - no dependency on removed `ranked_candidates`; rank is derived from array index.
+ * Why:
+ * - report refactor stays low-risk by preserving existing layout contracts.
+ */
+function getReportRootCauseCandidates(input: BuildDiagnosisModifiedReportViewInput): ReportRootCauseCandidate[] {
+  const result = getResult(input);
+  const rootCauses = getNormalizedRootCauses(result).filter((item) => {
+    const status = String(item.status ?? "").trim().toLowerCase();
+    return Boolean(item.recommended_fix) && ["confirmed", "contributing"].includes(status);
+  });
+  return rootCauses.map((item, index) => ({
+    rank: index + 1,
+    root_cause: item.title,
+    root_cause_layer: item.layer,
+    root_cause_entities: item.entities,
+    confidence: item.confidence,
+    evidence_summary: item.evidence_summary,
+    recommended_fix: item.recommended_fix ?? null,
+    distinguishing_verification: item.distinguishing_verification ?? null,
+  }));
+}
+
 function getResultNextAction(input: BuildDiagnosisModifiedReportViewInput) {
   const result = getResult(input);
   if (!result || typeof result !== "object") {
@@ -1554,7 +1719,7 @@ function getResultNextAction(input: BuildDiagnosisModifiedReportViewInput) {
 }
 
 function hasRootCauseConclusion(input: BuildDiagnosisModifiedReportViewInput) {
-  const rootCause = normalizeText(input.summary?.rootCause ?? getResult(input)?.root_cause);
+  const rootCause = normalizeText(input.summary?.rootCause ?? getPrimaryRootCause(getResult(input))?.title);
   return String(rootCause ?? "").trim().length > 0;
 }
 
@@ -1589,7 +1754,10 @@ function buildOverview(input: BuildDiagnosisModifiedReportViewInput, stage: Diag
   const result = getResult(input);
   const alertName = normalizeText(session?.alert.alert_name ?? "当前告警");
   const defaultPreview = isDefaultReportPreview(input);
-  const summaryTitle = normalizeText(defaultPreview ? "诊断修复报告" : input.summary?.rootCause ?? result?.root_cause ?? "诊断修复报告");
+  const primaryRootCause = getPrimaryRootCause(result);
+  const summaryTitle = normalizeText(
+    defaultPreview ? "\u8bca\u65ad\u4fee\u590d\u62a5\u544a" : input.summary?.rootCause ?? primaryRootCause?.title ?? "\u8bca\u65ad\u4fee\u590d\u62a5\u544a",
+  );
   const affectedServices = (input.summary?.affectedServices ?? result?.affected_services ?? []).map((item) => normalizeText(item));
   const primaryService =
     normalizeText(session?.alert?.labels?.service) ||
@@ -1662,15 +1830,15 @@ function buildConclusion(input: BuildDiagnosisModifiedReportViewInput) {
   const facts: DiagnosisModifiedReportFact[] = [
     {
       label: "根因",
-      value: normalizeText(summary?.rootCause ?? result?.root_cause ?? "待收敛"),
+      value: normalizeText(summary?.rootCause ?? getPrimaryRootCause(result)?.title ?? "待收敛"),
     },
     {
       label: "层级",
-      value: summary?.rootCauseLayerLabel ?? formatLayer(summary?.rootCauseLayer ?? result?.root_cause_layer),
+      value: summary?.rootCauseLayerLabel ?? formatLayer(summary?.rootCauseLayer ?? getPrimaryRootCause(result)?.layer),
     },
     {
       label: "实体",
-      value: normalizeText(summary?.rootCauseEntities?.join("、") ?? result?.root_cause_entities?.join("、") ?? "--"),
+      value: normalizeText(summary?.rootCauseEntities?.join("、") ?? getPrimaryRootCause(result)?.entities?.join("、") ?? "--"),
     },
     {
       label: "影响",
@@ -1679,7 +1847,7 @@ function buildConclusion(input: BuildDiagnosisModifiedReportViewInput) {
   ];
 
   return {
-    title: normalizeText(summary?.rootCause ?? result?.root_cause ?? "等待形成明确结论"),
+    title: normalizeText(summary?.rootCause ?? getPrimaryRootCause(result)?.title ?? "等待形成明确结论"),
     summary: normalizeText(
       result?.impact_summary ??
         summary?.impactSummary ??
@@ -1705,6 +1873,8 @@ function mapEventStage(stage: string) {
     case "observation_started":
     case "observation_result":
       return { eventKind: "metric_feedback" as const, label: "指标反馈", tone: "info" as ReportTone };
+    case "next_plan_approval_required":
+      return { eventKind: "approval_result" as const, label: "下一根因修复待审批", tone: "warning" as ReportTone };
     case "full_rollout_started":
     case "full_rollout_progress":
       return { eventKind: "execution_progress" as const, label: "全量执行中", tone: "warning" as ReportTone };
@@ -1802,8 +1972,12 @@ function buildUnifiedRecords(input: BuildDiagnosisModifiedReportViewInput) {
 
 function getPreferredRemediationPlan(input: BuildDiagnosisModifiedReportViewInput): RemediationPlan | undefined {
   const result = getResult(input);
-  const rankedCandidates = [...(result?.ranked_candidates ?? [])].sort((left, right) => left.rank - right.rank);
-  const normalizedRootCause = normalizeText(input.summary?.rootCause ?? result?.root_cause ?? "").toLowerCase();
+  const pendingPlan = getPlanByPlanKey(result, getPendingApprovalPlanKey(input.events, result));
+  if (pendingPlan) {
+    return pendingPlan;
+  }
+  const rankedCandidates = getReportRootCauseCandidates(input);
+  const normalizedRootCause = normalizeText(input.summary?.rootCause ?? getPrimaryRootCause(result)?.title ?? "").toLowerCase();
 
   const matchedCandidatePlan = rankedCandidates.find((candidate) => {
     if (!candidate.recommended_fix || !normalizedRootCause) {
@@ -1822,7 +1996,7 @@ function getPreferredRemediationPlan(input: BuildDiagnosisModifiedReportViewInpu
     return rankedPlan;
   }
 
-  return result?.recommended_fix ?? undefined;
+  return getPrimaryPlan(result);
 }
 
 function mapRemediationPlanToView(plan: RemediationPlan): DiagnosisModifiedPlanView {
@@ -2065,9 +2239,7 @@ function buildRootCauseView(
   remediation: DiagnosisModifiedRemediationKeyView,
 ): DiagnosisModifiedRootCauseView {
   const result = getResult(input);
-  const rankedCandidates = [...(result?.ranked_candidates ?? [])]
-    .sort((left, right) => left.rank - right.rank)
-    .slice(0, 2);
+  const rankedCandidates = getReportRootCauseCandidates(input);
 
   if (!hasRootCauseConclusion(input)) {
     return {
@@ -2095,12 +2267,15 @@ function buildRootCauseView(
     };
   }
 
-  const normalizedPrimaryRootCause = normalizeText(input.summary?.rootCause ?? result?.root_cause ?? "").toLowerCase();
-  const fallbackPlan = derivePlan(input);
+  const normalizedPrimaryRootCause = normalizeText(input.summary?.rootCause ?? getPrimaryRootCause(result)?.title ?? "").toLowerCase();
+  const primaryFallbackPlan =
+    result?.recommended_fix
+      ? mapRemediationPlanToView(result.recommended_fix)
+      : input.plan;
 
   return {
     state: "ready",
-    summary: `${rankedCandidates.length} root causes are listed by confidence (top 2).`,
+    summary: `${rankedCandidates.length} root causes are listed by backend diagnosis_result.root_cause.`,
     items: rankedCandidates.map((candidate, index) => {
       const candidateRootCause = normalizeText(candidate.root_cause);
       const isPrimary =
@@ -2111,10 +2286,8 @@ function buildRootCauseView(
       const candidateRemediation =
         candidatePlan
           ? buildRemediationFromPlanView(candidatePlan)
-          : fallbackPlan
-            ? buildRemediationFromPlanView(fallbackPlan)
-            : remediation.state === "ready"
-              ? remediation
+          : isPrimary && primaryFallbackPlan
+            ? buildRemediationFromPlanView(primaryFallbackPlan)
             : buildUnavailableCandidateRemediation();
 
       return {

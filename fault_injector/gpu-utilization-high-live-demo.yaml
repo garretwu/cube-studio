@@ -35,11 +35,12 @@ demo:
     allowed_tools:
       - "gpu.get_metrics"
       - "gpu.get_processes"
+      - "bmc.get_fan_status"
       - "prometheus.query_instant"
       - "k8s.list_pods"
     total_timeout: 180
     step_timeout: 60
-    max_steps: 5
+    max_steps: 7
 
 inventory:
   workers:
@@ -76,6 +77,6 @@ scenarios:
       - "worker-03"
     params:
       duration: 6000
-      memory: "90%"
-      gpu_ids: [0]
-      intensity: 90
+      memory: "100%"
+      gpu_ids: [0,1]
+      intensity: 100

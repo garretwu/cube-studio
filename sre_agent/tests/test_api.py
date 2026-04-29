@@ -16,7 +16,7 @@ from sre_agent.auth.jwt import CurrentUser, encode_token, resolve_jwt_settings
 from sre_agent.config import SREAgentConfig
 from sre_agent.models.alert import Alert
 from sre_agent.models.common import ErrorCode
-from sre_agent.models.diagnosis import DiagnosisResult, DiagnosisSession, Observation, RankedRootCause, ThinkingStep, ThinkingTrace
+from sre_agent.models.diagnosis import DiagnosisResult, DiagnosisSession, Observation, ThinkingStep, ThinkingTrace
 from sre_agent.models.events import EventType, WSEvent
 from sre_agent.models.ontology import EntityType, OntologyEdge, OntologyNode, RelationType
 from sre_agent.models.remediation import (
@@ -31,6 +31,41 @@ from sre_agent.ontology.graph import OntologyGraph
 from sre_agent.api.routes import AuditLogger
 from sre_agent.server import PersistentSessionStore, create_app
 from sre_agent.tools import SafetyLevel, ToolDefinition, ToolExecutionContext, ToolRegistry
+
+
+def _diagnosis_result(
+    *,
+    title: str = "gpu contention",
+    layer: str = "service",
+    confidence: float = 0.9,
+    evidence_summary: str = "high util",
+    impact_summary: str = "latency spike",
+    entities: list[str] | None = None,
+    recommended_fix: RemediationPlan | None = None,
+) -> DiagnosisResult:
+    root_cause: dict[str, Any] = {
+        "id": title.lower().replace(" ", "-"),
+        "title": title,
+        "layer": layer,
+        "entities": entities or [],
+        "confidence": confidence,
+        "certainty": "confirmed",
+        "status": "confirmed",
+        "evidence_summary": evidence_summary,
+        "impact_summary": impact_summary,
+    }
+    if recommended_fix is not None:
+        root_cause["recommended_fix"] = recommended_fix.model_dump(mode="json")
+    return DiagnosisResult.model_validate(
+        {
+            "root_cause": [root_cause],
+            "confidence": confidence,
+            "impact_summary": impact_summary,
+            "affected_services": ["vllm"],
+            "triage_priority": "P1",
+            "diagnosis_certainty": "confirmed",
+        }
+    )
 
 
 class _FakeDiagnosisRunner:
@@ -59,24 +94,7 @@ class _FakeDiagnosisRunner:
                 ),
             ],
         )
-        diagnosis = DiagnosisResult(
-            root_cause="gpu contention",
-            root_cause_layer="service",
-            confidence=0.9,
-            impact_summary="latency spike",
-            triage_priority="P1",
-            diagnosis_certainty="confirmed",
-            ranked_candidates=[
-                RankedRootCause(
-                    rank=1,
-                    root_cause="gpu contention",
-                    root_cause_layer="service",
-                    confidence=0.9,
-                    evidence_summary="high util",
-                    recommended_fix=plan,
-                )
-            ],
-        )
+        diagnosis = _diagnosis_result(recommended_fix=plan)
         return DiagnosisSession(session_id=alert.fingerprint, alert=alert, status="diagnosed", diagnosis_result=diagnosis)
 
 
@@ -167,50 +185,32 @@ class _FakeStreamingDiagnosisRunner:
                     "type": EventType.DIAGNOSIS_RESULT.value,
                     "session_id": alert.fingerprint,
                     "data": {
-                        "root_cause": "gpu contention",
-                        "root_cause_layer": "service",
-                        "root_cause_entities": ["node-a"],
+                        "root_cause": [
+                            {
+                                "id": "gpu-contention",
+                                "title": "gpu contention",
+                                "layer": "service",
+                                "entities": ["node-a"],
+                                "confidence": 0.9,
+                                "certainty": "confirmed",
+                                "status": "confirmed",
+                                "evidence_summary": "high util",
+                                "impact_summary": "latency spike",
+                                "distinguishing_verification": None,
+                            }
+                        ],
                         "confidence": 0.9,
                         "hypotheses": [],
                         "propagation_chain": [],
                         "impact_summary": "latency spike",
                         "affected_services": ["vllm"],
-                        "recommended_fix": None,
                         "triage_priority": "P1",
-                        "ranked_candidates": [
-                            {
-                                "rank": 1,
-                                "root_cause": "gpu contention",
-                                "root_cause_layer": "service",
-                                "root_cause_entities": ["node-a"],
-                                "confidence": 0.9,
-                                "evidence_summary": "high util",
-                                "recommended_fix": None,
-                                "distinguishing_verification": None,
-                            }
-                        ],
                         "diagnosis_certainty": "confirmed",
                     },
                 }
             )
             self.callback_count += 1
-        diagnosis = DiagnosisResult(
-            root_cause="gpu contention",
-            root_cause_layer="service",
-            confidence=0.9,
-            impact_summary="latency spike",
-            triage_priority="P1",
-            diagnosis_certainty="confirmed",
-            ranked_candidates=[
-                RankedRootCause(
-                    rank=1,
-                    root_cause="gpu contention",
-                    root_cause_layer="service",
-                    confidence=0.9,
-                    evidence_summary="high util",
-                )
-            ],
-        )
+        diagnosis = _diagnosis_result(entities=["node-a"])
         trace = ThinkingTrace(
             steps=[
                 ThinkingStep(
@@ -294,24 +294,7 @@ class _FakePartialStreamingDiagnosisRunner:
                 )
             ],
         )
-        diagnosis = DiagnosisResult(
-            root_cause="gpu contention",
-            root_cause_layer="service",
-            confidence=0.91,
-            impact_summary="latency spike",
-            triage_priority="P1",
-            diagnosis_certainty="confirmed",
-            ranked_candidates=[
-                RankedRootCause(
-                    rank=1,
-                    root_cause="gpu contention",
-                    root_cause_layer="service",
-                    confidence=0.91,
-                    evidence_summary="high util",
-                    recommended_fix=plan,
-                )
-            ],
-        )
+        diagnosis = _diagnosis_result(confidence=0.91, recommended_fix=plan)
         trace = ThinkingTrace(
             steps=[
                 ThinkingStep(
@@ -612,6 +595,76 @@ def _alert_payload() -> dict[str, Any]:
         "fingerprint": "fp-api-1",
         "status": "firing",
     }
+
+
+def _make_ranked_plan(plan_id: str, root_cause: str, pod_name: str) -> RemediationPlan:
+    return RemediationPlan(
+        plan_id=plan_id,
+        root_cause=root_cause,
+        description=f"repair {root_cause}",
+        estimated_impact="minor",
+        confidence=0.9,
+        priority="P1",
+        steps=[
+            RemediationStep(
+                step_id=1,
+                description=f"delete {pod_name}",
+                tool="k8s.delete_pod",
+                params={"namespace": "infer", "pod_name": pod_name},
+                verification=VerificationConfig(method="wait", wait_seconds=1),
+            )
+        ],
+    )
+
+
+def _install_two_root_cause_plans(client: TestClient, session_id: str) -> tuple[RemediationPlan, RemediationPlan]:
+    services = client.app.state.services
+    session = services.session_store.get(session_id)
+    assert session is not None
+    plan1 = _make_ranked_plan("plan-rc-gpu", "GPU contention", "vllm-gpu")
+    plan2 = _make_ranked_plan("plan-rc-load", "External load", "load-simulator")
+    diagnosis = DiagnosisResult.model_validate(
+        {
+            "root_cause": [
+                {
+                    "id": "rc-gpu",
+                    "title": "GPU contention",
+                    "layer": "service",
+                    "entities": ["worker-03"],
+                    "confidence": 0.95,
+                    "certainty": "confirmed",
+                    "status": "confirmed",
+                    "evidence_summary": "gpu busy",
+                    "impact_summary": "latency high",
+                    "recommended_fix": plan1.model_dump(mode="json"),
+                },
+                {
+                    "id": "rc-load",
+                    "title": "External load",
+                    "layer": "network",
+                    "entities": ["10.11.4.13"],
+                    "confidence": 0.9,
+                    "certainty": "confirmed",
+                    "status": "confirmed",
+                    "evidence_summary": "external pressure",
+                    "impact_summary": "latency high",
+                    "recommended_fix": plan2.model_dump(mode="json"),
+                },
+            ],
+            "confidence": 0.95,
+            "impact_summary": "latency high",
+            "affected_services": ["vllm"],
+            "triage_priority": "P1",
+            "diagnosis_certainty": "confirmed",
+        }
+    )
+    services.session_store.put(session.model_copy(update={"status": "approval_required", "diagnosis_result": diagnosis}))
+    services.remediation_engine.register_plans(
+        session_id,
+        [("rc:rc-gpu", plan1), ("rc:rc-load", plan2)],
+        clear_existing=True,
+    )
+    return plan1, plan2
 
 
 def _blocked_alert_payload() -> dict[str, Any]:
@@ -953,7 +1006,7 @@ class TestAPIIntegration:
             session_payload = session_response.json()
             assert session_payload["success"] is True
             assert session_payload["data"]["status"] == "approval_required"
-            assert session_payload["data"]["diagnosis_result"]["ranked_candidates"][0]["recommended_fix"]["steps"]
+            assert session_payload["data"]["diagnosis_result"]["root_cause"][0]["recommended_fix"]["steps"]
 
     def test_integration_diagnose_emits_approval_required_event_when_plan_exists(
         self, monkeypatch: pytest.MonkeyPatch
@@ -1827,7 +1880,9 @@ class TestAPIE2E:
         ]
         assert len(remediation_events) >= 5
         assert remediation_events[0]["data"]["stage"] == "approval_accepted"
+        assert remediation_events[0]["data"]["message"] == "审批已通过"
         assert remediation_events[1]["data"]["stage"] == "execution_started"
+        assert remediation_events[1]["data"]["message"] == "开始执行修复方案"
         assert remediation_events[2]["data"]["stage"] == "pre_remediation_baseline_collected"
         assert remediation_events[2]["data"]["baseline_alert"] is not None
         assert isinstance(remediation_events[2]["data"]["baseline_metrics"], list)
@@ -1835,9 +1890,256 @@ class TestAPIE2E:
         assert "alert_review" in remediation_events[-2]["data"]
         assert "metric_reviews" in remediation_events[-2]["data"]
         assert remediation_events[-1]["data"]["stage"] == "execution_succeeded"
+        assert remediation_events[-1]["data"]["message"] == "修复执行成功"
         assert isinstance(remediation_events[-1]["data"].get("step_results"), list)
         assert remediation_events[-1]["data"]["step_results"]
-        assert remediation_events[-1]["data"]["step_results"][0]["command"].startswith("mock::")
+        assert remediation_events[-1]["data"]["step_results"][0]["command"]
+        assert "remediation status update" not in {
+            str(item["data"].get("message", "")).strip().lower()
+            for item in remediation_events
+        }
+
+    def test_e2e_ranked_root_cause_remediation_requires_second_approval(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        client, token = _build_client(monkeypatch)
+        diagnose = client.post("/api/diagnose", json=_alert_payload(), headers=_auth_headers(token)).json()
+        session_id = diagnose["data"]["session_id"]
+        _install_two_root_cause_plans(client, session_id)
+        services = client.app.state.services
+        services.alert_store.replace([Alert.model_validate(_alert_payload())])
+        executed_plan_keys: list[str | None] = []
+
+        async def _approve_ranked_plan(
+            target_session_id: str,
+            approval_input: Any,
+            *,
+            plan_key: str | None = None,
+            progress_callback: Any | None = None,
+        ) -> RemediationResult:
+            _ = (approval_input, progress_callback)
+            executed_plan_keys.append(plan_key)
+            plan = services.remediation_engine.get_plan(target_session_id, plan_key=plan_key)
+            assert plan is not None
+            if plan_key == "rc:rc-load":
+                services.alert_store.replace([])
+            return RemediationResult(
+                plan_id=plan.plan_id,
+                success=True,
+                steps_completed=len(plan.steps),
+                steps_total=len(plan.steps),
+                verification_results=[{"step_id": 1, "verified": True, "plan_key": plan_key}],
+            )
+
+        services.remediation_engine.approve_and_execute = _approve_ranked_plan  # type: ignore[method-assign]
+
+        first = client.post(
+            f"/api/remediate/{session_id}/approve",
+            json={"approved": True, "user": "alice"},
+            headers=_auth_headers(token),
+        )
+        assert first.status_code == 200
+        assert first.json()["success"] is True
+        session_after_first = client.get(f"/api/sessions/{session_id}", headers=_auth_headers(token)).json()["data"]
+        assert session_after_first["status"] == "approval_required"
+        events_after_first = client.get(f"/api/sessions/{session_id}/events", headers=_auth_headers(token)).json()["data"]
+        next_events = [
+            item
+            for item in events_after_first
+            if item["type"] == EventType.REMEDIATION_PROGRESS.value
+            and item["data"].get("stage") == "next_plan_approval_required"
+        ]
+        assert next_events
+        assert next_events[-1]["data"]["previous_plan_key"] == "rc:rc-gpu"
+        assert next_events[-1]["data"]["plan_key"] == "rc:rc-load"
+
+        duplicate = client.post(
+            f"/api/remediate/{session_id}/approve",
+            json={"approved": True, "user": "alice", "plan_key": "rc:rc-gpu"},
+            headers=_auth_headers(token),
+        )
+        assert duplicate.status_code == 200
+        assert duplicate.json()["success"] is False
+
+        second = client.post(
+            f"/api/remediate/{session_id}/approve",
+            json={"approved": True, "user": "alice"},
+            headers=_auth_headers(token),
+        )
+        assert second.status_code == 200
+        assert second.json()["success"] is True
+        session_after_second = client.get(f"/api/sessions/{session_id}", headers=_auth_headers(token)).json()["data"]
+        assert session_after_second["status"] == "resolved"
+        assert executed_plan_keys == ["rc:rc-gpu", "rc:rc-load"]
+
+    def test_e2e_approve_all_is_rejected_for_ranked_root_cause_plans(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        client, token = _build_client(monkeypatch)
+        diagnose = client.post("/api/diagnose", json=_alert_payload(), headers=_auth_headers(token)).json()
+        session_id = diagnose["data"]["session_id"]
+        _install_two_root_cause_plans(client, session_id)
+
+        response = client.post(
+            f"/api/remediate/{session_id}/approve",
+            json={"approved": True, "user": "alice", "approve_all": True},
+            headers=_auth_headers(token),
+        )
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["success"] is False
+        assert payload["error"]["code"] == ErrorCode.VALIDATION_ERROR.value
+
+    def test_e2e_approve_rejects_invalid_plan_before_execution(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        client, token = _build_client(monkeypatch)
+        diagnose = client.post("/api/diagnose", json=_alert_payload(), headers=_auth_headers(token)).json()
+        session_id = diagnose["data"]["session_id"]
+        services = client.app.state.services
+        session = services.session_store.get(session_id)
+        assert session is not None
+        invalid_plan = RemediationPlan(
+            plan_id="plan-rc-load-invalid",
+            root_cause="External load",
+            description="verify with a read-only tool as an execution step",
+            estimated_impact="none",
+            confidence=0.9,
+            priority="P1",
+            steps=[
+                RemediationStep(
+                    step_id=1,
+                    description="query Prometheus",
+                    tool="prometheus.query_instant",
+                    params={"promql": "up"},
+                    verification=VerificationConfig(method="wait", wait_seconds=1),
+                )
+            ],
+        )
+        diagnosis = DiagnosisResult.model_validate(
+            {
+                "root_cause": [
+                    {
+                        "id": "rc-load",
+                        "title": "External load",
+                        "layer": "service",
+                        "entities": ["10.11.4.13"],
+                        "confidence": 0.9,
+                        "certainty": "confirmed",
+                        "status": "confirmed",
+                        "evidence_summary": "load_simulator present",
+                        "impact_summary": "latency high",
+                        "recommended_fix": invalid_plan.model_dump(mode="json"),
+                    }
+                ],
+                "confidence": 0.9,
+                "impact_summary": "latency high",
+                "affected_services": ["vllm"],
+                "triage_priority": "P1",
+                "diagnosis_certainty": "confirmed",
+            }
+        )
+        services.session_store.put(session.model_copy(update={"status": "approval_required", "diagnosis_result": diagnosis}))
+        services.remediation_engine.register_plan(session_id, invalid_plan, plan_key="rc:rc-load")
+
+        async def _should_not_execute(*args: Any, **kwargs: Any) -> RemediationResult:
+            _ = args, kwargs
+            raise AssertionError("invalid plan should be rejected before execution")
+
+        services.remediation_engine.approve_and_execute = _should_not_execute  # type: ignore[method-assign]
+
+        response = client.post(
+            f"/api/remediate/{session_id}/approve",
+            json={"approved": True, "user": "alice"},
+            headers=_auth_headers(token),
+        )
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["success"] is False
+        assert payload["error"]["code"] == ErrorCode.REMEDIATION_PLAN_INVALID.value
+        assert "prometheus.query_instant" in payload["error"]["message"]
+        session_after = client.get(f"/api/sessions/{session_id}", headers=_auth_headers(token)).json()["data"]
+        assert session_after["status"] == "approval_required"
+
+    def test_e2e_ranked_root_cause_observation_window_short_then_final_long(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        client, token = _build_client(monkeypatch)
+        client.app.state.config.remediation.observation_seconds = 600
+        client.app.state.config.remediation.ranked_intermediate_observation_seconds = 30
+        first_alert = _alert_payload()
+        first_alert["fingerprint"] = "fp-ranked-observation-first"
+        diagnose = client.post("/api/diagnose", json=first_alert, headers=_auth_headers(token)).json()
+        session_id = diagnose["data"]["session_id"]
+        _install_two_root_cause_plans(client, session_id)
+        services = client.app.state.services
+        services.alert_store.replace([])
+
+        first = client.post(
+            f"/api/remediate/{session_id}/approve",
+            json={"approved": True, "user": "alice"},
+            headers=_auth_headers(token),
+        )
+        assert first.status_code == 200
+        assert first.json()["success"] is True
+        first_events = client.get(f"/api/sessions/{session_id}/events", headers=_auth_headers(token)).json()["data"]
+        first_observations = [
+            item["data"]
+            for item in first_events
+            if item["type"] == EventType.REMEDIATION_PROGRESS.value
+            and item["data"].get("stage") == "observation_started"
+        ]
+        assert first_observations[-1]["plan_key"] == "rc:rc-gpu"
+        assert first_observations[-1]["seconds"] == 30
+        assert first_observations[-1]["observation_policy"] == "ranked_intermediate"
+        assert first_observations[-1]["has_next_ranked_plan"] is True
+
+        second_alert = _alert_payload()
+        second_alert["fingerprint"] = "fp-ranked-observation-final"
+        diagnose = client.post("/api/diagnose", json=second_alert, headers=_auth_headers(token)).json()
+        final_session_id = diagnose["data"]["session_id"]
+        _install_two_root_cause_plans(client, final_session_id)
+        final_services = client.app.state.services
+        final_services.alert_store.replace([])
+        asyncio.run(
+            final_services.trace_publisher.publish(
+                {
+                    "type": EventType.REMEDIATION_PROGRESS.value,
+                    "session_id": final_session_id,
+                    "data": {"stage": "observation_result", "plan_key": "rc:rc-gpu"},
+                }
+            )
+        )
+        asyncio.run(
+            final_services.trace_publisher.publish(
+                {
+                    "type": EventType.REMEDIATION_PROGRESS.value,
+                    "session_id": final_session_id,
+                    "data": {"stage": "next_plan_approval_required", "plan_key": "rc:rc-load"},
+                }
+            )
+        )
+
+        second = client.post(
+            f"/api/remediate/{final_session_id}/approve",
+            json={"approved": True, "user": "alice"},
+            headers=_auth_headers(token),
+        )
+        assert second.status_code == 200
+        assert second.json()["success"] is True
+        final_events = client.get(f"/api/sessions/{final_session_id}/events", headers=_auth_headers(token)).json()["data"]
+        final_observations = [
+            item["data"]
+            for item in final_events
+            if item["type"] == EventType.REMEDIATION_PROGRESS.value
+            and item["data"].get("stage") == "observation_started"
+        ]
+        assert final_observations[-1]["plan_key"] == "rc:rc-load"
+        assert final_observations[-1]["seconds"] == 600
+        assert final_observations[-1]["observation_policy"] == "ranked_final"
+        assert final_observations[-1]["has_next_ranked_plan"] is False
 
     def test_e2e_approve_route_real_mode_rejects_when_required_channels_not_ready(
         self, monkeypatch: pytest.MonkeyPatch

@@ -75,9 +75,20 @@ const details: Record<string, DiagnosisSession> = {
     status: "approval_required",
     duration_seconds: 98,
     diagnosis_result: {
-      root_cause: "机柜散热效率下降",
-      root_cause_layer: "hardware",
-      root_cause_entities: ["gpu-01"],
+      root_cause: [
+        {
+          id: "rc-cooling-drop",
+          title: "机柜散热效率下降",
+          layer: "hardware",
+          entities: ["gpu-01"],
+          confidence: 0.84,
+          certainty: "probable",
+          status: "confirmed",
+          evidence_summary: "温度曲线与风扇档位偏离趋势一致。",
+          impact_summary: "影响集中在单节点 GPU 温度抬升。",
+          distinguishing_verification: "提升风扇档位后复测温度回落斜率。",
+        },
+      ],
       confidence: 0.84,
       hypotheses: [],
       impact_summary: "影响集中在单节点 GPU 温度抬升。",

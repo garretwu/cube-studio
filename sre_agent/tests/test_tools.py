@@ -631,6 +631,96 @@ class TestToolRegistryUnit(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(merged["node"], "worker-03")
 
+    def test_unit_merge_tool_args_preserves_explicit_node_for_ssh_run_command(self) -> None:
+        from sre_agent.agent.nodes import _merge_tool_args
+
+        registry = build_default_registry()
+        merged = _merge_tool_args(
+            registry=registry,
+            tool_name="ssh.run_command",
+            tool_args={
+                "node": "10.11.4.13",
+                "command": "ps -p 2939350 -o pid,cmd",
+            },
+            variables={"node": "worker-03", "namespace": "service"},
+        )
+        self.assertEqual(merged["node"], "10.11.4.13")
+        self.assertNotIn("namespace", merged)
+        self.assertEqual(merged["command"], "ps -p 2939350 -o pid,cmd")
+
+    def test_unit_merge_tool_args_preserves_nested_kwargs_node_for_ssh_run_command(self) -> None:
+        from sre_agent.agent.nodes import _merge_tool_args
+
+        registry = build_default_registry()
+        merged = _merge_tool_args(
+            registry=registry,
+            tool_name="ssh.run_command",
+            tool_args={
+                "kwargs": {
+                    "node": "10.11.4.13",
+                    "command": "ps -p 2939350 -o pid,cmd",
+                }
+            },
+            variables={"node": "worker-03", "namespace": "service"},
+        )
+        self.assertEqual(merged["node"], "10.11.4.13")
+        self.assertNotIn("namespace", merged)
+        self.assertEqual(merged["command"], "ps -p 2939350 -o pid,cmd")
+
+    def test_unit_merge_tool_args_does_not_inject_runtime_defaults_for_prometheus_query_instant(self) -> None:
+        from sre_agent.agent.nodes import _merge_tool_args
+
+        registry = build_default_registry()
+        merged = _merge_tool_args(
+            registry=registry,
+            tool_name="prometheus.query_instant",
+            tool_args={"promql": "up"},
+            variables={"node": "worker-03", "namespace": "service"},
+        )
+        self.assertEqual(merged, {"promql": "up"})
+
+    def test_unit_merge_tool_args_prunes_unsupported_prometheus_query_instant_params(self) -> None:
+        from sre_agent.agent.nodes import _merge_tool_args
+
+        registry = build_default_registry()
+        merged = _merge_tool_args(
+            registry=registry,
+            tool_name="prometheus.query_instant",
+            tool_args={
+                "kwargs": {
+                    "promql": "up",
+                    "node": "worker-03",
+                    "namespace": "service",
+                }
+            },
+            variables={},
+        )
+        self.assertEqual(merged, {"promql": "up"})
+
+    def test_unit_merge_tool_args_preserves_explicit_namespace(self) -> None:
+        from sre_agent.agent.nodes import _merge_tool_args
+
+        registry = build_default_registry()
+        merged = _merge_tool_args(
+            registry=registry,
+            tool_name="k8s.list_pods",
+            tool_args={"namespace": "inference"},
+            variables={"namespace": "service"},
+        )
+        self.assertEqual(merged["namespace"], "inference")
+
+    def test_unit_merge_tool_args_injects_node_for_ssh_run_command_when_missing(self) -> None:
+        from sre_agent.agent.nodes import _merge_tool_args
+
+        registry = build_default_registry()
+        merged = _merge_tool_args(
+            registry=registry,
+            tool_name="ssh.run_command",
+            tool_args={"command": "hostname"},
+            variables={"node": "worker-03"},
+        )
+        self.assertEqual(merged["node"], "worker-03")
+
     async def test_unit_network_clear_tc_qdisc_dispatches_expected_commands(self) -> None:
         registry = build_default_registry()
         ssh = _FakeSSHChannel()

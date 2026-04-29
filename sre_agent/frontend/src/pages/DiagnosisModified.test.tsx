@@ -58,6 +58,11 @@ function createLiveSession(sessionId: string): DiagnosisSession {
   };
 }
 
+/**
+ * Build a detailed live session fixture with multiple root causes.
+ * Input: session id; Output: approval-ready diagnosis session using `root_cause[]` as the source of truth.
+ * Why: keep modified-page tests aligned with the breaking contract and primary-root-cause-first behavior.
+ */
 function createDetailedLiveSession(sessionId: string): DiagnosisSession {
   return {
     ...createLiveSession(sessionId),
@@ -65,9 +70,32 @@ function createDetailedLiveSession(sessionId: string): DiagnosisSession {
     outcome: "resolved",
     re_diagnosis_round: 2,
     diagnosis_result: {
-      root_cause: "Redis connection saturation",
-      root_cause_layer: "service",
-      root_cause_entities: ["redis-primary", "auth-svc"],
+      root_cause: [
+        {
+          id: "rc-redis-saturation",
+          title: "Redis connection saturation",
+          layer: "service",
+          entities: ["redis-primary", "auth-svc"],
+          confidence: 0.86,
+          certainty: "confirmed",
+          status: "confirmed",
+          evidence_summary: "Redis timeout and retry loop align with the alert window.",
+          impact_summary: "Auth login latency spikes and partial 5xx responses.",
+          distinguishing_verification: "Check Redis saturation before scaling rollout.",
+        },
+        {
+          id: "rc-db-queue",
+          title: "Downstream database wait queue",
+          layer: "service",
+          entities: ["orders-db"],
+          confidence: 0.54,
+          certainty: "probable",
+          status: "contributing",
+          evidence_summary: "Database wait queue increased after retry amplification.",
+          impact_summary: "Auth login latency spikes and partial 5xx responses.",
+          distinguishing_verification: "Verify queue depth after Redis recovery.",
+        },
+      ],
       confidence: 0.86,
       hypotheses: [
         {
@@ -82,25 +110,6 @@ function createDetailedLiveSession(sessionId: string): DiagnosisSession {
       affected_services: ["auth-svc", "login-api"],
       triage_priority: "P1",
       diagnosis_certainty: "confirmed",
-      ranked_candidates: [
-        {
-          rank: 1,
-          root_cause: "Redis connection saturation",
-          root_cause_layer: "service",
-          root_cause_entities: ["redis-primary", "auth-svc"],
-          confidence: 0.86,
-          evidence_summary: "Redis timeout and retry loop align with the alert window.",
-          distinguishing_verification: "Check Redis saturation before scaling rollout.",
-        },
-        {
-          rank: 2,
-          root_cause: "Downstream database wait queue",
-          root_cause_layer: "service",
-          root_cause_entities: ["orders-db"],
-          confidence: 0.54,
-          evidence_summary: "Database wait queue increased after retry amplification.",
-        },
-      ],
       recommended_fix: {
         plan_id: "plan-auth-redis-v2",
         root_cause: "Redis connection saturation",
@@ -191,6 +200,7 @@ function resetDiagnosisStore(overrides: Partial<ReturnType<typeof useDiagnosisSt
     activeStreamingTools: [],
     streamingAbortController: null,
     bootstrapSession: vi.fn().mockResolvedValue(undefined),
+    reconcileSession: vi.fn().mockResolvedValue(undefined),
     sendMessage: vi.fn().mockResolvedValue(undefined),
     revisePlan: vi.fn().mockResolvedValue(undefined),
     approvePlan: vi.fn().mockResolvedValue(undefined),
@@ -929,13 +939,13 @@ describe("DiagnosisModifiedPage sequential playback", () => {
     fireEvent.click(screen.getByRole("button", { name: /Start Demo/i }));
     await flushPendingTimers();
 
+    expect(screen.getByText("收起推理")).toBeInTheDocument();
+    expect(screen.queryByText(collapsedPreview)).not.toBeInTheDocument();
+    expect(screen.getByText(longContent)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "收起推理" }));
     expect(screen.getByText("展开全部推理")).toBeInTheDocument();
     expect(screen.getByText(collapsedPreview)).toBeInTheDocument();
-    expect(screen.queryByText(longContent)).not.toBeInTheDocument();
-
-    fireEvent.click(screen.getByRole("button", { name: "展开全部推理" }));
-    expect(screen.getByText("收起推理")).toBeInTheDocument();
-    expect(screen.getByText(longContent)).toBeInTheDocument();
   });
 
   it("renders completed short thinking content collapsed with a details toggle", async () => {
@@ -977,8 +987,8 @@ describe("DiagnosisModifiedPage sequential playback", () => {
     await flushPendingTimers();
 
     expect(screen.getByText("short reasoning content")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "展开全部推理" })).toBeInTheDocument();
-    expect(screen.queryByText("收起推理")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "收起推理" })).toBeInTheDocument();
+    expect(screen.queryByText("展开全部推理")).not.toBeInTheDocument();
   });
 
   it("blocks later timeline items while a demo tool is still loading", async () => {
@@ -1302,6 +1312,43 @@ describe("DiagnosisModifiedPage sequential playback", () => {
 
     expect(screen.getByText("incremental-one")).toBeInTheDocument();
     expect(container.querySelectorAll(".diagnosis-modified-message-row")).toHaveLength(3);
+  });
+
+  it("polls non-terminal live sessions for event reconciliation and stops after terminal status", async () => {
+    const reconcileSession = vi.fn().mockResolvedValue(undefined);
+    mockedBuildLiveView.mockReturnValue({
+      timeline: [],
+      candidates: [],
+      summary: undefined,
+      plan: undefined,
+    });
+
+    resetDiagnosisStore({
+      session: createSessionWithStatus("sess-live-poll", "remediating"),
+      activeSessionId: "sess-live-poll",
+      bootstrapStatus: "ready",
+      traceStatus: "ready",
+      bootstrapSession: vi.fn().mockResolvedValue(undefined),
+      reconcileSession,
+    });
+
+    renderLivePage("/diagnosis-modified/sess-live-poll");
+    await advance(0);
+
+    expect(reconcileSession).toHaveBeenCalledTimes(1);
+    expect(reconcileSession).toHaveBeenLastCalledWith("sess-live-poll");
+
+    await advance(2_000);
+    expect(reconcileSession).toHaveBeenCalledTimes(2);
+
+    act(() => {
+      useDiagnosisStore.setState({
+        session: createSessionWithStatus("sess-live-poll", "resolved"),
+      });
+    });
+
+    await advance(4_000);
+    expect(reconcileSession).toHaveBeenCalledTimes(2);
   });
 
   it("does not render remediation action buttons in the demo report rail", async () => {
@@ -1806,7 +1853,8 @@ describe("DiagnosisModifiedPage split workspace", () => {
     expect(within(reportRail).queryByText("Hypothesis summary")).not.toBeInTheDocument();
     expect(within(reportRail).queryByText("结论已趋于稳定，默认折叠细节；可按候选展开查看证据与置信度变化。")).not.toBeInTheDocument();
     expect(within(reportRail).queryByText("已选中 3 个候选假设。")).not.toBeInTheDocument();
-    expect(within(reportRail).getByText("Redis timeout and retry loop align with alert timing.")).toBeInTheDocument();
+    expect(within(reportRail).queryByText("Redis timeout and retry loop align with alert timing.")).not.toBeInTheDocument();
+    expect(within(reportRail).getAllByText("Redis timeout amplifies auth request retries").length).toBeGreaterThan(0);
     expect(within(reportRail).queryByText("仅展示告警主体与其直连关联实体；当缺少直连关系时，仅展示主体节点并给出提示。")).not.toBeInTheDocument();
     expect(screen.queryByTestId("diagnosis-modified-report-rail-loading")).not.toBeInTheDocument();
   });
@@ -1981,7 +2029,14 @@ describe("DiagnosisModifiedPage split workspace", () => {
     await act(async () => {
       useDiagnosisStore.setState({
         liveThinking: null,
-        messages: [{ id: "msg-trigger-rerender", role: "assistant", content: "trigger" }],
+        messages: [
+          {
+            id: "msg-trigger-rerender",
+            role: "assistant",
+            content: "trigger",
+            created_at: "2026-04-08T12:22:08.000Z",
+          },
+        ],
       });
       await Promise.resolve();
     });
@@ -2133,7 +2188,14 @@ describe("DiagnosisModifiedPage split workspace", () => {
           tool_name: null,
           active_tools: [],
         },
-        messages: [{ id: "msg-round-cleanup-trigger", role: "assistant", content: "trigger" }],
+        messages: [
+          {
+            id: "msg-round-cleanup-trigger",
+            role: "assistant",
+            content: "trigger",
+            created_at: "2026-04-08T12:28:05.000Z",
+          },
+        ],
       });
       await Promise.resolve();
     });
@@ -2142,7 +2204,7 @@ describe("DiagnosisModifiedPage split workspace", () => {
     expect(screen.getByText("新一轮推理中内容")).toBeInTheDocument();
   });
 
-  it("renders completed thinking collapsed by default and expands on demand", () => {
+  it("renders completed thinking expanded by default and collapses on demand", () => {
     const longThinking = "第一段推理。".repeat(80);
     mockedBuildLiveView.mockReturnValue({
       timeline: [
@@ -2173,11 +2235,12 @@ describe("DiagnosisModifiedPage split workspace", () => {
 
     renderLivePage("/diagnosis-modified/sess-live-thinking-collapsed");
 
-    const expandButton = screen.getByRole("button", { name: "展开全部推理" });
-    expect(expandButton).toBeInTheDocument();
+    const collapseButton = screen.getByRole("button", { name: "收起推理" });
+    expect(collapseButton).toBeInTheDocument();
+    expect(screen.getByText(longThinking)).toBeInTheDocument();
 
-    fireEvent.click(expandButton);
-    expect(screen.getByRole("button", { name: "收起推理" })).toBeInTheDocument();
+    fireEvent.click(collapseButton);
+    expect(screen.getByRole("button", { name: "展开全部推理" })).toBeInTheDocument();
   });
 
   it("uses smart auto-follow and does not force-scroll when user has scrolled away from bottom", async () => {
@@ -2428,7 +2491,7 @@ describe("DiagnosisModifiedPage split workspace", () => {
           session_id: liveSessionId,
           timestamp: "2026-04-08T12:30:00.000Z",
           data: {
-            ranked_candidates: [],
+            root_cause: [],
           },
         },
       ],
@@ -3192,15 +3255,15 @@ describe("DiagnosisModifiedPage hypothesis detail toggles after settlement", () 
     renderLivePage("/diagnosis-modified/sess-live-hypothesis-settled");
 
     expect(screen.queryByText("支持证据")).not.toBeInTheDocument();
-    const settledCard = screen.getByTestId("diagnosis-modified-hypothesis-card-candidate-settled-1");
+    const settledCard = screen.getByTestId("diagnosis-modified-hypothesis-card-hypothesis-1-Redis-timeout-amplifies-auth-request-retries");
     expect(within(settledCard).getByText("86%")).toBeInTheDocument();
     expect(within(settledCard).getByText("已确认")).toHaveClass("diagnosis-modified-badge--success");
-    const toggle = screen.getByRole("button", { name: "展开证据链" });
+    const toggle = within(settledCard).getByRole("button", { name: "展开证据链" });
     fireEvent.click(toggle);
-    const detailPanel = screen.getByTestId("diagnosis-modified-hypothesis-details-candidate-settled-1");
+    const detailPanel = screen.getByTestId("diagnosis-modified-hypothesis-details-hypothesis-1-Redis-timeout-amplifies-auth-request-retries");
     expect(detailPanel).toBeInTheDocument();
     expect(within(detailPanel).getAllByText("支持证据").length).toBeGreaterThan(0);
-    expect(within(detailPanel).getByText("Redis timeout observed")).toBeInTheDocument();
+    expect(within(detailPanel).getByText("Redis saturation observed")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "收起证据链" })).toBeInTheDocument();
     expect(screen.queryByText("Primary root cause")).not.toBeInTheDocument();
     expect(screen.queryByText("Candidate root cause")).not.toBeInTheDocument();

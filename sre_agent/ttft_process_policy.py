@@ -3,7 +3,9 @@ from __future__ import annotations
 import re
 
 TTFT_STRICT_PROCESS_FIND_PATTERN = (
-    r"load_simulator|fi_gpu_burn_gpu_contention|gpu_burn|stress-ng|stress|wrk|locust|jmeter|fio|iperf|apachebench|\bhey\b"
+    r"\bload_simulator\b|\bfi_gpu_burn_gpu_contention\w*\b|\bgpu[_-]?burn\b|"
+    r"\bstress-ng\b|\bstress\b|\bwrk\b|\blocust\b|\bjmeter\b|\bfio\b|"
+    r"\biperf(?:3)?\b|\bapachebench\b|\bhey\b"
 )
 
 _TTFT_SUSPECT_ALLOW_PATTERNS: tuple[re.Pattern[str], ...] = (
@@ -32,19 +34,19 @@ _TTFT_SUSPECT_DENY_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"\bloki-canary\b", re.IGNORECASE),
 )
 
-_TTFT_VERIFICATION_TOKEN_ALLOWLIST: tuple[str, ...] = (
-    "fi_gpu_burn_gpu_contention",
-    "gpu_burn",
-    "load_simulator",
-    "stress-ng",
-    "stress",
-    "wrk",
-    "locust",
-    "jmeter",
-    "fio",
-    "iperf",
-    "apachebench",
-    "hey",
+_TTFT_VERIFICATION_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("fi_gpu_burn_gpu_contention", re.compile(r"\bfi_gpu_burn_gpu_contention\w*\b", re.IGNORECASE)),
+    ("gpu_burn", re.compile(r"\bgpu[_-]?burn\b", re.IGNORECASE)),
+    ("load_simulator", re.compile(r"\bload_simulator\b", re.IGNORECASE)),
+    ("stress-ng", re.compile(r"\bstress-ng\b", re.IGNORECASE)),
+    ("stress", re.compile(r"\bstress\b", re.IGNORECASE)),
+    ("wrk", re.compile(r"\bwrk\b", re.IGNORECASE)),
+    ("locust", re.compile(r"\blocust\b", re.IGNORECASE)),
+    ("jmeter", re.compile(r"\bjmeter\b", re.IGNORECASE)),
+    ("fio", re.compile(r"\bfio\b", re.IGNORECASE)),
+    ("iperf", re.compile(r"\biperf(?:3)?\b", re.IGNORECASE)),
+    ("apachebench", re.compile(r"\bapachebench\b", re.IGNORECASE)),
+    ("hey", re.compile(r"\bhey\b", re.IGNORECASE)),
 )
 
 
@@ -62,8 +64,8 @@ def extract_ttft_verification_pattern(process_text: str) -> str | None:
     lowered = str(process_text or "").strip().lower()
     if not lowered:
         return None
-    for token in _TTFT_VERIFICATION_TOKEN_ALLOWLIST:
-        if token in lowered:
+    for token, pattern in _TTFT_VERIFICATION_PATTERNS:
+        if pattern.search(lowered):
             return token
     return None
 

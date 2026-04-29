@@ -1572,8 +1572,6 @@ class StreamingDiagnosisRunner:
                     data = event["data"]
                     if data.get("diagnosis_result") is not None:
                         final_state["diagnosis_result"] = data["diagnosis_result"]
-                    if data.get("remediation_plan") is not None:
-                        final_state["remediation_plan"] = data["remediation_plan"]
                     if data.get("status") is not None:
                         final_state["status"] = data["status"]
                     if data.get("step_count") is not None:
@@ -1655,9 +1653,9 @@ class StreamingDiagnosisRunner:
                     final_state["trace_items"] = final_trace_items
                 completed = _diagnosis_session_from_state(alert=enriched_alert, state=final_state)
                 completed = completed.model_copy(update={"session_id": final_session_id})
-                plan = self._extract_recommended_fix(completed)
-                if plan is not None:
-                    self._remediation_engine.register_plan(final_session_id, plan)
+                plans = self._extract_root_cause_plans(completed)
+                plan_summaries = self._register_root_cause_plans(final_session_id, plans)
+                if plan_summaries:
                     completed = completed.model_copy(update={"status": "approval_required"})
                 elif completed.status == "diagnosing":
                     completed = completed.model_copy(update={"status": "diagnosed"})
@@ -1707,19 +1705,22 @@ class StreamingDiagnosisRunner:
                                 "data": completed.diagnosis_result.model_dump(mode="json"),
                             }
                         )
-                if plan is not None and EventType.APPROVAL_REQUIRED.value not in emitted_event_types:
-                    plan_version = self._remediation_engine.get_latest_plan_version(final_session_id)
+                if plan_summaries and EventType.APPROVAL_REQUIRED.value not in emitted_event_types:
+                    primary = plan_summaries[0]
                     supplemental_events.append(
                         {
                             "type": EventType.APPROVAL_REQUIRED.value,
                             "session_id": final_session_id,
                             "data": {
-                                "plan_id": plan.plan_id,
-                                "plan_version": plan_version,
+                                "plan_count": len(plan_summaries),
+                                "plans": plan_summaries,
+                                "plan_key": primary["plan_key"],
+                                "plan_id": primary["plan_id"],
+                                "plan_version": primary["plan_version"],
                             },
                         }
                     )
-                if plan is None:
+                if not plan_summaries:
                     supplemental_events.append(
                         {
                             "type": EventType.REMEDIATION_PROGRESS.value,
@@ -1846,14 +1847,82 @@ class StreamingDiagnosisRunner:
         return None
 
     @staticmethod
+    def _extract_root_cause_plans(session: DiagnosisSession) -> list[tuple[str, Any]]:
+        """Extract all remediation plans from diagnosis root-cause items."""
+        if session.diagnosis_result is None:
+            return []
+        plans: list[tuple[str, Any]] = []
+        for index, item in enumerate(session.diagnosis_result.root_cause):
+            if item.recommended_fix is None:
+                continue
+            plan_key = StreamingDiagnosisRunner._build_root_cause_plan_key(index=index, root_cause_id=item.id)
+            plans.append((plan_key, item.recommended_fix))
+        return plans
+
+    @staticmethod
+    def _build_root_cause_plan_key(*, index: int, root_cause_id: str | None) -> str:
+        cleaned = re.sub(r"[^a-zA-Z0-9._:-]+", "-", str(root_cause_id or "").strip()).strip("-")
+        if cleaned:
+            return f"rc:{cleaned}"
+        return f"rc:{index + 1}"
+
+    def _register_root_cause_plans(
+        self,
+        session_id: str,
+        plans: list[tuple[str, Any]],
+    ) -> list[dict[str, Any]]:
+        if not plans:
+            clear = getattr(self._remediation_engine, "clear_session_plans", None)
+            if callable(clear):
+                clear(session_id)
+            return []
+
+        register_plans = getattr(self._remediation_engine, "register_plans", None)
+        if callable(register_plans):
+            register_plans(session_id, plans, clear_existing=True)
+        else:
+            clear = getattr(self._remediation_engine, "clear_session_plans", None)
+            if callable(clear):
+                clear(session_id)
+            for idx, (plan_key, plan) in enumerate(plans):
+                try:
+                    self._remediation_engine.register_plan(
+                        session_id,
+                        plan,
+                        plan_key=plan_key,
+                        set_default=idx == 0,
+                    )
+                except TypeError:
+                    self._remediation_engine.register_plan(session_id, plan)
+
+        summaries: list[dict[str, Any]] = []
+        for idx, (plan_key, plan) in enumerate(plans):
+            get_version = getattr(self._remediation_engine, "get_latest_plan_version", None)
+            if callable(get_version):
+                try:
+                    plan_version = int(get_version(session_id, plan_key=plan_key))
+                except TypeError:
+                    plan_version = int(get_version(session_id))
+            else:
+                plan_version = 0
+            summaries.append(
+                {
+                    "rank": idx + 1,
+                    "plan_key": plan_key,
+                    "plan_id": str(getattr(plan, "plan_id", "") or ""),
+                    "plan_version": plan_version,
+                }
+            )
+        return summaries
+
+    @staticmethod
     def _extract_recommended_fix(session: DiagnosisSession) -> Any:
+        """Deprecated compatibility helper; returns the first root-cause plan if present."""
         if session.diagnosis_result is None:
             return None
-        if session.diagnosis_result.recommended_fix is not None:
-            return session.diagnosis_result.recommended_fix
-        for candidate in session.diagnosis_result.ranked_candidates:
-            if candidate.recommended_fix is not None:
-                return candidate.recommended_fix
+        for item in session.diagnosis_result.root_cause:
+            if item.recommended_fix is not None:
+                return item.recommended_fix
         return None
 
     @staticmethod
@@ -1899,7 +1968,7 @@ class DefaultReDiagnoseRunner:
             f"{_build_default_query(alert)}\n\n"
             f"Previous diagnosis session failed remediation attempts. "
             f"Failed candidates: {context.get('failed_candidates', [])}. "
-            f"Re-diagnose and provide updated ranked candidates.\n"
+            f"Re-diagnose and provide updated root-cause candidates.\n"
             f"{topology_context['summary']}"
         )
         runtime_variables = _build_runtime_diagnosis_variables(
@@ -1936,7 +2005,7 @@ def _build_default_query(alert: Alert) -> str:
     return (
         f"Diagnose alert '{alert.alert_name}' with severity '{alert.severity.value}'. "
         f"Summary: {alert.summary or 'n/a'}. Description: {alert.description or 'n/a'}. "
-        "Use available tools to identify root cause and produce ranked candidates."
+        "Use available tools to identify root causes and produce root_cause[] candidates."
     )
 
 
@@ -1999,6 +2068,9 @@ def _build_diagnosis_query(
             "Before concluding, you MUST complete minimum TTFT coverage: "
             "at least one gpu.get_processes call and one process.find call for external load verification. "
             "If process.find was not executed yet, schedule it now instead of calling unrelated tools. "
+            "When multiple abnormal factors are observed, split them into distinct root-cause candidates "
+            "whenever they can be independently validated, remediated, or observed after remediation. "
+            "Only merge them when they are an inseparable causal chain or share the same remediation action. "
             "Follow the evidence: if gpu.get_processes reveals non-service processes consuming significant GPU "
             "resources, that is a strong GPU-contention signal — prioritize it over external traffic hypotheses. "
             "If the serving node shows no GPU anomalies, then consider external traffic, KV cache pressure, "
@@ -2342,21 +2414,24 @@ def _resolve_inventory_node_for_alert(*, labels: dict[str, Any], cfg: SREAgentCo
 
 
 def _diagnosis_session_from_state(*, alert: Alert, state: dict[str, Any]) -> DiagnosisSession:
-    from sre_agent.models.diagnosis import DiagnosisResult, DiagnosisSession, RankedRootCause, ThinkingTrace
-    from sre_agent.models.remediation import RemediationPlan
+    """Build a persisted diagnosis session from graph state using the new root_cause[] contract.
+
+    Purpose:
+    - transform runtime state snapshot into `DiagnosisSession` for API/session-store usage.
+    Input/Output:
+    - input: alert context plus state dict from graph execution;
+    - output: validated `DiagnosisSession`.
+    Compatibility rationale:
+    - fallback payload now emits `root_cause[]` directly and no longer constructs ranked candidates.
+    Why:
+    - migration requires all terminal state paths to converge on the array-based diagnosis schema.
+    """
+    from sre_agent.models.diagnosis import DiagnosedRootCause, DiagnosisResult, DiagnosisSession, ThinkingTrace
 
     session_id = str(state.get("session_id") or alert.fingerprint or f"default-{datetime.now(UTC).timestamp()}").strip()
     summary = str(state.get("summary") or "diagnosis completed").strip()
     status = str(state.get("status") or "diagnosed").strip().lower()
     mapped_status = "diagnosed" if status in {"diagnosed", "resolved"} else "failed"
-
-    remediation_plan = None
-    raw_plan = state.get("remediation_plan")
-    if isinstance(raw_plan, dict):
-        try:
-            remediation_plan = RemediationPlan.model_validate(raw_plan)
-        except Exception:  # noqa: BLE001
-            remediation_plan = None
 
     raw_diag = state.get("diagnosis_result")
     diagnosis_result = None
@@ -2368,23 +2443,24 @@ def _diagnosis_session_from_state(*, alert: Alert, state: dict[str, Any]) -> Dia
 
     if diagnosis_result is None:
         diagnosis_result = DiagnosisResult(
-            root_cause=summary,
-            root_cause_layer="service",
+            root_cause=[
+                DiagnosedRootCause(
+                    id="rc-1",
+                    title=summary,
+                    layer="service",
+                    entities=[],
+                    confidence=0.6 if mapped_status == "diagnosed" else 0.3,
+                    certainty="probable" if mapped_status == "diagnosed" else "ambiguous",
+                    status="suspected",
+                    evidence_summary="default diagnosis runner synthesized primary root cause",
+                    impact_summary=summary,
+                    recommended_fix=None,
+                )
+            ],
             confidence=0.6 if mapped_status == "diagnosed" else 0.3,
             impact_summary=summary,
             triage_priority="P2",
             diagnosis_certainty="probable" if mapped_status == "diagnosed" else "ambiguous",
-            ranked_candidates=[
-                RankedRootCause(
-                    rank=1,
-                    root_cause=summary,
-                    root_cause_layer="service",
-                    confidence=0.6 if mapped_status == "diagnosed" else 0.3,
-                    evidence_summary="default diagnosis runner synthesized candidate",
-                    recommended_fix=remediation_plan,
-                )
-            ],
-            recommended_fix=remediation_plan,
         )
     trace = None
     raw_trace_items = state.get("trace_items")

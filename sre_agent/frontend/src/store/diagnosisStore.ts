@@ -23,6 +23,13 @@ import type {
   WSEvent,
 } from "../api/types";
 import { formatDateTime } from "../utils/format";
+import {
+  getPendingApprovalPlanKey,
+  getPlanByPlanKey,
+  getPrimaryPlan,
+  getPrimaryPlanKey,
+  getPrimaryRootCause,
+} from "../pages/rootCauseModel";
 
 type ConnectionState = "connecting" | "open" | "closed" | "error";
 type BootstrapStatus = "idle" | "loading" | "ready" | "empty" | "error";
@@ -40,6 +47,7 @@ export type ApprovalDecisionInput = {
   approved: boolean;
   reason?: string;
   user?: string;
+  planKey?: string;
 };
 
 type DiagnosisState = {
@@ -582,46 +590,128 @@ function toTraceEntryFromNodeSnapshot(
   return null;
 }
 
-function sortByCandidateRank(left: { rank?: number }, right: { rank?: number }) {
-  const lhs = Number(left.rank ?? Number.POSITIVE_INFINITY);
-  const rhs = Number(right.rank ?? Number.POSITIVE_INFINITY);
-  return lhs - rhs;
-}
-
-function extractRecommendedPlan(session: DiagnosisSession | undefined): RemediationPlan | null {
+function extractRecommendedPlan(
+  session: DiagnosisSession | undefined,
+  events: SessionEvent[] = [],
+): RemediationPlan | null {
+  /**
+   * Extract the single effective remediation plan.
+   *
+   * Purpose:
+   * - keep store-level plan selection consistent with first-root-cause strategy.
+   * Input/Output:
+   * - input: optional diagnosis session;
+   * - output: remediation plan or null.
+   * Compatibility rationale:
+   * - no fallback to removed ranked-candidate plans.
+   * Why:
+   * - this migration intentionally avoids multi-plan execution in store workflows.
+   */
   if (!session?.diagnosis_result) {
     return null;
   }
-  if (session.diagnosis_result.recommended_fix) {
-    return session.diagnosis_result.recommended_fix;
+  const pendingPlanKey = getPendingApprovalPlanKey(events, session.diagnosis_result);
+  const pendingPlan = getPlanByPlanKey(session.diagnosis_result, pendingPlanKey);
+  if (pendingPlan) {
+    return pendingPlan;
   }
-  const rankedCandidates = [...(session.diagnosis_result.ranked_candidates ?? [])].sort(sortByCandidateRank);
-  for (const candidate of rankedCandidates) {
-    if (candidate.recommended_fix) {
-      return candidate.recommended_fix;
-    }
-  }
-  return null;
+  return getPrimaryPlan(session.diagnosis_result) ?? null;
 }
 
 function diagnosisResultHasRecommendedPlan(
   diagnosisResult: DiagnosisSession["diagnosis_result"] | null | undefined,
 ): boolean {
+  /**
+   * Check whether diagnosis result currently has one effective remediation plan.
+   *
+   * Purpose:
+   * - gate approval and plan-status UI logic in store selectors.
+   * Input/Output:
+   * - input: optional diagnosis result payload;
+   * - output: boolean.
+   * Compatibility rationale:
+   * - checks the currently effective default/primary plan; later approval events can target another
+   *   root-cause plan via explicit plan_key.
+   * Why:
+   * - the store only needs a boolean gate here, while plan_key-specific lookup happens separately.
+   */
   if (!diagnosisResult) {
     return false;
   }
-  if (diagnosisResult.recommended_fix) {
-    return true;
+  return Boolean(getPrimaryPlan(diagnosisResult) ?? getPrimaryRootCause(diagnosisResult)?.recommended_fix);
+}
+
+function buildRootCauseFromRankedCandidate(
+  candidate: Record<string, unknown>,
+  index: number,
+  fallback: Pick<DiagnosisResult, "confidence" | "diagnosis_certainty" | "impact_summary">,
+): DiagnosisResult["root_cause"][number] {
+  const title = normalizeNonEmptyString(candidate.root_cause) ?? normalizeNonEmptyString(candidate.title) ?? `候选根因 ${index + 1}`;
+  const layer = candidate.root_cause_layer === "hardware" ||
+    candidate.root_cause_layer === "network" ||
+    candidate.root_cause_layer === "os" ||
+    candidate.root_cause_layer === "platform" ||
+    candidate.root_cause_layer === "service"
+    ? candidate.root_cause_layer
+    : "platform";
+  const entities = Array.isArray(candidate.root_cause_entities)
+    ? candidate.root_cause_entities.filter((item): item is string => typeof item === "string")
+    : [];
+  const confidence = typeof candidate.confidence === "number" ? candidate.confidence : fallback.confidence;
+  const evidenceSummary =
+    normalizeNonEmptyString(candidate.evidence_summary) ??
+    normalizeNonEmptyString(candidate.summary) ??
+    fallback.impact_summary ??
+    title;
+  const impactSummary = normalizeNonEmptyString(candidate.impact_summary) ?? fallback.impact_summary ?? evidenceSummary;
+
+  return {
+    id: normalizeNonEmptyString(candidate.id) ?? `rc-${index + 1}`,
+    title,
+    layer,
+    entities,
+    confidence,
+    certainty: fallback.diagnosis_certainty,
+    status: index === 0 ? "suspected" : "contributing",
+    evidence_summary: evidenceSummary,
+    impact_summary: impactSummary,
+    distinguishing_verification: null,
+    factor_type: null,
+    evidence_refs: [],
+    evidence_interpretation: null,
+    recommended_fix: null,
+  };
+}
+
+function buildRootCausesFromCandidatesPayload(
+  payload: Record<string, unknown>,
+  previous: DiagnosisSession["diagnosis_result"] | null | undefined,
+  fallback: Pick<DiagnosisResult, "confidence" | "diagnosis_certainty" | "impact_summary">,
+): DiagnosisResult["root_cause"] {
+  if (Array.isArray(payload.root_cause)) {
+    const rootCauses = payload.root_cause.filter(isRecord).map((item) => ({
+      ...item,
+      recommended_fix: null,
+    })) as DiagnosisResult["root_cause"];
+    if (rootCauses.length > 0) {
+      return rootCauses;
+    }
   }
-  const rankedCandidates = diagnosisResult.ranked_candidates ?? [];
-  return rankedCandidates.some((candidate) => Boolean(candidate?.recommended_fix));
+  if (Array.isArray(payload.ranked_candidates)) {
+    const rootCauses = payload.ranked_candidates
+      .filter(isRecord)
+      .map((candidate, index) => buildRootCauseFromRankedCandidate(candidate, index, fallback));
+    if (rootCauses.length > 0) {
+      return rootCauses;
+    }
+  }
+  return previous?.root_cause ?? [];
 }
 
 function buildDiagnosisResultFromCandidatesPayload(
   payload: Record<string, unknown>,
   previous: DiagnosisSession["diagnosis_result"] | null | undefined,
 ): NonNullable<DiagnosisSession["diagnosis_result"]> {
-  const rankedCandidates = Array.isArray(payload.ranked_candidates) ? (payload.ranked_candidates as DiagnosisResult["ranked_candidates"]) : [];
   const hypotheses = Array.isArray(payload.hypotheses) ? (payload.hypotheses as DiagnosisResult["hypotheses"]) : [];
   const confidence = typeof payload.confidence === "number" ? payload.confidence : (previous?.confidence ?? 0);
   const diagnosisCertainty =
@@ -641,11 +731,18 @@ function buildDiagnosisResultFromCandidatesPayload(
     ? payload.affected_services.filter((item): item is string => typeof item === "string")
     : (previous?.affected_services ?? []);
   const impactSummary = typeof payload.impact_summary === "string" ? payload.impact_summary : (previous?.impact_summary ?? "");
+  const rootCauses = buildRootCausesFromCandidatesPayload(
+    payload,
+    previous,
+    {
+      confidence,
+      diagnosis_certainty: diagnosisCertainty,
+      impact_summary: impactSummary,
+    },
+  );
 
   return {
-    root_cause: previous?.root_cause ?? "",
-    root_cause_layer: previous?.root_cause_layer ?? "platform",
-    root_cause_entities: previous?.root_cause_entities ?? [],
+    root_cause: rootCauses,
     confidence,
     next_action: previous?.next_action ?? null,
     hypotheses,
@@ -653,7 +750,6 @@ function buildDiagnosisResultFromCandidatesPayload(
     impact_summary: impactSummary,
     affected_services: affectedServices,
     triage_priority: triagePriority,
-    ranked_candidates: rankedCandidates,
     diagnosis_certainty: diagnosisCertainty,
     recommended_fix: previous?.recommended_fix ?? null,
   };
@@ -757,6 +853,9 @@ function formatRemediationEventMessage(event: EventLike): string | null {
     if (stage === "execution_timeout") {
       return "修复执行超时退出";
     }
+    if (stage === "next_plan_approval_required") {
+      return String(data.message ?? "上一个修复未恢复，下一根因修复方案待审批");
+    }
     if (typeof data.message === "string" && data.message.trim()) {
       return data.message;
     }
@@ -831,6 +930,7 @@ function shouldTriggerSessionBackfill(event: WSEvent): boolean {
     "execution_timeout",
     "escalation_required",
     "observation_result",
+    "next_plan_approval_required",
   ].includes(stage);
 }
 
@@ -923,10 +1023,11 @@ function resolveDisplayUser(user?: string) {
 
 function buildPlanDetailLines(
   session: DiagnosisSession | undefined,
+  events: SessionEvent[],
   planVersion: number | null,
   timestamp: string,
 ) {
-  const plan = extractRecommendedPlan(session);
+  const plan = extractRecommendedPlan(session, events);
   const lines = [
     `审批时间：${formatDateTime(timestamp)}`,
     `方案版本：${planVersion ? `v${planVersion}` : "--"}`,
@@ -951,6 +1052,7 @@ function buildPlanDetailLines(
 function buildApprovalAuditRecord(
   sessionId: string,
   session: DiagnosisSession | undefined,
+  events: SessionEvent[],
   input: ApprovalDecisionInput,
   planVersion: number | null,
 ): DiagnosisLocalAuditRecord {
@@ -959,7 +1061,7 @@ function buildApprovalAuditRecord(
   const reason = input.reason?.trim();
   const timestamp = new Date().toISOString();
   const versionLabel = planVersion ? `v${planVersion}` : "v?";
-  const details = buildPlanDetailLines(session, planVersion, timestamp);
+  const details = buildPlanDetailLines(session, events, planVersion, timestamp);
 
   details.splice(3, 0, `审批人：${approver}`);
   details.splice(4, 0, `审批动作：${approved ? "同意，通过执行" : "拒绝执行"}`);
@@ -1400,6 +1502,7 @@ export const useDiagnosisStore = create<DiagnosisState>((set, get) => ({
   revisePlan: async (instruction: string) => {
     const sessionId = get().activeSessionId;
     const basePlanVersion = get().latestPlanVersion ?? undefined;
+    const planKey = getPrimaryPlanKey(get().session?.diagnosis_result);
     const text = instruction.trim();
     const effectiveInstruction = text || DEFAULT_REVISE_INSTRUCTION;
     if (!sessionId) {
@@ -1413,7 +1516,7 @@ export const useDiagnosisStore = create<DiagnosisState>((set, get) => ({
     });
 
     try {
-      const payload = await apiClient.reviseRemediationPlan(sessionId, effectiveInstruction, basePlanVersion);
+      const payload = await apiClient.reviseRemediationPlan(sessionId, effectiveInstruction, basePlanVersion, planKey);
       const events = await apiClient.getSessionEvents(sessionId).catch(() => []);
       const approvalState = deriveApprovalState(payload.session, events);
       set((state) => ({
@@ -1440,6 +1543,10 @@ export const useDiagnosisStore = create<DiagnosisState>((set, get) => ({
         : inputOrApproved;
     const sessionId = get().activeSessionId;
     const planVersion = get().latestPlanVersion ?? undefined;
+    const selectedPlanKey =
+      input.planKey?.trim() ||
+      getPendingApprovalPlanKey(get().events, get().session?.diagnosis_result) ||
+      getPrimaryPlanKey(get().session?.diagnosis_result);
     const reason = input.reason?.trim() || (!input.approved ? "需要人工复核" : undefined);
     const user = resolveDisplayUser(input.user);
 
@@ -1461,6 +1568,7 @@ export const useDiagnosisStore = create<DiagnosisState>((set, get) => ({
     const approvalRecord = buildApprovalAuditRecord(
       sessionId,
       get().session,
+      get().events,
       { approved: input.approved, reason, user },
       planVersion ?? null,
     );
@@ -1504,7 +1612,7 @@ export const useDiagnosisStore = create<DiagnosisState>((set, get) => ({
     const pollingPromise = pollApprovalEvents();
 
     try {
-      await apiClient.approveRemediation(sessionId, input.approved, user, planVersion);
+      await apiClient.approveRemediation(sessionId, input.approved, user, planVersion, selectedPlanKey);
     } catch (error) {
       keepPollingApprovalEvents = false;
       void pollingPromise.catch(() => undefined);
@@ -2238,6 +2346,12 @@ export const useDiagnosisStore = create<DiagnosisState>((set, get) => ({
           nextSession = {
             ...nextSession,
             status: "escalated",
+          };
+        }
+        if (stage === "next_plan_approval_required") {
+          nextSession = {
+            ...nextSession,
+            status: "approval_required",
           };
         }
       }

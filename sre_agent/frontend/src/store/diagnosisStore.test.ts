@@ -523,8 +523,8 @@ describe("useDiagnosisStore", () => {
         ? {
             ...diagnosisSession.diagnosis_result,
             recommended_fix: undefined,
-            ranked_candidates: (diagnosisSession.diagnosis_result.ranked_candidates ?? []).map((candidate) => ({
-              ...candidate,
+            root_cause: diagnosisSession.diagnosis_result.root_cause.map((rootCause) => ({
+              ...rootCause,
               recommended_fix: undefined,
             })),
           }
@@ -574,7 +574,10 @@ describe("useDiagnosisStore", () => {
       session_id: diagnosisSession.session_id,
       timestamp: "2026-04-28T08:00:00Z",
       data: {
-        ranked_candidates: diagnosisSession.diagnosis_result?.ranked_candidates ?? [],
+        root_cause: diagnosisSession.diagnosis_result?.root_cause.map((rootCause) => ({
+          ...rootCause,
+          recommended_fix: null,
+        })) ?? [],
         hypotheses: diagnosisSession.diagnosis_result?.hypotheses ?? [],
         confidence: diagnosisSession.diagnosis_result?.confidence ?? 0.5,
         diagnosis_certainty: diagnosisSession.diagnosis_result?.diagnosis_certainty ?? "ambiguous",
@@ -587,7 +590,9 @@ describe("useDiagnosisStore", () => {
     const staged = useDiagnosisStore.getState();
     expect(staged.session?.status).toBe("diagnosed");
     expect(staged.session?.diagnosis_result).toBeDefined();
-    expect(staged.session?.diagnosis_result?.root_cause ?? "").toBe("");
+    expect(staged.session?.diagnosis_result?.root_cause).toHaveLength(
+      diagnosisSession.diagnosis_result?.root_cause.length ?? 0,
+    );
     expect(staged.hasPlan).toBe(false);
 
     useDiagnosisStore.getState().applyEvent({

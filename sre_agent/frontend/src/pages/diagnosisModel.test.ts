@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import type { Alert, DiagnosisSession } from "../api/types";
+import type { Alert, DiagnosedRootCause, DiagnosisSession } from "../api/types";
 import {
   buildDiagnosisDemoScenario,
   buildDiagnosisLiveView,
@@ -29,6 +29,30 @@ function createSession(traceSteps: NonNullable<DiagnosisSession["trace"]>["steps
     trace: {
       steps: traceSteps,
     },
+  };
+}
+
+/**
+ * Construct a normalized root-cause fixture item for diagnosis-model tests.
+ * Input: root-cause title plus optional field overrides; Output: `DiagnosedRootCause`.
+ * Why: enforce the new multi-root-cause contract in tests while keeping fixtures concise.
+ */
+function createRootCause(
+  title: string,
+  overrides: Partial<DiagnosedRootCause> = {},
+): DiagnosedRootCause {
+  return {
+    id: overrides.id ?? `rc-${title.toLowerCase().replace(/\s+/g, "-")}`,
+    title,
+    layer: overrides.layer ?? "platform",
+    entities: overrides.entities ?? ["node:worker-03"],
+    confidence: overrides.confidence ?? 0.9,
+    certainty: overrides.certainty ?? "confirmed",
+    status: overrides.status ?? "confirmed",
+    evidence_summary: overrides.evidence_summary ?? "Root-cause evidence is consistent with timeline signals.",
+    impact_summary: overrides.impact_summary ?? "impact",
+    distinguishing_verification: overrides.distinguishing_verification ?? null,
+    recommended_fix: overrides.recommended_fix,
   };
 }
 
@@ -207,9 +231,13 @@ describe("buildDiagnosisLiveView next-action narration", () => {
         },
       ]),
       diagnosis_result: {
-        root_cause: "GPU contention",
-        root_cause_layer: "platform",
-        root_cause_entities: ["node:worker-03"],
+        root_cause: [
+          createRootCause("GPU contention", {
+            confidence: 0.9,
+            impact_summary: "impact",
+            distinguishing_verification: "Use canary drain on worker-03 and validate p95 before full rollout.",
+          }),
+        ],
         confidence: 0.9,
         next_action: "Use canary drain on worker-03 and validate p95 before full rollout.",
         hypotheses: [],
@@ -247,9 +275,13 @@ describe("diagnosis report timeline item", () => {
       ]),
       status: "approval_required",
       diagnosis_result: {
-        root_cause: "GPU contention",
-        root_cause_layer: "platform",
-        root_cause_entities: ["node:worker-03"],
+        root_cause: [
+          createRootCause("GPU contention", {
+            confidence: 0.91,
+            impact_summary: "impact",
+            evidence_summary: "GPU util remains above 99%",
+          }),
+        ],
         confidence: 0.91,
         hypotheses: [
           {
@@ -367,9 +399,22 @@ describe("diagnosis display text normalization", () => {
       status: "diagnosing",
       duration_seconds: 0,
       diagnosis_result: {
-        root_cause: String.raw`\u5f53\u524d\u7ed3\u8bba\u4e3a worker-03 \u8282\u70b9 GPU \u4e89\u7528`,
-        root_cause_layer: "platform",
-        root_cause_entities: ["node:worker-03", "gpu:0"],
+        root_cause: [
+          createRootCause(String.raw`\u5f53\u524d\u7ed3\u8bba\u4e3a worker-03 \u8282\u70b9 GPU \u4e89\u7528`, {
+            entities: ["node:worker-03", "gpu:0"],
+            confidence: 0.91,
+            impact_summary: String.fromCharCode(
+              0x76, 0x4c, 0x4c, 0x4d, 0x20, 0x70, 0x39, 0x35, 0x20,
+              0xe5, 0xbb, 0xb6, 0xe8, 0xbf, 0x9f, 0xe6, 0x8c, 0x81, 0xe7, 0xbb, 0xad,
+              0xe8, 0xb5, 0xb0, 0xe9, 0xab, 0x98, 0xef, 0xbc, 0x8c,
+              0xe6, 0x8e, 0xa8, 0xe7, 0x90, 0x86, 0xe5, 0x90, 0x9e, 0xe5, 0x90, 0x90,
+              0xe5, 0x87, 0xba, 0xe7, 0x8e, 0xb0, 0xe6, 0x98, 0x8e, 0xe6, 0x98, 0xbe,
+              0xe4, 0xb8, 0x8b, 0xe9, 0x99, 0x8d, 0xe3, 0x80, 0x82,
+            ),
+            evidence_summary: String.raw`GPU util \u6301\u7eed 99%\uff0c\u8bf7\u6c42\u6392\u961f\u65f6\u957f\u4e0e\u8d85\u65f6\u544a\u8b66\u540c\u6b65\u51fa\u73b0\u3002`,
+            distinguishing_verification: String.raw`\u786e\u8ba4 worker-03 \u7684 GPU \u5f02\u5e38\u5360\u7528`,
+          }),
+        ],
         confidence: 0.91,
         hypotheses: [
           {
@@ -391,17 +436,6 @@ describe("diagnosis display text normalization", () => {
         affected_services: ["inference-gateway", "vllm-serving"],
         triage_priority: "P1",
         diagnosis_certainty: "confirmed",
-        ranked_candidates: [
-          {
-            rank: 1,
-            root_cause: String.raw`GPU \u4e89\u7528`,
-            root_cause_layer: "platform",
-            root_cause_entities: ["node:worker-03", "gpu:0"],
-            confidence: 0.91,
-            evidence_summary: String.raw`GPU util \u6301\u7eed 99%\uff0c\u8bf7\u6c42\u6392\u961f\u65f6\u957f\u4e0e\u8d85\u65f6\u544a\u8b66\u540c\u6b65\u51fa\u73b0\u3002`,
-            distinguishing_verification: String.raw`\u786e\u8ba4 worker-03 \u7684 GPU \u5f02\u5e38\u5360\u7528`,
-          },
-        ],
       },
     };
 
@@ -409,7 +443,7 @@ describe("diagnosis display text normalization", () => {
 
     expect(view.summary?.rootCause).toBe("\u5f53\u524d\u7ed3\u8bba\u4e3a worker-03 \u8282\u70b9 GPU \u4e89\u7528");
     expect(view.summary?.impactSummary).toBe("vLLM p95 \u5ef6\u8fdf\u6301\u7eed\u8d70\u9ad8\uff0c\u63a8\u7406\u541e\u5410\u51fa\u73b0\u660e\u663e\u4e0b\u964d\u3002");
-    expect(view.candidates[0]?.title).toBe("GPU \u4e89\u7528");
+    expect(view.candidates[0]?.title).toBe("\u5f53\u524d\u7ed3\u8bba\u4e3a worker-03 \u8282\u70b9 GPU \u4e89\u7528");
     expect(view.candidates[0]?.evidenceSummary).toBe("GPU util \u6301\u7eed 99%\uff0c\u8bf7\u6c42\u6392\u961f\u65f6\u957f\u4e0e\u8d85\u65f6\u544a\u8b66\u540c\u6b65\u51fa\u73b0\u3002");
   });
 });
@@ -435,9 +469,13 @@ describe("diagnosis summary metadata", () => {
         ],
       },
       diagnosis_result: {
-        root_cause: "GPU \u4e89\u7528",
-        root_cause_layer: "platform",
-        root_cause_entities: ["node:worker-03", "gpu:0"],
+        root_cause: [
+          createRootCause("GPU \u4e89\u7528", {
+            entities: ["node:worker-03", "gpu:0"],
+            confidence: 0.91,
+            impact_summary: "impact",
+          }),
+        ],
         confidence: 0.91,
         hypotheses: [],
         impact_summary: "impact",
@@ -481,9 +519,12 @@ describe("diagnosis remediation audit timeline", () => {
       status: "remediating",
       duration_seconds: 0,
       diagnosis_result: {
-        root_cause: "GPU contention",
-        root_cause_layer: "platform",
-        root_cause_entities: ["node:worker-03"],
+        root_cause: [
+          createRootCause("GPU contention", {
+            confidence: 0.82,
+            impact_summary: "impact",
+          }),
+        ],
         confidence: 0.82,
         hypotheses: [],
         impact_summary: "impact",
@@ -581,9 +622,12 @@ describe("diagnosis remediation audit timeline", () => {
       status: "validating",
       duration_seconds: 0,
       diagnosis_result: {
-        root_cause: "GPU contention",
-        root_cause_layer: "platform",
-        root_cause_entities: ["node:worker-03"],
+        root_cause: [
+          createRootCause("GPU contention", {
+            confidence: 0.9,
+            impact_summary: "impact",
+          }),
+        ],
         confidence: 0.9,
         hypotheses: [],
         impact_summary: "impact",
@@ -757,9 +801,12 @@ describe("diagnosis remediation audit timeline", () => {
         },
       ]),
       diagnosis_result: {
-        root_cause: "GPU contention",
-        root_cause_layer: "platform",
-        root_cause_entities: ["node:worker-03"],
+        root_cause: [
+          createRootCause("GPU contention", {
+            confidence: 0.9,
+            impact_summary: "impact",
+          }),
+        ],
         confidence: 0.9,
         hypotheses: [],
         impact_summary: "impact",

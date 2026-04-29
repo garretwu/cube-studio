@@ -1,0 +1,5 @@
+FROM 10.11.4.5:5000/sre_agent/sre-agent-web-preview:2b97ee6a-202604160927
+
+COPY lib /app/lib
+COPY fault_injector /app/fault_injector
+COPY sre_agent /app/sre_agent
