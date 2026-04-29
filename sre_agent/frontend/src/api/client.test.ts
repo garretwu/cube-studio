@@ -933,6 +933,116 @@ describe("apiClient.getTopology", () => {
     expect(overview.progress.total_steps).toBe(2);
   });
 
+  it("uses root-cause recommended_fix selected by remediation plan_key for remediation overview", async () => {
+    server.use(
+      http.get("/api/sessions/sess-ttft-root-plan", async () =>
+        HttpResponse.json({
+          session_id: "sess-ttft-root-plan",
+          alert: {
+            alert_name: "AIServiceTTFTP99High",
+            severity: "warning",
+            labels: {},
+            annotations: {},
+            starts_at: "2026-04-27T00:00:00Z",
+            fingerprint: "fp-ttft-root-plan",
+            status: "firing",
+            source: "alertmanager",
+          },
+          status: "approval_required",
+          diagnosis_result: {
+            confidence: 0.93,
+            impact_summary: "TTFT P99 high",
+            affected_services: ["vllm"],
+            triage_priority: "P1",
+            diagnosis_certainty: "confirmed",
+            root_cause: [
+              {
+                id: "gpu-contention",
+                title: "GPU contention",
+                layer: "hardware",
+                entities: ["gpu-0"],
+                confidence: 0.8,
+                certainty: "probable",
+                status: "suspected",
+                evidence_summary: "GPU busy",
+                impact_summary: "TTFT high",
+                recommended_fix: {
+                  plan_id: "plan-gpu",
+                  root_cause: "GPU contention",
+                  description: "Terminate GPU burn.",
+                  steps: [
+                    {
+                      step_id: 1,
+                      description: "Kill gpu burn",
+                      tool: "kill_process",
+                      params: { node: "worker-03", pid: 101 },
+                      verification: { method: "wait", wait_seconds: 1 },
+                      timeout: 30,
+                    },
+                  ],
+                  estimated_impact: "low",
+                  confidence: 0.8,
+                  priority: "P1",
+                },
+              },
+              {
+                id: "external-load",
+                title: "External load process",
+                layer: "service",
+                entities: ["node-13"],
+                confidence: 0.92,
+                certainty: "confirmed",
+                status: "confirmed",
+                evidence_summary: "load process found",
+                impact_summary: "TTFT high",
+                recommended_fix: {
+                  plan_id: "plan-external",
+                  root_cause: "External load process",
+                  description: "Terminate external pressure process.",
+                  steps: [
+                    {
+                      step_id: 1,
+                      description: "Kill load process",
+                      tool: "kill_process",
+                      params: { node: "10.11.4.13", pid: 202 },
+                      verification: {
+                        method: "promql",
+                        query: "ttft_p99_seconds",
+                        condition: { field: "value", operator: "<=", value: 1.2 },
+                        wait_seconds: 1,
+                      },
+                      timeout: 30,
+                    },
+                  ],
+                  estimated_impact: "low",
+                  confidence: 0.92,
+                  priority: "P1",
+                },
+              },
+            ],
+          },
+        }),
+      ),
+      http.get("/api/sessions/sess-ttft-root-plan/events", async () =>
+        HttpResponse.json([
+          {
+            schema_version: "1.0",
+            type: "remediation_progress",
+            session_id: "sess-ttft-root-plan",
+            timestamp: "2026-04-27T00:00:01Z",
+            data: { stage: "next_plan_approval_required", plan_key: "rc:external-load" },
+          },
+        ]),
+      ),
+    );
+
+    const overview = await apiClient.getRemediationOverview("sess-ttft-root-plan");
+
+    expect(overview.plan.plan_id).toBe("plan-external");
+    expect(overview.plan.steps[0]?.verification.query).toBe("ttft_p99_seconds");
+    expect(overview.progress.status).toBe("approval_required");
+  });
+
   it("loads chat history from /api/chat/history", async () => {
     server.use(
       http.get("/api/chat/history", async () =>

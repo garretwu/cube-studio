@@ -1,4 +1,4 @@
-import { render, within } from "@testing-library/react";
+import { fireEvent, render, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { DiagnosisSessionSummary, RemediationOverview, SessionEvent } from "../api/types";
@@ -123,6 +123,9 @@ describe("RemediationDetailDrawer", () => {
     const scoped = within(drawer as HTMLElement);
 
     expect(scoped.getByText("vllm-serving、chat-serving")).toBeInTheDocument();
+    expect(scoped.queryByText("步骤 1 观察等待：30s")).not.toBeInTheDocument();
+    fireEvent.click(scoped.getByRole("button", { name: "展开成功判定策略" }));
+    expect(scoped.getByText("步骤 1 观察等待：30s")).toBeInTheDocument();
     expect(scoped.getByText("策略口径：告警恢复 + 指标改善")).toBeInTheDocument();
     expect(scoped.getByText("alert_cleared：是")).toBeInTheDocument();
     expect(scoped.getByText("metrics_improved：是")).toBeInTheDocument();
@@ -187,6 +190,8 @@ describe("RemediationDetailDrawer", () => {
     expect(scoped.getByText("1分 10秒")).toBeInTheDocument();
     expect(scoped.getByText("总体 55%")).toBeInTheDocument();
     expect(scoped.getByText("灰度 75%")).toBeInTheDocument();
+    fireEvent.click(scoped.getByRole("button", { name: "展开成功判定策略" }));
+    expect(scoped.queryByText("灰度目标流量 50%，观察窗口 120s。")).not.toBeInTheDocument();
 
   });
 });

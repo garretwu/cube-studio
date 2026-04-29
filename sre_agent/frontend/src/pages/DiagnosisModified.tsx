@@ -747,7 +747,7 @@ function ThinkingBlock({
   onStreamComplete?: () => void;
 }) {
   const isThinking = item.status === "thinking";
-  const [isExpanded, setIsExpanded] = useState(true);
+  const [isExpanded, setIsExpanded] = useState(isThinking);
   const latestSummaryLine = item.summaryLine?.trim() || extractLatestThinkingSummary(item.content);
   const streamingPreviewText = buildStreamingThinkingPreview(latestSummaryLine || item.content);
   const hasCompletedContent = !isThinking && item.content.trim().length > 0;
@@ -758,7 +758,7 @@ function ThinkingBlock({
       setIsExpanded(true);
       return;
     }
-    setIsExpanded(true);
+    setIsExpanded(false);
   }, [isThinking, item.content, item.id]);
 
   const durationLabel = formatThoughtDurationLabel(item.thoughtDurationSec);

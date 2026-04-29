@@ -105,6 +105,56 @@ function formatStepVerificationSummary(step: RemediationOverview["plan"]["steps"
   return parts.join(" / ");
 }
 
+function formatVerificationCondition(condition: RemediationOverview["plan"]["steps"][number]["verification"]["condition"]): string {
+  if (!condition) return "";
+  const field = String(condition.field || "value").trim() || "value";
+  return `${field} ${condition.operator} ${String(condition.value)}`;
+}
+
+function formatToolParams(params: Record<string, unknown> | null | undefined): string {
+  if (!params || Object.keys(params).length === 0) return "";
+  return Object.entries(params)
+    .map(([key, value]) => `${key}=${JSON.stringify(value)}`)
+    .join(", ");
+}
+
+function buildPlannedSuccessCriteria(plan: RemediationOverview["plan"]): string[] {
+  const lines: string[] = [];
+  plan.steps.forEach((step) => {
+    const verification = step.verification;
+    if (!verification) return;
+    const conditionText = formatVerificationCondition(verification.condition);
+    if (verification.method === "promql") {
+      const query = String(verification.query ?? "").trim();
+      lines.push(
+        [
+          `步骤 ${step.step_id} 指标校验`,
+          query ? `PromQL：${query}` : "",
+          conditionText ? `条件：${conditionText}` : "",
+        ].filter(Boolean).join("；"),
+      );
+      return;
+    }
+    if (verification.method === "tool_call") {
+      const tool = String(verification.tool ?? "").trim();
+      const params = formatToolParams(verification.tool_params);
+      lines.push(
+        [
+          `步骤 ${step.step_id} 工具校验`,
+          tool ? `工具：${tool}` : "",
+          params ? `参数：${params}` : "",
+          conditionText ? `条件：${conditionText}` : "",
+        ].filter(Boolean).join("；"),
+      );
+      return;
+    }
+    if (verification.method === "wait") {
+      lines.push(`步骤 ${step.step_id} 观察等待：${verification.wait_seconds ?? 30}s`);
+    }
+  });
+  return Array.from(new Set(lines.filter(Boolean)));
+}
+
 function getExecutionStartedAt(events: SessionEvent[] | undefined): string | null {
   if (!events?.length) return null;
   for (const event of sortEvents(events)) {
@@ -246,9 +296,11 @@ export default function RemediationDetailDrawer({
   const alertOnlyPolicy = observationPolicy === "alert_status_only_when_post_metrics_unavailable";
   const observationPassed =
     alertCleared !== null && (alertOnlyPolicy ? alertCleared : alertCleared && metricsImproved === true);
+  const canarySuccessCriteria = drawerOverview?.plan.canary?.success_criteria ?? [];
+  const plannedSuccessCriteria = drawerOverview ? buildPlannedSuccessCriteria(drawerOverview.plan) : [];
   const [nowMs, setNowMs] = useState(() => Date.now());
   const [planStepsExpanded, setPlanStepsExpanded] = useState(false);
-  const [strategyExpanded, setStrategyExpanded] = useState(true);
+  const [strategyExpanded, setStrategyExpanded] = useState(false);
   const [timelinePlayback, setTimelinePlayback] = useState<TimelinePlaybackState>({
     activeIndex: null,
     completedCount: 0,
@@ -260,7 +312,7 @@ export default function RemediationDetailDrawer({
   useEffect(() => {
     if (!open) return;
     setPlanStepsExpanded(false);
-    setStrategyExpanded(true);
+    setStrategyExpanded(false);
   }, [open, drawerOverview?.session_id]);
 
   useEffect(() => {
@@ -432,37 +484,51 @@ export default function RemediationDetailDrawer({
                 <div className="remediation-panel-strategy__body">
                   {drawerOverview.plan.canary?.enabled ? (
                     <>
-                      <ul className="remediation-panel-strategy__list">
-                        {drawerOverview.plan.canary.success_criteria.map((item, index) => (
-                          <li key={`${item.metric}-${index}`} className="remediation-panel-strategy__item">
-                            {`${item.metric} ${item.operator} ${String(item.value)}`}
-                          </li>
-                        ))}
-                      </ul>
-                      <p className="remediation-panel-strategy__meta">
-                        {`灰度目标流量 ${formatPercent(drawerOverview.plan.canary.target_percentage)}，观察窗口 ${drawerOverview.plan.canary.monitor_duration}s。`}
-                      </p>
+                      {canarySuccessCriteria.length > 0 ? (
+                        <ul className="remediation-panel-strategy__list">
+                          {canarySuccessCriteria.map((item, index) => (
+                            <li key={`${item.metric}-${index}`} className="remediation-panel-strategy__item">
+                              {`${item.metric} ${item.operator} ${String(item.value)}`}
+                            </li>
+                          ))}
+                        </ul>
+                      ) : plannedSuccessCriteria.length > 0 ? (
+                        <ul className="remediation-panel-strategy__list">
+                          {plannedSuccessCriteria.map((item) => (
+                            <li key={item} className="remediation-panel-strategy__item">{item}</li>
+                          ))}
+                        </ul>
+                      ) : (
+                        <p className="remediation-panel-strategy__meta">当前灰度方案未配置独立成功条件，按步骤最终验证结果判定。</p>
+                      )}
                     </>
                   ) : (
-                    observationResult ? (
-                      <>
-                        <ul className="remediation-panel-strategy__list">
-                          <li className="remediation-panel-strategy__item">{`策略口径：${policyLabel}`}</li>
-                          <li className="remediation-panel-strategy__item">{`alert_cleared：${alertCleared === null ? "未知" : (alertCleared ? "是" : "否")}`}</li>
-                          <li className="remediation-panel-strategy__item">
-                            {`metrics_improved：${
-                              metricsImproved === null
-                                ? (alertOnlyPolicy ? "未纳入（策略降级）" : "未知")
-                                : (metricsImproved ? "是" : "否")
-                            }`}
-                          </li>
-                          <li className="remediation-panel-strategy__item">{`观察结论：${observationPassed ? "通过" : "未通过"}`}</li>
-                        </ul>
-                        <p className="remediation-panel-strategy__meta">当前方案未启用灰度，按观察结果判定是否成功。</p>
-                      </>
-                    ) : (
-                      <p className="remediation-panel-strategy__meta">当前方案未启用灰度，等待观察结果。</p>
-                    )
+                    <>
+                      <ul className="remediation-panel-strategy__list">
+                        {plannedSuccessCriteria.map((item) => (
+                          <li key={item} className="remediation-panel-strategy__item">{item}</li>
+                        ))}
+                        {observationResult ? (
+                          <>
+                            <li className="remediation-panel-strategy__item">{`策略口径：${policyLabel}`}</li>
+                            <li className="remediation-panel-strategy__item">{`alert_cleared：${alertCleared === null ? "未知" : (alertCleared ? "是" : "否")}`}</li>
+                            <li className="remediation-panel-strategy__item">
+                              {`metrics_improved：${
+                                metricsImproved === null
+                                  ? (alertOnlyPolicy ? "未纳入（策略降级）" : "未知")
+                                  : (metricsImproved ? "是" : "否")
+                              }`}
+                            </li>
+                            <li className="remediation-panel-strategy__item">{`观察结论：${observationPassed ? "通过" : "未通过"}`}</li>
+                          </>
+                        ) : null}
+                      </ul>
+                      <p className="remediation-panel-strategy__meta">
+                        {observationResult
+                          ? "当前方案未启用灰度，按步骤验证和观察结果判定是否成功。"
+                          : "当前方案未启用灰度，等待步骤验证和观察结果。"}
+                      </p>
+                    </>
                   )}
                 </div>
               ) : null}
